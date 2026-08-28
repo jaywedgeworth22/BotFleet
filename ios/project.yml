@@ -80,6 +80,13 @@ targets:
             ts.net:
               NSIncludesSubdomains: true
               NSExceptionAllowsInsecureHTTPLoads: true
+    entitlements:
+      path: App/BotFleet.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.app.botfleet
+        com.apple.developer.associated-domains:
+          - applinks:botfleet.app
 
   BotFleetWidgets:
     type: app-extension
@@ -107,3 +114,8 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Widgets/BotFleetWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.app.botfleet
