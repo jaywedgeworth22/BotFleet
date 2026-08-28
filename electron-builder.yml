@@ -1,4 +1,4 @@
-appId: app.botfleet.desktop
+appId: app.botfleet.macos
 productName: BotFleet
 artifactName: BotFleet-${version}-${arch}.${ext}
 

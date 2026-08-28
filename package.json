@@ -12,7 +12,7 @@
     "name": "Jay Wedgeworth"
   },
   "license": "Apache-2.0",
-  "desktopName": "app.botfleet.desktop",
+  "desktopName": "app.botfleet.macos",
   "type": "module",
   "main": "electron/main.mjs",
   "engines": {
