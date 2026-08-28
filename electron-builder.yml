@@ -1,10 +1,10 @@
-appId: com.openmausbot.app
-productName: OpenMausBot
-artifactName: OpenMausBot-${version}-${arch}.${ext}
+appId: app.botfleet.desktop
+productName: BotFleet
+artifactName: BotFleet-${version}-${arch}.${ext}
 
 protocols:
-  - name: OpenMausBot package install
-    schemes: [openmausbot]
+  - name: BotFleet package install
+    schemes: [botfleet, openmausbot]
 
 # In-app auto-update reads latest-mac.yml + the .zip (macOS) or latest.yml +
 # the NSIS .exe (Windows) from this PUBLIC releases repo (separate from the
@@ -118,7 +118,7 @@ dmg:
   # ${arch} is load-bearing: without it the x64 dmg silently overwrites
   # the arm64 one when both arches build (this section overrides both the
   # top-level and mac-level artifactName, so it must carry the arch itself)
-  artifactName: OpenMausBot-${version}-${arch}.dmg
+  artifactName: BotFleet-${version}-${arch}.dmg
 
 win:
   target:

@@ -1,19 +1,18 @@
 {
-  "name": "openmausbot",
+  "name": "botfleet",
   "private": true,
   "version": "0.1.38",
   "description": "A local-first chat app for running a team of AI agents.",
-  "homepage": "https://github.com/milind-soni/OpenMausBot",
+  "homepage": "https://botfleet.app",
   "repository": {
     "type": "git",
-    "url": "https://github.com/milind-soni/OpenMausBot.git"
+    "url": "https://github.com/jaywedgeworth22/BotFleet.git"
   },
   "author": {
-    "name": "Milind Soni",
-    "email": "46266943+milind-soni@users.noreply.github.com"
+    "name": "Jay Wedgeworth"
   },
   "license": "Apache-2.0",
-  "desktopName": "com.openmausbot.app.desktop",
+  "desktopName": "app.botfleet.desktop",
   "type": "module",
   "main": "electron/main.mjs",
   "engines": {
