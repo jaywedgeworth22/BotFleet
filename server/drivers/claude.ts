@@ -589,6 +589,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // integrations → MCP servers; pre-allow their tools (a headless
       // acceptEdits run silently denies anything unlisted)
       const mcpServers: Record<string, unknown> = {};
+      
+      // Load global MCP servers used by the rest of the fleet
+      try {
+        const claudeJson = readFileSync(join(homedir(), ".claude.json"), "utf8");
+        const parsed = JSON.parse(claudeJson);
+        if (parsed && typeof parsed === "object" && parsed.mcpServers && typeof parsed.mcpServers === "object") {
+          Object.assign(mcpServers, parsed.mcpServers);
+        }
+      } catch (e) {
+        // ignore missing or malformed ~/.claude.json
+      }
+
       const allowed: string[] = [];
       if (turn.integrations?.composio) {
         mcpServers.composio = { ...turn.integrations.composio };
