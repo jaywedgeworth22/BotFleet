@@ -1,7 +1,7 @@
 # XcodeGen spec. The .xcodeproj is generated, not committed — a project
 # file is a merge-conflict machine and nothing in it is worth reviewing.
 #
-#   brew install xcodegen && cd ios && xcodegen generate && open OpenMausCompanion.xcodeproj
+#   brew install xcodegen && cd ios && xcodegen generate && open BotFleetCompanion.xcodeproj
 #
 # XcodeGen is a development tool, not a dependency of the app: the app
 # itself has none. If you'd rather not install it, make an iOS App target
@@ -52,7 +52,7 @@ targets:
           - CFBundleURLName: app.botfleet.companion.pairing
             CFBundleURLSchemes:
               - botfleet
-              - openmausbot
+              - botfleet
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
@@ -70,7 +70,7 @@ targets:
           BotFleet converts your speech into text so you can send it
           to a bot. Recognition runs on this phone when it can.
         NSBonjourServices:
-          - _openmausbot._tcp
+          - _botfleet._tcp
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
           NSExceptionDomains:

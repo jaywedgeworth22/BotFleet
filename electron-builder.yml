@@ -4,7 +4,7 @@ artifactName: BotFleet-${version}-${arch}.${ext}
 
 protocols:
   - name: BotFleet package install
-    schemes: [botfleet, openmausbot]
+    schemes: [botfleet, botfleet]
 
 # In-app auto-update reads latest-mac.yml + the .zip (macOS) or latest.yml +
 # the NSIS .exe (Windows) from this PUBLIC releases repo (separate from the
@@ -16,7 +16,7 @@ protocols:
 publish:
   - provider: github
     owner: milind-soni
-    repo: openmausbot-releases
+    repo: botfleet-releases
 
 directories:
   buildResources: build
@@ -37,11 +37,11 @@ files:
   - "!electron/resources/speech-helper"
   - "!electron/resources/speech-helper.swift"
   - "!electron/resources/speech-helper-Info.plist"
-  - "!electron/resources/OpenMausBot Speech.app/**"
+  - "!electron/resources/BotFleet Speech.app/**"
   - "!electron/resources/recorder-helper"
   - "!electron/resources/recorder-helper.swift"
   - "!electron/resources/recorder-helper-Info.plist"
-  - "!electron/resources/OpenMausBot Recorder.app/**"
+  - "!electron/resources/BotFleet Recorder.app/**"
   - "!**/node_modules/**"
   - package.json
 
@@ -50,11 +50,11 @@ asar: true
 extraResources:
   # Ship the app's own license terms in every desktop distribution.
   - from: LICENSE
-    to: licenses/OpenMausBot-LICENSE.txt
+    to: licenses/BotFleet-LICENSE.txt
   - from: NOTICE
-    to: licenses/OpenMausBot-NOTICE.txt
+    to: licenses/BotFleet-NOTICE.txt
   # cloudflared is distributed under Apache-2.0 as a separate executable.
-  # OpenMausBot itself uses the same full license text; ship another named
+  # BotFleet itself uses the same full license text; ship another named
   # copy so the third-party executable's terms remain unambiguous.
   - from: LICENSE
     to: licenses/cloudflared-LICENSE.txt
@@ -91,10 +91,10 @@ mac:
   entitlementsInherit: build/entitlements.mac.plist
   # the dictation helper is a signed background app — Windows and Linux never see it
   extraResources:
-    - from: electron/resources/OpenMausBot Speech.app
-      to: OpenMausBot Speech.app
-    - from: electron/resources/OpenMausBot Recorder.app
-      to: OpenMausBot Recorder.app
+    - from: electron/resources/BotFleet Speech.app
+      to: BotFleet Speech.app
+    - from: electron/resources/BotFleet Recorder.app
+      to: BotFleet Recorder.app
     # CUA must live outside ASAR. prepare-cua stages the signed executable and
     # a self-contained JS/native SDK bundle selected for macOS arm64.
     # ${arch} resolves per built arch — each bundle carries its own natives
@@ -105,10 +105,10 @@ mac:
     - from: dist-native/cloudflared/darwin-${arch}/cloudflared
       to: cloudflared/cloudflared
   extendInfo:
-    NSMicrophoneUsageDescription: OpenMausBot uses the microphone for voice dictation into the composer.
-    NSSpeechRecognitionUsageDescription: OpenMausBot transcribes your voice on-device to type messages for you.
-    NSAccessibilityUsageDescription: OpenMausBot uses Accessibility when you let a bot control this Mac.
-    NSScreenCaptureUsageDescription: OpenMausBot uses Screen Recording so bots can see this Mac before acting.
+    NSMicrophoneUsageDescription: BotFleet uses the microphone for voice dictation into the composer.
+    NSSpeechRecognitionUsageDescription: BotFleet transcribes your voice on-device to type messages for you.
+    NSAccessibilityUsageDescription: BotFleet uses Accessibility when you let a bot control this Mac.
+    NSScreenCaptureUsageDescription: BotFleet uses Screen Recording so bots can see this Mac before acting.
   # Notarization runs manually after the build (notarytool + staple),
   # mirroring the BlueyLite ship_release.sh flow.
   notarize: false
@@ -143,11 +143,11 @@ win:
 nsis:
   oneClick: true
   perMachine: false
-  shortcutName: OpenMausBot
+  shortcutName: BotFleet
   # Versioned, like the .dmg. The README's /latest/download/ button needs a
-  # STABLE filename, so ship a second copy named OpenMausBot-setup.exe on the
-  # release — the same trick as OpenMausBot.dmg beside OpenMausBot-${version}.dmg.
-  artifactName: OpenMausBot-${version}-setup.${ext}
+  # STABLE filename, so ship a second copy named BotFleet-setup.exe on the
+  # release — the same trick as BotFleet.dmg beside BotFleet-${version}.dmg.
+  artifactName: BotFleet-${version}-setup.${ext}
 
 linux:
   target:
@@ -159,11 +159,11 @@ linux:
   # lone 1024px PNG is not indexed by GNOME's hicolor theme on Ubuntu 24.04.
   icon: build/icon.svg
   category: Utility
-  executableName: openmausbot
+  executableName: botfleet
   synopsis: Your own team of AI bots, in a chat app
   description: A local-first chat app for running a team of AI agents.
   maintainer: Milind Soni <46266943+milind-soni@users.noreply.github.com>
-  vendor: OpenMausBot
+  vendor: BotFleet
   syncDesktopName: true
   # The reviewed x64 CLI runtime is staged before packaging and remains
   # outside ASAR so executable modes and adjacent sidecars are preserved.
@@ -174,7 +174,7 @@ linux:
       to: cloudflared/cloudflared
   desktop:
     entry:
-      Name: OpenMausBot
+      Name: BotFleet
       Comment: Your own team of AI bots, in a chat app
       Keywords: AI;Agents;Chat;Productivity;
 

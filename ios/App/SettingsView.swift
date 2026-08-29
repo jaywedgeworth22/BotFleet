@@ -58,7 +58,7 @@ struct SettingsView: View {
                     .accessibilityHint(notificationAccessibilityHint)
                 }
             } footer: {
-                Text("Alerts arrive while OpenMausBot is open or was recently in the background. Closed-app delivery is not available yet.")
+                Text("Alerts arrive while BotFleet is open or was recently in the background. Closed-app delivery is not available yet.")
             }
 
             if session.connection != nil {
@@ -299,7 +299,7 @@ struct ConnectionSecurityView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the connection from this iPhone only. It does not revoke this phone on your Mac. To remove Mac-side access, open OpenMausBot → Settings → Phone and remove this device.")
+            Text("This removes the connection from this iPhone only. It does not revoke this phone on your Mac. To remove Mac-side access, open BotFleet → Settings → Phone and remove this device.")
         }
     }
 
@@ -308,7 +308,7 @@ struct ConnectionSecurityView: View {
         case .live:
             return "This computer is connected and responding normally."
         case .connecting:
-            return "OpenMausBot is trying the saved connection automatically."
+            return "BotFleet is trying the saved connection automatically."
         case let .offline(reason):
             return reason
         case .unauthorized:

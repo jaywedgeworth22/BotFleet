@@ -91,6 +91,7 @@ const appConfigSchema = z.object({
   tts: z.object({ key: optionalText, voice: optionalText, provider: z.enum(["elevenlabs", "system"]).optional() }).optional(),
   /** OpenAI key used only by the in-process avatar image generator. */
   imageGen: z.object({ key: optionalText }).optional(),
+  autoUpdate: z.object({ enabled: z.boolean().optional() }).optional(),
   /** Non-secret profile details shown in the sidebar. */
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
   rooms: roomConfigSchema.optional(),
@@ -112,6 +113,7 @@ export interface AppConfig {
   opencodeGo?: { apiKey?: string };
   tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system" };
   imageGen?: { key?: string };
+  autoUpdate?: { enabled?: boolean };
   profile?: { name?: string; email?: string };
   rooms?: { turnTimeoutMinutes: number };
   ingress?: { publicUrl?: string };

@@ -1,6 +1,6 @@
-# OpenMausMobile privacy
+# BotFleetMobile privacy
 
-OpenMausMobile is a companion for an BotFleet service chosen and operated
+BotFleetMobile is a companion for an BotFleet service chosen and operated
 by the user. Local Wi-Fi and Tailscale connections work without an BotFleet
 account. A user may separately sign in on the desktop to enable the optional
 **Use your phone anywhere** HTTPS connection.

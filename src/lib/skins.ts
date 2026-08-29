@@ -4,7 +4,7 @@
 // that keeps the two halves from drifting apart, and it means adding a skin is
 // one CSS block plus one line in SKINS.
 
-export const SKIN_IDS = ["midnight", "atelier", "foundry", "lagoon"] as const;
+export const SKIN_IDS = ["system", "midnight", "atelier", "foundry", "lagoon"] as const;
 export type SkinId = (typeof SKIN_IDS)[number];
 
 export type Skin = {
@@ -15,6 +15,7 @@ export type Skin = {
 };
 
 export const SKINS: readonly Skin[] = [
+  { id: "system", name: "System", tagline: "Matches macOS Dark/Light Mode" },
   { id: "midnight", name: "Midnight", tagline: "The original. Cool and dark." },
   { id: "atelier", name: "Atelier", tagline: "Daylight on paper, warm and quiet." },
   { id: "foundry", name: "Foundry", tagline: "Night shift. Dark, warm, lit in brass." },
@@ -22,11 +23,7 @@ export const SKINS: readonly Skin[] = [
 ];
 
 export function getDefaultSkin(): SkinId {
-  if (typeof window !== "undefined" && window.matchMedia) {
-    if (window.matchMedia("(prefers-color-scheme: dark)").matches) return "midnight";
-    return "atelier";
-  }
-  return "atelier"; // Fleet standard: Light theme is product default
+  return "system";
 }
 
 const KEY = "omb-skin";
@@ -67,19 +64,30 @@ export function readSkin(): SkinId {
  * attribute rather than a class so it can never collide with Tailwind.
  */
 export function applySkin(id: SkinId): void {
-  document.documentElement.dataset.skin = id;
   try {
     getStore()?.setItem(KEY, id);
   } catch {
     /* quota / private mode — the skin still applies for this session */
   }
+
+  let resolvedId = id;
+  if (id === "system") {
+    if (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      resolvedId = "midnight";
+    } else {
+      resolvedId = "atelier";
+    }
+  }
+
+  document.documentElement.dataset.skin = resolvedId;
+  
   // The one surface CSS cannot reach: on Windows the caption buttons sit in a
   // native overlay the main process paints. Left at the default it stays
   // Midnight-black on a light skin — the "black block in the top-right
   // corner" of issue #454. Best-effort: a browser tab or an older desktop
   // build has no bridge, and the skin still applies without it.
   try {
-    void window.ogb?.applySkin?.(id)?.catch(() => undefined);
+    void window.ogb?.applySkin?.(resolvedId)?.catch(() => undefined);
   } catch {
     /* no bridge */
   }

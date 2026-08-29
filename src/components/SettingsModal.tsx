@@ -113,6 +113,7 @@ function CustomIngressFields() {
 }
 
 function UpdatesRow() {
+  const { state, dispatch } = useStore();
   const s = useUpdaterState();
   if (!window.ogb?.updater) return null;
   const updater = window.ogb.updater;
@@ -130,21 +131,40 @@ function UpdatesRow() {
               : "You're on the latest version we know of.";
   return (
     <Card title="Updates" subtitle={label}>
-      <button
-        onClick={() => {
-          if (s?.status === "available") return void updater.download();
-          if (s?.status === "downloaded") return void updater.install();
-          void updater.check();
-        }}
-        disabled={s?.status === "checking" || s?.status === "downloading"}
-        className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
-      >
-        {s?.status === "available"
-          ? "Download"
-          : s?.status === "downloaded"
-            ? "Restart and install"
-            : "Check for updates"}
-      </button>
+      <div className="flex flex-col items-end gap-3">
+        <label className="flex items-center gap-2 text-[13px] text-ink">
+          <input
+            type="checkbox"
+            checked={state.config?.autoUpdate?.enabled ?? false}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              void fetch("/api/config", {
+                method: "PUT",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ autoUpdate: { enabled } }),
+              })
+                .then((r) => r.json())
+                .then((config) => dispatch({ type: "configStatus", config }));
+            }}
+          />
+          Enable automatic update checks
+        </label>
+        <button
+          onClick={() => {
+            if (s?.status === "available") return void updater.download();
+            if (s?.status === "downloaded") return void updater.install();
+            void updater.check();
+          }}
+          disabled={s?.status === "checking" || s?.status === "downloading"}
+          className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
+        >
+          {s?.status === "available"
+            ? "Download"
+            : s?.status === "downloaded"
+              ? "Restart and install"
+              : "Check for updates"}
+        </button>
+      </div>
     </Card>
   );
 }

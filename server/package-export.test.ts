@@ -61,7 +61,7 @@ describe("package export", () => {
     });
 
     expect(exported).toMatchObject({
-      format: "openmaus.package",
+      format: "botfleet.package",
       package: {
         chiefOfStaff: "lead",
         requirements: { apps: [{ slug: "github" }] },

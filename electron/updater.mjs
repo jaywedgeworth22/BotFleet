@@ -61,6 +61,21 @@ export function startUpdater(mainWindow) {
     setState({ status: "idle" });
     return;
   }
+
+  try {
+    const { readFileSync } = require("node:fs");
+    const { homedir } = require("node:os");
+    const configPath = join(process.env.BOTFLEET_DATA_DIR || join(homedir(), ".botfleet"), "config.json");
+    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    if (config.autoUpdate?.enabled !== true) {
+      updaterCoordinator = null;
+      setState({ status: "idle" });
+      return;
+    }
+  } catch (e) {
+    // continue if config is unreadable or missing
+  }
+
   try {
     ({ autoUpdater } = require("./vendor/electron-updater.cjs"));
   } catch {

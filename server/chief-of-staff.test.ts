@@ -62,7 +62,7 @@ describe("chiefOfStaffSystemPrompt", () => {
     expect(prompt).not.toContain("Use ask_bot");
   });
 
-  it("includes trusted OpenMaus status only when the Chief caller supplies it", () => {
+  it("includes trusted BotFleet status only when the Chief caller supplies it", () => {
     const status = "TRUSTED BOTFLEET STATUS\nfreshness=fresh; runtime_state=degraded";
 
     const chiefPrompt = chiefOfStaffSystemPrompt("chief", bots, true, status);

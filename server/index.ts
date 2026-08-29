@@ -37,7 +37,7 @@ import * as box from "./box.ts";
 import { cloudBackendChangeError, vpsAliasChangeError } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { openMausStatusSystemPrompt } from "./openmaus-status-capsule.ts";
+import { botFleetStatusSystemPrompt } from "./botfleet-status-capsule.ts";
 import {
   containerComputerAction,
   containerComputerExists,
@@ -1827,7 +1827,7 @@ async function startTurn(
           : null;
       const cwd = pinnedCwd ?? undefined;
       // Checkpoint explicit project folders, where a bot can overwrite the
-      // user's work. Its private OpenMaus workspace is app-owned and changes
+      // user's work. Its private BotFleet workspace is app-owned and changes
       // on nearly every ordinary chat; snapshotting it would add hidden disk
       // and process overhead without a user project to restore.
       const checkpointCwd = cwd && cwd !== privateWorkspace ? cwd : undefined;
@@ -2026,7 +2026,7 @@ async function startTurn(
             bot.id,
             store.bots,
             Boolean(integrations.agents),
-            openMausStatusSystemPrompt(),
+            botFleetStatusSystemPrompt(),
           )
         : integrations.agents && sectionPeers.length > 0
           ? "You can work with the other bots in your section through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
@@ -3099,6 +3099,7 @@ function configStatus() {
       mode: localVmMode(cfg),
       maxInstances: localVmMaxInstances(cfg),
     },
+    autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
     features: { skillRecorder: skillRecorderEnabled(cfg), showToolCalls: showToolCallsEnabled(cfg) },
   };
 }
@@ -4050,7 +4051,7 @@ const server = createServer(async (req, res) => {
           ? body.name.trim()
           : profileName
             ? `${profileName}'s Team`
-            : "My OpenMaus Team";
+            : "My BotFleet Team";
       const memberIds = store.bots.filter((bot) => !bot.hidden).map((bot) => bot.id);
       if (memberIds.length === 0) return json(res, 400, { error: "Create a bot before exporting your team" });
       try {
@@ -5790,6 +5791,7 @@ const server = createServer(async (req, res) => {
           key !== "vps" &&
           key !== "rooms" &&
           key !== "localVm" &&
+          key !== "autoUpdate" &&
           key !== "features",
       );
       if (reloadKeys.length > 0) await reloadProviders();

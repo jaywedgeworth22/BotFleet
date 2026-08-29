@@ -5,7 +5,7 @@ import { schemaIssue, type JsonValue } from "./schema.ts";
 import type { MausColor } from "./store.ts";
 import type { TeamManifestMember } from "./team-manifest.ts";
 
-export const BOT_PACKAGE_FORMAT = "openmaus.package" as const;
+export const BOT_PACKAGE_FORMAT = "botfleet.package" as const;
 export const BOT_PACKAGE_VERSION = 1 as const;
 export const BOTMRR_MARKDOWN_VERSION = 1 as const;
 
@@ -37,7 +37,7 @@ const key = requiredText(64).regex(/^[a-z0-9][a-z0-9_-]*$/, {
 });
 
 const packageSchema = z.object({
-  format: z.literal(BOT_PACKAGE_FORMAT, { error: "This is not an OpenMaus package" }),
+  format: z.literal(BOT_PACKAGE_FORMAT, { error: "This is not an BotFleet package" }),
   version: z.literal(BOT_PACKAGE_VERSION, { error: "Package version is not supported" }),
   package: z.object({
     id: requiredText(80).regex(/^[a-z0-9][a-z0-9-]*$/, { message: "must be a lowercase slug" }),

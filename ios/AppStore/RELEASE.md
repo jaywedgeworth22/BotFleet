@@ -6,7 +6,7 @@ The app is native Swift and uses XcodeGen; EAS commands do not apply.
 
 1. Enrol in the Apple Developer Program.
 2. Register the bundle IDs `com.botfleet.app` and `com.botfleet.app.widgets` (or change them in `project.yml` before the first upload).
-3. Create the matching app in App Store Connect with the name **OpenMaus Mobile**, primary category **Productivity**, and a unique SKU.
+3. Create the matching app in App Store Connect with the name **BotFleet Mobile**, primary category **Productivity**, and a unique SKU.
 4. Create or select an Apple Distribution certificate and App Store provisioning profile.
 5. Add the review contact details in App Store Connect; do not commit private contact data or App Store Connect keys.
 

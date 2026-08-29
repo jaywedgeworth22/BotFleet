@@ -13,9 +13,9 @@ for root, _, files in os.walk('.'):
             with open(path, 'r', encoding='utf-8', errors='ignore') as f:
                 content = f.read()
             
-            new_content = content.replace('OpenMausBot', 'BotFleet')
-            new_content = new_content.replace('openmausbot', 'botfleet')
-            new_content = new_content.replace('OPENMAUSBOT', 'BOTFLEET')
+            new_content = content.replace('BotFleet', 'BotFleet')
+            new_content = new_content.replace('botfleet', 'botfleet')
+            new_content = new_content.replace('BOTFLEET', 'BOTFLEET')
             
             if new_content != content:
                 with open(path, 'w', encoding='utf-8') as f:
