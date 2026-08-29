@@ -21,7 +21,13 @@ export const SKINS: readonly Skin[] = [
   { id: "lagoon", name: "Lagoon", tagline: "Cool daylight. Porcelain and deep teal." },
 ];
 
-export const DEFAULT_SKIN: SkinId = "midnight";
+export function getDefaultSkin(): SkinId {
+  if (typeof window !== "undefined" && window.matchMedia) {
+    if (window.matchMedia("(prefers-color-scheme: dark)").matches) return "midnight";
+    return "atelier";
+  }
+  return "atelier"; // Fleet standard: Light theme is product default
+}
 
 const KEY = "omb-skin";
 
@@ -49,9 +55,9 @@ function getStore(): Storage | undefined {
 export function readSkin(): SkinId {
   try {
     const stored = getStore()?.getItem(KEY);
-    return isSkinId(stored) ? stored : DEFAULT_SKIN;
+    return isSkinId(stored) ? stored : getDefaultSkin();
   } catch {
-    return DEFAULT_SKIN;
+    return getDefaultSkin();
   }
 }
 

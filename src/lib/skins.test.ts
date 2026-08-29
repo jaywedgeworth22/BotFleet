@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SKINS, SKIN_IDS, DEFAULT_SKIN } from "./skins";
+import { SKINS, SKIN_IDS, getDefaultSkin } from "./skins";
 
 const css = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "../styles.css"),
@@ -32,7 +32,7 @@ describe("skins", () => {
       const body = css.match(new RegExp(`\\[data-skin="${id}"\\]\\s*\\{([^}]*)\\}`))?.[1] ?? "";
       return new Set([...body.matchAll(/(--[\w-]+)\s*:/g)].map(([, name]) => name));
     };
-    const reference = tokensOf(DEFAULT_SKIN);
+    const reference = tokensOf("midnight");
     expect(reference.size).toBeGreaterThan(15);
     for (const id of SKIN_IDS) {
       expect([...reference].filter((t) => !tokensOf(id).has(t))).toEqual([]);
