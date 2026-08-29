@@ -99,6 +99,18 @@ export function createWebhookIngressHandler(manager: WebhookManager) {
     if (req.method === "GET" && url.pathname === "/health") {
       return json(res, 200, { app: "botfleet-webhooks", ready: true });
     }
+    if (req.method === "GET" && url.pathname === "/.well-known/apple-app-site-association") {
+      return json(res, 200, {
+        applinks: {
+          details: [
+            {
+              appIDs: ["CC8UTF7ATG.app.botfleet.ios", "CC8UTF7ATG.app.botfleet.macos"],
+              components: [{ "/": "/*" }],
+            },
+          ],
+        },
+      });
+    }
     const match = url.pathname.match(/^\/hooks\/(wh_[A-Za-z0-9_-]+)(?:\/([^/]+))?$/);
     if (!match) return json(res, 404, { error: "Unknown webhook endpoint" });
     if (req.method !== "POST") return json(res, 405, { error: "Webhooks accept POST requests" });

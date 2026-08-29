@@ -230,6 +230,9 @@ type SkillRecordingPayload = {
         install(): Promise<void>;
         onState(cb: (s: UpdaterState) => void): () => void;
       };
+      dialog?: {
+        showOpenDialog(options: any): Promise<{ canceled: boolean; filePaths: string[] }>;
+      };
     };
   }
 }

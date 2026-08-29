@@ -76,6 +76,42 @@ function ProfileFields() {
   );
 }
 
+function CustomIngressFields() {
+  const { state, dispatch } = useStore();
+  const [publicUrl, setPublicUrl] = useState(state.config?.ingress?.publicUrl ?? "");
+
+  useEffect(() => {
+    setPublicUrl(state.config?.ingress?.publicUrl ?? "");
+  }, [state.config?.ingress?.publicUrl]);
+
+  const save = () => {
+    void fetch("/api/config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ingress: { publicUrl: publicUrl.trim() || undefined } }),
+    })
+      .then((r) => r.json())
+      .then((config) => dispatch({ type: "configStatus", config }))
+      .catch(() => {});
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <input
+        type="url"
+        value={publicUrl}
+        onChange={(e) => setPublicUrl(e.target.value)}
+        onBlur={save}
+        placeholder="https://botfleet.yourdomain.com"
+        className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+      />
+      <div className="text-[12px] text-ink-secondary leading-relaxed">
+        If you run your own Cloudflare Tunnel or proxy, enter its public URL here to bypass BotFleet's managed tunnel.
+      </div>
+    </div>
+  );
+}
+
 function UpdatesRow() {
   const s = useUpdaterState();
   if (!window.ogb?.updater) return null;
@@ -488,6 +524,12 @@ export function SettingsModal() {
                   <ApiKeyRow section="box" />
                   <VpsConnection />
                   <ApiKeyRow section="opencodeGo" />
+                  <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
+                    <summary className="cursor-pointer text-[13px] text-ink-secondary">Custom Webhook Domain / Ingress</summary>
+                    <div className="mt-3">
+                      <CustomIngressFields />
+                    </div>
+                  </details>
                   <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
                     <summary className="cursor-pointer text-[13px] text-ink-secondary">Self-host connected apps</summary>
                     <div className="mt-3">

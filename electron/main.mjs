@@ -1,4 +1,4 @@
-import { app, BrowserWindow, WebContentsView, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, powerSaveBlocker, safeStorage, screen, session, shell, systemPreferences, utilityProcess } from "electron";
+import { app, BrowserWindow, WebContentsView, clipboard, desktopCapturer, dialog, ipcMain, Menu, nativeImage, powerSaveBlocker, safeStorage, screen, session, shell, systemPreferences, Tray, utilityProcess } from "electron";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
@@ -74,6 +74,7 @@ let desktopWorkspaceManager = null;
 let desktopWorkspaceOwner = null;
 let pendingPackageInstallUrl = packageUrlFromCommandLine(process.argv);
 let mainWindow = null;
+let tray = null;
 let unreadCount = 0;
 let unreadOverlayIcon = null;
 
@@ -1541,6 +1542,21 @@ setCuaStateListener((connection) => {
 app.whenReady().then(async () => {
   if (app.isPackaged) app.setAsDefaultProtocolClient("botfleet");
   if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
+  
+  const trayIcon = nativeImage.createFromPath(APP_ICON).resize({ width: 16, height: 16 });
+  tray = new Tray(trayIcon);
+  tray.setToolTip("BotFleet");
+  tray.setContextMenu(Menu.buildFromTemplate([
+    { label: "Show BotFleet", click: () => {
+        if (app.dock) app.dock.show();
+        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+        else { mainWindow?.show(); mainWindow?.focus(); }
+      }
+    },
+    { type: "separator" },
+    { label: "Quit", click: () => app.quit() }
+  ]));
+
   secureCredentials = await loadSecureCredentials();
   if (app.isPackaged) {
     await secureComposioConfig();
@@ -1663,7 +1679,9 @@ app.whenReady().then(async () => {
 });
 
 app.on("window-all-closed", () => {
-  if (process.platform !== "darwin") app.quit();
+  if (process.platform === "darwin" && app.dock) {
+    app.dock.hide();
+  }
 });
 
 // EMBEDDING.md lifecycle rule: defer the first quit until the embedded

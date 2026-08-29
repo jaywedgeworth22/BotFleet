@@ -94,6 +94,7 @@ const appConfigSchema = z.object({
   /** Non-secret profile details shown in the sidebar. */
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
   rooms: roomConfigSchema.optional(),
+  ingress: z.object({ publicUrl: optionalText }).optional(),
   localVm: localVmConfigSchema.optional(),
   features: featureConfigSchema.optional(),
   instances: instanceConfigMapSchema.optional(),
@@ -113,6 +114,7 @@ export interface AppConfig {
   imageGen?: { key?: string };
   profile?: { name?: string; email?: string };
   rooms?: { turnTimeoutMinutes: number };
+  ingress?: { publicUrl?: string };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */
   localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
@@ -142,6 +144,10 @@ export function vpsSshAlias(cfg: AppConfig): string | null {
 
 export function roomTurnTimeoutMinutes(cfg: AppConfig): number {
   return cfg.rooms?.turnTimeoutMinutes ?? DEFAULT_ROOM_TURN_TIMEOUT_MINUTES;
+}
+
+export function publicIngressUrl(cfg: AppConfig): string | null {
+  return cfg.ingress?.publicUrl || null;
 }
 
 export function localVmMode(cfg: AppConfig): "shared" | "per-bot" {

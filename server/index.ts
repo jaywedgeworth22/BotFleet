@@ -58,6 +58,7 @@ import {
   localVmMaxInstances,
   localVmMode,
   parseConfigPatch,
+  publicIngressUrl,
   roomTurnTimeoutMinutes,
   saveConfig,
   showToolCallsEnabled,
@@ -2318,7 +2319,7 @@ try {
 
 const webhookIngressStatus = () => ({
   available: Boolean(webhookIngress),
-  baseUrl: webhookIngress?.baseUrl ?? `http://127.0.0.1:${WEBHOOK_PORT}`,
+  baseUrl: publicIngressUrl(cfg) || webhookIngress?.baseUrl || `http://127.0.0.1:${WEBHOOK_PORT}`,
   ...(webhookIngressError ? { error: webhookIngressError } : {}),
 });
 
@@ -3093,6 +3094,7 @@ function configStatus() {
     // not a secret — the sidebar shows it
     profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
     rooms: { turnTimeoutMinutes: roomTurnTimeoutMinutes(cfg) },
+    ingress: { publicUrl: cfg.ingress?.publicUrl || "" },
     localVm: {
       mode: localVmMode(cfg),
       maxInstances: localVmMaxInstances(cfg),
@@ -4481,6 +4483,12 @@ const server = createServer(async (req, res) => {
         if (name.length > 100) return json(res, 400, { error: "room name must be at most 100 characters" });
         patch.name = name;
       }
+      if (body.avatarUrl !== undefined) {
+        if (body.avatarUrl !== null && typeof body.avatarUrl !== "string") {
+          return json(res, 400, { error: "avatarUrl must be a string or null" });
+        }
+        patch.avatarUrl = body.avatarUrl;
+      }
       if (body.bulletin !== undefined) {
         if (typeof body.bulletin !== "string") return json(res, 400, { error: "bulletin must be a string" });
         if (body.bulletin.length > 12_000) {
@@ -5555,6 +5563,18 @@ const server = createServer(async (req, res) => {
     // the same API shape but a different pid)
     if (method === "GET" && path === "/api/health") {
       return json(res, 200, { app: "botfleet", pid: process.pid, static: Boolean(STATIC_DIR) });
+    }
+    if (method === "GET" && path === "/.well-known/apple-app-site-association") {
+      return json(res, 200, {
+        applinks: {
+          details: [
+            {
+              appIDs: ["CC8UTF7ATG.app.botfleet.ios", "CC8UTF7ATG.app.botfleet.macos"],
+              components: [{ "/": "/*" }],
+            },
+          ],
+        },
+      });
     }
 
     // ── inspector: a thread's runtime events + native protocol tee ──
