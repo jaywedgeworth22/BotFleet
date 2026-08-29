@@ -1,5 +1,5 @@
 // Vitest setup — every test file gets a throwaway home directory so
-// DATA_DIR (~/.openmausbot) never touches the real one. os.homedir()
+// DATA_DIR (~/.botfleet) never touches the real one. os.homedir()
 // reads HOME (POSIX) / USERPROFILE (Windows) at call time, and this file
 // runs before any test module imports server/config.ts.
 import { mkdtempSync } from "node:fs";
@@ -22,7 +22,7 @@ delete process.env.HERMES_HOME;
 // Named explicitly all the same: the device tests delete this directory
 // wholesale, and "it is safe because of a line in another file" is not the
 // footing that delete should stand on.
-process.env.OMB_COMPANION_DIR = join(home, ".openmausbot-companion");
+process.env.OMB_COMPANION_DIR = join(home, ".botfleet-companion");
 
 // SQLite keeps the database file open for the lifetime of its handle.
 // Windows will not remove a directory containing an open database, so close

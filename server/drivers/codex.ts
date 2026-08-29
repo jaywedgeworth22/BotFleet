@@ -51,7 +51,7 @@ function decodeConfig(raw: unknown): CodexConfig {
 
 const QUESTION_TIMEOUT_NOTE = "No answer was given — use your best judgment.";
 const DENY_TIMEOUT_NOTE =
-  "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
+  "BotFleet: nobody answered this permission request in time. Skip this action and finish what you can without it.";
 
 type StdioMcpServer = { command: string; args: string[]; env: Record<string, string> };
 
@@ -152,7 +152,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const env = childEnv();
         const appServerArgs = ["app-server", ...codexLocalProviderArgs(env, turn.model)];
         if (turn.integrations?.composio) {
-          mountMcpServer(appServerArgs, env, "openmausbot_connectors", turn.integrations.composio);
+          mountMcpServer(appServerArgs, env, "botfleet_connectors", turn.integrations.composio);
         }
         if (turn.integrations?.agents) {
           mountMcpServer(appServerArgs, env, "agents", turn.integrations.agents);
@@ -180,7 +180,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         if (turn.integrations?.phone) {
           const bridge = turn.integrations.phone;
           Object.assign(env, bridge.env);
-          const prefix = "mcp_servers.openmausbot_phone";
+          const prefix = "mcp_servers.botfleet_phone";
           appServerArgs.push(
             "-c", `${prefix}.command=${JSON.stringify(bridge.command)}`,
             "-c", `${prefix}.args=${JSON.stringify(bridge.args)}`,
@@ -245,7 +245,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const settle = (ok: boolean, stopReason: string | null) => {
         if (state.settled) return;
         state.settled = true;
-        for (const finish of [...asks.values()]) finish("deny", "OpenMausBot: the turn ended", "system");
+        for (const finish of [...asks.values()]) finish("deny", "BotFleet: the turn ended", "system");
         for (const p of rpcPending.values()) p.reject(new Error("turn settled"));
         rpcPending.clear();
         active.delete(threadId);
@@ -508,7 +508,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // one relaunch of the whole app-server after backoff — but only when
       // nothing streamed yet, and never for auth/shape errors or interrupts
       try {
-        await request("initialize", { clientInfo: { name: "openmausbot", version: "1" } });
+        await request("initialize", { clientInfo: { name: "botfleet", version: "1" } });
         send({ jsonrpc: "2.0", method: "initialized", params: {} });
         const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
         let codexThreadId: string | null = null;

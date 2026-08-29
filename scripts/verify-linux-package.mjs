@@ -138,7 +138,7 @@ function verifyCompliance(licenses, label) {
   const registryIds = new Set();
   for (const component of registry) {
     const packageId = component.properties?.find(
-      (property) => property.name === "openmausbot:cargo:package-id",
+      (property) => property.name === "botfleet:cargo:package-id",
     )?.value;
     if (typeof packageId !== "string" || !packageId.startsWith("registry+")) {
       fail(`${label} SBOM registry component has no exact Cargo package ID`);
@@ -372,7 +372,7 @@ function verifyCloudflaredResources(resources, label, { directoryMode = 0o755 } 
 const appImage = exactlyOne(".AppImage");
 const deb = exactlyOne(".deb");
 const unpacked = path.join(releaseDir, "linux-unpacked");
-const executable = path.join(unpacked, "openmausbot");
+const executable = path.join(unpacked, "botfleet");
 const resources = path.join(unpacked, "resources");
 
 requireExecutable(appImage);
@@ -395,7 +395,7 @@ const fields = execFileSync(
   { encoding: "utf8" },
 );
 for (const expected of [
-  "Package: openmausbot",
+  "Package: botfleet",
   "Architecture: amd64",
   "Maintainer: Milind Soni",
   "Section: utils",
@@ -407,7 +407,7 @@ for (const expected of [
 const extracted = mkdtempSync(path.join(tmpdir(), "omb-deb-verify-"));
 try {
   execFileSync("dpkg-deb", ["--extract", deb, extracted]);
-  const debAppRoot = path.join(extracted, "opt", "OpenMausBot");
+  const debAppRoot = path.join(extracted, "opt", "BotFleet");
   requireDirectoryMode(debAppRoot, 0o755);
   const debResources = path.join(debAppRoot, "resources");
   const debHashes = verifyCuaResources(debResources, "DEB");
@@ -424,7 +424,7 @@ try {
     "usr",
     "share",
     "applications",
-    "com.openmausbot.app.desktop",
+    "com.botfleet.app.desktop",
   );
   const scalableIcon = path.join(
     extracted,
@@ -434,16 +434,16 @@ try {
     "hicolor",
     "scalable",
     "apps",
-    "openmausbot.svg",
+    "botfleet.svg",
   );
   requireFile(desktopFile);
   requireFile(scalableIcon);
   const desktop = readFileSync(desktopFile, "utf8");
   for (const expected of [
-    "Name=OpenMausBot",
-    "Exec=/opt/OpenMausBot/openmausbot %U",
-    "Icon=openmausbot",
-    "StartupWMClass=com.openmausbot.app",
+    "Name=BotFleet",
+    "Exec=/opt/BotFleet/botfleet %U",
+    "Icon=botfleet",
+    "StartupWMClass=com.botfleet.app",
     "Categories=Utility;",
   ]) {
     if (!desktop.includes(expected)) fail(`desktop entry is missing ${JSON.stringify(expected)}`);

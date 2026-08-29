@@ -29,7 +29,7 @@ function fixture() {
 function runHook(appRoot) {
   return spawnSync("/bin/sh", [hook], {
     encoding: "utf8",
-    env: { ...process.env, OPENMAUSBOT_POSTINSTALL_TEST_ROOT: appRoot },
+    env: { ...process.env, BOTFLEET_POSTINSTALL_TEST_ROOT: appRoot },
   });
 }
 

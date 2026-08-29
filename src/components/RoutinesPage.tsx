@@ -407,7 +407,7 @@ export function RoutineEditor({
             {runOn === "cloud" && (
               <div className={cn("mt-2 rounded-lg px-3 py-2 text-[11.5px] leading-relaxed", cloudReady ? "bg-accent/10 text-ink-secondary" : "border border-warning/25 bg-warning/10 text-warning")}>
                 {cloudReady
-                  ? "The VM wakes automatically for each run. Keep OpenMausBot running so its scheduler can launch the job."
+                  ? "The VM wakes automatically for each run. Keep BotFleet running so its scheduler can launch the job."
                   : "Cloud VM needs a working Box API key in App Settings before this routine can run."}
               </div>
             )}

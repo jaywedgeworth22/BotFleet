@@ -28,15 +28,15 @@ import {
 
 const service: ServiceInfo = {
   name: "Milind's computer",
-  type: "_openmausbot._tcp",
+  type: "_botfleet._tcp",
   port: 8800,
-  host: "openmausbot-1a2b3c4d.local",
+  host: "botfleet-1a2b3c4d.local",
   addresses: ["192.168.1.42"],
   txt: ["v=1", "name=Milind's computer"],
 };
 
-const INSTANCE = "Milind's computer._openmausbot._tcp.local";
-const SERVICE_NAME = "_openmausbot._tcp.local";
+const INSTANCE = "Milind's computer._botfleet._tcp.local";
+const SERVICE_NAME = "_botfleet._tcp.local";
 
 /** A query packet, built by hand so the decoder is tested against the
  * format rather than against our own encoder. */
@@ -260,13 +260,13 @@ describe("naming", () => {
     expect(dnsLabel("Dr. Smith's computer")).toBe("Dr  Smith's computer");
     expect(dnsLabel("x".repeat(200)).length).toBeLessThanOrEqual(63);
     expect(Buffer.byteLength(dnsLabel("é".repeat(60)), "utf8")).toBeLessThanOrEqual(63);
-    expect(dnsLabel("")).toBe("OpenMausBot");
-    expect(dnsLabel("   ")).toBe("OpenMausBot");
+    expect(dnsLabel("")).toBe("BotFleet");
+    expect(dnsLabel("   ")).toBe("BotFleet");
   });
 
   it("claims a host name the system responder will not fight us for", () => {
     const name = defaultHostName("Milinds-MacBook-Pro");
-    expect(name).toMatch(/^openmausbot-[0-9a-f]{8}\.local$/);
+    expect(name).toMatch(/^botfleet-[0-9a-f]{8}\.local$/);
     // stable across restarts, distinct per machine
     expect(defaultHostName("Milinds-MacBook-Pro")).toBe(name);
     expect(defaultHostName("another-machine")).not.toBe(name);

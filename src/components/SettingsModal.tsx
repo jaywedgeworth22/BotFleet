@@ -113,6 +113,35 @@ function UpdatesRow() {
   );
 }
 
+import { loadUpdateNotificationsEnabled, saveUpdateNotificationsEnabled } from "@/lib/update-preferences";
+
+function UpdateNotificationsRow() {
+  const [on, setOn] = useState(true);
+  useEffect(() => { setOn(loadUpdateNotificationsEnabled()); }, []);
+  return (
+    <Card
+      title="Update notifications"
+      subtitle="Show a small popup when a new version of BotFleet is available to download."
+    >
+      <button
+        role="switch"
+        aria-checked={on}
+        aria-label="Show update notifications"
+        onClick={() => {
+          const next = !on;
+          saveUpdateNotificationsEnabled(next);
+          setOn(next);
+          // dispatch custom event to re-render banner immediately
+          window.dispatchEvent(new Event("botfleet:update-pref-changed"));
+        }}
+        className={cnSwitch(on)}
+      >
+        <span className={cnKnob(on)} />
+      </button>
+    </Card>
+  );
+}
+
 /** Usage analytics, on by default and switchable here. Naming what is sent
  * matters more than the switch: people who cannot see the scope assume the
  * worst, and the worst — conversation text — is exactly what this never
@@ -438,6 +467,7 @@ export function SettingsModal() {
                 <ToolCallsRow />
                 <ExperimentalFeaturesRow />
                 <UpdatesRow />
+                <UpdateNotificationsRow />
                 <DiagnosticsRow />
                 <AnalyticsRow />
               </>

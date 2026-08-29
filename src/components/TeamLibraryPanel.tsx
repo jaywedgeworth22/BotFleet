@@ -25,7 +25,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 const MAX_TEAM_FILE_BYTES = 1_000_000;
-const COMMUNITY_TEAMS_REPOSITORY = "https://github.com/milind-soni/openmausbot-teams";
+const COMMUNITY_TEAMS_REPOSITORY = "https://github.com/milind-soni/botfleet-teams";
 
 interface TeamCatalogEntry {
   slug: string;

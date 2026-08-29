@@ -146,7 +146,7 @@ describe("manual pairing code placement", () => {
   });
 
   it("keeps the code in troubleshooting details when a QR is available", () => {
-    expect(phonePairingManualCodeMode(true, "openmausbot://pair?token=example")).toBe("details");
+    expect(phonePairingManualCodeMode(true, "botfleet://pair?token=example")).toBe("details");
     expect(phonePairingManualCodeMode(false, null)).toBe("hidden");
   });
 });

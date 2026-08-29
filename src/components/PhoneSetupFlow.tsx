@@ -913,7 +913,7 @@ export function PhoneSetupFlowView({
         <div className="flex size-14 items-center justify-center rounded-2xl bg-accent/12 text-accent">
           <Smartphone size={26} />
         </div>
-        <h2 className="mt-4 text-[19px] font-semibold text-ink">Use OpenMausBot from your phone</h2>
+        <h2 className="mt-4 text-[19px] font-semibold text-ink">Use BotFleet from your phone</h2>
         <p className="mt-1.5 max-w-[460px] text-[13.5px] leading-relaxed text-ink-secondary">
           Check chats, answer approvals, and send new work without staying at your computer.
         </p>
@@ -1121,7 +1121,7 @@ export function PhoneSetupFlowView({
           }}
           className="mt-5 w-full max-w-[280px] rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white"
         >
-          {variant === "onboarding" ? "Start using OpenMausBot" : "Done"}
+          {variant === "onboarding" ? "Start using BotFleet" : "Done"}
         </button>
       </div>
     );

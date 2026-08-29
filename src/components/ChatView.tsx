@@ -1162,7 +1162,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         }}
       >
         <div
-          className="flex w-full flex-col gap-3 pb-24"
+          className="flex w-full flex-col gap-3 pb-36"
           role="log"
           aria-live="polite"
           aria-label={`Conversation with ${bot.name}`}
