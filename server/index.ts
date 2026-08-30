@@ -2178,7 +2178,6 @@ if (recoveryOwners.length > 0) {
     ),
   );
 }
-routines.start();
 
 // Chat tools can prepare routine changes, but the harness applies them only
 // after the user confirms a durable card. Keeping this beside the scheduler
@@ -6114,6 +6113,8 @@ const server = createServer(async (req, res) => {
     return json(res, status, { error: e instanceof Error ? e.message : String(e) });
   }
 });
+
+routines?.start();
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
