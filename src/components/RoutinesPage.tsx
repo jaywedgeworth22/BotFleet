@@ -513,14 +513,14 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
           {routine && (
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Schedule</div><div className="mt-1 text-[13px] text-ink">{scheduleLabel(routine)}</div></div>
-              <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Runs on</div><div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink">{routine.runOn === "cloud" ? <Cloud size={13} /> : <Laptop size={13} />}{routine.runOn === "cloud" ? "Cloud VM" : "MAUS setup"}</div></div>
+              <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Runs on</div><div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink">{routine.runOn === "cloud" ? <Cloud size={13} /> : <Laptop size={13} />}{routine.runOn === "cloud" ? "Cloud VM" : "Local setup"}</div></div>
               <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Duration</div><div className="mt-1 text-[13px] text-ink">{routine.durationMinutes} minutes</div></div>
             </div>
           )}
           {run?.triggerSource === "webhook" && (
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Triggered by</div><div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink"><Webhook size={13} />Webhook</div></div>
-              <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Runs on</div><div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink">{run.runOn === "cloud" ? <Cloud size={13} /> : <Laptop size={13} />}{run.runOn === "cloud" ? "Cloud VM" : "MAUS setup"}</div></div>
+              <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Runs on</div><div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink">{run.runOn === "cloud" ? <Cloud size={13} /> : <Laptop size={13} />}{run.runOn === "cloud" ? "Cloud VM" : "Local setup"}</div></div>
               {run.deliveryId && <div className="col-span-2 rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Delivery ID</div><div className="mt-1 truncate font-mono text-[11.5px] text-ink">{run.deliveryId}</div></div>}
             </div>
           )}
