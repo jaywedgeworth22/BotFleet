@@ -24,7 +24,6 @@ const MODELS = {
   options: [
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
-    { id: "deepseek-chat", label: "DeepSeek V3 (Chat)" },
     { id: "deepseek-reasoner", label: "DeepSeek R1 (Reasoner)" },
   ],
 };
