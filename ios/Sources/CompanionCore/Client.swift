@@ -196,7 +196,8 @@ public struct PairingInvite: Equatable, Sendable {
     }
 
     public static func parse(_ url: URL) -> PairingInvite? {
-        guard url.scheme?.lowercased() == "botfleet",
+        let scheme = url.scheme?.lowercased()
+        guard scheme == "botfleet" || scheme == "openmausbot",
               url.host?.lowercased() == "pair",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { return nil }

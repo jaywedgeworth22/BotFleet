@@ -1003,7 +1003,15 @@ export function GroupView({ group }: { group: Group }) {
           "pl-11 md:pl-5",
         )}
       >
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          {group.avatarUrl && (
+            <img
+              src={group.avatarUrl}
+              alt={group.name}
+              className="size-7 shrink-0 rounded-full object-cover shadow-sm"
+              draggable={false}
+            />
+          )}
           <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
           {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
         </div>

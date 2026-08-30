@@ -31,6 +31,7 @@ export function validateBaseUrl(url: string): string {
 }
 
 const configuredUrl = process.env.BOTFLEET_URL ||
+  process.env.OPENMAUSBOT_URL ||
   (process.env.OMB_PORT ? `http://127.0.0.1:${process.env.OMB_PORT}` : undefined);
 
 export const OMB_BASE_URL = validateBaseUrl(configuredUrl || "http://127.0.0.1:8799");
@@ -46,12 +47,12 @@ export function log(msg: string) {
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 function requestTimeoutMs(): number {
-  const raw = Number(process.env.BOTFLEET_MCP_TIMEOUT_MS);
+  const raw = Number(process.env.BOTFLEET_MCP_TIMEOUT_MS || process.env.OPENMAUSBOT_MCP_TIMEOUT_MS);
   return Number.isFinite(raw) && raw >= 1_000 && raw <= 120_000 ? Math.floor(raw) : DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
 function requestHeaders(options: RequestInit): NonNullable<RequestInit["headers"]> {
-  const token = process.env.BOTFLEET_TOKEN?.trim();
+  const token = (process.env.BOTFLEET_TOKEN || process.env.OPENMAUSBOT_TOKEN)?.trim();
   const headers = new Headers(options.headers);
   if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);

@@ -203,8 +203,8 @@ export function decodeMessage(buf: Buffer): DnsMessage | null {
  * The rrtype test below is a shorthand that holds *for the records this file
  * builds*, and not a general rule: §2 defines shared versus unique over the
  * RRset, not over the type, so a PTR is not inherently shared nor an SRV
- * inherently unique. `serviceRecords` emits exactly four RRsets — two shared
- * PTRs, and SRV/TXT/A on names derived from this machine — and no other
+ * inherently unique. `serviceRecords` emits shared PTRs (current type plus
+ * any predecessor types) and SRV/TXT/A on names derived from this machine — and no other
  * shared type is constructed anywhere here, which is what makes the
  * shorthand safe. Add a record type and this predicate is the thing to
  * revisit.
@@ -315,6 +315,8 @@ export interface ServiceInfo {
   name: string;
   /** e.g. "_botfleet._tcp" */
   type: string;
+  /** Predecessor service types still browsed by older companion builds. */
+  legacyTypes?: string[];
   port: number;
   /** the name our A records claim, e.g. "botfleet-1a2b3c4d.local" */
   host: string;
@@ -342,18 +344,30 @@ function dedupe(records: ResourceRecord[], exclude: ResourceRecord[] = []): Reso
 
 /** The four records that describe the service, as a browser expects them. */
 export function serviceRecords(service: ServiceInfo) {
-  const serviceName = `${service.type}.local`;
-  const instance = `${service.name}.${serviceName}`;
+  const types = [service.type, ...(service.legacyTypes ?? []).filter((type) => type !== service.type)];
+  const groups = types.map((type) => {
+    const serviceName = `${type}.local`;
+    const instance = `${service.name}.${serviceName}`;
+    return {
+      serviceName,
+      instance,
+      ptr: { name: serviceName, type: TYPE.PTR, data: instance } as ResourceRecord,
+      srv: {
+        name: instance,
+        type: TYPE.SRV,
+        data: { port: service.port, target: service.host },
+      } as ResourceRecord,
+      txt: { name: instance, type: TYPE.TXT, data: service.txt } as ResourceRecord,
+    };
+  });
+  const primary = groups[0]!;
   return {
-    serviceName,
-    instance,
-    ptr: { name: serviceName, type: TYPE.PTR, data: instance } as ResourceRecord,
-    srv: {
-      name: instance,
-      type: TYPE.SRV,
-      data: { port: service.port, target: service.host },
-    } as ResourceRecord,
-    txt: { name: instance, type: TYPE.TXT, data: service.txt } as ResourceRecord,
+    serviceName: primary.serviceName,
+    instance: primary.instance,
+    ptr: primary.ptr,
+    srv: primary.srv,
+    txt: primary.txt,
+    groups,
     addresses: service.addresses.map(
       (address) => ({ name: service.host, type: TYPE.A, data: address }) as ResourceRecord,
     ),
@@ -362,8 +376,8 @@ export function serviceRecords(service: ServiceInfo) {
 
 /** Everything we shout when we arrive (and, with ttl 0, when we leave). */
 export function announcement(service: ServiceInfo): ResourceRecord[] {
-  const { ptr, srv, txt, addresses } = serviceRecords(service);
-  return [ptr, srv, txt, ...addresses];
+  const { groups, addresses } = serviceRecords(service);
+  return [...groups.flatMap((group) => [group.ptr, group.srv, group.txt]), ...addresses];
 }
 
 /** What to answer a query with — the whole protocol decision, kept pure so
@@ -378,7 +392,7 @@ export function answersFor(
   service: ServiceInfo,
 ): { answers: ResourceRecord[]; additionals: ResourceRecord[] } {
   if (message.response) return { answers: [], additionals: [] };
-  const { serviceName, instance, ptr, srv, txt, addresses } = serviceRecords(service);
+  const { groups, addresses } = serviceRecords(service);
   const answers: ResourceRecord[] = [];
   const additionals: ResourceRecord[] = [];
 
@@ -387,18 +401,28 @@ export function answersFor(
     const asks = (type: number) => question.type === type || question.type === TYPE.ANY;
 
     if (name === SERVICE_ENUMERATION && asks(TYPE.PTR)) {
-      answers.push({ name: SERVICE_ENUMERATION, type: TYPE.PTR, data: serviceName });
-    } else if (name === serviceName.toLowerCase() && asks(TYPE.PTR)) {
-      answers.push(ptr);
-      additionals.push(srv, txt, ...addresses);
-    } else if (name === instance.toLowerCase()) {
-      if (asks(TYPE.SRV)) {
-        answers.push(srv);
-        additionals.push(...addresses);
+      for (const group of groups) {
+        answers.push({ name: SERVICE_ENUMERATION, type: TYPE.PTR, data: group.serviceName });
       }
-      if (asks(TYPE.TXT)) answers.push(txt);
-    } else if (name === service.host.toLowerCase() && asks(TYPE.A)) {
-      answers.push(...addresses);
+    } else {
+      let matchedType = false;
+      for (const group of groups) {
+        if (name === group.serviceName.toLowerCase() && asks(TYPE.PTR)) {
+          answers.push(group.ptr);
+          additionals.push(group.srv, group.txt, ...addresses);
+          matchedType = true;
+        } else if (name === group.instance.toLowerCase()) {
+          if (asks(TYPE.SRV)) {
+            answers.push(group.srv);
+            additionals.push(...addresses);
+          }
+          if (asks(TYPE.TXT)) answers.push(group.txt);
+          matchedType = true;
+        }
+      }
+      if (!matchedType && name === service.host.toLowerCase() && asks(TYPE.A)) {
+        answers.push(...addresses);
+      }
     }
   }
 

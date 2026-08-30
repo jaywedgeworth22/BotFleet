@@ -32,6 +32,7 @@ export const VPS_MANAGED_LABEL = "com.botfleet.vps";
 export const VPS_CONTAINER_LABEL = "com.botfleet.container";
 export const VPS_VIEWER_LABEL = "com.botfleet.vps-viewer";
 export const VPS_CONTAINER_PREFIX = "botfleet-vps";
+export const LEGACY_VPS_CONTAINER_PREFIXES = ["openmausbot-vps", "opengrokbot-vps"] as const;
 // SIGTERM must give ssh + docker time to tear down the remote exec before the
 // SIGKILL escalation; 1s was routinely too short over a WAN round-trip, and an
 // orphaned remote exec keeps the driver socket busy for the next command.
@@ -103,6 +104,13 @@ function containerNamePart(botId: string): string {
 export function vpsContainerName(botId: string): string {
   const hash = createHash("sha256").update(botId).digest("hex").slice(0, 12);
   return `${VPS_CONTAINER_PREFIX}-${containerNamePart(botId)}-${hash}`;
+}
+
+/** Current name first, then predecessors from the OpenMausBot / OpenGrokBot rename. */
+export function vpsContainerNameCandidates(botId: string): string[] {
+  const part = containerNamePart(botId);
+  const hash = createHash("sha256").update(botId).digest("hex").slice(0, 12);
+  return [VPS_CONTAINER_PREFIX, ...LEGACY_VPS_CONTAINER_PREFIXES].map((prefix) => `${prefix}-${part}-${hash}`);
 }
 
 export function vpsDockerArgs(alias: string, args: string[]): string[] {
@@ -429,7 +437,7 @@ async function computeVpsComputerStatus(
   }
 
   try {
-    const inspected = JSON.parse((await run(["inspect", status.container_name])).stdout) as Array<{
+    type ContainerDetail = {
       Config?: { Image?: string; Labels?: Record<string, string>; Env?: string[] };
       HostConfig?: DockerHardeningConfig & {
         Binds?: string[] | null;
@@ -444,8 +452,23 @@ async function computeVpsComputerStatus(
       NetworkSettings?: { Networks?: Record<string, { IPAddress?: string }> | null };
       Mounts?: unknown;
       State?: { Running?: boolean };
-    }>;
-    const detail = inspected[0];
+    };
+    let inspected: ContainerDetail[] | null = null;
+    let lastMissing: unknown;
+    for (const name of vpsContainerNameCandidates(botId)) {
+      try {
+        inspected = JSON.parse((await run(["inspect", name])).stdout) as ContainerDetail[];
+        status.container_name = name;
+        lastMissing = undefined;
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isMissingObjectMessage(message)) throw error;
+        lastMissing = error;
+      }
+    }
+    if (!inspected) throw lastMissing ?? new Error("no such container");
+    const detail: ContainerDetail | undefined = inspected[0];
     const labels = detail?.Config?.Labels;
     const containerId = detail?.Id ?? detail?.id;
     status.container_id = containerId && CONTAINER_ID.test(containerId) ? containerId : null;

@@ -1366,6 +1366,9 @@ bus.subscribe((event: RuntimeEvent) => {
           }
           if (lastUserMessage && typeof lastUserMessage.text === "string") {
             const userMsg = lastUserMessage;
+            // startTurn rejects while the bot is still busy from this failed
+            // turn. Settle idle first so the fallback can dispatch.
+            if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
             setTimeout(() => {
               void startTurn(bot.id, userMsg.text || "", { userMessage: userMsg });
             }, 100);
@@ -1805,7 +1808,7 @@ async function startTurn(
     transcript,
     rewound,
     fresh,
-    replaysNatively: instance.driverKind === "grok",
+    replaysNatively: instance.driverKind === "grok" || instance.driverKind === "deepseek",
   });
 
   const isImessageTask = store.tasks(bot.id).find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
@@ -4567,6 +4570,9 @@ const server = createServer(async (req, res) => {
         if (body.avatarUrl !== null && typeof body.avatarUrl !== "string") {
           return json(res, 400, { error: "avatarUrl must be a string or null" });
         }
+        if (body.avatarUrl && !storedAvatarExists(body.avatarUrl)) {
+          return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
+        }
         patch.avatarUrl = body.avatarUrl;
       }
       if (body.bulletin !== undefined) {
@@ -4624,6 +4630,7 @@ const server = createServer(async (req, res) => {
       }
       const group = store.patchGroup(m[1], patch);
       if (!group) return json(res, 404, { error: "no such room" });
+      broadcast({ kind: "group", group: publicGroupState(group) });
       return json(res, 200, { group: publicGroupState(group) });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/read$/);
@@ -5871,6 +5878,7 @@ const server = createServer(async (req, res) => {
           key !== "rooms" &&
           key !== "localVm" &&
           key !== "autoUpdate" &&
+          key !== "ingress" &&
           key !== "features",
       );
       if (reloadKeys.length > 0) await reloadProviders();

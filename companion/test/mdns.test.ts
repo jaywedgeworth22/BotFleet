@@ -239,6 +239,17 @@ describe("answersFor", () => {
     expect(answers[0]).toMatchObject({ name: SERVICE_ENUMERATION, data: SERVICE_NAME });
   });
 
+  it("still answers the predecessor Bonjour type during a rename", () => {
+    const renamed: ServiceInfo = { ...service, legacyTypes: ["_openmausbot._tcp"] };
+    const { answers, additionals } = answersFor(decodeMessage(query("_openmausbot._tcp.local", TYPE.PTR))!, renamed);
+    expect(answers[0]).toMatchObject({
+      name: "_openmausbot._tcp.local",
+      type: TYPE.PTR,
+      data: "Milind's computer._openmausbot._tcp.local",
+    });
+    expect(additionals.map((r) => r.type).sort()).toEqual([TYPE.A, TYPE.SRV, TYPE.TXT].sort());
+  });
+
   it("matches names case-insensitively, as DNS does", () => {
     expect(ask(SERVICE_NAME.toUpperCase(), TYPE.PTR).answers).toHaveLength(1);
   });

@@ -19,6 +19,7 @@ let win = null;
 // status: idle | checking | available | downloading | downloaded | installing | error
 let state = { status: "idle" };
 let updaterCoordinator = null;
+let autoUpdateEnabled = false;
 
 function updaterLogger() {
   const directory = app.getPath("logs");
@@ -65,13 +66,15 @@ export function startUpdater(mainWindow) {
   try {
     const { readFileSync } = require("node:fs");
     const { homedir } = require("node:os");
-    const configPath = join(process.env.BOTFLEET_DATA_DIR || join(homedir(), ".botfleet"), "config.json");
+    const configPath = join(
+      process.env.OMB_DATA_DIR || process.env.BOTFLEET_DATA_DIR || join(homedir(), ".botfleet"),
+      "config.json",
+    );
     const config = JSON.parse(readFileSync(configPath, "utf8"));
-    if (config.autoUpdate?.enabled !== true) {
-      updaterCoordinator = null;
-      setState({ status: "idle" });
-      return;
-    }
+    // Always wire the coordinator in packaged apps so enabling the setting
+    // or pressing Check for updates works without a restart. Automatic
+    // periodic checks still honor autoUpdate.enabled below.
+    autoUpdateEnabled = config.autoUpdate?.enabled === true;
   } catch (e) {
     // continue if config is unreadable or missing
   }
@@ -95,6 +98,9 @@ export function startUpdater(mainWindow) {
   // first check ~15s after launch (let the app settle), then hourly — both
   // silent on failure, hence the arrow: a bare `check` would receive the
   // timer's argument as `manual` and start reporting errors again.
-  setTimeout(() => void updaterCoordinator?.check(), 15_000).unref?.();
-  setInterval(() => void updaterCoordinator?.check(), 60 * 60 * 1000).unref?.();
+  // Manual "Check for updates" always works once the coordinator exists.
+  if (autoUpdateEnabled) {
+    setTimeout(() => void updaterCoordinator?.check(), 15_000).unref?.();
+    setInterval(() => void updaterCoordinator?.check(), 60 * 60 * 1000).unref?.();
+  }
 }

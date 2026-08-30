@@ -660,6 +660,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
         allowed.push("mcp__ogb");
       }
+      // Fleet MCP servers copied from ~/.claude.json are visible in
+      // mcpServers but acceptEdits silently denies anything whose prefix is
+      // not in --allowedTools. Pre-allow every imported server too.
+      for (const name of Object.keys(mcpServers)) {
+        const prefix = `mcp__${name}`;
+        if (!allowed.includes(prefix)) allowed.push(prefix);
+      }
       // The MCP config carries credentials — a Composio consumer key in a
       // header, the box token in the computer proxy's env, the comms token in
       // the agents proxy's env. On argv every one of those is world-readable

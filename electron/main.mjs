@@ -1540,7 +1540,10 @@ setCuaStateListener((connection) => {
 });
 
 app.whenReady().then(async () => {
-  if (app.isPackaged) app.setAsDefaultProtocolClient("botfleet");
+  if (app.isPackaged) {
+    app.setAsDefaultProtocolClient("botfleet");
+    app.setAsDefaultProtocolClient("openmausbot");
+  }
   if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
   
   const trayIcon = nativeImage.createFromPath(APP_ICON).resize({ width: 16, height: 16 });
@@ -1681,7 +1684,9 @@ app.whenReady().then(async () => {
 app.on("window-all-closed", () => {
   if (process.platform === "darwin" && app.dock) {
     app.dock.hide();
+    return;
   }
+  app.quit();
 });
 
 // EMBEDDING.md lifecycle rule: defer the first quit until the embedded

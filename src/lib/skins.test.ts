@@ -16,9 +16,12 @@ const blocks = new Set(
   [...css.matchAll(/\[data-skin="([a-z-]+)"\]/g)].map(([, id]) => id),
 );
 
+/** `system` is a virtual skin that resolves to midnight or atelier. */
+const STYLE_SKIN_IDS = SKIN_IDS.filter((id) => id !== "system");
+
 describe("skins", () => {
   it("gives every registered skin a stylesheet block", () => {
-    for (const id of SKIN_IDS) expect(blocks).toContain(id);
+    for (const id of STYLE_SKIN_IDS) expect(blocks).toContain(id);
   });
 
   it("registers every stylesheet block", () => {
@@ -34,7 +37,7 @@ describe("skins", () => {
     };
     const reference = tokensOf("midnight");
     expect(reference.size).toBeGreaterThan(15);
-    for (const id of SKIN_IDS) {
+    for (const id of STYLE_SKIN_IDS) {
       expect([...reference].filter((t) => !tokensOf(id).has(t))).toEqual([]);
     }
   });
