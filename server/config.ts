@@ -417,6 +417,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // CLI — `{"instances": {"gemini": {"driver": "geminiAgent"}}}` restores it.
   const DEFAULT_FLEET: InstanceConfigMap = {
     grok: { driver: "grokAgent" },
+    dsh: { driver: "dshAgent" },
     deepseek: { driver: "deepseek" },
     kimi: { driver: "kimiAgent" },
     droid: { driver: "droidAgent" },
