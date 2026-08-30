@@ -139,8 +139,8 @@ jobs:
         run: |
           cd ios
           xcodebuild \
-            -project BotFleetCompanion.xcodeproj \
-            -scheme BotFleetCompanion \
+            -project BotFleet.xcodeproj \
+            -scheme BotFleet \
             -sdk iphonesimulator \
             -destination 'generic/platform=iOS Simulator' \
             CODE_SIGNING_ALLOWED=NO \

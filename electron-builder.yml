@@ -4,7 +4,7 @@ artifactName: BotFleet-${version}-${arch}.${ext}
 
 protocols:
   - name: BotFleet package install
-    schemes: [botfleet, botfleet]
+    schemes: [botfleet, openmausbot]
 
 # In-app auto-update reads latest-mac.yml + the .zip (macOS) or latest.yml +
 # the NSIS .exe (Windows) from this PUBLIC releases repo (separate from the

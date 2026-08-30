@@ -1364,21 +1364,11 @@ bus.subscribe((event: RuntimeEvent) => {
                  break;
              }
           }
-          if (lastUserMessage) {
-            // Remove any error chips or partial assistant messages emitted during the failed turn
-            // so we have a clean retry state
-            const failedIndex = activeMsgs.findIndex(m => m.id === lastUserMessage!.id) + 1;
-            const toDelete = activeMsgs.slice(failedIndex).map(m => m.id);
-            for (const id of toDelete) {
-               store.deleteMessage(event.threadId, id);
-            }
-            
-            // Wait for the store to settle, then restart the turn
+          if (lastUserMessage && typeof lastUserMessage.text === "string") {
+            const userMsg = lastUserMessage;
             setTimeout(() => {
-              void startTurn(bot.id, lastUserMessage.text, { userMessage: lastUserMessage });
+              void startTurn(bot.id, userMsg.text || "", { userMessage: userMsg });
             }, 100);
-            
-            // Stop processing this failed turn completion (don't mark idle)
             return;
           }
         }
@@ -1818,7 +1808,7 @@ async function startTurn(
     replaysNatively: instance.driverKind === "grok",
   });
 
-  const isImessageTask = store.task(bot.id, threadId)?.title?.toLowerCase() === "imessage";
+  const isImessageTask = store.tasks(bot.id).find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
   const persona = [
     `You are BF-${bot.name} (display: ${bot.name}), a bot in BotFleet. Always identify yourself as BF-${bot.name} in fleet communications and logs.`,
     bot.title && `Role: ${bot.title}.`,
@@ -2423,6 +2413,42 @@ _loadPending();
   const leftover = pendingThreads();
   if (leftover.length) console.log(`delegations: ${leftover.length} thread(s) with queued handoffs from a previous run — draining`);
   for (const threadId of leftover) drainDelegations(commsBus, approvalBus, threadId, runDelegatedTurn);
+}
+
+// Auto-resume mid-task bots on startup / restart:
+// If a bot was interrupted while working or has an unfulfilled user message,
+// automatically prompt the bot to review previous context and resume its work.
+{
+  setTimeout(() => {
+    for (const bot of store.bots) {
+      if (bot.hidden) continue;
+      const tasks = store.tasks(bot.id);
+      for (const task of tasks) {
+        const threadId = task.threadId;
+        const activeMsgs = store.activePath(threadId);
+        if (!activeMsgs.length) continue;
+
+        const lastMsg = activeMsgs[activeMsgs.length - 1];
+        const isInterruptedUserTurn = lastMsg.role === "user" && lastMsg.kind === "text";
+        const isInterruptedToolTurn = lastMsg.role === "bot" && lastMsg.kind === "activity";
+
+        if (isInterruptedUserTurn || isInterruptedToolTurn) {
+          console.log(`boot recovery: auto-resuming interrupted task "${task.title || 'Task'}" for ${bot.name} (${threadId})`);
+          const prompt = isInterruptedUserTurn
+            ? (lastMsg.text || "Please resume.")
+            : "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
+
+          void startTurn(bot.id, prompt, {
+            threadId,
+            userMessage: isInterruptedUserTurn ? lastMsg : undefined,
+          }).catch((err) => {
+            console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
+          });
+          break;
+        }
+      }
+    }
+  }, 2500);
 }
 
 async function runGroupMemberTurn(
