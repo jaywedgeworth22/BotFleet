@@ -947,6 +947,10 @@ final class Session: ObservableObject {
         catch { actionError = error.localizedDescription; return nil }
     }
 
+    func clientInstances() async throws -> [CompanionCore.Instance]? {
+        return try await client?.instances()
+    }
+
     func configStatus() async -> ConfigStatus? {
         guard let client else { return nil }
         return try? await client.config()

@@ -12,6 +12,13 @@ struct GroupProfileView: View {
     @State private var photo: PhotosPickerItem? = nil
     @State private var busy = false
 
+    var currentRoom: CompanionCore.Room {
+        var r = room
+        r.name = name
+        r.avatarUrl = session.state.rooms.first(where: { $0.id == room.id })?.avatarUrl ?? room.avatarUrl
+        return r
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -19,7 +26,7 @@ struct GroupProfileView: View {
                     HStack {
                         Spacer()
                         PhotosPicker(selection: $photo, matching: .images, photoLibrary: .shared()) {
-                            RoomAvatarView(room: Room(id: room.id, threadId: room.threadId, name: name, avatarUrl: session.state.group(room.id)?.avatarUrl ?? room.avatarUrl, memberIds: room.memberIds, defaultResponder: room.defaultResponder, bulletin: room.bulletin, unread: room.unread, createdAt: room.createdAt), size: 120, state: .idle, animated: false)
+                            ChatAvatarView(chat: .room(currentRoom), size: 120)
                                 .overlay(alignment: .bottomTrailing) {
                                     Image(systemName: "camera.circle.fill")
                                         .symbolRenderingMode(.multicolor)
@@ -34,7 +41,7 @@ struct GroupProfileView: View {
                     }
                     .padding(.vertical, 8)
 
-                    if (session.state.group(room.id)?.avatarUrl ?? room.avatarUrl) != nil {
+                    if (session.state.rooms.first(where: { $0.id == room.id })?.avatarUrl ?? room.avatarUrl) != nil {
                         Button(role: .destructive) { Task { await clearImage() } } label: {
                             HStack {
                                 Spacer()

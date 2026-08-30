@@ -234,6 +234,7 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var threadId: String
     public var name: String
+    public var avatarUrl: String?
     public var memberIds: [String]
     public var defaultResponder: GroupResponder
     public var bulletin: String
