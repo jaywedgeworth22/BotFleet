@@ -20,8 +20,10 @@ const DRIVER_KIND = "deepseek";
 const DEFAULT_URL = "https://api.deepseek.com/v1";
 
 const MODELS = {
-  default: "deepseek-chat",
+  default: "deepseek-v4-pro",
   options: [
+    { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-chat", label: "DeepSeek V3 (Chat)" },
     { id: "deepseek-reasoner", label: "DeepSeek R1 (Reasoner)" },
   ],
