@@ -22,8 +22,8 @@ const DEFAULT_URL = "https://api.deepseek.com/v1";
 const MODELS = {
   default: "deepseek-chat",
   options: [
-    { id: "deepseek-chat", label: "DeepSeek Chat" },
-    { id: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+    { id: "deepseek-chat", label: "DeepSeek V3 (Chat)" },
+    { id: "deepseek-reasoner", label: "DeepSeek R1 (Reasoner)" },
   ],
 };
 
@@ -43,8 +43,7 @@ function decodeConfig(raw: unknown): DeepSeekConfig {
 
 export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
   driverKind: DRIVER_KIND,
-  // "(API)" distinguishes this key-billed driver from deepseekAgent, the CLI one
-  metadata: { displayName: "DeepSeek (API)", supportsMultipleInstances: true },
+  metadata: { displayName: "DeepSeek", supportsMultipleInstances: true },
   models: MODELS,
   decodeConfig,
   defaultConfig: () => decodeConfig({}),

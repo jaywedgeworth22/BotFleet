@@ -138,6 +138,8 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
     case "grokAgent":
       return <GrokMark size={size} className={className} />;
     case "deepseek":
+    case "deepseekAgent":
+    case "dshAgent":
       return <DeepSeekMark size={size} className={className} />;
     case "claudeAgent":
       return <ClaudeMark size={size} className={className} />;
