@@ -589,13 +589,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // integrations → MCP servers; pre-allow their tools (a headless
       // acceptEdits run silently denies anything unlisted)
       const mcpServers: Record<string, unknown> = {};
-      
+      const importedMcpNames: string[] = [];
+
       // Load global MCP servers used by the rest of the fleet
       try {
         const claudeJson = readFileSync(join(homedir(), ".claude.json"), "utf8");
         const parsed = JSON.parse(claudeJson);
         if (parsed && typeof parsed === "object" && parsed.mcpServers && typeof parsed.mcpServers === "object") {
           Object.assign(mcpServers, parsed.mcpServers);
+          importedMcpNames.push(...Object.keys(parsed.mcpServers));
         }
       } catch (e) {
         // ignore missing or malformed ~/.claude.json
@@ -662,8 +664,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       }
       // Fleet MCP servers copied from ~/.claude.json are visible in
       // mcpServers but acceptEdits silently denies anything whose prefix is
-      // not in --allowedTools. Pre-allow every imported server too.
-      for (const name of Object.keys(mcpServers)) {
+      // not in --allowedTools. Pre-allow imported prefixes only — never the
+      // whole mcpServers map, which also holds host-controlled CUA.
+      for (const name of importedMcpNames) {
+        if (name === "computer") continue;
         const prefix = `mcp__${name}`;
         if (!allowed.includes(prefix)) allowed.push(prefix);
       }

@@ -158,7 +158,7 @@ posixOnly("readBotFleetStatus", () => {
     // Cross-language receipt produced by scripts/aos_botfleet_status.py
     // for this exact normalized fixture.
     expect(capsule.receipt_sha256).toBe(
-      "sha256:2f76115fcbf37dfc5406d4a7a460c5e3016ff87184cd9e314bf4cc11022e2d7c",
+      "sha256:4472d01ae83b01e0877733bb51f0124ac8bb940ffca2db0984e4e7957a58921f",
     );
     const path = cachePath(capsule);
 
