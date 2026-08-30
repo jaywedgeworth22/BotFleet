@@ -20,6 +20,14 @@ export function GrokMark({ size = 16, className }: IconProps) {
   );
 }
 
+export function DeepSeekMark({ size = 16, className }: IconProps) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" className={cn("fill-[var(--color-ink)]", className)}>
+      <path d="M11.999 1.1c-6 0-10.9 4.9-10.9 10.9s4.9 10.9 10.9 10.9 10.9-4.9 10.9-10.9S17.999 1.1 11.999 1.1zm3.8 15.5h-7.6v-1.9h7.6v1.9zm0-3.8h-7.6v-1.9h7.6v1.9zm0-3.8h-7.6V7.1h7.6v1.9z" />
+    </svg>
+  );
+}
+
 export function ClaudeMark({ size = 16, className }: IconProps) {
   return (
     <svg width={size} height={size} viewBox="0 0 256 257" preserveAspectRatio="xMidYMid" className={cn("fill-[#d97757]", className)}>
@@ -129,6 +137,8 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
     case "grok":
     case "grokAgent":
       return <GrokMark size={size} className={className} />;
+    case "deepseek":
+      return <DeepSeekMark size={size} className={className} />;
     case "claudeAgent":
       return <ClaudeMark size={size} className={className} />;
     case "codex":

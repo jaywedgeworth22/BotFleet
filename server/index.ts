@@ -3080,6 +3080,7 @@ async function perBotLocalVmCountForModeChange(): Promise<number | null> {
 function configStatus() {
   return {
     xai: { configured: Boolean(cfg.xai?.key) },
+    deepseek: { configured: Boolean(cfg.deepseek?.key) },
     composio: {
       configured: composio.configured(cfg),
       mode: composio.connectionMode(cfg),

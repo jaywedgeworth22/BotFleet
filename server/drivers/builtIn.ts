@@ -18,10 +18,13 @@ import { OpenAICompatDriver } from "./openai-compat.ts";
 import { PiDriver } from "./pi.ts";
 import { MinimaxDriver } from "./minimax.ts";
 
+import { DeepSeekDriver } from "./deepseek.ts";
+
 export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
   GrokDriver,
   GrokAgentDriver,
   GeminiAgentDriver,
+  DeepSeekDriver,
   KimiAgentDriver,
   DroidAgentDriver,
   CursorAgentDriver,
