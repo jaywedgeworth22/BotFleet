@@ -75,6 +75,15 @@ final class ConnectionTests: XCTestCase {
         XCTAssertEqual(invite.credential, token)
     }
 
+    func testParsesALegacyDesktopPairingInvite() throws {
+        let token = "omb_pair_" + String(repeating: "a", count: 43)
+        let url = try XCTUnwrap(URL(string: "openmausbot://pair?address=macbook.tail1234.ts.net%3A8810&token=\(token)&code=004209&name=Milind%27s%20Mac"))
+        let invite = try XCTUnwrap(PairingInvite.parse(url))
+        XCTAssertEqual(invite.connection.host, "macbook.tail1234.ts.net")
+        XCTAssertEqual(invite.connection.port, 8810)
+        XCTAssertEqual(invite.credential, token)
+    }
+
     func testPairingConsentShowsNormalizedOriginInsteadOfTrustingQRName() throws {
         let url = try XCTUnwrap(URL(string:
             "botfleet://pair?address=https%3A%2F%2FOTHER.Example%3A9443%2F" +

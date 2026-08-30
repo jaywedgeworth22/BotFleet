@@ -253,7 +253,7 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
         },
       },
       generateText: async (prompt: string) => {
-        const { text } = await complete([{ role: "user", content: prompt }], "deepseek-3-mini", { stream: false });
+        const { text } = await complete([{ role: "user", content: prompt }], MODELS.default, { stream: false });
         return text;
       },
       dispose: async () => {

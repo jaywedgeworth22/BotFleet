@@ -20,8 +20,10 @@ export function teamImportPreview(manifest: unknown): PendingTeamImport {
     throw new Error("This file does not contain a team.");
   }
   const root = manifest as Record<string, unknown>;
-  if (root.format === "botfleet.package") return packagePreview(root, manifest);
-  if (root.format !== "botfleet.team") throw new Error("This is not a BotMRR playbook or legacy BotFleet team.");
+  if (root.format === "botfleet.package" || root.format === "openmaus.package") return packagePreview(root, manifest);
+  if (root.format !== "botfleet.team" && root.format !== "openmaus.team" && root.format !== "opengrok.team") {
+    throw new Error("This is not a BotMRR playbook or legacy BotFleet team.");
+  }
   if (root.version !== 1 && root.version !== 2) throw new Error(`Team file version ${String(root.version)} is not supported.`);
   if (!root.team || typeof root.team !== "object" || Array.isArray(root.team)) {
     throw new Error("This team file is missing its team definition.");

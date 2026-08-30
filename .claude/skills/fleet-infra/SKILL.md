@@ -17,34 +17,24 @@ All fleet repositories except `fleet-ops` are **public**.  To protect origin inf
 ## Canonical Inventory Location
 
 - **Local Workstation Agents (Mac/Terminal):**
-  Read directly from `/Users/jay/Code/fleet-ops/ATTACK-MAP.md`.
-  GitHub repo: [`jaywedgeworth22/fleet-ops:ATTACK-MAP.md`](https://github.com/jaywedgeworth22/fleet-ops/blob/main/ATTACK-MAP.md) (private).
+  Read `/Users/jay/Code/fleet-ops/ATTACK-MAP.md` privately.  Copy only the single field the task needs.  Never paste the file, a host list, or a Tailscale address into chat or a public repo.
 
 - **Cloud / Remote Agents (without direct repo access):**
-  Fetch securely from the Mac agent relay using `MAC_COLLAB_TOKEN`:
-  ```bash
-  curl -fsS -H "Authorization: Bearer ${MAC_COLLAB_TOKEN}" https://mac.jays.services/files/ATTACK-MAP.md
-  ```
+  Do not fetch `ATTACK-MAP.md` over HTTP.  A `curl` (or similar) with `Authorization: Bearer ${MAC_COLLAB_TOKEN}` puts the token on argv and dumps the whole inventory into the transcript.  Ask a Mac seat to read the file locally and return only the redacted field required for the task.
 
 ## What Lives in `fleet-ops:ATTACK-MAP.md`
 
 1. **Host Topology & IP Addresses:**
-   - Production Hetzner Linux host public IP, Tailscale MagicDNS (`server.boa-roygbiv.ts.net`), and mesh IP (`100.69.77.26`).
-   - Mac workstation local relay Tailscale IP (`100.113.106.39`).
-   - iPhone operator client Tailscale IP (`100.100.72.76`).
-   - Retired Oracle server references and transition logs.
+   Production public IPs, Tailscale MagicDNS names, mesh IPs, workstation relay addresses, and retired-host notes.  None of those values belong in this public skill.
 
 2. **Coolify Container & Server UUIDs:**
-   - Server UUIDs for Hetzner (`fleet-hetzner-nbg1`).
-   - Application UUIDs for `Socratic.Trade`, `Congress.Trade`, and `Usage-Monitor`.
+   Server and application UUIDs for Socratic.Trade, Congress.Trade, and Usage-Monitor.
 
 3. **Infisical Project IDs:**
-   - Project workspace IDs for ST, CT, Shared, and UM scopes.
+   Project workspace IDs for ST, CT, Shared, and UM scopes.
 
 4. **Edge & Access Control Rules:**
-   - Cloudflare origin isolation rules (blocking non-CF traffic on `:80`/`:443`).
-   - SSH `:22` access restricted to Tailscale mesh (`macbook` and `iphone`).
-   - Coolify control plane `:8000` bound to Tailscale IP.
+   Cloudflare origin isolation, SSH restricted to the Tailscale mesh, and Coolify control-plane bind rules.
 
 ## Invariants for Public Repositories
 

@@ -1364,16 +1364,14 @@ bus.subscribe((event: RuntimeEvent) => {
                  break;
              }
           }
-          if (lastUserMessage) {
-            // Remove any error chips or partial assistant messages emitted during the failed turn
-            // so we have a clean retry state
-            // We cannot easily delete the failed chips here, so they remain as a record of the failure.
-            // Wait for the store to settle, then restart the turn
+          if (lastUserMessage && typeof lastUserMessage.text === "string") {
+            const userMsg = lastUserMessage;
+            // startTurn rejects while the bot is still busy from this failed
+            // turn. Settle idle first so the fallback can dispatch.
+            if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
             setTimeout(() => {
-              void startTurn(bot.id, (lastUserMessage as any).text || "", { userMessage: lastUserMessage });
+              void startTurn(bot.id, userMsg.text || "", { userMessage: userMsg });
             }, 100);
-            
-            // Stop processing this failed turn completion (don't mark idle)
             return;
           }
         }
@@ -1810,7 +1808,7 @@ async function startTurn(
     transcript,
     rewound,
     fresh,
-    replaysNatively: instance.driverKind === "grok",
+    replaysNatively: instance.driverKind === "grok" || instance.driverKind === "deepseek",
   });
 
   const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
@@ -4536,6 +4534,9 @@ const server = createServer(async (req, res) => {
         if (body.avatarUrl !== null && typeof body.avatarUrl !== "string") {
           return json(res, 400, { error: "avatarUrl must be a string or null" });
         }
+        if (body.avatarUrl && !storedAvatarExists(body.avatarUrl)) {
+          return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
+        }
         patch.avatarUrl = body.avatarUrl;
       }
       if (body.bulletin !== undefined) {
@@ -5840,6 +5841,7 @@ const server = createServer(async (req, res) => {
           key !== "rooms" &&
           key !== "localVm" &&
           key !== "autoUpdate" &&
+          key !== "ingress" &&
           key !== "features",
       );
       if (reloadKeys.length > 0) await reloadProviders();

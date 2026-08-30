@@ -103,6 +103,25 @@ describe("team manifests", () => {
     expect(manifest.team).not.toHaveProperty("room");
   });
 
+  it("accepts a team exported under the predecessor format name", () => {
+    const manifest = parseTeamManifest({
+      format: "openmaus.team",
+      version: 2,
+      team: {
+        name: "Engineering",
+        members: [
+          {
+            key: "chief",
+            name: "Chief",
+            appearance: { color: "purple" },
+          },
+        ],
+      },
+    });
+    expect(manifest.format).toBe("botfleet.team");
+    expect(manifest.team.name).toBe("Engineering");
+  });
+
   it("rejects unsupported versions and dangling member references", () => {
     expect(() => parseTeamManifest({ format: "botfleet.team", version: 99 })).toThrow("not supported");
     expect(() =>

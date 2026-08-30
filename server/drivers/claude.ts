@@ -591,11 +591,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const mcpServers: Record<string, unknown> = {};
       
       // Load global MCP servers used by the rest of the fleet
+      const importedMcpNames: string[] = [];
       try {
         const claudeJson = readFileSync(join(homedir(), ".claude.json"), "utf8");
         const parsed = JSON.parse(claudeJson);
         if (parsed && typeof parsed === "object" && parsed.mcpServers && typeof parsed.mcpServers === "object") {
           Object.assign(mcpServers, parsed.mcpServers);
+          importedMcpNames.push(...Object.keys(parsed.mcpServers));
         }
       } catch (e) {
         // ignore missing or malformed ~/.claude.json
@@ -659,6 +661,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         args.push("--permission-prompt-tool", "mcp__ogb__approve");
         mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
         allowed.push("mcp__ogb");
+      }
+      // Fleet MCP servers copied from ~/.claude.json are visible in
+      // mcpServers but acceptEdits silently denies anything whose prefix is
+      // not in --allowedTools. Pre-allow those imported servers only — do
+      // not re-allow BotFleet-owned namespaces that were deliberately omitted
+      // (host-controlled local CUA must not get mcp__computer).
+      for (const name of importedMcpNames) {
+        const prefix = `mcp__${name}`;
+        if (!allowed.includes(prefix)) allowed.push(prefix);
       }
       // The MCP config carries credentials — a Composio consumer key in a
       // header, the box token in the computer proxy's env, the comms token in

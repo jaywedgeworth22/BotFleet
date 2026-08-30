@@ -237,7 +237,7 @@ See the [Ubuntu Desktop guide](docs/linux-desktop.md) for installation, capabili
 **From source:**
 
 ```sh
-git clone https://github.com/milind-soni/BotFleet && cd BotFleet
+git clone https://github.com/jaywedgeworth22/BotFleet && cd BotFleet
 pnpm install
 
 pnpm dev:server    # harness server → 127.0.0.1:8799
@@ -271,9 +271,9 @@ The Linux preview is user-initiated and never enables local bot control or Auto 
 Driver 0.19.3 runtime starts only after explicit opt-in and without its full-screen cursor overlay. On Wayland the
 app never starts it and clears legacy opt-ins while that real-seat safety gate remains unresolved. Chat, preview,
 Cloud, and Local VM remain available on both sessions. See the [Ubuntu Desktop guide](docs/linux-desktop.md) and tracking
-issues [#29](https://github.com/milind-soni/BotFleet/issues/29),
-[#345](https://github.com/milind-soni/BotFleet/issues/345), and
-[#113](https://github.com/milind-soni/BotFleet/issues/113).
+issues [#29](https://github.com/jaywedgeworth22/BotFleet/issues/29),
+[#345](https://github.com/jaywedgeworth22/BotFleet/issues/345), and
+[#113](https://github.com/jaywedgeworth22/BotFleet/issues/113).
 
 The Linux packager downloads only the tag-pinned upstream archive during the build, verifies its size, SHA-256,
 complete member allowlist, and inner executable hashes, then packages only the CLI and cursor-theme sidecar. The

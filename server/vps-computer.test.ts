@@ -23,6 +23,7 @@ import {
   vpsComputerMcp,
   vpsContainerMcpArgs,
   vpsContainerName,
+  vpsContainerNameCandidates,
   vpsContainerRunArgs,
   vpsDockerArgs,
   vpsDriverError,
@@ -234,6 +235,14 @@ describe("VPS computer", () => {
     expect(vpsContainerName(BOT_ID)).toBe(vpsContainerName(BOT_ID));
     expect(vpsContainerName(BOT_ID)).not.toBe(vpsContainerName("another-bot"));
     expect(vpsContainerName(BOT_ID)).toMatch(/^botfleet-vps-[a-z0-9-]+$/);
+    expect(vpsContainerNameCandidates(BOT_ID)[0]).toBe(vpsContainerName(BOT_ID));
+    expect(vpsContainerNameCandidates(BOT_ID)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^botfleet-vps-/),
+        expect.stringMatching(/^openmausbot-vps-/),
+        expect.stringMatching(/^opengrokbot-vps-/),
+      ]),
+    );
   });
 
   it("passes the SSH target as one validated Docker argv value", () => {
