@@ -393,20 +393,7 @@ function RoomContextMenu({
       )}
       <button
         onClick={() => {
-          if (window.ogb?.dialog?.showOpenDialog) {
-            window.ogb.dialog.showOpenDialog({
-              title: "Choose Channel Photo",
-              filters: [{ name: "Images", extensions: ["png", "jpg", "jpeg", "gif", "webp"] }],
-              properties: ["openFile"],
-            }).then(result => {
-              if (result.canceled || !result.filePaths[0]) return;
-              fetch(`file://${result.filePaths[0]}`)
-                .then(r => r.blob())
-                .then(b => upload(new File([b], "avatar.png", { type: b.type })));
-            });
-          } else {
-            fileRef.current?.click();
-          }
+          fileRef.current?.click();
         }}
         disabled={uploading}
         className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70 disabled:opacity-50"
