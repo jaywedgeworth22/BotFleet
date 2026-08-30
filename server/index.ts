@@ -1364,21 +1364,14 @@ bus.subscribe((event: RuntimeEvent) => {
                  break;
              }
           }
-          if (lastUserMessage) {
-            // Remove any error chips or partial assistant messages emitted during the failed turn
-            // so we have a clean retry state
-            const failedIndex = activeMsgs.findIndex(m => m.id === lastUserMessage!.id) + 1;
-            const toDelete = activeMsgs.slice(failedIndex).map(m => m.id);
-            for (const id of toDelete) {
-               store.deleteMessage(event.threadId, id);
-            }
-            
-            // Wait for the store to settle, then restart the turn
+          if (lastUserMessage && typeof lastUserMessage.text === "string") {
+            const userMsg = lastUserMessage;
+            // startTurn rejects while the bot is still busy from this failed
+            // turn. Settle idle first so the fallback can dispatch.
+            if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
             setTimeout(() => {
-              void startTurn(bot.id, lastUserMessage.text, { userMessage: lastUserMessage });
+              void startTurn(bot.id, userMsg.text || "", { userMessage: userMsg });
             }, 100);
-            
-            // Stop processing this failed turn completion (don't mark idle)
             return;
           }
         }
@@ -1818,7 +1811,7 @@ async function startTurn(
     replaysNatively: instance.driverKind === "grok",
   });
 
-  const isImessageTask = store.task(bot.id, threadId)?.title?.toLowerCase() === "imessage";
+  const isImessageTask = store.tasks(bot.id).find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
   const persona = [
     `You are BF-${bot.name} (display: ${bot.name}), a bot in BotFleet. Always identify yourself as BF-${bot.name} in fleet communications and logs.`,
     bot.title && `Role: ${bot.title}.`,

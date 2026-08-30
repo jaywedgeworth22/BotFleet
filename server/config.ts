@@ -417,6 +417,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // CLI — `{"instances": {"gemini": {"driver": "geminiAgent"}}}` restores it.
   const DEFAULT_FLEET: InstanceConfigMap = {
     grok: { driver: "grokAgent" },
+    deepseek: { driver: "deepseek" },
     dsh: { driver: "dshAgent" },
     kimi: { driver: "kimiAgent" },
     droid: { driver: "droidAgent" },
@@ -442,6 +443,8 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   const PRODUCT_FLEET_ADDITIONS = {
     cursor: { driver: "cursorAgent" },
     openaiCompat: { driver: "openai-compat" },
+    deepseek: { driver: "deepseek" },
+    dsh: { driver: "dshAgent" },
     ...CUSTOM_ONLY,
   } as const;
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;
