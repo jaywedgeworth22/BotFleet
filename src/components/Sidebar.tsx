@@ -406,7 +406,7 @@ function RoomContextMenu({
         type="file"
         accept="image/png, image/jpeg, image/gif, image/webp"
         className="hidden"
-        onChange={(e) => void upload(e.target.files?.[0])}
+        onChange={(e) => { void upload(e.target.files?.[0]); e.target.value = ""; }}
       />
       <button
         onClick={() => {
