@@ -1347,7 +1347,12 @@ bus.subscribe((event: RuntimeEvent) => {
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
-        if (!event.ok && bot.modelSelection.fallbacks?.length) {
+        if (
+          !event.ok &&
+          event.stopReason !== "interrupted" &&
+          event.stopReason !== "cancelled" &&
+          bot.modelSelection.fallbacks?.length
+        ) {
           // Fallback logic
           const fallbacks = [...bot.modelSelection.fallbacks];
           const nextModel = fallbacks.shift()!;
