@@ -47,6 +47,8 @@ export interface ModelSelection {
   model: string;
   /** Optional: no effort means no flag, and the CLI keeps its own default. */
   effort?: EffortLevel;
+  /** Optional: engines to try if this one fails (e.g. quota/rate limit) */
+  fallbacks?: ModelSelection[];
 }
 
 // ── instance configuration envelope ────────────────────────────────────

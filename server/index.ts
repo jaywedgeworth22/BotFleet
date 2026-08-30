@@ -364,10 +364,23 @@ function checkedModelSelection(
     }
     selection.effort = value.effort;
   }
+  
+  if ("fallbacks" in value && Array.isArray(value.fallbacks)) {
+    const parsedFallbacks: ModelSelection[] = [];
+    for (const f of value.fallbacks) {
+       const res = checkedModelSelection(f, undefined, requireAvailableModel);
+       if (!res.ok) return res;
+       parsedFallbacks.push(res.selection);
+    }
+    if (parsedFallbacks.length > 0) {
+      selection.fallbacks = parsedFallbacks;
+    }
+  }
   const changed = current && (
     selection.instanceId !== current.selection.instanceId ||
     selection.model !== current.selection.model ||
-    selection.effort !== current.selection.effort
+    selection.effort !== current.selection.effort ||
+    JSON.stringify(selection.fallbacks) !== JSON.stringify(current.selection.fallbacks)
   );
   if (current?.busy && changed) {
     return { ok: false, status: 409, error: "the bot is working — stop it before changing models" };
@@ -1334,6 +1347,42 @@ bus.subscribe((event: RuntimeEvent) => {
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
+        if (!event.ok && bot.modelSelection.fallbacks?.length) {
+          // Fallback logic
+          const fallbacks = [...bot.modelSelection.fallbacks];
+          const nextModel = fallbacks.shift()!;
+          const updatedSelection = { ...nextModel, fallbacks };
+          store.patchBot(bot.id, { modelSelection: updatedSelection });
+          
+          // Identify the last user message on the active path to retry
+          const activeMsgs = store.activePath(event.threadId);
+          let lastUserMessage: Message | undefined;
+          // Search backwards for the last user message that isn't a steering message
+          for (let i = activeMsgs.length - 1; i >= 0; i--) {
+             if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
+                 lastUserMessage = activeMsgs[i];
+                 break;
+             }
+          }
+          if (lastUserMessage) {
+            // Remove any error chips or partial assistant messages emitted during the failed turn
+            // so we have a clean retry state
+            const failedIndex = activeMsgs.findIndex(m => m.id === lastUserMessage!.id) + 1;
+            const toDelete = activeMsgs.slice(failedIndex).map(m => m.id);
+            for (const id of toDelete) {
+               store.deleteMessage(event.threadId, id);
+            }
+            
+            // Wait for the store to settle, then restart the turn
+            setTimeout(() => {
+              void startTurn(bot.id, lastUserMessage.text, { userMessage: lastUserMessage });
+            }, 100);
+            
+            // Stop processing this failed turn completion (don't mark idle)
+            return;
+          }
+        }
+
         const vpsTurn = activeVpsThreads.get(bot.id) === event.threadId;
         const clearVpsTurn = () => {
           if (activeVpsThreads.get(bot.id) === event.threadId) activeVpsThreads.delete(bot.id);
@@ -1769,10 +1818,13 @@ async function startTurn(
     replaysNatively: instance.driverKind === "grok",
   });
 
+  const isImessageTask = store.task(bot.id, threadId)?.title?.toLowerCase() === "imessage";
   const persona = [
-    `You are ${bot.name}, a personal bot in BotFleet.`,
+    `You are BF-${bot.name} (display: ${bot.name}), a bot in BotFleet. Always identify yourself as BF-${bot.name} in fleet communications and logs.`,
     bot.title && `Role: ${bot.title}.`,
     bot.description && `About: ${bot.description}`,
+    `Slack communication rules: Use Slack channel #agent-sync sparingly — ONLY to claim/unclaim tasks on the shared board or for strictly necessary coordination with external agents outside BotFleet. Never post unprompted status spam or routine commentary to Slack.`,
+    isImessageTask && `iMessage communication rule: When replying in this iMessage thread, be concise, direct, and action-oriented. Do not leave out key details, but avoid verbose fluff, unnecessary conversational padding, or multi-paragraph meta commentary. Provide clear, direct summaries.`,
   ]
     .filter(Boolean)
     .join(" ");
@@ -2480,9 +2532,10 @@ async function runGroupMemberTurn(
     .map((b) => `@${b.name}${b.title ? ` (${b.title})` : ""}`)
     .join(", ");
   const system = [
-    `You are ${bot.name}, a bot in the room "${group.name}" in BotFleet.`,
+    `You are BF-${bot.name} (display: ${bot.name}), a bot in the room "${group.name}" in BotFleet. Always identify yourself as BF-${bot.name} in fleet communications and logs.`,
     bot.title && `Role: ${bot.title}.`,
     bot.description && `About: ${bot.description}`,
+    `Slack communication rules: Use Slack channel #agent-sync sparingly — ONLY to claim/unclaim tasks on the shared board or for strictly necessary coordination with external agents outside BotFleet. Never post unprompted status spam or routine commentary to Slack.`,
     `Room members: ${roster}, and ${userName} (the human).`,
     group.bulletin.trim() && `Room bulletin (shared instructions for everyone):\n${group.bulletin.trim()}`,
     `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.`,

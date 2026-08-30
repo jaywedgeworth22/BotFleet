@@ -160,6 +160,7 @@ export interface ModelSelection {
   instanceId: string;
   model: string;
   effort?: EffortLevel;
+  fallbacks?: ModelSelection[];
 }
 
 /** One of a bot's separate contexts: its own thread, transcript and
