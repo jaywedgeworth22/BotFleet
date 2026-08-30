@@ -18,6 +18,7 @@ struct AgentProfileView: View {
     @State private var crop: AvatarCrop
     @State private var voice: String
     @State private var speakReplies: Bool
+    @State private var modelSelection: ModelSelection
     @State private var photo: PhotosPickerItem?
     @State private var prompt = ""
     @State private var voices: [Voice] = []
@@ -35,6 +36,7 @@ struct AgentProfileView: View {
         _crop = State(initialValue: bot.avatarCrop ?? .mascot)
         _voice = State(initialValue: bot.voice ?? "")
         _speakReplies = State(initialValue: bot.speakReplies == true)
+        _modelSelection = State(initialValue: bot.modelSelection)
         _baseline = State(initialValue: ProfileFormSnapshot(bot: bot))
     }
 
@@ -105,6 +107,61 @@ struct AgentProfileView: View {
                     TextField("What this agent does", text: $description, axis: .vertical)
                         .lineLimit(3...8)
                     Toggle("Agent notifications", isOn: $notifications)
+                }
+
+
+                Section {
+                    Picker("Primary model", selection: $modelSelection.model) {
+                        ForEach(session.state.instances) { instance in
+                            Section(instance.displayName ?? instance.id) {
+                                ForEach(instance.models.options) { option in
+                                    Text(option.label).tag(option.id)
+                                }
+                            }
+                        }
+                    }
+                    .onChange(of: modelSelection.model) { _, newModel in
+                        if let instance = session.state.instances.first(where: { $0.models.options.contains(where: { $0.id == newModel }) }) {
+                            modelSelection.instanceId = instance.id
+                        }
+                    }
+
+                    ForEach(Array((modelSelection.fallbacks ?? []).enumerated()), id: \.offset) { index, fallback in
+                        Picker("Fallback \(index + 1)", selection: Binding(
+                            get: { modelSelection.fallbacks?[index].model ?? "" },
+                            set: { newModel in
+                                if let instance = session.state.instances.first(where: { $0.models.options.contains(where: { $0.id == newModel }) }) {
+                                    modelSelection.fallbacks?[index].instanceId = instance.id
+                                    modelSelection.fallbacks?[index].model = newModel
+                                }
+                            }
+                        )) {
+                            ForEach(session.state.instances) { instance in
+                                Section(instance.displayName ?? instance.id) {
+                                    ForEach(instance.models.options) { option in
+                                        Text(option.label).tag(option.id)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    .onDelete { indices in
+                        modelSelection.fallbacks?.remove(atOffsets: indices)
+                        if modelSelection.fallbacks?.isEmpty == true {
+                            modelSelection.fallbacks = nil
+                        }
+                    }
+
+                    Button("+ Add Fallback Model") {
+                        if modelSelection.fallbacks == nil {
+                            modelSelection.fallbacks = []
+                        }
+                        if let firstInstance = session.state.instances.first, let firstModel = firstInstance.models.options.first {
+                            modelSelection.fallbacks?.append(ModelSelection(instanceId: firstInstance.id, model: firstModel.id))
+                        }
+                    }
+                } header: {
+                    Text("Model")
                 }
 
                 Section {
@@ -212,7 +269,8 @@ struct AgentProfileView: View {
             // Empty is the server's explicit "use workspace default" value;
             // nil would mean the voice field is not part of this patch.
             voice: voice == baseline.voice ? nil : voice,
-            speakReplies: savedSpeakReplies == baseline.speakReplies ? nil : savedSpeakReplies
+            speakReplies: savedSpeakReplies == baseline.speakReplies ? nil : savedSpeakReplies,
+            modelSelection: modelSelection == baseline.modelSelection ? nil : modelSelection
         )
     }
 
@@ -326,6 +384,7 @@ struct AgentProfileView: View {
         crop = bot.avatarCrop ?? .mascot
         voice = bot.voice ?? ""
         speakReplies = bot.speakReplies == true
+        modelSelection = bot.modelSelection
         baseline = ProfileFormSnapshot(bot: bot)
     }
 }
@@ -338,6 +397,7 @@ private struct ProfileFormSnapshot {
     var crop: AvatarCrop
     var voice: String
     var speakReplies: Bool
+    var modelSelection: ModelSelection
 
     init(bot: Bot) {
         name = bot.name
@@ -347,6 +407,7 @@ private struct ProfileFormSnapshot {
         crop = bot.avatarCrop ?? .mascot
         voice = bot.voice ?? ""
         speakReplies = bot.speakReplies == true
+        modelSelection = bot.modelSelection
     }
 }
 

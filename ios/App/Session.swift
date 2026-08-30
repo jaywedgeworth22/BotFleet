@@ -905,6 +905,36 @@ final class Session: ObservableObject {
         avatarCache.removeAllObjects()
     }
 
+    func updateRoom(id: String, name: String, bulletin: String) async {
+        guard let client else { return }
+        do {
+            let _ = try await client.patchGroup(id: id, patch: ["name": name, "bulletin": bulletin])
+        } catch {
+            if !Task.isCancelled { actionError = error.localizedDescription }
+        }
+    }
+
+    func updateRoomAvatar(id: String, avatarUrl: String?) async {
+        guard let client else { return }
+        do {
+            let patch: [String: String?] = ["avatarUrl": avatarUrl]
+            let _ = try await client.patchGroup(id: id, patch: patch)
+        } catch {
+            if !Task.isCancelled { actionError = error.localizedDescription }
+        }
+    }
+
+    func uploadRoomAvatar(id: String, data: Data, mime: String) async {
+        guard let client else { return }
+        do {
+            let avatarUrl = try await client.uploadAvatar(data: data, mime: mime)
+            guard !Task.isCancelled else { return }
+            await updateRoomAvatar(id: id, avatarUrl: avatarUrl)
+        } catch {
+            if !Task.isCancelled { actionError = error.localizedDescription }
+        }
+    }
+
     func voiceOptions() async -> [Voice] {
         guard let client else { return [] }
         do { return try await client.voices() }

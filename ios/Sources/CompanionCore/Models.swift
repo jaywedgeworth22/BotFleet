@@ -156,6 +156,13 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
 public struct ModelSelection: Codable, Hashable, Sendable {
     public var instanceId: String
     public var model: String
+    public var fallbacks: [ModelSelection]?
+
+    public init(instanceId: String, model: String, fallbacks: [ModelSelection]? = nil) {
+        self.instanceId = instanceId
+        self.model = model
+        self.fallbacks = fallbacks
+    }
 }
 
 public struct BotTask: Codable, Hashable, Sendable {
@@ -532,6 +539,7 @@ public struct BotProfilePatch: Encodable, Sendable {
     public var avatarCrop: AvatarCrop?
     public var voice: String?
     public var speakReplies: Bool?
+    public var modelSelection: ModelSelection?
 
     /// `avatarUrl` needs three wire states: omitted, a stored path, or JSON
     /// null to clear. A nested optional would technically represent that, but
@@ -549,7 +557,8 @@ public struct BotProfilePatch: Encodable, Sendable {
         avatarUrl: AvatarURL? = nil,
         avatarCrop: AvatarCrop? = nil,
         voice: String? = nil,
-        speakReplies: Bool? = nil
+        speakReplies: Bool? = nil,
+        modelSelection: ModelSelection? = nil
     ) {
         self.name = name
         self.title = title
@@ -559,6 +568,7 @@ public struct BotProfilePatch: Encodable, Sendable {
         self.avatarCrop = avatarCrop
         self.voice = voice
         self.speakReplies = speakReplies
+        self.modelSelection = modelSelection
     }
 
     private enum CodingKeys: String, CodingKey {

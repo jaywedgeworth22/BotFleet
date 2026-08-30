@@ -293,7 +293,10 @@ struct ChatView: View {
             if current.supportsTasks { TaskManagerView(chat: current) }
         }
         .sheet(isPresented: $showingProfile) {
-            if case let .bot(bot) = current { AgentProfileView(bot: bot) }
+            switch current {
+            case let .bot(bot): AgentProfileView(bot: bot)
+            case let .room(room): GroupProfileView(room: room)
+            }
         }
         .sheet(item: $shareFile) { file in
             ActivityShareSheet(items: [file.url])
@@ -383,8 +386,7 @@ struct ChatView: View {
                 Color.clear.frame(width: 60, height: 60)
             }
             Button {
-                if case .bot = current { showingProfile = true }
-                else { showingPlus = true }
+                showingProfile = true
             } label: {
                 HStack(spacing: 6) {
                     Text(current.name)
