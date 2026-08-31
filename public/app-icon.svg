@@ -3,7 +3,7 @@
   <desc id="desc">An oversized silver SupaMaus cursor on a black app tile, tilted toward the top-right corner and cropped by the left and bottom edges.</desc>
 
   <defs>
-    <clipPath id="tile"><rect width="1024" height="1024" rx="224" /></clipPath>
+    <clipPath id="tile"><rect width="1024" height="1024"  /></clipPath>
 
     <!-- The original mascot gradient. -->
     <linearGradient id="mascot-grey" x1="18%" y1="10%" x2="84%" y2="94%">
