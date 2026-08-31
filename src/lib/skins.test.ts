@@ -16,8 +16,8 @@ const blocks = new Set(
   [...css.matchAll(/\[data-skin="([a-z-]+)"\]/g)].map(([, id]) => id),
 );
 
-/** `system` is a virtual skin that resolves to midnight or atelier. */
-const STYLE_SKIN_IDS = SKIN_IDS.filter((id) => id !== "system");
+/** `system` and `custom` are virtual/dynamic skins that do not have static CSS blocks. */
+const STYLE_SKIN_IDS = SKIN_IDS.filter((id) => id !== "system" && id !== "custom");
 
 describe("skins", () => {
   it("gives every registered skin a stylesheet block", () => {

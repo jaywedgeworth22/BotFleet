@@ -37,7 +37,7 @@ import {
 import { EngineSetup } from "./EngineSetup";
 import { BotAvatar, MausAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
-import { showToolCallsEnabled } from "@/lib/feature-flags";
+import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
 import { stateForBot } from "@/lib/mascot";
 import { showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
@@ -659,9 +659,13 @@ const MessagesList = memo(function MessagesList({
 }) {
   const { state, dispatch } = useStore();
   const showToolCalls = showToolCallsEnabled(state.config);
-  // Fold finished tool chips into runs, so a stretch of them cannot bury
-  // what the bot actually said. Hidden unless Settings → Tool calls is on.
-  const items = useMemo(() => groupActivityRuns(messages), [messages]);
+  const summarizeToolCalls = summarizeToolCallsEnabled(state.config);
+  // Fold finished tool chips into runs when summarizeToolCalls is enabled, so a stretch of them cannot bury
+  // what the bot actually said. If summarizeToolCalls is false, show each step individually.
+  const items = useMemo(
+    () => (summarizeToolCalls ? groupActivityRuns(messages) : messages.map((m) => ({ kind: "message" as const, message: m }))),
+    [messages, summarizeToolCalls],
+  );
   // A search hit inside a folded run has to open it: the fold keeps the
   // row out of the DOM, and there is nothing for the scroll to land on.
   const focus = state.focusMessage;

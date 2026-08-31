@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { showToolCallsEnabled, skillRecorderEnabled } from "./feature-flags";
+import { showToolCallsEnabled, skillRecorderEnabled, summarizeToolCallsEnabled } from "./feature-flags";
 
 describe("experimental feature flags", () => {
   it("keeps Teach a skill hidden by default", () => {
@@ -21,5 +21,12 @@ describe("experimental feature flags", () => {
 
   it("shows tool-call chips only after explicit opt-in", () => {
     expect(showToolCallsEnabled({ features: { showToolCalls: true } })).toBe(true);
+  });
+
+  it("summarizes tool-call runs by default unless explicitly disabled", () => {
+    expect(summarizeToolCallsEnabled(null)).toBe(true);
+    expect(summarizeToolCallsEnabled({})).toBe(true);
+    expect(summarizeToolCallsEnabled({ features: { summarizeToolCalls: true } })).toBe(true);
+    expect(summarizeToolCallsEnabled({ features: { summarizeToolCalls: false } })).toBe(false);
   });
 });

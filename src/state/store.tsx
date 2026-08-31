@@ -296,7 +296,7 @@ export interface ConfigStatus {
   profile?: { name: string; email: string };
   autoUpdate?: { enabled: boolean };
   /** Opt-in flags. Absent means off. */
-  features?: { skillRecorder: boolean; showToolCalls?: boolean };
+  features?: { skillRecorder: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
 }
 
 export type ConfigStatusFrame = Pick<
