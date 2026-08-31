@@ -1380,7 +1380,7 @@ bus.subscribe((event: RuntimeEvent) => {
           const produced =
             lastUserIdx >= 0 &&
             activeMsgs.slice(lastUserIdx + 1).some(
-              (message) => message.role === "bot" && (message.kind === "text" || message.kind === "activity"),
+              (message) => message.role === "bot" && (message.kind === "text" || (message.kind === "activity" && message.tool?.ok !== false)),
             );
           const chain = bot.modelSelection.fallbacks;
           const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;

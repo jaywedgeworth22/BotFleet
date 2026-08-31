@@ -77,7 +77,7 @@ export const DEFAULT_CUSTOM_THEME: CustomThemeConfig = {
 };
 
 export function getDefaultSkin(): SkinId {
-  return "system";
+  return "studio";
 }
 
 const KEY = "omb-skin";

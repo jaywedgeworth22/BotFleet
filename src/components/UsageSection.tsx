@@ -2,6 +2,7 @@
 // costing me money" is answerable without a provider dashboard. Figures are
 // banked per settled turn on each task (server/store.ts addTaskUsage) and
 // summed here; nothing is fetched.
+import * as React from "react";
 import { useStore } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
@@ -9,6 +10,21 @@ import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteC
 
 export function UsageSection() {
   const { state } = useStore();
+  const [telemetryError, setTelemetryError] = React.useState<string | null>(null);
+
+  React.useEffect(() => {
+    fetch("/api/telemetry/status")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data && data.lastError) {
+          setTelemetryError(data.lastError);
+        }
+      })
+      .catch(() => {
+        setTelemetryError("Failed to fetch telemetry status");
+      });
+  }, []);
+
   const rows = state.bots
     .filter((b) => !b.hidden)
     .map((bot) => {
@@ -117,13 +133,19 @@ export function UsageSection() {
         <div className="flex flex-col gap-3 text-[13px]">
           <div className="flex items-center justify-between rounded-xl border border-hairline/30 bg-inset/40 px-3.5 py-2.5">
             <div className="flex items-center gap-2">
-              <span className="flex size-2 rounded-full bg-success shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse" />
+              <span className={`flex size-2 rounded-full ${telemetryError ? 'bg-danger shadow-[0_0_8px_rgba(239,68,68,0.6)]' : 'bg-success shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse'}`} />
               <span className="font-medium text-ink">Usage Monitor</span>
               <span className="text-[11.5px] text-ink-secondary font-mono">usage.jays.services</span>
             </div>
-            <span className="rounded bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
-              Active Telemetry
-            </span>
+            {telemetryError ? (
+              <span className="rounded bg-danger/15 px-2 py-0.5 text-[11px] font-medium text-danger" title={telemetryError}>
+                Error
+              </span>
+            ) : (
+              <span className="rounded bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
+                Active Telemetry
+              </span>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">

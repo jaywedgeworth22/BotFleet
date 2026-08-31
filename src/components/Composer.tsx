@@ -584,31 +584,18 @@ export function Composer({
             setDismissedAt(null);
           }}
           onPaste={(e) => {
-            const files = Array.from(e.clipboardData.files);
-            if (!files.length && e.clipboardData.items) {
-              for (const item of Array.from(e.clipboardData.items)) {
-                if (item.kind === "file") {
-                  const f = item.getAsFile();
-                  if (f) files.push(f);
+            // rely on onGlobalPaste for files to prevent double-intake
+            const pasted = e.clipboardData?.getData("text/plain");
+            if (!pasted || !isLongPaste(pasted)) {
+              // auto-grow on normal text paste
+              setTimeout(() => {
+                if (inputRef.current) {
+                  inputRef.current.style.height = "auto";
+                  inputRef.current.style.height = inputRef.current.scrollHeight + "px";
                 }
-              }
-            }
-            if (files.length > 0) {
-              e.preventDefault();
-              void (async () => {
-                const { attachments: added, notice } = await intakeFiles(files, {
-                  allowImages: engineSupportsImages,
-                  getPath: pathForFile,
-                  uploadImage: imageAttachmentFromFile,
-                });
-                if (added.length) addAttachments(added);
-                if (notice) setAttachmentNotice(notice);
-              })();
+              }, 0);
               return;
             }
-            // a wall of text becomes a chip instead of burying the input
-            const pasted = e.clipboardData.getData("text/plain");
-            if (!isLongPaste(pasted)) return;
             e.preventDefault();
             // Preserve native paste replacement semantics: if text was
             // selected, the attachment replaces that selection.

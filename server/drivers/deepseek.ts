@@ -27,8 +27,6 @@ const MODELS = {
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
     { id: "deepseek-v4-flash-vision-exp", label: "DeepSeek V4 Flash Vision Exp" },
-    { id: "deepseek-chat", label: "DeepSeek V3 (Chat)" },
-    { id: "deepseek-reasoner", label: "DeepSeek R1 (Reasoner)" },
   ],
 };
 
@@ -63,12 +61,9 @@ export function computeDeepSeekCost(
   const uncachedInput = Math.max(0, inputTokens - cachedTokens);
 
   if (modelId === "deepseek-v4-flash" || modelId === "deepseek-v4-flash-vision-exp") {
-    return (uncachedInput * 0.07 + cachedTokens * 0.0175 + outputTokens * 0.14) / 1_000_000;
+    return (uncachedInput * 0.7 + cachedTokens * 0.175 + outputTokens * 1.4) / 1_000_000;
   }
-  if (modelId === "deepseek-reasoner") {
-    return (uncachedInput * 0.55 + cachedTokens * 0.14 + outputTokens * 2.19) / 1_000_000;
-  }
-  return (uncachedInput * 0.14 + cachedTokens * 0.014 + outputTokens * 0.28) / 1_000_000;
+  return (uncachedInput * 1.4 + cachedTokens * 0.14 + outputTokens * 2.8) / 1_000_000;
 }
 
 function decodeConfig(raw: unknown): DeepSeekConfig {

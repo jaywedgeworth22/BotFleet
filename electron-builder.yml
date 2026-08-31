@@ -19,7 +19,7 @@ publish:
     repo: botfleet-releases
   - provider: github
     owner: milind-soni
-    repo: openmausbot-releases
+    repo: botfleet-releases
 
 directories:
   buildResources: build
