@@ -14,6 +14,10 @@ const SKIN_CHROME = Object.freeze({
   atelier: Object.freeze({ color: "#f5f1eb", symbolColor: "#6b6559" }),
   foundry: Object.freeze({ color: "#100e0b", symbolColor: "#b0a696" }),
   lagoon: Object.freeze({ color: "#dfeceb", symbolColor: "#4d5c5b" }),
+  porcelain: Object.freeze({ color: "#ffffff", symbolColor: "#64748b" }),
+  nordic: Object.freeze({ color: "#eef3f8", symbolColor: "#475d78" }),
+  sandstone: Object.freeze({ color: "#f7f4ed", symbolColor: "#786d5c" }),
+  solarized: Object.freeze({ color: "#fdf6e3", symbolColor: "#586e75" }),
 });
 
 const DEFAULT_SKIN = "midnight";

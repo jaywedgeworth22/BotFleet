@@ -63,6 +63,7 @@ import {
   roomTurnTimeoutMinutes,
   saveConfig,
   showToolCallsEnabled,
+  summarizeToolCallsEnabled,
   skillRecorderEnabled,
   syncCredentialEnv,
   withInstanceCli,
@@ -3227,7 +3228,11 @@ function configStatus() {
       maxInstances: localVmMaxInstances(cfg),
     },
     autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
-    features: { skillRecorder: skillRecorderEnabled(cfg), showToolCalls: showToolCallsEnabled(cfg) },
+    features: {
+      skillRecorder: skillRecorderEnabled(cfg),
+      showToolCalls: showToolCallsEnabled(cfg),
+      summarizeToolCalls: summarizeToolCallsEnabled(cfg),
+    },
   };
 }
 

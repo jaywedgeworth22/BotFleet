@@ -6,7 +6,7 @@ import { useEffect, useRef, useState } from "react";
 import { Coins, KeyRound, Monitor, Search, Smartphone, Terminal, User, X } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
 import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
-import { showToolCallsEnabled, skillRecorderEnabled } from "@/lib/feature-flags";
+import { showToolCallsEnabled, skillRecorderEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
 import { ApiKeyRow, VpsConnection } from "./ApiKeys";
 import { useUpdaterState } from "@/lib/updater";
 import { EnginesSettings } from "./EnginesSettings";
@@ -293,22 +293,23 @@ function AnalyticsRow() {
 
 function ToolCallsRow() {
   const { state, dispatch } = useStore();
-  const enabled = showToolCallsEnabled(state.config);
+  const showCalls = showToolCallsEnabled(state.config);
+  const summarize = summarizeToolCallsEnabled(state.config);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
 
-  const toggle = async () => {
+  const patchFeatures = async (patch: { showToolCalls?: boolean; summarizeToolCalls?: boolean }) => {
     if (saving) return;
     setSaving(true);
     setError("");
     try {
       const config: ConfigStatus = await api("/api/config", {
         method: "PATCH",
-        body: JSON.stringify({ features: { showToolCalls: !enabled } }),
+        body: JSON.stringify({ features: patch }),
       });
       dispatch({ type: "configStatus", config });
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Could not save the tool-call setting.");
+      setError(cause instanceof Error ? cause.message : "Could not save setting.");
     } finally {
       setSaving(false);
     }
@@ -316,26 +317,47 @@ function ToolCallsRow() {
 
   return (
     <Card
-      title="Tool calls"
-      subtitle="Show each tool a bot runs in the transcript. Off by default — the mascot already shows that work is happening."
+      title="Tool calls & tasks"
+      subtitle="Configure how tool executions and background tasks are displayed in the transcript."
     >
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <div className="text-[14px] font-medium text-ink">Show tool calls</div>
-          <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
-            Named chips for Bash, search, and other tools. Errors and bot-to-bot messages still appear.
+      <div className="flex flex-col gap-4 divide-y divide-hairline/30">
+        <div className="flex items-center justify-between gap-4">
+          <div className="min-w-0">
+            <div className="text-[14px] font-medium text-ink">Show tool calls</div>
+            <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
+              Named chips for Bash, search, and other tools. Errors and bot-to-bot messages still appear.
+            </div>
           </div>
+          <button
+            role="switch"
+            aria-checked={showCalls}
+            aria-label="Show tool calls in chat"
+            disabled={saving}
+            onClick={() => void patchFeatures({ showToolCalls: !showCalls })}
+            className={`${cnSwitch(showCalls)} disabled:cursor-wait disabled:opacity-50`}
+          >
+            <span className={cnKnob(showCalls)} />
+          </button>
         </div>
-        <button
-          role="switch"
-          aria-checked={enabled}
-          aria-label="Show tool calls in chat"
-          disabled={saving}
-          onClick={() => void toggle()}
-          className={`${cnSwitch(enabled)} disabled:cursor-wait disabled:opacity-50`}
-        >
-          <span className={cnKnob(enabled)} />
-        </button>
+
+        <div className="flex items-center justify-between gap-4 pt-4">
+          <div className="min-w-0">
+            <div className="text-[14px] font-medium text-ink">Summarize bot tasks</div>
+            <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
+              Group consecutive tool actions into an expandable live summary card with real-time step counters and latest command status.
+            </div>
+          </div>
+          <button
+            role="switch"
+            aria-checked={summarize}
+            aria-label="Summarize bot tasks"
+            disabled={saving}
+            onClick={() => void patchFeatures({ summarizeToolCalls: !summarize })}
+            className={`${cnSwitch(summarize)} disabled:cursor-wait disabled:opacity-50`}
+          >
+            <span className={cnKnob(summarize)} />
+          </button>
+        </div>
       </div>
       {error ? <p role="alert" className="mt-2 text-[12px] text-danger">{error}</p> : null}
     </Card>

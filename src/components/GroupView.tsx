@@ -16,7 +16,7 @@ import {
 } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
-import { showToolCallsEnabled } from "@/lib/feature-flags";
+import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
 import { normalizeState } from "@/lib/mascot";
 import { effectiveDefaultResponder, groupResponseHint } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
@@ -266,10 +266,14 @@ const Transcript = memo(function Transcript({
 }) {
   const { state } = useStore();
   const showToolCalls = showToolCallsEnabled(state.config);
+  const summarizeToolCalls = summarizeToolCallsEnabled(state.config);
   const memberOf = (id?: string) => members.find((b) => b.id === id);
   // Several bots working at once turn a room into a wall of chips; fold the
-  // finished ones the same way a 1:1 chat does.
-  const items = useMemo(() => groupActivityRuns(messages), [messages]);
+  // finished ones when summarizeToolCalls is enabled.
+  const items = useMemo(
+    () => (summarizeToolCalls ? groupActivityRuns(messages) : messages.map((m) => ({ kind: "message" as const, message: m }))),
+    [messages, summarizeToolCalls],
+  );
   const focus = state.focusMessage;
   const focusedId = focus && !focus.consumed && focus.threadId === group.threadId ? focus.messageId : null;
   return (

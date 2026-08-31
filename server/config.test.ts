@@ -14,6 +14,7 @@ import {
   parseStoredConfig,
   roomTurnTimeoutMinutes,
   showToolCallsEnabled,
+  summarizeToolCallsEnabled,
   skillRecorderEnabled,
   stripWorkspaceCredentialEnv,
   syncCredentialEnv,
@@ -98,6 +99,12 @@ describe("configuration boundaries", () => {
       features: { showToolCalls: true },
     });
     expect(showToolCallsEnabled({ features: { showToolCalls: true } })).toBe(true);
+  });
+
+  it("defaults summarizeToolCalls to true and accepts explicit toggle", () => {
+    expect(summarizeToolCallsEnabled({})).toBe(true);
+    expect(summarizeToolCallsEnabled({ features: { summarizeToolCalls: false } })).toBe(false);
+    expect(summarizeToolCallsEnabled({ features: { summarizeToolCalls: true } })).toBe(true);
   });
 
   it.each([0, 1.5, 5, "2", null])("rejects an invalid per-bot VM limit: %j", (maxInstances) => {
