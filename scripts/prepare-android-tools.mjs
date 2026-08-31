@@ -14,6 +14,10 @@ const archive = archiveNames[process.platform];
 if (!platform || !archive) throw new Error(`Android Platform Tools are unsupported on ${process.platform}`);
 
 const finalDir = join(root, "dist-native", "android-platform-tools", platform);
+if (existsSync(join(finalDir, process.platform === "win32" ? "adb.exe" : "adb"))) {
+  console.log(`staged Android Platform Tools already cached at ${finalDir}`);
+  process.exit(0);
+}
 const override = process.env.OMB_ANDROID_PLATFORM_TOOLS_SOURCE;
 const temporary = mkdtempSync(join(tmpdir(), "botfleet-android-tools-"));
 const staged = join(temporary, platform);
