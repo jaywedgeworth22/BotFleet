@@ -853,7 +853,7 @@ export function ComputerPanel({
                     onClick={openVmSettings}
                     className="mt-1 rounded-lg bg-control px-3 py-1.5 text-[12px] text-ink hover:bg-raised-hover"
                   >
-                    Open Local VM setup
+                    Local setup
                   </button>
                 )
               )}
