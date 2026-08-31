@@ -212,6 +212,10 @@ type SkillRecordingPayload = {
       /** Writes the redacted diagnostics report to a user-chosen file;
        * resolves the path, or null when cancelled. */
       exportDiagnostics?(): Promise<string | null>;
+      /** Open a file directly with its default OS application. */
+      openFile?(filePath: string): Promise<boolean>;
+      /** Reveal a file in Finder / file manager with the file selected. */
+      showInFolder?(filePath: string): Promise<boolean>;
       /** Asks where to save a bot-created file (inside ~/.botfleet), copies
        * it there and reveals it. Resolves the chosen path, or null if the
        * user cancelled the dialog. */

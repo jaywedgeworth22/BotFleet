@@ -71,10 +71,22 @@ export function inferProject(cwd?: string | null, botName?: string, taskTitle?: 
   if (normCwd.includes("botfleet") || normCwd.includes("openmausbot") || normBot.includes("botfleet")) {
     return "botfleet";
   }
-  if (normCwd.includes("ai-fleet-coordinator") || normBot.includes("fleet-coordinator")) {
+  if (normCwd.includes("ai-fleet-coordinator") || normBot.includes("fleet-coordinator") || normTask.includes("fleet coordinator")) {
     return "ai-fleet-coordinator";
   }
-  if (normCwd.includes("usage-monitor")) {
+  if (normCwd.includes("fleet-ops") || normCwd.includes("fleetops") || normBot.includes("fleet-ops") || normTask.includes("fleet ops")) {
+    return "fleet-ops";
+  }
+  if (normCwd.includes("dealdex") || normBot.includes("dealdex") || normTask.includes("dealdex")) {
+    return "dealdex";
+  }
+  if (normCwd.includes("contactlogo") || normCwd.includes("contact-logo") || normBot.includes("contactlogo") || normTask.includes("contactlogo")) {
+    return "contactlogo";
+  }
+  if (normCwd.includes("autorotate") || normCwd.includes("auto-rotate") || normBot.includes("autorotate") || normTask.includes("autorotate")) {
+    return "autorotate";
+  }
+  if (normCwd.includes("usage-monitor") || normBot.includes("usage-monitor") || normTask.includes("usage-monitor")) {
     return "usage-monitor";
   }
 

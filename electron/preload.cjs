@@ -157,7 +157,13 @@ contextBridge.exposeInMainWorld("ogb", {
   /** Writes the redacted diagnostics report to a user-chosen file; resolves
    * the path, or null when the save dialog was cancelled. */
   exportDiagnostics: () => ipcRenderer.invoke("desktop:export-diagnostics"),
-  /** Ask where to save a bot-created file (inside ~/.openmausbot), copy it
+  /** Open a local file directly with its default macOS application. */
+  openFile: (filePath) => ipcRenderer.invoke("desktop:open-file", filePath),
+  /** Reveal a file in Finder with the file selected. */
+  showInFolder: (filePath) => ipcRenderer.invoke("desktop:show-in-folder", filePath),
+  /** Open a web URL in the default browser. */
+  openExternal: (url) => ipcRenderer.invoke("desktop:open-external", url),
+  /** Ask where to save a bot-created file (inside ~/.botfleet), copy it
    * there and reveal it. Returns the chosen path, or null if the user
    * cancelled the dialog. The chat bubble shows the
    * rejection text verbatim, so strip the "Error invoking remote method"

@@ -142,51 +142,115 @@ function CodeBlock({ code, lang, streaming }: { code: string; lang: string; stre
 // middle or modifier click, which calls shell.openExternal without the main
 // process' containment check.
 function LocalFileLink({ filePath, children }: { filePath: string; children?: ReactNode }) {
-  const [state, setState] = useState<"idle" | "saved" | "failed">("idle");
+  const [state, setState] = useState<"idle" | "opened" | "revealed" | "saved" | "failed">("idle");
   const [reason, setReason] = useState("");
-  const [savedTo, setSavedTo] = useState("");
+  const [showMenu, setShowMenu] = useState(false);
 
-  const save = async () => {
+  const openDirect = async (e?: React.MouseEvent) => {
+    if (e?.altKey || e?.metaKey) {
+      return revealInFinder();
+    }
+    if (window.ogb?.openFile) {
+      try {
+        await window.ogb.openFile(filePath);
+        setState("opened");
+        setTimeout(() => setState("idle"), 2500);
+        return;
+      } catch (err) {
+        // fall back to reveal in finder
+        return revealInFinder();
+      }
+    }
+    if (window.ogb?.showInFolder) {
+      return revealInFinder();
+    }
+    return saveCopy();
+  };
+
+  const revealInFinder = async () => {
+    setShowMenu(false);
+    if (window.ogb?.showInFolder) {
+      try {
+        await window.ogb.showInFolder(filePath);
+        setState("revealed");
+        setTimeout(() => setState("idle"), 2500);
+        return;
+      } catch (err) {
+        setReason(err instanceof Error ? err.message : "Could not open folder");
+        setState("failed");
+      }
+    }
+  };
+
+  const saveCopy = async () => {
+    setShowMenu(false);
     const saveFile = window.ogb?.saveFile;
     if (!saveFile) {
-      // an older shell has no save bridge; saying so beats the silent click
-      // this change exists to remove
-      setReason("Saving files needs a newer version of the desktop app");
+      setReason("Saving files needs the desktop app");
       setState("failed");
       return;
     }
     try {
       const saved = await saveFile(filePath);
-      // null means the user closed the save dialog, which is a decision
-      // rather than a failure — say nothing
       if (!saved) return;
-      setSavedTo(saved);
       setState("saved");
-      setTimeout(() => setState("idle"), 4000);
+      setTimeout(() => setState("idle"), 3000);
     } catch (error) {
-      // the bug being fixed here was a click that failed silently, so a
-      // failed save says why rather than doing nothing
       setReason(error instanceof Error ? error.message : "That file could not be saved");
       setState("failed");
     }
   };
 
   return (
-    <>
+    <span className="relative inline-block">
       <button
         type="button"
-        onClick={() => void save()}
-        title={`Save a copy — ${filePath}`}
-        className="break-words text-left text-accent underline decoration-accent/40 hover:decoration-accent"
+        onClick={openDirect}
+        onContextMenu={(e) => {
+          e.preventDefault();
+          setShowMenu(true);
+        }}
+        title={`Click to open · Alt/Cmd-click to reveal in Finder (${filePath})`}
+        className="break-words text-left font-mono text-[12.5px] text-accent underline decoration-accent/40 hover:decoration-accent hover:text-accent-hover cursor-pointer"
       >
         {children}
       </button>
+
+      {showMenu && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setShowMenu(false)} />
+          <div className="absolute left-0 top-full z-50 mt-1 min-w-[170px] rounded-lg border border-hairline/40 bg-raised/95 p-1 shadow-lg backdrop-blur-md">
+            <button
+              type="button"
+              onClick={() => void openDirect()}
+              className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[12px] text-ink hover:bg-hover"
+            >
+              <span>Open File</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void revealInFinder()}
+              className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[12px] text-ink hover:bg-hover"
+            >
+              <span>Reveal in Finder</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void saveCopy()}
+              className="flex w-full items-center gap-2 rounded px-2.5 py-1.5 text-left text-[12px] text-ink-secondary hover:bg-hover hover:text-ink"
+            >
+              <span>Save Copy As...</span>
+            </button>
+          </div>
+        </>
+      )}
+
       {state !== "idle" && (
-        <span className={`ml-1.5 text-[12px] ${state === "saved" ? "text-success" : "text-danger"}`}>
-          {state === "saved" ? `Saved to ${savedTo}` : reason}
+        <span className={`ml-1.5 text-[11.5px] ${state === "failed" ? "text-danger" : "text-success font-medium"}`}>
+          {state === "opened" ? "✓ Opened" : state === "revealed" ? "✓ Shown in Finder" : state === "saved" ? "✓ Saved" : reason}
         </span>
       )}
-    </>
+    </span>
   );
 }
 
@@ -268,11 +332,18 @@ function ChatMarkdownComponent({ text, streaming = false }: { text: string; stre
           a({ href, children }: { href?: string; children?: ReactNode }) {
             const localPath = localFilePath(href);
             if (localPath) return <LocalFileLink filePath={localPath}>{children}</LocalFileLink>;
+            const handleClick = (e: React.MouseEvent) => {
+              if (href && window.ogb?.openExternal) {
+                e.preventDefault();
+                void window.ogb.openExternal(href);
+              }
+            };
             return (
               <a
                 href={href}
                 target="_blank"
                 rel="noreferrer"
+                onClick={handleClick}
                 className="break-words text-accent underline decoration-accent/40 hover:decoration-accent"
               >
                 {children}

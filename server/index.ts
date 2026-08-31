@@ -2609,6 +2609,9 @@ async function runGroupMemberTurn(
     `Slack communication rules: Use Slack channel #agent-sync sparingly — ONLY to claim/unclaim tasks on the shared board or for strictly necessary coordination with external agents outside BotFleet. Never post unprompted status spam or routine commentary to Slack.`,
     `Room members: ${roster}, and ${userName} (the human).`,
     group.bulletin.trim() && `Room bulletin (shared instructions for everyone):\n${group.bulletin.trim()}`,
+    group.extraCwds?.length &&
+      `Associated Workspace Repositories / Folders:\n- Primary: ${group.cwd || "default"}\n${group.extraCwds.map((c) => `- Auxiliary: ${c}`).join("\n")}`,
+    "Format replies with clean Github-Flavored Markdown (headers, code fences with language tags, bullet lists, tables, bold/italic). When referencing local files on this Mac, use absolute paths or file links (e.g. `file:///path/to/file` or `/Users/jay/...`) so they are directly clickable in the UI.",
     `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.`,
     integrations.agents &&
       "If a supported API key is missing, use request_credential to show the secure in-app card. Never ask the user to paste credentials into chat.",
@@ -4650,6 +4653,19 @@ const server = createServer(async (req, res) => {
         const checked = validateBotCwd(body.cwd);
         if (!checked.ok) return json(res, 400, { error: checked.error });
         patch.cwd = checked.cwd ?? undefined;
+      }
+      if (body.extraCwds !== undefined) {
+        if (!Array.isArray(body.extraCwds)) {
+          return json(res, 400, { error: "extraCwds must be an array of folder paths" });
+        }
+        const cleaned: string[] = [];
+        for (const item of body.extraCwds) {
+          if (typeof item === "string" && item.trim()) {
+            const checked = validateBotCwd(item.trim());
+            if (checked.ok && checked.cwd) cleaned.push(checked.cwd);
+          }
+        }
+        patch.extraCwds = cleaned;
       }
       // one pinned message per room; null/"" clears. The id is not
       // validated against the transcript here — a pin whose message was

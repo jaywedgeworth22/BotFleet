@@ -1283,6 +1283,38 @@ ipcMain.handle("desktop:save-file", async (event, rawPath) => {
     shell.showItemInFolder(choice.filePath);
     return choice.filePath;
   });
+ipcMain.handle("desktop:open-file", async (_event, rawPath) => {
+  if (typeof rawPath !== "string") throw new Error("A file path is required");
+  let normPath = rawPath.trim();
+  if (normPath.startsWith("file://")) {
+    try {
+      normPath = decodeURIComponent(new URL(normPath).pathname);
+    } catch {
+      // keep normPath
+    }
+  }
+  if (!fs.existsSync(normPath)) {
+    throw new Error(`File does not exist: ${normPath}`);
+  }
+  const openError = await shell.openPath(normPath);
+  if (openError) {
+    shell.showItemInFolder(normPath);
+  }
+  return true;
+});
+
+ipcMain.handle("desktop:show-in-folder", async (_event, rawPath) => {
+  if (typeof rawPath !== "string") throw new Error("A file path is required");
+  let normPath = rawPath.trim();
+  if (normPath.startsWith("file://")) {
+    try {
+      normPath = decodeURIComponent(new URL(normPath).pathname);
+    } catch {
+      // keep normPath
+    }
+  }
+  shell.showItemInFolder(normPath);
+  return true;
 });
 
 // The renderer owns the skin. Native Windows/Linux chrome is intentionally

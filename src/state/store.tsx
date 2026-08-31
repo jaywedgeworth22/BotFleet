@@ -130,6 +130,8 @@ export interface Group {
   /** the room's shared desk — where member turns run their shell tools,
    * overriding each member's own folder; absent = each member's own */
   cwd?: string;
+  /** Additional associated workspace folders/repositories */
+  extraCwds?: string[];
   /** folder the room's turns actually run in, pinned on the first turn;
    * null = each member's own default; absent = not pinned yet */
   pinnedCwd?: string | null;
