@@ -24,3 +24,5 @@ cloudflare/control-plane/worker-configuration.d.ts
 .claude/worktrees/
 .vercel/
 .pi/
+.vercel
+.env*
