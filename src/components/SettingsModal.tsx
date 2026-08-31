@@ -150,8 +150,6 @@ function UpdatesRow() {
                 });
             }}
           />
-            }}
-          />
           Enable automatic update checks
         </label>
         <button
