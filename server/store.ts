@@ -173,6 +173,8 @@ export interface GroupRecord {
    * overriding each member's own folder. The room pins its own copy on its
    * first turn (pinnedCwd). Absent = each member's own default. */
   cwd?: string;
+  /** Auxiliary / additional workspace folders for multi-repo channels. */
+  extraCwds?: string[];
   /** Compatibility mirror of the active task's pinned folder. */
   pinnedCwd?: string | null;
   /** Compatibility mirror of the active task's pinned message. */
@@ -415,6 +417,9 @@ export interface BotRecord {
    * could not tell working from waiting-on-you from a stalled engine.
    * Transient like busy: reset to idle on load. */
   activity?: BotActivity;
+  /** Durable crash marker: the thread a turn was dispatched on. Cleared
+   * when that turn settles. Unlike activity/busy, this survives restart. */
+  inflightThreadId?: string;
   createdAt: number;
 }
 
@@ -770,7 +775,7 @@ export class Store {
     );
   }
 
-  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "avatarUrl" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt">>): GroupRecord | null {
+  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "avatarUrl" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "busyBotId" | "cwd" | "extraCwds" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt">>): GroupRecord | null {
     const group = this.group(id);
     if (!group) return null;
     Object.assign(group, patch);

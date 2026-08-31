@@ -13,6 +13,7 @@ import {
 
 const MAPPINGS: Array<[CredentialTargetId, CredentialConfig]> = [
   ["xaiApiKey", { xai: { key: "secret" } }],
+  ["deepseekApiKey", { deepseek: { key: "secret" } }],
   ["boxToken", { box: { token: "secret" } }],
   ["opencodeGoApiKey", { opencodeGo: { apiKey: "secret" } }],
   ["ttsKey", { tts: { key: "secret" } }],
@@ -22,6 +23,7 @@ const MAPPINGS: Array<[CredentialTargetId, CredentialConfig]> = [
 describe("credential request allowlist", () => {
   it("accepts only declared own ids", () => {
     expect(isCredentialTargetId("xaiApiKey")).toBe(true);
+    expect(isCredentialTargetId("deepseekApiKey")).toBe(true);
     expect(isCredentialTargetId("composioApiKey")).toBe(false);
     expect(isCredentialTargetId("__proto__")).toBe(false);
     expect(isCredentialTargetId({ toString: () => "xaiApiKey" })).toBe(false);
@@ -39,7 +41,7 @@ describe("credential request allowlist", () => {
   it("checks configured state without exposing values", () => {
     expect(credentialIsConfigured({ tts: { key: "secret" } }, "ttsKey")).toBe(true);
     expect(credentialIsConfigured({ tts: { key: "" } }, "ttsKey")).toBe(false);
-    expect(Object.keys(CREDENTIAL_TARGETS)).toHaveLength(5);
+    expect(Object.keys(CREDENTIAL_TARGETS)).toHaveLength(6);
   });
 
   it("reuses open room cards only for the bot that requested them", () => {

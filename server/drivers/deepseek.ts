@@ -38,6 +38,39 @@ export interface DeepSeekConfig {
   apiKeyEnv: string;
 }
 
+export interface DeepSeekUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+}
+
+export function usageFromDeepSeekApi(apiUsage?: DeepSeekUsage | null): { input: number; output: number; cachedInput?: number } | null {
+  if (!apiUsage) return null;
+  const input = apiUsage.prompt_tokens ?? 0;
+  const output = apiUsage.completion_tokens ?? 0;
+  const cachedInput = apiUsage.prompt_cache_hit_tokens ?? 0;
+  return { input, output, ...(cachedInput > 0 ? { cachedInput } : {}) };
+}
+
+export function computeDeepSeekCost(
+  modelId: string,
+  usage: { input: number; output: number; cachedInput?: number } | null,
+): number | null {
+  if (!usage) return null;
+  const inputTokens = usage.input;
+  const outputTokens = usage.output;
+  const cachedTokens = usage.cachedInput ?? 0;
+  const uncachedInput = Math.max(0, inputTokens - cachedTokens);
+
+  if (modelId === "deepseek-v4-flash" || modelId === "deepseek-v4-flash-vision-exp") {
+    return (uncachedInput * 0.07 + cachedTokens * 0.0175 + outputTokens * 0.14) / 1_000_000;
+  }
+  if (modelId === "deepseek-reasoner") {
+    return (uncachedInput * 0.55 + cachedTokens * 0.14 + outputTokens * 2.19) / 1_000_000;
+  }
+  return (uncachedInput * 0.14 + cachedTokens * 0.014 + outputTokens * 0.28) / 1_000_000;
+}
+
 function decodeConfig(raw: unknown): DeepSeekConfig {
   const o = (raw ?? {}) as Record<string, unknown>;
   return {
@@ -79,7 +112,12 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, stream: opts.stream }),
+        body: JSON.stringify({
+          model,
+          messages,
+          stream: opts.stream,
+          ...(opts.stream ? { stream_options: { include_usage: true } } : {}),
+        }),
         signal: opts.signal
           ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
           : AbortSignal.timeout(120_000),
@@ -92,13 +130,11 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
         const json: any = await res.json();
         return {
           text: json.choices?.[0]?.message?.content ?? "",
-          usage: json.usage
-            ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
-            : null,
+          usage: usageFromDeepSeekApi(json.usage),
         };
       }
       let text = "";
-      let usage: { input: number; output: number } | null = null;
+      let usage: { input: number; output: number; cachedInput?: number } | null = null;
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -125,7 +161,7 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
             opts.onDelta?.(delta);
           }
           if (chunk.usage) {
-            usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
+            usage = usageFromDeepSeekApi(chunk.usage);
           }
         }
       }
@@ -176,8 +212,16 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
             if (usage) {
               emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
             }
+            const cost = computeDeepSeekCost(turn.model || MODELS.default, usage);
             active.delete(threadId);
-            emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: null });
+            emit({
+              ...base(threadId, turnId),
+              type: "turn.completed",
+              ok: true,
+              stopReason: null,
+              cost,
+              ...(usage ? { usage } : {}),
+            });
             return;
           } catch (e) {
             const aborted = (e as Error).name === "AbortError";

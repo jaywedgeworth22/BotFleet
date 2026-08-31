@@ -1204,7 +1204,7 @@ export function ComputerPanel({
               {botRoutines.slice(0, 3).map((routine) => (
                 <button
                   key={routine.id}
-                  onClick={() => dispatch({ type: "showRoutines" })}
+                  onClick={() => dispatch({ type: "showRoutines", routineId: routine.id })}
                   className="flex w-full items-center gap-2 rounded-lg bg-inset px-3 py-2 text-left hover:bg-control/60"
                 >
                   <span className={cn("size-1.5 shrink-0 rounded-full", routine.enabled ? "bg-success" : "bg-ink-secondary/40")} />

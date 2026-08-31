@@ -298,11 +298,9 @@ function RoomContextMenu({
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("mousedown", onDown);
     window.addEventListener("keydown", onKey);
-    window.addEventListener("blur", onClose);
     return () => {
       window.removeEventListener("mousedown", onDown);
       window.removeEventListener("keydown", onKey);
-      window.removeEventListener("blur", onClose);
     };
   }, [onClose]);
 
@@ -326,7 +324,7 @@ function RoomContextMenu({
       dispatch({ type: "patchGroup", groupId: group.id, patch: { avatarUrl } });
       onClose();
     } catch (e) {
-      console.error(e);
+      console.error("Failed to upload channel photo:", e);
       setUploading(false);
     }
   };
@@ -401,12 +399,28 @@ function RoomContextMenu({
         {uploading ? <Loader2 size={16} className="animate-spin text-ink-secondary" /> : <ImagePlus size={16} className="text-ink-secondary" />}
         Change Photo
       </button>
+      {group.avatarUrl && (
+        <button
+          onClick={() => {
+            dispatch({ type: "patchGroup", groupId: group.id, patch: { avatarUrl: null } });
+            onClose();
+          }}
+          className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink-secondary hover:bg-raised/70 hover:text-danger"
+        >
+          <Trash2 size={16} />
+          Remove Photo
+        </button>
+      )}
       <input
         ref={fileRef}
         type="file"
         accept="image/png, image/jpeg, image/gif, image/webp"
         className="hidden"
-        onChange={(e) => { void upload(e.target.files?.[0]); e.target.value = ""; }}
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          e.target.value = "";
+          void upload(file);
+        }}
       />
       <button
         onClick={() => {

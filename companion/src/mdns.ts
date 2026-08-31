@@ -203,8 +203,8 @@ export function decodeMessage(buf: Buffer): DnsMessage | null {
  * The rrtype test below is a shorthand that holds *for the records this file
  * builds*, and not a general rule: §2 defines shared versus unique over the
  * RRset, not over the type, so a PTR is not inherently shared nor an SRV
- * inherently unique. `serviceRecords` emits exactly four RRsets — two shared
- * PTRs, and SRV/TXT/A on names derived from this machine — and no other
+ * inherently unique. `serviceRecords` emits shared PTRs (current type plus
+ * any predecessor types) and SRV/TXT/A on names derived from this machine — and no other
  * shared type is constructed anywhere here, which is what makes the
  * shorthand safe. Add a record type and this predicate is the thing to
  * revisit.

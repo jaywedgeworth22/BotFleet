@@ -80,6 +80,9 @@ enum Keychain {
         guard let legacy = try token(for: connectionId, service: legacyService) else {
             return nil
         }
+        // Move the bearer into the current service so later lookups and
+        // removals stay on one name. Failure to rewrite still returns the
+        // token — pairing must not bounce because migration could not write.
         try? save(legacy, for: connectionId)
         _ = remove(connectionId, service: legacyService)
         return legacy

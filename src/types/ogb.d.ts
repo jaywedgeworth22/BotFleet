@@ -212,13 +212,17 @@ type SkillRecordingPayload = {
       /** Writes the redacted diagnostics report to a user-chosen file;
        * resolves the path, or null when cancelled. */
       exportDiagnostics?(): Promise<string | null>;
+      /** Open a file directly with its default OS application. */
+      openFile?(filePath: string): Promise<boolean>;
+      /** Reveal a file in Finder / file manager with the file selected. */
+      showInFolder?(filePath: string): Promise<boolean>;
       /** Asks where to save a bot-created file (inside ~/.botfleet), copies
        * it there and reveals it. Resolves the chosen path, or null if the
        * user cancelled the dialog. */
       saveFile?(filePath: string): Promise<string | null>;
       /** Save a provider credential through Electron's OS-backed store. */
       setCredential?(
-        name: "composioApiKey" | "xaiApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "openaiImageApiKey",
+        name: "composioApiKey" | "xaiApiKey" | "deepseekApiKey" | "boxToken" | "opencodeGoApiKey" | "ttsKey" | "openaiImageApiKey",
         value: string,
       ): Promise<ConfigStatus>;
       /** In-app auto-update (packaged app only; dormant in dev). onState
@@ -228,6 +232,7 @@ type SkillRecordingPayload = {
         download(): Promise<void>;
         /** quit-and-install the downloaded update */
         install(): Promise<void>;
+        setEnabled?(enabled: boolean): Promise<void>;
         onState(cb: (s: UpdaterState) => void): () => void;
       };
       dialog?: {

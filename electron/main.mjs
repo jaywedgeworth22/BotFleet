@@ -1285,6 +1285,40 @@ ipcMain.handle("desktop:save-file", async (event, rawPath) => {
   });
 });
 
+ipcMain.handle("desktop:open-file", async (_event, rawPath) => {
+  if (typeof rawPath !== "string") throw new Error("A file path is required");
+  let normPath = rawPath.trim();
+  if (normPath.startsWith("file://")) {
+    try {
+      normPath = decodeURIComponent(new URL(normPath).pathname);
+    } catch {
+      // keep normPath
+    }
+  }
+  if (!fs.existsSync(normPath)) {
+    throw new Error(`File does not exist: ${normPath}`);
+  }
+  const openError = await shell.openPath(normPath);
+  if (openError) {
+    shell.showItemInFolder(normPath);
+  }
+  return true;
+});
+
+ipcMain.handle("desktop:show-in-folder", async (_event, rawPath) => {
+  if (typeof rawPath !== "string") throw new Error("A file path is required");
+  let normPath = rawPath.trim();
+  if (normPath.startsWith("file://")) {
+    try {
+      normPath = decodeURIComponent(new URL(normPath).pathname);
+    } catch {
+      // keep normPath
+    }
+  }
+  shell.showItemInFolder(normPath);
+  return true;
+});
+
 // The renderer owns the skin. Native Windows/Linux chrome is intentionally
 // outside that surface; acknowledge the renderer handshake without creating
 // a frameless caption overlay that can cover page controls.
@@ -1476,6 +1510,7 @@ ipcMain.handle("assemblyai:streaming-token", () =>
 const CREDENTIAL_PATCH = {
   composioApiKey: (value) => ({ composio: { apiKey: value } }),
   xaiApiKey: (value) => ({ xai: { key: value } }),
+  deepseekApiKey: (value) => ({ deepseek: { key: value } }),
   boxToken: (value) => ({ box: { token: value } }),
   opencodeGoApiKey: (value) => ({ opencodeGo: { apiKey: value } }),
   ttsKey: (value) => ({ tts: { key: value } }),

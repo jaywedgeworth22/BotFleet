@@ -10,6 +10,12 @@ export const CREDENTIAL_TARGETS = {
     placeholder: "xai-…",
     helpUrl: "https://console.x.ai/",
   },
+  deepseekApiKey: {
+    label: "DeepSeek API key",
+    description: "Used by the built-in DeepSeek provider.",
+    placeholder: "sk-…",
+    helpUrl: "https://platform.deepseek.com/api_keys",
+  },
   boxToken: {
     label: "Box API key",
     description: "Gives bots an isolated cloud computer when Box is selected.",
@@ -39,6 +45,7 @@ export const CREDENTIAL_TARGETS = {
 export type CredentialTargetId = keyof typeof CREDENTIAL_TARGETS;
 export type CredentialConfig = {
   xai?: { key?: string };
+  deepseek?: { key?: string };
   box?: { token?: string };
   opencodeGo?: { apiKey?: string };
   tts?: { key?: string };
@@ -53,6 +60,8 @@ export function credentialConfigPatch(id: CredentialTargetId, value: string): Cr
   switch (id) {
     case "xaiApiKey":
       return { xai: { key: value } };
+    case "deepseekApiKey":
+      return { deepseek: { key: value } };
     case "boxToken":
       return { box: { token: value } };
     case "opencodeGoApiKey":
@@ -68,6 +77,8 @@ export function credentialIsConfigured(config: CredentialConfig, id: CredentialT
   switch (id) {
     case "xaiApiKey":
       return Boolean(config.xai?.key);
+    case "deepseekApiKey":
+      return Boolean(config.deepseek?.key);
     case "boxToken":
       return Boolean(config.box?.token);
     case "opencodeGoApiKey":

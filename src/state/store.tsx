@@ -130,6 +130,8 @@ export interface Group {
   /** the room's shared desk — where member turns run their shell tools,
    * overriding each member's own folder; absent = each member's own */
   cwd?: string;
+  /** Additional associated workspace folders/repositories */
+  extraCwds?: string[];
   /** folder the room's turns actually run in, pinned on the first turn;
    * null = each member's own default; absent = not pinned yet */
   pinnedCwd?: string | null;
@@ -385,6 +387,7 @@ export interface AppState {
   /** selected chat — a bot id OR a group id */
   selectedId: string;
   activeView: "chat" | "team-map" | "routines" | "skill-recorder";
+  selectedRoutineId?: string | null;
   routines: Routine[];
   routineRuns: RoutineRun[];
   webhooks: WebhookTrigger[];
@@ -443,7 +446,7 @@ export type Action =
       groups: Group[];
       computerControl: Record<string, { held: boolean; helpReason: string | null }>;
     }
-  | { type: "showRoutines" }
+  | { type: "showRoutines"; routineId?: string }
   | { type: "showTeamMap" }
   | { type: "showSkillRecorder" }
   | { type: "routinesHydrated"; routines: Routine[]; runs: RoutineRun[] }
@@ -623,6 +626,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         activeView: "routines",
+        selectedRoutineId: action.routineId ?? null,
         settingsOpen: false,
         computerOpen: false,
         inspectorOpen: false,
@@ -1146,6 +1150,7 @@ export const initialState: AppState = {
   config: null,
   selectedId: "",
   activeView: "chat",
+  selectedRoutineId: null,
   routines: [],
   routineRuns: [],
   webhooks: [],

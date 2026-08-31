@@ -29,6 +29,7 @@ import { SecretRequestCard } from "./SecretRequestCard";
 import { AttachedImageGallery } from "./AttachmentPreview";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
 import { ReactionBar, ReactionChips } from "./Reactions";
+import { CopyButton } from "./CopyButton";
 import { ApprovalCard } from "./ApprovalCard";
 import { ManageMembersPanel } from "./ManageMembersPanel";
 import { groupActivityRuns } from "@/lib/activity-runs";
@@ -117,6 +118,135 @@ function PinToggle({ group, message }: { group: Group; message: Message }) {
   );
 }
 
+function GroupTextRow({
+  m,
+  user,
+  group,
+  transcript,
+  members,
+  onReply,
+  attachedImages,
+}: {
+  m: Message;
+  user: boolean;
+  group: Group;
+  transcript: Message[];
+  members: Bot[];
+  onReply: (message: Message) => void;
+  attachedImages: ReturnType<typeof splitAttachedImages> | null;
+}) {
+  const { dispatch } = useStore();
+  const [copied, setCopied] = useState(false);
+  const copyContent = attachedImages?.display ?? m.text ?? "";
+  const requestId = m.card?.requestId;
+
+  const handleBubbleClick = (e: React.MouseEvent) => {
+    const selection = window.getSelection()?.toString();
+    if (selection && selection.trim().length > 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("a, button, input, textarea, summary, pre, code")) return;
+    if (!copyContent) return;
+    void navigator.clipboard?.writeText(copyContent);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1400);
+  };
+
+  return (
+    <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
+      <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
+        {user && <ReactionBar threadId={group.threadId} message={m} />}
+        {user && (
+          <>
+            <CopyButton
+              text={copyContent}
+              messageId={m.id}
+              requestId={requestId}
+              copied={copied}
+              onCopy={() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => onReply(m)}
+              aria-label="Reply to message"
+              title="Reply"
+              className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              <MessageSquareReply size={14} />
+            </button>
+            <PinToggle group={group} message={m} />
+          </>
+        )}
+        <div
+          onClick={handleBubbleClick}
+          className={cn(
+            "w-fit max-w-[min(42rem,78%)] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed cursor-pointer select-text relative",
+            user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
+          )}
+          title={copied ? "Copied to clipboard!" : `Click to copy · ${new Date(m.at).toLocaleString()}`}
+        >
+          {m.replyToId && (() => {
+            const target = transcript.find((candidate) => candidate.id === m.replyToId);
+            return target ? (
+              <div className="mb-2">
+                <ReplyQuote
+                  message={target}
+                  fallbackName="Bot"
+                  compact
+                  onJump={() =>
+                    dispatch({ type: "focusMessage", threadId: group.threadId, messageId: target.id })
+                  }
+                />
+              </div>
+            ) : null;
+          })()}
+          {user ? (
+            <>
+              {attachedImages && attachedImages.images.length > 0 && (
+                <AttachedImageGallery paths={attachedImages.images} />
+              )}
+              {attachedImages?.display ?? m.text}
+            </>
+          ) : (
+            <ChatMarkdown text={m.text ?? ""} />
+          )}
+        </div>
+        {!user && (
+          <>
+            <CopyButton
+              text={copyContent}
+              messageId={m.id}
+              requestId={requestId}
+              copied={copied}
+              onCopy={() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => onReply(m)}
+              aria-label="Reply to message"
+              title="Reply"
+              className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              <MessageSquareReply size={14} />
+            </button>
+            <PinToggle group={group} message={m} />
+            <ReactionBar threadId={group.threadId} message={m} />
+          </>
+        )}
+        <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
+          {formatTime(m.at)}
+        </span>
+      </div>
+      <ReactionChips threadId={group.threadId} message={m} members={members} align={user ? "right" : "left"} />
+    </div>
+  );
+}
+
 const Transcript = memo(function Transcript({
   group,
   members,
@@ -134,7 +264,7 @@ const Transcript = memo(function Transcript({
   emergingId?: string | null;
   onReply: (message: Message) => void;
 }) {
-  const { state, dispatch } = useStore();
+  const { state } = useStore();
   const showToolCalls = showToolCallsEnabled(state.config);
   const memberOf = (id?: string) => members.find((b) => b.id === id);
   // Several bots working at once turn a room into a wall of chips; fold the
@@ -196,75 +326,15 @@ const Transcript = memo(function Transcript({
               <RoomToolChip message={m} />
             ) : null
           ) : m.kind === "text" && m.text ? (
-            <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
-              <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
-                {user && <ReactionBar threadId={group.threadId} message={m} />}
-                {user && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => onReply(m)}
-                      aria-label="Reply to message"
-                      title="Reply"
-                      className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                    >
-                      <MessageSquareReply size={14} />
-                    </button>
-                    <PinToggle group={group} message={m} />
-                  </>
-                )}
-                <div
-                  className={cn(
-                    "w-fit max-w-[min(42rem,78%)] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
-                    user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
-                  )}
-                  title={new Date(m.at).toLocaleString()}
-                >
-                  {m.replyToId && (() => {
-                    const target = transcript.find((candidate) => candidate.id === m.replyToId);
-                    return target ? (
-                      <div className="mb-2">
-                        <ReplyQuote
-                          message={target}
-                          fallbackName="Bot"
-                          compact
-                          onJump={() =>
-                            dispatch({ type: "focusMessage", threadId: group.threadId, messageId: target.id })
-                          }
-                        />
-                      </div>
-                    ) : null;
-                  })()}
-                  {user ? (
-                    <>
-                      {attachedImages && attachedImages.images.length > 0 && (
-                        <AttachedImageGallery paths={attachedImages.images} />
-                      )}
-                      {attachedImages?.display ?? m.text}
-                    </>
-                  ) : <ChatMarkdown text={m.text} />}
-                </div>
-                {!user && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => onReply(m)}
-                      aria-label="Reply to message"
-                      title="Reply"
-                      className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                    >
-                      <MessageSquareReply size={14} />
-                    </button>
-                    <PinToggle group={group} message={m} />
-                    <ReactionBar threadId={group.threadId} message={m} />
-                  </>
-                )}
-                <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
-                  {formatTime(m.at)}
-                </span>
-              </div>
-              <ReactionChips threadId={group.threadId} message={m} members={members} align={user ? "right" : "left"} />
-            </div>
+            <GroupTextRow
+              m={m}
+              user={user}
+              group={group}
+              transcript={transcript}
+              members={members}
+              onReply={onReply}
+              attachedImages={attachedImages}
+            />
           ) : null;
         if (!row) return null;
         return (
@@ -351,12 +421,15 @@ function RoomWorkingFolder({ group }: { group: Group }) {
   const pinned = group.pinnedCwd; // undefined = not yet, null = each bot's own, string = folder
   const locked = pinned !== undefined;
   const shownCwd = locked ? (pinned ?? undefined) : group.cwd;
+  const extraCwds = group.extraCwds ?? [];
 
-  const save = async (cwd: string | null) => {
+  const save = async (cwd: string | null, newExtraCwds?: string[]) => {
     setSaving(true);
     setError(null);
     try {
-      await api(`/api/groups/${group.id}`, { method: "PATCH", body: JSON.stringify({ cwd }) });
+      const payload: Record<string, unknown> = { cwd };
+      if (newExtraCwds !== undefined) payload.extraCwds = newExtraCwds;
+      await api(`/api/groups/${group.id}`, { method: "PATCH", body: JSON.stringify(payload) });
       setDraft(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -364,58 +437,109 @@ function RoomWorkingFolder({ group }: { group: Group }) {
       setSaving(false);
     }
   };
-  const pick = async () => {
+
+  const pickPrimary = async () => {
     const chosen = await window.ogb?.pickFolder?.(group.cwd);
     if (chosen) void save(chosen);
   };
 
+  const pickExtra = async () => {
+    const chosen = await window.ogb?.pickFolder?.(group.cwd);
+    if (chosen && !extraCwds.includes(chosen)) {
+      void save(group.cwd ?? null, [...extraCwds, chosen]);
+    }
+  };
+
+  const removeExtra = (pathToRemove: string) => {
+    void save(group.cwd ?? null, extraCwds.filter((p) => p !== pathToRemove));
+  };
+
   return (
     <div className="rounded-xl bg-card p-4">
-      <div className="text-[15px] font-medium text-ink">Working folder</div>
-      <div className="mt-0.5 text-[13px] text-ink-secondary">Where every bot in this channel runs its shell and file tools.</div>
-      {locked ? (
-        <div className="mt-3">
-          <div className="truncate rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12.5px] text-ink" title={shownCwd}>
+      <div className="text-[15px] font-medium text-ink">Associated Workspaces & Repositories</div>
+      <div className="mt-0.5 text-[13px] text-ink-secondary">Primary working folder and additional repositories accessible to channel bots.</div>
+      
+      {/* Primary Folder */}
+      <div className="mt-3">
+        <div className="text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">Primary Workspace</div>
+        {locked ? (
+          <div className="mt-1.5 truncate rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12.5px] text-ink" title={shownCwd}>
             {shownCwd ? shortPath(shownCwd, home) : <span className="text-ink-secondary">Each bot's own folder</span>}
           </div>
-          <div className="mt-2 text-[12px] text-ink-secondary">
-            Fixed for this task after its first turn. Start a new task to work somewhere else.
+        ) : canPick ? (
+          <div className="mt-1.5 flex items-center gap-2">
+            <div className="min-w-0 flex-1 truncate rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12.5px] text-ink" title={group.cwd}>
+              {group.cwd ? shortPath(group.cwd, home) : <span className="text-ink-secondary">Each bot's own folder</span>}
+            </div>
+            <button onClick={() => void pickPrimary()} disabled={saving} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50">
+              <FolderOpen size={14} /> Choose…
+            </button>
+            {group.cwd && (
+              <button onClick={() => void save(null)} disabled={saving} className="shrink-0 rounded-lg px-2 py-2 text-[13px] text-ink-secondary hover:text-ink disabled:opacity-50">
+                Clear
+              </button>
+            )}
           </div>
-        </div>
-      ) : canPick ? (
-        <div className="mt-3 flex items-center gap-2">
-          <div className="min-w-0 flex-1 truncate rounded-lg border border-hairline/40 bg-inset px-3 py-2 font-mono text-[12.5px] text-ink" title={group.cwd}>
-            {group.cwd ? shortPath(group.cwd, home) : <span className="text-ink-secondary">Each bot's own folder</span>}
-          </div>
-          <button onClick={() => void pick()} disabled={saving} className="flex shrink-0 items-center gap-1.5 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50">
-            <FolderOpen size={14} /> Choose…
-          </button>
-          {group.cwd && (
-            <button onClick={() => void save(null)} disabled={saving} className="shrink-0 rounded-lg px-2 py-2 text-[13px] text-ink-secondary hover:text-ink disabled:opacity-50">
-              Clear
+        ) : (
+          <form
+            className="mt-1.5 flex items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void save((draft ?? group.cwd ?? "").trim() || null);
+            }}
+          >
+            <input
+              className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 font-mono text-[12.5px] text-ink placeholder:text-ink-secondary focus:outline-none focus:border-hairline"
+              placeholder="Each bot's own folder — or an absolute path"
+              value={draft ?? group.cwd ?? ""}
+              onChange={(e) => setDraft(e.target.value)}
+            />
+            <button type="submit" disabled={saving || draft === null} className="shrink-0 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50">
+              Save
+            </button>
+          </form>
+        )}
+      </div>
+
+      {/* Auxiliary Repositories / Folders */}
+      <div className="mt-4 border-t border-hairline/30 pt-3">
+        <div className="flex items-center justify-between">
+          <div className="text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">Additional Repositories</div>
+          {canPick && (
+            <button
+              onClick={() => void pickExtra()}
+              disabled={saving}
+              className="flex items-center gap-1 text-[12px] font-medium text-accent hover:text-accent-hover disabled:opacity-50"
+            >
+              + Add Repo / Folder
             </button>
           )}
         </div>
-      ) : (
-        <form
-          className="mt-3 flex items-center gap-2"
-          onSubmit={(e) => {
-            e.preventDefault();
-            // an emptied field clears the folder — the server wants null
-            void save((draft ?? group.cwd ?? "").trim() || null);
-          }}
-        >
-          <input
-            className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 font-mono text-[12.5px] text-ink placeholder:text-ink-secondary focus:outline-none focus:border-hairline"
-            placeholder="Each bot's own folder — or an absolute path"
-            value={draft ?? group.cwd ?? ""}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <button type="submit" disabled={saving || draft === null} className="shrink-0 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-50">
-            Save
-          </button>
-        </form>
-      )}
+
+        {extraCwds.length === 0 ? (
+          <div className="mt-2 text-[12px] text-ink-secondary">
+            No secondary repositories attached. Add more folders (e.g. Fleet Ops) so channel bots have full multi-repo context.
+          </div>
+        ) : (
+          <div className="mt-2 flex flex-col gap-1.5">
+            {extraCwds.map((path) => (
+              <div key={path} className="flex items-center justify-between rounded-lg border border-hairline/30 bg-inset/40 px-3 py-1.5 text-[12px]">
+                <span className="truncate font-mono text-ink" title={path}>{shortPath(path, home)}</span>
+                <button
+                  type="button"
+                  onClick={() => removeExtra(path)}
+                  disabled={saving}
+                  className="ml-2 text-ink-secondary hover:text-danger"
+                  title="Remove repository from channel"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
       {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
     </div>
   );
@@ -438,14 +562,20 @@ function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: ()
     );
   }
   const name = folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
+  const extraCount = group.extraCwds?.length ?? 0;
   return (
     <button
       onClick={onToggle}
-      className="flex max-w-[180px] items-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
-      title={`Working folder: ${folder}`}
+      className="flex max-w-[220px] items-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
+      title={`Primary: ${folder}${extraCount > 0 ? ` (+${extraCount} additional repos)` : ""}`}
     >
       <Folder size={12} />
       <span className="truncate font-mono">{name}</span>
+      {extraCount > 0 && (
+        <span className="rounded bg-accent/20 px-1.5 py-0.2 text-[10.5px] font-semibold text-accent">
+          +{extraCount}
+        </span>
+      )}
     </button>
   );
 }
@@ -1003,7 +1133,15 @@ export function GroupView({ group }: { group: Group }) {
           "pl-11 md:pl-5",
         )}
       >
-        <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2.5">
+          {group.avatarUrl && (
+            <img
+              src={group.avatarUrl}
+              alt={group.name}
+              className="size-7 shrink-0 rounded-full object-cover shadow-sm"
+              draggable={false}
+            />
+          )}
           <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
           {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
         </div>

@@ -8,7 +8,7 @@ import { isIP } from "node:net";
 import { extname, join } from "node:path";
 
 import { z } from "zod";
-import { botAvatarUrlFromStoredPath } from "../shared/bot-avatar.ts";
+import { botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
 import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
@@ -33,6 +33,7 @@ import {
 import { parseBotProfilePatch } from "./bot-profile.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
+import { telemetry } from "./telemetry.ts";
 import * as box from "./box.ts";
 import { cloudBackendChangeError, vpsAliasChangeError } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
@@ -463,8 +464,11 @@ const wireBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
  * prefix. Resolve them before persistence so every accepted avatar can be
  * fetched immediately and a deleted/guessed attachment id cannot become a
  * dangling profile reference. */
-const storedAvatarExists = (avatarUrl: string): boolean =>
-  attachmentExists(avatarUrl.slice("/api/attachments/".length));
+const storedAvatarExists = (avatarUrl: string): boolean => {
+  const parsed = botAvatarUrlSchema.safeParse(avatarUrl);
+  if (!parsed.success) return false;
+  return attachmentExists(parsed.data.slice("/api/attachments/".length));
+};
 
 const publicBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => ({
   ...wireBot(bot),
@@ -777,6 +781,11 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 // the last settled assistant text per thread, so a "finished" notification
 // can carry what the bot actually said
 const lastReply = new Map<string, string>();
+/** Per-thread fallback steps already used this user request.  Reset on a
+ * successful turn and on a user-initiated startTurn so a later message
+ * gets the full saved chain.  One-shot fallbacks never rewrite the bot's
+ * configured primary. */
+const fallbackAttemptByTurn = new Map<string, number>();
 
 /** Put a notification on the wire. Clients decide what to do with it — a
  * desktop notification now, a push to a paired phone later. */
@@ -841,6 +850,7 @@ const watchdog = new TurnWatchdog({
         stopScreenPoller(currentBot.id);
         if (activeVpsThreads.get(currentBot.id) === turn.threadId) activeVpsThreads.delete(currentBot.id);
         store.setActivity(currentBot.id, "idle");
+        store.patchBot(currentBot.id, { inflightThreadId: undefined });
         // The grace fallback replaces a missing turn.completed event. Release
         // every kind of work that may have queued behind this bot, including
         // connector and credential continuations.
@@ -1347,37 +1357,42 @@ bus.subscribe((event: RuntimeEvent) => {
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
+        let fallbackUserMessage: Message | undefined;
+        let fallbackSelection: ModelSelection | undefined;
+        const fallbackKey = `${bot.id}:${event.threadId}`;
+        if (event.ok) fallbackAttemptByTurn.delete(fallbackKey);
         if (
           !event.ok &&
           event.stopReason !== "interrupted" &&
           event.stopReason !== "cancelled" &&
           bot.modelSelection.fallbacks?.length
         ) {
-          // Fallback logic
-          const fallbacks = [...bot.modelSelection.fallbacks];
-          const nextModel = fallbacks.shift()!;
-          const updatedSelection = { ...nextModel, fallbacks };
-          store.patchBot(bot.id, { modelSelection: updatedSelection });
-          
-          // Identify the last user message on the active path to retry
           const activeMsgs = store.activePath(event.threadId);
-          let lastUserMessage: Message | undefined;
-          // Search backwards for the last user message that isn't a steering message
+          let lastUserIdx = -1;
           for (let i = activeMsgs.length - 1; i >= 0; i--) {
-             if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
-                 lastUserMessage = activeMsgs[i];
-                 break;
-             }
+            if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
+              lastUserIdx = i;
+              fallbackUserMessage = activeMsgs[i];
+              break;
+            }
           }
-          if (lastUserMessage && typeof lastUserMessage.text === "string") {
-            const userMsg = lastUserMessage;
-            // startTurn rejects while the bot is still busy from this failed
-            // turn. Settle idle first so the fallback can dispatch.
-            if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
-            setTimeout(() => {
-              void startTurn(bot.id, userMsg.text || "", { userMessage: userMsg });
-            }, 100);
-            return;
+          const produced =
+            lastUserIdx >= 0 &&
+            activeMsgs.slice(lastUserIdx + 1).some(
+              (message) => message.role === "bot" && (message.kind === "text" || message.kind === "activity"),
+            );
+          const chain = bot.modelSelection.fallbacks;
+          const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
+          if (!produced && fallbackUserMessage && used < chain.length) {
+            const nextModel = chain[used];
+            fallbackAttemptByTurn.set(fallbackKey, used + 1);
+            fallbackSelection = {
+              instanceId: nextModel.instanceId,
+              model: nextModel.model,
+              effort: nextModel.effort,
+            };
+          } else {
+            fallbackUserMessage = undefined;
           }
         }
 
@@ -1396,10 +1411,35 @@ bus.subscribe((event: RuntimeEvent) => {
           cachedInput: tokens?.cachedInput,
           costUsd: event.cost ?? null,
         });
+        const currentTask = store.tasks(bot.id).find((t) => t.threadId === event.threadId);
+        telemetry.trackTurn({
+          botId: bot.id,
+          botName: bot.name,
+          threadId: event.threadId,
+          taskTitle: currentTask?.title,
+          cwd: currentTask?.cwd || bot.cwd,
+          instanceId: bot.modelSelection.instanceId,
+          modelId: bot.modelSelection.model,
+          inputTokens: tokens?.input,
+          outputTokens: tokens?.output,
+          cachedInputTokens: tokens?.cachedInput,
+          costUsd: event.cost ?? null,
+          success: event.ok !== false,
+        });
         // settled → idle; a setup failure already marked it dead, keep that
         if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
-        store.patchBot(bot.id, { unread: true });
-        if (routineRun?.status !== "failed") {
+        store.patchBot(bot.id, { unread: true, inflightThreadId: undefined });
+        if (fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
+          const userMsg = fallbackUserMessage;
+          const fallbackBotId = bot.id;
+          void startTurn(fallbackBotId, userMsg.text || "", {
+            userMessage: userMsg,
+            threadId: event.threadId,
+            modelSelection: fallbackSelection,
+          }).catch((error) => {
+            console.error(`fallback startTurn failed for ${fallbackBotId}:`, error);
+          });
+        } else if (routineRun?.status !== "failed") {
           // the frame carries the bot's avatar so every desktop client can
           // show the notification under that bot's own face
           notify(buildNotification("done", bot, event.threadId, reply, { avatarUrl: bot.avatarUrl }));
@@ -1721,6 +1761,8 @@ async function startTurn(
     /** Earlier text message this user turn is replying to. */
     replyTo?: Message;
     onDispatchError?: (message: string) => void;
+    /** One-shot engine for a fallback turn.  Does not persist. */
+    modelSelection?: ModelSelection;
   },
 ) {
   const bot = store.bot(botId);
@@ -1742,24 +1784,26 @@ async function startTurn(
   // a task takes its name from the first thing you asked it to do
   if (text.trim() && !opts?.cardContinuation) store.titleTaskFromFirstMessage(bot.id, text, threadId);
 
+  const selection = opts?.modelSelection ?? bot.modelSelection;
+  if (!opts?.modelSelection) fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
   const instance = opts?.runOn === "cloud"
     ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
-    : registry.get(bot.modelSelection.instanceId);
+    : registry.get(selection.instanceId);
   if (!instance) {
     throw Object.assign(
       new Error(
         opts?.runOn === "cloud"
           ? "the Cloud VM runner is unavailable — configure Box in App Settings"
-          : `provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`,
+          : `provider instance "${selection.instanceId}" is unavailable — pick another model in settings`,
       ),
       { status: 409 },
     );
   }
   const instanceId = instance.instanceId;
-  const model = opts?.runOn === "cloud" ? instance.models.default : bot.modelSelection.model;
+  const model = opts?.runOn === "cloud" ? instance.models.default : selection.model;
   // a cloud routine borrows the instance default model, so it borrows no
   // per-bot effort either
-  const effort = opts?.runOn === "cloud" ? undefined : bot.modelSelection.effort;
+  const effort = opts?.runOn === "cloud" ? undefined : selection.effort;
   // A selection can be persisted while its engine is offline. Re-check when
   // the engine returns so an old or unsupported value never reaches a CLI.
   if (effort && !instance.adapter.capabilities.effortLevels?.includes(effort)) {
@@ -1831,7 +1875,7 @@ async function startTurn(
   // in the background — box provisioning can take ~90s and must never
   // hang the HTTP request
   store.setActivity(bot.id, "working");
-  store.patchBot(bot.id, { unread: false });
+  store.patchBot(bot.id, { unread: false, inflightThreadId: threadId });
   turnUsage.delete(threadId);
 
   void (async () => {
@@ -2168,6 +2212,7 @@ async function startTurn(
         tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
       });
       store.setActivity(bot.id, "idle");
+      store.patchBot(bot.id, { inflightThreadId: undefined });
       opts?.onDispatchError?.(message);
       // a dispatch failure never emits turn.completed, so the settle-driven
       // drain would strand anything queued behind this turn
@@ -2423,6 +2468,34 @@ _loadPending();
   for (const threadId of leftover) drainDelegations(commsBus, approvalBus, threadId, runDelegatedTurn);
 }
 
+// Auto-resume only when a previous process died mid-turn. Transcript shape
+// is not a crash signal (Stop, a tool-only turn, and a crash can all end
+// on a user or activity message). inflightThreadId is written at dispatch
+// and cleared when the turn settles, so it is the durable crash marker.
+{
+  setTimeout(() => {
+    for (const bot of store.bots) {
+      if (bot.hidden) continue;
+      const threadId = bot.inflightThreadId;
+      if (!threadId) continue;
+      const activeMsgs = store.activePath(threadId);
+      const lastMsg = activeMsgs[activeMsgs.length - 1];
+      const resumeUser = lastMsg?.role === "user" && lastMsg.kind === "text" ? lastMsg : undefined;
+      const prompt = resumeUser
+        ? (resumeUser.text || "Please resume.")
+        : "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
+      console.log(`boot recovery: auto-resuming in-flight thread ${threadId} for ${bot.name}`);
+      void startTurn(bot.id, prompt, {
+        threadId,
+        userMessage: resumeUser,
+      }).catch((err) => {
+        console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
+        store.patchBot(bot.id, { inflightThreadId: undefined });
+      });
+    }
+  }, 2500);
+}
+
 async function runGroupMemberTurn(
   groupId: string,
   threadId: string,
@@ -2536,6 +2609,9 @@ async function runGroupMemberTurn(
     `Slack communication rules: Use Slack channel #agent-sync sparingly — ONLY to claim/unclaim tasks on the shared board or for strictly necessary coordination with external agents outside BotFleet. Never post unprompted status spam or routine commentary to Slack.`,
     `Room members: ${roster}, and ${userName} (the human).`,
     group.bulletin.trim() && `Room bulletin (shared instructions for everyone):\n${group.bulletin.trim()}`,
+    group.extraCwds?.length &&
+      `Associated Workspace Repositories / Folders:\n- Primary: ${group.cwd || "default"}\n${group.extraCwds.map((c) => `- Auxiliary: ${c}`).join("\n")}`,
+    "Format replies with clean Github-Flavored Markdown (headers, code fences with language tags, bullet lists, tables, bold/italic). When referencing local files on this Mac, use absolute paths or file links (e.g. `file:///path/to/file` or `/Users/jay/...`) so they are directly clickable in the UI.",
     `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.`,
     integrations.agents &&
       "If a supported API key is missing, use request_credential to show the secure in-app card. Never ask the user to paste credentials into chat.",
@@ -3184,6 +3260,7 @@ async function reloadProviders() {
       tool: { name: "error: turn interrupted — provider settings changed", ok: false },
     });
     store.setActivity(b.id, "idle");
+    store.patchBot(b.id, { inflightThreadId: undefined });
   }
   // killed turns settle here without a turn.completed event, so anything
   // queued behind them drains now — onto the freshly loaded fleet
@@ -4577,6 +4654,19 @@ const server = createServer(async (req, res) => {
         if (!checked.ok) return json(res, 400, { error: checked.error });
         patch.cwd = checked.cwd ?? undefined;
       }
+      if (body.extraCwds !== undefined) {
+        if (!Array.isArray(body.extraCwds)) {
+          return json(res, 400, { error: "extraCwds must be an array of folder paths" });
+        }
+        const cleaned: string[] = [];
+        for (const item of body.extraCwds) {
+          if (typeof item === "string" && item.trim()) {
+            const checked = validateBotCwd(item.trim());
+            if (checked.ok && checked.cwd) cleaned.push(checked.cwd);
+          }
+        }
+        patch.extraCwds = cleaned;
+      }
       // one pinned message per room; null/"" clears. The id is not
       // validated against the transcript here — a pin whose message was
       // edited away or deleted simply resolves to nothing in the UI.
@@ -4599,6 +4689,7 @@ const server = createServer(async (req, res) => {
       }
       const group = store.patchGroup(m[1], patch);
       if (!group) return json(res, 404, { error: "no such room" });
+      broadcast({ kind: "group", group: publicGroupState(group) });
       return json(res, 200, { group: publicGroupState(group) });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/read$/);
@@ -5619,6 +5710,9 @@ const server = createServer(async (req, res) => {
     if (method === "GET" && path === "/api/health") {
       return json(res, 200, { app: "botfleet", pid: process.pid, static: Boolean(STATIC_DIR) });
     }
+    if (method === "GET" && path === "/api/telemetry/status") {
+      return json(res, 200, telemetry.getStatus());
+    }
     if (method === "GET" && path === "/.well-known/apple-app-site-association") {
       return json(res, 200, {
         applinks: {
@@ -5823,6 +5917,7 @@ const server = createServer(async (req, res) => {
         if (persisted.opencodeGo?.apiKey !== undefined) persisted.opencodeGo.apiKey = "";
         if (persisted.tts?.key !== undefined) persisted.tts.key = "";
         if (persisted.imageGen?.key !== undefined) persisted.imageGen.key = "";
+        if (persisted.deepseek?.key !== undefined) persisted.deepseek.key = "";
         saveConfig(persisted);
         syncCredentialEnv(patch);
         Object.assign(cfg, loadConfig());
