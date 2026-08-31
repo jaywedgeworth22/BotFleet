@@ -17,6 +17,9 @@ publish:
   - provider: github
     owner: milind-soni
     repo: botfleet-releases
+  - provider: github
+    owner: milind-soni
+    repo: openmausbot-releases
 
 directories:
   buildResources: build
@@ -177,6 +180,7 @@ linux:
       Name: BotFleet
       Comment: Your own team of AI bots, in a chat app
       Keywords: AI;Agents;Chat;Productivity;
+      StartupWMClass: botfleet
 
 deb:
   packageCategory: utils
@@ -184,6 +188,13 @@ deb:
   # dpkg can preserve legacy directory modes during an upgrade. This
   # idempotent hook repairs only the exact package-owned CUA path.
   afterInstall: build/linux-after-install.sh
+  fpm:
+    - --replaces
+    - openmausbot
+    - --conflicts
+    - openmausbot
+    - --provides
+    - openmausbot
 
 # Static AppImage runtime: Ubuntu 24.04 can launch it without legacy FUSE 2.
 toolsets:

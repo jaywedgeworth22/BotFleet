@@ -821,7 +821,10 @@ public struct CompanionClient: Sendable {
     /// is empty, exactly as the desktop's dialog does.
 
     public func patchGroup<T: Encodable>(id: String, patch: T) async throws -> Room {
-        try await request(method: "PATCH", path: "/api/groups/\(id)", body: patch, decode: RoomResponse.self).group
+        try await send(
+            try makeRequest("PATCH", "/api/groups/\(id)", encodedBody: patch),
+            as: RoomResponse.self
+        ).group
     }
 
     public func createRoom(name: String?, memberIds: [String]) async throws -> Room {
