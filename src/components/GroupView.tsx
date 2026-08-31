@@ -14,7 +14,7 @@ import {
   type GroupDefaultResponder,
   type Message,
 } from "@/state/store";
-import { MausAvatar, GroupAvatar } from "./Avatar";
+import { MausAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled } from "@/lib/feature-flags";
 import { normalizeState } from "@/lib/mascot";
