@@ -153,7 +153,7 @@ export function BotProfileAvatarCard({
           <input
             ref={fileRef}
             type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp"
+            accept="image/png,image/jpeg,image/gif,image/webp,image/heic,image/heif,image/avif"
             className="sr-only"
             onChange={(event) => void upload(event.target.files?.[0])}
           />
