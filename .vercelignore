@@ -1,0 +1,14 @@
+node_modules
+.git
+.vercel
+dist
+dist-*
+release
+ios/build
+ios/DerivedData
+*.dmg
+*.zip
+*.tar.gz
+*.iso
+.cache
+coverage
