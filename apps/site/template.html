@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BotFleet — Add-On Features</title>
+<meta name="description" content="BotFleet extends the open-source OpenMausBot desktop app with fleet-grade add-ons.&nbsp; This page tracks each add-on feature and whether it is Beta or Established.">
+<meta property="og:title" content="BotFleet — Add-On Features">
+<meta property="og:description" content="The add-on features BotFleet layers on top of OpenMausBot, and how far along each one is.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://botfleet.app/">
+<link rel="icon" type="image/png" href="/favicon-64.png" sizes="64x64">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:image" content="https://botfleet.app/icon-1024.png">
+<meta name="twitter:card" content="summary">
+<style>
+  :root {
+    --bg: #fafafa;
+    --surface: #ffffff;
+    --ink: #111318;
+    --ink-soft: #4b5160;
+    --line: #e4e6ea;
+    --tile: #000000;
+    --silver-hi: #e6e8eb;
+    --silver-lo: #848a94;
+    --beta-bg: #fff7e6;
+    --beta-ink: #8a5a00;
+    --beta-line: #f0ddb0;
+    --est-bg: #e9f7ee;
+    --est-ink: #14602e;
+    --est-line: #c4e6cf;
+    --radius: 14px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 24px; }
+
+  header.site {
+    border-bottom: 1px solid var(--line);
+    background: var(--surface);
+  }
+  .nav {
+    display: flex; align-items: center; gap: 12px;
+    padding-top: 18px; padding-bottom: 18px;
+  }
+  .nav img { width: 40px; height: 40px; border-radius: 9px; }
+  .nav .word { font-weight: 700; font-size: 1.15rem; letter-spacing: -0.01em; }
+  .nav .links { margin-left: auto; display: flex; gap: 18px; font-size: 0.92rem; flex-wrap: wrap; }
+  .nav .links a { color: var(--ink-soft); text-decoration: none; }
+  .nav .links a:hover { color: var(--ink); text-decoration: underline; }
+
+  .hero { padding: 56px 0 44px; }
+  .hero .hero-image {
+    max-width: 440px; width: 100%; height: auto; border-radius: 24px;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.12);
+    margin-bottom: 28px;
+    display: block;
+  }
+  .hero h1 {
+    font-size: clamp(2.1rem, 5vw, 3.1rem);
+    letter-spacing: -0.02em;
+    line-height: 1.12;
+    margin-bottom: 14px;
+  }
+  .hero h1 .thin { color: var(--ink-soft); font-weight: 500; }
+  .hero p.lede { font-size: 1.08rem; color: var(--ink-soft); max-width: 46rem; margin-bottom: 20px; }
+  .cta-row { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 26px; }
+  .cta {
+    display: inline-block; background: var(--tile); color: #ffffff;
+    text-decoration: none; font-weight: 600; font-size: 0.95rem;
+    border-radius: 10px; padding: 10px 18px;
+  }
+  .cta:hover { background: #24262c; }
+  .cta-note { font-size: 0.85rem; color: var(--ink-soft); }
+  .roster-label { font-size: 0.85rem; color: var(--ink-soft); margin-bottom: 8px; }
+  .roster { display: flex; flex-wrap: wrap; gap: 8px; }
+  .roster span {
+    font-size: 0.78rem; color: var(--ink-soft);
+    border: 1px solid var(--line); background: var(--surface);
+    border-radius: 999px; padding: 3px 10px;
+  }
+
+  .legend {
+    display: flex; flex-wrap: wrap; gap: 14px;
+    padding: 20px; border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--surface); margin: 8px 0 0;
+    font-size: 0.92rem; color: var(--ink-soft);
+  }
+  .legend div { flex: 1 1 260px; }
+  .legend .lineage { flex: 1 1 100%; font-size: 0.85rem; border-top: 1px solid var(--line); padding-top: 12px; }
+
+  .badge {
+    display: inline-block; font-size: 0.78rem; font-weight: 700;
+    letter-spacing: 0.02em;
+    border-radius: 999px; padding: 3px 10px; vertical-align: middle;
+  }
+  .badge.beta { background: var(--beta-bg); color: var(--beta-ink); border: 1px solid var(--beta-line); }
+  .badge.est  { background: var(--est-bg);  color: var(--est-ink);  border: 1px solid var(--est-line); }
+
+  section.features { padding: 44px 0 8px; }
+  section.features h2 {
+    font-size: 1.5rem; letter-spacing: -0.01em; margin-bottom: 6px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  section.features p.sub { color: var(--ink-soft); margin-bottom: 22px; font-size: 0.95rem; }
+  .grid {
+    display: grid; gap: 16px;
+    grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 20px 20px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .card h3 { font-size: 1.02rem; letter-spacing: -0.01em; }
+  .card p { font-size: 0.92rem; color: var(--ink-soft); flex: 1; }
+  .card .prov {
+    font-size: 0.8rem; color: var(--ink-soft);
+    border-top: 1px solid var(--line); padding-top: 10px;
+  }
+  .card .prov a { color: var(--ink-soft); text-decoration: none; }
+  .card .prov a:hover { text-decoration: underline; }
+
+  footer.site {
+    margin-top: 64px; border-top: 1px solid var(--line);
+    background: var(--tile); color: var(--silver-hi);
+  }
+  footer.site .inner { padding-top: 36px; padding-bottom: 44px; font-size: 0.9rem; }
+  footer.site a { color: var(--silver-hi); }
+  footer.site .fine { color: var(--silver-lo); margin-top: 10px; font-size: 0.82rem; }
+</style>
+</head>
+<body>
+
+<header class="site">
+  <div class="wrap nav">
+    <img src="/logo-256.png" alt="BotFleet app icon">
+    <span class="word">BotFleet</span>
+    <nav class="links">
+      <a href="#established">Established</a>
+      <a href="#beta">Beta</a>
+      <a href="{{TESTFLIGHT_URL}}">TestFlight</a>
+      <a href="{{REPO_URL}}">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <section class="hero">
+    <img class="hero-image" src="/hero-bots.png" alt="BotFleet Metallic Robot Trio">
+    <h1>A Fleet of Bots, <span class="thin">Built on OpenMausBot</span></h1>
+    <p class="lede">
+      BotFleet is a distribution of the open-source
+      <a href="{{UPSTREAM_URL}}">OpenMausBot</a> desktop app, extended to run a coordinated fleet of
+      specialized bots on your own Mac.&nbsp; This page tracks the add-on features BotFleet layers on top
+      of upstream OpenMausBot and how far along each one is.
+    </p>
+    <div class="cta-row">
+      <a class="cta" href="{{TESTFLIGHT_URL}}">Join the iOS TestFlight</a>
+      <span class="cta-note">Public beta of the iOS companion.&nbsp; A Mac TestFlight is planned.</span>
+    </div>
+    <p class="roster-label">An example fleet — the bots the maintainer runs today:</p>
+    <div class="roster" role="group" aria-label="Example bot roster">
+      {{ROSTER}}
+    </div>
+  </section>
+
+  <div class="legend">
+    <div><span class="badge est">Established</span>&nbsp; Merged to main, or deployed and verified in daily use.</div>
+    <div><span class="badge beta">Beta</span>&nbsp; Shipped in a BotFleet branch or pull request and still under review or active testing.</div>
+    <div class="lineage">The open pull requests build on one another, so a feature can appear in more than
+      one PR's diff.&nbsp; Each card cites the pull request where the work originated.</div>
+  </div>
+
+  {{SECTIONS}}
+
+</main>
+
+<footer class="site">
+  <div class="wrap inner">
+    <div>BotFleet builds on <a href="{{UPSTREAM_URL}}">OpenMausBot</a>, an
+      open-source project by Milind Soni and contributors.&nbsp; BotFleet source lives at
+      <a href="{{REPO_URL}}">github.com/jaywedgeworth22/BotFleet</a>.&nbsp; iOS companion:
+      <a href="{{TESTFLIGHT_URL}}">public TestFlight</a>.</div>
+    <div class="fine">© 2026 BotFleet.&nbsp; Last updated {{UPDATED}}.&nbsp; No affiliation with any
+      cryptocurrency — BotFleet and OpenMausBot have no token.</div>
+  </div>
+</footer>
+
+</body>
+</html>

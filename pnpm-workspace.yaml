@@ -4,6 +4,7 @@
 packages:
   - "."
   - "apps/docs"
+  - "apps/site"
   - "cloudflare/control-plane"
 allowBuilds:
   electron: true # postinstall downloads the Electron dist
