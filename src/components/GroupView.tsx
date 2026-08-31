@@ -29,6 +29,7 @@ import { SecretRequestCard } from "./SecretRequestCard";
 import { AttachedImageGallery } from "./AttachmentPreview";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
 import { ReactionBar, ReactionChips } from "./Reactions";
+import { CopyButton } from "./CopyButton";
 import { ApprovalCard } from "./ApprovalCard";
 import { ManageMembersPanel } from "./ManageMembersPanel";
 import { groupActivityRuns } from "@/lib/activity-runs";
@@ -117,6 +118,135 @@ function PinToggle({ group, message }: { group: Group; message: Message }) {
   );
 }
 
+function GroupTextRow({
+  m,
+  user,
+  group,
+  transcript,
+  members,
+  onReply,
+  attachedImages,
+}: {
+  m: Message;
+  user: boolean;
+  group: Group;
+  transcript: Message[];
+  members: Bot[];
+  onReply: (message: Message) => void;
+  attachedImages: ReturnType<typeof splitAttachedImages> | null;
+}) {
+  const { dispatch } = useStore();
+  const [copied, setCopied] = useState(false);
+  const copyContent = attachedImages?.display ?? m.text ?? "";
+  const requestId = m.card?.requestId;
+
+  const handleBubbleClick = (e: React.MouseEvent) => {
+    const selection = window.getSelection()?.toString();
+    if (selection && selection.trim().length > 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("a, button, input, textarea, summary, pre, code")) return;
+    if (!copyContent) return;
+    void navigator.clipboard?.writeText(copyContent);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1400);
+  };
+
+  return (
+    <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
+      <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
+        {user && <ReactionBar threadId={group.threadId} message={m} />}
+        {user && (
+          <>
+            <CopyButton
+              text={copyContent}
+              messageId={m.id}
+              requestId={requestId}
+              copied={copied}
+              onCopy={() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => onReply(m)}
+              aria-label="Reply to message"
+              title="Reply"
+              className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              <MessageSquareReply size={14} />
+            </button>
+            <PinToggle group={group} message={m} />
+          </>
+        )}
+        <div
+          onClick={handleBubbleClick}
+          className={cn(
+            "w-fit max-w-[min(42rem,78%)] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed cursor-pointer select-text relative",
+            user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
+          )}
+          title={copied ? "Copied to clipboard!" : `Click to copy · ${new Date(m.at).toLocaleString()}`}
+        >
+          {m.replyToId && (() => {
+            const target = transcript.find((candidate) => candidate.id === m.replyToId);
+            return target ? (
+              <div className="mb-2">
+                <ReplyQuote
+                  message={target}
+                  fallbackName="Bot"
+                  compact
+                  onJump={() =>
+                    dispatch({ type: "focusMessage", threadId: group.threadId, messageId: target.id })
+                  }
+                />
+              </div>
+            ) : null;
+          })()}
+          {user ? (
+            <>
+              {attachedImages && attachedImages.images.length > 0 && (
+                <AttachedImageGallery paths={attachedImages.images} />
+              )}
+              {attachedImages?.display ?? m.text}
+            </>
+          ) : (
+            <ChatMarkdown text={m.text ?? ""} />
+          )}
+        </div>
+        {!user && (
+          <>
+            <CopyButton
+              text={copyContent}
+              messageId={m.id}
+              requestId={requestId}
+              copied={copied}
+              onCopy={() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }}
+            />
+            <button
+              type="button"
+              onClick={() => onReply(m)}
+              aria-label="Reply to message"
+              title="Reply"
+              className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              <MessageSquareReply size={14} />
+            </button>
+            <PinToggle group={group} message={m} />
+            <ReactionBar threadId={group.threadId} message={m} />
+          </>
+        )}
+        <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
+          {formatTime(m.at)}
+        </span>
+      </div>
+      <ReactionChips threadId={group.threadId} message={m} members={members} align={user ? "right" : "left"} />
+    </div>
+  );
+}
+
 const Transcript = memo(function Transcript({
   group,
   members,
@@ -134,7 +264,7 @@ const Transcript = memo(function Transcript({
   emergingId?: string | null;
   onReply: (message: Message) => void;
 }) {
-  const { state, dispatch } = useStore();
+  const { state } = useStore();
   const showToolCalls = showToolCallsEnabled(state.config);
   const memberOf = (id?: string) => members.find((b) => b.id === id);
   // Several bots working at once turn a room into a wall of chips; fold the
@@ -196,75 +326,15 @@ const Transcript = memo(function Transcript({
               <RoomToolChip message={m} />
             ) : null
           ) : m.kind === "text" && m.text ? (
-            <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
-              <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
-                {user && <ReactionBar threadId={group.threadId} message={m} />}
-                {user && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => onReply(m)}
-                      aria-label="Reply to message"
-                      title="Reply"
-                      className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                    >
-                      <MessageSquareReply size={14} />
-                    </button>
-                    <PinToggle group={group} message={m} />
-                  </>
-                )}
-                <div
-                  className={cn(
-                    "w-fit max-w-[min(42rem,78%)] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed",
-                    user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
-                  )}
-                  title={new Date(m.at).toLocaleString()}
-                >
-                  {m.replyToId && (() => {
-                    const target = transcript.find((candidate) => candidate.id === m.replyToId);
-                    return target ? (
-                      <div className="mb-2">
-                        <ReplyQuote
-                          message={target}
-                          fallbackName="Bot"
-                          compact
-                          onJump={() =>
-                            dispatch({ type: "focusMessage", threadId: group.threadId, messageId: target.id })
-                          }
-                        />
-                      </div>
-                    ) : null;
-                  })()}
-                  {user ? (
-                    <>
-                      {attachedImages && attachedImages.images.length > 0 && (
-                        <AttachedImageGallery paths={attachedImages.images} />
-                      )}
-                      {attachedImages?.display ?? m.text}
-                    </>
-                  ) : <ChatMarkdown text={m.text} />}
-                </div>
-                {!user && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => onReply(m)}
-                      aria-label="Reply to message"
-                      title="Reply"
-                      className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                    >
-                      <MessageSquareReply size={14} />
-                    </button>
-                    <PinToggle group={group} message={m} />
-                    <ReactionBar threadId={group.threadId} message={m} />
-                  </>
-                )}
-                <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
-                  {formatTime(m.at)}
-                </span>
-              </div>
-              <ReactionChips threadId={group.threadId} message={m} members={members} align={user ? "right" : "left"} />
-            </div>
+            <GroupTextRow
+              m={m}
+              user={user}
+              group={group}
+              transcript={transcript}
+              members={members}
+              onReply={onReply}
+              attachedImages={attachedImages}
+            />
           ) : null;
         if (!row) return null;
         return (

@@ -8,7 +8,6 @@ import {
   ChevronRight,
   Bug,
   Clock,
-  Copy,
   Crown,
   Folder,
   ListTree,
@@ -56,6 +55,7 @@ import { RenameTitle } from "./RenameTitle";
 import { TaskPicker } from "./TaskPicker";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { SpeakButton } from "./SpeakButton";
+import { CopyButton } from "./CopyButton";
 import { CallButton, CallOverlay } from "./CallView";
 import { cn } from "@/lib/cn";
 import { COMPACT_BUBBLE, COMPACT_SQUARE } from "@/lib/compact-chip";
@@ -142,27 +142,6 @@ function TaskTimeline({ messages, busy }: { messages: Message[]; busy: boolean }
   );
 }
 
-/** Hover/focus-revealed copy control shared by user + bot bubbles. */
-function CopyButton({ text, className }: { text: string; className?: string }) {
-  const [copied, setCopied] = useState(false);
-  return (
-    <button
-      onClick={() => {
-        void navigator.clipboard?.writeText(text);
-        setCopied(true);
-        setTimeout(() => setCopied(false), 1200);
-      }}
-      aria-label="Copy message"
-      title="Copy message"
-      className={cn(
-        "rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100",
-        className,
-      )}
-    >
-      {copied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
-    </button>
-  );
-}
 
 /** A failed turn: a real error block with a retry, not a truncated pill.
  *
@@ -308,12 +287,26 @@ function Bubble({
   const { dispatch } = useStore();
   const user = message.role === "user";
   const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
   const text = message.text ?? "";
   const webhookView = user ? webhookMessageView(text) : null;
   const attachedImages = user && !webhookView ? splitAttachedImages(text) : null;
   const visibleText = webhookView?.task ?? attachedImages?.display ?? text;
+  const copyContent = user ? visibleText : text;
+  const requestId = message.card?.requestId;
   const collapsible =
     user && !webhookView && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
+
+  const handleBubbleClick = (e: React.MouseEvent) => {
+    const selection = window.getSelection()?.toString();
+    if (selection && selection.trim().length > 0) return;
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("a, button, input, textarea, summary, pre, code")) return;
+    if (!copyContent) return;
+    void navigator.clipboard?.writeText(copyContent);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1400);
+  };
 
   if (user && editing && !webhookView) {
     return (
@@ -346,9 +339,18 @@ function Bubble({
           </button>
         )}
         {user && message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
-        {user && <CopyButton text={visibleText} />}
         {user && (
           <>
+            <CopyButton
+              text={copyContent}
+              messageId={message.id}
+              requestId={requestId}
+              copied={copied}
+              onCopy={() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }}
+            />
             <button
               type="button"
               onClick={onReply}
@@ -379,15 +381,16 @@ function Bubble({
           </>
         )}
         <div
+          onClick={handleBubbleClick}
           className={cn(
-            "w-fit max-w-[min(42rem,78%)] rounded-2xl text-[15px] leading-relaxed",
+            "w-fit max-w-[min(42rem,78%)] rounded-2xl text-[15px] leading-relaxed cursor-pointer select-text relative",
             user && webhookView
               ? "overflow-hidden border border-accent/25 bg-card text-ink shadow-[0_10px_30px_rgba(0,0,0,0.18)]"
               : user
                 ? "bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink"
                 : "bg-card px-4 py-2.5 text-ink",
           )}
-          title={new Date(message.at).toLocaleString()}
+          title={copied ? "Copied to clipboard!" : `Click to copy · ${new Date(message.at).toLocaleString()}`}
         >
           {replyTarget && (
             <div className="mb-2">
@@ -449,22 +452,16 @@ function Bubble({
         </div>
         {!user && (
           <>
-            <div className="flex flex-col gap-0.5 self-end pb-0.5">
-              <CopyButton text={text} />
-              {message.kind === "text" && (
-                <SpeakButton text={text} botId={bot.id} messageId={message.id} voiceId={bot.voice} />
-              )}
-              {isLastBotText && !bot.busy && onRegenerate && (
-                <button
-                  onClick={onRegenerate}
-                  aria-label="Regenerate response"
-                  title="Regenerate response"
-                  className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                >
-                  <RefreshCw size={14} />
-                </button>
-              )}
-            </div>
+            <CopyButton
+              text={copyContent}
+              messageId={message.id}
+              requestId={requestId}
+              copied={copied}
+              onCopy={() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 1400);
+              }}
+            />
             <button
               type="button"
               onClick={onReply}
@@ -492,6 +489,19 @@ function Bubble({
             >
               {bot.pinnedMessageId === message.id ? <PinOff size={14} /> : <Pin size={14} />}
             </button>
+            {message.kind === "text" && (
+              <SpeakButton text={text} botId={bot.id} messageId={message.id} voiceId={bot.voice} />
+            )}
+            {isLastBotText && !bot.busy && onRegenerate && (
+              <button
+                onClick={onRegenerate}
+                aria-label="Regenerate response"
+                title="Regenerate response"
+                className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+              >
+                <RefreshCw size={14} />
+              </button>
+            )}
           </>
         )}
         {!user && message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
