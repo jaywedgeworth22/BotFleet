@@ -4,6 +4,7 @@
 import { Check } from "lucide-react";
 import type { Bot } from "@/state/store";
 import { BotAvatar } from "./Avatar";
+import { stateForBot } from "@/lib/mascot";
 import { cn } from "@/lib/cn";
 
 export function BotPickerList({
@@ -29,7 +30,7 @@ export function BotPickerList({
           aria-checked={picked.has(b.id)}
           className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-raised/50"
         >
-          <BotAvatar bot={b} state="happy" size={28} />
+          <BotAvatar bot={b} state={stateForBot(b)} size={28} />
           <span className="min-w-0 flex-1 truncate text-[14px] text-ink">{b.name}</span>
           <span
             className={cn(
