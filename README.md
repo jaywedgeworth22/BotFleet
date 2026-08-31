@@ -1,56 +1,33 @@
-> ⚠️ **No affiliation with any cryptocurrency.** OpenMausBot has no token. Any coin using the OpenMausBot, Maus, or SupaMaus name is not created, endorsed, or affiliated with this project or its maintainer. I have received no tokens, payment, or allocation from anyone, and I will not be endorsing any token.
+> ⚠️ **No affiliation with any cryptocurrency.** BotFleet and OpenMausBot have no token.  Any coin using the BotFleet, OpenMausBot, Maus, or SupaMaus name is not created, endorsed, or affiliated with this project or its maintainers.
 
 <div align="center">
 
-# OpenMausBot
+# BotFleet
 
-**Your own team of AI bots, in a chat app.**
+**Your own fleet of AI bots, in a chat app.**
 
-<sub>An open-source version of **Grok Bot** — bring-your-own-agent, local-first, on the models you already have.</sub>
-
-Every bot in the sidebar is a real agent — Claude or Codex running locally under the hood — with its own
-personality, its own model, its own cloud computer, and its own connected apps.
-Talk to them like contacts. Watch them work. Approve what matters.
-
-![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)
-![React](https://img.shields.io/badge/React-19-61DAFB?logo=react&logoColor=black)
-![Electron](https://img.shields.io/badge/Electron-macOS%20%C2%B7%20Windows%20%C2%B7%20Ubuntu-2B2E3A?logo=electron&logoColor=9FEAF9)
-![Agents](https://img.shields.io/badge/agents-Claude%20·%20Codex-d97757)
-[![Release](https://img.shields.io/badge/release-v0.1.37-1084fe)](https://github.com/milind-soni/openmausbot-releases/releases/tag/v0.1.37)
-![PRs](https://img.shields.io/badge/PRs-welcome-38d591)
-
-<br>
-
-<a href="https://github.com/milind-soni/openmausbot-releases/releases/download/v0.1.37/OpenMausBot.dmg">
-  <img src="https://img.shields.io/github/v/release/milind-soni/openmausbot-releases?style=for-the-badge&label=%E2%AC%87%EF%B8%8F%20%20Download%20for%20Mac%20%28Apple%20silicon%29&labelColor=070707&color=1084fe&cacheSeconds=300" alt="Download the latest OpenMausBot for Mac with Apple silicon (.dmg)" height="40">
-</a>
-&nbsp;
-<a href="https://github.com/milind-soni/openmausbot-releases/releases/download/v0.1.37/OpenMausBot-intel.dmg">
-  <img src="https://img.shields.io/github/v/release/milind-soni/openmausbot-releases?style=for-the-badge&label=%E2%AC%87%EF%B8%8F%20%20Download%20for%20Mac%20%28Intel%29&labelColor=070707&color=2a9d8f&cacheSeconds=300" alt="Download the latest OpenMausBot for Intel Macs (.dmg)" height="40">
-</a>
-&nbsp;
-<a href="https://github.com/milind-soni/openmausbot-releases/releases/download/v0.1.37/OpenMausBot-setup.exe">
-  <img src="https://img.shields.io/github/v/release/milind-soni/openmausbot-releases?style=for-the-badge&label=%E2%AC%87%EF%B8%8F%20%20Download%20for%20Windows&labelColor=070707&color=4cc2ff&cacheSeconds=300" alt="Download the latest OpenMausBot for Windows (.exe)" height="40">
-</a>
-&nbsp;
-<a href="https://github.com/milind-soni/openmausbot-releases/releases/download/v0.1.37/OpenMausBot-amd64.deb">
-  <img src="https://img.shields.io/github/v/release/milind-soni/openmausbot-releases?style=for-the-badge&label=%E2%AC%87%EF%B8%8F%20%20Download%20for%20Ubuntu&labelColor=070707&color=e95420&cacheSeconds=300" alt="Download the latest OpenMausBot for Ubuntu (.deb)" height="40">
-</a>
-
-<sub>[v0.1.37](https://github.com/milind-soni/openmausbot-releases/releases/tag/v0.1.37) &nbsp;·&nbsp; macOS: Apple silicon & Intel · signed & notarized .dmg &nbsp;·&nbsp; Windows: x64 installer &nbsp;·&nbsp; Ubuntu 24.04 x64: .deb or AppImage beta &nbsp;·&nbsp; [all releases](https://github.com/milind-soni/openmausbot-releases/releases)</sub>
-
-<br>
-
-<a href="https://buy.polar.sh/polar_cl_EEzWmormSVBD151HkmkyId9j0GPXina0KurfS1fYYcO">
-  <img src="https://img.shields.io/badge/%E2%9D%A4%EF%B8%8F%20%20Support%20OpenMausBot-any%20amount%20%C2%B7%20or%20monthly-38d591?style=for-the-badge&labelColor=070707" alt="Support OpenMausBot — one-time any amount or monthly, via Polar" height="40">
-</a>
+<sub>A distribution of the open-source <a href="https://github.com/milind-soni/OpenMausBot">OpenMausBot</a> — extended with fleet-grade add-ons for running a coordinated team of bots on your own Mac, with an iOS companion.</sub>
 
 <br>
 <br>
 
-<img src="docs/screenshots/hero.png" alt="OpenMausBot — a Telegram-style chat app where every chat is a real AI agent" width="900">
+<a href="https://botfleet.app"><b>botfleet.app</b></a> &nbsp;·&nbsp; <a href="https://testflight.apple.com/join/ER6sPNMh">iOS companion on TestFlight (public beta)</a> &nbsp;·&nbsp; <a href="https://github.com/milind-soni/OpenMausBot">upstream OpenMausBot</a>
 
 </div>
+
+## What BotFleet Adds
+
+BotFleet tracks upstream OpenMausBot closely and layers fleet-oriented add-ons on top.  The live status of every add-on — Established vs Beta — is kept at **[botfleet.app](https://botfleet.app)**.  Highlights:
+
+- **Always-on iMessage relay** — a host daemon plus LaunchAgents keep every bot group chat in Messages.app wired to the BotFleet backend in both directions, so the fleet stays reachable from a phone.
+- **iOS companion infrastructure** — App Groups and Associated Domains entitlements, universal links, and a public TestFlight for the companion app.
+- **Multi-tier model fallbacks** — first, second, and third choice models per bot with automatic failover and retry on rate limits, quota, or outages.
+- **Native DeepSeek driver** — DeepSeek V3 and R1 join Claude, Codex, and Cursor via a native ACP driver plus the dsh agent.
+- **Mid-task restart recovery**, **usage and cost telemetry**, **multi-repo channels with clickable file links**, **custom webhook domains**, **menu bar tray integration**, **dynamic system theme**, and more — see [botfleet.app](https://botfleet.app) for the full, current list with per-feature provenance.
+
+## Relationship to OpenMausBot
+
+BotFleet is a friendly fork of [milind-soni/OpenMausBot](https://github.com/milind-soni/OpenMausBot) by Milind Soni and contributors, and inherits its architecture, license, and most of its documentation.  Everything below this line documents the OpenMausBot foundation that BotFleet ships with; where upstream's name appears, BotFleet behaves the same unless an add-on listed at [botfleet.app](https://botfleet.app) says otherwise.
 
 ---
 
