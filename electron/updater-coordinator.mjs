@@ -48,9 +48,11 @@ export function createUpdaterCoordinator(updater, setState) {
     const manual = Boolean(installOperation || downloadOperation || checkOperation?.manual);
     routeError(manual, error);
   });
-  updater.on("download-progress", (progress) =>
-    setState({ status: "downloading", percent: Math.round(progress?.percent ?? 0) }),
-  );
+  updater.on("download-progress", (progress) => {
+    const percent = Math.round(progress?.percent ?? 0);
+    updater.logger?.info("Download progress: " + percent + "%");
+    setState({ status: "downloading", percent });
+  });
   updater.on("update-downloaded", (info) => {
     // On macOS electron-updater emits this before Squirrel.Mac has finished
     // staging the ZIP. Keep the UI in downloading until downloadUpdate's
