@@ -8,7 +8,7 @@ import { isIP } from "node:net";
 import { extname, join } from "node:path";
 
 import { z } from "zod";
-import { botAvatarUrlFromStoredPath } from "../shared/bot-avatar.ts";
+import { botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
 import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
@@ -463,8 +463,11 @@ const wireBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
  * prefix. Resolve them before persistence so every accepted avatar can be
  * fetched immediately and a deleted/guessed attachment id cannot become a
  * dangling profile reference. */
-const storedAvatarExists = (avatarUrl: string): boolean =>
-  attachmentExists(avatarUrl.slice("/api/attachments/".length));
+const storedAvatarExists = (avatarUrl: string): boolean => {
+  const parsed = botAvatarUrlSchema.safeParse(avatarUrl);
+  if (!parsed.success) return false;
+  return attachmentExists(parsed.data.slice("/api/attachments/".length));
+};
 
 const publicBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => ({
   ...wireBot(bot),
@@ -777,6 +780,11 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 // the last settled assistant text per thread, so a "finished" notification
 // can carry what the bot actually said
 const lastReply = new Map<string, string>();
+/** Per-thread fallback steps already used this user request.  Reset on a
+ * successful turn and on a user-initiated startTurn so a later message
+ * gets the full saved chain.  One-shot fallbacks never rewrite the bot's
+ * configured primary. */
+const fallbackAttemptByTurn = new Map<string, number>();
 
 /** Put a notification on the wire. Clients decide what to do with it — a
  * desktop notification now, a push to a paired phone later. */
@@ -841,6 +849,7 @@ const watchdog = new TurnWatchdog({
         stopScreenPoller(currentBot.id);
         if (activeVpsThreads.get(currentBot.id) === turn.threadId) activeVpsThreads.delete(currentBot.id);
         store.setActivity(currentBot.id, "idle");
+        store.patchBot(currentBot.id, { inflightThreadId: undefined });
         // The grace fallback replaces a missing turn.completed event. Release
         // every kind of work that may have queued behind this bot, including
         // connector and credential continuations.
@@ -1348,21 +1357,41 @@ bus.subscribe((event: RuntimeEvent) => {
       // 1:1 task turns are tallied for now.
       if (bot) {
         let fallbackUserMessage: Message | undefined;
+        let fallbackSelection: ModelSelection | undefined;
+        const fallbackKey = `${bot.id}:${event.threadId}`;
+        if (event.ok) fallbackAttemptByTurn.delete(fallbackKey);
         if (
           !event.ok &&
           event.stopReason !== "interrupted" &&
           event.stopReason !== "cancelled" &&
           bot.modelSelection.fallbacks?.length
         ) {
-          const fallbacks = [...bot.modelSelection.fallbacks];
-          const nextModel = fallbacks.shift()!;
-          store.patchBot(bot.id, { modelSelection: { ...nextModel, fallbacks } });
           const activeMsgs = store.activePath(event.threadId);
+          let lastUserIdx = -1;
           for (let i = activeMsgs.length - 1; i >= 0; i--) {
             if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
+              lastUserIdx = i;
               fallbackUserMessage = activeMsgs[i];
               break;
             }
+          }
+          const produced =
+            lastUserIdx >= 0 &&
+            activeMsgs.slice(lastUserIdx + 1).some(
+              (message) => message.role === "bot" && (message.kind === "text" || message.kind === "activity"),
+            );
+          const chain = bot.modelSelection.fallbacks;
+          const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
+          if (!produced && fallbackUserMessage && used < chain.length) {
+            const nextModel = chain[used];
+            fallbackAttemptByTurn.set(fallbackKey, used + 1);
+            fallbackSelection = {
+              instanceId: nextModel.instanceId,
+              model: nextModel.model,
+              effort: nextModel.effort,
+            };
+          } else {
+            fallbackUserMessage = undefined;
           }
         }
 
@@ -1384,12 +1413,13 @@ bus.subscribe((event: RuntimeEvent) => {
         // settled → idle; a setup failure already marked it dead, keep that
         if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
         store.patchBot(bot.id, { unread: true, inflightThreadId: undefined });
-        if (fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
+        if (fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
           const userMsg = fallbackUserMessage;
           const fallbackBotId = bot.id;
           void startTurn(fallbackBotId, userMsg.text || "", {
             userMessage: userMsg,
             threadId: event.threadId,
+            modelSelection: fallbackSelection,
           }).catch((error) => {
             console.error(`fallback startTurn failed for ${fallbackBotId}:`, error);
           });
@@ -1715,6 +1745,8 @@ async function startTurn(
     /** Earlier text message this user turn is replying to. */
     replyTo?: Message;
     onDispatchError?: (message: string) => void;
+    /** One-shot engine for a fallback turn.  Does not persist. */
+    modelSelection?: ModelSelection;
   },
 ) {
   const bot = store.bot(botId);
@@ -1736,24 +1768,26 @@ async function startTurn(
   // a task takes its name from the first thing you asked it to do
   if (text.trim() && !opts?.cardContinuation) store.titleTaskFromFirstMessage(bot.id, text, threadId);
 
+  const selection = opts?.modelSelection ?? bot.modelSelection;
+  if (!opts?.modelSelection) fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
   const instance = opts?.runOn === "cloud"
     ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
-    : registry.get(bot.modelSelection.instanceId);
+    : registry.get(selection.instanceId);
   if (!instance) {
     throw Object.assign(
       new Error(
         opts?.runOn === "cloud"
           ? "the Cloud VM runner is unavailable — configure Box in App Settings"
-          : `provider instance "${bot.modelSelection.instanceId}" is unavailable — pick another model in settings`,
+          : `provider instance "${selection.instanceId}" is unavailable — pick another model in settings`,
       ),
       { status: 409 },
     );
   }
   const instanceId = instance.instanceId;
-  const model = opts?.runOn === "cloud" ? instance.models.default : bot.modelSelection.model;
+  const model = opts?.runOn === "cloud" ? instance.models.default : selection.model;
   // a cloud routine borrows the instance default model, so it borrows no
   // per-bot effort either
-  const effort = opts?.runOn === "cloud" ? undefined : bot.modelSelection.effort;
+  const effort = opts?.runOn === "cloud" ? undefined : selection.effort;
   // A selection can be persisted while its engine is offline. Re-check when
   // the engine returns so an old or unsupported value never reaches a CLI.
   if (effort && !instance.adapter.capabilities.effortLevels?.includes(effort)) {
@@ -3207,6 +3241,7 @@ async function reloadProviders() {
       tool: { name: "error: turn interrupted — provider settings changed", ok: false },
     });
     store.setActivity(b.id, "idle");
+    store.patchBot(b.id, { inflightThreadId: undefined });
   }
   // killed turns settle here without a turn.completed event, so anything
   // queued behind them drains now — onto the freshly loaded fleet

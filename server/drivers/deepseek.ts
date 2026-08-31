@@ -111,7 +111,9 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
           stream: opts.stream,
           ...(opts.stream ? { stream_options: { include_usage: true } } : {}),
         }),
-        signal: opts.signal ?? AbortSignal.timeout(120_000),
+        signal: opts.signal
+          ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
+          : AbortSignal.timeout(120_000),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");

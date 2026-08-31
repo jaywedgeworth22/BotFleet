@@ -1,3 +1,7 @@
+import { existsSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type { ModelCatalog } from "../../contracts.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
@@ -15,7 +19,6 @@ const support: AcpSupport = {
   images: false,
   models: STATIC_DSH_MODELS,
   resolveModels: () => STATIC_DSH_MODELS,
-  effortLevels: ["low", "medium", "high"], // Whatever is supported
   defaultCli: "dsh",
   nativeSource: "dsh.acp",
   loginNote: "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",
@@ -44,7 +47,7 @@ const support: AcpSupport = {
 
   pickAuthMethod: () => null,
   authFailure: "fail",
-  isAuthenticated: () => true,
+  isAuthenticated: () => existsSync(join(homedir(), ".dsh", ".credentials.yaml")),
 
   buildPromptText: (turn) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),
 };
