@@ -23,6 +23,7 @@ import {
   vpsComputerMcp,
   vpsContainerMcpArgs,
   vpsContainerName,
+  vpsContainerNameCandidates,
   vpsContainerRunArgs,
   vpsDockerArgs,
   vpsDriverError,
@@ -233,7 +234,15 @@ describe("VPS computer", () => {
   it("uses a deterministic, bot-id-derived managed container name", () => {
     expect(vpsContainerName(BOT_ID)).toBe(vpsContainerName(BOT_ID));
     expect(vpsContainerName(BOT_ID)).not.toBe(vpsContainerName("another-bot"));
-    expect(vpsContainerName(BOT_ID)).toMatch(/^openmausbot-vps-[a-z0-9-]+$/);
+    expect(vpsContainerName(BOT_ID)).toMatch(/^botfleet-vps-[a-z0-9-]+$/);
+    expect(vpsContainerNameCandidates(BOT_ID)[0]).toBe(vpsContainerName(BOT_ID));
+    expect(vpsContainerNameCandidates(BOT_ID)).toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^botfleet-vps-/),
+        expect.stringMatching(/^openmausbot-vps-/),
+        expect.stringMatching(/^opengrokbot-vps-/),
+      ]),
+    );
   });
 
   it("passes the SSH target as one validated Docker argv value", () => {
@@ -456,10 +465,10 @@ describe("VPS computer", () => {
       "-e",
       "CUA_DRIVER_RS_TELEMETRY_ENABLED=0",
       vpsContainerName(BOT_ID),
-      "/usr/local/libexec/openmausbot/cua-driver",
+      "/usr/local/libexec/botfleet/cua-driver",
       "mcp",
       "--socket",
-      "/run/user/1000/openmausbot-cua.sock",
+      "/run/user/1000/botfleet-cua.sock",
     ]);
   });
 
@@ -527,7 +536,7 @@ describe("VPS computer", () => {
     expect(rebuilt.ready).toBe(true);
   });
 
-  it("never removes a container OpenMausBot did not create", async () => {
+  it("never removes a container BotFleet did not create", async () => {
     const unowned = fixture({ managed: false });
     await expect(vpsComputerAction("remove", CONFIG, BOT_ID, unowned.runner)).rejects.toThrow(/did not create/);
     expect(unowned.calls.some(({ args }) => args[2] === "rm")).toBe(false);

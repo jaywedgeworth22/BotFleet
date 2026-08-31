@@ -16,20 +16,20 @@ import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 const EMPTY: ModelCatalog = { default: "", options: [] };
 
-export const HERMES_OPENMAUS_SCREENSHOT_COMPAT = "HERMES_OPENMAUS_SCREENSHOT_COMPAT";
-export const HERMES_OPENMAUS_SCREENSHOT_COMPAT_MODEL = "HERMES_OPENMAUS_SCREENSHOT_COMPAT_MODEL";
+export const HERMES_BOTFLEET_SCREENSHOT_COMPAT = "HERMES_BOTFLEET_SCREENSHOT_COMPAT";
+export const HERMES_BOTFLEET_SCREENSHOT_COMPAT_MODEL = "HERMES_BOTFLEET_SCREENSHOT_COMPAT_MODEL";
 
 /** Bind screenshot pseudo-call compatibility to one exact injected model. */
 export function bindHermesScreenshotCompat(
   env: Record<string, string | undefined>,
   modelId: string | null | undefined,
 ): void {
-  delete env[HERMES_OPENMAUS_SCREENSHOT_COMPAT];
-  delete env[HERMES_OPENMAUS_SCREENSHOT_COMPAT_MODEL];
+  delete env[HERMES_BOTFLEET_SCREENSHOT_COMPAT];
+  delete env[HERMES_BOTFLEET_SCREENSHOT_COMPAT_MODEL];
   const inject = decodeInjectId(modelId);
   if (!inject) return;
-  env[HERMES_OPENMAUS_SCREENSHOT_COMPAT] = "1";
-  env[HERMES_OPENMAUS_SCREENSHOT_COMPAT_MODEL] = inject.model;
+  env[HERMES_BOTFLEET_SCREENSHOT_COMPAT] = "1";
+  env[HERMES_BOTFLEET_SCREENSHOT_COMPAT_MODEL] = inject.model;
 }
 
 function hermesHome(env: Record<string, string | undefined>): string {
@@ -399,7 +399,7 @@ const support: AcpSupport = {
   resolveModels: (env: Record<string, string | undefined>, config: any) => resolveModels(env, config),
   resolveTurnModel: (model, env) => {
     // Never inherit a broad or stale compatibility grant from the parent.
-    // Only this OpenMaus driver binds one concrete local model; Hermes still
+    // Only this BotFleet driver binds one concrete local model; Hermes still
     // requires the exact read-only screenshot MCP tool before activation.
     bindHermesScreenshotCompat(env, model);
     if (!model) return model;

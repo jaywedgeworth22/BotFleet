@@ -23,11 +23,11 @@ production hosted service still match this repository.
   Connect definition of ephemeral processing when answering the collection
   question for the submitted build.
 - Privacy policy URL:
-  `https://github.com/milind-soni/OpenMausBot/blob/main/docs/ios-privacy.md`
+  `https://github.com/milind-soni/BotFleet/blob/main/docs/ios-privacy.md`
 
 The iOS app does not receive the hosted account's user ID or the computer's
 hosted installation ID. Email sign-in for optional hosted access happens on the
-companion computer, and local Wi-Fi and Tailscale pairing require no OpenMausBot
+companion computer, and local Wi-Fi and Tailscale pairing require no BotFleet
 account. If the desktop user opts into **Use your phone anywhere**, Cloudflare
 proxies the encrypted phone traffic to that user's computer. The computer
 remains the only transcript store; the control plane does not receive a

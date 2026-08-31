@@ -1,7 +1,7 @@
-# OpenMausBot MCP server
+# BotFleet MCP server
 
-The OpenMausBot desktop app includes a local stdio MCP server. It lets another MCP client coordinate your
-OpenMausBot team while the desktop app and its harness are running.
+The BotFleet desktop app includes a local stdio MCP server. It lets another MCP client coordinate your
+BotFleet team while the desktop app and its harness are running.
 
 ## What it can do
 
@@ -16,14 +16,14 @@ change credentials, or control computer/VM lifecycle. Those actions stay in the 
 
 ## From a source checkout
 
-Start OpenMausBot, then configure the MCP client to run:
+Start BotFleet, then configure the MCP client to run:
 
 ```json
 {
   "mcpServers": {
-    "openmausbot": {
+    "botfleet": {
       "command": "pnpm",
-      "args": ["--dir", "/absolute/path/to/OpenMausBot", "mcp"]
+      "args": ["--dir", "/absolute/path/to/BotFleet", "mcp"]
     }
   }
 }
@@ -39,33 +39,33 @@ macOS example:
 ```json
 {
   "mcpServers": {
-    "openmausbot": {
-      "command": "/Applications/OpenMausBot.app/Contents/MacOS/OpenMausBot",
-      "args": ["/Applications/OpenMausBot.app/Contents/Resources/server/mcp-server.js"],
+    "botfleet": {
+      "command": "/Applications/BotFleet.app/Contents/MacOS/BotFleet",
+      "args": ["/Applications/BotFleet.app/Contents/Resources/server/mcp-server.js"],
       "env": { "ELECTRON_RUN_AS_NODE": "1" }
     }
   }
 }
 ```
 
-On Windows, use the installed `OpenMausBot.exe` as `command`, the adjacent
+On Windows, use the installed `BotFleet.exe` as `command`, the adjacent
 `resources\\server\\mcp-server.js` as the argument, and the same `ELECTRON_RUN_AS_NODE=1` environment value.
-The usual per-user install is under `%LOCALAPPDATA%\\Programs\\OpenMausBot`.
+The usual per-user install is under `%LOCALAPPDATA%\\Programs\\BotFleet`.
 
-On Ubuntu `.deb` installs, the executable is normally `/opt/OpenMausBot/openmausbot` and the script is
-`/opt/OpenMausBot/resources/server/mcp-server.js`. Use the same environment value.
+On Ubuntu `.deb` installs, the executable is normally `/opt/BotFleet/botfleet` and the script is
+`/opt/BotFleet/resources/server/mcp-server.js`. Use the same environment value.
 
 ## Connection discovery
 
-With no configuration, the MCP process probes OpenMausBot's three desktop ports (`8799`, `18799`, and `28799`)
-and accepts only a health response that identifies itself as OpenMausBot. This handles the desktop's normal
+With no configuration, the MCP process probes BotFleet's three desktop ports (`8799`, `18799`, and `28799`)
+and accepts only a health response that identifies itself as BotFleet. This handles the desktop's normal
 fallback when another local process already owns port 8799.
 
-Set `OMB_PORT` to force one local port, or `OPENMAUSBOT_URL` to use an explicit HTTP(S) origin. Cleartext remote
+Set `OMB_PORT` to force one local port, or `BOTFLEET_URL` to use an explicit HTTP(S) origin. Cleartext remote
 HTTP is rejected unless `ALLOW_INSECURE_HTTP=true`; HTTPS should be used outside loopback. An optional
-`OPENMAUSBOT_TOKEN` is sent as a bearer token for authenticated reverse proxies. When a token is set, an
-explicit `OPENMAUSBOT_URL` or `OMB_PORT` is required so the credential is never sent while probing unrelated
-local ports. `OPENMAUSBOT_MCP_TIMEOUT_MS` can set an HTTP timeout between 1,000 and 120,000 milliseconds.
+`BOTFLEET_TOKEN` is sent as a bearer token for authenticated reverse proxies. When a token is set, an
+explicit `BOTFLEET_URL` or `OMB_PORT` is required so the credential is never sent while probing unrelated
+local ports. `BOTFLEET_MCP_TIMEOUT_MS` can set an HTTP timeout between 1,000 and 120,000 milliseconds.
 
 ## Tools
 

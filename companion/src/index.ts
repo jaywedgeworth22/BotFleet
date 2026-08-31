@@ -49,7 +49,8 @@ const HARNESS_PORT = num(process.env.OMB_PORT, 8799);
 const WEBHOOK_PORT = num(process.env.OMB_WEBHOOK_PORT, HARNESS_PORT + 1);
 const COMPANION_PORT = num(process.env.OMB_COMPANION_PORT, 8810);
 const CONTROL_PORT = num(process.env.OMB_CONTROL_PORT, 8811);
-const SERVICE_TYPE = "_openmausbot._tcp";
+const SERVICE_TYPE = "_botfleet._tcp";
+const LEGACY_SERVICE_TYPE = "_openmausbot._tcp";
 let hostedUrl = hostedCompanionUrl(process.env.OMB_COMPANION_HOSTED_URL);
 const PRIVATE_ORIGIN = companionOriginSocket(process.env.OMB_COMPANION_INTERNAL_ORIGIN);
 
@@ -84,7 +85,7 @@ const conflict = (name: string, port: number): string | null => {
 let cachedName = process.env.OMB_COMPANION_NAME?.trim() || "";
 
 /** What this computer is called on the phone. Never empty. */
-const machineName = (): string => cachedName || "OpenMausBot";
+const machineName = (): string => cachedName || "BotFleet";
 
 /** Ask the harness whose computer this is, once, at startup. Every failure
  * is survivable: the name is a label, and no part of pairing depends on it. */
@@ -99,7 +100,7 @@ async function refreshMachineName(): Promise<void> {
     const owner = config.profile?.name?.trim();
     if (owner) cachedName = `${owner}'s computer`;
   } catch {
-    /* not up, or no profile — "OpenMausBot" is a fine thing to be called */
+    /* not up, or no profile — "BotFleet" is a fine thing to be called */
   }
 }
 
@@ -123,6 +124,7 @@ const service = (): ServiceInfo => ({
   // one DNS label: no dots, and inside the 63-byte limit
   name: dnsLabel(machineName()),
   type: SERVICE_TYPE,
+  legacyTypes: [LEGACY_SERVICE_TYPE],
   port: COMPANION_PORT,
   host: defaultHostName(),
   addresses: advertisableAddresses(),

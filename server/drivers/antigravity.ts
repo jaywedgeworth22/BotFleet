@@ -128,7 +128,7 @@ export function readAntigravityModelCatalog(env: Record<string, string | undefin
 // right before each spawn: every other byte of the user's config is
 // preserved, and a malformed file starts from a fresh object instead of
 // failing the turn (the ensureOpenCodeInjectModel discipline).
-export const ANTIGRAVITY_COMPUTER_MCP_KEY = "openmausbot-computer";
+export const ANTIGRAVITY_COMPUTER_MCP_KEY = "botfleet-computer";
 
 export interface AntigravityComputerMcpServer {
   command: string;
@@ -164,7 +164,7 @@ const mcpConfigFileSchema = z.looseObject({
 });
 
 /** The computer MCP server for this turn, or null when the turn has none.
- * Cloud boxes go through OpenMausBot's REST-to-MCP adapter (the same spec
+ * Cloud boxes go through BotFleet's REST-to-MCP adapter (the same spec
  * claude.ts and codex.ts build); Local VM and VPS connections arrive as a
  * ready-made Cua Driver stdio command and pass through unchanged. */
 export function antigravityComputerMcpServer(
@@ -192,7 +192,7 @@ export function antigravityComputerMcpServer(
   return null;
 }
 
-/** Upsert (server) or remove (null) the openmausbot-computer entry in the
+/** Upsert (server) or remove (null) the botfleet-computer entry in the
  * global mcp_config.json. Only that one key is ever written; a turn without
  * a computer removes it so a previous turn's mount cannot leak tools — or
  * box/control tokens — into later turns or the user's own agy sessions. */
@@ -257,7 +257,7 @@ export function ensureAntigravityComputerMcp(
     }
 
     // A malformed concurrent edit is not safe to rewrite. Leaving a stale
-    // OpenMausBot entry is preferable to destroying bytes we cannot interpret.
+    // BotFleet entry is preferable to destroying bytes we cannot interpret.
     let currentJson: unknown;
     try {
       currentJson = JSON.parse(current);

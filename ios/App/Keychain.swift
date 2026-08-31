@@ -10,7 +10,8 @@ import Foundation
 import Security
 
 enum Keychain {
-    private static let service = "com.openmausbot.companion.token"
+    private static let service = "com.botfleet.companion.token"
+    private static let legacyService = "com.openmausbot.companion.token"
 
     static func save(_ token: String, for connectionId: String) throws {
         let data = Data(token.utf8)
@@ -73,6 +74,18 @@ enum Keychain {
     /// So: `errSecItemNotFound` is the only nil. Everything else throws, and
     /// the caller decides whether to wait or to give up.
     static func token(for connectionId: String) throws -> String? {
+        if let current = try token(for: connectionId, service: service) {
+            return current
+        }
+        guard let legacy = try token(for: connectionId, service: legacyService) else {
+            return nil
+        }
+        try? save(legacy, for: connectionId)
+        _ = remove(connectionId, service: legacyService)
+        return legacy
+    }
+
+    private static func token(for connectionId: String, service: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -94,6 +107,13 @@ enum Keychain {
 
     @discardableResult
     static func remove(_ connectionId: String) -> Bool {
+        let current = remove(connectionId, service: service)
+        let legacy = remove(connectionId, service: legacyService)
+        return current || legacy
+    }
+
+    @discardableResult
+    private static func remove(_ connectionId: String, service: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

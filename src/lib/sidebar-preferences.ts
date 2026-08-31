@@ -1,6 +1,6 @@
 export type SidebarDensity = "comfortable" | "compact" | "icons";
 
-export const SIDEBAR_DENSITY_KEY = "openmausbot.sidebarDensity";
+export const SIDEBAR_DENSITY_KEY = "botfleet.sidebarDensity";
 
 export function parseSidebarDensity(value: string | null): SidebarDensity {
   switch (value) {

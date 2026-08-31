@@ -26,7 +26,7 @@ export interface NotificationBotIdentity {
  * coalescing key platforms replace on (`tag`) and its avatar, when the
  * profile has one. Pure so the grouping rule stays testable on its own. */
 export function buildNotificationOptions(bot: NotificationBotIdentity): NotificationOptions {
-  return { tag: `openmausbot:${bot.id}`, icon: bot.avatarUrl ?? undefined };
+  return { tag: `botfleet:${bot.id}`, icon: bot.avatarUrl ?? undefined };
 }
 
 /** Show one, unless the app is already in front of the user — a banner over

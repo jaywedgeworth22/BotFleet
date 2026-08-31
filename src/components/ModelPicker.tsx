@@ -96,6 +96,8 @@ export function ModelPicker({
   className,
   contained = false,
   label,
+  selection: propSelection,
+  onChange,
 }: {
   bot: Bot;
   className?: string;
@@ -103,6 +105,8 @@ export function ModelPicker({
    * narrow parent (the Agent profile sidebar). */
   contained?: boolean;
   label?: ReactNode;
+  selection?: ModelSelection;
+  onChange?: (selection: ModelSelection) => void;
 }) {
   const { state, dispatch, refreshInstances } = useStore();
   const [open, setOpen] = useState(false);
@@ -112,7 +116,7 @@ export function ModelPicker({
   const [showAll, setShowAll] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  const selection = bot.modelSelection;
+  const selection = propSelection || bot.modelSelection;
   const active = state.instances.find((instance) => instance.instanceId === selection.instanceId);
   const railInstance =
     state.instances.find((instance) => instance.instanceId === (railId ?? selection.instanceId)) ?? state.instances[0];
@@ -169,11 +173,17 @@ export function ModelPicker({
       model,
     };
     if (sameInstance && selection.effort) nextSelection.effort = selection.effort;
-    dispatch({
-      type: "setModel",
-      botId: bot.id,
-      selection: nextSelection,
-    });
+    
+    if (onChange) {
+       onChange(nextSelection);
+    } else {
+       nextSelection.fallbacks = bot.modelSelection.fallbacks;
+       dispatch({
+         type: "setModel",
+         botId: bot.id,
+         selection: nextSelection,
+       });
+    }
     setOpen(false);
   };
 

@@ -58,7 +58,7 @@ const entryPoint = (resourcesPath) =>
 // stayed closed until the user rediscovered the switch. The position of the
 // toggle is state worth keeping, and it lives in the app's own userData —
 // like cua-connection.json — because the app owns the toggle. Not in the
-// sidecar's ~/.openmausbot-companion, which is the child process's directory,
+// sidecar's ~/.botfleet-companion, which is the child process's directory,
 // and not in the harness's config.json, which is somebody else's data layout.
 
 const settingsFile = () => path.join(app.getPath("userData"), "companion-settings.json");

@@ -191,7 +191,7 @@ export function decodeMessage(buf: Buffer): DnsMessage | null {
  * and type is stale, drop it" (RFC 6762 §10.2), and two rules keep it off a
  * record here:
  *
- * - **Shared records (§10.2).** The PTR of `_openmausbot._tcp.local` is
+ * - **Shared records (§10.2).** The PTR of `_botfleet._tcp.local` is
  *   shared: every computer running the companion answers that same name with
  *   its own instance, and the service-type enumeration PTR is shared wider
  *   still. Flushing one tells the client to throw away the instances the
@@ -313,10 +313,12 @@ export function encodeResponse(
 export interface ServiceInfo {
   /** human-readable instance name — what a picker on the phone shows */
   name: string;
-  /** e.g. "_openmausbot._tcp" */
+  /** e.g. "_botfleet._tcp" */
   type: string;
+  /** Predecessor service types still browsed by older companion builds. */
+  legacyTypes?: string[];
   port: number;
-  /** the name our A records claim, e.g. "openmausbot-1a2b3c4d.local" */
+  /** the name our A records claim, e.g. "botfleet-1a2b3c4d.local" */
   host: string;
   addresses: string[];
   /** DNS-SD key=value pairs */
@@ -342,18 +344,30 @@ function dedupe(records: ResourceRecord[], exclude: ResourceRecord[] = []): Reso
 
 /** The four records that describe the service, as a browser expects them. */
 export function serviceRecords(service: ServiceInfo) {
-  const serviceName = `${service.type}.local`;
-  const instance = `${service.name}.${serviceName}`;
+  const types = [service.type, ...(service.legacyTypes ?? []).filter((type) => type !== service.type)];
+  const groups = types.map((type) => {
+    const serviceName = `${type}.local`;
+    const instance = `${service.name}.${serviceName}`;
+    return {
+      serviceName,
+      instance,
+      ptr: { name: serviceName, type: TYPE.PTR, data: instance } as ResourceRecord,
+      srv: {
+        name: instance,
+        type: TYPE.SRV,
+        data: { port: service.port, target: service.host },
+      } as ResourceRecord,
+      txt: { name: instance, type: TYPE.TXT, data: service.txt } as ResourceRecord,
+    };
+  });
+  const primary = groups[0]!;
   return {
-    serviceName,
-    instance,
-    ptr: { name: serviceName, type: TYPE.PTR, data: instance } as ResourceRecord,
-    srv: {
-      name: instance,
-      type: TYPE.SRV,
-      data: { port: service.port, target: service.host },
-    } as ResourceRecord,
-    txt: { name: instance, type: TYPE.TXT, data: service.txt } as ResourceRecord,
+    serviceName: primary.serviceName,
+    instance: primary.instance,
+    ptr: primary.ptr,
+    srv: primary.srv,
+    txt: primary.txt,
+    groups,
     addresses: service.addresses.map(
       (address) => ({ name: service.host, type: TYPE.A, data: address }) as ResourceRecord,
     ),
@@ -362,8 +376,8 @@ export function serviceRecords(service: ServiceInfo) {
 
 /** Everything we shout when we arrive (and, with ttl 0, when we leave). */
 export function announcement(service: ServiceInfo): ResourceRecord[] {
-  const { ptr, srv, txt, addresses } = serviceRecords(service);
-  return [ptr, srv, txt, ...addresses];
+  const { groups, addresses } = serviceRecords(service);
+  return [...groups.flatMap((group) => [group.ptr, group.srv, group.txt]), ...addresses];
 }
 
 /** What to answer a query with — the whole protocol decision, kept pure so
@@ -378,7 +392,7 @@ export function answersFor(
   service: ServiceInfo,
 ): { answers: ResourceRecord[]; additionals: ResourceRecord[] } {
   if (message.response) return { answers: [], additionals: [] };
-  const { serviceName, instance, ptr, srv, txt, addresses } = serviceRecords(service);
+  const { groups, addresses } = serviceRecords(service);
   const answers: ResourceRecord[] = [];
   const additionals: ResourceRecord[] = [];
 
@@ -387,18 +401,28 @@ export function answersFor(
     const asks = (type: number) => question.type === type || question.type === TYPE.ANY;
 
     if (name === SERVICE_ENUMERATION && asks(TYPE.PTR)) {
-      answers.push({ name: SERVICE_ENUMERATION, type: TYPE.PTR, data: serviceName });
-    } else if (name === serviceName.toLowerCase() && asks(TYPE.PTR)) {
-      answers.push(ptr);
-      additionals.push(srv, txt, ...addresses);
-    } else if (name === instance.toLowerCase()) {
-      if (asks(TYPE.SRV)) {
-        answers.push(srv);
-        additionals.push(...addresses);
+      for (const group of groups) {
+        answers.push({ name: SERVICE_ENUMERATION, type: TYPE.PTR, data: group.serviceName });
       }
-      if (asks(TYPE.TXT)) answers.push(txt);
-    } else if (name === service.host.toLowerCase() && asks(TYPE.A)) {
-      answers.push(...addresses);
+    } else {
+      let matchedType = false;
+      for (const group of groups) {
+        if (name === group.serviceName.toLowerCase() && asks(TYPE.PTR)) {
+          answers.push(group.ptr);
+          additionals.push(group.srv, group.txt, ...addresses);
+          matchedType = true;
+        } else if (name === group.instance.toLowerCase()) {
+          if (asks(TYPE.SRV)) {
+            answers.push(group.srv);
+            additionals.push(...addresses);
+          }
+          if (asks(TYPE.TXT)) answers.push(group.txt);
+          matchedType = true;
+        }
+      }
+      if (!matchedType && name === service.host.toLowerCase() && asks(TYPE.A)) {
+        answers.push(...addresses);
+      }
     }
   }
 
@@ -410,7 +434,7 @@ export function answersFor(
 
 /** One DNS label: no dots (they would split it into two labels), no control
  * characters, and inside the 63-byte limit even in UTF-8. */
-export function dnsLabel(text: string, fallback = "OpenMausBot"): string {
+export function dnsLabel(text: string, fallback = "BotFleet"): string {
   let label = text
     .replace(/[\u0000-\u001f\u007f]/g, "")
     .replace(/\./g, " ")
@@ -449,7 +473,7 @@ export function clampBytes(text: string, limit: number): string {
  * user's own machine name is a bad trade for a companion feature. */
 export function defaultHostName(machine = hostname()): string {
   const digest = createHash("sha256").update(machine).digest("hex").slice(0, 8);
-  return `openmausbot-${digest}.local`;
+  return `botfleet-${digest}.local`;
 }
 
 /**

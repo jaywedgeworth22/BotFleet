@@ -118,6 +118,7 @@ export interface Group {
   id: string;
   threadId: string;
   name: string;
+  avatarUrl?: string | null;
   memberIds: string[];
   defaultResponder: GroupDefaultResponder;
   bulletin: string;
@@ -159,6 +160,7 @@ export interface ModelSelection {
   instanceId: string;
   model: string;
   effort?: EffortLevel;
+  fallbacks?: ModelSelection[];
 }
 
 /** One of a bot's separate contexts: its own thread, transcript and
@@ -273,10 +275,12 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
   xai?: { configured: boolean };
+  deepseek?: { configured: boolean };
   composio: { configured: boolean; mode?: "managed" | "self-hosted" | "unavailable" };
   box: { configured: boolean };
   vps: { configured: boolean; sshAlias: string };
   rooms: { turnTimeoutMinutes: number };
+  ingress?: { publicUrl?: string };
   localVm: { mode: "shared" | "per-bot"; maxInstances: number };
   opencodeGo?: { configured: boolean };
   /** Voice (ElevenLabs). `configured` = a key is saved; `ready` = a key AND
@@ -287,27 +291,31 @@ export interface ConfigStatus {
   imageGen?: { configured: boolean };
   /** who's using the app — collected in onboarding, shown in the sidebar */
   profile?: { name: string; email: string };
+  autoUpdate?: { enabled: boolean };
   /** Opt-in flags. Absent means off. */
   features?: { skillRecorder: boolean; showToolCalls?: boolean };
 }
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "composio" | "box" | "vps" | "rooms" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "features"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
   return {
     xai: frame.xai,
+    deepseek: frame.deepseek,
     composio: frame.composio,
     box: frame.box,
     vps: frame.vps,
     rooms: frame.rooms,
+    ingress: frame.ingress,
     localVm: frame.localVm,
     opencodeGo: frame.opencodeGo,
     tts: frame.tts,
     imageGen: frame.imageGen,
     profile: frame.profile,
+    autoUpdate: frame.autoUpdate,
     features: frame.features,
   };
 }
@@ -459,7 +467,7 @@ export type Action =
   | {
       type: "patchGroup";
       groupId: string;
-      patch: Partial<Pick<Group, "name" | "bulletin" | "memberIds" | "defaultResponder" | "pinnedMessageId" | "section">>;
+      patch: Partial<Pick<Group, "name" | "avatarUrl" | "bulletin" | "memberIds" | "defaultResponder" | "pinnedMessageId" | "section">>;
     }
   | { type: "deleteGroup"; groupId: string }
   | { type: "newGroupTask"; groupId: string }

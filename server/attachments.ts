@@ -1,5 +1,5 @@
 // Image attachments: pasted/dropped images become files under
-// ~/.openmausbot/attachments so every CLI engine can open them by path —
+// ~/.botfleet/attachments so every CLI engine can open them by path —
 // the app never ships image bytes through the prompt itself.
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";

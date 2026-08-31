@@ -19,7 +19,7 @@ const posixOnly = describe.skipIf(process.platform === "win32");
 
 posixOnly("Local VM Cua MCP bridge", () => {
   it("passes MCP bytes unchanged to cua-driver mcp over the container runtime", async () => {
-    const bin = await mkdtemp(join(tmpdir(), "openmausbot-container-mcp-"));
+    const bin = await mkdtemp(join(tmpdir(), "botfleet-container-mcp-"));
     temporary.push(bin);
     const fakeDocker = join(bin, "docker");
     await writeFile(

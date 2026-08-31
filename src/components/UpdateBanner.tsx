@@ -26,6 +26,8 @@ function friendlyError(message?: string): string {
   return message.split("\n")[0].slice(0, 140);
 }
 
+import { loadUpdateNotificationsEnabled } from "@/lib/update-preferences";
+
 export function UpdateBanner() {
   const s = useUpdaterState();
   // dismissal is per status+version, so the popup returns for the next
@@ -35,10 +37,20 @@ export function UpdateBanner() {
   // arrives. Latch the pressed button as busy on the same frame so it greys
   // out immediately; the incoming status clears the latch.
   const [pending, setPending] = useState<"download" | "install" | "check" | null>(null);
+  
+  // also respect global preference
+  const [enabled, setEnabled] = useState(true);
+  useEffect(() => {
+    const handlePrefChange = () => setEnabled(loadUpdateNotificationsEnabled());
+    handlePrefChange();
+    window.addEventListener("botfleet:update-pref-changed", handlePrefChange);
+    return () => window.removeEventListener("botfleet:update-pref-changed", handlePrefChange);
+  }, []);
+  
   const status = s?.status;
   useEffect(() => setPending(null), [status]);
 
-  if (!s || s.status === "idle" || s.status === "checking") return null;
+  if (!enabled || !s || s.status === "idle" || s.status === "checking") return null;
   const key = `${s.status}:${s.version ?? ""}`;
   if (dismissed === key) return null;
   const updater = window.ogb!.updater!;
@@ -49,7 +61,7 @@ export function UpdateBanner() {
 
   const title =
     s.status === "available"
-      ? `OpenMausBot ${s.version} is available`
+      ? `BotFleet ${s.version} is available`
       : s.status === "downloading"
         ? `Downloading ${s.version ?? "update"}…`
         : s.status === "downloaded"
@@ -68,7 +80,7 @@ export function UpdateBanner() {
         : s.status === "downloaded"
           ? "Restart to finish updating."
           : installing
-            ? "OpenMausBot will reopen in a moment."
+            ? "BotFleet will reopen in a moment."
             : friendlyError(s.message);
 
   return (

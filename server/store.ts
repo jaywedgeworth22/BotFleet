@@ -158,6 +158,7 @@ export interface GroupRecord {
   /** User-created channels have independent tasks, newest first. */
   tasks?: GroupTaskRecord[];
   name: string;
+  avatarUrl?: string | null;
   memberIds: string[];
   defaultResponder: GroupDefaultResponder;
   bulletin: string;
@@ -769,7 +770,7 @@ export class Store {
     );
   }
 
-  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt">>): GroupRecord | null {
+  patchGroup(id: string, patch: Partial<Pick<GroupRecord, "name" | "avatarUrl" | "memberIds" | "defaultResponder" | "bulletin" | "unread" | "busyBotId" | "cwd" | "pinnedMessageId" | "section" | "setupCompletedAt" | "setupSkippedAt">>): GroupRecord | null {
     const group = this.group(id);
     if (!group) return null;
     Object.assign(group, patch);

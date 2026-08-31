@@ -8,6 +8,14 @@ import "./styles.css";
 // render would show one frame of the default palette first.
 applySkin(readSkin());
 
+if (typeof window !== "undefined" && window.matchMedia) {
+  window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
+    if (readSkin() === "system") {
+      applySkin("system");
+    }
+  });
+}
+
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />

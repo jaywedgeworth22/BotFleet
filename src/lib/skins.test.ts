@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { SKINS, SKIN_IDS, DEFAULT_SKIN } from "./skins";
+import { SKINS, SKIN_IDS } from "./skins";
 
 const css = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "../styles.css"),
@@ -16,9 +16,12 @@ const blocks = new Set(
   [...css.matchAll(/\[data-skin="([a-z-]+)"\]/g)].map(([, id]) => id),
 );
 
+/** `system` is a virtual skin that resolves to midnight or atelier. */
+const STYLE_SKIN_IDS = SKIN_IDS.filter((id) => id !== "system");
+
 describe("skins", () => {
   it("gives every registered skin a stylesheet block", () => {
-    for (const id of SKIN_IDS) expect(blocks).toContain(id);
+    for (const id of STYLE_SKIN_IDS) expect(blocks).toContain(id);
   });
 
   it("registers every stylesheet block", () => {
@@ -32,9 +35,9 @@ describe("skins", () => {
       const body = css.match(new RegExp(`\\[data-skin="${id}"\\]\\s*\\{([^}]*)\\}`))?.[1] ?? "";
       return new Set([...body.matchAll(/(--[\w-]+)\s*:/g)].map(([, name]) => name));
     };
-    const reference = tokensOf(DEFAULT_SKIN);
+    const reference = tokensOf("midnight");
     expect(reference.size).toBeGreaterThan(15);
-    for (const id of SKIN_IDS) {
+    for (const id of STYLE_SKIN_IDS) {
       expect([...reference].filter((t) => !tokensOf(id).has(t))).toEqual([]);
     }
   });

@@ -24,9 +24,9 @@
     "lint": "oxlint .",
     "check:contrast": "node scripts/check-contrast.mjs",
     "dev": "vite",
-    "docs:dev": "pnpm --filter @openmausbot/docs dev",
-    "docs:build": "pnpm --filter @openmausbot/docs build",
-    "docs:preview": "pnpm --filter @openmausbot/docs preview",
+    "docs:dev": "pnpm --filter @botfleet/docs dev",
+    "docs:build": "pnpm --filter @botfleet/docs build",
+    "docs:preview": "pnpm --filter @botfleet/docs preview",
     "companion": "node --experimental-strip-types companion/src/index.ts",
     "dev:server": "node --experimental-strip-types server/index.ts",
     "mcp": "node --experimental-strip-types scripts/mcp-server.ts",
@@ -69,10 +69,10 @@
     "broker:check": "pnpm broker:types && tsc -p cloudflare/composio-broker/tsconfig.json",
     "broker:test": "vitest run --config cloudflare/composio-broker/vitest.config.ts",
     "broker:deploy": "wrangler deploy --config cloudflare/composio-broker/wrangler.jsonc",
-    "control-plane:types": "pnpm --filter @openmausbot/control-plane types",
-    "control-plane:check": "pnpm --filter @openmausbot/control-plane check",
-    "control-plane:test": "pnpm --filter @openmausbot/control-plane test",
-    "control-plane:dry-run": "pnpm --filter @openmausbot/control-plane dry-run"
+    "control-plane:types": "pnpm --filter @botfleet/control-plane types",
+    "control-plane:check": "pnpm --filter @botfleet/control-plane check",
+    "control-plane:test": "pnpm --filter @botfleet/control-plane test",
+    "control-plane:dry-run": "pnpm --filter @botfleet/control-plane dry-run"
   },
   "dependencies": {
     "@trycua/cua-driver": "0.20.0",

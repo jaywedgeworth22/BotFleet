@@ -180,7 +180,7 @@ export function SkillRecorderPage() {
   const start = async () => {
     setError("");
     if (!bridge || !window.ogb?.beginScreenPreviewIntent || !navigator.mediaDevices?.getDisplayMedia) {
-      setError("Skill recording requires the OpenMausBot desktop app on macOS.");
+      setError("Skill recording requires the BotFleet desktop app on macOS.");
       return;
     }
     if (!transcriptionConfigured || !window.ogb.transcription) {
@@ -371,7 +371,7 @@ export function SkillRecorderPage() {
                 </div>
                 <h2 className="mt-5 text-[25px] font-semibold tracking-[-0.02em]">Record yourself doing the task</h2>
                 <p className="mt-2 max-w-xl text-[14px] leading-6 text-ink-secondary">
-                  Speak naturally while you work. OpenMausBot lines up your clicks, app changes, screenshots, and narration, then turns the reviewed demonstration into a reusable local skill.
+                  Speak naturally while you work. BotFleet lines up your clicks, app changes, screenshots, and narration, then turns the reviewed demonstration into a reusable local skill.
                 </p>
 
                 <div className="mt-7 grid gap-3 sm:grid-cols-3">
