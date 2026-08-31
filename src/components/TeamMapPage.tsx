@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ArrowRight, BookOpen, Crown, Loader2, Network, Radio, RefreshCw, Save, X } from "lucide-react";
 
-import { MausAvatar } from "./Avatar";
+import { BotAvatar } from "./Avatar";
+import { stateForBot } from "@/lib/mascot";
 import { api, formatTime, useStore, type Bot } from "@/state/store";
-import { normalizeState } from "@/lib/mascot";
 import {
   EMPTY_TEAM_MAP_SNAPSHOT,
   buildTeamMapEdges,
@@ -30,9 +30,9 @@ function BotNode({ bot, chief = false }: { bot: Bot; chief?: boolean }) {
       onClick={() => dispatch({ type: "select", id: bot.id })}
       className="group relative flex min-w-0 items-center gap-3 rounded-xl border border-hairline/50 bg-card px-3 py-3 text-left shadow-sm transition hover:border-accent/35 hover:bg-raised/50"
     >
-      <MausAvatar
-        color={bot.color}
-        state={normalizeState(bot.mascotExpression) ?? "idle"}
+      <BotAvatar
+        bot={bot}
+        state={stateForBot(bot)}
         size={34}
         motion="none"
         motionKey={0}
