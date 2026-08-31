@@ -10,7 +10,7 @@ import {
 } from "./team-library.ts";
 
 const manifest = {
-  format: "openmaus.team",
+  format: "botfleet.team",
   version: 2,
   team: {
     name: "Engineering",
@@ -27,7 +27,7 @@ const manifest = {
 };
 
 const catalog = {
-  format: "openmaus.catalog",
+  format: "botfleet.catalog",
   version: 1,
   teams: [
     {
@@ -54,7 +54,7 @@ function response(value: unknown, status = 200): Response {
 describe("team library", () => {
   it("validates catalog paths and adds the trusted repository URL", () => {
     const parsed = parseTeamCatalog(catalog);
-    expect(parsed.repositoryUrl).toBe("https://github.com/milind-soni/openmausbot-teams");
+    expect(parsed.repositoryUrl).toBe("https://github.com/milind-soni/botfleet-teams");
     expect(parsed.teams[0]).toMatchObject({ slug: "engineering", members: 1 });
 
     const unsafe = structuredClone(catalog);
@@ -71,7 +71,7 @@ describe("team library", () => {
     }) as unknown as typeof fetch;
 
     const loaded = await fetchLibraryTeam("engineering", fetcher);
-    if (loaded.format !== "openmaus.team") throw new Error("expected a legacy team");
+    if (loaded.format !== "botfleet.team") throw new Error("expected a legacy team");
     expect(loaded.team.name).toBe("Engineering");
     expect(fetcher).toHaveBeenCalledTimes(2);
   });
@@ -103,7 +103,7 @@ describe("team library", () => {
     ) as unknown as typeof fetch;
 
     const loaded = await fetchGithubTeam("https://github.com/acme/team", fetcher);
-    if (loaded.format !== "openmaus.team") throw new Error("expected a legacy team");
+    if (loaded.format !== "botfleet.team") throw new Error("expected a legacy team");
     expect(loaded.team.members[0]?.name).toBe("Ada");
     expect(fetcher).toHaveBeenCalledTimes(6);
   });

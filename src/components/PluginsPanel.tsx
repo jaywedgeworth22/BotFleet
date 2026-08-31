@@ -511,7 +511,7 @@ export function PluginsPanel() {
             <TriangleAlert size={14} className="mt-px shrink-0" />
             <span>
               Showing what was connected last time — this Mac's credential store could not be opened just now, so these
-              could not be re-checked. Your apps are still connected; restarting OpenMausBot usually clears this.
+              could not be re-checked. Your apps are still connected; restarting BotFleet usually clears this.
             </span>
           </div>
         )}

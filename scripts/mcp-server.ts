@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Model Context Protocol (MCP) Server for OpenMausBot
+// Model Context Protocol (MCP) Server for BotFleet
 // Standard JSON-RPC 2.0 stdio transport for external agent orchestration (Hermes, Claude Desktop, Cursor, etc.).
 import readline from "node:readline";
 
@@ -9,16 +9,16 @@ export function validateBaseUrl(url: string): string {
   try {
     parsed = new URL(trimmed);
   } catch {
-    throw new Error(`Invalid OpenMausBot URL: '${url}'`);
+    throw new Error(`Invalid BotFleet URL: '${url}'`);
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new Error("OpenMausBot URL must use http:// or https://");
+    throw new Error("BotFleet URL must use http:// or https://");
   }
   if (parsed.username || parsed.password) {
-    throw new Error("OpenMausBot URL must not contain credentials; use OPENMAUSBOT_TOKEN instead");
+    throw new Error("BotFleet URL must not contain credentials; use BOTFLEET_TOKEN instead");
   }
   if ((parsed.pathname !== "/" && parsed.pathname !== "") || parsed.search || parsed.hash) {
-    throw new Error("OpenMausBot URL must be an origin without a path, query, or fragment");
+    throw new Error("BotFleet URL must be an origin without a path, query, or fragment");
   }
   const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
   const isLoopback = hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
@@ -30,7 +30,8 @@ export function validateBaseUrl(url: string): string {
   return parsed.origin;
 }
 
-const configuredUrl = process.env.OPENMAUSBOT_URL ||
+const configuredUrl = process.env.BOTFLEET_URL ||
+  process.env.OPENMAUSBOT_URL ||
   (process.env.OMB_PORT ? `http://127.0.0.1:${process.env.OMB_PORT}` : undefined);
 
 export const OMB_BASE_URL = validateBaseUrl(configuredUrl || "http://127.0.0.1:8799");
@@ -40,18 +41,18 @@ const DISCOVERY_URLS = configuredUrl
 let discoveredBaseUrl: string | undefined;
 
 export function log(msg: string) {
-  process.stderr.write(`[openmausbot-mcp] ${msg}\n`);
+  process.stderr.write(`[botfleet-mcp] ${msg}\n`);
 }
 
 export const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 
 function requestTimeoutMs(): number {
-  const raw = Number(process.env.OPENMAUSBOT_MCP_TIMEOUT_MS);
+  const raw = Number(process.env.BOTFLEET_MCP_TIMEOUT_MS || process.env.OPENMAUSBOT_MCP_TIMEOUT_MS);
   return Number.isFinite(raw) && raw >= 1_000 && raw <= 120_000 ? Math.floor(raw) : DEFAULT_REQUEST_TIMEOUT_MS;
 }
 
 function requestHeaders(options: RequestInit): NonNullable<RequestInit["headers"]> {
-  const token = process.env.OPENMAUSBOT_TOKEN?.trim();
+  const token = (process.env.BOTFLEET_TOKEN || process.env.OPENMAUSBOT_TOKEN)?.trim();
   const headers = new Headers(options.headers);
   if (!headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
@@ -68,12 +69,12 @@ async function fetchJson(url: string, options: RequestInit = {}): Promise<any> {
   });
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`OpenMausBot API error (${response.status}): ${text || response.statusText}`);
+    throw new Error(`BotFleet API error (${response.status}): ${text || response.statusText}`);
   }
   try {
     return await response.json();
   } catch {
-    throw new Error(`OpenMausBot API returned a non-JSON response from ${url}`);
+    throw new Error(`BotFleet API returned a non-JSON response from ${url}`);
   }
 }
 
@@ -85,8 +86,8 @@ export async function probeBaseUrls(candidates: string[]): Promise<string> {
       const health = await fetchJson(`${candidate}/api/health`, {
         signal: AbortSignal.timeout(Math.min(requestTimeoutMs(), 2_000)),
       });
-      if (health?.app !== "openmausbot") {
-        failures.push(`${candidate} answered, but it was not OpenMausBot`);
+      if (health?.app !== "botfleet") {
+        failures.push(`${candidate} answered, but it was not BotFleet`);
         continue;
       }
       return candidate;
@@ -94,13 +95,13 @@ export async function probeBaseUrls(candidates: string[]): Promise<string> {
       failures.push(`${candidate}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  throw new Error(`Could not find a running OpenMausBot server. ${failures.join("; ")}`);
+  throw new Error(`Could not find a running BotFleet server. ${failures.join("; ")}`);
 }
 
 export async function resolveBaseUrl(): Promise<string> {
   if (discoveredBaseUrl) return discoveredBaseUrl;
-  if (process.env.OPENMAUSBOT_TOKEN?.trim() && !configuredUrl) {
-    throw new Error("Set OPENMAUSBOT_URL or OMB_PORT when using OPENMAUSBOT_TOKEN so credentials are never sent during port discovery");
+  if (process.env.BOTFLEET_TOKEN?.trim() && !configuredUrl) {
+    throw new Error("Set BOTFLEET_URL or OMB_PORT when using BOTFLEET_TOKEN so credentials are never sent during port discovery");
   }
   discoveredBaseUrl = await probeBaseUrls(DISCOVERY_URLS);
   return discoveredBaseUrl;
@@ -138,7 +139,7 @@ const AGENT_ACTION = { readOnlyHint: false, destructiveHint: true, idempotentHin
 export const TOOLS: McpToolDefinition[] = [
   {
     name: "get_system_health",
-    description: "Check whether the OpenMausBot server is reachable.",
+    description: "Check whether the BotFleet server is reachable.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -522,7 +523,7 @@ function optionalStringArg(
 
 function idArg(args: Record<string, unknown>, key: string): string {
   const value = stringArg(args, key);
-  if (!/^[\w-]+$/.test(value)) throw new ToolInputError(`${key} is not a valid OpenMausBot ID`);
+  if (!/^[\w-]+$/.test(value)) throw new ToolInputError(`${key} is not a valid BotFleet ID`);
   return value;
 }
 
@@ -750,11 +751,11 @@ export async function handleToolCall(
   switch (name) {
     case "get_system_health": {
       const res = await fetcher("/api/health");
-      if (res?.app !== "openmausbot") throw new Error("The configured endpoint is not an OpenMausBot server");
+      if (res?.app !== "botfleet") throw new Error("The configured endpoint is not an BotFleet server");
       return {
         status: "connected",
         endpoint: discoveredBaseUrl ?? OMB_BASE_URL,
-        app: "openmausbot",
+        app: "botfleet",
         packaged: Boolean(res.static),
       };
     }
@@ -824,7 +825,7 @@ export async function handleToolCall(
         }),
       });
       if (!isRecord(created?.bot) || typeof created.bot.id !== "string") {
-        throw new Error("OpenMausBot did not return the created bot");
+        throw new Error("BotFleet did not return the created bot");
       }
       return { success: true, bot: projectBot(created.bot) };
     }
@@ -842,7 +843,7 @@ export async function handleToolCall(
         body: JSON.stringify(patch),
       });
       if (!isRecord(result?.bot)) {
-        throw new Error("OpenMausBot did not return the updated bot");
+        throw new Error("BotFleet did not return the updated bot");
       }
       return { success: true, bot: projectBot(result.bot) };
     }
@@ -909,7 +910,7 @@ export async function handleToolCall(
         }),
       });
       if (!isRecord(created?.group) || typeof created.group.id !== "string") {
-        throw new Error("OpenMausBot did not return the created channel");
+        throw new Error("BotFleet did not return the created channel");
       }
       return { success: true, channel: projectChannel(created.group) };
     }
@@ -933,7 +934,7 @@ export async function handleToolCall(
         body: JSON.stringify(patch),
       });
       if (!isRecord(result?.group)) {
-        throw new Error("OpenMausBot did not return the updated channel");
+        throw new Error("BotFleet did not return the updated channel");
       }
       return { success: true, channel: projectChannel(result.group) };
     }
@@ -944,7 +945,7 @@ export async function handleToolCall(
       const route = taskRoute(args.target_type, targetId);
       const result = await fetcher(route, { method: "POST", body: JSON.stringify(title ? { title } : {}) });
       if (!isRecord(result?.task) || typeof result.task.threadId !== "string") {
-        throw new Error("OpenMausBot did not return the created task");
+        throw new Error("BotFleet did not return the created task");
       }
       const activeTaskId = result.bot?.threadId ?? result.group?.threadId ?? result.task?.threadId;
       return {
@@ -982,7 +983,7 @@ export async function handleToolCall(
         body: JSON.stringify({ title }),
       });
       if (!isRecord(result?.task)) {
-        throw new Error("OpenMausBot did not return the renamed task");
+        throw new Error("BotFleet did not return the renamed task");
       }
       return {
         success: true,
@@ -1242,10 +1243,10 @@ export async function processMcpMessage(
           tools: {},
         },
         serverInfo: {
-          name: "openmausbot-mcp",
+          name: "botfleet-mcp",
           version: "1.1.0",
         },
-        instructions: "Use bounded read tools before mutating the OpenMausBot team. Approval grants, deletion, and computer lifecycle are intentionally unavailable.",
+        instructions: "Use bounded read tools before mutating the BotFleet team. Approval grants, deletion, and computer lifecycle are intentionally unavailable.",
       });
     }
 
@@ -1369,5 +1370,5 @@ if (process.argv[1] && (process.argv[1].endsWith("mcp-server.ts") || process.arg
     process.exitCode = 0;
   });
 
-  log("OpenMausBot MCP server running on stdio");
+  log("BotFleet MCP server running on stdio");
 }

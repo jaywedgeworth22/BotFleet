@@ -4,10 +4,10 @@
 // built-in MCP"). This extension is that client: loaded into the per-turn
 // `pi --mode rpc --no-session` process via `-e`, it reads a JSON file whose
 // path is handed in through OMB_MCP_CONFIG and mounts every server described
-// there as first-class pi tools (pi.registerTool). OpenMausBot ships this file
+// there as first-class pi tools (pi.registerTool). BotFleet ships this file
 // and the pi driver spawns it — the pi repo itself is never touched.
 //
-// Protocol: the OpenMausBot proxies speak raw JSON-RPC 2.0 over stdio, one
+// Protocol: the BotFleet proxies speak raw JSON-RPC 2.0 over stdio, one
 // frame per line (no MCP SDK, no Content-Length framing) — see
 // server/mcp-bridge.ts and server/drivers/agents-proxy.ts. This client matches
 // that exactly.
@@ -68,7 +68,7 @@ interface PiToolDefinition {
 }
 
 /** Structural slice of Pi 0.84's ExtensionAPI used by this standalone file.
- * Keeping it local avoids bundling Pi into OpenMausBot; the extension is
+ * Keeping it local avoids bundling Pi into BotFleet; the extension is
  * loaded by the user's installed Pi, which supplies the real implementation. */
 interface PiExtensionApi {
   registerTool(definition: PiToolDefinition): void;
@@ -83,7 +83,7 @@ const TOOL_OUTPUT_MAX_BYTES = 50 * 1024;
 const TOOL_OUTPUT_MAX_LINES = 2_000;
 const TOOL_NAME_MAX_LENGTH = 64;
 
-/** A minimal stdio JSON-RPC 2.0 MCP client, matched to OpenMausBot's
+/** A minimal stdio JSON-RPC 2.0 MCP client, matched to BotFleet's
  * newline-delimited house protocol. */
 export class StdioMcp {
   private child: ChildProcessWithoutNullStreams;
@@ -231,7 +231,7 @@ export class StdioMcp {
       {
         protocolVersion: "2024-11-05",
         capabilities: {},
-        clientInfo: { name: "openmausbot-pi", version: "1" },
+        clientInfo: { name: "botfleet-pi", version: "1" },
       },
       MCP_STARTUP_TIMEOUT_MS,
     );
@@ -563,7 +563,7 @@ export default async function (pi: PiExtensionApi): Promise<void> {
         return { serverName, def, client, tools: await client.listTools() };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[openmausbot-pi-mcp] ${serverName}: ${message}\n`);
+        process.stderr.write(`[botfleet-pi-mcp] ${serverName}: ${message}\n`);
         client?.dispose();
         return { serverName };
       }
@@ -578,7 +578,7 @@ export default async function (pi: PiExtensionApi): Promise<void> {
 
     for (const tool of tools) {
       if (!tool || typeof tool.name !== "string" || !tool.name.trim()) {
-        process.stderr.write(`[openmausbot-pi-mcp] ${serverName}: skipped a tool with no valid name\n`);
+        process.stderr.write(`[botfleet-pi-mcp] ${serverName}: skipped a tool with no valid name\n`);
         continue;
       }
       const toolName = tool.name;
@@ -623,7 +623,7 @@ export default async function (pi: PiExtensionApi): Promise<void> {
         // One malformed tool must not dispose the client behind tools that
         // were already registered from the same server.
         const message = err instanceof Error ? err.message : String(err);
-        process.stderr.write(`[openmausbot-pi-mcp] ${serverName}:${toolName}: ${message}\n`);
+        process.stderr.write(`[botfleet-pi-mcp] ${serverName}:${toolName}: ${message}\n`);
       }
     }
 

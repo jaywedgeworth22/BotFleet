@@ -2,8 +2,8 @@ import { parseJson, type JsonValue } from "./schema.ts";
 import { isBotPackage, parseBotPackage, type ParsedBotPackage } from "./bot-package.ts";
 import { parseTeamManifest, type ParsedTeamManifest } from "./team-manifest.ts";
 
-export const TEAM_LIBRARY_REPOSITORY = "https://github.com/milind-soni/openmausbot-teams";
-export const TEAM_LIBRARY_RAW_ROOT = "https://raw.githubusercontent.com/milind-soni/openmausbot-teams/main";
+export const TEAM_LIBRARY_REPOSITORY = "https://github.com/milind-soni/botfleet-teams";
+export const TEAM_LIBRARY_RAW_ROOT = "https://raw.githubusercontent.com/milind-soni/botfleet-teams/main";
 export const TEAM_LIBRARY_CATALOG_URL = `${TEAM_LIBRARY_RAW_ROOT}/catalog.json`;
 
 const MAX_CATALOG_BYTES = 256_000;
@@ -26,7 +26,7 @@ export interface TeamCatalogEntry {
 }
 
 export interface TeamCatalog {
-  format: "openmaus.catalog";
+  format: "botfleet.catalog";
   version: 1;
   repositoryUrl: typeof TEAM_LIBRARY_REPOSITORY;
   teams: TeamCatalogEntry[];
@@ -65,7 +65,7 @@ function stringList(value: unknown, field: string, maxItems: number): string[] {
 
 /** Validate the remotely maintained index before any of it reaches the renderer. */
 export function parseTeamCatalog(value: unknown): TeamCatalog {
-  if (!isRecord(value) || value.format !== "openmaus.catalog" || value.version !== 1) {
+  if (!isRecord(value) || value.format !== "botfleet.catalog" || value.version !== 1) {
     throw new Error("The team library catalog is not supported");
   }
   if (!Array.isArray(value.teams) || value.teams.length > 100) {
@@ -110,7 +110,7 @@ export function parseTeamCatalog(value: unknown): TeamCatalog {
     };
   });
   return {
-    format: "openmaus.catalog",
+    format: "botfleet.catalog",
     version: 1,
     repositoryUrl: TEAM_LIBRARY_REPOSITORY,
     teams,

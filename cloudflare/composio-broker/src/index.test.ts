@@ -81,7 +81,7 @@ describe("connected-apps broker boundaries", () => {
   });
 
   it("hashes installation tokens before storage", async () => {
-    await expect(sha256("openmausbot")).resolves.toBe("63c74f70a9d4681c334e84001935955a75245ea5b16b9c37c808e85c69963705");
+    await expect(sha256("botfleet")).resolves.toBe("bec3e3852322168415c2d67feef2589289ddbc255e49902be8301cdef0eda07d");
   });
 
   it("creates Sessions with explicit multi-account selection", async () => {

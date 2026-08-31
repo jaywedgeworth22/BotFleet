@@ -1,14 +1,14 @@
 ---
 title: Data and backups
-description: Know what OpenMausBot stores locally and what to preserve.
+description: Know what BotFleet stores locally and what to preserve.
 icon: DatabaseBackup
 ---
 
-OpenMausBot keeps its application state under `~/.openmausbot`, including configuration, transcripts, message attachments, device pairing state, and the SQLite message store.
+BotFleet keeps its application state under `~/.botfleet`, including configuration, transcripts, message attachments, device pairing state, and the SQLite message store.
 
 ## Back up
 
-Close OpenMausBot before taking a filesystem-level backup so SQLite and configuration files are captured consistently. Preserve the entire `.openmausbot` directory rather than selecting individual database files.
+Close BotFleet before taking a filesystem-level backup so SQLite and configuration files are captured consistently. Preserve the entire `.botfleet` directory rather than selecting individual database files.
 
 ## Do not copy secrets casually
 

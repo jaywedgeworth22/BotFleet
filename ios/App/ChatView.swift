@@ -37,6 +37,7 @@ struct ChatView: View {
     @State private var islandExpanded = false
     @State private var islandVisible = false
     @State private var facePhase: CGFloat = 0
+    @State private var isAtBottom = true
 
     /// The live bubble's scroll target. A constant because there is at most
     /// one per chat and it has no message id to borrow.
@@ -147,6 +148,10 @@ struct ChatView: View {
                                 .id(Self.liveBubbleId)
                                 .accessibilityLabel("\(current.name) is working")
                         }
+                        Color.clear.frame(height: 1)
+                            .id("bottom-marker")
+                            .onAppear { isAtBottom = true }
+                            .onDisappear { isAtBottom = false }
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
@@ -203,7 +208,7 @@ struct ChatView: View {
                 // starts on the newest message rather than the oldest.
                 .defaultScrollAnchor(.bottom)
                 .onChange(of: transcript.last?.id) { _, _ in
-                    guard let last = transcript.last else { return }
+                    guard isAtBottom, let last = transcript.last else { return }
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
                 // Follow the text as it arrives. Keyed on length rather than
@@ -211,7 +216,7 @@ struct ChatView: View {
                 // animation — animating every token turns a smooth stream
                 // into a stutter, because each scroll interrupts the last.
                 .onChange(of: session.state.streaming[threadId]?.count ?? 0) { _, length in
-                    guard length > 0 else { return }
+                    guard isAtBottom, length > 0 else { return }
                     proxy.scrollTo(Self.liveBubbleId, anchor: .bottom)
                 }
                 .onChange(of: session.focusedMessageId) { _, messageId in
@@ -293,7 +298,10 @@ struct ChatView: View {
             if current.supportsTasks { TaskManagerView(chat: current) }
         }
         .sheet(isPresented: $showingProfile) {
-            if case let .bot(bot) = current { AgentProfileView(bot: bot) }
+            switch current {
+            case let .bot(bot): AgentProfileView(bot: bot)
+            case let .room(room): GroupProfileView(room: room)
+            }
         }
         .sheet(item: $shareFile) { file in
             ActivityShareSheet(items: [file.url])
@@ -383,8 +391,7 @@ struct ChatView: View {
                 Color.clear.frame(width: 60, height: 60)
             }
             Button {
-                if case .bot = current { showingProfile = true }
-                else { showingPlus = true }
+                showingProfile = true
             } label: {
                 HStack(spacing: 6) {
                     Text(current.name)
@@ -663,8 +670,7 @@ struct ChatView: View {
                             .font(.system(size: 17))
                             .padding(.vertical, 11)
                             .focused($composerFocused)
-                            .submitLabel(.send)
-                            // Partial transcripts rebuild from a frozen base;
+                                                        // Partial transcripts rebuild from a frozen base;
                             // prevent competing edits without dimming the text.
                             .allowsHitTesting(!dictation.isListening && !dictation.isStarting)
                             .onChange(of: draft) { _, value in

@@ -2,13 +2,14 @@
 //
 // Its own directory, not the harness's. The two processes have separate
 // lifecycles and separate concerns, and a sidecar that writes into
-// ~/.openmausbot would be reaching into somebody else's data layout — the
+// ~/.botfleet would be reaching into somebody else's data layout — the
 // exact coupling this design exists to avoid. If the harness reorganises its
 // files tomorrow, nothing here notices.
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
@@ -20,7 +21,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 /** OMB_COMPANION_DIR isolates a test rig from a real paired fleet. */
-export const DATA_DIR = process.env.OMB_COMPANION_DIR ?? join(homedir(), ".openmausbot-companion");
+export const DATA_DIR = process.env.OMB_COMPANION_DIR ?? join(homedir(), ".botfleet-companion");
+const LEGACY_COMPANION_DIRS = [".openmausbot-companion", ".opengrokbot-companion"] as const;
 
 /** 0700 on the directory, 0600 on the files it holds.
  *
@@ -34,6 +36,18 @@ const DIR_MODE = 0o700;
 export const FILE_MODE = 0o600;
 
 export function ensureDataDir(): void {
+  if (!process.env.OMB_COMPANION_DIR && !existsSync(DATA_DIR)) {
+    for (const name of LEGACY_COMPANION_DIRS) {
+      const legacy = join(homedir(), name);
+      if (!existsSync(legacy)) continue;
+      try {
+        renameSync(legacy, DATA_DIR);
+        break;
+      } catch {
+        /* cross-device or busy — try the next predecessor */
+      }
+    }
+  }
   mkdirSync(DATA_DIR, { recursive: true, mode: DIR_MODE });
   // mkdirSync's mode applies only to a directory it creates — `recursive`
   // leaves an existing one's mode alone — and an install from before this

@@ -76,7 +76,44 @@ function ProfileFields() {
   );
 }
 
+function CustomIngressFields() {
+  const { state, dispatch } = useStore();
+  const [publicUrl, setPublicUrl] = useState(state.config?.ingress?.publicUrl ?? "");
+
+  useEffect(() => {
+    setPublicUrl(state.config?.ingress?.publicUrl ?? "");
+  }, [state.config?.ingress?.publicUrl]);
+
+  const save = () => {
+    void fetch("/api/config", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ingress: { publicUrl: publicUrl.trim() || undefined } }),
+    })
+      .then((r) => r.json())
+      .then((config) => dispatch({ type: "configStatus", config }))
+      .catch(() => {});
+  };
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <input
+        type="url"
+        value={publicUrl}
+        onChange={(e) => setPublicUrl(e.target.value)}
+        onBlur={save}
+        placeholder="https://botfleet.yourdomain.com"
+        className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+      />
+      <div className="text-[12px] text-ink-secondary leading-relaxed">
+        If you run your own Cloudflare Tunnel or proxy, enter its public URL here to bypass BotFleet's managed tunnel.
+      </div>
+    </div>
+  );
+}
+
 function UpdatesRow() {
+  const { state, dispatch } = useStore();
   const s = useUpdaterState();
   if (!window.ogb?.updater) return null;
   const updater = window.ogb.updater;
@@ -94,20 +131,68 @@ function UpdatesRow() {
               : "You're on the latest version we know of.";
   return (
     <Card title="Updates" subtitle={label}>
+      <div className="flex flex-col items-end gap-3">
+        <label className="flex items-center gap-2 text-[13px] text-ink">
+          <input
+            type="checkbox"
+            checked={state.config?.autoUpdate?.enabled ?? false}
+            onChange={(e) => {
+              const enabled = e.target.checked;
+              void fetch("/api/config", {
+                method: "PUT",
+                headers: { "content-type": "application/json" },
+                body: JSON.stringify({ autoUpdate: { enabled } }),
+              })
+                .then((r) => r.json())
+                .then((config) => dispatch({ type: "configStatus", config }));
+            }}
+          />
+          Enable automatic update checks
+        </label>
+        <button
+          onClick={() => {
+            if (s?.status === "available") return void updater.download();
+            if (s?.status === "downloaded") return void updater.install();
+            void updater.check();
+          }}
+          disabled={s?.status === "checking" || s?.status === "downloading"}
+          className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
+        >
+          {s?.status === "available"
+            ? "Download"
+            : s?.status === "downloaded"
+              ? "Restart and install"
+              : "Check for updates"}
+        </button>
+      </div>
+    </Card>
+  );
+}
+
+import { loadUpdateNotificationsEnabled, saveUpdateNotificationsEnabled } from "@/lib/update-preferences";
+
+function UpdateNotificationsRow() {
+  const [on, setOn] = useState(true);
+  useEffect(() => { setOn(loadUpdateNotificationsEnabled()); }, []);
+  return (
+    <Card
+      title="Update notifications"
+      subtitle="Show a small popup when a new version of BotFleet is available to download."
+    >
       <button
+        role="switch"
+        aria-checked={on}
+        aria-label="Show update notifications"
         onClick={() => {
-          if (s?.status === "available") return void updater.download();
-          if (s?.status === "downloaded") return void updater.install();
-          void updater.check();
+          const next = !on;
+          saveUpdateNotificationsEnabled(next);
+          setOn(next);
+          // dispatch custom event to re-render banner immediately
+          window.dispatchEvent(new Event("botfleet:update-pref-changed"));
         }}
-        disabled={s?.status === "checking" || s?.status === "downloading"}
-        className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
+        className={cnSwitch(on)}
       >
-        {s?.status === "available"
-          ? "Download"
-          : s?.status === "downloaded"
-            ? "Restart and install"
-            : "Check for updates"}
+        <span className={cnKnob(on)} />
       </button>
     </Card>
   );
@@ -438,6 +523,7 @@ export function SettingsModal() {
                 <ToolCallsRow />
                 <ExperimentalFeaturesRow />
                 <UpdatesRow />
+                <UpdateNotificationsRow />
                 <DiagnosticsRow />
                 <AnalyticsRow />
               </>
@@ -458,6 +544,12 @@ export function SettingsModal() {
                   <ApiKeyRow section="box" />
                   <VpsConnection />
                   <ApiKeyRow section="opencodeGo" />
+                  <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
+                    <summary className="cursor-pointer text-[13px] text-ink-secondary">Custom Webhook Domain / Ingress</summary>
+                    <div className="mt-3">
+                      <CustomIngressFields />
+                    </div>
+                  </details>
                   <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
                     <summary className="cursor-pointer text-[13px] text-ink-secondary">Self-host connected apps</summary>
                     <div className="mt-3">

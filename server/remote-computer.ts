@@ -1,12 +1,12 @@
 // Shared provisioning and shell contract for the cloud computer's Cua Driver.
 // The box command API is the transport boundary: the daemon stays loopback-only
-// inside the VM and OpenMausBot never exposes another inbound port.
+// inside the VM and BotFleet never exposes another inbound port.
 
 export const REMOTE_CUA_VERSION = "0.20.0";
 export const REMOTE_CUA_EXECUTABLE = "/opt/ogb/cua-driver";
 export const REMOTE_CUA_SOCKET = "/opt/ogb/run/cua.sock";
-export const REMOTE_CUA_SESSION = "openmausbot";
-export const REMOTE_CDP_HELPER = "/opt/ogb/openmausbot-cdp.mjs";
+export const REMOTE_CUA_SESSION = "botfleet";
+export const REMOTE_CDP_HELPER = "/opt/ogb/botfleet-cdp.mjs";
 
 const REMOTE_CUA_WHEELS = {
   x86_64: {
@@ -138,7 +138,7 @@ export function remoteComputerBootstrapCommand(botName: string): string {
     'pkill -f "^/opt/ogb/venv/bin/python -m computer_server( |$)" >/dev/null 2>&1 || true',
     `[ -f /opt/ogb/cua-${REMOTE_CUA_VERSION}-ready ] || [ -f /tmp/ogb-cua-installing ] || { touch /tmp/ogb-cua-installing; nohup bash -c ${shellQuote(installer)} > /tmp/ogb-cua-install.log 2>&1 & }`,
     ensureRemoteCuaCommand(),
-    `tmux has-session -t work 2>/dev/null || tmux new-session -d -s work 'echo; echo "  ▦ ${safeName}'"'"'s computer — OpenMausBot"; echo; exec bash -i'`,
+    `tmux has-session -t work 2>/dev/null || tmux new-session -d -s work 'echo; echo "  ▦ ${safeName}'"'"'s computer — BotFleet"; echo; exec bash -i'`,
     "echo bootstrapped",
   ].join("\n");
 }

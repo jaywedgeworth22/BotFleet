@@ -206,17 +206,17 @@ type AskBehavior = "allow" | "deny" | "answer";
 type AskResolutionSource = "user" | "timeout" | "system";
 
 const DENY_TIMEOUT_NOTE =
-  "OpenMausBot: nobody answered this permission request in time. Skip this action and finish what you can without it.";
-const QUESTION_TIMEOUT_NOTE = "OpenMausBot: nobody answered in time. Use your best judgment and continue.";
-const DUPLICATE_ASK_ID_NOTE = "OpenMausBot: duplicate ask id — skipping this request.";
+  "BotFleet: nobody answered this permission request in time. Skip this action and finish what you can without it.";
+const QUESTION_TIMEOUT_NOTE = "BotFleet: nobody answered in time. Use your best judgment and continue.";
+const DUPLICATE_ASK_ID_NOTE = "BotFleet: duplicate ask id — skipping this request.";
 
 /** The system-source reply for an ask that outlives the turn — used both to
  * drain in-flight `pending` asks on close() and to answer one that arrives
  * on an already-closed broker (see the `closed` branch below). */
 function systemEndedReply(kind: Ask["kind"]): { behavior: AskBehavior; message: string } {
   return kind === "question"
-    ? { behavior: "answer", message: "OpenMausBot: the turn is ending — wrap up." }
-    : { behavior: "deny", message: "OpenMausBot: the turn ended" };
+    ? { behavior: "answer", message: "BotFleet: the turn is ending — wrap up." }
+    : { behavior: "deny", message: "BotFleet: the turn ended" };
 }
 
 /** One human-readable line for an ask — what the card subtitle shows. */
@@ -589,6 +589,20 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // integrations → MCP servers; pre-allow their tools (a headless
       // acceptEdits run silently denies anything unlisted)
       const mcpServers: Record<string, unknown> = {};
+      
+      // Load global MCP servers used by the rest of the fleet
+      const importedMcpNames: string[] = [];
+      try {
+        const claudeJson = readFileSync(join(homedir(), ".claude.json"), "utf8");
+        const parsed = JSON.parse(claudeJson);
+        if (parsed && typeof parsed === "object" && parsed.mcpServers && typeof parsed.mcpServers === "object") {
+          Object.assign(mcpServers, parsed.mcpServers);
+          importedMcpNames.push(...Object.keys(parsed.mcpServers));
+        }
+      } catch (e) {
+        // ignore missing or malformed ~/.claude.json
+      }
+
       const allowed: string[] = [];
       if (turn.integrations?.composio) {
         mcpServers.composio = { ...turn.integrations.composio };
@@ -609,7 +623,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           env: local.env,
         };
         // The isolated Local VM preserves the established pre-allow behavior.
-        // Host tools always route through OpenMausBot's permission broker.
+        // Host tools always route through BotFleet's permission broker.
         if (!controlsHost) allowed.push("mcp__computer");
       }
       // peer-agent comms (list_bots/ask_bot) — the harness builds the whole
@@ -647,6 +661,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         args.push("--permission-prompt-tool", "mcp__ogb__approve");
         mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
         allowed.push("mcp__ogb");
+      }
+      // Fleet MCP servers copied from ~/.claude.json are visible in
+      // mcpServers but acceptEdits silently denies anything whose prefix is
+      // not in --allowedTools. Pre-allow those imported servers only — do
+      // not re-allow BotFleet-owned namespaces that were deliberately omitted
+      // (host-controlled local CUA must not get mcp__computer).
+      for (const name of importedMcpNames) {
+        if (name === "computer") continue;
+        const prefix = `mcp__${name}`;
+        if (!allowed.includes(prefix)) allowed.push(prefix);
       }
       // The MCP config carries credentials — a Composio consumer key in a
       // header, the box token in the computer proxy's env, the comms token in

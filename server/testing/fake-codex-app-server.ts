@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 const mode = process.env.FAKE_CODEX_MODE ?? "happy";
 
 if (process.argv[2] === "--version") {
-  process.stdout.write("codex-cli 0.147.0\n");
+  process.stdout.write("codex-cli 0.151.0\n");
   process.exit(0);
 }
 if (process.argv[2] === "login" && process.argv[3] === "status") {
@@ -169,7 +169,7 @@ process.stdin.on("data", (chunk) => {
             ].join(" ")
           : "ls -la";
         notify("item/started", { item: { id: "i1", type: "commandExecution", command } });
-        notify("item/started", { item: { id: "w1", type: "webSearch", query: "OpenMausBot" } });
+        notify("item/started", { item: { id: "w1", type: "webSearch", query: "BotFleet" } });
         if (mode === "mcp-elicitation") {
           out({
             jsonrpc: "2.0",

@@ -1,4 +1,4 @@
-// OpenMausBot server — the harness host. Clients hold no transports
+// BotFleet server — the harness host. Clients hold no transports
 // (upstream rule): the React app dispatches typed commands over HTTP and
 // folds one SSE event stream; every provider process runs here.
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
@@ -37,7 +37,7 @@ import * as box from "./box.ts";
 import { cloudBackendChangeError, vpsAliasChangeError } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
-import { openMausStatusSystemPrompt } from "./openmaus-status-capsule.ts";
+import { botFleetStatusSystemPrompt } from "./botfleet-status-capsule.ts";
 import {
   containerComputerAction,
   containerComputerExists,
@@ -58,6 +58,7 @@ import {
   localVmMaxInstances,
   localVmMode,
   parseConfigPatch,
+  publicIngressUrl,
   roomTurnTimeoutMinutes,
   saveConfig,
   showToolCallsEnabled,
@@ -363,10 +364,23 @@ function checkedModelSelection(
     }
     selection.effort = value.effort;
   }
+  
+  if ("fallbacks" in value && Array.isArray(value.fallbacks)) {
+    const parsedFallbacks: ModelSelection[] = [];
+    for (const f of value.fallbacks) {
+       const res = checkedModelSelection(f, undefined, requireAvailableModel);
+       if (!res.ok) return res;
+       parsedFallbacks.push(res.selection);
+    }
+    if (parsedFallbacks.length > 0) {
+      selection.fallbacks = parsedFallbacks;
+    }
+  }
   const changed = current && (
     selection.instanceId !== current.selection.instanceId ||
     selection.model !== current.selection.model ||
-    selection.effort !== current.selection.effort
+    selection.effort !== current.selection.effort ||
+    JSON.stringify(selection.fallbacks) !== JSON.stringify(current.selection.fallbacks)
   );
   if (current?.busy && changed) {
     return { ok: false, status: 409, error: "the bot is working — stop it before changing models" };
@@ -1333,6 +1347,40 @@ bus.subscribe((event: RuntimeEvent) => {
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
+        if (
+          !event.ok &&
+          event.stopReason !== "interrupted" &&
+          event.stopReason !== "cancelled" &&
+          bot.modelSelection.fallbacks?.length
+        ) {
+          // Fallback logic
+          const fallbacks = [...bot.modelSelection.fallbacks];
+          const nextModel = fallbacks.shift()!;
+          const updatedSelection = { ...nextModel, fallbacks };
+          store.patchBot(bot.id, { modelSelection: updatedSelection });
+          
+          // Identify the last user message on the active path to retry
+          const activeMsgs = store.activePath(event.threadId);
+          let lastUserMessage: Message | undefined;
+          // Search backwards for the last user message that isn't a steering message
+          for (let i = activeMsgs.length - 1; i >= 0; i--) {
+             if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
+                 lastUserMessage = activeMsgs[i];
+                 break;
+             }
+          }
+          if (lastUserMessage && typeof lastUserMessage.text === "string") {
+            const userMsg = lastUserMessage;
+            // startTurn rejects while the bot is still busy from this failed
+            // turn. Settle idle first so the fallback can dispatch.
+            if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
+            setTimeout(() => {
+              void startTurn(bot.id, userMsg.text || "", { userMessage: userMsg });
+            }, 100);
+            return;
+          }
+        }
+
         const vpsTurn = activeVpsThreads.get(bot.id) === event.threadId;
         const clearVpsTurn = () => {
           if (activeVpsThreads.get(bot.id) === event.threadId) activeVpsThreads.delete(bot.id);
@@ -1765,13 +1813,16 @@ async function startTurn(
     transcript,
     rewound,
     fresh,
-    replaysNatively: instance.driverKind === "grok",
+    replaysNatively: instance.driverKind === "grok" || instance.driverKind === "deepseek",
   });
 
+  const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
   const persona = [
-    `You are ${bot.name}, a personal bot in OpenMausBot.`,
+    `You are BF-${bot.name} (display: ${bot.name}), a bot in BotFleet. Always identify yourself as BF-${bot.name} in fleet communications and logs.`,
     bot.title && `Role: ${bot.title}.`,
     bot.description && `About: ${bot.description}`,
+    `Slack communication rules: Use Slack channel #agent-sync sparingly — ONLY to claim/unclaim tasks on the shared board or for strictly necessary coordination with external agents outside BotFleet. Never post unprompted status spam or routine commentary to Slack.`,
+    isImessageTask && `iMessage communication rule: When replying in this iMessage thread, be concise, direct, and action-oriented. Do not leave out key details, but avoid verbose fluff, unnecessary conversational padding, or multi-paragraph meta commentary. Provide clear, direct summaries.`,
   ]
     .filter(Boolean)
     .join(" ");
@@ -1826,7 +1877,7 @@ async function startTurn(
           : null;
       const cwd = pinnedCwd ?? undefined;
       // Checkpoint explicit project folders, where a bot can overwrite the
-      // user's work. Its private OpenMaus workspace is app-owned and changes
+      // user's work. Its private BotFleet workspace is app-owned and changes
       // on nearly every ordinary chat; snapshotting it would add hidden disk
       // and process overhead without a user project to restore.
       const checkpointCwd = cwd && cwd !== privateWorkspace ? cwd : undefined;
@@ -1883,7 +1934,7 @@ async function startTurn(
           throw new Error("this model engine cannot control this computer — choose Claude or an ACP engine, or select another destination");
         }
         const cua = readCuaConnection();
-        if (!cua) throw new Error("CUA Driver is not ready for this computer — check permissions and restart OpenMausBot");
+        if (!cua) throw new Error("CUA Driver is not ready for this computer — check permissions and restart BotFleet");
         integrations.localComputer = cua;
         computerKind = "local";
       }
@@ -2025,7 +2076,7 @@ async function startTurn(
             bot.id,
             store.bots,
             Boolean(integrations.agents),
-            openMausStatusSystemPrompt(),
+            botFleetStatusSystemPrompt(),
           )
         : integrations.agents && sectionPeers.length > 0
           ? "You can work with the other bots in your section through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
@@ -2177,7 +2228,6 @@ if (recoveryOwners.length > 0) {
     ),
   );
 }
-routines.start();
 
 // Chat tools can prepare routine changes, but the harness applies them only
 // after the user confirms a durable card. Keeping this beside the scheduler
@@ -2191,7 +2241,7 @@ async function cloudRoutineReadiness(): Promise<{ ready: boolean; reason?: strin
   }
   const instance = registry.instances().find((candidate) => candidate.driverKind === "boxAgent");
   if (!instance) {
-    return { ready: false, reason: "The Cloud VM runner is unavailable. Restart OpenMausBot and try again." };
+    return { ready: false, reason: "The Cloud VM runner is unavailable. Restart BotFleet and try again." };
   }
   try {
     const snapshot = await instance.snapshot();
@@ -2310,15 +2360,15 @@ let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
 try {
   webhookIngress = await listenWebhookIngress(webhooks, { port: WEBHOOK_PORT });
-  console.log(`openmausbot webhook receiver on ${webhookIngress.baseUrl}`);
+  console.log(`botfleet webhook receiver on ${webhookIngress.baseUrl}`);
 } catch (error) {
   webhookIngressError = error instanceof Error ? error.message : String(error);
-  console.error(`openmausbot webhook receiver unavailable: ${webhookIngressError}`);
+  console.error(`botfleet webhook receiver unavailable: ${webhookIngressError}`);
 }
 
 const webhookIngressStatus = () => ({
   available: Boolean(webhookIngress),
-  baseUrl: webhookIngress?.baseUrl ?? `http://127.0.0.1:${WEBHOOK_PORT}`,
+  baseUrl: publicIngressUrl(cfg) || webhookIngress?.baseUrl || `http://127.0.0.1:${WEBHOOK_PORT}`,
   ...(webhookIngressError ? { error: webhookIngressError } : {}),
 });
 
@@ -2480,9 +2530,10 @@ async function runGroupMemberTurn(
     .map((b) => `@${b.name}${b.title ? ` (${b.title})` : ""}`)
     .join(", ");
   const system = [
-    `You are ${bot.name}, a bot in the room "${group.name}" in OpenMausBot.`,
+    `You are BF-${bot.name} (display: ${bot.name}), a bot in the room "${group.name}" in BotFleet. Always identify yourself as BF-${bot.name} in fleet communications and logs.`,
     bot.title && `Role: ${bot.title}.`,
     bot.description && `About: ${bot.description}`,
+    `Slack communication rules: Use Slack channel #agent-sync sparingly — ONLY to claim/unclaim tasks on the shared board or for strictly necessary coordination with external agents outside BotFleet. Never post unprompted status spam or routine commentary to Slack.`,
     `Room members: ${roster}, and ${userName} (the human).`,
     group.bulletin.trim() && `Room bulletin (shared instructions for everyone):\n${group.bulletin.trim()}`,
     `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.`,
@@ -2786,7 +2837,7 @@ function dispatchConnectorResume(entry: { botId: string; threadId: string; resum
   const owner = connectorThread(entry.botId, entry.threadId);
   if (!owner) return;
   const names = entry.labels.join(", ");
-  const prompt = `OpenMausBot connection update: the user securely connected ${names}. Continue the task that paused for this connection. Do not ask them to connect it again.`;
+  const prompt = `BotFleet connection update: the user securely connected ${names}. Continue the task that paused for this connection. Do not ask them to connect it again.`;
   if (owner.bot.busy) {
     pendingConnectorResumes.set(`${entry.threadId}:${entry.resumeKey}`, entry);
     return;
@@ -2882,8 +2933,8 @@ function dispatchSecretResume(entry: SecretResumeEntry) {
   if (!owner) return;
   const prompt =
     entry.outcome === "provided"
-      ? `OpenMausBot credential update: the user securely provided ${entry.label}. Continue the task that paused for it. You do not receive the secret and must not ask them to paste it into chat.`
-      : `OpenMausBot credential update: the user declined to provide ${entry.label}. Continue without it if possible, or briefly explain the limitation. Do not ask them to paste it into chat.`;
+      ? `BotFleet credential update: the user securely provided ${entry.label}. Continue the task that paused for it. You do not receive the secret and must not ask them to paste it into chat.`
+      : `BotFleet credential update: the user declined to provide ${entry.label}. Continue without it if possible, or briefly explain the limitation. Do not ask them to paste it into chat.`;
   if (owner.bot.busy) {
     pendingSecretResumes.set(`${entry.threadId}:${entry.messageId}`, entry);
     return;
@@ -3079,6 +3130,7 @@ async function perBotLocalVmCountForModeChange(): Promise<number | null> {
 function configStatus() {
   return {
     xai: { configured: Boolean(cfg.xai?.key) },
+    deepseek: { configured: Boolean(cfg.deepseek?.key) },
     composio: {
       configured: composio.configured(cfg),
       mode: composio.connectionMode(cfg),
@@ -3093,10 +3145,12 @@ function configStatus() {
     // not a secret — the sidebar shows it
     profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
     rooms: { turnTimeoutMinutes: roomTurnTimeoutMinutes(cfg) },
+    ingress: { publicUrl: cfg.ingress?.publicUrl || "" },
     localVm: {
       mode: localVmMode(cfg),
       maxInstances: localVmMaxInstances(cfg),
     },
+    autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
     features: { skillRecorder: skillRecorderEnabled(cfg), showToolCalls: showToolCallsEnabled(cfg) },
   };
 }
@@ -3393,7 +3447,7 @@ const server = createServer(async (req, res) => {
         }
         const channel = getOrCreateChannel(store, currentFrom, currentTarget);
         mirrorExchange(commsBus, currentFrom, currentTarget, message, channel, fromThreadId);
-        const prefixed = `[Message from @${currentFrom.name}, another bot in this OpenMausBot workspace. Reply to them.]\n\n${message}`;
+        const prefixed = `[Message from @${currentFrom.name}, another bot in this BotFleet workspace. Reply to them.]\n\n${message}`;
         const reply = await askBotAndWait(toBotId, prefixed, depth, fromBotId);
         mirrorReply(commsBus, currentTarget, reply, channel);
         return json(res, 200, { botName: currentTarget.name, text: reply });
@@ -3705,7 +3759,7 @@ const server = createServer(async (req, res) => {
     // ── independent webhook triggers ────────────────────────────────────
     // Management stays on the app-only server. Actual deliveries land on a
     // second, webhook-only loopback listener so Funnel or a future hosted
-    // relay never has to expose the rest of OpenMausBot's control surface.
+    // relay never has to expose the rest of BotFleet's control surface.
     if (path === "/api/webhooks" && method === "GET") {
       return json(res, 200, { webhooks: webhooks.list(), attempts: webhooks.listAttempts(), ingress: webhookIngressStatus() });
     }
@@ -4048,7 +4102,7 @@ const server = createServer(async (req, res) => {
           ? body.name.trim()
           : profileName
             ? `${profileName}'s Team`
-            : "My OpenMaus Team";
+            : "My BotFleet Team";
       const memberIds = store.bots.filter((bot) => !bot.hidden).map((bot) => bot.id);
       if (memberIds.length === 0) return json(res, 400, { error: "Create a bot before exporting your team" });
       try {
@@ -4480,6 +4534,15 @@ const server = createServer(async (req, res) => {
         if (!name) return json(res, 400, { error: "room name must not be empty" });
         if (name.length > 100) return json(res, 400, { error: "room name must be at most 100 characters" });
         patch.name = name;
+      }
+      if (body.avatarUrl !== undefined) {
+        if (body.avatarUrl !== null && typeof body.avatarUrl !== "string") {
+          return json(res, 400, { error: "avatarUrl must be a string or null" });
+        }
+        if (body.avatarUrl && !storedAvatarExists(body.avatarUrl)) {
+          return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
+        }
+        patch.avatarUrl = body.avatarUrl;
       }
       if (body.bulletin !== undefined) {
         if (typeof body.bulletin !== "string") return json(res, 400, { error: "bulletin must be a string" });
@@ -5554,7 +5617,19 @@ const server = createServer(async (req, res) => {
     // child proves it is OURS by echoing its pid (a stray dev server has
     // the same API shape but a different pid)
     if (method === "GET" && path === "/api/health") {
-      return json(res, 200, { app: "openmausbot", pid: process.pid, static: Boolean(STATIC_DIR) });
+      return json(res, 200, { app: "botfleet", pid: process.pid, static: Boolean(STATIC_DIR) });
+    }
+    if (method === "GET" && path === "/.well-known/apple-app-site-association") {
+      return json(res, 200, {
+        applinks: {
+          details: [
+            {
+              appIDs: ["CC8UTF7ATG.app.botfleet.ios", "CC8UTF7ATG.app.botfleet.macos"],
+              components: [{ "/": "/*" }],
+            },
+          ],
+        },
+      });
     }
 
     // ── inspector: a thread's runtime events + native protocol tee ──
@@ -5770,6 +5845,8 @@ const server = createServer(async (req, res) => {
           key !== "vps" &&
           key !== "rooms" &&
           key !== "localVm" &&
+          key !== "autoUpdate" &&
+          key !== "ingress" &&
           key !== "features",
       );
       if (reloadKeys.length > 0) await reloadProviders();
@@ -6033,7 +6110,7 @@ const server = createServer(async (req, res) => {
           return json(res, 409, { error: "the VPS computer is being used by this bot — interrupt the turn first" });
         }
         if (m[2] === "join") {
-          if (req.headers["x-openmausbot-companion"] === "1") {
+          if (req.headers["x-botfleet-companion"] === "1") {
             return json(res, 409, {
               error: "VPS live desktop control is currently available in the desktop app; the SSH viewer is loopback-only",
             });
@@ -6092,8 +6169,10 @@ const server = createServer(async (req, res) => {
   }
 });
 
+routines?.start();
+
 server.listen(PORT, "127.0.0.1", () => {
-  console.log(`openmausbot server on http://127.0.0.1:${PORT}`);
+  console.log(`botfleet server on http://127.0.0.1:${PORT}`);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {

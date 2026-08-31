@@ -545,19 +545,59 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </button>
           </div>
 
-          <div className="rounded-xl bg-card p-4">
+          <div className="rounded-xl bg-card p-4 flex flex-col gap-4">
             <ModelPicker
               bot={bot}
               contained
               label={
                 <div>
-                  <div className="text-[15px] font-medium text-ink">Model</div>
+                  <div className="text-[15px] font-medium text-ink">Primary Model</div>
                   <div className="mt-0.5 text-[13px] text-ink-secondary">
                     Which provider and model this bot runs on
                   </div>
                 </div>
               }
             />
+            
+            {bot.modelSelection.fallbacks?.map((fallback, i) => (
+              <div key={i} className="flex flex-col gap-2 pt-4 border-t border-hairline/40">
+                <div className="flex items-center justify-between">
+                  <div className="text-[13px] font-medium text-ink">Fallback #{i + 1}</div>
+                  <button 
+                    onClick={() => {
+                       const next = [...(bot.modelSelection.fallbacks || [])];
+                       next.splice(i, 1);
+                       patch({ modelSelection: { ...bot.modelSelection, fallbacks: next } });
+                    }}
+                    className="text-[12px] text-red-500 hover:underline"
+                  >
+                    Remove
+                  </button>
+                </div>
+                <ModelPicker
+                  bot={bot}
+                  contained
+                  selection={fallback}
+                  onChange={(sel) => {
+                     const next = [...(bot.modelSelection.fallbacks || [])];
+                     next[i] = sel;
+                     patch({ modelSelection: { ...bot.modelSelection, fallbacks: next } });
+                  }}
+                />
+              </div>
+            ))}
+            
+            {(bot.modelSelection.fallbacks?.length || 0) < 2 && (
+              <button
+                onClick={() => {
+                   const next = [...(bot.modelSelection.fallbacks || []), { instanceId: bot.modelSelection.instanceId, model: bot.modelSelection.model }];
+                   patch({ modelSelection: { ...bot.modelSelection, fallbacks: next } });
+                }}
+                className="mt-2 text-left text-[13px] text-blue-500 hover:underline"
+              >
+                + Add Fallback Model
+              </button>
+            )}
           </div>
 
           {!!engine?.capabilities?.effortLevels?.length && (

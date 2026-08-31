@@ -39,6 +39,9 @@ import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
 import { skillRecorderEnabled } from "@/lib/feature-flags";
 import { nextRename } from "@/lib/rename";
+import { imageAttachmentFromFile } from "@/lib/composer-attachments";
+import { botAvatarUrlFromStoredPath } from "../../shared/bot-avatar";
+import { ImagePlus } from "lucide-react";
 import { downloadAllBots } from "@/lib/team-files";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { MIN_QUERY, SearchResults } from "./SearchResults";
@@ -173,10 +176,24 @@ function groupPreview(group: Group, bots: Bot[]): string {
 }
 
 /** Room avatar: 2–3 overlapping mauses in the same 56px slot a bot gets. */
-function StackedMauses({ members, density }: { members: Bot[]; density: SidebarDensity }) {
+function StackedMauses({ group, members, density }: { group: Group; members: Bot[]; density: SidebarDensity }) {
   const iconOnly = density === "icons";
   const slotSize = iconOnly ? "size-12" : density === "compact" ? "size-10" : "size-14";
   const singleSize = iconOnly ? 44 : density === "compact" ? 40 : 56;
+  
+  if (group.avatarUrl) {
+    return (
+      <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
+        <img
+          src={group.avatarUrl}
+          alt={group.name}
+          className="size-full rounded-full object-cover shadow-sm"
+          style={{ width: singleSize, height: singleSize }}
+          draggable={false}
+        />
+      </div>
+    );
+  }
   if (members.length <= 1) {
     const b = members[0];
     return (
@@ -242,7 +259,7 @@ function GroupListItem({
       title={density === "icons" ? group.name : undefined}
       aria-label={density === "icons" ? group.name : undefined}
     >
-      <StackedMauses members={members} density={density} />
+      <StackedMauses group={group} members={members} density={density} />
       <div className={cn("min-w-0 flex-1", density === "icons" && "hidden")}>
         <div className="flex items-baseline justify-between gap-2">
           <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
@@ -295,6 +312,25 @@ function RoomContextMenu({
     if (name) dispatch({ type: "patchGroup", groupId: group.id, patch: { name } });
     onClose();
   };
+  
+  const fileRef = useRef<HTMLInputElement>(null);
+  const [uploading, setUploading] = useState(false);
+  const upload = async (file: File | undefined) => {
+    if (!file) return;
+    setUploading(true);
+    try {
+      const saved = await imageAttachmentFromFile(file);
+      if (!saved) throw new Error("Choose a PNG, JPEG, GIF, or WebP image");
+      const avatarUrl = botAvatarUrlFromStoredPath(saved.path);
+      if (!avatarUrl) throw new Error("The uploaded image could not be used as an avatar");
+      dispatch({ type: "patchGroup", groupId: group.id, patch: { avatarUrl } });
+      onClose();
+    } catch (e) {
+      console.error(e);
+      setUploading(false);
+    }
+  };
+
   const top = Math.min(menu.y, window.innerHeight - 204);
   const left = Math.min(menu.x, window.innerWidth - 240);
   return createPortal(
@@ -355,6 +391,23 @@ function RoomContextMenu({
           Rename Channel
         </button>
       )}
+      <button
+        onClick={() => {
+          fileRef.current?.click();
+        }}
+        disabled={uploading}
+        className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70 disabled:opacity-50"
+      >
+        {uploading ? <Loader2 size={16} className="animate-spin text-ink-secondary" /> : <ImagePlus size={16} className="text-ink-secondary" />}
+        Change Photo
+      </button>
+      <input
+        ref={fileRef}
+        type="file"
+        accept="image/png, image/jpeg, image/gif, image/webp"
+        className="hidden"
+        onChange={(e) => { void upload(e.target.files?.[0]); e.target.value = ""; }}
+      />
       <button
         onClick={() => {
           onClose();

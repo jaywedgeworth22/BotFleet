@@ -216,16 +216,26 @@ const support: AcpSupport = {
   // and BEFORE `stdio` (`grok agent -m slug stdio`). Putting -m first is
   // accepted as a TUI option and then ignored, so ACP session/new keeps
   // [models].default (grok-4.6) and oMLX never sees a request.
-  spawnArgs: (config, turn) => [
-    "--permission-mode",
-    config.fullAuto ? "bypassPermissions" : "default",
-    "agent",
-    ...(turn.model ? ["-m", turn.model] : []),
-    // long form on purpose: `--effort` is documented as an alias, and an
-    // alias is the part a CLI is free to rename
-    ...(turn.effort ? ["--reasoning-effort", turn.effort] : []),
-    "stdio",
-  ],
+  spawnArgs: (config, turn) => {
+    const args = [
+      "--permission-mode",
+      config.fullAuto ? "bypassPermissions" : "default",
+      "agent",
+      ...(turn.model ? ["-m", turn.model] : []),
+      ...(turn.effort ? ["--reasoning-effort", turn.effort] : []),
+    ];
+    // Spawning Grok subagents should use only the MCP that the bot sent in parameters.
+    // Inject the requested MCPs dynamically.
+    if (turn.integrations) {
+      for (const [name, def] of Object.entries(turn.integrations)) {
+        if (def && typeof def === "object" && "command" in def) {
+          args.push("--mcp", `${name}=${def.command} ${(def.args || []).join(" ")}`);
+        }
+      }
+    }
+    args.push("stdio");
+    return args;
+  },
 
   // -m on argv is necessary but not sufficient: session/new still starts on
   // [models].default. Pin the slug over the wire, same as Hermes/Droid.

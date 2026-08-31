@@ -47,6 +47,8 @@ export interface ModelSelection {
   model: string;
   /** Optional: no effort means no flag, and the CLI keeps its own default. */
   effort?: EffortLevel;
+  /** Optional: engines to try if this one fails (e.g. quota/rate limit) */
+  fallbacks?: ModelSelection[];
 }
 
 // ── instance configuration envelope ────────────────────────────────────
@@ -163,7 +165,7 @@ export interface SendTurnInput {
      * bridge harness-controlled lets it turn connection requests into trusted
      * chat cards consistently across provider CLIs. */
     composio?: { command: string; args: string[]; env: Record<string, string> };
-    /** Cloud computer, reached through OpenMausBot's REST-to-MCP adapter.
+    /** Cloud computer, reached through BotFleet's REST-to-MCP adapter.
      * `control` is the harness's loopback who-is-driving endpoint: the
      * adapter consults it so a person who takes the wheel in the panel
      * pauses the bot's hands mid-turn instead of typing over them. */
