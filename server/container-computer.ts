@@ -40,6 +40,7 @@ export const IMAGE_LAYER_VERSION = "4";
 export const IMAGE_LAYER_LABEL = "com.botfleet.image-layer";
 export const IMAGE = `${IMAGE_REPOSITORY}:driver-${CUA_DRIVER_VERSION}-v${IMAGE_LAYER_VERSION}`;
 export const CONTAINER = "botfleet-computer";
+const LEGACY_CONTAINER_PREFIXES = ["openmausbot-computer", "opengrokbot-computer"] as const;
 export const MANAGED_LABEL = "com.botfleet.local-vm";
 export const DRIVER_LABEL = "com.botfleet.cua-driver";
 export const BASE_IMAGE_LABEL = "com.botfleet.cua-base";
@@ -448,6 +449,24 @@ export async function containerComputerStatus(
   if (!status.runtime || !status.daemonUp) {
     status.problem = statusProblem(status);
     return status;
+  }
+
+  try {
+    await runner(status.runtime, ["inspect", target.containerName]);
+  } catch {
+    for (const prefix of LEGACY_CONTAINER_PREFIXES) {
+      const legacy =
+        target.containerName === CONTAINER
+          ? prefix
+          : target.containerName.replace(CONTAINER, prefix);
+      try {
+        await runner(status.runtime, ["inspect", legacy]);
+        await runner(status.runtime, ["rename", legacy, target.containerName]);
+        break;
+      } catch {
+        /* predecessor missing, or rename lost the race — try the next name */
+      }
+    }
   }
 
   try {

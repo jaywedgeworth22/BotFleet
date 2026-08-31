@@ -298,21 +298,24 @@ export interface ConfigStatus {
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "composio" | "box" | "vps" | "rooms" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "features"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
   return {
     xai: frame.xai,
+    deepseek: frame.deepseek,
     composio: frame.composio,
     box: frame.box,
     vps: frame.vps,
     rooms: frame.rooms,
+    ingress: frame.ingress,
     localVm: frame.localVm,
     opencodeGo: frame.opencodeGo,
     tts: frame.tts,
     imageGen: frame.imageGen,
     profile: frame.profile,
+    autoUpdate: frame.autoUpdate,
     features: frame.features,
   };
 }

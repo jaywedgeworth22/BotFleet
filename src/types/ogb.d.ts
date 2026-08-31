@@ -228,6 +228,7 @@ type SkillRecordingPayload = {
         download(): Promise<void>;
         /** quit-and-install the downloaded update */
         install(): Promise<void>;
+        setEnabled?(enabled: boolean): Promise<void>;
         onState(cb: (s: UpdaterState) => void): () => void;
       };
       dialog?: {

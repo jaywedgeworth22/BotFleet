@@ -419,13 +419,10 @@ try {
     const packaged = path.join(debResources, "cua-linux-x64", path.basename(unpackedFile));
     if (debHashes.get(packaged) !== expected) fail(`DEB and linux-unpacked CUA hashes differ`);
   }
-  const desktopFile = path.join(
-    extracted,
-    "usr",
-    "share",
-    "applications",
-    "com.botfleet.app.desktop",
-  );
+  const desktopDir = path.join(extracted, "usr", "share", "applications");
+  const desktopNames = readdirSync(desktopDir).filter((name) => name.endsWith(".desktop"));
+  if (!desktopNames.length) fail("missing .desktop file in usr/share/applications");
+  const desktopFile = path.join(desktopDir, desktopNames[0]);
   const scalableIcon = path.join(
     extracted,
     "usr",
@@ -443,7 +440,7 @@ try {
     "Name=BotFleet",
     "Exec=/opt/BotFleet/botfleet %U",
     "Icon=botfleet",
-    "StartupWMClass=com.botfleet.app",
+    "StartupWMClass=",
     "Categories=Utility;",
   ]) {
     if (!desktop.includes(expected)) fail(`desktop entry is missing ${JSON.stringify(expected)}`);

@@ -1,6 +1,3 @@
-import { join } from "node:path";
-import { homedir } from "node:os";
-
 import type { ModelCatalog } from "../../contracts.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
@@ -19,7 +16,7 @@ const support: AcpSupport = {
   models: STATIC_DSH_MODELS,
   resolveModels: () => STATIC_DSH_MODELS,
   effortLevels: ["low", "medium", "high"], // Whatever is supported
-  defaultCli: join(homedir(), "apps", "dsh-runtime", "dsh-acp.sh"),
+  defaultCli: "dsh",
   nativeSource: "dsh.acp",
   loginNote: "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",
 
@@ -30,8 +27,8 @@ const support: AcpSupport = {
   resolveTurnModel: (model) => model,
 
   spawnArgs: (_config, _turn) => [
-    // dsh-acp.sh takes no arguments or we can pass model if needed. 
-    // Usually ACP handles it via session/set_model or init payload.
+    // Official DSH ACP is a PATH binary. Instance config can override `cli`
+    // for a custom script; session/set_model carries the model id.
   ],
 
   async configureSession({ request, sessionId, turn }) {

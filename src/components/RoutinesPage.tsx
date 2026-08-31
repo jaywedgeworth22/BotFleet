@@ -607,19 +607,18 @@ export function RoutinesPage() {
   }, [pausedOpen, paused.length]);
 
   useEffect(() => {
-    if (state.selectedRoutineId) {
-      const targetRoutine = state.routines.find((r) => r.id === state.selectedRoutineId);
-      if (targetRoutine) {
-        setBotFilter(targetRoutine.botId || "all");
-        setSelected({
-          id: `routine-${targetRoutine.id}`,
-          at: targetRoutine.nextRunAt || Date.now(),
-          routine: targetRoutine,
-          run: state.routineRuns.find((run) => run.routineId === targetRoutine.id) ?? null,
-        });
-      }
-    }
-  }, [state.selectedRoutineId, state.routines, state.routineRuns]);
+    if (!state.selectedRoutineId) return;
+    const targetRoutine = state.routines.find((r) => r.id === state.selectedRoutineId);
+    if (!targetRoutine) return;
+    setBotFilter(targetRoutine.botId || "all");
+    setSelected({
+      id: `routine-${targetRoutine.id}`,
+      at: targetRoutine.nextRunAt || Date.now(),
+      routine: targetRoutine,
+      run: state.routineRuns.find((run) => run.routineId === targetRoutine.id) ?? null,
+    });
+    dispatch({ type: "showRoutines" });
+  }, [state.selectedRoutineId, state.routines, state.routineRuns, dispatch]);
 
   const move = (direction: number) => setAnchor((current) => addDays(current, direction * viewDays));
   const goToday = () => setAnchor(viewDays === 7 ? startOfWeek(Date.now()) : startOfDay(Date.now()));

@@ -28,6 +28,37 @@ const MODELS = {
   ],
 };
 
+/** USD per 1M tokens — same figures the Usage page shows. */
+export const DEEPSEEK_RATES_PER_MILLION = {
+  "deepseek-v4-flash": { input: 0.07, cache: 0.007, output: 0.14 },
+  "deepseek-v4-pro": { input: 0.14, cache: 0.014, output: 0.28 },
+  "deepseek-reasoner": { input: 0.55, cache: 0.14, output: 2.19 },
+} as const;
+
+export type DeepSeekUsage = { input: number; output: number; cachedInput?: number };
+
+export function usageFromDeepSeekApi(usage: unknown): DeepSeekUsage | null {
+  if (!usage || typeof usage !== "object") return null;
+  const u = usage as Record<string, unknown>;
+  const input = typeof u.prompt_tokens === "number" ? u.prompt_tokens : 0;
+  const output = typeof u.completion_tokens === "number" ? u.completion_tokens : 0;
+  const cached = typeof u.prompt_cache_hit_tokens === "number" ? u.prompt_cache_hit_tokens : undefined;
+  return cached === undefined ? { input, output } : { input, output, cachedInput: cached };
+}
+
+/** Model-specific API cost from this turn's token counts. Unknown model
+ * ids inherit V4 Pro (the driver default) so Usage never shows a dash
+ * when the API reported tokens. */
+export function computeDeepSeekCost(model: string | undefined, usage: DeepSeekUsage | null): number | null {
+  if (!usage) return null;
+  const rates =
+    DEEPSEEK_RATES_PER_MILLION[(model ?? "") as keyof typeof DEEPSEEK_RATES_PER_MILLION] ??
+    DEEPSEEK_RATES_PER_MILLION["deepseek-v4-pro"];
+  const cached = Math.max(0, Math.min(usage.input, usage.cachedInput ?? 0));
+  const uncached = Math.max(0, usage.input - cached);
+  return (uncached * rates.input + cached * rates.cache + usage.output * rates.output) / 1_000_000;
+}
+
 export interface DeepSeekConfig {
   url: string;
   /** resolved at create-time from instance environment / app config */
@@ -70,11 +101,16 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
       messages: Array<{ role: string; content: string }>,
       model: string,
       opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void },
-    ): Promise<{ text: string; usage: { input: number; output: number } | null }> => {
+    ): Promise<{ text: string; usage: DeepSeekUsage | null }> => {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, stream: opts.stream }),
+        body: JSON.stringify({
+          model,
+          messages,
+          stream: opts.stream,
+          ...(opts.stream ? { stream_options: { include_usage: true } } : {}),
+        }),
         signal: opts.signal ?? AbortSignal.timeout(120_000),
       });
       if (!res.ok) {
@@ -85,13 +121,11 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
         const json: any = await res.json();
         return {
           text: json.choices?.[0]?.message?.content ?? "",
-          usage: json.usage
-            ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
-            : null,
+          usage: usageFromDeepSeekApi(json.usage),
         };
       }
       let text = "";
-      let usage: { input: number; output: number } | null = null;
+      let usage: DeepSeekUsage | null = null;
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -117,9 +151,7 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
             text += delta;
             opts.onDelta?.(delta);
           }
-          if (chunk.usage) {
-            usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
-          }
+          if (chunk.usage) usage = usageFromDeepSeekApi(chunk.usage);
         }
       }
       return { text, usage };
@@ -170,7 +202,14 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
               emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
             }
             active.delete(threadId);
-            emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: null });
+            const completed: RuntimeEvent = {
+              ...base(threadId, turnId),
+              type: "turn.completed",
+              ok: true,
+              stopReason: null,
+              cost: computeDeepSeekCost(turn.model || MODELS.default, usage),
+            };
+            emit(usage ? { ...completed, usage } : completed);
             return;
           } catch (e) {
             const aborted = (e as Error).name === "AbortError";

@@ -150,7 +150,7 @@ function applyUnreadBadge(win = mainWindow) {
 // intercepting input. This app is not graphics-heavy, so reliability wins.
 if (process.platform === "linux") {
   app.disableHardwareAcceleration();
-  app.setDesktopName("app.botfleet.macos");
+  app.setDesktopName("botfleet.desktop");
 }
 
 // One instance per user: without this lock a second launch forks a second

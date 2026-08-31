@@ -31,6 +31,8 @@ export const VPS_IMAGE = CUA_IMAGE;
 export const VPS_MANAGED_LABEL = "com.botfleet.vps";
 export const VPS_CONTAINER_LABEL = "com.botfleet.container";
 export const VPS_VIEWER_LABEL = "com.botfleet.vps-viewer";
+const LEGACY_VPS_MANAGED_LABELS = ["com.openmausbot.vps", "com.opengrokbot.vps"] as const;
+const LEGACY_VPS_CONTAINER_LABELS = ["com.openmausbot.container", "com.opengrokbot.container"] as const;
 export const VPS_CONTAINER_PREFIX = "botfleet-vps";
 export const LEGACY_VPS_CONTAINER_PREFIXES = ["openmausbot-vps", "opengrokbot-vps"] as const;
 // SIGTERM must give ssh + docker time to tear down the remote exec before the
@@ -481,8 +483,13 @@ async function computeVpsComputerStatus(
       detail?.Image === inspectedImageId &&
       imageLabelsMatch(labels) &&
       labels?.[VPS_VIEWER_LABEL] === VIEWER_VERSION;
-    status.managed =
-      labels?.[VPS_MANAGED_LABEL] === "1" && labels?.[VPS_CONTAINER_LABEL] === status.container_name;
+    const managedFlag =
+      labels?.[VPS_MANAGED_LABEL] === "1" ||
+      LEGACY_VPS_MANAGED_LABELS.some((key) => labels?.[key] === "1");
+    const namedByUs =
+      labels?.[VPS_CONTAINER_LABEL] === status.container_name ||
+      LEGACY_VPS_CONTAINER_LABELS.some((key) => labels?.[key] === status.container_name);
+    status.managed = managedFlag && namedByUs;
     status.network = hasNoPublishedPorts(detail?.HostConfig, detail?.NetworkSettings?.Networks) ? "private" : "unsafe";
     status.mounts = hasNoHostMounts(detail ?? {}) ? "none" : "unsafe";
     status.security = dockerSecurityIsHardened(detail?.HostConfig, { restartPolicy: "unless-stopped" })

@@ -52,6 +52,10 @@ export function registerUpdaterIpc() {
   ipcMain.handle("update:check", () => updaterCoordinator?.check(true));
   ipcMain.handle("update:download", () => updaterCoordinator?.download());
   ipcMain.handle("update:install", () => updaterCoordinator?.install());
+  ipcMain.handle("update:set-enabled", (_event, enabled) => {
+    autoUpdateEnabled = Boolean(enabled);
+    if (autoUpdateEnabled) void updaterCoordinator?.check(true);
+  });
 }
 
 export function startUpdater(mainWindow) {
@@ -76,7 +80,7 @@ export function startUpdater(mainWindow) {
     // periodic checks still honor autoUpdate.enabled below.
     autoUpdateEnabled = config.autoUpdate?.enabled === true;
   } catch (e) {
-    // continue if config is unreadable or missing
+    autoUpdateEnabled = false;
   }
 
   try {
@@ -99,8 +103,12 @@ export function startUpdater(mainWindow) {
   // silent on failure, hence the arrow: a bare `check` would receive the
   // timer's argument as `manual` and start reporting errors again.
   // Manual "Check for updates" always works once the coordinator exists.
-  if (autoUpdateEnabled) {
-    setTimeout(() => void updaterCoordinator?.check(), 15_000).unref?.();
-    setInterval(() => void updaterCoordinator?.check(), 60 * 60 * 1000).unref?.();
-  }
+  // Timers stay armed so enabling the setting later takes effect without
+  // a restart; they no-op while autoUpdateEnabled is false.
+  setTimeout(() => {
+    if (autoUpdateEnabled) void updaterCoordinator?.check();
+  }, 15_000).unref?.();
+  setInterval(() => {
+    if (autoUpdateEnabled) void updaterCoordinator?.check();
+  }, 60 * 60 * 1000).unref?.();
 }

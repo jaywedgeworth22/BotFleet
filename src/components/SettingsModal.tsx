@@ -88,7 +88,7 @@ function CustomIngressFields() {
     void fetch("/api/config", {
       method: "PUT",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ingress: { publicUrl: publicUrl.trim() || undefined } }),
+      body: JSON.stringify({ ingress: { publicUrl: publicUrl.trim() } }),
     })
       .then((r) => r.json())
       .then((config) => dispatch({ type: "configStatus", config }))
@@ -144,7 +144,10 @@ function UpdatesRow() {
                 body: JSON.stringify({ autoUpdate: { enabled } }),
               })
                 .then((r) => r.json())
-                .then((config) => dispatch({ type: "configStatus", config }));
+                .then((config) => {
+                  dispatch({ type: "configStatus", config });
+                  void window.ogb?.updater?.setEnabled?.(enabled);
+                });
             }}
           />
           Enable automatic update checks

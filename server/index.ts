@@ -1347,32 +1347,22 @@ bus.subscribe((event: RuntimeEvent) => {
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
-        if (!event.ok && bot.modelSelection.fallbacks?.length) {
-          // Fallback logic
+        let fallbackUserMessage: Message | undefined;
+        if (
+          !event.ok &&
+          event.stopReason !== "interrupted" &&
+          event.stopReason !== "cancelled" &&
+          bot.modelSelection.fallbacks?.length
+        ) {
           const fallbacks = [...bot.modelSelection.fallbacks];
           const nextModel = fallbacks.shift()!;
-          const updatedSelection = { ...nextModel, fallbacks };
-          store.patchBot(bot.id, { modelSelection: updatedSelection });
-          
-          // Identify the last user message on the active path to retry
+          store.patchBot(bot.id, { modelSelection: { ...nextModel, fallbacks } });
           const activeMsgs = store.activePath(event.threadId);
-          let lastUserMessage: Message | undefined;
-          // Search backwards for the last user message that isn't a steering message
           for (let i = activeMsgs.length - 1; i >= 0; i--) {
-             if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
-                 lastUserMessage = activeMsgs[i];
-                 break;
-             }
-          }
-          if (lastUserMessage && typeof lastUserMessage.text === "string") {
-            const userMsg = lastUserMessage;
-            // startTurn rejects while the bot is still busy from this failed
-            // turn. Settle idle first so the fallback can dispatch.
-            if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
-            setTimeout(() => {
-              void startTurn(bot.id, userMsg.text || "", { userMessage: userMsg });
-            }, 100);
-            return;
+            if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
+              fallbackUserMessage = activeMsgs[i];
+              break;
+            }
           }
         }
 
@@ -1393,8 +1383,17 @@ bus.subscribe((event: RuntimeEvent) => {
         });
         // settled → idle; a setup failure already marked it dead, keep that
         if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
-        store.patchBot(bot.id, { unread: true });
-        if (routineRun?.status !== "failed") {
+        store.patchBot(bot.id, { unread: true, inflightThreadId: undefined });
+        if (fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
+          const userMsg = fallbackUserMessage;
+          const fallbackBotId = bot.id;
+          void startTurn(fallbackBotId, userMsg.text || "", {
+            userMessage: userMsg,
+            threadId: event.threadId,
+          }).catch((error) => {
+            console.error(`fallback startTurn failed for ${fallbackBotId}:`, error);
+          });
+        } else if (routineRun?.status !== "failed") {
           // the frame carries the bot's avatar so every desktop client can
           // show the notification under that bot's own face
           notify(buildNotification("done", bot, event.threadId, reply, { avatarUrl: bot.avatarUrl }));
@@ -1826,7 +1825,7 @@ async function startTurn(
   // in the background — box provisioning can take ~90s and must never
   // hang the HTTP request
   store.setActivity(bot.id, "working");
-  store.patchBot(bot.id, { unread: false });
+  store.patchBot(bot.id, { unread: false, inflightThreadId: threadId });
   turnUsage.delete(threadId);
 
   void (async () => {
@@ -2163,6 +2162,7 @@ async function startTurn(
         tool: { name: `error: ${message.slice(0, 160)}`, ok: false },
       });
       store.setActivity(bot.id, "idle");
+      store.patchBot(bot.id, { inflightThreadId: undefined });
       opts?.onDispatchError?.(message);
       // a dispatch failure never emits turn.completed, so the settle-driven
       // drain would strand anything queued behind this turn
@@ -2418,38 +2418,30 @@ _loadPending();
   for (const threadId of leftover) drainDelegations(commsBus, approvalBus, threadId, runDelegatedTurn);
 }
 
-// Auto-resume mid-task bots on startup / restart:
-// If a bot was interrupted while working or has an unfulfilled user message,
-// automatically prompt the bot to review previous context and resume its work.
+// Auto-resume only when a previous process died mid-turn. Transcript shape
+// is not a crash signal (Stop, a tool-only turn, and a crash can all end
+// on a user or activity message). inflightThreadId is written at dispatch
+// and cleared when the turn settles, so it is the durable crash marker.
 {
   setTimeout(() => {
     for (const bot of store.bots) {
       if (bot.hidden) continue;
-      const tasks = store.tasks(bot.id);
-      for (const task of tasks) {
-        const threadId = task.threadId;
-        const activeMsgs = store.activePath(threadId);
-        if (!activeMsgs.length) continue;
-
-        const lastMsg = activeMsgs[activeMsgs.length - 1];
-        const isInterruptedUserTurn = lastMsg.role === "user" && lastMsg.kind === "text";
-        const isInterruptedToolTurn = lastMsg.role === "bot" && lastMsg.kind === "activity";
-
-        if (isInterruptedUserTurn || isInterruptedToolTurn) {
-          console.log(`boot recovery: auto-resuming interrupted task "${task.title || 'Task'}" for ${bot.name} (${threadId})`);
-          const prompt = isInterruptedUserTurn
-            ? (lastMsg.text || "Please resume.")
-            : "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
-
-          void startTurn(bot.id, prompt, {
-            threadId,
-            userMessage: isInterruptedUserTurn ? lastMsg : undefined,
-          }).catch((err) => {
-            console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
-          });
-          break;
-        }
-      }
+      const threadId = bot.inflightThreadId;
+      if (!threadId) continue;
+      const activeMsgs = store.activePath(threadId);
+      const lastMsg = activeMsgs[activeMsgs.length - 1];
+      const resumeUser = lastMsg?.role === "user" && lastMsg.kind === "text" ? lastMsg : undefined;
+      const prompt = resumeUser
+        ? (resumeUser.text || "Please resume.")
+        : "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
+      console.log(`boot recovery: auto-resuming in-flight thread ${threadId} for ${bot.name}`);
+      void startTurn(bot.id, prompt, {
+        threadId,
+        userMessage: resumeUser,
+      }).catch((err) => {
+        console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
+        store.patchBot(bot.id, { inflightThreadId: undefined });
+      });
     }
   }, 2500);
 }
@@ -5855,6 +5847,7 @@ const server = createServer(async (req, res) => {
         if (persisted.opencodeGo?.apiKey !== undefined) persisted.opencodeGo.apiKey = "";
         if (persisted.tts?.key !== undefined) persisted.tts.key = "";
         if (persisted.imageGen?.key !== undefined) persisted.imageGen.key = "";
+        if (persisted.deepseek?.key !== undefined) persisted.deepseek.key = "";
         saveConfig(persisted);
         syncCredentialEnv(patch);
         Object.assign(cfg, loadConfig());

@@ -415,6 +415,9 @@ export interface BotRecord {
    * could not tell working from waiting-on-you from a stalled engine.
    * Transient like busy: reset to idle on load. */
   activity?: BotActivity;
+  /** Durable crash marker: the thread a turn was dispatched on. Cleared
+   * when that turn settles. Unlike activity/busy, this survives restart. */
+  inflightThreadId?: string;
   createdAt: number;
 }
 
