@@ -294,6 +294,7 @@ export function EnginesSettings() {
       )}
       {(() => {
         const { subscription, custom } = splitEngineRail(rows);
+        subscription.sort((a, b) => (a.snapshot.state === "unavailable" ? 1 : 0) - (b.snapshot.state === "unavailable" ? 1 : 0));
         return (
           <>
             {subscription.length > 0 && <EngineGroupLabel>Cloud</EngineGroupLabel>}
