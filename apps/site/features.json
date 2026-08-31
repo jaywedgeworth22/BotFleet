@@ -4,7 +4,20 @@
     "repo": "https://github.com/jaywedgeworth22/BotFleet",
     "upstream": "https://github.com/milind-soni/OpenMausBot"
   },
-  "exampleFleet": ["Director", "Producer", "Publisher", "Oracle", "Builder", "Fixer", "Designer", "Compiler", "Monitor", "Plumber", "Housekeeper", "Firefighter"],
+  "exampleFleet": [
+    "Director",
+    "Producer",
+    "Publisher",
+    "Oracle",
+    "Builder",
+    "Fixer",
+    "Designer",
+    "Compiler",
+    "Monitor",
+    "Plumber",
+    "Housekeeper",
+    "Firefighter"
+  ],
   "sections": [
     {
       "id": "established",
@@ -16,42 +29,98 @@
         {
           "title": "Chat Bubble &amp; Request ID Copy Controls",
           "desc": "Click any user or bot message bubble to instantly copy its text.&nbsp; Hover for a dedicated copy button with right-click options to copy the Request ID or Message ID for quick logging.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open",
+            "note": "Verified in daily use"
+          }
         },
         {
           "title": "Usage Telemetry &amp; Central Accounting",
           "desc": "Live token consumption (prompt, completion, cache hits) and model costs stream to Usage Monitor (usage.jays.services) with automatic project and repo classification.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Live on usage.jays.services" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open",
+            "note": "Live on usage.jays.services"
+          }
         },
         {
           "title": "Multi-Repo Channels &amp; Interactive File Links",
           "desc": "Channels can attach multiple repositories (e.g. AI Fleet Coordinator + Fleet Ops) with automatic context injection.&nbsp; Local file links open in default Mac apps with 1 click or reveal in Finder on Option-click.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open",
+            "note": "Verified in daily use"
+          }
         },
         {
           "title": "Native DeepSeek Engine &amp; Pricing Breakdown",
           "desc": "Native API and ACP drivers for DeepSeek V4 Flash, V4 Pro, and R1 Reasoner, complete with an in-app model rates and token pricing reference in Settings.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open",
+            "note": "Verified in daily use"
+          }
         },
         {
           "title": "Multi-Tier Model Fallback Chains",
           "desc": "Assign 1st, 2nd, and 3rd choice fallback models to each bot.&nbsp; When primary engines hit rate limits or downtime, BotFleet degrades down the chain automatically without interrupting work.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open",
+            "note": "Verified in daily use"
+          }
         },
         {
           "title": "Mid-Task Crash &amp; Restart Recovery",
           "desc": "Interrupted turns and mid-flight tool executions are automatically detected on boot, prompting immediate resumption instead of leaving tasks stuck in an unknown state.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open",
+            "note": "Verified in daily use"
+          }
         },
         {
           "title": "Dynamic System Theme &amp; Update Controls",
           "desc": "Theme auto-switches between dark and light to match macOS.&nbsp; Includes update toggle preferences and refined in-app banner controls.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open",
+            "note": "Verified in daily use"
+          }
         },
         {
           "title": "Custom BotFleet Brand &amp; Icons",
           "desc": "Custom metallic robot trio mascot branding and matching full-bleed macOS and iOS app icon sets across the entire fleet ecosystem.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open",
+            "note": "Verified in daily use"
+          }
         }
       ]
     },
@@ -65,27 +134,55 @@
         {
           "title": "Always-On iMessage Relay Daemon",
           "desc": "Background relay daemon connecting Messages.app bot group chats to the BotFleet backend with persistent launchd supervision.",
-          "prov": { "type": "host", "note": "Under active test" }
+          "prov": {
+            "type": "host",
+            "note": "Under active test"
+          }
         },
         {
           "title": "iOS Companion Deep-Link Infrastructure",
           "desc": "Universal Links (BotFleet.app), App Groups, and Remote Control companion for iPhone and iPad, prepared for public TestFlight.",
-          "prov": { "type": "pr", "prs": [5], "state": "open" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open"
+          }
         },
         {
           "title": "Fleet MCP Tools &amp; Standard Skills",
           "desc": "Global MCP servers from Claude desktop configurations merged into BotFleet agents, alongside standard fleet repo skills.",
-          "prov": { "type": "pr", "prs": [1], "state": "open" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              1
+            ],
+            "state": "open"
+          }
         },
         {
-          "title": "Custom Webhook Ingress Domain",
-          "desc": "Route webhook triggers to a dedicated custom domain with token validation for external CI/CD pipelines.",
-          "prov": { "type": "pr", "prs": [5], "state": "open" }
+          "title": "TryCloudflare (Free URL) &amp; Networking",
+          "desc": "Deeply integrated TryCloudflare mode automatically provisions a secure, persistent *.trycloudflare.com URL for webhooks and mobile linking without configuration.&nbsp; Optional Tailscale or Custom Domain routing is fully supported.",
+          "prov": {
+            "type": "pr",
+            "prs": [
+              5
+            ],
+            "state": "open"
+          }
         },
         {
           "title": "One-Command TestFlight Ship",
           "desc": "Automated signing, archiving, and TestFlight upload pipeline from the Mac build environment.",
-          "prov": { "type": "pr", "prs": [4], "state": "merged", "note": "Merged to integration branch" }
+          "prov": {
+            "type": "pr",
+            "prs": [
+              4
+            ],
+            "state": "merged",
+            "note": "Merged to integration branch"
+          }
         }
       ]
     }
