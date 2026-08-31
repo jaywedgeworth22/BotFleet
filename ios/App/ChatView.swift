@@ -15,6 +15,8 @@ import CompanionCore
 // lives.
 import UIKit
 import AVFoundation
+import PhotosUI
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     let chat: Chat
@@ -29,6 +31,12 @@ struct ChatView: View {
     @State private var showingProfile = false
     @State private var showCommandHUD = false
     @State private var shareFile: ShareFile?
+    @State private var stagedAttachments: [StagedAttachment] = []
+    @State private var selectedPhotoItems: [PhotosPickerItem] = []
+    @State private var showingPhotoPicker = false
+    @State private var showingFileImporter = false
+    @State private var isUploadingAttachments = false
+    @State private var isDropTargeted = false
     @FocusState private var composerFocused: Bool
     @StateObject private var dictation = SpeechDictation()
     /// The opening beat: the island grows with the bot's face in it, then
@@ -220,18 +228,21 @@ struct ChatView: View {
                     proxy.scrollTo(Self.liveBubbleId, anchor: .bottom)
                 }
                 .onChange(of: session.focusedMessageId) { _, messageId in
-                    guard let messageId,
-                          messages.contains(where: { $0.id == messageId })
-                    else { return }
-                    withAnimation { proxy.scrollTo(messageId, anchor: .center) }
-                    session.consumeFocus(messageId)
+                    guard let messageId else { return }
+                    let contains = messages.contains(where: { $0.id == messageId })
+                    if contains {
+                        withAnimation { proxy.scrollTo(messageId, anchor: .center) }
+                        session.consumeFocus(messageId)
+                    }
                 }
                 .task {
-                    guard let messageId = session.focusedMessageId,
-                          messages.contains(where: { $0.id == messageId })
-                    else { return }
-                    proxy.scrollTo(messageId, anchor: .center)
-                    session.consumeFocus(messageId)
+                    if let messageId = session.focusedMessageId {
+                        let contains = messages.contains(where: { $0.id == messageId })
+                        if contains {
+                            proxy.scrollTo(messageId, anchor: .center)
+                            session.consumeFocus(messageId)
+                        }
+                    }
                 }
             }
             .id(threadId)
@@ -305,6 +316,31 @@ struct ChatView: View {
         }
         .sheet(item: $shareFile) { file in
             ActivityShareSheet(items: [file.url])
+        }
+        .photosPicker(
+            isPresented: $showingPhotoPicker,
+            selection: $selectedPhotoItems,
+            maxSelectionCount: 10,
+            matching: .images
+        )
+        .onChange(of: selectedPhotoItems) { _, items in
+            Task { await processPhotoItems(items) }
+        }
+        .fileImporter(
+            isPresented: $showingFileImporter,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            processImportedFiles(result)
+        }
+        .onDrop(of: [UTType.image.identifier, UTType.fileURL.identifier, UTType.data.identifier], isTargeted: $isDropTargeted) { providers in
+            handleDrop(providers: providers)
+        }
+        .onAppear {
+            if let initial = session.stagedAttachmentsByChatId[current.id], !initial.isEmpty {
+                stagedAttachments.append(contentsOf: initial)
+                session.stagedAttachmentsByChatId[current.id] = nil
+            }
         }
     }
 
@@ -514,6 +550,18 @@ struct ChatView: View {
             ) { showingTasks = true })
         }
         out.append(PlusAction(
+            id: "photo", systemImage: "photo.badge.plus", title: "Attach photo",
+            subtitle: "Choose from photo library"
+        ) { showingPhotoPicker = true })
+        out.append(PlusAction(
+            id: "file", systemImage: "doc.badge.plus", title: "Attach file",
+            subtitle: "Choose from Files or iCloud"
+        ) { showingFileImporter = true })
+        out.append(PlusAction(
+            id: "paste", systemImage: "doc.on.clipboard", title: "Paste from clipboard",
+            subtitle: "Photo, document or text"
+        ) { pasteFromClipboard() })
+        out.append(PlusAction(
             id: "share", systemImage: "doc.plaintext", title: "Share transcript",
             subtitle: "This chat as Markdown"
         ) {
@@ -562,7 +610,7 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !stagedAttachments.isEmpty
     }
 
     private var hasPendingApproval: Bool {
@@ -570,16 +618,216 @@ struct ChatView: View {
     }
 
     private func submit(_ explicitText: String? = nil) {
-        // This also cancels an in-flight permission prompt before it can
-        // open the microphone after the message has already been sent.
         dictation.stop()
-        let text = (explicitText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let rawText = (explicitText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawText.isEmpty || !stagedAttachments.isEmpty else { return }
+
+        let pending = stagedAttachments
+        stagedAttachments = []
         draft = ""
         showCommandHUD = false
         SoundEffects.playSent()
         Haptics.impact(.medium)
-        Task { await session.send(text, to: current) }
+
+        Task {
+            var parts: [String] = []
+            if !rawText.isEmpty {
+                parts.append(rawText)
+            }
+            if !pending.isEmpty {
+                isUploadingAttachments = true
+                for item in pending {
+                    if let path = await session.uploadAttachment(data: item.data, mime: item.mime) {
+                        if item.isImage {
+                            parts.append("<attached-image path=\"\(path)\" />")
+                        } else {
+                            parts.append("<attached-file path=\"\(path)\" />")
+                        }
+                    }
+                }
+                isUploadingAttachments = false
+            }
+            let finalMessage = parts.joined(separator: "\n\n")
+            if !finalMessage.isEmpty {
+                await session.send(finalMessage, to: current)
+            }
+        }
+    }
+
+    private func pasteFromClipboard() {
+        let pasteboard = UIPasteboard.general
+        if let images = pasteboard.images, !images.isEmpty {
+            for image in images {
+                if let data = image.jpegData(compressionQuality: 0.85) {
+                    stagedAttachments.append(StagedAttachment(
+                        name: "Pasted Photo",
+                        mime: "image/jpeg",
+                        data: data,
+                        previewImage: image,
+                        isImage: true
+                    ))
+                }
+            }
+            Haptics.selection()
+            return
+        }
+        if let urls = pasteboard.urls, !urls.isEmpty {
+            for url in urls {
+                if let data = try? Data(contentsOf: url) {
+                    let name = url.lastPathComponent
+                    let mime = mimeType(for: url)
+                    let isImg = mime.hasPrefix("image/")
+                    stagedAttachments.append(StagedAttachment(
+                        name: name,
+                        mime: mime,
+                        data: data,
+                        previewImage: isImg ? UIImage(data: data) : nil,
+                        isImage: isImg
+                    ))
+                }
+            }
+            Haptics.selection()
+            return
+        }
+        if let data = pasteboard.data(forPasteboardType: "public.png") ?? pasteboard.data(forPasteboardType: "public.jpeg") {
+            let mime = pasteboard.contains(pasteboardTypes: ["public.png"]) ? "image/png" : "image/jpeg"
+            let image = UIImage(data: data)
+            stagedAttachments.append(StagedAttachment(
+                name: "Pasted Photo",
+                mime: mime,
+                data: data,
+                previewImage: image,
+                isImage: true
+            ))
+            Haptics.selection()
+            return
+        }
+        if let string = pasteboard.string, !string.isEmpty {
+            if draft.isEmpty {
+                draft = string
+            } else {
+                draft += "\n" + string
+            }
+            Haptics.selection()
+        }
+    }
+
+    private func processPhotoItems(_ items: [PhotosPickerItem]) async {
+        for item in items {
+            if let data = try? await item.loadTransferable(type: Data.self) {
+                let mime = imageMIME(data) ?? "image/jpeg"
+                let image = UIImage(data: data)
+                let attachment = StagedAttachment(
+                    name: "Photo",
+                    mime: mime,
+                    data: data,
+                    previewImage: image,
+                    isImage: true
+                )
+                stagedAttachments.append(attachment)
+            }
+        }
+        selectedPhotoItems = []
+    }
+
+    private func processImportedFiles(_ result: Result<[URL], Error>) {
+        guard case let .success(urls) = result else { return }
+        for url in urls {
+            guard url.startAccessingSecurityScopedResource() else { continue }
+            defer { url.stopAccessingSecurityScopedResource() }
+            if let data = try? Data(contentsOf: url) {
+                let name = url.lastPathComponent
+                let mime = mimeType(for: url)
+                let isImg = mime.hasPrefix("image/")
+                let preview = isImg ? UIImage(data: data) : nil
+                let attachment = StagedAttachment(
+                    name: name,
+                    mime: mime,
+                    data: data,
+                    previewImage: preview,
+                    isImage: isImg
+                )
+                stagedAttachments.append(attachment)
+            }
+        }
+    }
+
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                handled = true
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                    guard let data, let image = UIImage(data: data) else { return }
+                    let mime = self.imageMIME(data) ?? "image/jpeg"
+                    DispatchQueue.main.async {
+                        self.stagedAttachments.append(StagedAttachment(
+                            name: "Dropped Photo",
+                            mime: mime,
+                            data: data,
+                            previewImage: image,
+                            isImage: true
+                        ))
+                    }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    guard let url = item as? URL ?? (item as? Data).flatMap({ URL(dataRepresentation: $0, relativeTo: nil) }) else { return }
+                    if let data = try? Data(contentsOf: url) {
+                        let name = url.lastPathComponent
+                        let mime = self.mimeType(for: url)
+                        let isImg = mime.hasPrefix("image/")
+                        let preview = isImg ? UIImage(data: data) : nil
+                        DispatchQueue.main.async {
+                            self.stagedAttachments.append(StagedAttachment(
+                                name: name,
+                                mime: mime,
+                                data: data,
+                                previewImage: preview,
+                                isImage: isImg
+                            ))
+                        }
+                    }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.data.identifier) {
+                handled = true
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.data.identifier) { data, _ in
+                    guard let data else { return }
+                    let mime = self.imageMIME(data) ?? "application/octet-stream"
+                    let isImg = mime.hasPrefix("image/")
+                    let preview = isImg ? UIImage(data: data) : nil
+                    DispatchQueue.main.async {
+                        self.stagedAttachments.append(StagedAttachment(
+                            name: "Attachment",
+                            mime: mime,
+                            data: data,
+                            previewImage: preview,
+                            isImage: isImg
+                        ))
+                    }
+                }
+            }
+        }
+        return handled
+    }
+
+    private func imageMIME(_ data: Data) -> String? {
+        let bytes = [UInt8](data.prefix(12))
+        if bytes.starts(with: [0x89, 0x50, 0x4e, 0x47]) { return "image/png" }
+        if bytes.starts(with: [0xff, 0xd8, 0xff]) { return "image/jpeg" }
+        if bytes.starts(with: Array("GIF8".utf8)) { return "image/gif" }
+        if bytes.count >= 12,
+           String(bytes: bytes[0..<4], encoding: .ascii) == "RIFF",
+           String(bytes: bytes[8..<12], encoding: .ascii) == "WEBP" { return "image/webp" }
+        return nil
+    }
+
+    private func mimeType(for url: URL) -> String {
+        if let type = UTType(filenameExtension: url.pathExtension) {
+            return type.preferredMIMEType ?? "application/octet-stream"
+        }
+        return "application/octet-stream"
     }
 
     // MARK: - Composer
@@ -622,6 +870,69 @@ struct ChatView: View {
                     submit(chip.prompt)
                 }
                 .transition(.opacity)
+            }
+
+            if !stagedAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(stagedAttachments) { item in
+                            HStack(spacing: 6) {
+                                if let img = item.previewImage {
+                                    Image(uiImage: img)
+                                        .resizable()
+                                        .scaledToFill()
+                                        .frame(width: 32, height: 32)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                } else {
+                                    Image(systemName: item.isImage ? "photo.fill" : "doc.fill")
+                                        .font(.system(size: 14))
+                                        .foregroundStyle(Color.secondary)
+                                        .frame(width: 32, height: 32)
+                                }
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(item.name)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .lineLimit(1)
+                                    Text(ByteCountFormatter.string(fromByteCount: Int64(item.data.count), countStyle: .file))
+                                        .font(.system(size: 10))
+                                        .foregroundStyle(Color.secondary)
+                                }
+                                Button {
+                                    withAnimation(.snappy(duration: 0.2)) {
+                                        stagedAttachments.removeAll { $0.id == item.id }
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .font(.system(size: 14))
+                                        .foregroundStyle(Color.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .padding(.leading, 2)
+                            }
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color(uiColor: .secondarySystemBackground))
+                                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.1), lineWidth: 1))
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                    .padding(.bottom, 2)
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
+            if isUploadingAttachments {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.small)
+                    Text("Uploading attachments…")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.secondary)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 4)
             }
 
             GlassGroup(spacing: 10) {
@@ -938,6 +1249,26 @@ struct TextBubble: View {
         return core.count >= 3 && core.allSatisfy { $0 == "-" }
     }
 
+    private var splitMessage: (text: String, imagePaths: [String]) {
+        let raw = message.text ?? ""
+        var images: [String] = []
+        let pattern = "<attached-image\\s+path=\"([^\"]*)\"\\s*\\/?>"
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return (raw, [])
+        }
+        let nsString = raw as NSString
+        let matches = regex.matches(in: raw, options: [], range: NSRange(location: 0, length: nsString.length))
+        for match in matches {
+            if match.numberOfRanges > 1 {
+                let range = match.range(at: 1)
+                let path = nsString.substring(with: range)
+                images.append(path)
+            }
+        }
+        let cleanText = regex.stringByReplacingMatches(in: raw, options: [], range: NSRange(location: 0, length: nsString.length), withTemplate: "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (cleanText, images)
+    }
+
     var body: some View {
         let mine = message.role == .user
         let customCard = parsedDiff != nil || parsedTable != nil
@@ -954,6 +1285,16 @@ struct TextBubble: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(MausPalette.color(speaker.color))
                 }
+
+                if !splitMessage.imagePaths.isEmpty {
+                    VStack(alignment: .leading, spacing: 6) {
+                        ForEach(splitMessage.imagePaths, id: \.self) { path in
+                            AttachedImageView(path: path)
+                        }
+                    }
+                    .padding(.bottom, splitMessage.text.isEmpty ? 0 : 4)
+                }
+
                 // Bots get markdown, you do not — the same split the desktop
                 // makes. Markdown you did not intend is worse than markdown
                 // you did: a message about `**` should show the asterisks.
@@ -962,16 +1303,20 @@ struct TextBubble: View {
                 } else if let table = parsedTable {
                     SQLResultTableView(columns: table.headers, rows: table.rows)
                 } else if mine {
-                    Text(message.text ?? "")
-                        .font(.system(size: 17))
-                        .foregroundStyle(BubbleColor.mineText)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !splitMessage.text.isEmpty {
+                        Text(splitMessage.text)
+                            .font(.system(size: 17))
+                            .foregroundStyle(BubbleColor.mineText)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 } else {
-                    MarkdownText(source: message.text ?? "")
-                        .foregroundStyle(Color.primary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                    if !splitMessage.text.isEmpty {
+                        MarkdownText(source: splitMessage.text)
+                            .foregroundStyle(Color.primary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             .padding(.horizontal, customCard ? 0 : 15)
@@ -988,6 +1333,70 @@ struct TextBubble: View {
             .padding(.bottom, !customCard && tailed ? SpeechBubble.tailDrop() : 0)
 
             if !mine { Spacer(minLength: 44) }
+        }
+    }
+}
+
+struct AttachedImageView: View {
+    let path: String
+    @EnvironmentObject private var session: Session
+    @State private var image: UIImage? = nil
+    @State private var showingFullscreen = false
+
+    private var filename: String {
+        URL(fileURLWithPath: path).lastPathComponent
+    }
+
+    private var avatarUrl: String {
+        "/api/attachments/\(filename)"
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxWidth: 240, maxHeight: 200)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.primary.opacity(0.12), lineWidth: 1))
+                    .contentShape(Rectangle())
+                    .onTapGesture { showingFullscreen = true }
+            } else {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Photo attachment")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.secondary)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .background(RoundedRectangle(cornerRadius: 8).fill(Color.primary.opacity(0.06)))
+            }
+        }
+        .task(id: avatarUrl) {
+            if let data = await session.avatarData(forUrl: avatarUrl), let uiImage = UIImage(data: data) {
+                image = uiImage
+            }
+        }
+        .sheet(isPresented: $showingFullscreen) {
+            if let image {
+                NavigationStack {
+                    ZStack {
+                        Color.black.ignoresSafeArea()
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFit()
+                            .padding()
+                    }
+                    .toolbar {
+                        ToolbarItem(placement: .cancellationAction) {
+                            Button("Done") { showingFullscreen = false }
+                                .foregroundStyle(Color.white)
+                        }
+                    }
+                }
+            }
         }
     }
 }

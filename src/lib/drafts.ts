@@ -56,6 +56,30 @@ export function setDraftAttachments(store: Store, id: string, attachments: Attac
   }
 }
 
+interface EventTargetLike {
+  dispatchEvent(event: unknown): boolean;
+  addEventListener(type: string, listener: (event: unknown) => void): void;
+  removeEventListener(type: string, listener: (event: unknown) => void): void;
+}
+
+export function appendDraftAttachments(id: string, newAttachments: Attachment[]): void {
+  if (!newAttachments.length) return;
+  const store = getStore();
+  const existing = getDraftAttachments(store, id);
+  setDraftAttachments(store, id, [...existing, ...newAttachments]);
+  try {
+    if (typeof globalThis !== "undefined" && "dispatchEvent" in globalThis) {
+      const target = globalThis as unknown as EventTargetLike;
+      const CustomEventCtor = (globalThis as unknown as { CustomEvent?: new (type: string, params?: unknown) => unknown }).CustomEvent;
+      if (CustomEventCtor) {
+        target.dispatchEvent(new CustomEventCtor("omb-draft-attachments-updated", { detail: { id } }));
+      }
+    }
+  } catch {
+    /* window not available in non-DOM test env */
+  }
+}
+
 // Reaching for localStorage is itself a failure point: on an origin with
 // storage blocked the getter throws, and `typeof` doesn't shield it.
 function getStore(): Store {
@@ -103,5 +127,21 @@ export function useComposerDraft(
     },
     [store, id],
   );
+
+  // Sync if attachments were appended externally (e.g. dropped onto sidebar row)
+  useState(() => {
+    if (typeof globalThis === "undefined" || !("addEventListener" in globalThis)) return;
+    const target = globalThis as unknown as EventTargetLike;
+    const handler = (e: unknown) => {
+      const detail = (e as { detail?: { id?: string } })?.detail;
+      if (detail?.id === id) {
+        setAttachmentState(getDraftAttachments(getStore(), id));
+      }
+    };
+    target.addEventListener("omb-draft-attachments-updated", handler);
+    return () => target.removeEventListener("omb-draft-attachments-updated", handler);
+  });
+
   return [text, setText, attachments, setAttachments];
 }
+

@@ -381,7 +381,7 @@ function DefaultResponderSelect({ group, members }: { group: Group; members: Bot
         aria-label="Default responder"
         value={value}
         onChange={(event) => change(event.target.value)}
-        className="h-8 max-w-[190px] appearance-none truncate rounded-full border border-hairline/40 bg-raised/60 py-1 pl-3 pr-7 text-[12.5px] font-medium text-ink outline-none hover:bg-raised focus:border-accent"
+        className="h-8 max-w-[170px] appearance-none truncate rounded-full border border-hairline/40 bg-raised/60 py-1 pl-3 pr-7 text-[12.5px] font-medium text-ink outline-none hover:bg-raised focus:border-accent @max-4xl/chathead:max-w-[100px]"
       >
         <optgroup label="Channel lead">
           {members.map((member) => (
@@ -566,13 +566,16 @@ function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: ()
   return (
     <button
       onClick={onToggle}
-      className="flex max-w-[220px] items-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
+      className={cn(
+        "flex max-w-[200px] items-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink",
+        "@max-4xl/chathead:size-[30px] @max-4xl/chathead:justify-center @max-4xl/chathead:p-0 @max-4xl/chathead:gap-0",
+      )}
       title={`Primary: ${folder}${extraCount > 0 ? ` (+${extraCount} additional repos)` : ""}`}
     >
-      <Folder size={12} />
-      <span className="truncate font-mono">{name}</span>
+      <Folder size={12} className="@max-4xl/chathead:size-[14px]" />
+      <span className="truncate font-mono @max-4xl/chathead:hidden">{name}</span>
       {extraCount > 0 && (
-        <span className="rounded bg-accent/20 px-1.5 py-0.2 text-[10.5px] font-semibold text-accent">
+        <span className="rounded bg-accent/20 px-1.5 py-0.2 text-[10.5px] font-semibold text-accent @max-4xl/chathead:hidden">
           +{extraCount}
         </span>
       )}
@@ -1102,22 +1105,35 @@ export function GroupView({ group }: { group: Group }) {
     }
   };
 
-  // Static mauses: one per member, a ring + dot on whoever is working.
-  const memberMauses = members.map((b) => (
-    <span
-      key={b.id}
-      title={`${b.name}${group.busyBotId === b.id ? " — working…" : ""}`}
-      className={cn(
-        "relative inline-flex rounded-full",
-        group.busyBotId === b.id && "ring-2 ring-accent/50 ring-offset-1 ring-offset-app",
+  // Static mauses: one per member, stacked with overlap and a counter pill when large.
+  const maxVisibleMauses = 5;
+  const visibleMembers = members.slice(0, maxVisibleMauses);
+  const hiddenMemberCount = members.length - maxVisibleMauses;
+
+  const memberMauses = (
+    <div className="flex items-center -space-x-1.5">
+      {visibleMembers.map((b) => (
+        <span
+          key={b.id}
+          title={`${b.name}${group.busyBotId === b.id ? " — working…" : ""}`}
+          className={cn(
+            "relative inline-flex rounded-full ring-2 ring-app",
+            group.busyBotId === b.id && "ring-accent/70",
+          )}
+        >
+          <MausAvatar color={b.color} state={normalizeState(b.mascotExpression) ?? "happy"} size={22} animated={false} />
+          {group.busyBotId === b.id && (
+            <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full border border-app bg-accent" />
+          )}
+        </span>
+      ))}
+      {hiddenMemberCount > 0 && (
+        <span className="relative flex size-[22px] items-center justify-center rounded-full border border-hairline/60 bg-raised text-[10px] font-semibold text-ink-secondary ring-2 ring-app">
+          +{hiddenMemberCount}
+        </span>
       )}
-    >
-      <MausAvatar color={b.color} state={normalizeState(b.mascotExpression) ?? "happy"} size={24} animated={false} />
-      {group.busyBotId === b.id && (
-        <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full border border-app bg-accent" />
-      )}
-    </span>
-  ));
+    </div>
+  );
 
   return (
     <main className="relative flex h-full min-w-0 flex-1 flex-col bg-app">
@@ -1125,19 +1141,19 @@ export function GroupView({ group }: { group: Group }) {
       {membersOpen && !group.dm && (
         <ManageMembersPanel group={group} onClose={closeMembers} triggerRef={membersTriggerRef} />
       )}
-      {/* Header: static member mauses; a ring + dot marks the working bot. */}
+      {/* Header: responsive container so chips fold gracefully */}
       <div
         className={cn(
-          "flex items-center justify-between px-5 py-3",
+          "@container/chathead flex items-center justify-between gap-3 px-5 py-3",
           // Room for the drawer button, which overlays this corner below md.
           "pl-11 md:pl-5",
         )}
       >
-        <div className="flex min-w-0 items-center gap-2.5">
+        <div className="flex min-w-0 shrink items-center gap-2">
           <button
             type="button"
             onClick={() => dispatch({ type: "toggleSettings", open: true })}
-            className="flex items-center gap-2.5 rounded-lg p-1 text-left transition-colors hover:bg-raised/50"
+            className="flex min-w-0 items-center gap-2 rounded-lg p-1 text-left transition-colors hover:bg-raised/50"
             title="Open channel settings"
             aria-label={`Open ${group.name} settings`}
           >
@@ -1163,7 +1179,7 @@ export function GroupView({ group }: { group: Group }) {
           </button>
           {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
             onClick={() => setFindOpen((open) => !open)}

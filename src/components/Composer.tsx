@@ -12,7 +12,6 @@ import {
   composeMessage,
   imageAttachmentFromFile,
   intakeFiles,
-  isImageFile,
   isLongPaste,
   pasteAttachment,
   type Attachment,
@@ -401,6 +400,42 @@ export function Composer({
     setRecording((r) => !r);
   };
 
+  useEffect(() => {
+    const onGlobalPaste = (e: ClipboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (
+        target &&
+        target !== inputRef.current &&
+        (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable)
+      ) {
+        return;
+      }
+      const files = Array.from(e.clipboardData?.files ?? []);
+      if (!files.length && e.clipboardData?.items) {
+        for (const item of Array.from(e.clipboardData.items)) {
+          if (item.kind === "file") {
+            const f = item.getAsFile();
+            if (f) files.push(f);
+          }
+        }
+      }
+      if (files.length > 0) {
+        e.preventDefault();
+        void (async () => {
+          const { attachments: added, notice } = await intakeFiles(files, {
+            allowImages: engineSupportsImages,
+            getPath: pathForFile,
+            uploadImage: imageAttachmentFromFile,
+          });
+          if (added.length) addAttachments(added);
+          if (notice) setAttachmentNotice(notice);
+        })();
+      }
+    };
+    window.addEventListener("paste", onGlobalPaste);
+    return () => window.removeEventListener("paste", onGlobalPaste);
+  }, [engineSupportsImages, addAttachments]);
+
   return (
     <div className="pointer-events-none relative px-5 pb-3">
       {/* No fill or hairline on this wrapper — those were the black frame
@@ -549,24 +584,25 @@ export function Composer({
             setDismissedAt(null);
           }}
           onPaste={(e) => {
-            // an image from the clipboard becomes an uploaded attachment —
-            // but only for engines that can open one; a grok bot politely
-            // refuses instead of receiving a path it cannot read
-            const imageFiles = Array.from(e.clipboardData.files).filter(isImageFile);
-            if (imageFiles.length && engineSupportsImages) {
+            const files = Array.from(e.clipboardData.files);
+            if (!files.length && e.clipboardData.items) {
+              for (const item of Array.from(e.clipboardData.items)) {
+                if (item.kind === "file") {
+                  const f = item.getAsFile();
+                  if (f) files.push(f);
+                }
+              }
+            }
+            if (files.length > 0) {
               e.preventDefault();
               void (async () => {
-                for (const file of imageFiles) {
-                  try {
-                    const attachment = await imageAttachmentFromFile(file);
-                    if (attachment) setAttachments((prev) => [...prev, attachment]);
-                  } catch (err) {
-                    dispatch({
-                      type: "error",
-                      message: err instanceof Error ? err.message : "image upload failed",
-                    });
-                  }
-                }
+                const { attachments: added, notice } = await intakeFiles(files, {
+                  allowImages: engineSupportsImages,
+                  getPath: pathForFile,
+                  uploadImage: imageAttachmentFromFile,
+                });
+                if (added.length) addAttachments(added);
+                if (notice) setAttachmentNotice(notice);
               })();
               return;
             }
