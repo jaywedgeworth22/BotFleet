@@ -263,6 +263,80 @@
   --radius-xl: 14px;
 }
 
+/* ── Studio ────────────────────────────────────────────────────────────────
+   Crisp, modern macOS daylight. Pure white panels, cool grey-white ground,
+   deep graphite typography, and an electric royal sapphire accent.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-skin="studio"] {
+  --color-app: #f6f8fa;
+  --color-panel: #ffffff;
+  --color-raised: #ffffff;
+  --color-raised-hover: #f1f3f5;
+  --color-card: #ffffff;
+  --color-inset: #f1f3f5;
+  --color-control: #e9ecef;
+  --color-hairline: #d0d7de;
+
+  --color-ink: #111418;
+  --color-ink-secondary: #57606a;
+
+  --color-accent: #0969da;
+  --color-accent-border: #218bff;
+  --color-accent-text: #0969da;
+  --color-focus: #0969da;
+  --color-accent-ink: #ffffff;
+  --color-bubble-user: #e7f0fa;
+
+  --color-success: #1a7f37;
+  --color-danger: #cf222e;
+  --color-danger-ink: #ffffff;
+  --color-warning: #9a6700;
+  --color-scrollbar: #c2cbd4;
+  --color-maus-line: #57606a;
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+/* ── Titanium ──────────────────────────────────────────────────────────────
+   Brushed titanium frost. Refined silver slate neutrals, crisp white cards,
+   dark indigo ink, and a vivid modern indigo-violet accent.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-skin="titanium"] {
+  --color-app: #eef1f4;
+  --color-panel: #f8fafc;
+  --color-raised: #ffffff;
+  --color-raised-hover: #e2e8f0;
+  --color-card: #ffffff;
+  --color-inset: #e2e8f0;
+  --color-control: #cbd5e1;
+  --color-hairline: #94a3b8;
+
+  --color-ink: #0f172a;
+  --color-ink-secondary: #475569;
+
+  --color-accent: #4f46e5;
+  --color-accent-border: #6366f1;
+  --color-accent-text: #4338ca;
+  --color-focus: #4f46e5;
+  --color-accent-ink: #ffffff;
+  --color-bubble-user: #e0e7ff;
+
+  --color-success: #059669;
+  --color-danger: #dc2626;
+  --color-danger-ink: #ffffff;
+  --color-warning: #d97706;
+  --color-scrollbar: #94a3b8;
+  --color-maus-line: #475569;
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --radius-lg: 6px;
+  --radius-xl: 10px;
+}
+
 html,
 body,
 #root {

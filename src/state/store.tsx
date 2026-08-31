@@ -119,6 +119,7 @@ export interface Group {
   threadId: string;
   name: string;
   avatarUrl?: string | null;
+  avatarCrop?: "circle" | "rounded" | "square" | "mascot" | null;
   memberIds: string[];
   defaultResponder: GroupDefaultResponder;
   bulletin: string;
@@ -470,7 +471,7 @@ export type Action =
   | {
       type: "patchGroup";
       groupId: string;
-      patch: Partial<Pick<Group, "name" | "avatarUrl" | "bulletin" | "memberIds" | "defaultResponder" | "pinnedMessageId" | "section">>;
+      patch: Partial<Pick<Group, "name" | "avatarUrl" | "avatarCrop" | "bulletin" | "memberIds" | "defaultResponder" | "pinnedMessageId" | "section" | "cwd" | "extraCwds">>;
     }
   | { type: "deleteGroup"; groupId: string }
   | { type: "newGroupTask"; groupId: string }

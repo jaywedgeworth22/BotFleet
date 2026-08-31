@@ -4,7 +4,15 @@
 // that keeps the two halves from drifting apart, and it means adding a skin is
 // one CSS block plus one line in SKINS.
 
-export const SKIN_IDS = ["system", "midnight", "atelier", "foundry", "lagoon"] as const;
+export const SKIN_IDS = [
+  "system",
+  "studio",
+  "titanium",
+  "midnight",
+  "atelier",
+  "foundry",
+  "lagoon",
+] as const;
 export type SkinId = (typeof SKIN_IDS)[number];
 
 export type Skin = {
@@ -16,24 +24,36 @@ export type Skin = {
 
 export const SKINS: readonly Skin[] = [
   { id: "system", name: "System", tagline: "Matches macOS Dark/Light Mode" },
+  { id: "studio", name: "Studio Clean", tagline: "Pure white, crisp modern macOS daylight." },
+  { id: "titanium", name: "Titanium Frost", tagline: "Brushed titanium and cool slate silver." },
   { id: "midnight", name: "Midnight", tagline: "The original. Cool and dark." },
   { id: "atelier", name: "Atelier", tagline: "Daylight on paper, warm and quiet." },
   { id: "foundry", name: "Foundry", tagline: "Night shift. Dark, warm, lit in brass." },
   { id: "lagoon", name: "Lagoon", tagline: "Cool daylight. Porcelain and deep teal." },
 ];
 
+export const ACCENT_PRESETS = [
+  { name: "Royal Blue", hex: "#0969da" },
+  { name: "Electric Blue", hex: "#1084fe" },
+  { name: "Indigo", hex: "#4f46e5" },
+  { name: "Violet", hex: "#7c3aed" },
+  { name: "Emerald", hex: "#059669" },
+  { name: "Warm Amber", hex: "#d97706" },
+  { name: "Crimson Rose", hex: "#e11d48" },
+  { name: "Titanium Slate", hex: "#475569" },
+] as const;
+
 export function getDefaultSkin(): SkinId {
   return "system";
 }
 
 const KEY = "omb-skin";
+const ACCENT_KEY = "omb-custom-accent";
 
 // The input is whatever localStorage handed back — a string this app wrote
 // on an earlier run, a value edited by hand, or a leftover from a renamed
 // skin. The list is the schema.
 function isSkinId(value: unknown): value is SkinId {
-  // SAFETY: the assertion only satisfies includes()' parameter type; the
-  // check itself is what decides, and a non-member returns false.
   return SKIN_IDS.includes(value as SkinId);
 }
 
@@ -41,8 +61,6 @@ function isSkinId(value: unknown): value is SkinId {
 // storage blocked the getter throws, and `typeof` alone doesn't shield it.
 function getStore(): Storage | undefined {
   try {
-    // A bare feature test, not a narrowing of parsed input: in a renderer
-    // without storage the identifier is simply not defined.
     return typeof localStorage === "undefined" ? undefined : localStorage;
   } catch {
     return undefined;
@@ -56,6 +74,41 @@ export function readSkin(): SkinId {
   } catch {
     return getDefaultSkin();
   }
+}
+
+export function readCustomAccent(): string | null {
+  try {
+    return getStore()?.getItem(ACCENT_KEY) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function applyCustomAccent(hex: string | null): void {
+  const root = document.documentElement;
+  if (!hex) {
+    try {
+      getStore()?.removeItem(ACCENT_KEY);
+    } catch {
+      // ignore
+    }
+    root.style.removeProperty("--color-accent");
+    root.style.removeProperty("--color-accent-border");
+    root.style.removeProperty("--color-accent-text");
+    root.style.removeProperty("--color-focus");
+    return;
+  }
+
+  try {
+    getStore()?.setItem(ACCENT_KEY, hex);
+  } catch {
+    // ignore
+  }
+
+  root.style.setProperty("--color-accent", hex);
+  root.style.setProperty("--color-accent-border", hex);
+  root.style.setProperty("--color-accent-text", hex);
+  root.style.setProperty("--color-focus", hex);
 }
 
 /**
@@ -75,11 +128,16 @@ export function applySkin(id: SkinId): void {
     if (typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
       resolvedId = "midnight";
     } else {
-      resolvedId = "atelier";
+      resolvedId = "studio";
     }
   }
 
   document.documentElement.dataset.skin = resolvedId;
+
+  const customAccent = readCustomAccent();
+  if (customAccent) {
+    applyCustomAccent(customAccent);
+  }
   
   // The one surface CSS cannot reach: on Windows the caption buttons sit in a
   // native overlay the main process paints. Left at the default it stays

@@ -1134,15 +1134,32 @@ export function GroupView({ group }: { group: Group }) {
         )}
       >
         <div className="flex min-w-0 items-center gap-2.5">
-          {group.avatarUrl && (
-            <img
-              src={group.avatarUrl}
-              alt={group.name}
-              className="size-7 shrink-0 rounded-full object-cover shadow-sm"
-              draggable={false}
-            />
-          )}
-          <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
+          <button
+            type="button"
+            onClick={() => dispatch({ type: "toggleSettings", open: true })}
+            className="flex items-center gap-2.5 rounded-lg p-1 text-left transition-colors hover:bg-raised/50"
+            title="Open channel settings"
+            aria-label={`Open ${group.name} settings`}
+          >
+            {group.avatarUrl ? (
+              <img
+                src={group.avatarUrl}
+                alt={group.name}
+                className={cn(
+                  "size-7 shrink-0 object-cover shadow-sm",
+                  group.avatarCrop === "square" ? "rounded-none" : group.avatarCrop === "rounded" ? "rounded-lg" : "rounded-full",
+                )}
+                draggable={false}
+              />
+            ) : (
+              <div className="flex size-7 shrink-0 items-center justify-center -space-x-2 rounded-full bg-control p-0.5">
+                {members.slice(0, 2).map((b) => (
+                  <MausAvatar key={b.id} color={b.color} state="happy" size={14} animated={false} />
+                ))}
+              </div>
+            )}
+            <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
+          </button>
           {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
         </div>
         <div className="flex items-center gap-1.5">
