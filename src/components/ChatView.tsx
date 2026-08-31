@@ -325,10 +325,11 @@ function Bubble({
 
   return (
     <div className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start")}>
-      <div className={cn("flex w-full items-center gap-1.5", user ? "justify-end" : "justify-start")}>
+      <div className={cn("flex w-full items-end gap-1.5", user ? "flex-row-reverse flex-wrap justify-start" : "flex-wrap justify-start")}>
         {/* editing rewinds the thread, so it waits for the turn to end —
             same rule as the version switcher below */}
-        {user && message.kind === "text" && !webhookView && !bot.busy && (
+        <div className={cn("flex items-center gap-1.5 shrink-0", user && "flex-row-reverse")}>
+{user && message.kind === "text" && !webhookView && !bot.busy && (
           <button
             onClick={onStartEdit}
             aria-label="Edit message"
@@ -450,7 +451,8 @@ function Bubble({
             </MessageBoundary>
           )}
         </div>
-        {!user && (
+        <div className="flex items-center gap-1.5 shrink-0">
+{!user && (
           <>
             <CopyButton
               text={copyContent}
@@ -504,6 +506,8 @@ function Bubble({
             )}
           </>
         )}
+</div>
+</div>
         {!user && message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
         <span
           className={cn(

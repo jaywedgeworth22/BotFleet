@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { api, useStore, formatTime, visibleMessages, type Bot, type Group } from "@/state/store";
 
-import { BotAvatar, InitialsAvatar } from "./Avatar";
+import { BotAvatar, GroupAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
@@ -184,13 +184,7 @@ function StackedMauses({ group, members, density }: { group: Group; members: Bot
   if (group.avatarUrl) {
     return (
       <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
-        <img
-          src={group.avatarUrl}
-          alt={group.name}
-          className="size-full rounded-full object-cover shadow-sm"
-          style={{ width: singleSize, height: singleSize }}
-          draggable={false}
-        />
+        <GroupAvatar group={group} size={singleSize} />
       </div>
     );
   }
