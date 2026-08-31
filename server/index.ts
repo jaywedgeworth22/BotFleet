@@ -33,6 +33,7 @@ import {
 import { parseBotProfilePatch } from "./bot-profile.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
+import { telemetry } from "./telemetry.ts";
 import * as box from "./box.ts";
 import { cloudBackendChangeError, vpsAliasChangeError } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
@@ -1409,6 +1410,21 @@ bus.subscribe((event: RuntimeEvent) => {
           output: tokens?.output,
           cachedInput: tokens?.cachedInput,
           costUsd: event.cost ?? null,
+        });
+        const currentTask = store.tasks(bot.id).find((t) => t.threadId === event.threadId);
+        telemetry.trackTurn({
+          botId: bot.id,
+          botName: bot.name,
+          threadId: event.threadId,
+          taskTitle: currentTask?.title,
+          cwd: currentTask?.cwd || bot.cwd,
+          instanceId: bot.modelSelection.instanceId,
+          modelId: bot.modelSelection.model,
+          inputTokens: tokens?.input,
+          outputTokens: tokens?.output,
+          cachedInputTokens: tokens?.cachedInput,
+          costUsd: event.cost ?? null,
+          success: event.ok !== false,
         });
         // settled → idle; a setup failure already marked it dead, keep that
         if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
@@ -5677,6 +5693,9 @@ const server = createServer(async (req, res) => {
     // the same API shape but a different pid)
     if (method === "GET" && path === "/api/health") {
       return json(res, 200, { app: "botfleet", pid: process.pid, static: Boolean(STATIC_DIR) });
+    }
+    if (method === "GET" && path === "/api/telemetry/status") {
+      return json(res, 200, telemetry.getStatus());
     }
     if (method === "GET" && path === "/.well-known/apple-app-site-association") {
       return json(res, 200, {

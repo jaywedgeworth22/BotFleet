@@ -109,6 +109,47 @@ export function UsageSection() {
           </div>
         </div>
       </Card>
+
+      <Card
+        title="Usage Monitor & Central Accounting"
+        subtitle="Automatic, lightweight telemetry stream reporting token consumption classified by model, project, and repository to usage.jays.services."
+      >
+        <div className="flex flex-col gap-3 text-[13px]">
+          <div className="flex items-center justify-between rounded-xl border border-hairline/30 bg-inset/40 px-3.5 py-2.5">
+            <div className="flex items-center gap-2">
+              <span className="flex size-2 rounded-full bg-success shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse" />
+              <span className="font-medium text-ink">Usage Monitor</span>
+              <span className="text-[11.5px] text-ink-secondary font-mono">usage.jays.services</span>
+            </div>
+            <span className="rounded bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
+              Active Telemetry
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">
+            <div className="flex flex-col rounded-lg border border-hairline/20 bg-inset/20 p-2">
+              <span className="text-ink-secondary">Classification</span>
+              <span className="font-medium text-ink">Project & Repo</span>
+            </div>
+            <div className="flex flex-col rounded-lg border border-hairline/20 bg-inset/20 p-2">
+              <span className="text-ink-secondary">Schema</span>
+              <span className="font-medium text-ink">Telemetry v2</span>
+            </div>
+            <div className="flex flex-col rounded-lg border border-hairline/20 bg-inset/20 p-2">
+              <span className="text-ink-secondary">Transport</span>
+              <span className="font-medium text-ink">Non-blocking HTTP</span>
+            </div>
+            <div className="flex flex-col rounded-lg border border-hairline/20 bg-inset/20 p-2">
+              <span className="text-ink-secondary">Privacy</span>
+              <span className="font-medium text-ink">Secret-Safe Metrics</span>
+            </div>
+          </div>
+
+          <div className="text-[12px] leading-relaxed text-ink-secondary">
+            Every settled turn records token metrics (input, output, cache hits), model selection, and working directory project classification into the Usage Monitor for real-time fleet accounting.
+          </div>
+        </div>
+      </Card>
     </div>
   );
 }
