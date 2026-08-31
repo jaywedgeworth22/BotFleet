@@ -106,25 +106,32 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
     });
 
     const complete = async (
-      messages: Array<{ role: string; content: string }>,
+      messages: Array<any>,
       model: string,
       opts: {
         stream: boolean;
         signal?: AbortSignal;
+        tools?: any[];
         onDelta?: (d: string, streamKind?: "assistant_text" | "reasoning_text") => void;
+        onToolCallDelta?: (index: number, id: string | undefined, name: string | undefined, args: string | undefined) => void;
       },
     ): Promise<{
       text: string;
       reasoning: string;
+      tool_calls?: any[];
       usage: { input: number; output: number } | null;
     }> => {
+      const bodyPayload: any = { model, messages, stream: opts.stream };
+      if (opts.tools && opts.tools.length > 0) {
+        bodyPayload.tools = opts.tools;
+      }
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${apiKey}`,
           "content-type": "application/json",
         },
-        body: JSON.stringify({ model, messages, stream: opts.stream }),
+        body: JSON.stringify(bodyPayload),
         signal: opts.signal ?? AbortSignal.timeout(120_000),
       });
       if (!res.ok) {
@@ -141,6 +148,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         return {
           text: mainContent,
           reasoning: reasoningContent,
+          tool_calls: msg?.tool_calls,
           usage: json.usage
             ? {
                 input: json.usage.prompt_tokens ?? 0,
@@ -175,6 +183,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           const delta = chunk.choices?.[0]?.delta;
           const contentDelta = typeof delta?.content === "string" ? delta.content : undefined;
           const reasoningDelta = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : undefined;
+          const toolCallsDelta = Array.isArray(delta?.tool_calls) ? delta.tool_calls : undefined;
+          
           if (reasoningDelta) {
             reasoning += reasoningDelta;
             opts.onDelta?.(reasoningDelta, "reasoning_text");
@@ -182,6 +192,15 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           if (contentDelta) {
             text += contentDelta;
             opts.onDelta?.(contentDelta, "assistant_text");
+          }
+          if (toolCallsDelta) {
+            for (const tc of toolCallsDelta) {
+              const tcIndex = tc.index ?? 0;
+              const tcId = tc.id;
+              const tcName = tc.function?.name;
+              const tcArgs = tc.function?.arguments;
+              opts.onToolCallDelta?.(tcIndex, tcId, tcName, tcArgs);
+            }
           }
           if (chunk.usage) {
             usage = {
@@ -243,12 +262,44 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       const abort = new AbortController();
       active.set(threadId, { abort, turnId });
 
+      const openAiTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+        },
+      })) : undefined;
+
       const messages = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
-        ...(turn.transcript ?? []).map((m) => ({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: m.text,
-        })),
+        ...(turn.transcript ?? []).flatMap((m: any) => {
+          const res = [];
+          if (m.role === "assistant") {
+            const assistantMsg: any = { role: "assistant", content: m.text || "" };
+            if (m.toolCalls && m.toolCalls.length > 0) {
+              assistantMsg.tool_calls = m.toolCalls.map((tc: any) => ({
+                id: tc.id,
+                type: "function",
+                function: { name: tc.name, arguments: tc.arguments },
+              }));
+            }
+            res.push(assistantMsg);
+          } else {
+            if (m.toolResults && m.toolResults.length > 0) {
+              for (const tr of m.toolResults) {
+                res.push({
+                  role: "tool",
+                  tool_call_id: tr.id,
+                  content: tr.result,
+                });
+              }
+            } else {
+              res.push({ role: "user", content: m.text });
+            }
+          }
+          return res;
+        }),
         { role: "user", content: turn.text },
       ];
       appendNative(threadId, {
@@ -269,12 +320,13 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
 
       (async () => {
         try {
-          const { text, reasoning, usage } = await complete(
+          const { text, reasoning, tool_calls, usage } = await complete(
             messages,
             turn.model || catalog.default,
             {
               stream: true,
               signal: abort.signal,
+              tools: openAiTools,
               onDelta: (delta, streamKind = "assistant_text") =>
                 emit({
                   ...base(threadId, turnId),
@@ -282,21 +334,32 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
                   streamKind,
                   delta,
                 }),
+              onToolCallDelta: (index, id, name, args) => {
+                emit({
+                  ...base(threadId, turnId),
+                  type: "tool_call.delta",
+                  index,
+                  toolCallId: id,
+                  name,
+                  args,
+                } as any);
+              }
             },
           );
           appendNative(threadId, {
             dir: "in",
             source: "openai-compat.chat.completions",
-            msg: { textLength: text.length, reasoningLength: reasoning.length, usage },
+            msg: { textLength: text.length, reasoningLength: reasoning.length, toolCallsLength: tool_calls?.length ?? 0, usage },
           });
           const replyText = text.trim() ? text : reasoning;
-          if (replyText.trim()) {
+          if (replyText.trim() || (tool_calls && tool_calls.length > 0)) {
             emit({
               ...base(threadId, turnId),
               type: "item.completed",
               itemType: "assistant_text",
               text: replyText,
-            });
+              toolCalls: tool_calls,
+            } as any);
           }
           if (usage) {
             emit({
@@ -359,7 +422,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session" },
+        capabilities: { sessionModelSwitch: "in-session", localComputerMcp: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const,

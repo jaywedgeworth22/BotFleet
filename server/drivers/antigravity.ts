@@ -724,6 +724,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           // approval (see contracts.ts), which print mode cannot deliver in
           // any mode; that returns with the native ACP path (agy issue #31).
           computerMcp: config.fullAuto,
+          localComputerMcp: !config.fullAuto,
+          // The same approval limitation applies to bot-to-bot calls. The
+          // harness only injects the short-lived agents proxy when this flag
+          // is true, so safe-mode turns never expose a token they cannot use.
+          agentsMcp: config.fullAuto,
         },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),

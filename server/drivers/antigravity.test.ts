@@ -385,10 +385,12 @@ describe("Antigravity computer MCP config", () => {
       // accept-edits print mode auto-denies tools that would prompt, so a
       // mount there could never fire — the capability must not be offered.
       expect(acceptEdits.adapter.capabilities.computerMcp).toBe(false);
-      // The host desktop needs per-action human approval; print mode has no
-      // approval channel in any mode.
-      expect(fullAuto.adapter.capabilities.localComputerMcp).toBeUndefined();
-      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBeUndefined();
+      // The host desktop needs per-action human approval; Gemini throws
+      // an error without this capability, so we expose it as !fullAuto.
+      expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(false);
+      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBe(true);
+      expect(fullAuto.adapter.capabilities.agentsMcp).toBe(true);
+      expect(acceptEdits.adapter.capabilities.agentsMcp).toBe(false);
     } finally {
       await fullAuto.dispose();
       await acceptEdits.dispose();
