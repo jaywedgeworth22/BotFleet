@@ -17,7 +17,7 @@ import UIKit
 /// Stream lifecycle, in Console.app and the Xcode console. A companion that
 /// is silently not connected looks exactly like one with nothing to say, so
 /// the transitions are worth being able to read.
-private let log = Logger(subsystem: "com.botfleet.companion", category: "stream")
+private let log = Logger(subsystem: "com.openmausbot.companion", category: "stream")
 
 @MainActor
 final class Session: ObservableObject {
@@ -47,9 +47,6 @@ final class Session: ObservableObject {
     /// A notification response that should be pushed by the roster's
     /// NavigationStack after the exact detached task has been activated.
     @Published private(set) var notificationChat: Chat?
-
-    /// Pending attachments queued for a chat (e.g. from drag & drop on roster).
-    @Published var stagedAttachmentsByChatId: [String: [StagedAttachment]] = [:]
 
     private var client: CompanionClient?
     /// The device token, kept in memory so the client can be rebuilt when the
@@ -764,15 +761,11 @@ final class Session: ObservableObject {
                 return state.bot(bot.id).map(Chat.bot)
             }
             if let groupId = hit.groupId,
-               var room = state.rooms.first(where: { $0.id == groupId }) {
-                if room.threadId != hit.threadId {
-                    room = try await client.switchTask(groupId: room.id, threadId: hit.threadId)
-                    state.apply(.room(room))
-                }
+               let room = state.rooms.first(where: { $0.id == groupId }) {
                 let page = try await client.messages(threadId: hit.threadId, around: hit.messageId)
                 state.merge(page, intoThread: hit.threadId)
                 focusedMessageId = hit.messageId
-                return state.rooms.first(where: { $0.id == groupId }).map(Chat.room)
+                return .room(room)
             }
         } catch { actionError = error.localizedDescription }
         return nil
@@ -808,32 +801,6 @@ final class Session: ObservableObject {
         catch { actionError = error.localizedDescription }
     }
 
-    func createTask(for room: Room, title: String?) async {
-        guard let client else { return }
-        do { state.apply(.room(try await client.createTask(groupId: room.id, title: title))) }
-        catch { actionError = error.localizedDescription }
-    }
-
-    func switchTask(_ task: BotTask, for room: Room) async {
-        guard let client, task.threadId != room.threadId else { return }
-        do { state.apply(.room(try await client.switchTask(groupId: room.id, threadId: task.threadId))) }
-        catch { actionError = error.localizedDescription }
-    }
-
-    func renameTask(_ task: BotTask, for room: Room, title: String) async {
-        guard let client else { return }
-        do {
-            try await client.renameTask(groupId: room.id, threadId: task.threadId, title: title)
-            await refresh()
-        } catch { actionError = error.localizedDescription }
-    }
-
-    func deleteTask(_ task: BotTask, for room: Room) async {
-        guard let client else { return }
-        do { state.apply(.room(try await client.deleteTask(groupId: room.id, threadId: task.threadId))) }
-        catch { actionError = error.localizedDescription }
-    }
-
     // MARK: - Agent profile
 
     func updateProfile(_ patch: BotProfilePatch, for bot: Bot) async -> Bot? {
@@ -865,16 +832,6 @@ final class Session: ObservableObject {
         }
     }
 
-    func uploadAttachment(data: Data, mime: String) async -> String? {
-        guard let client else { return nil }
-        do {
-            return try await client.uploadAvatar(data: data, mime: mime)
-        } catch {
-            if !Task.isCancelled { actionError = error.localizedDescription }
-            return nil
-        }
-    }
-
     func generateAvatar(prompt: String, for bot: Bot) async -> Bot? {
         guard let client else { return nil }
         do {
@@ -889,17 +846,7 @@ final class Session: ObservableObject {
     }
 
     func avatarData(for bot: Bot) async -> Data? {
-        guard let path = bot.avatarUrl else { return nil }
-        return await avatarData(forUrl: path)
-    }
-
-    func avatarData(forPath path: String?) async -> Data? {
-        guard let path else { return nil }
-        return await avatarData(forUrl: path)
-    }
-
-    func avatarData(forUrl path: String) async -> Data? {
-        guard let client else { return nil }
+        guard let path = bot.avatarUrl, let client else { return nil }
         let key = path as NSString
         if let cached = avatarCache.object(forKey: key) { return cached as Data }
         let generation = avatarCacheGeneration
@@ -928,39 +875,6 @@ final class Session: ObservableObject {
         avatarCache.removeAllObjects()
     }
 
-    func updateRoom(id: String, name: String, bulletin: String, avatarCrop: AvatarCrop? = nil) async {
-        guard let client else { return }
-        do {
-            var patch: [String: String] = ["name": name, "bulletin": bulletin]
-            if let avatarCrop { patch["avatarCrop"] = avatarCrop.rawValue }
-            let _ = try await client.patchGroup(id: id, patch: patch)
-        } catch {
-            if !Task.isCancelled { actionError = error.localizedDescription }
-        }
-    }
-
-    func updateRoomAvatar(id: String, avatarUrl: String?, avatarCrop: AvatarCrop? = nil) async {
-        guard let client else { return }
-        do {
-            var patch: [String: String?] = ["avatarUrl": avatarUrl]
-            if let avatarCrop { patch["avatarCrop"] = avatarCrop.rawValue }
-            let _ = try await client.patchGroup(id: id, patch: patch)
-        } catch {
-            if !Task.isCancelled { actionError = error.localizedDescription }
-        }
-    }
-
-    func uploadRoomAvatar(id: String, data: Data, mime: String, crop: AvatarCrop = .circle) async {
-        guard let client else { return }
-        do {
-            let avatarUrl = try await client.uploadAvatar(data: data, mime: mime)
-            guard !Task.isCancelled else { return }
-            await updateRoomAvatar(id: id, avatarUrl: avatarUrl, avatarCrop: crop)
-        } catch {
-            if !Task.isCancelled { actionError = error.localizedDescription }
-        }
-    }
-
     func voiceOptions() async -> [Voice] {
         guard let client else { return [] }
         do { return try await client.voices() }
@@ -973,13 +887,15 @@ final class Session: ObservableObject {
         catch { actionError = error.localizedDescription; return nil }
     }
 
-    func clientInstances() async throws -> [CompanionCore.Instance]? {
-        return try await client?.instances()
-    }
-
     func configStatus() async -> ConfigStatus? {
         guard let client else { return nil }
         return try? await client.config()
+    }
+
+    func instances() async -> [Instance] {
+        guard let client else { return [] }
+        do { return try await client.instances() }
+        catch { actionError = error.localizedDescription; return [] }
     }
 
     // MARK: - Routines
@@ -1054,18 +970,7 @@ final class Session: ObservableObject {
             // A room's approval/question notification carries the asker bot
             // with the ROOM's thread id — open the room rather than asking
             // the bot to switch to a thread it does not own (a 404).
-            if var room = state.rooms.first(where: {
-                $0.threadId == target.threadId || ($0.tasks ?? []).contains(where: { $0.threadId == target.threadId })
-            }) {
-                if room.threadId != target.threadId {
-                    do {
-                        room = try await client.switchTask(groupId: room.id, threadId: target.threadId)
-                        state.apply(.room(room))
-                    } catch {
-                        // A stale notification should still open the channel's
-                        // current task instead of leaving the person nowhere.
-                    }
-                }
+            if let room = state.rooms.first(where: { $0.threadId == target.threadId }) {
                 notificationChat = .room(room)
                 return
             }
@@ -1231,15 +1136,6 @@ enum Chat: Identifiable, Hashable {
         return false
     }
 
-    var supportsTasks: Bool {
-        switch self {
-        case .bot: return true
-        // `tasks == nil` means an older paired desktop. Hide the affordance
-        // instead of sending it a route it does not know yet.
-        case let .room(room): return room.dm != true && room.tasks != nil
-        }
-    }
-
     var subtitle: String {
         switch self {
         case let .bot(bot): return bot.title
@@ -1334,33 +1230,3 @@ extension CompanionState {
         }
     }
 }
-
-public struct StagedAttachment: Identifiable, Equatable {
-    public let id: String
-    public let name: String
-    public let mime: String
-    public let data: Data
-    public var previewImage: UIImage?
-    public var isImage: Bool
-
-    public init(
-        id: String = UUID().uuidString,
-        name: String,
-        mime: String,
-        data: Data,
-        previewImage: UIImage? = nil,
-        isImage: Bool
-    ) {
-        self.id = id
-        self.name = name
-        self.mime = mime
-        self.data = data
-        self.previewImage = previewImage
-        self.isImage = isImage
-    }
-
-    public static func == (lhs: StagedAttachment, rhs: StagedAttachment) -> Bool {
-        lhs.id == rhs.id
-    }
-}
-

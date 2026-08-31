@@ -1,81 +1,69 @@
 import SwiftUI
 import CompanionCore
 
-/// Separate contexts for either an agent or a channel. Keeping one sheet for
-/// both makes "task" mean the same operation everywhere in the app.
+/// A bot's separate contexts. Tasks remain a compact sheet because they are
+/// conversation navigation, not host configuration.
 struct TaskManagerView: View {
-    let chat: Chat
+    let bot: Bot
     @EnvironmentObject private var session: Session
     @Environment(\.dismiss) private var dismiss
     @State private var showingNewTask = false
     @State private var taskToRename: BotTask?
     @State private var title = ""
 
-    private var current: Chat {
-        switch chat {
-        case let .bot(bot): return session.state.bot(bot.id).map(Chat.bot) ?? chat
-        case let .room(room):
-            return session.state.rooms.first(where: { $0.id == room.id }).map(Chat.room) ?? chat
-        }
-    }
-
-    private var tasks: [BotTask] {
-        switch current {
-        case let .bot(bot): return bot.tasks ?? []
-        case let .room(room): return room.tasks ?? []
-        }
-    }
+    private var current: Bot { session.state.bot(bot.id) ?? bot }
+    private var tasks: [BotTask] { current.tasks ?? [] }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
                     HStack(spacing: 12) {
-                        ChatAvatarView(chat: current, size: 48, state: .idle, animated: false)
+                        BotAvatarView(bot: current, size: 48, state: .idle, animated: false)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(current.name).font(.headline)
-                            Text(current.isBot ? "Agent tasks" : "Channel tasks")
+                            Text(current.title.isEmpty ? "Agent tasks" : current.title)
                                 .font(.subheadline).foregroundStyle(.secondary)
                         }
                     }
                 } footer: {
-                    Text("A task is one conversation and result, with its own context and working folder.")
+                    Text("A task is one conversation and result. Routines create fresh tasks on a schedule.")
                 }
 
                 Section("Tasks") {
                     ForEach(tasks, id: \.threadId) { task in
-                        Button {
-                            Task {
-                                await switchTo(task)
-                                dismiss()
-                            }
-                        } label: {
-                            HStack {
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text(task.title.isEmpty ? "Untitled task" : task.title)
-                                        .foregroundStyle(Color.primary)
-                                    Text(RelativeStamp.list(task.createdAt))
-                                        .font(.caption)
-                                        .foregroundStyle(Color.secondary)
-                                }
-                                Spacer()
-                                if task.threadId == current.threadId {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
-                                }
-                            }
+                    Button {
+                        Task {
+                            await session.switchTask(task, for: current)
+                            dismiss()
                         }
-                        .contextMenu {
-                            Button("Rename", systemImage: "pencil") {
-                                title = task.title
-                                taskToRename = task
+                    } label: {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(task.title.isEmpty ? "Untitled task" : task.title)
+                                    .foregroundStyle(Color.primary)
+                                Text(RelativeStamp.list(task.createdAt))
+                                    .font(.caption)
+                                    .foregroundStyle(Color.secondary)
+                            }
+                            Spacer()
+                            if task.threadId == current.threadId {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(Color.accentColor)
                             }
                         }
-                        .swipeActions(edge: .trailing) {
-                            Button(role: .destructive) {
-                                Task { await delete(task) }
-                            } label: { Label("Delete", systemImage: "trash") }
-                            .disabled(tasks.count <= 1 || current.busy)
+                    }
+                    .contextMenu {
+                        Button("Rename", systemImage: "pencil") {
+                            title = task.title
+                            taskToRename = task
                         }
+                    }
+                    .swipeActions(edge: .trailing) {
+                        Button(role: .destructive) {
+                            Task { await session.deleteTask(task, for: current) }
+                        } label: { Label("Delete", systemImage: "trash") }
+                        .disabled(tasks.count <= 1 || current.busy == true)
+                    }
                     }
                 }
             }
@@ -88,7 +76,7 @@ struct TaskManagerView: View {
                         title = ""
                         showingNewTask = true
                     }
-                    .disabled(current.busy)
+                    .disabled(current.busy == true)
                 }
             }
         }
@@ -97,7 +85,7 @@ struct TaskManagerView: View {
             Button("Cancel", role: .cancel) {}
             Button("Create") {
                 Task {
-                    await create(title.trimmingCharacters(in: .whitespacesAndNewlines))
+                    await session.createTask(for: current, title: title.trimmingCharacters(in: .whitespacesAndNewlines))
                     dismiss()
                 }
             }
@@ -110,37 +98,9 @@ struct TaskManagerView: View {
             Button("Cancel", role: .cancel) { taskToRename = nil }
             Button("Save") {
                 guard let task = taskToRename else { return }
-                Task { await rename(task, title: title) }
+                Task { await session.renameTask(task, for: current, title: title) }
                 taskToRename = nil
             }
-        }
-    }
-
-    private func create(_ title: String) async {
-        switch current {
-        case let .bot(bot): await session.createTask(for: bot, title: title)
-        case let .room(room): await session.createTask(for: room, title: title)
-        }
-    }
-
-    private func switchTo(_ task: BotTask) async {
-        switch current {
-        case let .bot(bot): await session.switchTask(task, for: bot)
-        case let .room(room): await session.switchTask(task, for: room)
-        }
-    }
-
-    private func rename(_ task: BotTask, title: String) async {
-        switch current {
-        case let .bot(bot): await session.renameTask(task, for: bot, title: title)
-        case let .room(room): await session.renameTask(task, for: room, title: title)
-        }
-    }
-
-    private func delete(_ task: BotTask) async {
-        switch current {
-        case let .bot(bot): await session.deleteTask(task, for: bot)
-        case let .room(room): await session.deleteTask(task, for: room)
         }
     }
 }
