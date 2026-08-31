@@ -1283,6 +1283,8 @@ ipcMain.handle("desktop:save-file", async (event, rawPath) => {
     shell.showItemInFolder(choice.filePath);
     return choice.filePath;
   });
+});
+
 ipcMain.handle("desktop:open-file", async (_event, rawPath) => {
   if (typeof rawPath !== "string") throw new Error("A file path is required");
   let normPath = rawPath.trim();

@@ -8,9 +8,9 @@ var __commonJS = (cb, mod) => function __require() {
   }
 };
 
-// ../botfleet-grok/node_modules/.pnpm/universalify@2.0.1/node_modules/universalify/index.js
+// node_modules/.pnpm/universalify@2.0.1/node_modules/universalify/index.js
 var require_universalify = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/universalify@2.0.1/node_modules/universalify/index.js"(exports2) {
+  "node_modules/.pnpm/universalify@2.0.1/node_modules/universalify/index.js"(exports2) {
     "use strict";
     exports2.fromCallback = function(fn) {
       return Object.defineProperty(function(...args) {
@@ -36,9 +36,9 @@ var require_universalify = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/polyfills.js
+// node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/polyfills.js
 var require_polyfills = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/polyfills.js"(exports2, module2) {
+  "node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/polyfills.js"(exports2, module2) {
     var constants = require("constants");
     var origCwd = process.cwd;
     var cwd = null;
@@ -324,9 +324,9 @@ var require_polyfills = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/legacy-streams.js
+// node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/legacy-streams.js
 var require_legacy_streams = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/legacy-streams.js"(exports2, module2) {
+  "node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/legacy-streams.js"(exports2, module2) {
     var Stream = require("stream").Stream;
     module2.exports = legacy;
     function legacy(fs) {
@@ -420,9 +420,9 @@ var require_legacy_streams = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/clone.js
+// node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/clone.js
 var require_clone = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/clone.js"(exports2, module2) {
+  "node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/clone.js"(exports2, module2) {
     "use strict";
     module2.exports = clone;
     var getPrototypeOf = Object.getPrototypeOf || function(obj) {
@@ -443,9 +443,9 @@ var require_clone = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/graceful-fs.js
+// node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/graceful-fs.js
 var require_graceful_fs = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/graceful-fs.js"(exports2, module2) {
+  "node_modules/.pnpm/graceful-fs@4.2.11/node_modules/graceful-fs/graceful-fs.js"(exports2, module2) {
     var fs = require("fs");
     var polyfills = require_polyfills();
     var legacy = require_legacy_streams();
@@ -813,9 +813,9 @@ var require_graceful_fs = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/fs/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/fs/index.js
 var require_fs = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/fs/index.js"(exports2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/fs/index.js"(exports2) {
     "use strict";
     var u = require_universalify().fromCallback;
     var fs = require_graceful_fs();
@@ -916,9 +916,9 @@ var require_fs = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/utils.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/utils.js
 var require_utils = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/utils.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/utils.js"(exports2, module2) {
     "use strict";
     var path2 = require("path");
     module2.exports.checkPath = function checkPath(pth) {
@@ -934,9 +934,9 @@ var require_utils = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/make-dir.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/make-dir.js
 var require_make_dir = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/make-dir.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/make-dir.js"(exports2, module2) {
     "use strict";
     var fs = require_fs();
     var { checkPath } = require_utils();
@@ -962,9 +962,9 @@ var require_make_dir = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/index.js
 var require_mkdirs = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/mkdirs/index.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromPromise;
     var { makeDir: _makeDir, makeDirSync } = require_make_dir();
@@ -981,9 +981,9 @@ var require_mkdirs = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/path-exists/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/path-exists/index.js
 var require_path_exists = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/path-exists/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/path-exists/index.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromPromise;
     var fs = require_fs();
@@ -997,9 +997,9 @@ var require_path_exists = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/util/utimes.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/util/utimes.js
 var require_utimes = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/util/utimes.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/util/utimes.js"(exports2, module2) {
     "use strict";
     var fs = require_graceful_fs();
     function utimesMillis(path2, atime, mtime, callback) {
@@ -1024,9 +1024,9 @@ var require_utimes = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/util/stat.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/util/stat.js
 var require_stat = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/util/stat.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/util/stat.js"(exports2, module2) {
     "use strict";
     var fs = require_fs();
     var path2 = require("path");
@@ -1155,9 +1155,9 @@ var require_stat = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/copy.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/copy.js
 var require_copy = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/copy.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/copy.js"(exports2, module2) {
     "use strict";
     var fs = require_graceful_fs();
     var path2 = require("path");
@@ -1352,9 +1352,9 @@ var require_copy = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/copy-sync.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/copy-sync.js
 var require_copy_sync = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/copy-sync.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/copy-sync.js"(exports2, module2) {
     "use strict";
     var fs = require_graceful_fs();
     var path2 = require("path");
@@ -1486,9 +1486,9 @@ var require_copy_sync = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/index.js
 var require_copy2 = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/copy/index.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromCallback;
     module2.exports = {
@@ -1498,9 +1498,9 @@ var require_copy2 = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/remove/rimraf.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/remove/rimraf.js
 var require_rimraf = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/remove/rimraf.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/remove/rimraf.js"(exports2, module2) {
     "use strict";
     var fs = require_graceful_fs();
     var path2 = require("path");
@@ -1733,9 +1733,9 @@ var require_rimraf = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/remove/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/remove/index.js
 var require_remove = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/remove/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/remove/index.js"(exports2, module2) {
     "use strict";
     var fs = require_graceful_fs();
     var u = require_universalify().fromCallback;
@@ -1755,9 +1755,9 @@ var require_remove = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/empty/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/empty/index.js
 var require_empty = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/empty/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/empty/index.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromPromise;
     var fs = require_fs();
@@ -1794,9 +1794,9 @@ var require_empty = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/file.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/file.js
 var require_file = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/file.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/file.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromCallback;
     var path2 = require("path");
@@ -1856,9 +1856,9 @@ var require_file = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/link.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/link.js
 var require_link = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/link.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/link.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromCallback;
     var path2 = require("path");
@@ -1918,9 +1918,9 @@ var require_link = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink-paths.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink-paths.js
 var require_symlink_paths = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink-paths.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink-paths.js"(exports2, module2) {
     "use strict";
     var path2 = require("path");
     var fs = require_graceful_fs();
@@ -1997,9 +1997,9 @@ var require_symlink_paths = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink-type.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink-type.js
 var require_symlink_type = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink-type.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink-type.js"(exports2, module2) {
     "use strict";
     var fs = require_graceful_fs();
     function symlinkType(srcpath, type, callback) {
@@ -2029,9 +2029,9 @@ var require_symlink_type = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink.js
 var require_symlink = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/symlink.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromCallback;
     var path2 = require("path");
@@ -2107,9 +2107,9 @@ var require_symlink = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/index.js
 var require_ensure = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/ensure/index.js"(exports2, module2) {
     "use strict";
     var { createFile, createFileSync } = require_file();
     var { createLink, createLinkSync } = require_link();
@@ -2134,9 +2134,9 @@ var require_ensure = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/jsonfile@6.2.1/node_modules/jsonfile/utils.js
+// node_modules/.pnpm/jsonfile@6.2.1/node_modules/jsonfile/utils.js
 var require_utils2 = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/jsonfile@6.2.1/node_modules/jsonfile/utils.js"(exports2, module2) {
+  "node_modules/.pnpm/jsonfile@6.2.1/node_modules/jsonfile/utils.js"(exports2, module2) {
     function stringify(obj, { EOL = "\n", finalEOL = true, replacer = null, spaces } = {}) {
       const EOF = finalEOL ? EOL : "";
       const str = JSON.stringify(obj, replacer, spaces);
@@ -2153,9 +2153,9 @@ var require_utils2 = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/jsonfile@6.2.1/node_modules/jsonfile/index.js
+// node_modules/.pnpm/jsonfile@6.2.1/node_modules/jsonfile/index.js
 var require_jsonfile = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/jsonfile@6.2.1/node_modules/jsonfile/index.js"(exports2, module2) {
+  "node_modules/.pnpm/jsonfile@6.2.1/node_modules/jsonfile/index.js"(exports2, module2) {
     var _fs;
     try {
       _fs = require_graceful_fs();
@@ -2225,9 +2225,9 @@ var require_jsonfile = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/jsonfile.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/jsonfile.js
 var require_jsonfile2 = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/jsonfile.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/jsonfile.js"(exports2, module2) {
     "use strict";
     var jsonFile = require_jsonfile();
     module2.exports = {
@@ -2240,9 +2240,9 @@ var require_jsonfile2 = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/output-file/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/output-file/index.js
 var require_output_file = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/output-file/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/output-file/index.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromCallback;
     var fs = require_graceful_fs();
@@ -2279,9 +2279,9 @@ var require_output_file = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/output-json.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/output-json.js
 var require_output_json = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/output-json.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/output-json.js"(exports2, module2) {
     "use strict";
     var { stringify } = require_utils2();
     var { outputFile } = require_output_file();
@@ -2293,9 +2293,9 @@ var require_output_json = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/output-json-sync.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/output-json-sync.js
 var require_output_json_sync = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/output-json-sync.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/output-json-sync.js"(exports2, module2) {
     "use strict";
     var { stringify } = require_utils2();
     var { outputFileSync } = require_output_file();
@@ -2307,9 +2307,9 @@ var require_output_json_sync = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/index.js
 var require_json = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/json/index.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromPromise;
     var jsonFile = require_jsonfile2();
@@ -2325,9 +2325,9 @@ var require_json = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/move.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/move.js
 var require_move = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/move.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/move.js"(exports2, module2) {
     "use strict";
     var fs = require_graceful_fs();
     var path2 = require("path");
@@ -2396,9 +2396,9 @@ var require_move = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/move-sync.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/move-sync.js
 var require_move_sync = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/move-sync.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/move-sync.js"(exports2, module2) {
     "use strict";
     var fs = require_graceful_fs();
     var path2 = require("path");
@@ -2448,9 +2448,9 @@ var require_move_sync = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/index.js
 var require_move2 = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/move/index.js"(exports2, module2) {
     "use strict";
     var u = require_universalify().fromCallback;
     module2.exports = {
@@ -2460,9 +2460,9 @@ var require_move2 = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/index.js
+// node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/index.js
 var require_lib = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/index.js"(exports2, module2) {
+  "node_modules/.pnpm/fs-extra@10.1.0/node_modules/fs-extra/lib/index.js"(exports2, module2) {
     "use strict";
     module2.exports = {
       // Export promiseified graceful-fs:
@@ -2481,9 +2481,9 @@ var require_lib = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/CancellationToken.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/CancellationToken.js
 var require_CancellationToken = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/CancellationToken.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/CancellationToken.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.CancellationError = exports2.CancellationToken = void 0;
@@ -2587,9 +2587,9 @@ var require_CancellationToken = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/error.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/error.js
 var require_error = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/error.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/error.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.newError = newError;
@@ -2601,9 +2601,9 @@ var require_error = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/ms@2.1.3/node_modules/ms/index.js
+// node_modules/.pnpm/ms@2.1.3/node_modules/ms/index.js
 var require_ms = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/ms@2.1.3/node_modules/ms/index.js"(exports2, module2) {
+  "node_modules/.pnpm/ms@2.1.3/node_modules/ms/index.js"(exports2, module2) {
     var s = 1e3;
     var m = s * 60;
     var h = m * 60;
@@ -2717,9 +2717,9 @@ var require_ms = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/common.js
+// node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/common.js
 var require_common = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/common.js"(exports2, module2) {
+  "node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/common.js"(exports2, module2) {
     function setup(env) {
       createDebug.debug = createDebug;
       createDebug.default = createDebug;
@@ -2894,9 +2894,9 @@ var require_common = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/browser.js
+// node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/browser.js
 var require_browser = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/browser.js"(exports2, module2) {
+  "node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/browser.js"(exports2, module2) {
     exports2.formatArgs = formatArgs;
     exports2.save = save;
     exports2.load = load;
@@ -3064,9 +3064,9 @@ var require_browser = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/has-flag@4.0.0/node_modules/has-flag/index.js
+// node_modules/.pnpm/has-flag@4.0.0/node_modules/has-flag/index.js
 var require_has_flag = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/has-flag@4.0.0/node_modules/has-flag/index.js"(exports2, module2) {
+  "node_modules/.pnpm/has-flag@4.0.0/node_modules/has-flag/index.js"(exports2, module2) {
     "use strict";
     module2.exports = (flag, argv = process.argv) => {
       const prefix = flag.startsWith("-") ? "" : flag.length === 1 ? "-" : "--";
@@ -3077,9 +3077,9 @@ var require_has_flag = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/supports-color@7.2.0/node_modules/supports-color/index.js
+// node_modules/.pnpm/supports-color@7.2.0/node_modules/supports-color/index.js
 var require_supports_color = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/supports-color@7.2.0/node_modules/supports-color/index.js"(exports2, module2) {
+  "node_modules/.pnpm/supports-color@7.2.0/node_modules/supports-color/index.js"(exports2, module2) {
     "use strict";
     var os = require("os");
     var tty = require("tty");
@@ -3179,9 +3179,9 @@ var require_supports_color = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/node.js
+// node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/node.js
 var require_node = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/node.js"(exports2, module2) {
+  "node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/node.js"(exports2, module2) {
     var tty = require("tty");
     var util = require("util");
     exports2.init = init;
@@ -3353,9 +3353,9 @@ var require_node = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/index.js
+// node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/index.js
 var require_src = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/index.js"(exports2, module2) {
+  "node_modules/.pnpm/debug@4.4.3/node_modules/debug/src/index.js"(exports2, module2) {
     if (typeof process === "undefined" || process.type === "renderer" || process.browser === true || process.__nwjs) {
       module2.exports = require_browser();
     } else {
@@ -3364,9 +3364,9 @@ var require_src = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/ProgressCallbackTransform.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/ProgressCallbackTransform.js
 var require_ProgressCallbackTransform = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/ProgressCallbackTransform.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/ProgressCallbackTransform.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.ProgressCallbackTransform = void 0;
@@ -3423,9 +3423,9 @@ var require_ProgressCallbackTransform = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/httpExecutor.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/httpExecutor.js
 var require_httpExecutor = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/httpExecutor.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/httpExecutor.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.DigestTransform = exports2.HttpExecutor = exports2.HttpError = void 0;
@@ -3897,9 +3897,9 @@ Please double check that your authentication token is correct. Due to security r
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/MemoLazy.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/MemoLazy.js
 var require_MemoLazy = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/MemoLazy.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/MemoLazy.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.MemoLazy = void 0;
@@ -3941,9 +3941,9 @@ var require_MemoLazy = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/publishOptions.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/publishOptions.js
 var require_publishOptions = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/publishOptions.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/publishOptions.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.githubUrl = githubUrl;
@@ -4015,9 +4015,9 @@ var require_publishOptions = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/retry.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/retry.js
 var require_retry = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/retry.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/retry.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.retry = retry;
@@ -4039,9 +4039,9 @@ var require_retry = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/rfc2253Parser.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/rfc2253Parser.js
 var require_rfc2253Parser = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/rfc2253Parser.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/rfc2253Parser.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.parseDn = parseDn;
@@ -4118,9 +4118,9 @@ var require_rfc2253Parser = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/uuid.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/uuid.js
 var require_uuid = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/uuid.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/uuid.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.nil = exports2.UUID = void 0;
@@ -4269,9 +4269,9 @@ var require_uuid = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/sax@1.6.1/node_modules/sax/lib/sax.js
+// node_modules/.pnpm/sax@1.6.1/node_modules/sax/lib/sax.js
 var require_sax = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/sax@1.6.1/node_modules/sax/lib/sax.js"(exports2) {
+  "node_modules/.pnpm/sax@1.6.1/node_modules/sax/lib/sax.js"(exports2) {
     (function(sax) {
       sax.parser = function(strict, opt) {
         return new SAXParser(strict, opt);
@@ -5863,9 +5863,9 @@ var require_sax = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/xml.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/xml.js
 var require_xml = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/xml.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/xml.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.XElement = void 0;
@@ -5976,9 +5976,9 @@ var require_xml = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/objects.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/objects.js
 var require_objects = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/objects.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/objects.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.mapToObject = mapToObject;
@@ -6077,9 +6077,9 @@ var require_objects = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/index.js
+// node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/index.js
 var require_out = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/index.js"(exports2) {
+  "node_modules/.pnpm/builder-util-runtime@9.7.0/node_modules/builder-util-runtime/out/index.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.CURRENT_APP_PACKAGE_FILE_NAME = exports2.CURRENT_APP_INSTALLER_FILE_NAME = exports2.objectToArgs = exports2.deepAssign = exports2.asArray = exports2.mapToObject = exports2.isValidKey = exports2.XElement = exports2.parseXml = exports2.UUID = exports2.parseDn = exports2.retry = exports2.githubTagPrefix = exports2.githubUrl = exports2.getS3LikeProviderBaseUrl = exports2.ProgressCallbackTransform = exports2.MemoLazy = exports2.safeStringifyJson = exports2.safeGetHeader = exports2.parseJson = exports2.isSensitiveFieldName = exports2.HttpExecutor = exports2.hashSensitiveValue = exports2.HttpError = exports2.DigestTransform = exports2.createHttpError = exports2.configureRequestUrl = exports2.configureRequestOptionsFromUrl = exports2.configureRequestOptions = exports2.newError = exports2.CancellationToken = exports2.CancellationError = void 0;
@@ -6189,9 +6189,9 @@ var require_out = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/common.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/common.js
 var require_common2 = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/common.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/common.js"(exports2, module2) {
     "use strict";
     function isNothing(subject) {
       return typeof subject === "undefined" || subject === null;
@@ -6233,9 +6233,9 @@ var require_common2 = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/exception.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/exception.js
 var require_exception = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/exception.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/exception.js"(exports2, module2) {
     "use strict";
     function formatError(exception, compact) {
       let where = "";
@@ -6271,9 +6271,9 @@ var require_exception = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/snippet.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/snippet.js
 var require_snippet = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/snippet.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/snippet.js"(exports2, module2) {
     "use strict";
     var common = require_common2();
     function getLine(buffer, lineStart, lineEnd, position, maxLineLength) {
@@ -6351,9 +6351,9 @@ var require_snippet = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type.js
 var require_type = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type.js"(exports2, module2) {
     "use strict";
     var YAMLException = require_exception();
     var TYPE_CONSTRUCTOR_OPTIONS = [
@@ -6415,9 +6415,9 @@ var require_type = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema.js
 var require_schema = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema.js"(exports2, module2) {
     "use strict";
     var YAMLException = require_exception();
     var Type = require_type();
@@ -6504,9 +6504,9 @@ var require_schema = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/str.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/str.js
 var require_str = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/str.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/str.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     module2.exports = new Type("tag:yaml.org,2002:str", {
@@ -6518,9 +6518,9 @@ var require_str = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/seq.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/seq.js
 var require_seq = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/seq.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/seq.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     module2.exports = new Type("tag:yaml.org,2002:seq", {
@@ -6532,9 +6532,9 @@ var require_seq = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/map.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/map.js
 var require_map = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/map.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/map.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     module2.exports = new Type("tag:yaml.org,2002:map", {
@@ -6546,9 +6546,9 @@ var require_map = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/failsafe.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/failsafe.js
 var require_failsafe = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/failsafe.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/failsafe.js"(exports2, module2) {
     "use strict";
     var Schema = require_schema();
     module2.exports = new Schema({
@@ -6561,9 +6561,9 @@ var require_failsafe = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/null.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/null.js
 var require_null = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/null.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/null.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     function resolveYamlNull(data) {
@@ -6604,9 +6604,9 @@ var require_null = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/bool.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/bool.js
 var require_bool = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/bool.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/bool.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     function resolveYamlBoolean(data) {
@@ -6641,9 +6641,9 @@ var require_bool = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/int.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/int.js
 var require_int = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/int.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/int.js"(exports2, module2) {
     "use strict";
     var common = require_common2();
     var Type = require_type();
@@ -6757,9 +6757,9 @@ var require_int = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/float.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/float.js
 var require_float = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/float.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/float.js"(exports2, module2) {
     "use strict";
     var common = require_common2();
     var Type = require_type();
@@ -6842,9 +6842,9 @@ var require_float = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/json.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/json.js
 var require_json2 = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/json.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/json.js"(exports2, module2) {
     "use strict";
     module2.exports = require_failsafe().extend({
       implicit: [
@@ -6857,17 +6857,17 @@ var require_json2 = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/core.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/core.js
 var require_core = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/core.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/core.js"(exports2, module2) {
     "use strict";
     module2.exports = require_json2();
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/timestamp.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/timestamp.js
 var require_timestamp = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/timestamp.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/timestamp.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     var YAML_DATE_REGEXP = new RegExp(
@@ -6927,9 +6927,9 @@ var require_timestamp = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/merge.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/merge.js
 var require_merge = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/merge.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/merge.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     function resolveYamlMerge(data) {
@@ -6942,9 +6942,9 @@ var require_merge = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/binary.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/binary.js
 var require_binary = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/binary.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/binary.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     var BASE64_MAP = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=\n\r";
@@ -7034,9 +7034,9 @@ var require_binary = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/omap.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/omap.js
 var require_omap = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/omap.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/omap.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     var _hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -7073,9 +7073,9 @@ var require_omap = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/pairs.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/pairs.js
 var require_pairs = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/pairs.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/pairs.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     var _toString = Object.prototype.toString;
@@ -7111,9 +7111,9 @@ var require_pairs = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/set.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/set.js
 var require_set = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/set.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/type/set.js"(exports2, module2) {
     "use strict";
     var Type = require_type();
     var _hasOwnProperty = Object.prototype.hasOwnProperty;
@@ -7138,9 +7138,9 @@ var require_set = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/default.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/default.js
 var require_default = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/default.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/schema/default.js"(exports2, module2) {
     "use strict";
     module2.exports = require_core().extend({
       implicit: [
@@ -7157,9 +7157,9 @@ var require_default = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/loader.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/loader.js
 var require_loader = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/loader.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/loader.js"(exports2, module2) {
     "use strict";
     var common = require_common2();
     var YAMLException = require_exception();
@@ -8529,9 +8529,9 @@ var require_loader = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/dumper.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/dumper.js
 var require_dumper = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/dumper.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/lib/dumper.js"(exports2, module2) {
     "use strict";
     var common = require_common2();
     var YAMLException = require_exception();
@@ -9182,9 +9182,9 @@ var require_dumper = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/index.js
+// node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/index.js
 var require_js_yaml = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/index.js"(exports2, module2) {
+  "node_modules/.pnpm/js-yaml@4.3.1/node_modules/js-yaml/index.js"(exports2, module2) {
     "use strict";
     var loader = require_loader();
     var dumper = require_dumper();
@@ -9224,9 +9224,9 @@ var require_js_yaml = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/lazy-val@1.0.5/node_modules/lazy-val/out/main.js
+// node_modules/.pnpm/lazy-val@1.0.5/node_modules/lazy-val/out/main.js
 var require_main = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/lazy-val@1.0.5/node_modules/lazy-val/out/main.js"(exports2) {
+  "node_modules/.pnpm/lazy-val@1.0.5/node_modules/lazy-val/out/main.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.Lazy = void 0;
@@ -9255,9 +9255,9 @@ var require_main = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/constants.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/constants.js
 var require_constants = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/constants.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/constants.js"(exports2, module2) {
     "use strict";
     var SEMVER_SPEC_VERSION = "2.0.0";
     var MAX_LENGTH = 256;
@@ -9287,9 +9287,9 @@ var require_constants = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/debug.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/debug.js
 var require_debug = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/debug.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/debug.js"(exports2, module2) {
     "use strict";
     var debug = typeof process === "object" && process.env && process.env.NODE_DEBUG && /\bsemver\b/i.test(process.env.NODE_DEBUG) ? (...args) => console.error("SEMVER", ...args) : () => {
     };
@@ -9297,9 +9297,9 @@ var require_debug = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/re.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/re.js
 var require_re = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/re.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/re.js"(exports2, module2) {
     "use strict";
     var {
       MAX_SAFE_COMPONENT_LENGTH,
@@ -9385,9 +9385,9 @@ var require_re = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/parse-options.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/parse-options.js
 var require_parse_options = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/parse-options.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/parse-options.js"(exports2, module2) {
     "use strict";
     var looseOption = Object.freeze({ loose: true });
     var emptyOpts = Object.freeze({});
@@ -9404,9 +9404,9 @@ var require_parse_options = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/identifiers.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/identifiers.js
 var require_identifiers = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/identifiers.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/identifiers.js"(exports2, module2) {
     "use strict";
     var numeric = /^[0-9]+$/;
     var compareIdentifiers = (a, b) => {
@@ -9429,9 +9429,9 @@ var require_identifiers = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/semver.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/semver.js
 var require_semver = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/semver.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/semver.js"(exports2, module2) {
     "use strict";
     var debug = require_debug();
     var { MAX_LENGTH, MAX_SAFE_INTEGER } = require_constants();
@@ -9708,9 +9708,9 @@ var require_semver = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/parse.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/parse.js
 var require_parse = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/parse.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/parse.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var parse = (version, options, throwErrors = false) => {
@@ -9730,9 +9730,9 @@ var require_parse = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/valid.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/valid.js
 var require_valid = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/valid.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/valid.js"(exports2, module2) {
     "use strict";
     var parse = require_parse();
     var valid = (version, options) => {
@@ -9743,9 +9743,9 @@ var require_valid = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/clean.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/clean.js
 var require_clean = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/clean.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/clean.js"(exports2, module2) {
     "use strict";
     var parse = require_parse();
     var clean = (version, options) => {
@@ -9756,9 +9756,9 @@ var require_clean = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/inc.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/inc.js
 var require_inc = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/inc.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/inc.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var inc = (version, release, options, identifier, identifierBase) => {
@@ -9780,9 +9780,9 @@ var require_inc = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/diff.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/diff.js
 var require_diff = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/diff.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/diff.js"(exports2, module2) {
     "use strict";
     var parse = require_parse();
     var diff = (version1, version2) => {
@@ -9824,9 +9824,9 @@ var require_diff = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/major.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/major.js
 var require_major = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/major.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/major.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var major = (a, loose) => new SemVer(a, loose).major;
@@ -9834,9 +9834,9 @@ var require_major = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/minor.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/minor.js
 var require_minor = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/minor.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/minor.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var minor = (a, loose) => new SemVer(a, loose).minor;
@@ -9844,9 +9844,9 @@ var require_minor = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/patch.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/patch.js
 var require_patch = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/patch.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/patch.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var patch = (a, loose) => new SemVer(a, loose).patch;
@@ -9854,9 +9854,9 @@ var require_patch = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/prerelease.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/prerelease.js
 var require_prerelease = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/prerelease.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/prerelease.js"(exports2, module2) {
     "use strict";
     var parse = require_parse();
     var prerelease = (version, options) => {
@@ -9867,9 +9867,9 @@ var require_prerelease = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare.js
 var require_compare = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var compare = (a, b, loose) => new SemVer(a, loose).compare(new SemVer(b, loose));
@@ -9877,9 +9877,9 @@ var require_compare = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/rcompare.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/rcompare.js
 var require_rcompare = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/rcompare.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/rcompare.js"(exports2, module2) {
     "use strict";
     var compare = require_compare();
     var rcompare = (a, b, loose) => compare(b, a, loose);
@@ -9887,9 +9887,9 @@ var require_rcompare = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare-loose.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare-loose.js
 var require_compare_loose = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare-loose.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare-loose.js"(exports2, module2) {
     "use strict";
     var compare = require_compare();
     var compareLoose = (a, b) => compare(a, b, true);
@@ -9897,9 +9897,9 @@ var require_compare_loose = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare-build.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare-build.js
 var require_compare_build = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare-build.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/compare-build.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var compareBuild = (a, b, loose) => {
@@ -9911,9 +9911,9 @@ var require_compare_build = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/sort.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/sort.js
 var require_sort = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/sort.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/sort.js"(exports2, module2) {
     "use strict";
     var compareBuild = require_compare_build();
     var sort = (list, loose) => list.sort((a, b) => compareBuild(a, b, loose));
@@ -9921,9 +9921,9 @@ var require_sort = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/rsort.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/rsort.js
 var require_rsort = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/rsort.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/rsort.js"(exports2, module2) {
     "use strict";
     var compareBuild = require_compare_build();
     var rsort = (list, loose) => list.sort((a, b) => compareBuild(b, a, loose));
@@ -9931,9 +9931,9 @@ var require_rsort = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/gt.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/gt.js
 var require_gt = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/gt.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/gt.js"(exports2, module2) {
     "use strict";
     var compare = require_compare();
     var gt = (a, b, loose) => compare(a, b, loose) > 0;
@@ -9941,9 +9941,9 @@ var require_gt = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/lt.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/lt.js
 var require_lt = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/lt.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/lt.js"(exports2, module2) {
     "use strict";
     var compare = require_compare();
     var lt = (a, b, loose) => compare(a, b, loose) < 0;
@@ -9951,9 +9951,9 @@ var require_lt = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/eq.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/eq.js
 var require_eq = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/eq.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/eq.js"(exports2, module2) {
     "use strict";
     var compare = require_compare();
     var eq = (a, b, loose) => compare(a, b, loose) === 0;
@@ -9961,9 +9961,9 @@ var require_eq = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/neq.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/neq.js
 var require_neq = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/neq.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/neq.js"(exports2, module2) {
     "use strict";
     var compare = require_compare();
     var neq = (a, b, loose) => compare(a, b, loose) !== 0;
@@ -9971,9 +9971,9 @@ var require_neq = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/gte.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/gte.js
 var require_gte = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/gte.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/gte.js"(exports2, module2) {
     "use strict";
     var compare = require_compare();
     var gte = (a, b, loose) => compare(a, b, loose) >= 0;
@@ -9981,9 +9981,9 @@ var require_gte = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/lte.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/lte.js
 var require_lte = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/lte.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/lte.js"(exports2, module2) {
     "use strict";
     var compare = require_compare();
     var lte = (a, b, loose) => compare(a, b, loose) <= 0;
@@ -9991,9 +9991,9 @@ var require_lte = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/cmp.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/cmp.js
 var require_cmp = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/cmp.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/cmp.js"(exports2, module2) {
     "use strict";
     var eq = require_eq();
     var neq = require_neq();
@@ -10041,9 +10041,9 @@ var require_cmp = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/coerce.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/coerce.js
 var require_coerce = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/coerce.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/coerce.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var parse = require_parse();
@@ -10087,9 +10087,9 @@ var require_coerce = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/lrucache.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/lrucache.js
 var require_lrucache = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/lrucache.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/internal/lrucache.js"(exports2, module2) {
     "use strict";
     var LRUCache = class {
       constructor() {
@@ -10125,9 +10125,9 @@ var require_lrucache = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/range.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/range.js
 var require_range = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/range.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/range.js"(exports2, module2) {
     "use strict";
     var SPACE_CHARACTERS = /\s+/g;
     var Range = class _Range {
@@ -10502,9 +10502,9 @@ var require_range = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/comparator.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/comparator.js
 var require_comparator = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/comparator.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/classes/comparator.js"(exports2, module2) {
     "use strict";
     var ANY = /* @__PURE__ */ Symbol("SemVer ANY");
     var Comparator = class _Comparator {
@@ -10615,9 +10615,9 @@ var require_comparator = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/satisfies.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/satisfies.js
 var require_satisfies = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/satisfies.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/functions/satisfies.js"(exports2, module2) {
     "use strict";
     var Range = require_range();
     var satisfies = (version, range, options) => {
@@ -10632,9 +10632,9 @@ var require_satisfies = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/to-comparators.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/to-comparators.js
 var require_to_comparators = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/to-comparators.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/to-comparators.js"(exports2, module2) {
     "use strict";
     var Range = require_range();
     var toComparators = (range, options) => new Range(range, options).set.map((comp) => comp.map((c) => c.value).join(" ").trim().split(" "));
@@ -10642,9 +10642,9 @@ var require_to_comparators = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/max-satisfying.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/max-satisfying.js
 var require_max_satisfying = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/max-satisfying.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/max-satisfying.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var Range = require_range();
@@ -10671,9 +10671,9 @@ var require_max_satisfying = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/min-satisfying.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/min-satisfying.js
 var require_min_satisfying = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/min-satisfying.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/min-satisfying.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var Range = require_range();
@@ -10700,9 +10700,9 @@ var require_min_satisfying = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/min-version.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/min-version.js
 var require_min_version = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/min-version.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/min-version.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var Range = require_range();
@@ -10759,9 +10759,9 @@ var require_min_version = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/valid.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/valid.js
 var require_valid2 = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/valid.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/valid.js"(exports2, module2) {
     "use strict";
     var Range = require_range();
     var validRange = (range, options) => {
@@ -10775,9 +10775,9 @@ var require_valid2 = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/outside.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/outside.js
 var require_outside = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/outside.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/outside.js"(exports2, module2) {
     "use strict";
     var SemVer = require_semver();
     var Comparator = require_comparator();
@@ -10844,9 +10844,9 @@ var require_outside = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/gtr.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/gtr.js
 var require_gtr = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/gtr.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/gtr.js"(exports2, module2) {
     "use strict";
     var outside = require_outside();
     var gtr = (version, range, options) => outside(version, range, ">", options);
@@ -10854,9 +10854,9 @@ var require_gtr = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/ltr.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/ltr.js
 var require_ltr = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/ltr.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/ltr.js"(exports2, module2) {
     "use strict";
     var outside = require_outside();
     var ltr = (version, range, options) => outside(version, range, "<", options);
@@ -10864,9 +10864,9 @@ var require_ltr = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/intersects.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/intersects.js
 var require_intersects = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/intersects.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/intersects.js"(exports2, module2) {
     "use strict";
     var Range = require_range();
     var intersects = (r1, r2, options) => {
@@ -10878,9 +10878,9 @@ var require_intersects = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/simplify.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/simplify.js
 var require_simplify = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/simplify.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/simplify.js"(exports2, module2) {
     "use strict";
     var satisfies = require_satisfies();
     var compare = require_compare();
@@ -10928,9 +10928,9 @@ var require_simplify = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/subset.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/subset.js
 var require_subset = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/subset.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/ranges/subset.js"(exports2, module2) {
     "use strict";
     var Range = require_range();
     var Comparator = require_comparator();
@@ -11090,9 +11090,9 @@ var require_subset = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/index.js
+// node_modules/.pnpm/semver@7.7.4/node_modules/semver/index.js
 var require_semver2 = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/semver@7.7.4/node_modules/semver/index.js"(exports2, module2) {
+  "node_modules/.pnpm/semver@7.7.4/node_modules/semver/index.js"(exports2, module2) {
     "use strict";
     var internalRe = require_re();
     var constants = require_constants();
@@ -11185,9 +11185,9 @@ var require_semver2 = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/lodash.isequal@4.5.0/node_modules/lodash.isequal/index.js
+// node_modules/.pnpm/lodash.isequal@4.5.0/node_modules/lodash.isequal/index.js
 var require_lodash = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/lodash.isequal@4.5.0/node_modules/lodash.isequal/index.js"(exports2, module2) {
+  "node_modules/.pnpm/lodash.isequal@4.5.0/node_modules/lodash.isequal/index.js"(exports2, module2) {
     var LARGE_ARRAY_SIZE = 200;
     var HASH_UNDEFINED = "__lodash_hash_undefined__";
     var COMPARE_PARTIAL_FLAG = 1;
@@ -11886,9 +11886,9 @@ var require_lodash = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/DownloadedUpdateHelper.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/DownloadedUpdateHelper.js
 var require_DownloadedUpdateHelper = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/DownloadedUpdateHelper.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/DownloadedUpdateHelper.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.DownloadedUpdateHelper = void 0;
@@ -12049,9 +12049,9 @@ var require_DownloadedUpdateHelper = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppAdapter.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppAdapter.js
 var require_AppAdapter = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppAdapter.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppAdapter.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.getAppCacheDir = getAppCacheDir;
@@ -12072,9 +12072,9 @@ var require_AppAdapter = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/ElectronAppAdapter.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/ElectronAppAdapter.js
 var require_ElectronAppAdapter = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/ElectronAppAdapter.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/ElectronAppAdapter.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.ElectronAppAdapter = void 0;
@@ -12119,9 +12119,9 @@ var require_ElectronAppAdapter = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/electronHttpExecutor.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/electronHttpExecutor.js
 var require_electronHttpExecutor = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/electronHttpExecutor.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/electronHttpExecutor.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.ElectronHttpExecutor = exports2.NET_SESSION_NAME = void 0;
@@ -12195,9 +12195,9 @@ var require_electronHttpExecutor = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/util.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/util.js
 var require_util = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/util.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/util.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.newBaseUrl = newBaseUrl;
@@ -12227,9 +12227,9 @@ var require_util = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/lodash.escaperegexp@4.1.2/node_modules/lodash.escaperegexp/index.js
+// node_modules/.pnpm/lodash.escaperegexp@4.1.2/node_modules/lodash.escaperegexp/index.js
 var require_lodash2 = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/lodash.escaperegexp@4.1.2/node_modules/lodash.escaperegexp/index.js"(exports2, module2) {
+  "node_modules/.pnpm/lodash.escaperegexp@4.1.2/node_modules/lodash.escaperegexp/index.js"(exports2, module2) {
     var INFINITY = 1 / 0;
     var symbolTag = "[object Symbol]";
     var reRegExpChar = /[\\^$.*+?()[\]{}|]/g;
@@ -12269,9 +12269,9 @@ var require_lodash2 = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/Provider.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/Provider.js
 var require_Provider = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/Provider.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/Provider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.Provider = void 0;
@@ -12411,9 +12411,9 @@ var require_Provider = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GenericProvider.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GenericProvider.js
 var require_GenericProvider = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GenericProvider.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GenericProvider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.GenericProvider = void 0;
@@ -12464,9 +12464,9 @@ var require_GenericProvider = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/BitbucketProvider.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/BitbucketProvider.js
 var require_BitbucketProvider = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/BitbucketProvider.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/BitbucketProvider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.BitbucketProvider = void 0;
@@ -12510,9 +12510,9 @@ var require_BitbucketProvider = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GitHubProvider.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GitHubProvider.js
 var require_GitHubProvider = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GitHubProvider.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GitHubProvider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.GitHubProvider = exports2.BaseGitHubProvider = void 0;
@@ -12726,9 +12726,9 @@ ${feedXml}`, "ERR_UPDATER_INVALID_RELEASE_FEED");
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GitLabProvider.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GitLabProvider.js
 var require_GitLabProvider = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GitLabProvider.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/GitLabProvider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.GitLabProvider = void 0;
@@ -12980,9 +12980,9 @@ var require_GitLabProvider = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/KeygenProvider.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/KeygenProvider.js
 var require_KeygenProvider = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/KeygenProvider.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/KeygenProvider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.KeygenProvider = void 0;
@@ -13030,9 +13030,9 @@ var require_KeygenProvider = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/PrivateGitHubProvider.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/PrivateGitHubProvider.js
 var require_PrivateGitHubProvider = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/PrivateGitHubProvider.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providers/PrivateGitHubProvider.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.PrivateGitHubProvider = void 0;
@@ -13125,9 +13125,9 @@ var require_PrivateGitHubProvider = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providerFactory.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providerFactory.js
 var require_providerFactory = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providerFactory.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/providerFactory.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.isUrlProbablySupportMultiRangeRequests = isUrlProbablySupportMultiRangeRequests;
@@ -13196,9 +13196,9 @@ var require_providerFactory = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/downloadPlanBuilder.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/downloadPlanBuilder.js
 var require_downloadPlanBuilder = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/downloadPlanBuilder.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/downloadPlanBuilder.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.OperationKind = void 0;
@@ -13305,9 +13305,9 @@ rel: ${lastOperation.start - min} until ${lastOperation.end - min} and ${operati
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/DataSplitter.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/DataSplitter.js
 var require_DataSplitter = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/DataSplitter.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/DataSplitter.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.DataSplitter = void 0;
@@ -13527,9 +13527,9 @@ var require_DataSplitter = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/multipleRangeDownloader.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/multipleRangeDownloader.js
 var require_multipleRangeDownloader = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/multipleRangeDownloader.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/multipleRangeDownloader.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.executeTasksUsingMultipleRangeRequests = executeTasksUsingMultipleRangeRequests;
@@ -13643,9 +13643,9 @@ var require_multipleRangeDownloader = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/ProgressDifferentialDownloadCallbackTransform.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/ProgressDifferentialDownloadCallbackTransform.js
 var require_ProgressDifferentialDownloadCallbackTransform = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/ProgressDifferentialDownloadCallbackTransform.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/ProgressDifferentialDownloadCallbackTransform.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.ProgressDifferentialDownloadCallbackTransform = void 0;
@@ -13734,9 +13734,9 @@ var require_ProgressDifferentialDownloadCallbackTransform = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/DifferentialDownloader.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/DifferentialDownloader.js
 var require_DifferentialDownloader = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/DifferentialDownloader.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/DifferentialDownloader.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.DifferentialDownloader = void 0;
@@ -13983,9 +13983,9 @@ var require_DifferentialDownloader = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/GenericDifferentialDownloader.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/GenericDifferentialDownloader.js
 var require_GenericDifferentialDownloader = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/GenericDifferentialDownloader.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/GenericDifferentialDownloader.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.GenericDifferentialDownloader = void 0;
@@ -13999,9 +13999,9 @@ var require_GenericDifferentialDownloader = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/types.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/types.js
 var require_types = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/types.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/types.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.UpdaterSignal = exports2.UPDATE_DOWNLOADED = exports2.DOWNLOAD_PROGRESS = exports2.CancellationToken = void 0;
@@ -14047,9 +14047,9 @@ var require_types = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppUpdater.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppUpdater.js
 var require_AppUpdater = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppUpdater.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppUpdater.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.NoOpLogger = exports2.AppUpdater = void 0;
@@ -14674,9 +14674,9 @@ var require_AppUpdater = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/BaseUpdater.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/BaseUpdater.js
 var require_BaseUpdater = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/BaseUpdater.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/BaseUpdater.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.BaseUpdater = void 0;
@@ -14819,9 +14819,9 @@ var require_BaseUpdater = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/FileWithEmbeddedBlockMapDifferentialDownloader.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/FileWithEmbeddedBlockMapDifferentialDownloader.js
 var require_FileWithEmbeddedBlockMapDifferentialDownloader = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/FileWithEmbeddedBlockMapDifferentialDownloader.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/differentialDownloader/FileWithEmbeddedBlockMapDifferentialDownloader.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.FileWithEmbeddedBlockMapDifferentialDownloader = void 0;
@@ -14860,9 +14860,9 @@ var require_FileWithEmbeddedBlockMapDifferentialDownloader = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppImageUpdater.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppImageUpdater.js
 var require_AppImageUpdater = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppImageUpdater.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/AppImageUpdater.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.AppImageUpdater = void 0;
@@ -14973,9 +14973,9 @@ var require_AppImageUpdater = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/LinuxUpdater.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/LinuxUpdater.js
 var require_LinuxUpdater = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/LinuxUpdater.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/LinuxUpdater.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.LinuxUpdater = void 0;
@@ -15084,9 +15084,9 @@ var require_LinuxUpdater = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/DebUpdater.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/DebUpdater.js
 var require_DebUpdater = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/DebUpdater.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/DebUpdater.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.DebUpdater = void 0;
@@ -15168,9 +15168,9 @@ var require_DebUpdater = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/PacmanUpdater.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/PacmanUpdater.js
 var require_PacmanUpdater = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/PacmanUpdater.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/PacmanUpdater.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.PacmanUpdater = void 0;
@@ -15235,9 +15235,9 @@ var require_PacmanUpdater = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/RpmUpdater.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/RpmUpdater.js
 var require_RpmUpdater = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/RpmUpdater.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/RpmUpdater.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.RpmUpdater = void 0;
@@ -15304,9 +15304,9 @@ var require_RpmUpdater = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/MacUpdater.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/MacUpdater.js
 var require_MacUpdater = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/MacUpdater.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/MacUpdater.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.MacUpdater = void 0;
@@ -15550,9 +15550,9 @@ var require_MacUpdater = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/windowsExecutableCodeSignatureVerifier.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/windowsExecutableCodeSignatureVerifier.js
 var require_windowsExecutableCodeSignatureVerifier = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/windowsExecutableCodeSignatureVerifier.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/windowsExecutableCodeSignatureVerifier.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.verifySignature = verifySignature;
@@ -15665,9 +15665,9 @@ var require_windowsExecutableCodeSignatureVerifier = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/NsisUpdater.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/NsisUpdater.js
 var require_NsisUpdater = __commonJS({
-  "../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/NsisUpdater.js"(exports2) {
+  "node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/NsisUpdater.js"(exports2) {
     "use strict";
     Object.defineProperty(exports2, "__esModule", { value: true });
     exports2.NsisUpdater = void 0;
@@ -15830,7 +15830,7 @@ var require_NsisUpdater = __commonJS({
   }
 });
 
-// ../botfleet-grok/node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/main.js
+// node_modules/.pnpm/electron-updater@6.8.9/node_modules/electron-updater/out/main.js
 var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m, k, k2) {
   if (k2 === void 0) k2 = k;
   var desc = Object.getOwnPropertyDescriptor(m, k);
