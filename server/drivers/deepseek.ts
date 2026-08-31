@@ -19,13 +19,16 @@ import { appendNative } from "./native.ts";
 const DRIVER_KIND = "deepseek";
 const DEFAULT_URL = "https://api.deepseek.com/v1";
 
+// DeepSeek's effort levels are handled implicitly via distinct model selection 
+// (e.g., Flash vs Pro vs Reasoner) rather than a separate parameter.
 const MODELS = {
-  default: "deepseek-chat",
+  default: "deepseek-v4-flash",
   options: [
-    { id: "deepseek-chat", label: "DeepSeek Chat" },
-    { id: "deepseek-reasoner", label: "DeepSeek Reasoner" },
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    { id: "deepseek-v4-flash-vision-exp", label: "DeepSeek V4 Flash Vision Exp" },
+    { id: "deepseek-chat", label: "DeepSeek V3 (Chat)" },
+    { id: "deepseek-reasoner", label: "DeepSeek R1 (Reasoner)" },
   ],
 };
 
