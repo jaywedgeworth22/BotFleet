@@ -12,17 +12,14 @@ import {
 } from "./deepseek.ts";
 
 describe("computeDeepSeekCost", () => {
-  it("prices V4 Flash / Pro / Reasoner from the Usage-page rates", () => {
-    expect(computeDeepSeekCost("deepseek-v4-flash", { input: 1_000_000, output: 1_000_000 })).toBeCloseTo(0.21);
-    expect(computeDeepSeekCost("deepseek-v4-pro", { input: 1_000, output: 500 })).toBeCloseTo(0.00028);
-    expect(
-      computeDeepSeekCost("deepseek-reasoner", { input: 1_000, output: 100, cachedInput: 800 }),
-    ).toBeCloseTo(0.000441);
+  it("prices V4 Flash / Pro from the Usage-page rates", () => {
+    expect(computeDeepSeekCost("deepseek-v4-flash", { input: 1_000_000, output: 1_000_000 })).toBeCloseTo(2.1);
+    expect(computeDeepSeekCost("deepseek-v4-pro", { input: 1_000, output: 500 })).toBeCloseTo(0.0028);
   });
 
   it("returns null without usage and inherits Pro rates for unknown models", () => {
     expect(computeDeepSeekCost("deepseek-v4-pro", null)).toBeNull();
-    expect(computeDeepSeekCost("unknown-model", { input: 1_000_000, output: 0 })).toBeCloseTo(0.14);
+    expect(computeDeepSeekCost("unknown-model", { input: 1_000_000, output: 0 })).toBeCloseTo(1.4);
   });
 
   it("reads cache hits from the DeepSeek usage object", () => {

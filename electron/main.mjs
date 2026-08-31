@@ -882,7 +882,7 @@ function openDesktopViewer(owner, rawUrl, rawTitle, contextId) {
     show: false,
     title,
     icon: APP_ICON,
-    backgroundColor: "#070707",
+    backgroundColor: "#f6f8fa",
     autoHideMenuBar: true,
     webPreferences: {
       nodeIntegration: false,
@@ -1016,7 +1016,7 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     icon: APP_ICON,
-    backgroundColor: "#070707",
+    backgroundColor: "#f6f8fa",
     autoHideMenuBar: process.platform !== "darwin",
     ...windowChromeOptions(process.platform),
     webPreferences: {
@@ -1597,7 +1597,7 @@ setCuaStateListener((connection) => {
 app.whenReady().then(async () => {
   if (app.isPackaged) {
     app.setAsDefaultProtocolClient("botfleet");
-    app.setAsDefaultProtocolClient("openmausbot");
+    app.setAsDefaultProtocolClient("botfleet");
   }
   // if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
   

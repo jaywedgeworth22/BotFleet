@@ -69,7 +69,7 @@
         },
         {
           "title": "Fleet MCP Tools &amp; Standard Skills",
-          "desc": "Global MCP servers from Claude desktop configurations merged into BotFleet agents, alongside standard fleet repo skills.",
+          "desc": "Global MCP servers from Claude desktop configurations merged into BotFleet bots, alongside standard fleet repo skills.",
           "prov": { "type": "pr", "prs": [1], "state": "open" }
         },
         {
