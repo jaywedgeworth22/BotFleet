@@ -70,14 +70,17 @@ struct RoomAvatarView: View {
     @State private var image: UIImage?
     @State private var failed = false
 
+    private var crop: AvatarCrop { room.avatarCrop ?? .circle }
+    private var usesImage: Bool { crop != .mascot && room.avatarUrl != nil && !failed }
+
     var body: some View {
         Group {
-            if room.avatarUrl != nil, !failed, let image {
+            if usesImage, let image {
                 Image(uiImage: image)
                     .resizable()
                     .scaledToFill()
                     .frame(width: size, height: size)
-                    .clipShape(Circle())
+                    .clipShape(mask)
             } else {
                 MausAvatar(color: "blue", size: size, state: state, animated: animated, comets: comets)
             }
@@ -85,11 +88,11 @@ struct RoomAvatarView: View {
         .frame(width: size, height: size)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(room.name) avatar")
-        .task(id: room.avatarUrl) {
+        .task(id: "\(room.avatarUrl ?? "")|\(crop.rawValue)") {
             image = nil
             failed = false
-            guard room.avatarUrl != nil else { return }
-            let data = await session.avatarData(forPath: room.avatarUrl)
+            guard crop != .mascot, let url = room.avatarUrl else { return }
+            let data = await session.avatarData(forUrl: url)
             guard !Task.isCancelled else { return }
             guard let data, let decoded = UIImage(data: data) else {
                 failed = true
@@ -97,6 +100,14 @@ struct RoomAvatarView: View {
             }
             guard !Task.isCancelled else { return }
             image = decoded
+        }
+    }
+
+    private var mask: AnyShape {
+        switch crop {
+        case .circle, .mascot: AnyShape(Circle())
+        case .rounded: AnyShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+        case .square: AnyShape(Rectangle())
         }
     }
 }

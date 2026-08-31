@@ -39,7 +39,9 @@ import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
 import { skillRecorderEnabled } from "@/lib/feature-flags";
 import { nextRename } from "@/lib/rename";
-import { imageAttachmentFromFile } from "@/lib/composer-attachments";
+import { imageAttachmentFromFile, intakeFiles } from "@/lib/composer-attachments";
+import { pathForFile } from "./ComposerAttachments";
+import { appendDraftAttachments } from "@/lib/drafts";
 import { botAvatarUrlFromStoredPath } from "../../shared/bot-avatar";
 import { ImagePlus } from "lucide-react";
 import { downloadAllBots } from "@/lib/team-files";
@@ -182,9 +184,21 @@ function StackedMauses({ group, members, density }: { group: Group; members: Bot
   const singleSize = iconOnly ? 44 : density === "compact" ? 40 : 56;
   
   if (group.avatarUrl) {
+    const radius =
+      group.avatarCrop === "square"
+        ? "0"
+        : group.avatarCrop === "rounded"
+        ? "22%"
+        : "50%";
     return (
       <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
-        <GroupAvatar group={group} size={singleSize} />
+        <img
+          src={group.avatarUrl}
+          alt={group.name}
+          className="size-full object-cover shadow-sm"
+          style={{ width: singleSize, height: singleSize, borderRadius: radius }}
+          draggable={false}
+        />
       </div>
     );
   }
@@ -224,14 +238,57 @@ function GroupListItem({
   onMenu: (menu: { groupId: string; x: number; y: number }) => void;
 }) {
   const { state, dispatch } = useStore();
+  const [isDragTarget, setIsDragTarget] = useState(false);
+  const dragDepth = useRef(0);
   const selected = state.activeView === "chat" && state.selectedId === group.id;
   const members = group.memberIds
     .map((id) => state.bots.find((b) => b.id === id))
     .filter((b): b is Bot => Boolean(b));
   const last = group.messages.at(-1);
+
+  const onDragEnter = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setIsDragTarget(true);
+  };
+  const onDragLeave = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setIsDragTarget(false);
+  };
+  const onDragOver = (e: React.DragEvent) => {
+    if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  };
+  const onDrop = async (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth.current = 0;
+    setIsDragTarget(false);
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (!files.length) return;
+    dispatch({ type: "select", id: group.id });
+    const { attachments } = await intakeFiles(files, {
+      allowImages: true,
+      getPath: pathForFile,
+      uploadImage: imageAttachmentFromFile,
+    });
+    if (attachments.length) {
+      appendDraftAttachments(`group:${group.id}:${group.threadId}`, attachments);
+    }
+  };
+
   return (
     <button
       onClick={() => dispatch({ type: "select", id: group.id })}
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
       onContextMenu={(e) => {
         e.preventDefault();
         onMenu({ groupId: group.id, x: e.clientX, y: e.clientY });
@@ -246,9 +303,13 @@ function GroupListItem({
         onMenu({ groupId: group.id, x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
       }}
       className={cn(
-        "relative flex w-full items-center rounded-xl text-left",
+        "relative flex w-full items-center rounded-xl text-left transition-all",
         density === "icons" ? "justify-center px-1 py-1.5" : density === "compact" ? "gap-2 px-2 py-1.5" : "gap-3 px-3 py-2.5",
-        selected ? "bg-raised" : "hover:bg-raised/50",
+        isDragTarget
+          ? "ring-2 ring-accent bg-accent/20 scale-[1.02]"
+          : selected
+            ? "bg-raised"
+            : "hover:bg-raised/50",
       )}
       title={density === "icons" ? group.name : undefined}
       aria-label={density === "icons" ? group.name : undefined}
@@ -878,6 +939,47 @@ function BotListItem({
       </div>
     </>
   );
+  const [isDragTarget, setIsDragTarget] = useState(false);
+  const dragDepth = useRef(0);
+
+  const onDragEnter = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    e.preventDefault();
+    dragDepth.current += 1;
+    setIsDragTarget(true);
+  };
+  const onDragLeave = (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setIsDragTarget(false);
+  };
+  const onDragOver = (e: React.DragEvent) => {
+    if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+    }
+  };
+  const onDrop = async (e: React.DragEvent) => {
+    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    e.preventDefault();
+    e.stopPropagation();
+    dragDepth.current = 0;
+    setIsDragTarget(false);
+    const files = Array.from(e.dataTransfer?.files ?? []);
+    if (!files.length) return;
+    dispatch({ type: "select", id: bot.id });
+    const instance = state.instances.find((i) => i.instanceId === bot.modelSelection?.instanceId);
+    const allowImages = Boolean(instance?.capabilities?.images);
+    const { attachments } = await intakeFiles(files, {
+      allowImages,
+      getPath: pathForFile,
+      uploadImage: imageAttachmentFromFile,
+    });
+    if (attachments.length) {
+      appendDraftAttachments(`bot:${bot.id}`, attachments);
+    }
+  };
+
   const onContextMenu = (event: React.MouseEvent) => {
     event.preventDefault();
     onMenu({ botId: bot.id, x: event.clientX, y: event.clientY });
@@ -894,7 +996,17 @@ function BotListItem({
   }
 
   return (
-    <div className="group relative" title={iconOnly ? bot.name : undefined}>
+    <div
+      onDragEnter={onDragEnter}
+      onDragLeave={onDragLeave}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      className={cn(
+        "group relative rounded-xl transition-all",
+        isDragTarget && "ring-2 ring-accent bg-accent/20 scale-[1.02]",
+      )}
+      title={iconOnly ? bot.name : undefined}
+    >
       <div
         role="button"
         tabIndex={0}

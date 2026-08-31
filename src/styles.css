@@ -263,6 +263,220 @@
   --radius-xl: 14px;
 }
 
+/* ── Studio ────────────────────────────────────────────────────────────────
+   Crisp, modern macOS daylight. Pure white panels, cool grey-white ground,
+   deep graphite typography, and an electric royal sapphire accent.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-skin="studio"] {
+  --color-app: #f6f8fa;
+  --color-panel: #ffffff;
+  --color-raised: #ffffff;
+  --color-raised-hover: #f1f3f5;
+  --color-card: #ffffff;
+  --color-inset: #f1f3f5;
+  --color-control: #e9ecef;
+  --color-hairline: #d0d7de;
+
+  --color-ink: #111418;
+  --color-ink-secondary: #57606a;
+
+  --color-accent: #0969da;
+  --color-accent-border: #218bff;
+  --color-accent-text: #0969da;
+  --color-focus: #0969da;
+  --color-accent-ink: #ffffff;
+  --color-bubble-user: #e7f0fa;
+
+  --color-success: #1a7f37;
+  --color-danger: #cf222e;
+  --color-danger-ink: #ffffff;
+  --color-warning: #9a6700;
+  --color-scrollbar: #c2cbd4;
+  --color-maus-line: #57606a;
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+/* ── Titanium ──────────────────────────────────────────────────────────────
+   Brushed titanium frost. Refined silver slate neutrals, crisp white cards,
+   dark indigo ink, and a vivid modern indigo-violet accent.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-skin="titanium"] {
+  --color-app: #eef1f4;
+  --color-panel: #f8fafc;
+  --color-raised: #ffffff;
+  --color-raised-hover: #e2e8f0;
+  --color-card: #ffffff;
+  --color-inset: #e2e8f0;
+  --color-control: #cbd5e1;
+  --color-hairline: #94a3b8;
+
+  --color-ink: #0f172a;
+  --color-ink-secondary: #475569;
+
+  --color-accent: #4f46e5;
+  --color-accent-border: #6366f1;
+  --color-accent-text: #4338ca;
+  --color-focus: #4f46e5;
+  --color-accent-ink: #ffffff;
+  --color-bubble-user: #e0e7ff;
+
+  --color-success: #059669;
+  --color-danger: #dc2626;
+  --color-danger-ink: #ffffff;
+  --color-warning: #d97706;
+  --color-scrollbar: #94a3b8;
+  --color-maus-line: #475569;
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    Roboto, sans-serif;
+  --radius-lg: 6px;
+  --radius-xl: 10px;
+}
+
+/* ── Porcelain ─────────────────────────────────────────────────────────────
+   Ultra-clean Apple White minimalism with soft neutral shadows and vivid modern sky blue.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-skin="porcelain"] {
+  --color-app: #ffffff;
+  --color-panel: #fcfcfd;
+  --color-raised: #f8fafc;
+  --color-raised-hover: #f1f5f9;
+  --color-card: #ffffff;
+  --color-inset: #f1f5f9;
+  --color-control: #e2e8f0;
+  --color-hairline: #e2e8f0;
+
+  --color-ink: #020617;
+  --color-ink-secondary: #64748b;
+
+  --color-accent: #0284c7;
+  --color-accent-border: #38bdf8;
+  --color-accent-text: #0369a1;
+  --color-focus: #0284c7;
+  --color-accent-ink: #ffffff;
+  --color-bubble-user: #e0f2fe;
+
+  --color-success: #16a34a;
+  --color-danger: #e11d48;
+  --color-danger-ink: #ffffff;
+  --color-warning: #ea580c;
+  --color-scrollbar: #cbd5e1;
+  --color-maus-line: #64748b;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+  --radius-lg: 8px;
+  --radius-xl: 14px;
+}
+
+/* ── Nordic ────────────────────────────────────────────────────────────────
+   Crisp sub-arctic daylight, frost white cards, deep fjord navy text, azure cyan.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-skin="nordic"] {
+  --color-app: #eef3f8;
+  --color-panel: #f5f8fc;
+  --color-raised: #ffffff;
+  --color-raised-hover: #e3ebf5;
+  --color-card: #ffffff;
+  --color-inset: #e0e8f2;
+  --color-control: #cad8e8;
+  --color-hairline: #a8bfd8;
+
+  --color-ink: #0f1c2e;
+  --color-ink-secondary: #475d78;
+
+  --color-accent: #0077cc;
+  --color-accent-border: #2998ec;
+  --color-accent-text: #0060a3;
+  --color-focus: #0077cc;
+  --color-accent-ink: #ffffff;
+  --color-bubble-user: #dbeafe;
+
+  --color-success: #0d9488;
+  --color-danger: #d946ef;
+  --color-danger-ink: #ffffff;
+  --color-warning: #f59e0b;
+  --color-scrollbar: #9cb5d1;
+  --color-maus-line: #475d78;
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+}
+
+/* ── Sandstone ─────────────────────────────────────────────────────────────
+   Sunlit cream stone, warm natural linen surfaces, and rich amber warmth.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-skin="sandstone"] {
+  --color-app: #f7f4ed;
+  --color-panel: #fdfbf7;
+  --color-raised: #ffffff;
+  --color-raised-hover: #eee9dc;
+  --color-card: #ffffff;
+  --color-inset: #ede6d6;
+  --color-control: #ded4c0;
+  --color-hairline: #bfb297;
+
+  --color-ink: #2b251c;
+  --color-ink-secondary: #786d5c;
+
+  --color-accent: #c05621;
+  --color-accent-border: #dd6b20;
+  --color-accent-text: #9c4221;
+  --color-focus: #c05621;
+  --color-accent-ink: #ffffff;
+  --color-bubble-user: #feebc8;
+
+  --color-success: #2f855a;
+  --color-danger: #c53030;
+  --color-danger-ink: #ffffff;
+  --color-warning: #b7791f;
+  --color-scrollbar: #c4b89f;
+  --color-maus-line: #786d5c;
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --radius-lg: 6px;
+  --radius-xl: 10px;
+}
+
+/* ── Solarized ─────────────────────────────────────────────────────────────
+   Designer daylight with soft cream ground, deep olive slate ink, and vibrant cyan.
+   ───────────────────────────────────────────────────────────────────────── */
+[data-skin="solarized"] {
+  --color-app: #fdf6e3;
+  --color-panel: #eee8d5;
+  --color-raised: #ffffff;
+  --color-raised-hover: #e0d8c0;
+  --color-card: #ffffff;
+  --color-inset: #e0d8c0;
+  --color-control: #d3cbb7;
+  --color-hairline: #93a1a1;
+
+  --color-ink: #073642;
+  --color-ink-secondary: #586e75;
+
+  --color-accent: #268bd2;
+  --color-accent-border: #2aa198;
+  --color-accent-text: #268bd2;
+  --color-focus: #268bd2;
+  --color-accent-ink: #ffffff;
+  --color-bubble-user: #eee8d5;
+
+  --color-success: #859900;
+  --color-danger: #dc322f;
+  --color-danger-ink: #ffffff;
+  --color-warning: #b58900;
+  --color-scrollbar: #93a1a1;
+  --color-maus-line: #586e75;
+
+  --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --radius-lg: 6px;
+  --radius-xl: 10px;
+}
+
 html,
 body,
 #root {

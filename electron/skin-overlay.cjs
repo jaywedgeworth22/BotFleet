@@ -8,6 +8,8 @@
 "use strict";
 
 const SKIN_CHROME = Object.freeze({
+  studio: Object.freeze({ color: "#f6f8fa", symbolColor: "#57606a" }),
+  titanium: Object.freeze({ color: "#eef1f4", symbolColor: "#475569" }),
   midnight: Object.freeze({ color: "#070707", symbolColor: "#b5b5b5" }),
   atelier: Object.freeze({ color: "#f5f1eb", symbolColor: "#6b6559" }),
   foundry: Object.freeze({ color: "#100e0b", symbolColor: "#b0a696" }),

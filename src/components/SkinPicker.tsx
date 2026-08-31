@@ -6,7 +6,18 @@
 // drift from what picking it actually does.
 import { useState } from "react";
 import { Check } from "lucide-react";
-import { SKINS, applySkin, readSkin, type SkinId } from "@/lib/skins";
+import {
+  SKINS,
+  applySkin,
+  readSkin,
+  ACCENT_PRESETS,
+  applyCustomAccent,
+  readCustomAccent,
+  readCustomTheme,
+  saveCustomTheme,
+  type SkinId,
+  type CustomThemeConfig,
+} from "@/lib/skins";
 import { cn } from "@/lib/cn";
 
 /**
@@ -64,50 +75,261 @@ function Miniature({ skin }: { skin: SkinId }) {
 }
 
 export function SkinPicker() {
-  // The document is the source of truth, not storage: main.tsx has already
-  // stamped it, and reading it back keeps the checkmark honest even if the
-  // skin was set some other way.
-  // SAFETY: main.tsx writes this attribute from applySkin() before the first
-  // paint, and readSkin() covers the case where it is absent or unreadable.
   const [active, setActive] = useState<SkinId>(
     () => (document.documentElement.dataset.skin as SkinId) || readSkin(),
   );
+  const [customAccent, setCustomAccent] = useState<string | null>(() => readCustomAccent());
+  const [customTheme, setCustomTheme] = useState<CustomThemeConfig>(() => readCustomTheme());
+
+  const handleSelectSkin = (id: SkinId) => {
+    setActive(id);
+    applySkin(id);
+  };
+
+  const handleSelectAccent = (hex: string | null) => {
+    setCustomAccent(hex);
+    applyCustomAccent(hex);
+  };
+
+  const handleUpdateCustomField = (key: keyof CustomThemeConfig, value: string) => {
+    const next = { ...customTheme, [key]: value };
+    setCustomTheme(next);
+    saveCustomTheme(next);
+    if (active !== "custom") {
+      setActive("custom");
+      applySkin("custom");
+    }
+  };
+
+  const handleApplyPreset = (preset: Partial<CustomThemeConfig>) => {
+    const next = { ...customTheme, ...preset };
+    setCustomTheme(next);
+    saveCustomTheme(next);
+    if (active !== "custom") {
+      setActive("custom");
+      applySkin("custom");
+    }
+  };
 
   return (
-    // One row, so the whole set is visible without scrolling the modal —
-    // 2x2 pushed the second row below the fold of its 560px frame.
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-      {SKINS.map((skin) => {
-        const selected = skin.id === active;
-        return (
-          <button
-            key={skin.id}
-            type="button"
-            onClick={() => {
-              applySkin(skin.id);
-              setActive(skin.id);
-            }}
-            aria-pressed={selected}
-            className={cn(
-              "flex flex-col gap-2 rounded-xl border p-2 text-left transition-colors",
-              selected
-                ? "border-accent-border bg-control"
-                : "border-hairline/60 hover:border-hairline hover:bg-control/50",
-            )}
-          >
-            <Miniature skin={skin.id} />
-            <div className="flex items-start gap-1.5 px-0.5 pb-0.5">
-              <div className="min-w-0 flex-1">
-                <div className="text-[13px] font-medium text-ink">{skin.name}</div>
-                <div className="mt-0.5 text-[11px] leading-snug text-ink-secondary">
-                  {skin.tagline}
+    <div className="flex flex-col gap-6">
+      <div>
+        <div className="mb-2 text-[13px] font-medium text-ink">Theme Presets</div>
+        <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 lg:grid-cols-4">
+          {SKINS.map((skin) => {
+            const selected = skin.id === active;
+            return (
+              <button
+                key={skin.id}
+                type="button"
+                onClick={() => handleSelectSkin(skin.id)}
+                aria-pressed={selected}
+                className={cn(
+                  "flex flex-col gap-2 rounded-xl border p-2 text-left transition-colors",
+                  selected
+                    ? "border-accent-border bg-control ring-1 ring-accent/30"
+                    : "border-hairline/60 hover:border-hairline hover:bg-control/50",
+                )}
+              >
+                <Miniature skin={skin.id} />
+                <div className="flex items-start gap-1.5 px-0.5 pb-0.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-[13px] font-medium text-ink">{skin.name}</div>
+                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-ink-secondary">
+                      {skin.tagline}
+                    </div>
+                  </div>
+                  {selected && <Check size={13} className="mt-0.5 shrink-0 text-accent-text" />}
                 </div>
-              </div>
-              {selected && <Check size={13} className="mt-0.5 shrink-0 text-accent-text" />}
-            </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Accent Color Section */}
+      <div className="rounded-xl border border-hairline/60 bg-control/40 p-3.5">
+        <div className="flex items-center justify-between">
+          <div className="text-[13px] font-medium text-ink">Accent Color</div>
+          {customAccent && (
+            <button
+              type="button"
+              onClick={() => handleSelectAccent(null)}
+              className="text-[12px] text-accent hover:underline"
+            >
+              Reset to theme default
+            </button>
+          )}
+        </div>
+        <div className="mt-2.5 flex flex-wrap items-center gap-2">
+          {ACCENT_PRESETS.map((preset) => {
+            const isSelected = customAccent?.toLowerCase() === preset.hex.toLowerCase();
+            return (
+              <button
+                key={preset.hex}
+                type="button"
+                onClick={() => handleSelectAccent(preset.hex)}
+                title={preset.name}
+                className={cn(
+                  "flex size-7 items-center justify-center rounded-full transition-transform hover:scale-110",
+                  isSelected ? "ring-2 ring-ink ring-offset-2 ring-offset-app" : "opacity-85 hover:opacity-100",
+                )}
+                style={{ backgroundColor: preset.hex }}
+              >
+                {isSelected && <Check size={13} className="text-white drop-shadow" />}
+              </button>
+            );
+          })}
+          <div className="flex items-center gap-1.5 pl-1.5">
+            <label className="relative flex size-7 cursor-pointer items-center justify-center rounded-full border border-hairline bg-raised hover:bg-raised-hover" title="Custom accent color picker">
+              <span className="text-[12px]">🎨</span>
+              <input
+                type="color"
+                value={customAccent || "#0969da"}
+                onChange={(e) => handleSelectAccent(e.target.value)}
+                className="sr-only"
+              />
+            </label>
+            <span className="text-[11.5px] text-ink-secondary">Custom</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Custom Theme Palette Builder */}
+      <div className="rounded-xl border border-hairline/60 bg-control/40 p-3.5">
+        <div className="flex items-center justify-between">
+          <div>
+            <div className="text-[13px] font-medium text-ink">Custom Palette Builder</div>
+            <div className="text-[11.5px] text-ink-secondary">Tailor every layer: background, sidebars, cards, and typography.</div>
+          </div>
+          {active === "custom" && (
+            <span className="rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent">Active Theme</span>
+          )}
+        </div>
+
+        {/* Quick Style Starters */}
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <span className="text-[11.5px] font-medium text-ink-secondary">Presets:</span>
+          <button
+            type="button"
+            onClick={() => handleApplyPreset({
+              appBg: "#f8f9fa",
+              panelBg: "#ffffff",
+              cardBg: "#ffffff",
+              inkColor: "#111827",
+              inkSecondaryColor: "#4b5563",
+              accentColor: "#2563eb",
+              hairlineColor: "#e5e7eb",
+            })}
+            className="rounded-md border border-hairline bg-raised px-2 py-1 text-[11.5px] font-medium text-ink hover:bg-raised-hover"
+          >
+            Clean Paper
           </button>
-        );
-      })}
+          <button
+            type="button"
+            onClick={() => handleApplyPreset({
+              appBg: "#f5f3ef",
+              panelBg: "#faf8f5",
+              cardBg: "#ffffff",
+              inkColor: "#292524",
+              inkSecondaryColor: "#78716c",
+              accentColor: "#ea580c",
+              hairlineColor: "#e7e5e4",
+            })}
+            className="rounded-md border border-hairline bg-raised px-2 py-1 text-[11.5px] font-medium text-ink hover:bg-raised-hover"
+          >
+            Warm Linen
+          </button>
+          <button
+            type="button"
+            onClick={() => handleApplyPreset({
+              appBg: "#f0fdf4",
+              panelBg: "#f8fafc",
+              cardBg: "#ffffff",
+              inkColor: "#064e3b",
+              inkSecondaryColor: "#047857",
+              accentColor: "#059669",
+              hairlineColor: "#dcfce7",
+            })}
+            className="rounded-md border border-hairline bg-raised px-2 py-1 text-[11.5px] font-medium text-ink hover:bg-raised-hover"
+          >
+            Mint Forest
+          </button>
+          <button
+            type="button"
+            onClick={() => handleApplyPreset({
+              appBg: "#0f172a",
+              panelBg: "#1e293b",
+              cardBg: "#334155",
+              inkColor: "#f8fafc",
+              inkSecondaryColor: "#94a3b8",
+              accentColor: "#38bdf8",
+              hairlineColor: "#475569",
+            })}
+            className="rounded-md border border-hairline bg-raised px-2 py-1 text-[11.5px] font-medium text-ink hover:bg-raised-hover"
+          >
+            Midnight Slate
+          </button>
+        </div>
+
+        {/* Color Inputs */}
+        <div className="mt-3.5 grid grid-cols-2 gap-2.5 sm:grid-cols-3">
+          <div className="flex items-center justify-between rounded-lg border border-hairline/60 bg-raised/50 p-2">
+            <span className="text-[12px] text-ink">App Ground</span>
+            <input
+              type="color"
+              value={customTheme.appBg}
+              onChange={(e) => handleUpdateCustomField("appBg", e.target.value)}
+              className="size-6 cursor-pointer rounded border border-hairline"
+            />
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-hairline/60 bg-raised/50 p-2">
+            <span className="text-[12px] text-ink">Sidebar Panel</span>
+            <input
+              type="color"
+              value={customTheme.panelBg}
+              onChange={(e) => handleUpdateCustomField("panelBg", e.target.value)}
+              className="size-6 cursor-pointer rounded border border-hairline"
+            />
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-hairline/60 bg-raised/50 p-2">
+            <span className="text-[12px] text-ink">Card Surface</span>
+            <input
+              type="color"
+              value={customTheme.cardBg}
+              onChange={(e) => handleUpdateCustomField("cardBg", e.target.value)}
+              className="size-6 cursor-pointer rounded border border-hairline"
+            />
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-hairline/60 bg-raised/50 p-2">
+            <span className="text-[12px] text-ink">Main Text</span>
+            <input
+              type="color"
+              value={customTheme.inkColor}
+              onChange={(e) => handleUpdateCustomField("inkColor", e.target.value)}
+              className="size-6 cursor-pointer rounded border border-hairline"
+            />
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-hairline/60 bg-raised/50 p-2">
+            <span className="text-[12px] text-ink">Secondary Text</span>
+            <input
+              type="color"
+              value={customTheme.inkSecondaryColor}
+              onChange={(e) => handleUpdateCustomField("inkSecondaryColor", e.target.value)}
+              className="size-6 cursor-pointer rounded border border-hairline"
+            />
+          </div>
+          <div className="flex items-center justify-between rounded-lg border border-hairline/60 bg-raised/50 p-2">
+            <span className="text-[12px] text-ink">Border Line</span>
+            <input
+              type="color"
+              value={customTheme.hairlineColor}
+              onChange={(e) => handleUpdateCustomField("hairlineColor", e.target.value)}
+              className="size-6 cursor-pointer rounded border border-hairline"
+            />
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

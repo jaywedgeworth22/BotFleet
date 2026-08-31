@@ -8,6 +8,7 @@
 // glass, which is the whole point of the glass.
 import SwiftUI
 import CompanionCore
+import UniformTypeIdentifiers
 
 struct ChatListView: View {
     @EnvironmentObject private var session: Session
@@ -80,6 +81,9 @@ struct ChatListView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            .onDrop(of: [UTType.image.identifier, UTType.fileURL.identifier, UTType.data.identifier], isTargeted: nil) { providers in
+                                handleDrop(for: summary.chat, providers: providers)
+                            }
                         }
                     }
                     .padding(.bottom, Self.barClearance)
@@ -226,6 +230,9 @@ struct ChatListView: View {
                             GroupTile(room: room)
                         }
                         .buttonStyle(.plain)
+                        .onDrop(of: [UTType.image.identifier, UTType.fileURL.identifier, UTType.data.identifier], isTargeted: nil) { providers in
+                            handleDrop(for: Chat.room(room), providers: providers)
+                        }
                     }
                     Button {
                         showingNewGroup = true
@@ -328,6 +335,93 @@ struct ChatListView: View {
             .tracking(0.4)
             .foregroundStyle(Color.secondary)
             .padding(.horizontal, 20)
+    }
+
+    private func handleDrop(for chat: Chat, providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                handled = true
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.image.identifier) { data, _ in
+                    guard let data, let image = UIImage(data: data) else { return }
+                    let mime = self.imageMIME(data) ?? "image/jpeg"
+                    DispatchQueue.main.async {
+                        var existing = self.session.stagedAttachmentsByChatId[chat.id] ?? []
+                        existing.append(StagedAttachment(
+                            name: "Dropped Photo",
+                            mime: mime,
+                            data: data,
+                            previewImage: image,
+                            isImage: true
+                        ))
+                        self.session.stagedAttachmentsByChatId[chat.id] = existing
+                        self.path.append(chat)
+                    }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                handled = true
+                provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                    guard let url = item as? URL ?? (item as? Data).flatMap({ URL(dataRepresentation: $0, relativeTo: nil) }) else { return }
+                    if let data = try? Data(contentsOf: url) {
+                        let name = url.lastPathComponent
+                        let mime = self.mimeType(for: url)
+                        let isImg = mime.hasPrefix("image/")
+                        let preview = isImg ? UIImage(data: data) : nil
+                        DispatchQueue.main.async {
+                            var existing = self.session.stagedAttachmentsByChatId[chat.id] ?? []
+                            existing.append(StagedAttachment(
+                                name: name,
+                                mime: mime,
+                                data: data,
+                                previewImage: preview,
+                                isImage: isImg
+                            ))
+                            self.session.stagedAttachmentsByChatId[chat.id] = existing
+                            self.path.append(chat)
+                        }
+                    }
+                }
+            } else if provider.hasItemConformingToTypeIdentifier(UTType.data.identifier) {
+                handled = true
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.data.identifier) { data, _ in
+                    guard let data else { return }
+                    let mime = self.imageMIME(data) ?? "application/octet-stream"
+                    let isImg = mime.hasPrefix("image/")
+                    let preview = isImg ? UIImage(data: data) : nil
+                    DispatchQueue.main.async {
+                        var existing = self.session.stagedAttachmentsByChatId[chat.id] ?? []
+                        existing.append(StagedAttachment(
+                            name: "Attachment",
+                            mime: mime,
+                            data: data,
+                            previewImage: preview,
+                            isImage: isImg
+                        ))
+                        self.session.stagedAttachmentsByChatId[chat.id] = existing
+                        self.path.append(chat)
+                    }
+                }
+            }
+        }
+        return handled
+    }
+
+    private func imageMIME(_ data: Data) -> String? {
+        let bytes = [UInt8](data.prefix(12))
+        if bytes.starts(with: [0x89, 0x50, 0x4e, 0x47]) { return "image/png" }
+        if bytes.starts(with: [0xff, 0xd8, 0xff]) { return "image/jpeg" }
+        if bytes.starts(with: Array("GIF8".utf8)) { return "image/gif" }
+        if bytes.count >= 12,
+           String(bytes: bytes[0..<4], encoding: .ascii) == "RIFF",
+           String(bytes: bytes[8..<12], encoding: .ascii) == "WEBP" { return "image/webp" }
+        return nil
+    }
+
+    private func mimeType(for url: URL) -> String {
+        if let type = UTType(filenameExtension: url.pathExtension) {
+            return type.preferredMIMEType ?? "application/octet-stream"
+        }
+        return "application/octet-stream"
     }
 }
 

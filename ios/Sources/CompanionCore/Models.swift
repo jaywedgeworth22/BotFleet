@@ -235,6 +235,7 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var threadId: String
     public var name: String
     public var avatarUrl: String?
+    public var avatarCrop: AvatarCrop?
     public var memberIds: [String]
     public var defaultResponder: GroupResponder
     public var bulletin: String
@@ -242,6 +243,8 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var createdAt: Double
     public var dm: Bool?
     public var busyBotId: String?
+    public var cwd: String?
+    public var extraCwds: [String]?
     /// Independent user conversations in this channel. Bot-to-bot rooms
     /// omit tasks because their transcript is the canonical private chat.
     public var tasks: [BotTask]?

@@ -48,6 +48,9 @@ final class Session: ObservableObject {
     /// NavigationStack after the exact detached task has been activated.
     @Published private(set) var notificationChat: Chat?
 
+    /// Pending attachments queued for a chat (e.g. from drag & drop on roster).
+    @Published var stagedAttachmentsByChatId: [String: [StagedAttachment]] = [:]
+
     private var client: CompanionClient?
     /// The device token, kept in memory so the client can be rebuilt when the
     /// dial moves to another stored host. The keychain remains the only place
@@ -862,6 +865,16 @@ final class Session: ObservableObject {
         }
     }
 
+    func uploadAttachment(data: Data, mime: String) async -> String? {
+        guard let client else { return nil }
+        do {
+            return try await client.uploadAvatar(data: data, mime: mime)
+        } catch {
+            if !Task.isCancelled { actionError = error.localizedDescription }
+            return nil
+        }
+    }
+
     func generateAvatar(prompt: String, for bot: Bot) async -> Bot? {
         guard let client else { return nil }
         do {
@@ -875,8 +888,18 @@ final class Session: ObservableObject {
         }
     }
 
+    func avatarData(for bot: Bot) async -> Data? {
+        guard let path = bot.avatarUrl else { return nil }
+        return await avatarData(forUrl: path)
+    }
+
     func avatarData(forPath path: String?) async -> Data? {
-        guard let path = path, let client else { return nil }
+        guard let path else { return nil }
+        return await avatarData(forUrl: path)
+    }
+
+    func avatarData(forUrl path: String) async -> Data? {
+        guard let client else { return nil }
         let key = path as NSString
         if let cached = avatarCache.object(forKey: key) { return cached as Data }
         let generation = avatarCacheGeneration
@@ -905,31 +928,34 @@ final class Session: ObservableObject {
         avatarCache.removeAllObjects()
     }
 
-    func updateRoom(id: String, name: String, bulletin: String) async {
+    func updateRoom(id: String, name: String, bulletin: String, avatarCrop: AvatarCrop? = nil) async {
         guard let client else { return }
         do {
-            let _ = try await client.patchGroup(id: id, patch: ["name": name, "bulletin": bulletin])
-        } catch {
-            if !Task.isCancelled { actionError = error.localizedDescription }
-        }
-    }
-
-    func updateRoomAvatar(id: String, avatarUrl: String?) async {
-        guard let client else { return }
-        do {
-            let patch: [String: String?] = ["avatarUrl": avatarUrl]
+            var patch: [String: String] = ["name": name, "bulletin": bulletin]
+            if let avatarCrop { patch["avatarCrop"] = avatarCrop.rawValue }
             let _ = try await client.patchGroup(id: id, patch: patch)
         } catch {
             if !Task.isCancelled { actionError = error.localizedDescription }
         }
     }
 
-    func uploadRoomAvatar(id: String, data: Data, mime: String) async {
+    func updateRoomAvatar(id: String, avatarUrl: String?, avatarCrop: AvatarCrop? = nil) async {
+        guard let client else { return }
+        do {
+            var patch: [String: String?] = ["avatarUrl": avatarUrl]
+            if let avatarCrop { patch["avatarCrop"] = avatarCrop.rawValue }
+            let _ = try await client.patchGroup(id: id, patch: patch)
+        } catch {
+            if !Task.isCancelled { actionError = error.localizedDescription }
+        }
+    }
+
+    func uploadRoomAvatar(id: String, data: Data, mime: String, crop: AvatarCrop = .circle) async {
         guard let client else { return }
         do {
             let avatarUrl = try await client.uploadAvatar(data: data, mime: mime)
             guard !Task.isCancelled else { return }
-            await updateRoomAvatar(id: id, avatarUrl: avatarUrl)
+            await updateRoomAvatar(id: id, avatarUrl: avatarUrl, avatarCrop: crop)
         } catch {
             if !Task.isCancelled { actionError = error.localizedDescription }
         }
@@ -1308,3 +1334,33 @@ extension CompanionState {
         }
     }
 }
+
+public struct StagedAttachment: Identifiable, Equatable {
+    public let id: String
+    public let name: String
+    public let mime: String
+    public let data: Data
+    public var previewImage: UIImage?
+    public var isImage: Bool
+
+    public init(
+        id: String = UUID().uuidString,
+        name: String,
+        mime: String,
+        data: Data,
+        previewImage: UIImage? = nil,
+        isImage: Bool
+    ) {
+        self.id = id
+        self.name = name
+        self.mime = mime
+        self.data = data
+        self.previewImage = previewImage
+        self.isImage = isImage
+    }
+
+    public static func == (lhs: StagedAttachment, rhs: StagedAttachment) -> Bool {
+        lhs.id == rhs.id
+    }
+}
+
