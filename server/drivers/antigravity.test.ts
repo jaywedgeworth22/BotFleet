@@ -17,8 +17,8 @@ import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import {
   ANTIGRAVITY_COMPUTER_MCP_KEY,
   AntigravityDriver,
-  antigravityComputerMcpServer,
-  ensureAntigravityComputerMcp,
+  antigravityMcpServers,
+  ensureAntigravityMcp,
   readAntigravityModelCatalog,
   STATIC_ANTIGRAVITY_MODELS,
 } from "./antigravity.ts";
@@ -218,10 +218,10 @@ describe("Antigravity computer MCP config", () => {
       control: { url: "http://127.0.0.1:9/control", token: "ctl-tok" },
     },
   };
-  const boxEntry = () => antigravityComputerMcpServer(boxIntegrations)!;
+  const boxEntry = () => antigravityMcpServers(boxIntegrations)["botfleet-computer"]!;
 
   it("builds the cloud-box spec on the shared computer proxy (never path-resolved locally)", () => {
-    expect(antigravityComputerMcpServer(boxIntegrations)).toEqual({
+    expect(antigravityMcpServers(boxIntegrations)["botfleet-computer"]).toEqual({
       command: process.execPath,
       args: [SPAWNED_PROXIES.computer],
       env: {
@@ -236,12 +236,12 @@ describe("Antigravity computer MCP config", () => {
 
   it("passes a Local VM / VPS stdio connection through unchanged, and yields null without a computer", () => {
     expect(
-      antigravityComputerMcpServer({
+      antigravityMcpServers({
         localComputer: { command: "/opt/cua", args: ["--mcp"], env: { CUA_SOCKET: "/tmp/cua.sock" } },
       }),
-    ).toEqual({ command: "/opt/cua", args: ["--mcp"], env: { CUA_SOCKET: "/tmp/cua.sock" } });
-    expect(antigravityComputerMcpServer({})).toBeNull();
-    expect(antigravityComputerMcpServer(undefined)).toBeNull();
+    ).toEqual({ "botfleet-localComputer": { command: "/opt/cua", args: ["--mcp"], env: { CUA_SOCKET: "/tmp/cua.sock" } } });
+    expect(antigravityMcpServers({})["botfleet-localComputer"]).toBeUndefined();
+    expect(antigravityMcpServers(undefined)["botfleet-localComputer"]).toBeUndefined();
   });
 
   it("upserts only its own key — the user's servers and unknown top-level keys survive", () => {
@@ -255,15 +255,15 @@ describe("Antigravity computer MCP config", () => {
           futureTopLevelKey: { keep: true },
         }),
       );
-      ensureAntigravityComputerMcp(boxEntry(), { HOME: home });
+      ensureAntigravityMcp({ [ANTIGRAVITY_COMPUTER_MCP_KEY]: boxEntry() }, { HOME: home });
       let config = readConfig(home);
       expect(config.mcpServers["sqlite-helper"]).toEqual({ command: "sqlite-mcp-server", args: ["/db"] });
       expect(config.futureTopLevelKey).toEqual({ keep: true });
       expect(config.mcpServers[ANTIGRAVITY_COMPUTER_MCP_KEY]).toEqual(boxEntry());
 
       // A later turn on a different computer overwrites the key in place.
-      ensureAntigravityComputerMcp(
-        { command: "/opt/cua", args: ["--mcp"], env: { CUA_SOCKET: "/tmp/cua.sock" } },
+      ensureAntigravityMcp(
+        { [ANTIGRAVITY_COMPUTER_MCP_KEY]: { command: "/opt/cua", args: ["--mcp"], env: { CUA_SOCKET: "/tmp/cua.sock" } } },
         { HOME: home },
       );
       config = readConfig(home);
@@ -280,7 +280,7 @@ describe("Antigravity computer MCP config", () => {
     try {
       mkdirSync(join(home, ".gemini", "config"), { recursive: true });
       writeFileSync(configPath(home), "{{{ not json");
-      ensureAntigravityComputerMcp(boxEntry(), { HOME: home });
+      ensureAntigravityMcp({ [ANTIGRAVITY_COMPUTER_MCP_KEY]: boxEntry() }, { HOME: home });
       expect(readConfig(home).mcpServers[ANTIGRAVITY_COMPUTER_MCP_KEY]).toEqual(boxEntry());
     } finally {
       rmSync(home, { recursive: true, force: true });
@@ -295,7 +295,7 @@ describe("Antigravity computer MCP config", () => {
       mkdirSync(directory, { recursive: true, mode: 0o755 });
       writeFileSync(configPath(home), "{}\n", { mode: 0o644 });
 
-      ensureAntigravityComputerMcp(boxEntry(), { HOME: home });
+      ensureAntigravityMcp({ [ANTIGRAVITY_COMPUTER_MCP_KEY]: boxEntry() }, { HOME: home });
 
       expect(statSync(directory).mode & 0o777).toBe(0o700);
       expect(statSync(configPath(home)).mode & 0o777).toBe(0o600);
@@ -307,7 +307,7 @@ describe("Antigravity computer MCP config", () => {
   it("preserves concurrent config edits while restoring only its own MCP entry", () => {
     const home = mkdtempSync(join(tmpdir(), "omb-agy-mcpconcurrent-"));
     try {
-      const restoreNewFile = ensureAntigravityComputerMcp(boxEntry(), { HOME: home });
+      const restoreNewFile = ensureAntigravityMcp({ [ANTIGRAVITY_COMPUTER_MCP_KEY]: boxEntry() }, { HOME: home });
       const concurrentlyCreated = readConfig(home);
       concurrentlyCreated.mcpServers["external-helper"] = { command: "external-mcp" };
       concurrentlyCreated.futureTopLevelKey = { keep: true };
@@ -325,7 +325,7 @@ describe("Antigravity computer MCP config", () => {
         configPath(home),
         JSON.stringify({ mcpServers: { [ANTIGRAVITY_COMPUTER_MCP_KEY]: originalEntry } }),
       );
-      const restoreExistingEntry = ensureAntigravityComputerMcp(boxEntry(), { HOME: home });
+      const restoreExistingEntry = ensureAntigravityMcp({ [ANTIGRAVITY_COMPUTER_MCP_KEY]: boxEntry() }, { HOME: home });
       const concurrentlyEdited = readConfig(home);
       concurrentlyEdited.mcpServers["another-helper"] = { command: "another-mcp" };
       writeFileSync(configPath(home), JSON.stringify(concurrentlyEdited));
@@ -343,7 +343,7 @@ describe("Antigravity computer MCP config", () => {
     const home = mkdtempSync(join(tmpdir(), "omb-agy-mcprm-"));
     try {
       // No file at all: removal is a no-op, not an empty file in the user's home.
-      ensureAntigravityComputerMcp(null, { HOME: home });
+      ensureAntigravityMcp({}, { HOME: home });
       expect(existsSync(configPath(home))).toBe(false);
 
       mkdirSync(join(home, ".gemini", "config"), { recursive: true });
@@ -356,7 +356,7 @@ describe("Antigravity computer MCP config", () => {
           },
         }),
       );
-      ensureAntigravityComputerMcp(null, { HOME: home });
+      ensureAntigravityMcp({}, { HOME: home });
       const config = readConfig(home);
       expect(config.mcpServers[ANTIGRAVITY_COMPUTER_MCP_KEY]).toBeUndefined();
       expect(config.mcpServers["sqlite-helper"]).toEqual({ command: "sqlite-mcp-server", args: ["/db"] });
