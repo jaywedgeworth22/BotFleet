@@ -14,7 +14,7 @@ import {
   type GroupDefaultResponder,
   type Message,
 } from "@/state/store";
-import { MausAvatar } from "./Avatar";
+import { MausAvatar, GroupAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled } from "@/lib/feature-flags";
 import { normalizeState } from "@/lib/mascot";
@@ -1133,19 +1133,14 @@ export function GroupView({ group }: { group: Group }) {
           "pl-11 md:pl-5",
         )}
       >
-        <div className="flex min-w-0 items-center gap-2.5">
+        <div className="flex flex-1 min-w-0 items-center gap-2.5">
           {group.avatarUrl && (
-            <img
-              src={group.avatarUrl}
-              alt={group.name}
-              className="size-7 shrink-0 rounded-full object-cover shadow-sm"
-              draggable={false}
-            />
+            <GroupAvatar group={group} size={28} />
           )}
           <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
           {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
         </div>
-        <div className="flex items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5">
           <button
             type="button"
             onClick={() => setFindOpen((open) => !open)}
