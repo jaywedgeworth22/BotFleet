@@ -167,115 +167,132 @@ const mcpConfigFileSchema = z.looseObject({
  * Cloud boxes go through BotFleet's REST-to-MCP adapter (the same spec
  * claude.ts and codex.ts build); Local VM and VPS connections arrive as a
  * ready-made Cua Driver stdio command and pass through unchanged. */
-export function antigravityComputerMcpServer(
+export function antigravityMcpServers(
   integrations: SendTurnInput["integrations"],
-): AntigravityComputerMcpServer | null {
-  const computer = integrations?.computer;
-  if (computer) {
-    const proxyEnv = computerProxyEnv(computer);
-    return {
-      command: process.execPath,
-      args: [SPAWNED_PROXIES.computer],
-      env: {
-        ELECTRON_RUN_AS_NODE: "1",
-        OGB_BOX_ID: proxyEnv.OGB_BOX_ID ?? "",
-        OGB_BOX_TOKEN: proxyEnv.OGB_BOX_TOKEN ?? "",
-        // who-is-driving endpoint, so a person taking the wheel in the
-        // panel pauses this bot's hands mid-turn
-        OMB_CONTROL_URL: proxyEnv.OMB_CONTROL_URL ?? "",
-        OMB_CONTROL_TOKEN: proxyEnv.OMB_CONTROL_TOKEN ?? "",
-      },
-    };
+): Record<string, { command: string; args: string[]; env: Record<string, string> }> {
+  const servers: Record<string, { command: string; args: string[]; env: Record<string, string> }> = {};
+  if (!integrations) return servers;
+
+  for (const [name, def] of Object.entries(integrations)) {
+    if (!def || typeof def !== "object" || !("command" in def)) {
+      if (name === "computer" && def && "kind" in def && def.kind === "box") {
+        const proxyEnv = computerProxyEnv(def as any);
+        servers[`botfleet-${name}`] = {
+          command: process.execPath,
+          args: [SPAWNED_PROXIES.computer],
+          env: {
+            ELECTRON_RUN_AS_NODE: "1",
+            OGB_BOX_ID: proxyEnv.OGB_BOX_ID ?? "",
+            OGB_BOX_TOKEN: proxyEnv.OGB_BOX_TOKEN ?? "",
+            OMB_CONTROL_URL: proxyEnv.OMB_CONTROL_URL ?? "",
+            OMB_CONTROL_TOKEN: proxyEnv.OMB_CONTROL_TOKEN ?? "",
+          },
+        };
+      }
+      continue;
+    }
+    servers[`botfleet-${name}`] = { command: (def as any).command, args: (def as any).args, env: { ...(def as any).env } };
   }
-  const local = integrations?.localComputer;
-  if (local) return { command: local.command, args: local.args, env: { ...local.env } };
-  return null;
+  return servers;
 }
 
 /** Upsert (server) or remove (null) the botfleet-computer entry in the
  * global mcp_config.json. Only that one key is ever written; a turn without
  * a computer removes it so a previous turn's mount cannot leak tools — or
  * box/control tokens — into later turns or the user's own agy sessions. */
-export function ensureAntigravityComputerMcp(
-  server: AntigravityComputerMcpServer | null,
+export function ensureAntigravityMcp(
+  servers: Record<string, { command: string; args: string[]; env: Record<string, string> }>,
   env: Record<string, string | undefined> = process.env,
 ): () => void {
   const home = env.HOME || env.USERPROFILE || homedir();
   const path = join(home, ".gemini", "config", "mcp_config.json");
   const existed = existsSync(path);
   const original = existed ? readFileSync(path, "utf8") : null;
-  let config: z.infer<typeof mcpConfigFileSchema> = {};
+  let config: any = {};
   try {
     const parsed = mcpConfigFileSchema.safeParse(JSON.parse(original ?? ""));
     if (parsed.success) config = parsed.data;
-  } catch {
-    // Missing or malformed user config — rebuild only what the mount needs.
+  } catch {}
+  
+  const currentServers = { ...config.mcpServers };
+  let hasChanges = false;
+  
+  for (const key of Object.keys(currentServers)) {
+    if (key.startsWith("botfleet-")) {
+      delete currentServers[key];
+      hasChanges = true;
+    }
   }
-  const servers = { ...config.mcpServers };
-  // Nothing to remove and nothing to add: leave the user's file untouched
-  // (don't create or reformat it on every computer-less turn).
-  if (!server && !(ANTIGRAVITY_COMPUTER_MCP_KEY in servers)) return () => {};
-  if (server) {
-    servers[ANTIGRAVITY_COMPUTER_MCP_KEY] = { command: server.command, args: server.args, env: server.env };
-  } else {
-    delete servers[ANTIGRAVITY_COMPUTER_MCP_KEY];
+  
+  for (const [name, server] of Object.entries(servers)) {
+    currentServers[name] = server;
+    hasChanges = true;
   }
+  
+  if (!hasChanges) return () => {};
+  
   const directory = dirname(path);
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  chmodSync(directory, 0o700);
-  if (existed) chmodSync(path, 0o600);
-  const mounted = `${JSON.stringify({ ...config, mcpServers: servers }, null, 2)}\n`;
-  writeFileSync(path, mounted, { mode: 0o600 });
-  chmodSync(path, 0o600);
-
-  const hadOriginalEntry = ANTIGRAVITY_COMPUTER_MCP_KEY in (config.mcpServers ?? {});
-  const originalEntry = config.mcpServers?.[ANTIGRAVITY_COMPUTER_MCP_KEY];
-
-  // Restore exactly what was present before this turn when nobody else touched
-  // the file. A user's own agy process is outside our module-wide lease, so if
-  // it edited the config concurrently, preserve that edit and restore only our
-  // one key instead of replacing (or deleting) the whole file.
-  let restored = false;
+  try { chmodSync(directory, 0o700); } catch {}
+  
+  const newConfig = { ...config, mcpServers: currentServers };
+  writeFileSync(path, JSON.stringify(newConfig, null, 2), { mode: 0o600 });
+  try { chmodSync(path, 0o600); } catch {}
+  
   return () => {
-    if (restored) return;
-    restored = true;
-    let current: string;
     try {
-      current = readFileSync(path, "utf8");
-    } catch (error) {
-      if (error instanceof Error && "code" in error && error.code === "ENOENT") return;
-      throw error;
-    }
-    if (current === mounted) {
-      if (original === null) {
-        unlinkSync(path);
+      if (!existsSync(path)) return;
+      const cleanupOriginal = readFileSync(path, "utf8");
+      
+      // If the file is exactly what we just wrote, we can just restore original
+      if (cleanupOriginal === JSON.stringify(newConfig, null, 2)) {
+        if (existed && original !== null) {
+           writeFileSync(path, original, { mode: 0o600 });
+           try { chmodSync(path, 0o600); } catch {}
+        } else {
+           unlinkSync(path);
+        }
         return;
       }
-      writeFileSync(path, original, { mode: 0o600 });
-      chmodSync(path, 0o600);
-      return;
-    }
-
-    // A malformed concurrent edit is not safe to rewrite. Leaving a stale
-    // BotFleet entry is preferable to destroying bytes we cannot interpret.
-    let currentJson: unknown;
-    try {
-      currentJson = JSON.parse(current);
-    } catch {
-      return;
-    }
-    const parsed = mcpConfigFileSchema.safeParse(currentJson);
-    if (!parsed.success) return;
-    const currentConfig = parsed.data;
-    const currentServers = { ...currentConfig.mcpServers };
-    if (hadOriginalEntry) currentServers[ANTIGRAVITY_COMPUTER_MCP_KEY] = originalEntry;
-    else delete currentServers[ANTIGRAVITY_COMPUTER_MCP_KEY];
-    writeFileSync(
-      path,
-      `${JSON.stringify({ ...currentConfig, mcpServers: currentServers }, null, 2)}\n`,
-      { mode: 0o600 },
-    );
-    chmodSync(path, 0o600);
+      
+      // Otherwise someone edited it concurrently! We must parse and patch!
+      let cleanupConfig: any = {};
+      try {
+        const cleanupParsed = mcpConfigFileSchema.safeParse(JSON.parse(cleanupOriginal));
+        if (cleanupParsed.success) cleanupConfig = cleanupParsed.data;
+      } catch {}
+      
+      const cleanupServers = { ...cleanupConfig.mcpServers };
+      let changed = false;
+      for (const key of Object.keys(cleanupServers)) {
+        if (key.startsWith("botfleet-")) {
+          delete cleanupServers[key];
+          changed = true;
+        }
+      }
+      
+      // We must ALSO restore any old botfleet- keys that existed originally!
+      if (existed && original !== null) {
+         try {
+           const origParsed = mcpConfigFileSchema.safeParse(JSON.parse(original));
+           if (origParsed.success && origParsed.data.mcpServers) {
+             for (const [k, v] of Object.entries(origParsed.data.mcpServers)) {
+               if (k.startsWith("botfleet-")) {
+                 cleanupServers[k] = v;
+                 changed = true;
+               }
+             }
+           }
+         } catch {}
+      }
+      
+      if (changed) {
+        writeFileSync(path, JSON.stringify({ ...cleanupConfig, mcpServers: cleanupServers }, null, 2), { mode: 0o600 });
+        try { chmodSync(path, 0o600); } catch {}
+      } else if (!existed && Object.keys(cleanupServers).length === 0 && Object.keys(cleanupConfig).length === 1) {
+        // If it was just mcpServers: {} we could unlink, but leaving it is fine too.
+      }
+    } catch {}
   };
 }
 
@@ -445,7 +462,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       }
       let restoreMcp = () => {};
       try {
-        restoreMcp = ensureAntigravityComputerMcp(antigravityComputerMcpServer(turn.integrations), env);
+        restoreMcp = ensureAntigravityMcp(antigravityMcpServers(turn.integrations), env);
       } catch (error) {
         releaseMcpLease();
         pending.delete(threadId);
