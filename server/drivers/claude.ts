@@ -668,6 +668,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // not re-allow BotFleet-owned namespaces that were deliberately omitted
       // (host-controlled local CUA must not get mcp__computer).
       for (const name of importedMcpNames) {
+        if (name === "computer") continue;
         const prefix = `mcp__${name}`;
         if (!allowed.includes(prefix)) allowed.push(prefix);
       }

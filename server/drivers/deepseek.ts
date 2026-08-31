@@ -77,7 +77,9 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({ model, messages, stream: opts.stream }),
-        signal: opts.signal ?? AbortSignal.timeout(120_000),
+        signal: opts.signal
+          ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
+          : AbortSignal.timeout(120_000),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
