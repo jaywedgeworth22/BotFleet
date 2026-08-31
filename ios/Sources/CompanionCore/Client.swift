@@ -196,8 +196,7 @@ public struct PairingInvite: Equatable, Sendable {
     }
 
     public static func parse(_ url: URL) -> PairingInvite? {
-        let scheme = url.scheme?.lowercased()
-        guard scheme == "botfleet" || scheme == "openmausbot",
+        guard url.scheme?.lowercased() == "openmausbot",
               url.host?.lowercased() == "pair",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { return nil }
@@ -315,7 +314,7 @@ public struct PairingRouteError: Error, LocalizedError, Equatable, Sendable {
 
     public var errorDescription: String? {
         let routes = attemptedHosts.joined(separator: ", ")
-        return "Couldn’t reach this computer through any available route (\(routes)). Keep Phone access turned on in BotFleet, then try again."
+        return "Couldn’t reach this computer through any available route (\(routes)). Keep Phone access turned on in OpenMausBot, then try again."
     }
 }
 
@@ -478,7 +477,7 @@ public struct CompanionClient: Sendable {
     /// that exact route is the user's preferred, explicit choice; neither a
     /// pairing credential nor the later bearer token is sprayed onto the
     /// current wifi merely because a private address was once advertised.
-    /// Only the first response that identifies itself as BotFleet receives
+    /// Only the first response that identifies itself as OpenMausBot receives
     /// the one-time pairing POST. The request id makes that redemption safely
     /// replayable by newer desktop builds if its response is lost in transit.
     public static func pairFirstReachable(
@@ -569,7 +568,7 @@ public struct CompanionClient: Sendable {
             guard !Task.isCancelled,
                   let http = response as? HTTPURLResponse,
                   (200...299).contains(http.statusCode),
-                  ["botfleet", "openmausbot"].contains(try JSONDecoder().decode(HealthIdentity.self, from: data).app)
+                  try JSONDecoder().decode(HealthIdentity.self, from: data).app == "openmausbot"
             else { return false }
             return true
         } catch {
@@ -819,14 +818,6 @@ public struct CompanionClient: Sendable {
 
     /// Make a room. The harness names it after the first member when `name`
     /// is empty, exactly as the desktop's dialog does.
-
-    public func patchGroup<T: Encodable>(id: String, patch: T) async throws -> Room {
-        try await send(
-            try makeRequest("PATCH", "/api/groups/\(id)", encodedBody: patch),
-            as: RoomResponse.self
-        ).group
-    }
-
     public func createRoom(name: String?, memberIds: [String]) async throws -> Room {
         var body: [String: Any] = ["memberIds": memberIds]
         if let name, !name.trimmingCharacters(in: .whitespaces).isEmpty { body["name"] = name }
@@ -927,24 +918,6 @@ public struct CompanionClient: Sendable {
 
     public func deleteTask(botId: String, threadId: String) async throws -> Bot {
         try await send(try makeRequest("DELETE", "/api/bots/\(botId)/tasks/\(threadId)"), as: BotResponse.self).bot
-    }
-
-    public func createTask(groupId: String, title: String? = nil) async throws -> Room {
-        var body: [String: Any] = [:]
-        if let title, !title.isEmpty { body["title"] = title }
-        return try await send(try makeRequest("POST", "/api/groups/\(groupId)/tasks", body: body), as: RoomResponse.self).group
-    }
-
-    public func switchTask(groupId: String, threadId: String) async throws -> Room {
-        try await send(try makeRequest("POST", "/api/groups/\(groupId)/tasks/\(threadId)"), as: RoomResponse.self).group
-    }
-
-    public func renameTask(groupId: String, threadId: String, title: String) async throws {
-        try await send(try makeRequest("PATCH", "/api/groups/\(groupId)/tasks/\(threadId)", body: ["title": title]))
-    }
-
-    public func deleteTask(groupId: String, threadId: String) async throws -> Room {
-        try await send(try makeRequest("DELETE", "/api/groups/\(groupId)/tasks/\(threadId)"), as: RoomResponse.self).group
     }
 
     public func interrupt(botId: String) async throws {

@@ -18,11 +18,12 @@ struct AgentProfileView: View {
     @State private var crop: AvatarCrop
     @State private var voice: String
     @State private var speakReplies: Bool
-    @State private var modelSelection: ModelSelection
+    @State private var instanceId: String
+    @State private var modelId: String
     @State private var photo: PhotosPickerItem?
     @State private var prompt = ""
     @State private var voices: [Voice] = []
-    @State private var instances: [CompanionCore.Instance] = []
+    @State private var instances: [Instance] = []
     @State private var config: ConfigStatus?
     @State private var busy = false
     @State private var player: AVAudioPlayer?
@@ -37,7 +38,8 @@ struct AgentProfileView: View {
         _crop = State(initialValue: bot.avatarCrop ?? .mascot)
         _voice = State(initialValue: bot.voice ?? "")
         _speakReplies = State(initialValue: bot.speakReplies == true)
-        _modelSelection = State(initialValue: bot.modelSelection)
+        _instanceId = State(initialValue: bot.modelSelection.instanceId)
+        _modelId = State(initialValue: bot.modelSelection.model)
         _baseline = State(initialValue: ProfileFormSnapshot(bot: bot))
     }
 
@@ -98,7 +100,7 @@ struct AgentProfileView: View {
                 } footer: {
                     Text(imageGenerationReady
                          ? "Generation uses the shared image provider configured on your computer. No provider key is sent to or stored on this phone."
-                         : "To generate images, configure the shared image provider in BotFleet on your computer. Provider keys cannot be added from a phone.")
+                         : "To generate images, configure the shared image provider in OpenMausBot on your computer. Provider keys cannot be added from a phone.")
                 }
 
                 Section("Identity") {
@@ -110,32 +112,32 @@ struct AgentProfileView: View {
                     Toggle("Agent notifications", isOn: $notifications)
                 }
 
-
-                Section {
-                    PrimaryPickerView(modelSelection: $modelSelection, instances: instances)
-
-                    if let fallbacks = modelSelection.fallbacks {
-                        ForEach(Array(fallbacks.enumerated()), id: \.offset) { index, fallback in
-                            FallbackPickerView(modelSelection: $modelSelection, index: index, instances: instances)
+                Section("Model") {
+                    if instances.isEmpty {
+                        Text("Loading models...")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        Picker("Provider", selection: $instanceId) {
+                            ForEach(instances) { instance in
+                                Text(instance.displayName ?? instance.instanceId).tag(instance.id)
+                            }
                         }
-                        .onDelete { indices in
-                            modelSelection.fallbacks?.remove(atOffsets: indices)
-                            if modelSelection.fallbacks?.isEmpty == true {
-                                modelSelection.fallbacks = nil
+                        .onChange(of: instanceId) { _, newInstanceId in
+                            if let instance = instances.first(where: { $0.id == newInstanceId }) {
+                                if !instance.models.options.contains(where: { $0.id == modelId }) {
+                                    modelId = instance.models.default
+                                }
+                            }
+                        }
+
+                        if let selectedInstance = instances.first(where: { $0.id == instanceId }) {
+                            Picker("Model", selection: $modelId) {
+                                ForEach(selectedInstance.models.options) { option in
+                                    Text(option.label).tag(option.id)
+                                }
                             }
                         }
                     }
-
-                    Button("+ Add Fallback Model") {
-                        if modelSelection.fallbacks == nil {
-                            modelSelection.fallbacks = []
-                        }
-                        if let firstInstance = instances.first, let firstModel = firstInstance.models.options.first {
-                            modelSelection.fallbacks?.append(ModelSelection(instanceId: firstInstance.id, model: firstModel.id))
-                        }
-                    }
-                } header: {
-                    Text("Model")
                 }
 
                 Section {
@@ -215,18 +217,13 @@ struct AgentProfileView: View {
             .task {
                 async let status = session.configStatus()
                 async let options = session.voiceOptions()
+                async let fetchedInstances = session.instances()
                 let loadedConfig = await status
                 config = loadedConfig
                 voices = await options
+                instances = await fetchedInstances
                 if let loadedConfig, !loadedConfig.canSpeak(agentVoice: voice) {
                     speakReplies = false
-                }
-                do {
-                    if let loadedInstances = try await session.clientInstances() {
-                        self.instances = loadedInstances
-                    }
-                } catch {
-                    print("Failed to load instances: \(error)")
                 }
             }
             .onChange(of: photo) { _, item in
@@ -238,6 +235,7 @@ struct AgentProfileView: View {
 
     private func profilePatch() -> BotProfilePatch {
         let savedSpeakReplies = config.map { $0.canSpeak(agentVoice: voice) && speakReplies } ?? speakReplies
+        let newModelSelection = ModelSelection(instanceId: instanceId, model: modelId)
         return BotProfilePatch(
             // The shared server contract owns the 100/200/4000 limits. Do not
             // silently apply narrower iOS-only limits to a user's profile.
@@ -251,7 +249,7 @@ struct AgentProfileView: View {
             // nil would mean the voice field is not part of this patch.
             voice: voice == baseline.voice ? nil : voice,
             speakReplies: savedSpeakReplies == baseline.speakReplies ? nil : savedSpeakReplies,
-            modelSelection: modelSelection == baseline.modelSelection ? nil : modelSelection
+            modelSelection: newModelSelection == baseline.modelSelection ? nil : newModelSelection
         )
     }
 
@@ -365,7 +363,8 @@ struct AgentProfileView: View {
         crop = bot.avatarCrop ?? .mascot
         voice = bot.voice ?? ""
         speakReplies = bot.speakReplies == true
-        modelSelection = bot.modelSelection
+        instanceId = bot.modelSelection.instanceId
+        modelId = bot.modelSelection.model
         baseline = ProfileFormSnapshot(bot: bot)
     }
 }
@@ -402,55 +401,3 @@ private extension AvatarCrop {
         }
     }
 }
-
-struct FallbackPickerView: View {
-    @Binding var modelSelection: ModelSelection
-    let index: Int
-    let instances: [CompanionCore.Instance]
-
-    var body: some View {
-        Picker("Fallback \(index + 1)", selection: Binding(
-            get: { modelSelection.fallbacks?[index].model ?? "" },
-            set: { newModel in
-                if let instance = instances.first(where: { $0.models.options.contains(where: { $0.id == newModel }) }) {
-                    modelSelection.fallbacks?[index].instanceId = instance.id
-                    modelSelection.fallbacks?[index].model = newModel
-                }
-            }
-        )) {
-            ForEach(instances) { instance in
-                Section(instance.displayName ?? instance.id) {
-                    ForEach(instance.models.options) { option in
-                        Text(option.label).tag(option.id)
-                    }
-                }
-            }
-        }
-    }
-}
-
-struct PrimaryPickerView: View {
-    @Binding var modelSelection: ModelSelection
-    let instances: [CompanionCore.Instance]
-
-    var body: some View {
-        Picker("Primary model", selection: Binding(
-            get: { modelSelection.model },
-            set: { newModel in
-                if let instance = instances.first(where: { $0.models.options.contains(where: { $0.id == newModel }) }) {
-                    modelSelection.instanceId = instance.id
-                    modelSelection.model = newModel
-                }
-            }
-        )) {
-            ForEach(instances) { instance in
-                Section(instance.displayName ?? instance.id) {
-                    ForEach(instance.models.options) { option in
-                        Text(option.label).tag(option.id)
-                    }
-                }
-            }
-        }
-    }
-}
-

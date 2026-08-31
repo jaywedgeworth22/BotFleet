@@ -62,13 +62,15 @@ final class LiveActivityCoordinator {
                 )
                 : nil
             if let activity = Activity<BotActivityAttributes>.activities.first(where: { $0.attributes.botId == bot.id }) {
-                let newAsk = update.kind == .needsYou && lastSent[bot.id]?.requestId != content.requestId
+                let newAsk = update.kind == .needsYou && lastSent[bot.id] != nil && lastSent[bot.id]?.requestId != content.requestId
                 Task { await activity.update(.init(state: content, staleDate: nil), alertConfiguration: newAsk ? alert : nil) }
             } else {
                 let attributes = BotActivityAttributes(botId: bot.id, threadId: bot.threadId, name: bot.name, color: bot.color)
                 _ = try? Activity.request(attributes: attributes, content: .init(state: content, staleDate: nil), pushType: nil)
-                // a fresh activity cannot alert on request; one immediate alerting update does it
-                if let alert, let activity = Activity<BotActivityAttributes>.activities.first(where: { $0.attributes.botId == bot.id }) {
+                // a fresh activity cannot alert on request; one immediate alerting update does it.
+                // We only do this if it is a genuinely new ask, not a pre-existing state from app launch.
+                let newAsk = update.kind == .needsYou && lastSent[bot.id] != nil && lastSent[bot.id]?.requestId != content.requestId
+                if newAsk, let alert, let activity = Activity<BotActivityAttributes>.activities.first(where: { $0.attributes.botId == bot.id }) {
                     Task { await activity.update(.init(state: content, staleDate: nil), alertConfiguration: alert) }
                 }
             }

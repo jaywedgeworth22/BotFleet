@@ -156,12 +156,10 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
 public struct ModelSelection: Codable, Hashable, Sendable {
     public var instanceId: String
     public var model: String
-    public var fallbacks: [ModelSelection]?
 
-    public init(instanceId: String, model: String, fallbacks: [ModelSelection]? = nil) {
+    public init(instanceId: String, model: String) {
         self.instanceId = instanceId
         self.model = model
-        self.fallbacks = fallbacks
     }
 }
 
@@ -234,8 +232,6 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var threadId: String
     public var name: String
-    public var avatarUrl: String?
-    public var avatarCrop: AvatarCrop?
     public var memberIds: [String]
     public var defaultResponder: GroupResponder
     public var bulletin: String
@@ -243,11 +239,6 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var createdAt: Double
     public var dm: Bool?
     public var busyBotId: String?
-    public var cwd: String?
-    public var extraCwds: [String]?
-    /// Independent user conversations in this channel. Bot-to-bot rooms
-    /// omit tasks because their transcript is the canonical private chat.
-    public var tasks: [BotTask]?
     public var messages: [Message]?
     public var hasMore: Bool?
 }
@@ -576,7 +567,7 @@ public struct BotProfilePatch: Encodable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies
+        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -594,6 +585,7 @@ public struct BotProfilePatch: Encodable, Sendable {
         try values.encodeIfPresent(avatarCrop, forKey: .avatarCrop)
         try values.encodeIfPresent(voice, forKey: .voice)
         try values.encodeIfPresent(speakReplies, forKey: .speakReplies)
+        try values.encodeIfPresent(modelSelection, forKey: .modelSelection)
     }
 }
 
@@ -866,9 +858,6 @@ struct ActiveBranchResponse: Codable, Sendable {
 
 struct BotResponse: Codable, Sendable {
     var bot: Bot
-}
-struct RoomResponse: Codable, Sendable {
-    var group: Room
 }
 struct VoiceListResponse: Codable, Sendable {
     var voices: [Voice]

@@ -6,7 +6,6 @@ import UIKit
 
 struct SettingsView: View {
     @EnvironmentObject private var session: Session
-    @AppStorage("activityRunSummaryMode") private var activityRunSummaryMode: Bool = true
     @State private var enablingNotifications = false
     private let onConnect: (() -> Void)?
 
@@ -59,7 +58,7 @@ struct SettingsView: View {
                     .accessibilityHint(notificationAccessibilityHint)
                 }
             } footer: {
-                Text("Alerts arrive while BotFleet is open or was recently in the background. Closed-app delivery is not available yet.")
+                Text("Alerts arrive while OpenMausBot is open or was recently in the background. Closed-app delivery is not available yet.")
             }
 
             if session.connection != nil {
@@ -82,22 +81,6 @@ struct SettingsView: View {
                         } icon: {
                             SettingsIcon(symbol: "link", color: .blue)
                         }
-                    }
-                }
-            }
-
-            Section("Chat & Tasks") {
-                Toggle(isOn: $activityRunSummaryMode) {
-                    Label {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("Summarize Bot Tasks")
-                                .foregroundStyle(.primary)
-                            Text("Group consecutive tool actions into an expandable live progress card with step counters and latest command status.")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    } icon: {
-                        SettingsIcon(symbol: "wrench.and.screwdriver.fill", color: .purple)
                     }
                 }
             }
@@ -316,7 +299,7 @@ struct ConnectionSecurityView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This removes the connection from this iPhone only. It does not revoke this phone on your Mac. To remove Mac-side access, open BotFleet → Settings → Phone and remove this device.")
+            Text("This removes the connection from this iPhone only. It does not revoke this phone on your Mac. To remove Mac-side access, open OpenMausBot → Settings → Phone and remove this device.")
         }
     }
 
@@ -325,7 +308,7 @@ struct ConnectionSecurityView: View {
         case .live:
             return "This computer is connected and responding normally."
         case .connecting:
-            return "BotFleet is trying the saved connection automatically."
+            return "OpenMausBot is trying the saved connection automatically."
         case let .offline(reason):
             return reason
         case .unauthorized:

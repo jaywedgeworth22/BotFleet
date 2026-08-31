@@ -1,7 +1,7 @@
 // Finding computers on the network, so nobody types an IP address.
 //
 // The other half of `server/mdns.ts`: the harness advertises
-// `_botfleet._tcp` while its companion listener is up, and this browses
+// `_openmausbot._tcp` while its companion listener is up, and this browses
 // for it. NWBrowser is first-party and does the mDNS work; all that is left
 // is resolving each result to a host and port.
 //
@@ -31,8 +31,6 @@ final class Discovery: ObservableObject {
     @Published private(set) var failure: String?
 
     private var browser: NWBrowser?
-    private var legacyBrowser: NWBrowser?
-    private var foundByType: [String: [Found]] = [:]
     private var retryTask: Task<Void, Never>?
     private var retryCount = 0
     private var generation = 0
@@ -46,24 +44,20 @@ final class Discovery: ObservableObject {
     }
 
     private func startBrowser() {
-        guard shouldBrowse, browser == nil, legacyBrowser == nil else { return }
+        guard shouldBrowse, browser == nil else { return }
         retryTask = nil
         generation += 1
-        foundByType = [:]
         let currentGeneration = generation
         let parameters = NWParameters()
         parameters.includePeerToPeer = false
-        browser = makeBrowser(type: "_botfleet._tcp", parameters: parameters, generation: currentGeneration)
-        legacyBrowser = makeBrowser(type: "_openmausbot._tcp", parameters: parameters, generation: currentGeneration)
-        browser?.start(queue: .main)
-        legacyBrowser?.start(queue: .main)
-    }
+        let browser = NWBrowser(
+            for: .bonjour(type: "_openmausbot._tcp", domain: nil),
+            using: parameters
+        )
 
-    private func makeBrowser(type: String, parameters: NWParameters, generation: Int) -> NWBrowser {
-        let browser = NWBrowser(for: .bonjour(type: type, domain: nil), using: parameters)
         browser.stateUpdateHandler = { [weak self] state in
             Task { @MainActor in
-                guard let self, self.generation == generation else { return }
+                guard let self, self.generation == currentGeneration else { return }
                 switch state {
                 case .ready:
                     self.retryCount = 0
@@ -81,23 +75,18 @@ final class Discovery: ObservableObject {
                 }
             }
         }
+
         browser.browseResultsChangedHandler = { [weak self] results, _ in
             let found = results.compactMap { result -> Found? in
                 guard case let .service(name, _, _, _) = result.endpoint else { return nil }
                 return Found(name: name, endpoint: result.endpoint)
             }
-            Task { @MainActor in
-                guard let self, self.generation == generation else { return }
-                self.foundByType[type] = found
-                var merged: [Found] = []
-                var seen = Set<String>()
-                for item in self.foundByType.values.flatMap({ $0 }) {
-                    if seen.insert(item.id).inserted { merged.append(item) }
-                }
-                self.found = merged.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            }
+            .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+            Task { @MainActor in self?.found = found }
         }
-        return browser
+
+        self.browser = browser
+        browser.start(queue: .main)
     }
 
     func stop() {
@@ -107,9 +96,6 @@ final class Discovery: ObservableObject {
         generation += 1
         browser?.cancel()
         browser = nil
-        legacyBrowser?.cancel()
-        legacyBrowser = nil
-        foundByType = [:]
         browsing = false
     }
 
@@ -120,11 +106,8 @@ final class Discovery: ObservableObject {
     private func handleFailure(_ error: NWError) {
         browser?.cancel()
         browser = nil
-        legacyBrowser?.cancel()
-        legacyBrowser = nil
         browsing = false
         found = []
-        foundByType = [:]
 
         guard Self.isDefunct(error), retryCount < 3, shouldBrowse else {
             failure = Self.failureMessage(for: error)
