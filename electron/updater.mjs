@@ -80,11 +80,7 @@ export function startUpdater(mainWindow) {
     // periodic checks still honor autoUpdate.enabled below.
     autoUpdateEnabled = config.autoUpdate?.enabled === true;
   } catch (e) {
-<<<<<<< HEAD
     autoUpdateEnabled = false;
-=======
-    // continue if config is unreadable or missing
->>>>>>> origin/main
   }
 
   try {
