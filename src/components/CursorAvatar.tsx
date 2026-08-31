@@ -1319,16 +1319,20 @@ export const CursorAvatar = React.forwardRef<CursorAvatarHandle, CursorAvatarPro
     )
     const motionStrength = motion ?? (prefersReducedMotion ? 0 : 1)
     const lastState: CursorState = state
+    const initialIndex = expression ?? POOLS[state]?.[0] ?? 0
+    const initialTarget = EXPRESSIONS[initialIndex] ?? EXPRESSIONS[0]
+    const initialMouth = MOUTHS[initialIndex] ?? MOUTHS[0]
+    const initialGaze = GAZE[initialIndex] ?? GAZE[0]
 
     // Frame-loop state lives in a ref so prop changes never restart a morph.
     const engine = useRef({
-      current: clone(EXPRESSIONS[0]),
-      target: EXPRESSIONS[0],
-      currentMouth: MOUTHS[0].slice(),
-      targetMouth: MOUTHS[0],
-      currentGaze: [...GAZE[0]],
-      targetGaze: [...GAZE[0]],
-      expression: 0,
+      current: clone(initialTarget),
+      target: initialTarget,
+      currentMouth: initialMouth.slice(),
+      targetMouth: initialMouth,
+      currentGaze: [...initialGaze],
+      targetGaze: [...initialGaze],
+      expression: initialIndex,
       morph: 1,
       velocity: 0,
       blinkStart: noTimestamp(),
@@ -1373,6 +1377,18 @@ export const CursorAvatar = React.forwardRef<CursorAvatarHandle, CursorAvatarPro
       const e = engine.current
       const i = ((index % EXPRESSION_COUNT) + EXPRESSION_COUNT) % EXPRESSION_COUNT
       if (i === e.expression && e.morph >= 1) return
+      if (e.props.paused) {
+        e.current = clone(EXPRESSIONS[i])
+        e.currentMouth = MOUTHS[i].slice()
+        e.currentGaze = [...GAZE[i]]
+        e.target = EXPRESSIONS[i]
+        e.targetMouth = MOUTHS[i]
+        e.targetGaze = GAZE[i]
+        e.expression = i
+        e.morph = 1
+        e.velocity = 0
+        return
+      }
       e.current = displayed(e)
       e.currentMouth = displayedMouth(e)
       e.currentGaze = displayedGaze(e)
@@ -1546,9 +1562,22 @@ export const CursorAvatar = React.forwardRef<CursorAvatarHandle, CursorAvatarPro
         // One draw per change of what the still face shows, then park.
         if (p.paused) {
           e.last = now
-          const still = `${p.state}|${p.expression ?? ''}|${paintRef.current}`
+          const targetIndex = p.expression ?? POOLS[p.state]?.[0] ?? 0
+          const still = `${p.state}|${targetIndex}|${paintRef.current}`
           if (e.pausedPaint !== still) {
             e.pausedPaint = still
+            const expr = EXPRESSIONS[targetIndex] ?? EXPRESSIONS[0]
+            const mouthSpec = MOUTHS[targetIndex] ?? MOUTHS[0]
+            const gazeSpec = GAZE[targetIndex] ?? GAZE[0]
+            e.current = clone(expr)
+            e.currentMouth = mouthSpec.slice()
+            e.currentGaze = [...gazeSpec]
+            e.target = expr
+            e.targetMouth = mouthSpec
+            e.targetGaze = gazeSpec
+            e.expression = targetIndex
+            e.morph = 1
+            e.velocity = 0
             draw(e, now, 0)
           }
           wake = setTimeout(() => {

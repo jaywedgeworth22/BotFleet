@@ -118,9 +118,6 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
     dispatch({ type: "toggleSettings", open: false });
   };
 
-  const avatarShapeCls =
-    crop === "square" ? "rounded-none" : crop === "rounded" ? "rounded-2xl" : "rounded-full";
-
   return (
     <aside className="animate-panel-in relative z-20 flex h-full w-[420px] shrink-0 flex-col border-l border-hairline/40 bg-panel shadow-2xl">
       {/* Header */}
@@ -154,7 +151,11 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
                 <img
                   src={group.avatarUrl}
                   alt={group.name}
-                  className={cn("size-24 object-cover shadow-md ring-1 ring-hairline", avatarShapeCls)}
+                  className="size-24 object-cover shadow-md ring-1 ring-hairline"
+                  style={{
+                    borderRadius:
+                      crop === "square" ? "0" : crop === "rounded" ? "22%" : "50%",
+                  }}
                 />
               ) : (
                 <div className="flex size-24 items-center justify-center -space-x-3 rounded-full bg-control p-2 shadow-inner">

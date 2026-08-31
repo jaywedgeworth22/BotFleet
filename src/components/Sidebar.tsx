@@ -182,13 +182,19 @@ function StackedMauses({ group, members, density }: { group: Group; members: Bot
   const singleSize = iconOnly ? 44 : density === "compact" ? 40 : 56;
   
   if (group.avatarUrl) {
+    const radius =
+      group.avatarCrop === "square"
+        ? "0"
+        : group.avatarCrop === "rounded"
+        ? "22%"
+        : "50%";
     return (
       <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
         <img
           src={group.avatarUrl}
           alt={group.name}
-          className="size-full rounded-full object-cover shadow-sm"
-          style={{ width: singleSize, height: singleSize }}
+          className="size-full object-cover shadow-sm"
+          style={{ width: singleSize, height: singleSize, borderRadius: radius }}
           draggable={false}
         />
       </div>

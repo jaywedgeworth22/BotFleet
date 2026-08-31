@@ -1145,10 +1145,11 @@ export function GroupView({ group }: { group: Group }) {
               <img
                 src={group.avatarUrl}
                 alt={group.name}
-                className={cn(
-                  "size-7 shrink-0 object-cover shadow-sm",
-                  group.avatarCrop === "square" ? "rounded-none" : group.avatarCrop === "rounded" ? "rounded-lg" : "rounded-full",
-                )}
+                className="size-7 shrink-0 object-cover shadow-sm"
+                style={{
+                  borderRadius:
+                    group.avatarCrop === "square" ? "0" : group.avatarCrop === "rounded" ? "22%" : "50%",
+                }}
                 draggable={false}
               />
             ) : (
