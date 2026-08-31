@@ -112,7 +112,12 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, stream: opts.stream }),
+        body: JSON.stringify({
+          model,
+          messages,
+          stream: opts.stream,
+          ...(opts.stream ? { stream_options: { include_usage: true } } : {}),
+        }),
         signal: opts.signal
           ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
           : AbortSignal.timeout(120_000),
@@ -125,13 +130,11 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
         const json: any = await res.json();
         return {
           text: json.choices?.[0]?.message?.content ?? "",
-          usage: json.usage
-            ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
-            : null,
+          usage: usageFromDeepSeekApi(json.usage),
         };
       }
       let text = "";
-      let usage: { input: number; output: number } | null = null;
+      let usage: { input: number; output: number; cachedInput?: number } | null = null;
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -158,7 +161,7 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
             opts.onDelta?.(delta);
           }
           if (chunk.usage) {
-            usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
+            usage = usageFromDeepSeekApi(chunk.usage);
           }
         }
       }
@@ -209,8 +212,16 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
             if (usage) {
               emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
             }
+            const cost = computeDeepSeekCost(turn.model || MODELS.default, usage);
             active.delete(threadId);
-            emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: null });
+            emit({
+              ...base(threadId, turnId),
+              type: "turn.completed",
+              ok: true,
+              stopReason: null,
+              cost,
+              ...(usage ? { usage } : {}),
+            });
             return;
           } catch (e) {
             const aborted = (e as Error).name === "AbortError";
