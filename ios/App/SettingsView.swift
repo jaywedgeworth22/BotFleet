@@ -6,6 +6,7 @@ import UIKit
 
 struct SettingsView: View {
     @EnvironmentObject private var session: Session
+    @AppStorage("activityRunSummaryMode") private var activityRunSummaryMode: Bool = true
     @State private var enablingNotifications = false
     private let onConnect: (() -> Void)?
 
@@ -81,6 +82,22 @@ struct SettingsView: View {
                         } icon: {
                             SettingsIcon(symbol: "link", color: .blue)
                         }
+                    }
+                }
+            }
+
+            Section("Chat & Tasks") {
+                Toggle(isOn: $activityRunSummaryMode) {
+                    Label {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("Summarize Bot Tasks")
+                                .foregroundStyle(.primary)
+                            Text("Group consecutive tool actions into an expandable live progress card with step counters and latest command status.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    } icon: {
+                        SettingsIcon(symbol: "wrench.and.screwdriver.fill", color: .purple)
                     }
                 }
             }

@@ -575,7 +575,7 @@ function ActivityChip({ message }: { message: Message }) {
         <button
           onClick={() => dispatch({ type: "select", id: comm.groupId })}
           title={`Open the conversation with ${comm.withName}`}
-          className="flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
+          className="flex items-center gap-2 rounded-xl border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
         >
           <MausAvatar color={comm.withColor} state="happy" size={16} />
           <span className="max-w-[480px] truncate">{tool.name}</span>
@@ -589,18 +589,20 @@ function ActivityChip({ message }: { message: Message }) {
     <div className="flex justify-start">
       <div
         className={cn(
-          "flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px]",
-          failed ? "text-danger" : "text-ink-secondary",
+          "flex items-start gap-2.5 rounded-xl border border-hairline/40 bg-panel px-3 py-2 text-[13px] shadow-sm",
+          failed ? "border-danger/30 text-danger bg-danger/5" : "text-ink-secondary",
         )}
       >
-        {tool.ok === undefined ? (
-          <Loader2 size={13} className="animate-spin" />
-        ) : failed ? (
-          <X size={13} />
-        ) : (
-          <Check size={13} className="text-success" />
-        )}
-        <span className="max-w-[480px] truncate font-mono">{tool.name}</span>
+        <div className="mt-0.5 shrink-0">
+          {tool.ok === undefined ? (
+            <Loader2 size={13} className="animate-spin text-accent" />
+          ) : failed ? (
+            <X size={13} className="text-danger" />
+          ) : (
+            <Check size={13} className="text-success" />
+          )}
+        </div>
+        <span className="max-w-[540px] break-words font-mono text-[12px] leading-relaxed select-text">{tool.name}</span>
       </div>
     </div>
   );

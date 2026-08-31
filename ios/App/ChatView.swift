@@ -37,6 +37,7 @@ struct ChatView: View {
     @State private var showingFileImporter = false
     @State private var isUploadingAttachments = false
     @State private var isDropTargeted = false
+    @AppStorage("activityRunSummaryMode") private var activityRunSummaryMode: Bool = true
     @FocusState private var composerFocused: Bool
     @StateObject private var dictation = SpeechDictation()
     /// The opening beat: the island grows with the bot's face in it, then
@@ -69,6 +70,39 @@ struct ChatView: View {
         session.state.visibleTranscript(forThread: threadId)
     }
 
+    private var transcriptItems: [TranscriptItem] {
+        let raw = messages
+        guard activityRunSummaryMode else {
+            return raw.enumerated().map { index, msg in
+                .message(msg, endsRun: endsRun(at: index, in: raw))
+            }
+        }
+        var items: [TranscriptItem] = []
+        var run: [Message] = []
+
+        func flush() {
+            if run.count > 1 {
+                items.append(.run(id: "run:\(run[0].id)", messages: run))
+            } else {
+                for msg in run {
+                    items.append(.message(msg, endsRun: false))
+                }
+            }
+            run = []
+        }
+
+        for (index, msg) in raw.enumerated() {
+            if msg.kind == .activity, msg.tool != nil, msg.comm == nil, !(msg.tool?.name.hasPrefix("error:") ?? false) {
+                run.append(msg)
+            } else {
+                flush()
+                items.append(.message(msg, endsRun: endsRun(at: index, in: raw)))
+            }
+        }
+        flush()
+        return items
+    }
+
     /// Unread elsewhere — what the back pill's badge counts, like Messages.
     private var unreadElsewhere: Int {
         let mine = current.unread ? 1 : 0
@@ -76,10 +110,7 @@ struct ChatView: View {
     }
 
     var body: some View {
-        // Read the transcript once for this render. Pagination changes the
-        // array as a unit; repeatedly reaching through ObservableObject for
-        // every row only recomputes the same value.
-        let transcript = messages
+        let items = transcriptItems
         // A VStack with the composer as a sibling, rather than a scroll view
         // with `.safeAreaInset`. The inset version sized itself to its
         // content, so a short transcript left the composer floating in the
@@ -102,10 +133,7 @@ struct ChatView: View {
 
                         if session.state.hasMore[threadId] == true {
                             Button("Load earlier messages") {
-                                // keep the reader where they were: after older
-                                // messages are prepended, sit back on the one
-                                // that used to be at the top
-                                let anchor = transcript.first?.id
+                                let anchor = items.first?.id
                                 Task {
                                     await session.loadOlder(threadId: threadId)
                                     if let anchor { proxy.scrollTo(anchor, anchor: .top) }
@@ -116,25 +144,28 @@ struct ChatView: View {
                             .padding(.vertical, 8)
                         }
 
-                        ForEach(Array(transcript.enumerated()), id: \.element.id) { index, message in
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                             VStack(alignment: .leading, spacing: 6) {
-                                // a gap in time is worth marking; a timestamp
-                                // on every message is just noise
-                                if startsANewStretch(at: index, in: transcript) {
-                                    Text(RelativeStamp.separator(message.date))
+                                if startsANewStretch(at: index, in: items) {
+                                    Text(RelativeStamp.separator(item.date))
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(Color.secondary.opacity(0.7))
                                         .frame(maxWidth: .infinity)
                                         .padding(.top, 10)
                                         .padding(.bottom, 4)
                                 }
-                                MessageRow(
-                                    chat: current,
-                                    message: message,
-                                    endsRun: endsRun(at: index, in: transcript)
-                                )
+                                switch item {
+                                case let .message(message, endsRun):
+                                    MessageRow(
+                                        chat: current,
+                                        message: message,
+                                        endsRun: endsRun
+                                    )
+                                case let .run(_, runMessages):
+                                    ActivityRunCardView(messages: runMessages, isBusy: current.busy)
+                                }
                             }
-                            .id(message.id)
+                            .id(item.id)
                         }
 
                         // The reply as it is typed. It sits after the last
@@ -215,8 +246,8 @@ struct ChatView: View {
                 // than the screen rests at the bottom, and opening a chat
                 // starts on the newest message rather than the oldest.
                 .defaultScrollAnchor(.bottom)
-                .onChange(of: transcript.last?.id) { _, _ in
-                    guard isAtBottom, let last = transcript.last else { return }
+                .onChange(of: items.last?.id) { _, _ in
+                    guard isAtBottom, let last = items.last else { return }
                     withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
                 }
                 // Follow the text as it arrives. Keyed on length rather than
@@ -588,6 +619,11 @@ struct ChatView: View {
             ) { Task { await session.interrupt(bot: bot) } })
         }
         return out
+    }
+
+    private func startsANewStretch(at index: Int, in items: [TranscriptItem]) -> Bool {
+        guard index > 0 else { return true }
+        return items[index].at - items[index - 1].at > 30 * 60 * 1000
     }
 
     /// True when this message opens a fresh stretch of conversation — the
@@ -1671,3 +1707,27 @@ struct StreamingBubble: View {
         // selectable anyway.
     }
 }
+
+enum TranscriptItem: Identifiable {
+    case message(Message, endsRun: Bool)
+    case run(id: String, messages: [Message])
+
+    var id: String {
+        switch self {
+        case let .message(msg, _): return msg.id
+        case let .run(id, _): return id
+        }
+    }
+
+    var at: Double {
+        switch self {
+        case let .message(msg, _): return msg.at
+        case let .run(_, msgs): return msgs.first?.at ?? 0
+        }
+    }
+
+    var date: Date {
+        Date(timeIntervalSince1970: at / 1000)
+    }
+}
+
