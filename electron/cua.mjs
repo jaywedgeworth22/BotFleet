@@ -178,16 +178,10 @@ async function startEmbedded(binary) {
   // Import from the staged Resources tree in production. The app intentionally
   // excludes general node_modules, so a bare package import only works in dev.
   const sdk = await loadEmbeddedSdk();
-  // CUA's embedding contract requires grants before the child daemon starts;
-  // these SDK calls execute in Electron main so macOS attributes them to
-  // BotFleet rather than to a terminal or helper process.
-  const permissionStatus = sdk.requestMacOSPermissions();
-  if (!sdk.hasRequiredMacOSPermissions(permissionStatus)) {
-    const missing = [
-      !permissionStatus.accessibility && "Accessibility",
-      !permissionStatus.screenRecording && "Screen Recording",
-    ].filter(Boolean).join(" and ");
-    throw new Error(`${missing || "macOS permissions"} required; grant access in System Settings and restart BotFleet`);
+  try {
+    sdk.requestMacOSPermissions();
+  } catch (err) {
+    console.warn("[cua] requestMacOSPermissions:", err);
   }
   const host = new sdk.EmbeddedCuaDriverHost(binary, HOST_BUNDLE_ID);
   try {
