@@ -156,6 +156,10 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
             continue;
           }
           const delta = chunk.choices?.[0]?.delta?.content;
+          const reasoning = chunk.choices?.[0]?.delta?.reasoning_content;
+          if (reasoning) {
+            opts.onDelta?.(reasoning);
+          }
           if (delta) {
             text += delta;
             opts.onDelta?.(delta);

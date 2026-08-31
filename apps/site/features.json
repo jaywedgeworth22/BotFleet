@@ -29,28 +29,8 @@
           "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
         },
         {
-          "title": "Native DeepSeek Engine &amp; Pricing Breakdown",
-          "desc": "Native API and ACP drivers for DeepSeek V4 Flash, V4 Pro, and R1 Reasoner, complete with an in-app model rates and token pricing reference in Settings.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
-        },
-        {
-          "title": "Multi-Tier Model Fallback Chains",
-          "desc": "Assign 1st, 2nd, and 3rd choice fallback models to each bot.&nbsp; When primary engines hit rate limits or downtime, BotFleet degrades down the chain automatically without interrupting work.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
-        },
-        {
-          "title": "Mid-Task Crash &amp; Restart Recovery",
-          "desc": "Interrupted turns and mid-flight tool executions are automatically detected on boot, prompting immediate resumption instead of leaving tasks stuck in an unknown state.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
-        },
-        {
           "title": "Dynamic System Theme &amp; Update Controls",
           "desc": "Theme auto-switches between dark and light to match macOS.&nbsp; Includes update toggle preferences and refined in-app banner controls.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
-        },
-        {
-          "title": "Custom BotFleet Brand &amp; Icons",
-          "desc": "Custom metallic robot trio mascot branding and matching full-bleed macOS and iOS app icon sets across the entire fleet ecosystem.",
           "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
         }
       ]
@@ -62,6 +42,21 @@
       "badgeLabel": "Beta",
       "sub": "Feature-complete add-ons undergoing active tuning and review.",
       "features": [
+        {
+          "title": "Native DeepSeek Engine &amp; Pricing Breakdown",
+          "desc": "Native API and ACP drivers for DeepSeek V4 Flash, V4 Pro, and R1 Reasoner, complete with an in-app model rates and token pricing reference in Settings.",
+          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Under active test" }
+        },
+        {
+          "title": "Multi-Tier Model Fallback Chains",
+          "desc": "Assign 1st, 2nd, and 3rd choice fallback models to each bot.&nbsp; When primary engines hit rate limits or downtime, BotFleet degrades down the chain automatically without interrupting work.",
+          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "In review" }
+        },
+        {
+          "title": "Mid-Task Crash &amp; Restart Recovery",
+          "desc": "Interrupted turns and mid-flight tool executions are automatically detected on boot, prompting immediate resumption instead of leaving tasks stuck in an unknown state.",
+          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "In review" }
+        },
         {
           "title": "Always-On iMessage Relay Daemon",
           "desc": "Background relay daemon connecting Messages.app bot group chats to the BotFleet backend with persistent launchd supervision.",
