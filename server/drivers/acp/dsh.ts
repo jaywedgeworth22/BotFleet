@@ -31,10 +31,17 @@ const support: AcpSupport = {
 
   resolveTurnModel: (model) => model,
 
-  spawnArgs: (_config, _turn) => [
-    // Official DSH ACP is a PATH binary. Instance config can override `cli`
-    // for a custom script; session/set_model carries the model id.
-  ],
+  spawnArgs: (_config, turn) => {
+    const args = [];
+    if (turn.integrations) {
+      for (const [name, def] of Object.entries(turn.integrations)) {
+        if (def && typeof def === "object" && "command" in def) {
+          args.push("--mcp", `${name}=${def.command} ${(def.args || []).join(" ")}`);
+        }
+      }
+    }
+    return args;
+  },
 
   async configureSession({ request, sessionId, turn }) {
     if (!turn.model) return;
