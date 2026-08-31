@@ -19,6 +19,9 @@ const IMAGE_MIMES: Record<string, string> = {
   "image/jpeg": ".jpg",
   "image/gif": ".gif",
   "image/webp": ".webp",
+  "image/heic": ".heic",
+  "image/heif": ".heif",
+  "image/avif": ".avif",
 };
 
 export function extensionForMime(mime: string | undefined): string | null {

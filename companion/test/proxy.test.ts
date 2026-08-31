@@ -290,8 +290,7 @@ describe("the sidecar in front of an unmodified harness", () => {
   it("serves a minimal, non-cacheable companion health identity", async () => {
     const health = await device("GET", "/api/health", { token: null });
     expect(health.status).toBe(200);
-    // Predecessor iOS requires this literal; current iOS accepts both.
-    expect(health.body).toEqual({ app: "openmausbot" });
+    expect(health.body).toEqual({ app: "botfleet" });
     expect(health.headers.get("cache-control")).toBe("private, no-store");
     expect(health.headers.get("cdn-cache-control")).toBe("no-store");
     expect(JSON.stringify(health.body)).not.toContain("pid");

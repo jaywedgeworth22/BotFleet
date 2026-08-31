@@ -1579,7 +1579,7 @@ app.whenReady().then(async () => {
     app.setAsDefaultProtocolClient("botfleet");
     app.setAsDefaultProtocolClient("openmausbot");
   }
-  if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
+  // if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
   
   const trayIcon = nativeImage.createFromPath(APP_ICON).resize({ width: 16, height: 16 });
   tray = new Tray(trayIcon);

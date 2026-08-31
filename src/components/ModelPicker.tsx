@@ -277,7 +277,8 @@ export function ModelPicker({
         >
           <div className="flex w-14 shrink-0 flex-col gap-1 overflow-y-auto border-r border-hairline/40 bg-panel p-2">
             {(() => {
-              const { subscription, custom: local } = splitEngineRail(state.instances);
+              const availableInstances = state.instances.filter((i) => i.snapshot.state !== "unavailable");
+              const { subscription, custom: local } = splitEngineRail(availableInstances);
               const railButton = (instance: InstanceInfo) => {
                 const selected = instance.instanceId === railInstance?.instanceId;
                 const attention = needsCli(instance) || needsSignIn(instance);

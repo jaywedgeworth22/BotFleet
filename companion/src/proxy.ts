@@ -344,16 +344,13 @@ export function createProxyHandler(options: ProxyOptions) {
             if (
               (harness.statusCode ?? 500) < 200 ||
               (harness.statusCode ?? 500) >= 300 ||
-              ((identity as { app?: unknown } | null)?.app !== "botfleet" &&
-                (identity as { app?: unknown } | null)?.app !== "openmausbot")
+              (identity as { app?: unknown } | null)?.app !== "botfleet"
             ) {
               fail();
               return;
             }
             finished = true;
-            // Predecessor iOS builds require app == "openmausbot". Current
-            // iOS accepts both; keep the legacy identity on this health hop.
-            sendJson(res, 200, { app: "openmausbot" });
+            sendJson(res, 200, { app: "botfleet" });
           });
           return;
         }

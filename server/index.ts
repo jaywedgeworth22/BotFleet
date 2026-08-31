@@ -1860,7 +1860,7 @@ async function startTurn(
     replaysNatively: instance.driverKind === "grok" || instance.driverKind === "deepseek",
   });
 
-  const isImessageTask = store.tasks(bot.id).find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
+  const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
   const persona = [
     `You are BF-${bot.name} (display: ${bot.name}), a bot in BotFleet. Always identify yourself as BF-${bot.name} in fleet communications and logs.`,
     bot.title && `Role: ${bot.title}.`,

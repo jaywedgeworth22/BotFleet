@@ -15,10 +15,8 @@ import { decodeInjectId, hostApiKey, LOCAL_HOSTS, localHost, mergeLocalInject } 
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 const STATIC_DEEPSEEK_MODELS: ModelCatalog = {
-  default: "deepseek-code/v4-pro",
+  default: "deepseek-code/k3",
   options: [
-    { id: "deepseek-code/v4-pro", label: "DeepSeek V4 Pro" },
-    { id: "deepseek-code/v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-code/k3", label: "DeepSeek K3" },
     { id: "deepseek-code/k3-256k", label: "DeepSeek K3 256K" },
     { id: "deepseek-code/deepseek-for-coding", label: "DeepSeek for Coding" },

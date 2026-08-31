@@ -14,7 +14,7 @@ import { readFileSync, writeFileSync } from "node:fs";
 const mode = process.env.FAKE_CODEX_MODE ?? "happy";
 
 if (process.argv[2] === "--version") {
-  process.stdout.write("codex-cli 0.147.0\n");
+  process.stdout.write("codex-cli 0.151.0\n");
   process.exit(0);
 }
 if (process.argv[2] === "login" && process.argv[3] === "status") {
