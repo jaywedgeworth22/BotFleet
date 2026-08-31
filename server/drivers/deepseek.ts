@@ -38,6 +38,39 @@ export interface DeepSeekConfig {
   apiKeyEnv: string;
 }
 
+export interface DeepSeekUsage {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  prompt_cache_hit_tokens?: number;
+}
+
+export function usageFromDeepSeekApi(apiUsage?: DeepSeekUsage | null): { input: number; output: number; cachedInput?: number } | null {
+  if (!apiUsage) return null;
+  const input = apiUsage.prompt_tokens ?? 0;
+  const output = apiUsage.completion_tokens ?? 0;
+  const cachedInput = apiUsage.prompt_cache_hit_tokens ?? 0;
+  return { input, output, ...(cachedInput > 0 ? { cachedInput } : {}) };
+}
+
+export function computeDeepSeekCost(
+  modelId: string,
+  usage: { input: number; output: number; cachedInput?: number } | null,
+): number | null {
+  if (!usage) return null;
+  const inputTokens = usage.input;
+  const outputTokens = usage.output;
+  const cachedTokens = usage.cachedInput ?? 0;
+  const uncachedInput = Math.max(0, inputTokens - cachedTokens);
+
+  if (modelId === "deepseek-v4-flash" || modelId === "deepseek-v4-flash-vision-exp") {
+    return (uncachedInput * 0.07 + cachedTokens * 0.0175 + outputTokens * 0.14) / 1_000_000;
+  }
+  if (modelId === "deepseek-reasoner") {
+    return (uncachedInput * 0.55 + cachedTokens * 0.14 + outputTokens * 2.19) / 1_000_000;
+  }
+  return (uncachedInput * 0.14 + cachedTokens * 0.014 + outputTokens * 0.28) / 1_000_000;
+}
+
 function decodeConfig(raw: unknown): DeepSeekConfig {
   const o = (raw ?? {}) as Record<string, unknown>;
   return {

@@ -437,13 +437,8 @@ async function computeVpsComputerStatus(
     status.daemonUp = true;
     status.image = false;
   }
-
   try {
-<<<<<<< HEAD
-    type ContainerDetail = {
-=======
     type InspectedContainer = {
->>>>>>> origin/main
       Config?: { Image?: string; Labels?: Record<string, string>; Env?: string[] };
       HostConfig?: DockerHardeningConfig & {
         Binds?: string[] | null;
@@ -459,19 +454,11 @@ async function computeVpsComputerStatus(
       Mounts?: unknown;
       State?: { Running?: boolean };
     };
-<<<<<<< HEAD
-    let inspected: ContainerDetail[] | null = null;
-    let lastMissing: unknown;
-    for (const name of vpsContainerNameCandidates(botId)) {
-      try {
-        inspected = JSON.parse((await run(["inspect", name])).stdout) as ContainerDetail[];
-=======
     let inspected: InspectedContainer[] | null = null;
     let lastMissing: unknown;
     for (const name of vpsContainerNameCandidates(botId)) {
       try {
         inspected = JSON.parse((await run(["inspect", name])).stdout) as InspectedContainer[];
->>>>>>> origin/main
         status.container_name = name;
         lastMissing = undefined;
         break;
@@ -482,11 +469,7 @@ async function computeVpsComputerStatus(
       }
     }
     if (!inspected) throw lastMissing ?? new Error("no such container");
-<<<<<<< HEAD
-    const detail: ContainerDetail | undefined = inspected[0];
-=======
     const detail = inspected[0];
->>>>>>> origin/main
     const labels = detail?.Config?.Labels;
     const containerId = detail?.Id ?? detail?.id;
     status.container_id = containerId && CONTAINER_ID.test(containerId) ? containerId : null;
