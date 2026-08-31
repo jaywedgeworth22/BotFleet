@@ -290,8 +290,15 @@ Set `OMB_WEBHOOK_PORT` to choose another port. A webhook secret is shown once wh
 or rotated. Bearer authentication is recommended so the secret stays out of request URLs and most access
 logs; a single capability URL remains available for senders that cannot configure headers. The receiver
 exposes only `/health` and secret `/hooks/...` endpoints; it never exposes the app's broader API.
-OpenMausBot must remain running to accept a delivery. For public internet delivery, proxy only this
-dedicated receiver through a hosted relay or a tool such as Tailscale Funnel.
+OpenMausBot must remain running to accept a delivery. For public internet delivery and mobile app access, BotFleet now offers **TryCloudflare (Free URL)** integration built directly into the app. 
+
+### Remote Access, Mobile App, and Webhooks
+
+To connect the BotFleet iOS app or receive public internet webhooks while the app is running on your Mac, you have three options:
+
+1. **TryCloudflare (Free URL)** (Recommended for Webhooks): BotFleet can instantly spin up a Cloudflare Tunnel giving you a persistent `*.trycloudflare.com` URL. This is deeply integrated — just toggle it on in Settings. It provides a long-lived, secure public URL without requiring a Cloudflare account or custom domain setup.
+2. **Tailscale**: For users prioritizing strict security and phone linking (without needing public webhooks), Tailscale is fully operational and supported out-of-the-box via MagicDNS.
+3. **Custom Domain**: For production setups, you can bring your own Cloudflare API Token to route traffic through a custom domain (requires configuring a Cloudflare Zero Trust account and setting up DNS).
 
 ## Status
 

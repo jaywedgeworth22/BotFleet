@@ -893,6 +893,11 @@ final class Session: ObservableObject {
         return await avatarData(forUrl: path)
     }
 
+    func avatarData(forPath path: String?) async -> Data? {
+        guard let path else { return nil }
+        return await avatarData(forUrl: path)
+    }
+
     func avatarData(forUrl path: String) async -> Data? {
         guard let client else { return nil }
         let key = path as NSString

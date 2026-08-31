@@ -39,7 +39,7 @@ struct BotAvatarView: View {
             image = nil
             failed = false
             guard crop != .mascot, bot.avatarUrl != nil else { return }
-            let data = await session.avatarData(for: bot)
+            let data = await session.avatarData(forPath: bot.avatarUrl)
             guard !Task.isCancelled else { return }
             guard let data, let decoded = UIImage(data: data) else {
                 failed = true

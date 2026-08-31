@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { api, useStore, formatTime, visibleMessages, type Bot, type Group } from "@/state/store";
 
-import { BotAvatar, InitialsAvatar } from "./Avatar";
+import { BotAvatar, GroupAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
