@@ -508,7 +508,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // one relaunch of the whole app-server after backoff — but only when
       // nothing streamed yet, and never for auth/shape errors or interrupts
       try {
-        await request("initialize", { clientInfo: { name: "botfleet", version: "1" } });
+        await request("initialize", { clientInfo: { name: "botfleet", version: "2" } });
         send({ jsonrpc: "2.0", method: "initialized", params: {} });
         const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
         let codexThreadId: string | null = null;
@@ -603,6 +603,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       );
     });
     if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
+    const match = version.match(/(\d+)\.(\d+)\.(\d+)/);
+    if (match && (parseInt(match[1]) === 0 && parseInt(match[2]) < 151)) {
+      return { state: "unavailable", reason: `Codex CLI is out of date (needs 0.151.0+). Run \`npm install -g @openai/codex\`` };
+    }
     const authenticated = await new Promise<boolean>((resolve) => {
       execCli(config.cli, ["login", "status"], { timeout: 8000, env }, (err, stdout, stderr) =>
         resolve(!err && /^logged in\b/im.test(`${stdout}\n${stderr ?? ""}`)),
