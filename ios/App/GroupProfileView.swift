@@ -9,13 +9,18 @@ struct GroupProfileView: View {
 
     @State private var name = ""
     @State private var bulletin = ""
+    @State private var avatarCrop: AvatarCrop = .circle
+    @State private var cwd = ""
     @State private var photo: PhotosPickerItem? = nil
     @State private var busy = false
 
     var currentRoom: CompanionCore.Room {
         var r = room
         r.name = name
+        r.bulletin = bulletin
         r.avatarUrl = session.state.rooms.first(where: { $0.id == room.id })?.avatarUrl ?? room.avatarUrl
+        r.avatarCrop = avatarCrop
+        r.cwd = cwd.isEmpty ? nil : cwd
         return r
     }
 
@@ -42,6 +47,14 @@ struct GroupProfileView: View {
                     .padding(.vertical, 8)
 
                     if (session.state.rooms.first(where: { $0.id == room.id })?.avatarUrl ?? room.avatarUrl) != nil {
+                        Picker("Photo shape", selection: $avatarCrop) {
+                            Text("Circle").tag(AvatarCrop.circle)
+                            Text("Rounded").tag(AvatarCrop.rounded)
+                            Text("Square").tag(AvatarCrop.square)
+                        }
+                        .pickerStyle(.segmented)
+                        .disabled(busy)
+
                         Button(role: .destructive) { Task { await clearImage() } } label: {
                             HStack {
                                 Spacer()
@@ -53,13 +66,20 @@ struct GroupProfileView: View {
                     }
                 }
 
-                Section {
+                Section("Channel Details") {
                     TextField("Name", text: $name)
                         .disabled(busy)
                         .autocorrectionDisabled()
                     TextField("Bulletin (Instructions for the team)", text: $bulletin, axis: .vertical)
                         .disabled(busy)
                         .lineLimit(2...6)
+                }
+
+                Section("Working Directory") {
+                    TextField("Folder path on host (optional)", text: $cwd)
+                        .disabled(busy)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
                 }
 
                 Section {
@@ -76,6 +96,8 @@ struct GroupProfileView: View {
             .onAppear {
                 name = room.name
                 bulletin = room.bulletin
+                avatarCrop = room.avatarCrop ?? .circle
+                cwd = room.cwd ?? ""
             }
             .onChange(of: photo) { _, item in
                 guard let item else { return }
@@ -87,7 +109,12 @@ struct GroupProfileView: View {
     private func save() async {
         busy = true
         defer { busy = false }
-        await session.updateRoom(id: room.id, name: name, bulletin: bulletin)
+        await session.updateRoom(
+            id: room.id,
+            name: name,
+            bulletin: bulletin,
+            avatarCrop: avatarCrop
+        )
     }
 
     private func clearImage() async {
