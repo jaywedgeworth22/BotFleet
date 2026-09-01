@@ -31,11 +31,12 @@ targets:
       - path: App
       - path: Shared
     dependencies:
+      - target: BotFleetWidgets
+        embed: true
       - package: CompanionCore
         product: CompanionCore
       - package: Sentry
         product: Sentry
-      - target: BotFleetWidgets
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.botfleet
@@ -45,6 +46,7 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1,2"
+        SUPPORTS_MACCATALYST: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: App/Info.plist
@@ -87,6 +89,8 @@ targets:
             ts.net:
               NSIncludesSubdomains: true
               NSExceptionAllowsInsecureHTTPLoads: true
+    entitlements:
+      path: App/BotFleet.entitlements
 
   BotFleetWidgets:
     type: app-extension
@@ -114,3 +118,14 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
+    entitlements:
+      path: Widgets/BotFleetWidgets.entitlements
+
+schemes:
+  BotFleet:
+    build:
+      targets:
+        BotFleet: all
+        BotFleetWidgets: all
+    run:
+      config: Debug
