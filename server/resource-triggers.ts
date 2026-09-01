@@ -162,8 +162,8 @@ function parseDfK(text: string): { freeGb: number; usedPct: number } | null {
   if (parts.length < 5) return null;
   const availK = Number(parts[3]);
   const cap = Number(String(parts[4]).replace("%", ""));
-  if (!Number.isFinite(availK) || !Number.isFinite(cap)) return null;
-  return { freeGb: availK / 1024 / 1024, usedPct: cap };
+  if (!Number.isFinite(availK) || !Number.isFinite(cap) || cap < 0 || cap > 100) return null;
+  return { freeGb: availK / (1024 * 1024), usedPct: cap };
 }
 
 function parseSwap(text: string): { usedPct: number; usedGb: number; totalGb: number } | null {
@@ -209,28 +209,12 @@ export function sampleHost(now = Date.now()): HostSample {
     (process.platform === "darwin" ? darwinRamUsedPct() : null) ??
     (total > 0 ? ((total - free) / total) * 100 : 0);
 
-  // On macOS `/` is the sealed read-only system snapshot.  It shares the APFS container
-  // (so Avail is right) but its Capacity% describes the ~12GB system volume, not the
-  // data volume: this host reported 13% on `/` while the data volume was 81% full.  A
-  // disk_used_pct trigger read off `/` could never fire.
-  const diskTargets = process.platform === "darwin" ? ["/System/Volumes/Data", "/"] : ["/"];
   let diskFreeGb = 0;
   let diskUsedPct = 0;
-  for (const target of diskTargets) {
+
+  if (process.platform === "win32") {
     try {
-      const parsed = parseDfK(execFileSync("df", ["-k", target], { encoding: "utf8", timeout: 5000 }));
-      if (parsed) {
-        diskFreeGb = parsed.freeGb;
-        diskUsedPct = parsed.usedPct;
-        break;
-      }
-    } catch {
-      /* try the next target */
-    }
-  }
-  if (diskFreeGb === 0 && diskUsedPct === 0) {
-    try {
-      const rootPath = process.platform === "win32" ? process.cwd().slice(0, 3) : "/";
+      const rootPath = process.cwd().slice(0, 3);
       const stats = statfsSync(rootPath);
       const totalBytes = stats.blocks * stats.bsize;
       const freeBytes = stats.bavail * stats.bsize;
@@ -240,6 +224,37 @@ export function sampleHost(now = Date.now()): HostSample {
       }
     } catch {
       /* keep zeros */
+    }
+  } else {
+    // On macOS `/` is the sealed read-only system snapshot.  It shares the APFS container
+    // (so Avail is right) but its Capacity% describes the ~12GB system volume, not the
+    // data volume: this host reported 13% on `/` while the data volume was 81% full.  A
+    // disk_used_pct trigger read off `/` could never fire.
+    const diskTargets = process.platform === "darwin" ? ["/System/Volumes/Data", "/"] : ["/"];
+    for (const target of diskTargets) {
+      try {
+        const parsed = parseDfK(execFileSync("df", ["-k", target], { encoding: "utf8", timeout: 5000 }));
+        if (parsed) {
+          diskFreeGb = parsed.freeGb;
+          diskUsedPct = parsed.usedPct;
+          break;
+        }
+      } catch {
+        /* try the next target */
+      }
+    }
+    if (diskFreeGb === 0 && diskUsedPct === 0) {
+      try {
+        const stats = statfsSync("/");
+        const totalBytes = stats.blocks * stats.bsize;
+        const freeBytes = stats.bavail * stats.bsize;
+        if (totalBytes > 0) {
+          diskFreeGb = freeBytes / (1024 * 1024 * 1024);
+          diskUsedPct = ((totalBytes - freeBytes) / totalBytes) * 100;
+        }
+      } catch {
+        /* keep zeros */
+      }
     }
   }
   let swapUsedPct: number | null = null;
