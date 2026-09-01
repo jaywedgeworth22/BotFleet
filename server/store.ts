@@ -556,35 +556,7 @@ export class Store {
     try {
       this.bots = JSON.parse(readFileSync(BOTS_FILE, "utf8"));
     } catch {
-      const initialThreadId = newId();
-      this.bots = [
-        {
-          id: newId(),
-          threadId: initialThreadId,
-          name: "Director",
-          title: "Chief of Staff",
-          description: "Chief of staff for the BotFleet roster. Route work, manage other bots, and coordinate fleet-wide tasks.",
-          notifications: true,
-          color: "blue",
-          mascotExpression: "focused",
-          unread: false,
-          modelSelection: this.defaultSelection(),
-          resumeCursors: {},
-          autoApprove: false,
-          tasks: [
-            {
-              id: newId(),
-              threadId: initialThreadId,
-              summary: "Inbox",
-              active: true,
-              updatedAt: Date.now(),
-            },
-          ],
-          createdAt: Date.now(),
-        },
-      ];
-      // Save it immediately so it persists
-      writeFileAtomic(BOTS_FILE, JSON.stringify(this.bots, null, 2));
+      this.bots = [];
     }
     try {
       this.groups = JSON.parse(readFileSync(GROUPS_FILE, "utf8"));
