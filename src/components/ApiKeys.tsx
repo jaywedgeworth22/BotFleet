@@ -6,7 +6,7 @@ import { Check, CircleHelp, ExternalLink, Loader2, TriangleAlert } from "lucide-
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 
-export type ConfigSection = "composio" | "box" | "opencodeGo" | "deepseek";
+export type ConfigSection = "composio" | "box" | "opencodeGo";
 
 const SECTIONS: Record<
   ConfigSection,
@@ -18,14 +18,12 @@ const SECTIONS: Record<
   },
   box: { body: (v) => ({ box: { token: v } }), flag: (c) => c.box.configured },
   opencodeGo: { body: (v) => ({ opencodeGo: { apiKey: v } }), flag: (c) => c.opencodeGo?.configured ?? false },
-  deepseek: { body: (v) => ({ deepseek: { key: v } }), flag: (c) => c.deepseek?.configured ?? false },
 };
 
-const ELECTRON_CREDENTIAL: Record<ConfigSection, "composioApiKey" | "boxToken" | "opencodeGoApiKey" | "deepseekApiKey"> = {
+const ELECTRON_CREDENTIAL: Record<ConfigSection, "composioApiKey" | "boxToken" | "opencodeGoApiKey"> = {
   composio: "composioApiKey",
   box: "boxToken",
   opencodeGo: "opencodeGoApiKey",
-  deepseek: "deepseekApiKey",
 };
 
 const CREDENTIALS: Record<
@@ -63,14 +61,6 @@ const CREDENTIALS: Record<
     description: "Optional. Existing OpenCode Zen, Go, and other provider connections are detected automatically.",
     href: "https://opencode.ai/docs/providers/",
     linkLabel: "Open the OpenCode provider guide",
-    optional: true,
-  },
-  deepseek: {
-    label: "DeepSeek API key",
-    placeholder: "sk-…",
-    description: "Use DeepSeek Chat (V3) and DeepSeek Reasoner (R1) models directly in your fleet.",
-    href: "https://platform.deepseek.com/api_keys",
-    linkLabel: "Get a DeepSeek API key",
     optional: true,
   },
 };
