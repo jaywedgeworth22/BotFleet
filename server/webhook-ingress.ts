@@ -86,6 +86,7 @@ function deliveryId(req: IncomingMessage): string | undefined {
 
 function eventName(req: IncomingMessage): string | undefined {
   return (
+    header(req, "x-botfleet-event") ??
     header(req, "x-github-event") ??
     header(req, "x-webhook-event") ??
     header(req, "x-event-type") ??
