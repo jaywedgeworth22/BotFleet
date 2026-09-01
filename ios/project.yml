@@ -56,6 +56,7 @@ targets:
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         TARGETED_DEVICE_FAMILY: "1,2"
         SUPPORTS_MACCATALYST: NO
+        ENABLE_ON_DEMAND_RESOURCES: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: App/Info.plist
@@ -133,6 +134,7 @@ targets:
         SDKROOT: iphoneos
         SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         TARGETED_DEVICE_FAMILY: "1,2"
+        ENABLE_ON_DEMAND_RESOURCES: NO
         SKIP_INSTALL: true
     info:
       path: Widgets/Info.plist
@@ -156,3 +158,5 @@ schemes:
         BotFleetWidgets: all
     run:
       config: Debug
+    archive:
+      config: Release
