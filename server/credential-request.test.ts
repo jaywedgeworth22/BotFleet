@@ -7,6 +7,7 @@ import {
   credentialResumeOutcome,
   isReusableCredentialRequest,
   isCredentialTargetId,
+  isCredentialTarget,
   type CredentialConfig,
   type CredentialTargetId,
 } from "../shared/credential-request.ts";
@@ -27,6 +28,13 @@ describe("credential request allowlist", () => {
     expect(isCredentialTargetId("composioApiKey")).toBe(false);
     expect(isCredentialTargetId("__proto__")).toBe(false);
     expect(isCredentialTargetId({ toString: () => "xaiApiKey" })).toBe(false);
+  });
+
+  it("accepts custom target objects", () => {
+    expect(isCredentialTarget({ custom: "my_token" })).toBe(true);
+    expect(isCredentialTarget({ custom: 123 })).toBe(false);
+    expect(isCredentialTarget({})).toBe(false);
+    expect(isCredentialTarget("xaiApiKey")).toBe(true);
   });
 
   it("maps each id to a fixed config location", () => {
