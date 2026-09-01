@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, statfsSync } from "node:fs";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
@@ -226,6 +226,20 @@ export function sampleHost(now = Date.now()): HostSample {
       }
     } catch {
       /* try the next target */
+    }
+  }
+  if (diskFreeGb === 0 && diskUsedPct === 0) {
+    try {
+      const rootPath = process.platform === "win32" ? process.cwd().slice(0, 3) : "/";
+      const stats = statfsSync(rootPath);
+      const totalBytes = stats.blocks * stats.bsize;
+      const freeBytes = stats.bavail * stats.bsize;
+      if (totalBytes > 0) {
+        diskFreeGb = freeBytes / (1024 * 1024 * 1024);
+        diskUsedPct = ((totalBytes - freeBytes) / totalBytes) * 100;
+      }
+    } catch {
+      /* keep zeros */
     }
   }
   let swapUsedPct: number | null = null;
