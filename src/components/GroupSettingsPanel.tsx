@@ -49,7 +49,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const members = state.bots.filter((b) => group.memberIds.includes(b.id));
-  const crop = group.avatarCrop ?? "circle";
+  const crop = group.avatarCrop ?? "rounded";
 
   const patch = (patchData: Partial<Group>) => {
     dispatch({
