@@ -79,8 +79,13 @@ export function credentialConfigPatch(id: CredentialTargetId, value: string): Cr
   }
 }
 
-export function credentialIsConfigured(config: CredentialConfig, id: CredentialTargetId): boolean {
-  switch (id) {
+export function credentialIsConfigured(config: CredentialConfig, target: CredentialTarget): boolean {
+  if (typeof target === "object" && target !== null && "custom" in target) {
+    // Custom credentials are in vault, we assume they are configured if we reach here 
+    // or we check it at a higher level
+    return true; 
+  }
+  switch (target) {
     case "xaiApiKey":
       return Boolean(config.xai?.key);
     case "deepseekApiKey":

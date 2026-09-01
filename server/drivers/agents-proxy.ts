@@ -435,10 +435,12 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
       }),
     });
     if (r.alreadyConfigured) {
-      return { text: `${r.label ?? CREDENTIAL_TARGETS[credentialId].label} is already configured. Continue the task.` };
+      const label = r.label ?? (credentialId !== "_custom" ? CREDENTIAL_TARGETS[credentialId as keyof typeof CREDENTIAL_TARGETS]?.label : "Custom credential");
+      return { text: `${label} is already configured. Continue the task.` };
     }
+    const label = r.label ?? (credentialId !== "_custom" ? CREDENTIAL_TARGETS[credentialId as keyof typeof CREDENTIAL_TARGETS]?.label : "Custom credential");
     return {
-      text: `A secure ${r.label ?? CREDENTIAL_TARGETS[credentialId].label} card is now visible to the user. End this turn; BotFleet will resume the task after they save or decline. Never ask them to paste the key into chat.`,
+      text: `A secure ${label} card is now visible to the user. End this turn; BotFleet will resume the task after they save or decline. Never ask them to paste the key into chat.`,
     };
   }
   if (name === "list_routines") {
