@@ -338,7 +338,7 @@ async function defaultSelection() {
   // spawn ENOENT — the single worst first-run experience, and the one every
   // user with no CLIs used to get. An empty selection is honest: the UI shows
   // the setup path instead of a bot that cannot answer.
-  const pick = available.find((d) => d.driverKind === "claudeAgent") ?? available[0];
+  const pick = available.find((d) => d.driverKind === "antigravityAgent") ?? available.find((d) => d.driverKind === "grokAgent") ?? available.find((d) => d.driverKind === "claudeAgent") ?? available[0];
   return { instanceId: pick?.instanceId ?? "", model: pick?.models.default ?? "" };
 }
 
@@ -442,9 +442,8 @@ function checkedMemberIds(value: unknown): { ok: true; memberIds: string[] } | {
   if (!memberIds.length) return { ok: false, error: "a channel needs at least one bot" };
   return { ok: true, memberIds };
 }
-let bootSelection = { instanceId: "", model: "" };
+const bootSelection = await defaultSelection();
 const store = new Store(() => bootSelection);
-bootSelection = await defaultSelection();
 store.seedIfEmpty();
 
 /** A bot as a client may see it: no provider session bookkeeping.
