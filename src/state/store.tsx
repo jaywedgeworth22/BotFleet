@@ -1279,8 +1279,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         },
         onError: (error) => {
           rawDispatch({ type: "error", message: error.message });
-          setTimeout(() => rawDispatch({ type: "error", message: null }), 6000);
-        },
+                  },
       }),
     [],
   );
@@ -1295,8 +1294,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const dispatch = useMemo(() => {
     const showError = (e: unknown) => {
       rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
-      setTimeout(() => rawDispatch({ type: "error", message: null }), 6000);
-    };
+          };
     // fire-and-forget card persistence; the route is optional server-side
     const persistCard = (botId: string, messageId: string, patch: Partial<OptionCardData>) => {
       fetch(`/api/bots/${botId}/cards/${messageId}`, {
