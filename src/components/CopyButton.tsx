@@ -52,6 +52,7 @@ export function CopyButton({
     setMenuOpen(false);
     onCopy?.();
     setTimeout(() => setCopiedType(null), 1400);
+    window.dispatchEvent(new CustomEvent("focus-composer"));
   };
 
   const copyId = (e?: React.MouseEvent) => {
@@ -62,6 +63,7 @@ export function CopyButton({
     setMenuOpen(false);
     onCopy?.();
     setTimeout(() => setCopiedType(null), 1400);
+    window.dispatchEvent(new CustomEvent("focus-composer"));
   };
 
   const handleContextMenu = (e: React.MouseEvent) => {
