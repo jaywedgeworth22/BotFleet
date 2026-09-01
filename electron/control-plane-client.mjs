@@ -241,12 +241,12 @@ export function createControlPlaneClient({
     origin,
 
     async health() {
-      const { payload } = await request("/healthz", {
+      const { payload } = await request("/healthz", { allowEmpty: true,
         deadlineMs: Math.min(timeoutMs, healthTimeoutMs),
       });
       if (
-        payload.ok !== true ||
-        payload.service !== "botfleet-control-plane"
+        payload && (payload.ok !== true ||
+        payload.service !== "botfleet-control-plane")
       ) {
         throw new ControlPlaneError("control_plane_unavailable");
       }
