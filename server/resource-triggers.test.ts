@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   crossed,
   ResourceTriggerManager,
+  sampleHost,
   valueFor,
   type HostSample,
 } from "./resource-triggers.ts";
@@ -17,6 +18,7 @@ function sample(partial: Partial<HostSample> = {}): HostSample {
     diskUsedPct: 70,
     ramUsedPct: 40,
     swapUsedPct: 10,
+    swapUsedGb: 0.2,
     swapTotalGb: 2,
     load1m: 2,
     ...partial,
@@ -37,6 +39,26 @@ describe("resource trigger math", () => {
     expect(valueFor("disk_free_gb", s)).toBe(41.2);
     expect(valueFor("swap_used_pct", s)).toBe(91);
     expect(valueFor("load_1m", s)).toBe(22);
+  });
+
+  it("exposes absolute swap so a dynamic swap store still reads as pressure", () => {
+    // macOS resizes the swap store, so used/total hovers near 90% at both 2GB and 20GB.
+    const light = sample({ swapUsedPct: 90, swapUsedGb: 1.8, swapTotalGb: 2 });
+    const heavy = sample({ swapUsedPct: 90, swapUsedGb: 18, swapTotalGb: 20 });
+    expect(valueFor("swap_used_pct", light)).toBe(valueFor("swap_used_pct", heavy));
+    expect(crossed("above", 8, valueFor("swap_used_gb", light)!)).toBe(false);
+    expect(crossed("above", 8, valueFor("swap_used_gb", heavy)!)).toBe(true);
+  });
+});
+
+describe("sampleHost", () => {
+  it("reports disk free and used% for the same volume", () => {
+    const s = sampleHost();
+    expect(s.diskFreeGb).toBeGreaterThan(0);
+    expect(s.diskUsedPct).toBeGreaterThanOrEqual(0);
+    expect(s.diskUsedPct).toBeLessThanOrEqual(100);
+    expect(s.ramUsedPct).toBeGreaterThan(0);
+    expect(s.ramUsedPct).toBeLessThanOrEqual(100);
   });
 });
 
@@ -76,6 +98,7 @@ describe("ResourceTriggerManager", () => {
       cmp: "below",
       threshold: 80,
       cooldownMinutes: 45,
+      sustainSamples: 1,
     });
     expect(manager.tick()).toHaveLength(1);
     expect(queued).toEqual([trigger.id]);
@@ -85,6 +108,52 @@ describe("ResourceTriggerManager", () => {
     now.t += 2 * 60_000;
     expect(manager.tick()).toHaveLength(1);
     expect(queued).toEqual([trigger.id, trigger.id]);
+  });
+
+  it("requires a sustained breach before firing", () => {
+    // A `du` sweep or a build can take 1m load from 12 to 120 and back inside a single
+    // 30s sample.  Waking a bot for that spike is noise, so N consecutive samples must
+    // breach before the trigger fires.
+    const now = { t: 1_000 };
+    const host = { current: sample({ load1m: 40 }) };
+    const { manager, queued } = make(now, host);
+    manager.create({
+      name: "Load",
+      prompt: "Check load",
+      botId: "housekeeper",
+      metric: "load_1m",
+      cmp: "above",
+      threshold: 16,
+      sustainSamples: 3,
+    });
+    expect(manager.tick()).toHaveLength(0);
+    expect(manager.tick()).toHaveLength(0);
+    expect(manager.tick()).toHaveLength(1);
+    expect(queued).toHaveLength(1);
+  });
+
+  it("resets the streak when pressure clears", () => {
+    const now = { t: 1_000 };
+    const host = { current: sample({ load1m: 40 }) };
+    const { manager, queued } = make(now, host);
+    manager.create({
+      name: "Load",
+      prompt: "Check load",
+      botId: "housekeeper",
+      metric: "load_1m",
+      cmp: "above",
+      threshold: 16,
+      sustainSamples: 3,
+    });
+    expect(manager.tick()).toHaveLength(0);
+    expect(manager.tick()).toHaveLength(0);
+    host.current = sample({ load1m: 2 }); // recovered -- streak must restart
+    expect(manager.tick()).toHaveLength(0);
+    host.current = sample({ load1m: 40 });
+    expect(manager.tick()).toHaveLength(0);
+    expect(manager.tick()).toHaveLength(0);
+    expect(manager.tick()).toHaveLength(1);
+    expect(queued).toHaveLength(1);
   });
 
   it("does not fire a paused trigger", () => {

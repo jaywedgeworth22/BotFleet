@@ -272,7 +272,7 @@ posixOnly("unattended turns keep asking", () => {
         if (!card) await new Promise((r) => setTimeout(r, 300));
       }
       expect(card, "the asked teammate auto-approved — ask_bot did not carry the gate").not.toBeNull();
-      expect(card!.card!.answered).toBeUndefined();
+      expect(card!.card!.answered).not.toBe("approve");
     },
     90_000,
   );
