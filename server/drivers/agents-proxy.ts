@@ -238,8 +238,12 @@ const TOOLS = [
       properties: {
         credential_id: {
           type: "string",
-          enum: Object.keys(CREDENTIAL_TARGETS),
-          description: "The credential the current task requires.",
+          enum: ["_custom", ...Object.keys(CREDENTIAL_TARGETS)],
+          description: "The credential the current task requires. Pass '_custom' if requesting a custom secret.",
+        },
+        custom_secret_name: {
+          type: "string",
+          description: "Required if credential_id is '_custom'. A snake_case or kebab-case name for the custom secret (e.g., 'github_token').",
         },
         reason: {
           type: "string",
@@ -412,8 +416,12 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
   }
   if (name === "request_credential") {
     const credentialId = args.credential_id;
-    if (!isCredentialTargetId(credentialId)) {
-      return { text: "request_credential needs a supported credential_id.", isError: true };
+    const customSecretName = typeof args.custom_secret_name === "string" ? args.custom_secret_name.trim() : undefined;
+    if (credentialId !== "_custom" && !isCredentialTargetId(credentialId)) {
+      return { text: "request_credential needs a supported credential_id or '_custom'.", isError: true };
+    }
+    if (credentialId === "_custom" && !customSecretName) {
+      return { text: "request_credential requires custom_secret_name when credential_id is '_custom'.", isError: true };
     }
     const reason = typeof args.reason === "string" ? args.reason.trim().slice(0, 240) : "";
     const r = await api("/api/internal/request-credential", {
@@ -422,6 +430,7 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
         fromBotId: BOT_ID,
         fromThreadId: THREAD_ID,
         credentialId,
+        ...(customSecretName ? { customSecretName } : {}),
         ...(reason ? { reason } : {}),
       }),
     });

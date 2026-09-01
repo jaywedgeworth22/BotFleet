@@ -160,6 +160,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       let text = "";
       let reasoning = "";
       let usage: { input: number; output: number } | null = null;
+      const tool_calls: any[] = [];
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -196,6 +197,14 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           if (toolCallsDelta) {
             for (const tc of toolCallsDelta) {
               const tcIndex = tc.index ?? 0;
+              if (!tool_calls[tcIndex]) {
+                tool_calls[tcIndex] = { id: tc.id, type: "function", function: { name: tc.function?.name ?? "", arguments: "" } };
+              } else {
+                if (tc.id) tool_calls[tcIndex].id = tc.id;
+                if (tc.function?.name) tool_calls[tcIndex].function.name += tc.function.name;
+              }
+              if (tc.function?.arguments) tool_calls[tcIndex].function.arguments += tc.function.arguments;
+
               const tcId = tc.id;
               const tcName = tc.function?.name;
               const tcArgs = tc.function?.arguments;
@@ -210,7 +219,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           }
         }
       }
-      return { text, reasoning, usage };
+      return { text, reasoning, tool_calls, usage };
     };
 
     const fetchModels = async (): Promise<void> => {

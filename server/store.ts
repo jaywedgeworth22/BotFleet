@@ -71,8 +71,8 @@ export interface ConnectorCardData {
 }
 
 export interface SecretRequestCardData {
-  /** Fixed allowlisted credential id; never an arbitrary config path. */
-  target: import("../shared/credential-request.ts").CredentialTargetId;
+  /** Fixed allowlisted credential id or a custom tool secret target; never an arbitrary config path. */
+  target: import("../shared/credential-request.ts").CredentialTarget;
   label: string;
   description: string;
   placeholder: string;
@@ -165,6 +165,7 @@ export interface GroupRecord {
   bulletin: string;
   unread: boolean;
   createdAt: number;
+  sharedVm?: boolean;
   /** true for auto-created bot⇄bot channels (ask_bot exchanges live here;
    * the user can open the channel and chip in) */
   dm?: boolean;
@@ -1050,6 +1051,11 @@ export class Store {
 
   bot(id: string) {
     return this.bots.find((b) => b.id === id) ?? null;
+  }
+
+  vmOwnerId(botId: string): string {
+    const group = this.groups.find(g => g.sharedVm && g.memberIds.includes(botId));
+    return group ? group.id : botId;
   }
 
   botByThread(threadId: string) {

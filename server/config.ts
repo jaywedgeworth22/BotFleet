@@ -215,6 +215,37 @@ function migrateLegacyHomeDir(current: string, legacyNames: readonly string[]): 
   }
 }
 
+const VAULT_FILE = join(DATA_DIR, "vault.json");
+
+export function vaultRead(key: string): string | undefined {
+  try {
+    const raw = readFileSync(VAULT_FILE, "utf8");
+    const data = JSON.parse(raw);
+    return data[key];
+  } catch {
+    return undefined;
+  }
+}
+
+export function vaultWrite(key: string, value: string): void {
+  let data: Record<string, string> = {};
+  try {
+    const raw = readFileSync(VAULT_FILE, "utf8");
+    data = JSON.parse(raw);
+  } catch {}
+  data[key] = value;
+  writeFileAtomic(VAULT_FILE, JSON.stringify(data, null, 2));
+}
+
+export function vaultReadAll(): Record<string, string> {
+  try {
+    const raw = readFileSync(VAULT_FILE, "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
 export function ensureDirs() {
   // one-time migration from the pre-rename data dirs — bots, transcripts,
   // config and keys all carry over. Skip when tests isolate via OMB_DATA_DIR.

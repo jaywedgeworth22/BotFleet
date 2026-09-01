@@ -75,13 +75,21 @@ export function SecretRequestCard({
     try {
       if (!savedLocally) {
         const next = value.trim();
-        const status: ConfigStatus = window.ogb?.setCredential
-          ? await window.ogb.setCredential(secret.target, next)
-          : await api("/api/config", {
-              method: "PUT",
-              body: JSON.stringify(credentialConfigPatch(secret.target, next)),
-            });
-        dispatch({ type: "configStatus", config: status });
+        let status: ConfigStatus | undefined;
+        if (typeof secret.target === "object" && secret.target !== null && "custom" in secret.target) {
+          await api("/api/vault", {
+            method: "POST",
+            body: JSON.stringify({ key: secret.target.custom, value: next }),
+          });
+        } else {
+          status = window.ogb?.setCredential
+            ? await window.ogb.setCredential(secret.target, next)
+            : await api("/api/config", {
+                method: "PUT",
+                body: JSON.stringify(credentialConfigPatch(secret.target as any, next)),
+              });
+        }
+        if (status) dispatch({ type: "configStatus", config: status });
         setValue("");
         setSavedLocally(true);
       }

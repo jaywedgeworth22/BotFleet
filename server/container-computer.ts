@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { augmentedPath } from "./env-path.ts";
-import { DATA_DIR } from "./config.ts";
+import { DATA_DIR, loadConfig, localVmMaxInstances, localVmMode, vaultReadAll } from "./config.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 
 const run = promisify(execFile);
@@ -1086,6 +1086,7 @@ export function containerComputerMcp(
     // The control pair rides in env, not argv — argv is world-readable
     // through `ps` for the life of the bridge.
     env: {
+      ...vaultReadAll(),
       ELECTRON_RUN_AS_NODE: "1",
       ...(control ? { OMB_CONTROL_URL: control.url, OMB_CONTROL_TOKEN: control.token } : {}),
     },

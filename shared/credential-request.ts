@@ -43,6 +43,7 @@ export const CREDENTIAL_TARGETS = {
 } as const;
 
 export type CredentialTargetId = keyof typeof CREDENTIAL_TARGETS;
+export type CredentialTarget = CredentialTargetId | { custom: string };
 export type CredentialConfig = {
   xai?: { key?: string };
   deepseek?: { key?: string };
@@ -54,6 +55,11 @@ export type CredentialConfig = {
 
 export function isCredentialTargetId(value: unknown): value is CredentialTargetId {
   return typeof value === "string" && Object.prototype.hasOwnProperty.call(CREDENTIAL_TARGETS, value);
+}
+
+export function isCredentialTarget(value: unknown): value is CredentialTarget {
+  if (isCredentialTargetId(value)) return true;
+  return typeof value === "object" && value !== null && typeof (value as any).custom === "string";
 }
 
 export function credentialConfigPatch(id: CredentialTargetId, value: string): CredentialConfig {
@@ -96,15 +102,24 @@ export function isReusableCredentialRequest(
     secret?: { target?: unknown; provided?: unknown; dismissed?: unknown };
     from?: { botId?: unknown };
   },
-  target: CredentialTargetId,
+  target: CredentialTarget,
   requestingBotId: string,
   roomThread: boolean,
 ): boolean {
+  let targetMatches = false;
+  if (message.secret?.target) {
+    if (typeof target === "string") {
+      targetMatches = message.secret.target === target;
+    } else if (typeof target === "object" && target !== null && typeof (target as any).custom === "string") {
+      const msgTarget = message.secret.target;
+      targetMatches = typeof msgTarget === "object" && msgTarget !== null && (msgTarget as any).custom === target.custom;
+    }
+  }
   return (
     message.kind === "secret" &&
-    message.secret?.target === target &&
-    message.secret.provided !== true &&
-    message.secret.dismissed !== true &&
+    targetMatches &&
+    message.secret?.provided !== true &&
+    message.secret?.dismissed !== true &&
     (!roomThread || message.from?.botId === requestingBotId)
   );
 }

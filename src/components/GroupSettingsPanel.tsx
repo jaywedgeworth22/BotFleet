@@ -268,6 +268,25 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
             />
           </Field>
 
+          {/* Shared Workspace VM */}
+          <div className="flex items-center gap-3 rounded-lg border border-hairline/40 bg-card p-3">
+            <input
+              type="checkbox"
+              id="shared-vm-toggle"
+              checked={group.sharedVm ?? false}
+              onChange={(e) => patch({ sharedVm: e.target.checked })}
+              className="size-4 rounded border-hairline text-accent focus:ring-accent"
+            />
+            <div className="flex flex-col">
+              <label htmlFor="shared-vm-toggle" className="text-[13px] font-medium text-ink cursor-pointer">
+                Shared Workspace VM
+              </label>
+              <p className="text-[11.5px] text-ink-secondary">
+                Allow all bots in this channel to share the same local VM.
+              </p>
+            </div>
+          </div>
+
           {/* Associated Repositories */}
           <div className="flex flex-col gap-2 rounded-xl border border-hairline/40 bg-card p-4">
             <div className="flex items-center justify-between">

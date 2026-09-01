@@ -58,7 +58,7 @@ export interface ConnectorCardData {
 }
 
 export interface SecretRequestCardData {
-  target: import("../../shared/credential-request").CredentialTargetId;
+  target: import("../../shared/credential-request").CredentialTarget;
   label: string;
   description: string;
   placeholder: string;
@@ -125,6 +125,7 @@ export interface Group {
   bulletin: string;
   unread: boolean;
   createdAt: number;
+  sharedVm?: boolean;
   /** auto-created bot⇄bot channel (ask_bot exchanges mirror here) */
   dm?: boolean;
   busyBotId?: string | null;

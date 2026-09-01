@@ -17,6 +17,8 @@ export const DRIVER_FILE_IDENTITY_KEYS = [
   "ctimeNs",
 ] as const;
 
+import { vaultReadAll } from "./config.ts";
+
 export type LocalComputerConnection = {
   command: string;
   args: string[];
@@ -100,7 +102,7 @@ function decodeLegacyDescriptor(
   return {
     command: value.mcpCommand,
     args,
-    env: env as Record<string, string>,
+    env: { ...vaultReadAll(), ...(env as Record<string, string>) },
     platform: supportedPlatform,
     scope: "local-computer",
   };
@@ -235,7 +237,7 @@ export function decodeLinuxDescriptor(value: LinuxConnectionDescriptor): LocalCo
   return {
     command: driver.path,
     args: [...(mcp.args as string[])],
-    env: { ...(mcp.env as Record<string, string>) },
+    env: { ...vaultReadAll(), ...(mcp.env as Record<string, string>) },
     platform: "linux",
     generation: value.generation,
     scope: "local-computer",
