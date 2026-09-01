@@ -26,6 +26,7 @@ targets:
     platform: iOS
     sources:
     - path: App
+    - path: App/Assets.xcassets
     - path: Shared
     dependencies:
     - target: BotFleetWidgets
@@ -45,6 +46,7 @@ targets:
         TARGETED_DEVICE_FAMILY: '1'
         SUPPORTS_MACCATALYST: false
         ENABLE_ON_DEMAND_RESOURCES: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: false
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: false
     info:
@@ -59,7 +61,6 @@ targets:
         CFBundleURLTypes:
         - CFBundleURLName: app.botfleet.companion.pairing
           CFBundleURLSchemes:
-          - botfleet
           - botfleet
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
@@ -80,7 +81,6 @@ targets:
         NSSpeechRecognitionUsageDescription: BotFleet converts your speech into text
           so you can send it to a bot. Recognition runs on this phone when it can.
         NSBonjourServices:
-        - _botfleet._tcp
         - _botfleet._tcp
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
