@@ -4,10 +4,9 @@ import Sentry
 /// Native Sentry crash reporting and telemetry for BotFleet iOS Companion.
 enum SentryTelemetry {
     static func start() {
-        let dsn = Bundle.main.object(forInfoDictionaryKey: "SENTRY_DSN") as? String
-            ?? "https://4512009246736384@o4511650476326912.ingest.us.sentry.io/4512009246736384"
-
-        guard !dsn.isEmpty else { return }
+        let dsn = (Bundle.main.object(forInfoDictionaryKey: "SENTRY_DSN") as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard dsn.hasPrefix("https://") else { return }
 
         SentrySDK.start { options in
             options.dsn = dsn

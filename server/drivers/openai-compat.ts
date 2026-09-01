@@ -19,6 +19,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
+import { recordExecutedTools, withChatSpan } from "../sentry-ai.ts";
 
 const DRIVER_KIND = "openai-compat";
 
@@ -322,32 +323,37 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
 
       (async () => {
         try {
-          const { text, reasoning, tool_calls, usage } = await complete(
-            messages,
-            turn.model || catalog.default,
-            {
-              stream: true,
-              signal: abort.signal,
-              tools: openAiTools,
-              onDelta: (delta, streamKind = "assistant_text") =>
-                emit({
-                  ...base(threadId, turnId),
-                  type: "content.delta",
-                  streamKind,
-                  delta,
-                }),
-              onToolCallDelta: (index, id, name, args) => {
-                emit({
-                  ...base(threadId, turnId),
-                  type: "tool_call.delta",
-                  index,
-                  toolCallId: id,
-                  name,
-                  args,
-                } as any);
-              }
-            },
+          const model = turn.model || catalog.default;
+          const { text, reasoning, tool_calls, usage } = await withChatSpan(
+            { model, conversationId: threadId, provider: "openai" },
+            () =>
+              complete(messages, model, {
+                stream: true,
+                signal: abort.signal,
+                tools: openAiTools,
+                onDelta: (delta, streamKind = "assistant_text") =>
+                  emit({
+                    ...base(threadId, turnId),
+                    type: "content.delta",
+                    streamKind,
+                    delta,
+                  }),
+                onToolCallDelta: (index, id, name, args) => {
+                  emit({
+                    ...base(threadId, turnId),
+                    type: "tool_call.delta",
+                    index,
+                    toolCallId: id,
+                    name,
+                    args,
+                  } as any);
+                },
+              }),
           );
+          const toolNames = (tool_calls ?? [])
+            .map((tc: { function?: { name?: string } }) => tc?.function?.name)
+            .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+          recordExecutedTools(threadId, toolNames);
           appendNative(threadId, {
             dir: "in",
             source: "openai-compat.chat.completions",

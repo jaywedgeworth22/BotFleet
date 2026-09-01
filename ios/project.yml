@@ -55,6 +55,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
         ITSAppUsesNonExemptEncryption: false
+        SENTRY_DSN: "https://3fb94d8a19248d0bd1cc75694d9d6586@o4511650476326912.ingest.us.sentry.io/4512009246736384"
         NSSupportsLiveActivities: true
         CFBundleURLTypes:
         - CFBundleURLName: app.botfleet.companion.pairing
