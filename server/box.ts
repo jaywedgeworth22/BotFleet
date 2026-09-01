@@ -12,6 +12,7 @@
 //   - the dedicated IP rotates across archive/resume — never persist it.
 import type { AppConfig } from "./config.ts";
 import { ensureRemoteCuaCommand, remoteComputerBootstrapCommand } from "./remote-computer.ts";
+import { generateProxyToken } from "./cloud-proxy.ts";
 
 // overridable so tests can point at a stub instead of the live provider
 const BOX_API = process.env.OMB_BOX_API || "https://ascii.dev/api/box/v1";
@@ -37,13 +38,13 @@ async function boxJson(cfg: AppConfig, path: string, opts: RequestInit = {}) {
 }
 
 // deterministic per-bot name; the hash kills truncated-uuid collisions
-async function boxNameFor(botId: string) {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(botId));
+async function boxNameFor(ownerId: string) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(ownerId));
   const hash = [...new Uint8Array(digest)]
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("")
     .slice(0, 6);
-  return `ogb-${botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "")}-${hash}`;
+  return `ogb-${ownerId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "")}-${hash}`;
 }
 
 export async function runCommand(cfg: AppConfig, boxId: string, command: string, { timeoutMs = 120_000 } = {}) {
@@ -100,24 +101,24 @@ async function waitReady(cfg: AppConfig, boxId: string, budgetMs = 90_000) {
 // the live state so callers can still see "archived".
 const boxIdCache = new Map<string, string>();
 
-export async function findBox(cfg: AppConfig, botId: string) {
-  const cachedId = boxIdCache.get(botId);
+export async function findBox(cfg: AppConfig, ownerId: string) {
+  const cachedId = boxIdCache.get(ownerId);
   if (cachedId) {
     const { ok, body } = await boxJson(cfg, `/boxes/${cachedId}`);
     const box = body?.box;
     if (ok && box?.id && box.state !== "error") return box;
-    boxIdCache.delete(botId); // gone or broken — fall back to the listing
+    boxIdCache.delete(ownerId); // gone or broken — fall back to the listing
   }
-  const name = await boxNameFor(botId);
+  const name = await boxNameFor(ownerId);
   const { body } = await boxJson(cfg, "/boxes");
   const found = (body?.boxes ?? []).find((b: any) => b.name === name && b.state !== "error") ?? null;
-  if (found?.id) boxIdCache.set(botId, found.id);
+  if (found?.id) boxIdCache.set(ownerId, found.id);
   return found;
 }
 
 /** Ready-or-null without the LIST when we already know the box. */
-export async function readyBox(cfg: AppConfig, botId: string, budgetMs = 60_000) {
-  const box = await findBox(cfg, botId);
+export async function readyBox(cfg: AppConfig, ownerId: string, budgetMs = 60_000) {
+  const box = await findBox(cfg, ownerId);
   if (!box) return null;
   if (READY.has(box.state)) return box;
   return waitReady(cfg, box.id, budgetMs);
@@ -203,9 +204,9 @@ async function createBox(cfg: AppConfig) {
 }
 
 /** Box state for the Computer panel. */
-export async function boxStatus(cfg: AppConfig, botId: string) {
+export async function boxStatus(cfg: AppConfig, ownerId: string) {
   if (!boxConfigured(cfg)) return { configured: false, box: null };
-  const box = await findBox(cfg, botId);
+  const box = await findBox(cfg, ownerId);
   return {
     configured: true,
     box: box ? { boxId: box.id, state: box.state, desktopAvailable: box.desktopAvailable ?? null } : null,
@@ -217,12 +218,12 @@ export async function boxStatus(cfg: AppConfig, botId: string) {
  * idempotent bootstrap (screenshot tooling for the computer-use bridge +
  * a tmux welcome), and mint a fresh desktop URL.
  */
-export async function provisionBox(cfg: AppConfig, botId: string, botName: string) {
+export async function provisionBox(cfg: AppConfig, ownerId: string, botName: string) {
   if (!boxConfigured(cfg)) {
     throw new Error('box provider not enabled — add {"box":{"token":"…"}} to ~/.botfleet/config.json');
   }
-  const vmName = await boxNameFor(botId);
-  let box = await findBox(cfg, botId);
+  const vmName = await boxNameFor(ownerId);
+  let box = await findBox(cfg, ownerId);
   let created = false;
   try {
     if (!box) {
@@ -246,7 +247,12 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
 
     // Install the exact Cua Driver executable in the background, keep its
     // daemon private to the VM, and retain X11 tooling as a degraded fallback.
-    const bootstrap = remoteComputerBootstrapCommand(botName);
+    const proxyToken = generateProxyToken();
+    const proxyUrl = cfg.ingress?.publicUrl || "http://host.docker.internal:3000";
+    const bootstrap = remoteComputerBootstrapCommand(botName, {
+      OMB_HOST_PROXY_URL: proxyUrl,
+      OMB_HOST_PROXY_TOKEN: proxyToken
+    });
     let boot;
     for (let attempt = 0; attempt < 5; attempt++) {
       boot = await runCommand(cfg, box.id, bootstrap);
@@ -267,7 +273,7 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
       method: "DELETE",
       headers: { "X-Ascii-Confirm-Delete": box.id },
     }).catch(() => null);
-    boxIdCache.delete(botId);
+    boxIdCache.delete(ownerId);
     if (cleanup?.ok) throw error;
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`${message}. The new computer could not be removed automatically; delete box ${box.id} in ascii.dev.`);
@@ -275,8 +281,8 @@ export async function provisionBox(cfg: AppConfig, botId: string, botName: strin
 }
 
 /** Wake the bot's box and return a FRESH desktop URL. */
-export async function joinBox(cfg: AppConfig, botId: string) {
-  const box = await findBox(cfg, botId);
+export async function joinBox(cfg: AppConfig, ownerId: string) {
+  const box = await findBox(cfg, ownerId);
   if (!box) throw new Error("no computer yet — provision it first");
   const ready = await waitReady(cfg, box.id);
   if (!ready) throw new Error("the box did not wake in time — try again");
@@ -287,8 +293,8 @@ export async function joinBox(cfg: AppConfig, botId: string) {
 }
 
 /** Archive the bot's box now (billing pauses, disk survives). */
-export async function sleepBox(cfg: AppConfig, botId: string) {
-  const box = await findBox(cfg, botId);
+export async function sleepBox(cfg: AppConfig, ownerId: string) {
+  const box = await findBox(cfg, ownerId);
   if (!box) throw new Error("no computer for this bot");
   // Ask the browser's oldest (main) process to exit before the provider
   // snapshots the disk. This gives Chrome a chance to flush cookies and
@@ -303,8 +309,8 @@ export async function sleepBox(cfg: AppConfig, botId: string) {
 }
 
 /** Owner-scoped shell for the Computer panel's console. */
-export async function execOnBox(cfg: AppConfig, botId: string, command: string) {
-  const box = await findBox(cfg, botId);
+export async function execOnBox(cfg: AppConfig, ownerId: string, command: string) {
+  const box = await findBox(cfg, ownerId);
   if (!box) throw new Error("no computer for this bot yet");
   const ready = await waitReady(cfg, box.id, 60_000);
   if (!ready) throw new Error("box did not wake");
@@ -349,10 +355,10 @@ async function readFileBase64(cfg: AppConfig, boxId: string, path: string): Prom
 
 /** `knownBoxId` skips box resolution entirely — the screen poller holds
  * the id for the whole turn and must not re-resolve it every frame. */
-export async function screenshotBox(cfg: AppConfig, botId: string, knownBoxId?: string) {
+export async function screenshotBox(cfg: AppConfig, ownerId: string, knownBoxId?: string) {
   let boxId = knownBoxId;
   if (!boxId) {
-    const box = await findBox(cfg, botId);
+    const box = await findBox(cfg, ownerId);
     if (!box) throw new Error("no computer for this bot yet");
     if (!READY.has(box.state)) throw new Error(`box is ${box.state}`);
     boxId = box.id as string;

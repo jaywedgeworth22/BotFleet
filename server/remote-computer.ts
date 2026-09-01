@@ -112,7 +112,7 @@ export function ensureRemoteCuaCommand(): string {
 /** Idempotent setup. The exact wheel is verified before its bundled native
  * executable is installed; installation remains asynchronous so first-time
  * provisioning does not block the desktop for several minutes. */
-export function remoteComputerBootstrapCommand(botName: string): string {
+export function remoteComputerBootstrapCommand(botName: string, envVars?: Record<string, string>): string {
   const helper = Buffer.from(CDP_HELPER_SOURCE).toString("base64");
   const installer = [
     "set -eu",
@@ -129,7 +129,15 @@ export function remoteComputerBootstrapCommand(botName: string): string {
     `touch /opt/ogb/cua-${REMOTE_CUA_VERSION}-ready`,
     'rm -f "$wheel"',
   ].join("\n");
-  const safeName = botName.replace(/["'\\]/g, "");
+  
+  const envLines = [];
+  if (envVars) {
+    for (const [k, v] of Object.entries(envVars)) {
+      envLines.push(`echo "${k}=${v}" | sudo tee -a /etc/environment >/dev/null`);
+    }
+  }
+
+  const safeName = botName.replace(/["'\\"]/g, "");
   return [
     "if ! command -v xdotool >/dev/null || ! command -v convert >/dev/null || ! command -v curl >/dev/null || ! command -v python3 >/dev/null; then sudo apt-get update -qq || true; sudo apt-get install -y -qq ca-certificates curl python3 gnome-screenshot xclip wmctrl xdotool imagemagick scrot >/dev/null 2>&1 || true; fi",
     "sudo mkdir -p /opt/ogb/run",
@@ -139,6 +147,7 @@ export function remoteComputerBootstrapCommand(botName: string): string {
     `[ -f /opt/ogb/cua-${REMOTE_CUA_VERSION}-ready ] || [ -f /tmp/ogb-cua-installing ] || { touch /tmp/ogb-cua-installing; nohup bash -c ${shellQuote(installer)} > /tmp/ogb-cua-install.log 2>&1 & }`,
     ensureRemoteCuaCommand(),
     `tmux has-session -t work 2>/dev/null || tmux new-session -d -s work 'echo; echo "  ▦ ${safeName}'"'"'s computer — BotFleet"; echo; exec bash -i'`,
+    ...envLines,
     "echo bootstrapped",
   ].join("\n");
 }

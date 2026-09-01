@@ -15,6 +15,8 @@ import {
   credentialIsConfigured,
   isReusableCredentialRequest,
   isCredentialTargetId,
+  isCredentialTarget,
+  CredentialTarget,
   type CredentialTargetId,
 } from "../shared/credential-request.ts";
 
@@ -67,6 +69,8 @@ import {
   skillRecorderEnabled,
   syncCredentialEnv,
   patchInstanceConfig,
+  vaultRead,
+  vaultWrite,
   vpsSshAlias,
   DATA_DIR,
   EVENTS_DIR,
@@ -2022,13 +2026,13 @@ async function startTurn(
         if (!mountsCloudComputer && wants === "cloud") {
           throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
         }
-        let b = await box.findBox(cfg, bot.id).catch(() => null);
+        let b = await box.findBox(cfg, store.vmOwnerId(bot.id)).catch(() => null);
         // Explicit Cloud and the box-native Computer engine provision on first
         // use. Auto remains non-surprising and only reuses an existing box.
         if (!b && mountsCloudComputer && (wants === "cloud" || instance.driverKind === "boxAgent")) {
           broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
-          await box.provisionBox(cfg, bot.id, bot.name);
-          b = await box.findBox(cfg, bot.id).catch(() => null);
+          await box.provisionBox(cfg, store.vmOwnerId(bot.id), bot.name);
+          b = await box.findBox(cfg, store.vmOwnerId(bot.id)).catch(() => null);
         }
         // an archived box answers every action with an error until it
         // resumes — wake it here, once, instead of letting the agent
@@ -2036,10 +2040,10 @@ async function startTurn(
         // resume (~8s, and it un-pauses billing) when the bot can act.
         if (b && mountsCloudComputer && !["idle", "ready", "running"].includes(b.state)) {
           broadcast({ kind: "computer", botId: bot.id, state: "waking" });
-          b = (await box.readyBox(cfg, bot.id).catch(() => null)) ?? b;
+          b = (await box.readyBox(cfg, store.vmOwnerId(bot.id)).catch(() => null)) ?? b;
         }
         if (b) {
-          previewCapture = () => box.screenshotBox(cfg, bot.id, b!.id);
+          previewCapture = () => box.screenshotBox(cfg, store.vmOwnerId(bot.id), b!.id);
           if (mountsCloudComputer) {
             integrations.computer = {
               kind: "box",
@@ -3463,6 +3467,65 @@ const server = createServer(async (req, res) => {
         });
         return json(res, 201, proposed);
       }
+      
+      if (method === "POST" && path === "/api/internal/cloud-proxy/chat") {
+        const auth = req.headers.authorization || "";
+        const token = auth.replace(/^Bearer\s+/i, "");
+        const { proxyTokens } = await import("./cloud-proxy.ts");
+        if (!token || !proxyTokens.has(token)) {
+          return json(res, 401, { error: "unauthorized proxy token" });
+        }
+        let body;
+        try {
+          body = JSON.parse(await readBody(req));
+        } catch {
+          return json(res, 400, { error: "invalid json" });
+        }
+        const model = body.model;
+        let targetInstance = null;
+        for (const inst of registry.instances()) {
+          if (inst.models.options.some((opt) => opt.id === model) || inst.models.default === model) {
+            targetInstance = inst;
+            break;
+          }
+        }
+        if (!targetInstance || !targetInstance.generateText) {
+          return json(res, 404, { error: "model not found or unsupported" });
+        }
+        const prompt = (body.messages || []).map((m: any) => `${m.role}: ${m.content}`).join("\n\n");
+        try {
+          const reply = await targetInstance.generateText(prompt);
+          if (body.stream) {
+            res.writeHead(200, {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache",
+              "Connection": "keep-alive"
+            });
+            const chunk = {
+              id: "chatcmpl-" + Math.random().toString(36).slice(2),
+              object: "chat.completion.chunk",
+              created: Math.floor(Date.now() / 1000),
+              model,
+              choices: [{ index: 0, delta: { content: reply }, finish_reason: "stop" }]
+            };
+            res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+            res.write("data: [DONE]\n\n");
+            res.end();
+            return;
+          } else {
+            return json(res, 200, {
+              id: "chatcmpl-" + Math.random().toString(36).slice(2),
+              object: "chat.completion",
+              created: Math.floor(Date.now() / 1000),
+              model,
+              choices: [{ index: 0, message: { role: "assistant", content: reply }, finish_reason: "stop" }]
+            });
+          }
+        } catch (e) {
+          return json(res, 500, { error: String(e) });
+        }
+      }
+
       if (method === "POST" && path === "/api/internal/ask-bot") {
         const body = await readBody(req);
         const fromBotId = String(body.fromBotId ?? "");
@@ -3648,19 +3711,48 @@ const server = createServer(async (req, res) => {
         const fromThreadId = String(body.fromThreadId ?? from.threadId);
         const owner = connectorThread(from.id, fromThreadId);
         if (!owner) return json(res, 403, { error: "source conversation does not belong to sender" });
-        if (!isCredentialTargetId(body.credentialId)) {
-          return json(res, 400, { error: "unsupported credential id" });
+        let targetId: CredentialTarget;
+        let label: string;
+        let description: string;
+        let placeholder: string;
+        let helpUrl: string;
+
+        if (body.credentialId === "_custom") {
+          if (!body.customSecretName || typeof body.customSecretName !== "string") {
+            return json(res, 400, { error: "customSecretName required for _custom credential" });
+          }
+          const customName = body.customSecretName.trim();
+          targetId = { custom: customName };
+          label = customName;
+          description = `A custom secret named ${customName} is required.`;
+          placeholder = "Paste secret here";
+          helpUrl = "";
+          // Check if already configured in vault
+          if (vaultRead(customName)) {
+            return json(res, 200, { alreadyConfigured: true, label });
+          }
+        } else {
+          if (!isCredentialTargetId(body.credentialId)) {
+            return json(res, 400, { error: "unsupported credential id" });
+          }
+          const cId = body.credentialId as CredentialTargetId;
+          targetId = cId;
+          const target = CREDENTIAL_TARGETS[cId];
+          label = target.label;
+          description = target.description;
+          placeholder = target.placeholder;
+          helpUrl = target.helpUrl;
+          
+          if (credentialIsConfigured(cfg, cId)) {
+            return json(res, 200, { alreadyConfigured: true, label });
+          }
         }
-        const credentialId: CredentialTargetId = body.credentialId;
-        const target = CREDENTIAL_TARGETS[credentialId];
-        if (credentialIsConfigured(cfg, credentialId)) {
-          return json(res, 200, { alreadyConfigured: true, label: target.label });
-        }
+
         const existing = store.messagesFor(fromThreadId).find((message) =>
-          isReusableCredentialRequest(message, credentialId, from.id, Boolean(owner.group))
+          isReusableCredentialRequest(message, targetId, from.id, Boolean(owner.group))
         );
         if (existing) {
-          return json(res, 200, { messageId: existing.id, label: target.label });
+          return json(res, 200, { messageId: existing.id, label });
         }
         const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 240) : "";
         const message = store.appendMessage(fromThreadId, {
@@ -3668,15 +3760,15 @@ const server = createServer(async (req, res) => {
           kind: "secret",
           ...(owner.group ? { from: { botId: from.id, name: from.name, color: from.color } } : {}),
           secret: {
-            target: credentialId,
-            label: target.label,
-            description: reason ? `${target.description} ${reason}` : target.description,
-            placeholder: target.placeholder,
-            helpUrl: target.helpUrl,
+            target: targetId,
+            label: label,
+            description: reason ? `${description} ${reason}` : description,
+            placeholder: placeholder,
+            helpUrl: helpUrl,
             requestKey: randomUUID(),
           },
         });
-        return json(res, 201, { messageId: message.id, label: target.label });
+        return json(res, 201, { messageId: message.id, label });
       }
       if (method === "POST" && path === "/api/internal/connectors/mcp") {
         const body = await readBody(req);
@@ -5849,6 +5941,17 @@ const server = createServer(async (req, res) => {
         providerConfigBusy = false;
       }
     }
+    if (method === "POST" && path === "/api/vault") {
+      const body = await readBody(req);
+      if (typeof body.key !== "string" || !body.key) {
+        return json(res, 400, { error: "key is required" });
+      }
+      if (typeof body.value !== "string" || !body.value) {
+        return json(res, 400, { error: "value is required" });
+      }
+      vaultWrite(body.key, body.value);
+      return json(res, 200, { ok: true });
+    }
 
     // ── app config (API keys — never echoed back, booleans only) ──
     if (method === "GET" && path === "/api/config") {
@@ -6143,7 +6246,7 @@ const server = createServer(async (req, res) => {
       if (!bot) return json(res, 404, { error: "no such bot" });
       return bot.cloudBackend === "vps"
         ? json(res, 200, { backend: "vps", ...(await vps.vpsComputerStatus(cfg, bot.id)) })
-        : json(res, 200, { backend: "box", ...(await box.boxStatus(cfg, bot.id)) });
+        : json(res, 200, { backend: "box", ...(await box.boxStatus(cfg, store.vmOwnerId(bot.id))) });
     }
     // Who is driving this bot's computer. GET is the panel's initial read;
     // POST take/release/dismiss-help are the person's three moves. The bot
@@ -6238,17 +6341,17 @@ const server = createServer(async (req, res) => {
       }
       switch (m[2]) {
         case "provision":
-          return json(res, 200, await box.provisionBox(cfg, botId, bot.name));
+          return json(res, 200, await box.provisionBox(cfg, store.vmOwnerId(botId), bot.name));
         case "join":
-          return json(res, 200, await box.joinBox(cfg, botId));
+          return json(res, 200, await box.joinBox(cfg, store.vmOwnerId(botId)));
         case "sleep":
-          return json(res, 200, await box.sleepBox(cfg, botId));
+          return json(res, 200, await box.sleepBox(cfg, store.vmOwnerId(botId)));
         case "exec": {
           const body = await readBody(req);
-          return json(res, 200, await box.execOnBox(cfg, botId, String(body.command ?? "")));
+          return json(res, 200, await box.execOnBox(cfg, store.vmOwnerId(botId), String(body.command ?? "")));
         }
         case "screenshot":
-          return json(res, 200, await box.screenshotBox(cfg, botId));
+          return json(res, 200, await box.screenshotBox(cfg, store.vmOwnerId(botId)));
       }
     }
 
