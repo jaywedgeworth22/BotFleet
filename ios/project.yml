@@ -17,6 +17,9 @@ options:
 packages:
   CompanionCore:
     path: .
+  Sentry:
+    url: https://github.com/getsentry/sentry-cocoa.git
+    from: "8.44.0"
 
 targets:
   BotFleet:
@@ -28,6 +31,8 @@ targets:
     dependencies:
       - package: CompanionCore
         product: CompanionCore
+      - package: Sentry
+        product: Sentry
       - target: BotFleetWidgets
     settings:
       base:

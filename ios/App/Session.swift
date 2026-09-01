@@ -305,7 +305,15 @@ final class Session: ObservableObject {
         }
         // back before the grace period ran out: keep the stream, drop the task
         endLinger()
-        guard client != nil, streamTask == nil else { return }
+        guard client != nil else { return }
+        if let existing = streamTask {
+            if case .offline = status {
+                existing.cancel()
+                streamTask = nil
+            } else {
+                return
+            }
+        }
         reconnectDelay = 0
         streamGeneration += 1
         let generation = streamGeneration
