@@ -187,9 +187,9 @@ function StackedMauses({ group, members, density }: { group: Group; members: Bot
     const radius =
       group.avatarCrop === "square"
         ? "0"
-        : group.avatarCrop === "rounded"
-        ? "22%"
-        : "50%";
+        : group.avatarCrop === "circle"
+        ? "50%"
+        : "22%";
     return (
       <div className={cn("flex shrink-0 items-center justify-center", slotSize)}>
         <img

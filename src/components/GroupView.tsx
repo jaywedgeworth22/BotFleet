@@ -1176,7 +1176,7 @@ export function GroupView({ group }: { group: Group }) {
                 className="size-7 shrink-0 object-cover shadow-sm"
                 style={{
                   borderRadius:
-                    group.avatarCrop === "square" ? "0" : group.avatarCrop === "rounded" ? "22%" : "50%",
+                    group.avatarCrop === "circle" ? "50%" : group.avatarCrop === "square" ? "0" : "22%",
                 }}
                 draggable={false}
               />
