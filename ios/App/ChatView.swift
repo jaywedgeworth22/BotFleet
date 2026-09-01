@@ -24,6 +24,7 @@ struct ChatView: View {
     @Environment(\.scenePhase) private var scenePhase
     @State private var draft = ""
     @State private var showingTasks = false
+    @State private var showingRoutines = false
     @State private var showingComputer = false
     @State private var showingPlus = false
     @State private var showingProfile = false
@@ -292,6 +293,9 @@ struct ChatView: View {
         .sheet(isPresented: $showingTasks) {
             if case let .bot(bot) = current { TaskManagerView(bot: bot) }
         }
+        .navigationDestination(isPresented: $showingRoutines) {
+            TasksRoutinesView()
+        }
         .sheet(isPresented: $showingProfile) {
             if case let .bot(bot) = current { AgentProfileView(bot: bot) }
         }
@@ -490,6 +494,10 @@ struct ChatView: View {
                 id: "tasks", systemImage: "square.stack", title: "Tasks",
                 subtitle: "Switch, rename or remove one"
             ) { showingTasks = true })
+            out.append(PlusAction(
+                id: "routines", systemImage: "calendar.badge.clock", title: "Tasks & Routines",
+                subtitle: "Automate tasks on a schedule"
+            ) { showingRoutines = true })
             out.append(PlusAction(
                 id: "computer", systemImage: "display", title: "Watch computer",
                 subtitle: "Live view of what \(bot.name) is doing"
