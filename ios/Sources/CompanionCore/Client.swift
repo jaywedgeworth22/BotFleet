@@ -197,7 +197,7 @@ public struct PairingInvite: Equatable, Sendable {
 
     public static func parse(_ url: URL) -> PairingInvite? {
         guard let scheme = url.scheme?.lowercased(),
-              scheme == "botfleet" || scheme == "openmausbot",
+              scheme == "botfleet" || scheme == "botfleet",
               url.host?.lowercased() == "pair",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { return nil }
@@ -478,7 +478,7 @@ public struct CompanionClient: Sendable {
     /// that exact route is the user's preferred, explicit choice; neither a
     /// pairing credential nor the later bearer token is sprayed onto the
     /// current wifi merely because a private address was once advertised.
-    /// Only the first response that identifies itself as OpenMausBot receives
+    /// Only the first response that identifies itself as BotFleet receives
     /// the one-time pairing POST. The request id makes that redemption safely
     /// replayable by newer desktop builds if its response is lost in transit.
     public static func pairFirstReachable(
@@ -572,7 +572,7 @@ public struct CompanionClient: Sendable {
             else { return false }
             let identity = try JSONDecoder().decode(HealthIdentity.self, from: data)
             let app = identity.app.lowercased()
-            guard app == "botfleet" || app == "openmausbot" else { return false }
+            guard app == "botfleet" || app == "botfleet" else { return false }
             return true
         } catch {
             return false

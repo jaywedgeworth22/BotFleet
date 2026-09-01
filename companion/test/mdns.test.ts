@@ -240,12 +240,12 @@ describe("answersFor", () => {
   });
 
   it("still answers the predecessor Bonjour type during a rename", () => {
-    const renamed: ServiceInfo = { ...service, legacyTypes: ["_openmausbot._tcp"] };
-    const { answers, additionals } = answersFor(decodeMessage(query("_openmausbot._tcp.local", TYPE.PTR))!, renamed);
+    const renamed: ServiceInfo = { ...service, legacyTypes: ["_botfleet._tcp"] };
+    const { answers, additionals } = answersFor(decodeMessage(query("_botfleet._tcp.local", TYPE.PTR))!, renamed);
     expect(answers[0]).toMatchObject({
-      name: "_openmausbot._tcp.local",
+      name: "_botfleet._tcp.local",
       type: TYPE.PTR,
-      data: "Milind's computer._openmausbot._tcp.local",
+      data: "Milind's computer._botfleet._tcp.local",
     });
     expect(additionals.map((r) => r.type).sort()).toEqual([TYPE.A, TYPE.SRV, TYPE.TXT].sort());
   });

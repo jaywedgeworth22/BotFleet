@@ -22,7 +22,7 @@ import { join } from "node:path";
 
 /** OMB_COMPANION_DIR isolates a test rig from a real paired fleet. */
 export const DATA_DIR = process.env.OMB_COMPANION_DIR ?? join(homedir(), ".botfleet-companion");
-const LEGACY_COMPANION_DIRS = [".openmausbot-companion", ".opengrokbot-companion"] as const;
+const LEGACY_COMPANION_DIRS = [".botfleet-companion", ".opengrokbot-companion"] as const;
 
 /** 0700 on the directory, 0600 on the files it holds.
  *
