@@ -1127,15 +1127,7 @@ export function ChatView({ bot }: { bot: Bot }) {
 
       {findOpen && <ChatFindBar threadId={bot.threadId} onClose={() => setFindOpen(false)} />}
 
-      {/* Error banner */}
-      {state.error && (
-        <div className="w-full px-5">
-          <div className="mb-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[13px] text-danger">
-            {state.error}
-          </div>
-        </div>
-      )}
-
+      
       {/* Pinned message banner */}
       <PinnedBanner
         bot={bot}
