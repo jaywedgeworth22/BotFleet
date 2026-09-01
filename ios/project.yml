@@ -99,7 +99,6 @@ targets:
         com.apple.security.application-groups:
           - group.app.botfleet
         com.apple.developer.usernotifications.time-sensitive: true
-        com.apple.developer.usernotifications.critical-alerts: true
 
   BotFleetWidgets:
     type: app-extension
