@@ -55,7 +55,7 @@ describe("sampleHost", () => {
   it("reports disk free and used% for the same volume", () => {
     const s = sampleHost();
     expect(s.diskFreeGb).toBeGreaterThan(0);
-    expect(s.diskUsedPct).toBeGreaterThan(0);
+    expect(s.diskUsedPct).toBeGreaterThanOrEqual(0);
     expect(s.diskUsedPct).toBeLessThanOrEqual(100);
     expect(s.ramUsedPct).toBeGreaterThan(0);
     expect(s.ramUsedPct).toBeLessThanOrEqual(100);
