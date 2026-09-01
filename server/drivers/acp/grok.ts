@@ -224,15 +224,6 @@ const support: AcpSupport = {
       ...(turn.model ? ["-m", turn.model] : []),
       ...(turn.effort ? ["--reasoning-effort", turn.effort] : []),
     ];
-    // Spawning Grok subagents should use only the MCP that the bot sent in parameters.
-    // Inject the requested MCPs dynamically.
-    if (turn.integrations) {
-      for (const [name, def] of Object.entries(turn.integrations)) {
-        if (def && typeof def === "object" && "command" in def) {
-          args.push("--mcp", `${name}=${def.command} ${(def.args || []).join(" ")}`);
-        }
-      }
-    }
     args.push("stdio");
     return args;
   },
