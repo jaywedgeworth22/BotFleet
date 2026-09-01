@@ -9,7 +9,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
-- (none)
+- **2026-09-01 — AG — COMPLETED / PR OPEN — Sentry client observability: Session Replay, error capture & distributed tracing (branch `ag/sentry-observability-expansion`).**  Integrated `@sentry/react` client error monitoring, Session Replay (100% on error, 10% baseline session, privacy-masked), and distributed browser tracing in `src/lib/sentry.ts` and `src/main.tsx`. Gated on `VITE_SENTRY_DSN`. Gate: typecheck clean, 2,271/2,271 tests clean. Rollout: `docs/rollouts/2026-09-01-sentry-client-observability.md`.
 
 ## Planned / Reserved
 - (none)
