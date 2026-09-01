@@ -18,6 +18,7 @@ import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import type { RoutineRequestCardData } from "../../shared/routine-request";
 import type { Routine, RoutineInput, RoutineRun } from "@/lib/routines";
+import type { ResourceTrigger } from "@/lib/resource-triggers";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
 import { currentCall } from "@/lib/call";
 import { showNotification, type NotificationTarget } from "@/lib/notify";
@@ -396,6 +397,7 @@ export interface AppState {
   webhooks: WebhookTrigger[];
   webhookAttempts: WebhookAttempt[];
   webhookIngress: WebhookIngressStatus | null;
+  resourceTriggers: ResourceTrigger[];
   settingsOpen: boolean;
   pluginsOpen: boolean;
   computerOpen: boolean;
@@ -460,6 +462,9 @@ export type Action =
   | { type: "webhookPatched"; webhook: WebhookTrigger }
   | { type: "webhookAttempted"; attempt: WebhookAttempt }
   | { type: "webhookDeleted"; webhookId: string }
+  | { type: "resourceTriggersHydrated"; triggers: ResourceTrigger[] }
+  | { type: "resourceTriggerPatched"; trigger: ResourceTrigger }
+  | { type: "resourceTriggerDeleted"; triggerId: string }
   | { type: "createRoutine"; input: RoutineInput }
   | { type: "updateRoutine"; routineId: string; patch: Partial<RoutineInput> }
   | { type: "deleteRoutine"; routineId: string }
@@ -694,6 +699,19 @@ export function reducer(state: AppState, action: Action): AppState {
         webhooks: state.webhooks.filter((webhook) => webhook.id !== action.webhookId),
         webhookAttempts: state.webhookAttempts.filter((attempt) => attempt.webhookId !== action.webhookId),
       };
+    case "resourceTriggersHydrated":
+      return { ...state, resourceTriggers: action.triggers };
+    case "resourceTriggerPatched": {
+      const exists = state.resourceTriggers.some((trigger) => trigger.id === action.trigger.id);
+      return {
+        ...state,
+        resourceTriggers: exists
+          ? state.resourceTriggers.map((trigger) => (trigger.id === action.trigger.id ? action.trigger : trigger))
+          : [action.trigger, ...state.resourceTriggers],
+      };
+    }
+    case "resourceTriggerDeleted":
+      return { ...state, resourceTriggers: state.resourceTriggers.filter((trigger) => trigger.id !== action.triggerId) };
     case "webhookAttempted": {
       const attempts = state.webhookAttempts.some((attempt) => attempt.id === action.attempt.id)
         ? state.webhookAttempts.map((attempt) => attempt.id === action.attempt.id ? action.attempt : attempt)
@@ -1159,6 +1177,7 @@ export const initialState: AppState = {
   webhooks: [],
   webhookAttempts: [],
   webhookIngress: null,
+  resourceTriggers: [],
   settingsOpen: false,
   pluginsOpen: false,
   computerOpen: false,
@@ -1631,6 +1650,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         api("/api/webhooks")
           .then(({ webhooks, attempts, ingress }) => alive && rawDispatch({ type: "webhooksHydrated", webhooks, attempts: attempts ?? [], ingress }))
           .catch(() => {}),
+        api("/api/resource-triggers")
+          .then(({ triggers }) => alive && rawDispatch({ type: "resourceTriggersHydrated", triggers: triggers ?? [] }))
+          .catch(() => {}),
       ]);
 
     // A snapshot and the live fold have to meet at a defined boundary. Start
@@ -1778,6 +1800,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           break;
         case "webhook.deleted":
           rawDispatch({ type: "webhookDeleted", webhookId: frame.webhookId });
+          break;
+        case "resource-trigger":
+          rawDispatch({ type: "resourceTriggerPatched", trigger: frame.trigger });
+          break;
+        case "resource-trigger.deleted":
+          rawDispatch({ type: "resourceTriggerDeleted", triggerId: frame.triggerId });
           break;
         case "runtime": {
           const event = frame.event;

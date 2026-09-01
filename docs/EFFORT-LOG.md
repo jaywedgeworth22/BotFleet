@@ -10,6 +10,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
+- **2026-09-01 — GROK — IN PROGRESS — Resource-threshold triggers that wake a bot (`grok/resource-triggers`).**  Board `3cd995b0`.  Worktree `~/apps/botfleet-grok-resource-triggers`.  Automations → Resources tab; disk/RAM/CPU sampler; same queue as webhooks.  Live Housekeeper webhook already created on 8799.
 - **2026-09-01 — AG — IN PROGRESS — iOS Native Sentry Cocoa telemetry, crash reporting, and app-hang detection (branch `ag/ios-sentry-cocoa-expansion`).**  Integrates native Sentry Cocoa SDK into BotFleet iOS Companion: added Sentry Cocoa SPM package dependency, implemented `SentryTelemetry.swift` for crash reporting, 2.0s app-hang detection, and 0.2 distributed tracing, and wired into `CompanionApp.init()`. Gate: xcodegen clean, SPM resolved, typecheck clean. Rollout: `docs/rollouts/2026-09-01-ios-sentry-cocoa-expansion.md`.
 
 ## Planned / Reserved

@@ -8,6 +8,7 @@ import {
   CircleAlert,
   Cloud,
   ExternalLink,
+  Gauge,
   Laptop,
   Loader2,
   Pause,
@@ -21,6 +22,7 @@ import {
 import { BotAvatar } from "@/components/Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { WebhooksPanel } from "@/components/WebhooksPanel";
+import { ResourceTriggersPanel } from "@/components/ResourceTriggersPanel";
 import { cn } from "@/lib/cn";
 import { MAUS_COLORS, type MausState } from "@/lib/mascot";
 import type { Routine, RoutineInput, RoutineRun, RoutineRunOn, RoutineRunStatus } from "@/lib/routines";
@@ -195,7 +197,7 @@ function RoutineCard({ item, bot, compact, onOpen }: { item: CalendarItem; bot: 
       )}
       style={{
         top: `${((new Date(item.at).getHours() * 60 + new Date(item.at).getMinutes()) / 60) * HOUR_HEIGHT}px`,
-        minHeight: item.run?.triggerSource === "webhook"
+        minHeight: item.run?.triggerSource === "webhook" || item.run?.triggerSource === "resource"
           ? "48px"
           : `${Math.max(48, ((item.routine?.durationMinutes ?? item.run?.durationMinutes ?? 30) / 60) * HOUR_HEIGHT)}px`,
         background: `linear-gradient(115deg, color-mix(in srgb, ${color} 48%, #181818), color-mix(in srgb, ${color} 20%, #111))`,
@@ -217,6 +219,7 @@ function RoutineCard({ item, bot, compact, onOpen }: { item: CalendarItem; bot: 
             <span>{niceTime(item.at)}</span>
             <span>·</span>
             {item.run?.triggerSource === "webhook" && <><Webhook size={10} /><span>Webhook</span><span>·</span></>}
+            {item.run?.triggerSource === "resource" && <><Gauge size={10} /><span>Resource</span><span>·</span></>}
             <span className="truncate">
               {status ? status.replace("waiting", "needs you") : bot.name}
               {(item.routine?.runOn ?? item.run?.runOn) === "cloud" ? " · VM" : ""}
@@ -576,7 +579,7 @@ function PausedRoutines({ routines, bots, onClose, onEdit }: { routines: Routine
 
 export function RoutinesPage() {
   const { state, dispatch } = useStore();
-  const [section, setSection] = useState<"calendar" | "webhooks">("calendar");
+  const [section, setSection] = useState<"calendar" | "webhooks" | "resources">("calendar");
   const [viewDays, setViewDays] = useState<1 | 3 | 7>(7);
   const [anchor, setAnchor] = useState(() => startOfWeek(Date.now()));
   const [botFilter, setBotFilter] = useState("all");
@@ -641,8 +644,8 @@ export function RoutinesPage() {
       >
         <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <div className="flex items-center gap-2.5">{section === "calendar" ? <CalendarDays size={21} className="text-accent" /> : <Webhook size={21} className="text-accent" />}<h1 className="text-[20px] font-semibold tracking-tight text-ink">Tasks &amp; routines</h1></div>
-            <p className="mt-1 text-[12.5px] text-ink-secondary">{section === "calendar" ? "Routines start fresh agent tasks on a schedule." : "Webhooks start fresh agent tasks when an event arrives."}</p>
+            <div className="flex items-center gap-2.5">{section === "calendar" ? <CalendarDays size={21} className="text-accent" /> : section === "resources" ? <Gauge size={21} className="text-accent" /> : <Webhook size={21} className="text-accent" />}<h1 className="text-[20px] font-semibold tracking-tight text-ink">Tasks &amp; routines</h1></div>
+            <p className="mt-1 text-[12.5px] text-ink-secondary">{section === "calendar" ? "Routines start fresh agent tasks on a schedule." : section === "resources" ? "Resource triggers start a bot when disk, RAM, or CPU crosses a threshold." : "Webhooks start fresh agent tasks when an event arrives."}</p>
           </div>
           <div className="flex items-center gap-2">
             {running > 0 && <span className="flex items-center gap-1.5 rounded-full border border-accent/25 bg-accent/10 px-2.5 py-1.5 text-[11px] text-accent"><Loader2 size={12} className="animate-spin" />{running} active</span>}
@@ -654,10 +657,13 @@ export function RoutinesPage() {
         <div className="mt-4 flex items-center gap-1 rounded-xl bg-panel p-1 sm:w-fit">
           <button onClick={() => setSection("calendar")} className={cn("flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium", section === "calendar" ? "bg-raised text-ink shadow" : "text-ink-secondary hover:text-ink")}><CalendarDays size={13} />Routines</button>
           <button onClick={() => setSection("webhooks")} className={cn("flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium", section === "webhooks" ? "bg-raised text-ink shadow" : "text-ink-secondary hover:text-ink")}><Webhook size={13} />Webhooks{state.webhooks.length > 0 && <span className="rounded-full bg-accent/15 px-1.5 text-[10px] text-accent">{state.webhooks.length}</span>}</button>
+          <button onClick={() => setSection("resources")} className={cn("flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-[12px] font-medium", section === "resources" ? "bg-raised text-ink shadow" : "text-ink-secondary hover:text-ink")}><Gauge size={13} />Resources{state.resourceTriggers.length > 0 && <span className="rounded-full bg-accent/15 px-1.5 text-[10px] text-accent">{state.resourceTriggers.length}</span>}</button>
         </div>
         <div className="mt-3 rounded-xl border border-hairline/45 bg-panel/70 px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink-secondary">
           {section === "calendar" ? (
             <><strong className="font-medium text-ink">Task</strong> = one conversation and result. <strong className="font-medium text-ink">Routine</strong> = a reusable schedule that creates a fresh task each run, using that agent's model, tools, permissions, computer, and connected apps.</>
+          ) : section === "resources" ? (
+            <><strong className="font-medium text-ink">Resource trigger</strong> = a local disk, RAM/swap, or CPU threshold that creates a fresh task. BotFleet must be running to sample this computer. A Mac launchd watch can also POST the Housekeeper webhook if you want coverage while the app is closed.</>
           ) : (
             <><strong className="font-medium text-ink">Webhook</strong> = an event endpoint that creates a fresh task. Connected services can call it when something happens; the receiving agent keeps its existing tools and permissions.</>
           )}
@@ -683,6 +689,8 @@ export function RoutinesPage() {
 
       {section === "webhooks" ? (
         <WebhooksPanel bots={visibleBots} />
+      ) : section === "resources" ? (
+        <ResourceTriggersPanel bots={visibleBots} />
       ) : state.routines.length === 0 && state.routineRuns.length === 0 ? (
         <div className="flex min-h-0 flex-1 items-center justify-center p-8">
           <div className="max-w-[430px] text-center">

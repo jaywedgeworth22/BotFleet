@@ -148,6 +148,10 @@ const EXPLAINED: ReadonlyArray<{ path: RegExp; error: string }> = [
     path: /^\/api\/webhooks(\/|$)/,
     error: "webhooks are set up on your computer",
   },
+  {
+    path: /^\/api\/resource-triggers(\/|$)/,
+    error: "resource triggers are set up on your computer",
+  },
   { path: /^\/api\/connectors(\/|$)/, error: "connected apps are set up on your computer" },
   {
     path: /^\/api\/routines(\/|$)/,

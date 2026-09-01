@@ -15,7 +15,7 @@ export type RoutineSchedule =
  * computer tools, if any. */
 export type RoutineRunOn = "maus" | "cloud";
 
-export type RoutineRunTrigger = "schedule" | "manual" | "webhook";
+export type RoutineRunTrigger = "schedule" | "manual" | "webhook" | "resource";
 
 export type RoutineRunStatus =
   | "queued"
@@ -523,6 +523,43 @@ export class RoutineManager {
     return { ...run };
   }
 
+  /** Host disk/RAM/CPU pressure. Same queue as webhooks so a busy Housekeeper
+   * is not double-started; receipts stay on the automations calendar. */
+  enqueueResource(input: {
+    triggerId: string;
+    triggerName: string;
+    prompt: string;
+    botId: string;
+    runOn: RoutineRunOn;
+    deliveryId: string;
+    receivedAt: number;
+  }): RoutineRun {
+    if (this.options.botState(input.botId) === "missing") {
+      throw Object.assign(new Error("The assigned MAUS no longer exists"), { status: 410 });
+    }
+    const run: RoutineRun = {
+      id: randomUUID(),
+      routineId: input.triggerId,
+      routineName: input.triggerName,
+      prompt: input.prompt,
+      botId: input.botId,
+      runOn: input.runOn,
+      scheduledFor: input.receivedAt,
+      status: "queued",
+      manual: false,
+      triggerSource: "resource",
+      webhookId: input.triggerId,
+      deliveryId: input.deliveryId,
+      createdAt: this.now(),
+    };
+    this.runs.push(run);
+    if (this.runs.length > MAX_RUNS) this.runs.splice(0, this.runs.length - MAX_RUNS);
+    this.save();
+    this.emitRun(run);
+    queueMicrotask(() => void this.tick());
+    return { ...run };
+  }
+
   activeWebhookRunCount(webhookId: string): number {
     return this.runs.filter(
       (run) => run.webhookId === webhookId && ["queued", "running", "waiting"].includes(run.status),
@@ -616,7 +653,11 @@ export class RoutineManager {
         }
         // A webhook is an incoming message, so make its task the bot's live
         // chat immediately. Scheduled work remains detached and unobtrusive.
-        const task = this.options.createTask(run.botId, run.routineName, run.triggerSource === "webhook");
+        const task = this.options.createTask(
+          run.botId,
+          run.routineName,
+          run.triggerSource === "webhook" || run.triggerSource === "resource",
+        );
         if (!task) {
           this.failRun(run, "Could not create a task for this run");
           continue;
