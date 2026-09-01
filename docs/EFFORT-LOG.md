@@ -6,10 +6,11 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-29 — Always-on iMessage bidirectional relay daemon (`botfleet-imessage-relay`) and LaunchAgents (`com.jay.botfleet-imessage-relay` + `com.jay.botfleet-server`) connecting 12 BotFleet bot group chats in Messages.app with BotFleet backend.
 
 ## Completed
+- [AG] 2026-08-31 — Sentry client observability: Session Replay, error capture & distributed tracing (PR #44 merged to `main`). Integrated `@sentry/react` client error monitoring, Session Replay (100% on error, 10% baseline session, privacy-masked), and distributed browser tracing in `src/lib/sentry.ts` and `src/main.tsx`. Gated on `VITE_SENTRY_DSN`. Gate: typecheck clean, 2,271/2,271 tests clean. Rollout: `docs/rollouts/2026-09-01-sentry-client-observability.md`.
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
-- **2026-09-01 — AG — COMPLETED / PR OPEN — Sentry client observability: Session Replay, error capture & distributed tracing (branch `ag/sentry-observability-expansion`).**  Integrated `@sentry/react` client error monitoring, Session Replay (100% on error, 10% baseline session, privacy-masked), and distributed browser tracing in `src/lib/sentry.ts` and `src/main.tsx`. Gated on `VITE_SENTRY_DSN`. Gate: typecheck clean, 2,271/2,271 tests clean. Rollout: `docs/rollouts/2026-09-01-sentry-client-observability.md`.
+- **2026-09-01 — AG — IN PROGRESS — iOS Native Sentry Cocoa telemetry, crash reporting, and app-hang detection (branch `ag/ios-sentry-cocoa-expansion`).**  Integrates native Sentry Cocoa SDK into BotFleet iOS Companion: added Sentry Cocoa SPM package dependency, implemented `SentryTelemetry.swift` for crash reporting, 2.0s app-hang detection, and 0.2 distributed tracing, and wired into `CompanionApp.init()`. Gate: xcodegen clean, SPM resolved, typecheck clean. Rollout: `docs/rollouts/2026-09-01-ios-sentry-cocoa-expansion.md`.
 
 ## Planned / Reserved
 - (none)
