@@ -13,7 +13,7 @@ import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { augmentedPath } from "./env-path.ts";
-import { DATA_DIR, loadConfig, localVmMaxInstances, localVmMode, vaultReadAll } from "./config.ts";
+import { DATA_DIR, vaultReadAll } from "./config.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 
 const run = promisify(execFile);

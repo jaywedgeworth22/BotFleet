@@ -15,8 +15,7 @@ import {
   credentialIsConfigured,
   isReusableCredentialRequest,
   isCredentialTargetId,
-  isCredentialTarget,
-  CredentialTarget,
+  type CredentialTarget,
   type CredentialTargetId,
 } from "../shared/credential-request.ts";
 
