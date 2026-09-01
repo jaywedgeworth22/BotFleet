@@ -150,6 +150,7 @@ function GroupTextRow({
     void navigator.clipboard?.writeText(copyContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 1400);
+    window.dispatchEvent(new CustomEvent("focus-composer"));
   };
 
   return (

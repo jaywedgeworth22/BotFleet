@@ -1594,9 +1594,176 @@ setCuaStateListener((connection) => {
   });
 });
 
+function setupApplicationMenu() {
+  const isMac = process.platform === "darwin";
+
+  const sendToRenderer = (action, payload) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.show();
+      mainWindow.focus();
+      mainWindow.webContents.send("menu:action", action, payload);
+    }
+  };
+
+  const template = [
+    ...(isMac
+      ? [
+          {
+            label: "BotFleet",
+            submenu: [
+              { label: "About BotFleet", role: "about" },
+              { type: "separator" },
+              {
+                label: "Settings...",
+                accelerator: "CmdOrCtrl+,",
+                click: () => sendToRenderer("open-settings"),
+              },
+              {
+                label: "API Keys & Models...",
+                click: () => sendToRenderer("open-settings", { section: "keys" }),
+              },
+              {
+                label: "Connections & Ingress...",
+                click: () => sendToRenderer("open-settings", { section: "connections" }),
+              },
+              {
+                label: "Phone / Companion Access...",
+                click: () => sendToRenderer("open-settings", { section: "companion" }),
+              },
+              {
+                label: "Engine CLIs...",
+                click: () => sendToRenderer("open-settings", { section: "engines" }),
+              },
+              {
+                label: "Usage & Token Spend...",
+                click: () => sendToRenderer("open-settings", { section: "usage" }),
+              },
+              { type: "separator" },
+              { role: "services" },
+              { type: "separator" },
+              { role: "hide" },
+              { role: "hideOthers" },
+              { role: "unhide" },
+              { type: "separator" },
+              { role: "quit" },
+            ],
+          },
+        ]
+      : []),
+    {
+      label: "File",
+      submenu: [
+        {
+          label: "New Task / Thread",
+          accelerator: "CmdOrCtrl+T",
+          click: () => sendToRenderer("new-task"),
+        },
+        {
+          label: "New Bot...",
+          accelerator: "CmdOrCtrl+N",
+          click: () => sendToRenderer("new-bot"),
+        },
+        {
+          label: "New Channel...",
+          accelerator: "CmdOrCtrl+Shift+N",
+          click: () => sendToRenderer("new-channel"),
+        },
+        { type: "separator" },
+        {
+          label: "Open Data Folder",
+          click: () => shell.openPath(DATA_DIR),
+        },
+        { type: "separator" },
+        isMac ? { role: "close" } : { role: "quit" },
+      ],
+    },
+    {
+      label: "Edit",
+      submenu: [
+        { role: "undo" },
+        { role: "redo" },
+        { type: "separator" },
+        { role: "cut" },
+        { role: "copy" },
+        { role: "paste" },
+        { role: "pasteAndMatchStyle" },
+        { role: "delete" },
+        { role: "selectAll" },
+      ],
+    },
+    {
+      label: "View",
+      submenu: [
+        {
+          label: "Chat & Threads",
+          accelerator: "CmdOrCtrl+1",
+          click: () => sendToRenderer("view-chat"),
+        },
+        {
+          label: "Automations & Routines",
+          accelerator: "CmdOrCtrl+2",
+          click: () => sendToRenderer("view-routines"),
+        },
+        {
+          label: "Resource Triggers",
+          click: () => sendToRenderer("view-triggers"),
+        },
+        {
+          label: "Computer Control (Local VM)",
+          click: () => sendToRenderer("view-computer"),
+        },
+        {
+          label: "Skills & Plugins",
+          click: () => sendToRenderer("view-plugins"),
+        },
+        { type: "separator" },
+        { role: "reload" },
+        { role: "forceReload" },
+        { role: "toggleDevTools" },
+        { type: "separator" },
+        { role: "resetZoom" },
+        { role: "zoomIn" },
+        { role: "zoomOut" },
+        { type: "separator" },
+        { role: "togglefullscreen" },
+      ],
+    },
+    {
+      label: "Window",
+      submenu: [
+        { role: "minimize" },
+        { role: "zoom" },
+        ...(isMac
+          ? [
+              { type: "separator" },
+              { role: "front" },
+              { type: "separator" },
+              { role: "window" },
+            ]
+          : [{ role: "close" }]),
+      ],
+    },
+    {
+      role: "help",
+      submenu: [
+        {
+          label: "BotFleet Documentation",
+          click: () => shell.openExternal("https://github.com/jaywedgeworth22/BotFleet"),
+        },
+        {
+          label: "Open Logs & Data Folder",
+          click: () => shell.openPath(DATA_DIR),
+        },
+      ],
+    },
+  ];
+
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.whenReady().then(async () => {
+  setupApplicationMenu();
   if (app.isPackaged) {
-    app.setAsDefaultProtocolClient("botfleet");
     app.setAsDefaultProtocolClient("botfleet");
   }
   // if (process.platform === "darwin") app.dock.setIcon(APP_ICON);
@@ -1609,6 +1776,13 @@ app.whenReady().then(async () => {
         if (app.dock) app.dock.show();
         if (BrowserWindow.getAllWindows().length === 0) createWindow();
         else { mainWindow?.show(); mainWindow?.focus(); }
+      }
+    },
+    { type: "separator" },
+    { label: "Settings...", click: () => {
+        if (BrowserWindow.getAllWindows().length === 0) createWindow();
+        else { mainWindow?.show(); mainWindow?.focus(); }
+        mainWindow?.webContents.send("menu:action", "open-settings");
       }
     },
     { type: "separator" },

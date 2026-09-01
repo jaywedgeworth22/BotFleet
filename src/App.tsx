@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Menu } from "lucide-react";
-import { StoreProvider, useStore } from "@/state/store";
+import { StoreProvider, useStore, type AppSettingsSection } from "@/state/store";
 import { Onboarding } from "@/components/Onboarding";
 import { emailGateDone, initAnalytics } from "@/lib/analytics";
 import { unreadConversationCount } from "@/lib/unread";
@@ -78,6 +78,41 @@ function Shell() {
   useEffect(() => {
     window.ogb?.setUnreadCount?.(unreadCount);
   }, [unreadCount]);
+
+  useEffect(() => {
+    if (!window.ogb?.onMenuAction) return;
+    return window.ogb.onMenuAction((action: string, payload?: unknown) => {
+      if (action === "open-settings") {
+        const section = (payload as { section?: AppSettingsSection } | undefined)?.section;
+        dispatch({ type: "toggleAppSettings", open: true, section });
+      } else if (action === "new-bot") {
+        dispatch({ type: "newBot" });
+      } else if (action === "new-channel") {
+        window.dispatchEvent(new CustomEvent("open-new-channel"));
+      } else if (action === "new-task") {
+        if (state.selectedId) {
+          const targetBot = state.bots.find((b) => b.id === state.selectedId);
+          if (targetBot) {
+            dispatch({ type: "newTask", botId: targetBot.id });
+          }
+        }
+        window.dispatchEvent(new CustomEvent("focus-composer"));
+      } else if (action === "view-chat") {
+        dispatch({ type: "toggleAppSettings", open: false });
+        dispatch({ type: "toggleComputer", open: false });
+        dispatch({ type: "togglePlugins", open: false });
+      } else if (action === "view-routines") {
+        dispatch({ type: "toggleAppSettings", open: false });
+        window.dispatchEvent(new CustomEvent("open-routines"));
+      } else if (action === "view-triggers") {
+        window.dispatchEvent(new CustomEvent("open-resource-triggers"));
+      } else if (action === "view-computer") {
+        dispatch({ type: "toggleComputer", open: true });
+      } else if (action === "view-plugins") {
+        dispatch({ type: "togglePlugins", open: true });
+      }
+    });
+  }, [state.selectedId, state.bots, dispatch]);
 
   // Warm connected-account state as soon as the local server is available.
   // The modal then opens with the correct Connect/Add account buttons and

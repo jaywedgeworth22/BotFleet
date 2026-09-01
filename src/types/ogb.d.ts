@@ -178,6 +178,8 @@ type SkillRecordingPayload = {
       applySkin?(skin: string): Promise<boolean>;
       /** Receives a GitHub package URL opened through botfleet://install. */
       onPackageInstall?(cb: (url: string) => void): () => void;
+      /** Native menu bar actions dispatched from the main process. */
+      onMenuAction?(cb: (action: string, payload?: unknown) => void): () => void;
       /** Updates the native Dock/taskbar unread indicator. */
       setUnreadCount?(count: number): void;
       /** Opens a live desktop as a sandboxed window owned by BotFleet. */
