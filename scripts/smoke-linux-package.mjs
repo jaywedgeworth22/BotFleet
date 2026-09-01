@@ -351,12 +351,13 @@ try {
   } else if (bundled) {
     if (signalShutdown) child.kill("SIGTERM");
     await waitForExit();
+    await delay(500);
     let staleHealth = null;
-    const drainDeadline = Date.now() + 2_000;
+    const drainDeadline = Date.now() + 5_000;
     while (Date.now() < drainDeadline) {
       staleHealth = await fetch(new URL("/api/health", location)).catch(() => null);
       if (!staleHealth?.ok) break;
-      await delay(100);
+      await delay(250);
     }
     if (staleHealth?.ok) throw new Error("embedded harness remained reachable after Electron quit");
     const appImage = executable.endsWith(".AppImage");
