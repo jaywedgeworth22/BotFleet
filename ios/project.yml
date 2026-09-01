@@ -44,7 +44,7 @@ targets:
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1"
         SDKROOT: iphoneos
-        SUPPORTED_PLATFORMS: "iphoneos"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: App/Info.plist
@@ -106,7 +106,7 @@ targets:
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1"
         SDKROOT: iphoneos
-        SUPPORTED_PLATFORMS: "iphoneos"
+        SUPPORTED_PLATFORMS: "iphoneos iphonesimulator"
         SKIP_INSTALL: true
     info:
       path: Widgets/Info.plist
