@@ -6,6 +6,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-29 — Always-on iMessage bidirectional relay daemon (`botfleet-imessage-relay`) and LaunchAgents (`com.jay.botfleet-imessage-relay` + `com.jay.botfleet-server`) connecting 12 BotFleet bot group chats in Messages.app with BotFleet backend.
 
 ## Completed
+- [AG] 2026-09-01 — Automatic model failover on quota/session limits, Gemini/Antigravity harness full tool & computer execution, and shared Qdrant Agent RAG integration (branch `ag/model-failover-gemini-qdrant-rag`). Enables automatic fallback model switching on session limits/quotas/errors, unlocks local computer control and full tool loading for Antigravity & Gemini ACP harnesses, adds shared Qdrant stdio MCP proxy with semantic vector search/store, and exposes Qdrant Agent RAG custom settings in App Settings. Gate: typecheck clean, driver test suites clean, build clean.
 - [AG] 2026-08-31 — Sentry client observability: Session Replay, error capture & distributed tracing (PR #44 merged to `main`). Integrated `@sentry/react` client error monitoring, Session Replay (100% on error, 10% baseline session, privacy-masked), and distributed browser tracing in `src/lib/sentry.ts` and `src/main.tsx`. Gated on `VITE_SENTRY_DSN`. Gate: typecheck clean, 2,271/2,271 tests clean. Rollout: `docs/rollouts/2026-09-01-sentry-client-observability.md`.
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 

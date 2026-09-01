@@ -196,6 +196,8 @@ export interface SendTurnInput {
     /** dweb network daemon: an MCP proxy exposing dweb status, repo, and
      * opencode model access as tools. url is the dweb HTTP base. */
     dweb?: { url: string };
+    /** Shared Qdrant Agent RAG vector memory integration. */
+    qdrant?: { command: string; args: string[]; env: Record<string, string> };
   };
   cwd?: string;
 }
@@ -223,6 +225,8 @@ export interface ProviderAdapter {
     composioMcp?: boolean;
     /** True when the driver can mount the first-party physical-phone MCP. */
     phoneMcp?: boolean;
+    /** True when the driver mounts turn.integrations.qdrant (Agent RAG). */
+    qdrantMcp?: boolean;
     /** True when this engine accepts images in the prompt — gates image
      * paste in the composer. Same rule as computerMcp: never offer an
      * attachment an engine cannot open (a bot told it has an image it

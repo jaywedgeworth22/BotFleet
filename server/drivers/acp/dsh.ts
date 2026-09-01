@@ -6,12 +6,11 @@ import type { ModelCatalog } from "../../contracts.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 export const STATIC_DSH_MODELS: ModelCatalog = {
-  default: "deepseek-chat",
+  default: "deepseek-v4-flash",
   options: [
-    { id: "deepseek-chat", label: "DeepSeek Chat" },
-    { id: "deepseek-reasoner", label: "DeepSeek Reasoner" },
-    { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
-    { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    { id: "deepseek-v4-flash", label: "DeepSeek-V4-Flash" },
+    { id: "deepseek-v4-pro", label: "DeepSeek-V4-Pro" },
+    { id: "deepseek-v4-flash-vision-exp", label: "DeepSeek-V4-Flash-Vision-Exp" },
   ],
 };
 
@@ -21,6 +20,7 @@ const support: AcpSupport = {
   images: false,
   models: STATIC_DSH_MODELS,
   resolveModels: () => STATIC_DSH_MODELS,
+  effortLevels: ["low", "medium", "high", "max"] as const,
   defaultCli: "dsh",
   nativeSource: "dsh.acp",
   loginNote: "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",

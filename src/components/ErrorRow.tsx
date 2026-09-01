@@ -62,7 +62,7 @@ function ErrorRow({
               <Download size={12} /> Get It From The Website
             </a>
           </div>
-        ) : message.toLowerCase().includes("provider") || message.toLowerCase().includes("api key") || message.toLowerCase().includes("rate limit") || message.toLowerCase().includes("model") ? (
+        ) : /provider|api key|rate.?limit|model|quota|session limit|exited|capacity|overloaded|unavailable|exhausted/i.test(message) ? (
           <div className="flex items-center flex-wrap gap-2 mt-1.5">
             {onRetry && (
               <button onClick={onRetry} className="flex items-center gap-1.5 rounded-full border border-danger/30 px-2.5 py-1 text-[12.5px] hover:bg-danger/15">

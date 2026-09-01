@@ -188,6 +188,9 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             "-c", `${prefix}.default_tools_approval_mode="auto"`,
           );
         }
+        if (turn.integrations?.qdrant) {
+          mountMcpServer(appServerArgs, env, "qdrant", turn.integrations.qdrant);
+        }
 
         const child = spawnCli(config.cli, appServerArgs, {
           cwd: turn.cwd ?? homedir(),
@@ -635,6 +638,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         composioMcp: true,
         agentsMcp: true,
         phoneMcp: true,
+        qdrantMcp: true,
         images: true,
         effortLevels: ["low", "medium", "high", "xhigh", "max"],
       },
