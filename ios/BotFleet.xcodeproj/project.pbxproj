@@ -155,6 +155,8 @@
 		140EC1FB2C89B2227AEA6D0D /* App */ = {
 			isa = PBXGroup;
 			children = (
+				B1B6B940D803CF2D6B07019D /* Cards */,
+				279294BB5061D8B2F2C0C5FD /* Composer */,
 				20B7A219402F3BE75BCC913A /* AgentProfileView.swift */,
 				BBC89917EE388120035B45E5 /* Assets.xcassets */,
 				295DEC9F0334E7CDB950A183 /* BotAvatarView.swift */,
@@ -193,8 +195,6 @@
 				D903428D2B87B9B313B8C5B2 /* TasksRoutinesView.swift */,
 				B56E714A2A8AAA529ECCCCAF /* Updates.swift */,
 				0ACB5BB19D912298FC7902DF /* UpdatesSheet.swift */,
-				B1B6B940D803CF2D6B07019D /* Cards */,
-				279294BB5061D8B2F2C0C5FD /* Composer */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -316,7 +316,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1430;
+				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					2D181846D5DBE08823FC84E3 = {
 						DevelopmentTeam = CC8UTF7ATG;
@@ -439,6 +439,7 @@
 		3A26F8FEAA459F8A0E7C2FD8 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Widgets/BotFleetWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = CC8UTF7ATG;
@@ -452,15 +453,15 @@
 				PRODUCT_BUNDLE_IDENTIFIER = app.botfleet.widgets;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = iphoneos;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
 		73C4743559E0CF3515750DF2 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = Widgets/BotFleetWidgets.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = CC8UTF7ATG;
@@ -474,9 +475,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = app.botfleet.widgets;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
-				SUPPORTED_PLATFORMS = iphoneos;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -484,6 +484,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/BotFleet.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -496,9 +497,9 @@
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.botfleet;
 				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -506,6 +507,7 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = App/BotFleet.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
@@ -518,9 +520,9 @@
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.botfleet;
 				SDKROOT = iphoneos;
-				SUPPORTED_PLATFORMS = iphoneos;
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
