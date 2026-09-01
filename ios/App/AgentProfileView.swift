@@ -20,6 +20,7 @@ struct AgentProfileView: View {
     @State private var speakReplies: Bool
     @State private var instanceId: String
     @State private var modelId: String
+    @State private var fallbacks: [ModelSelection]
     @State private var photo: PhotosPickerItem?
     @State private var prompt = ""
     @State private var voices: [Voice] = []
@@ -40,6 +41,7 @@ struct AgentProfileView: View {
         _speakReplies = State(initialValue: bot.speakReplies == true)
         _instanceId = State(initialValue: bot.modelSelection.instanceId)
         _modelId = State(initialValue: bot.modelSelection.model)
+        _fallbacks = State(initialValue: bot.modelSelection.fallbacks ?? [])
         _baseline = State(initialValue: ProfileFormSnapshot(bot: bot))
     }
 
@@ -137,6 +139,35 @@ struct AgentProfileView: View {
                                 }
                             }
                         }
+                        
+                        ForEach(fallbacks.indices, id: \.self) { index in
+                            let fallback = fallbacks[index]
+                            if let instance = instances.first(where: { $0.id == fallback.instanceId }) {
+                                Picker("Fallback \(index + 1)", selection: Binding(
+                                    get: { fallback.model },
+                                    set: { newModel in
+                                        fallbacks[index].model = newModel
+                                    }
+                                )) {
+                                    ForEach(instance.models.options) { option in
+                                        Text(option.label).tag(option.id)
+                                    }
+                                }
+                                .swipeActions {
+                                    Button(role: .destructive) {
+                                        fallbacks.remove(at: index)
+                                    } label: {
+                                        Label("Delete", systemImage: "trash")
+                                    }
+                                }
+                            }
+                        }
+                        
+                        if fallbacks.count < 2 {
+                            Button("Add fallback") {
+                                fallbacks.append(ModelSelection(instanceId: instanceId, model: modelId))
+                            }
+                        }
                     }
                 }
 
@@ -203,6 +234,40 @@ struct AgentProfileView: View {
                     }
                 }
 
+
+                if let tasks = current.tasks, !tasks.isEmpty {
+                    let totalTurns = tasks.compactMap { $0.usage?.turns }.reduce(0, +)
+                    let totalInput = tasks.compactMap { $0.usage?.input }.reduce(0, +)
+                    let totalOutput = tasks.compactMap { $0.usage?.output }.reduce(0, +)
+                    let totalCost = tasks.compactMap { $0.usage?.costUsd }.reduce(0, +)
+                    let hasCost = tasks.contains(where: { $0.usage?.costUsd != nil })
+                    
+                    if totalTurns > 0 {
+                        Section("Usage") {
+                            HStack {
+                                Text("Turns")
+                                Spacer()
+                                Text("\(totalTurns)")
+                                    .foregroundStyle(.secondary)
+                            }
+                            HStack {
+                                Text("Tokens")
+                                Spacer()
+                                Text("\((totalInput + totalOutput) / 1000)k (\(totalInput / 1000)k in, \(totalOutput / 1000)k out)")
+                                    .foregroundStyle(.secondary)
+                            }
+                            if hasCost {
+                                HStack {
+                                    Text("Cost")
+                                    Spacer()
+                                    Text(String(format: "$%.2f", totalCost))
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                        }
+                    }
+                }
+
                 Section {
                     Button("Save profile") { Task { await save() } }
                         .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
@@ -235,7 +300,7 @@ struct AgentProfileView: View {
 
     private func profilePatch() -> BotProfilePatch {
         let savedSpeakReplies = config.map { $0.canSpeak(agentVoice: voice) && speakReplies } ?? speakReplies
-        let newModelSelection = ModelSelection(instanceId: instanceId, model: modelId)
+        let newModelSelection = ModelSelection(instanceId: instanceId, model: modelId, fallbacks: fallbacks.isEmpty ? nil : fallbacks)
         return BotProfilePatch(
             // The shared server contract owns the 100/200/4000 limits. Do not
             // silently apply narrower iOS-only limits to a user's profile.
@@ -365,6 +430,7 @@ struct AgentProfileView: View {
         speakReplies = bot.speakReplies == true
         instanceId = bot.modelSelection.instanceId
         modelId = bot.modelSelection.model
+        fallbacks = bot.modelSelection.fallbacks ?? []
         baseline = ProfileFormSnapshot(bot: bot)
     }
 }

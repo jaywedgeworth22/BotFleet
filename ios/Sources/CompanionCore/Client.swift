@@ -729,6 +729,14 @@ public struct CompanionClient: Sendable {
         ).bot
     }
 
+    public func updateRoom(id: String, patch: RoomPatch) async throws -> Room {
+        struct RoomResponse: Decodable { let group: Room }
+        return try await send(
+            try makeRequest("PATCH", "/api/groups/\(id)", encodedBody: patch),
+            as: RoomResponse.self
+        ).group
+    }
+
     public func uploadAvatar(data: Data, mime: String) async throws -> String {
         let allowed = ["image/png", "image/jpeg", "image/gif", "image/webp"]
         guard allowed.contains(mime), data.count <= 10 * 1_024 * 1_024 else {

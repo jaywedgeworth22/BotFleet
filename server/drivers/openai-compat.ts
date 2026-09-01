@@ -160,6 +160,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       let text = "";
       let reasoning = "";
       let usage: { input: number; output: number } | null = null;
+      let streamToolCalls: any[] = [];
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -196,10 +197,11 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           if (toolCallsDelta) {
             for (const tc of toolCallsDelta) {
               const tcIndex = tc.index ?? 0;
-              const tcId = tc.id;
-              const tcName = tc.function?.name;
-              const tcArgs = tc.function?.arguments;
-              opts.onToolCallDelta?.(tcIndex, tcId, tcName, tcArgs);
+              if (!streamToolCalls[tcIndex]) streamToolCalls[tcIndex] = { id: "", function: { name: "", arguments: "" } };
+              if (tc.id) streamToolCalls[tcIndex].id += tc.id;
+              if (tc.function?.name) streamToolCalls[tcIndex].function.name += tc.function.name;
+              if (tc.function?.arguments) streamToolCalls[tcIndex].function.arguments += tc.function.arguments;
+              opts.onToolCallDelta?.(tcIndex, tc.id, tc.function?.name, tc.function?.arguments);
             }
           }
           if (chunk.usage) {
@@ -210,7 +212,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           }
         }
       }
-      return { text, reasoning, usage };
+      return { text, reasoning, usage, tool_calls: streamToolCalls.length > 0 ? streamToolCalls : undefined };
     };
 
     const fetchModels = async (): Promise<void> => {

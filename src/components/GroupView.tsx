@@ -21,6 +21,7 @@ import { normalizeState } from "@/lib/mascot";
 import { effectiveDefaultResponder, groupResponseHint } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Composer } from "./Composer";
+import { ErrorRow } from "./ErrorRow";
 import { ChatFindBar } from "./ChatFindBar";
 import { GroupTaskPicker } from "./TaskPicker";
 import { ReplyQuote } from "./ReplyQuote";
@@ -326,7 +327,14 @@ const Transcript = memo(function Transcript({
               <ApprovalCard bot={memberOf(m.from?.botId)} message={m} />
             </div>
           ) : m.kind === "activity" && m.tool ? (
-            m.tool.ok === false || m.tool.name.startsWith("error:") || showToolCalls ? (
+            m.tool.name.startsWith("error:") ? (
+              <div className="flex justify-start max-w-full">
+                <ErrorRow 
+                  message={m.tool.name.slice(6).trim()} 
+                  onRetry={() => {}} 
+                />
+              </div>
+            ) : m.tool.ok === false || showToolCalls ? (
               <RoomToolChip message={m} />
             ) : null
           ) : m.kind === "text" && m.text ? (

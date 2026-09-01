@@ -103,25 +103,25 @@ export function inferProviderAndService(instanceId: string, modelId?: string): {
   const model = (modelId || "").toLowerCase();
 
   if (inst.includes("deepseek") || model.includes("deepseek")) {
-    return { provider: "deepseek", service: modelId || "deepseek-v4-pro" };
+    return { provider: "deepseek", service: modelId || "unknown" };
   }
   if (inst.includes("grok") || model.includes("grok")) {
-    return { provider: "xai", service: modelId || "grok-3" };
+    return { provider: "xai", service: modelId || "unknown" };
   }
   if (inst.includes("claude") || model.includes("claude") || model.includes("sonnet")) {
-    return { provider: "anthropic", service: modelId || "claude-3-7-sonnet" };
+    return { provider: "anthropic", service: modelId || "unknown" };
   }
   if (inst.includes("codex") || model.includes("gpt") || model.includes("o1") || model.includes("o3")) {
-    return { provider: "openai", service: modelId || "gpt-5.4" };
+    return { provider: "openai", service: modelId || "unknown" };
   }
   if (inst.includes("antigravity") || model.includes("gemini")) {
-    return { provider: "google-ai", service: modelId || "gemini-2.5-pro" };
+    return { provider: "google-ai", service: modelId || "unknown" };
   }
   if (inst.includes("cursor")) {
-    return { provider: "cursor", service: modelId || "cursor-agent" };
+    return { provider: "cursor", service: modelId || "unknown" };
   }
   if (inst.includes("kimi") || model.includes("moonshot")) {
-    return { provider: "moonshot", service: modelId || "k1.5" };
+    return { provider: "moonshot", service: modelId || "unknown" };
   }
 
   return { provider: instanceId || "custom", service: modelId || instanceId || "unknown" };

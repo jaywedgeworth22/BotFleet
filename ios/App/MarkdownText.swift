@@ -19,6 +19,9 @@ struct MarkdownText: View {
     /// layout — a caret bolted on outside would put it on its own line the
     /// moment the reply ends in a list item.
     var caret: Bool = false
+    @State private var fileLink: URL?
+    @State private var showingFileAlert = false
+    @Environment(\.openURL) private var openURL
 
     var body: some View {
         let blocks = Markdown.blocks(source)
@@ -27,8 +30,19 @@ struct MarkdownText: View {
                 view(for: item.element, tail: caret && item.offset == blocks.count - 1)
             }
         }
-    }
-
+        .environment(\.openURL, OpenURLAction { url in
+            if url.scheme == "file" {
+                fileLink = url
+                showingFileAlert = true
+                return .handled
+            }
+            return .systemAction
+        })
+        .alert("Cannot open file on phone", isPresented: $showingFileAlert, presenting: fileLink) { _ in
+            Button("OK", role: .cancel) { }
+        } message: { url in
+            Text("The file '\(url.lastPathComponent)' is on your computer. You can only view it from the desktop app.")
+        }
     @ViewBuilder
     private func view(for block: MarkdownBlock, tail: Bool) -> some View {
         switch block {

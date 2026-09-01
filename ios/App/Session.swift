@@ -803,6 +803,52 @@ final class Session: ObservableObject {
 
     // MARK: - Agent profile
 
+    @MainActor
+    func updateRoom(id: String, name: String?, bulletin: String?, avatarCrop: AvatarCrop?, cwd: String? = nil, extraCwds: [String]? = nil) async {
+        guard let client = activeClient else { return }
+        do {
+            let patch = RoomPatch(name: name, bulletin: bulletin, avatarCrop: avatarCrop, cwd: cwd, extraCwds: extraCwds)
+            let updated = try await client.updateRoom(id: id, patch: patch)
+            if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
+                state.rooms[index] = updated
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    func updateRoomAvatar(id: String, avatarUrl: String?) async {
+        guard let client = activeClient else { return }
+        do {
+            let urlVal: BotProfilePatch.AvatarURL?
+            if let url = avatarUrl {
+                urlVal = .set(url)
+            } else {
+                urlVal = .clear
+            }
+            let patch = RoomPatch(avatarUrl: urlVal, avatarCrop: .circle)
+            let updated = try await client.updateRoom(id: id, patch: patch)
+            if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
+                state.rooms[index] = updated
+            }
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    @MainActor
+    func uploadRoomAvatar(id: String, data: Data, mime: String) async {
+        guard let client = activeClient else { return }
+        do {
+            let url = try await client.uploadAvatar(data: data, mime: mime)
+            await updateRoomAvatar(id: id, avatarUrl: url)
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    @MainActor
     func updateProfile(_ patch: BotProfilePatch, for bot: Bot) async -> Bot? {
         guard let client else { return nil }
         do {

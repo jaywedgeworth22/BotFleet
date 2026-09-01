@@ -14,6 +14,7 @@ export const BOT_PROFILE_PATCH_FIELDS = [
   "avatarCrop",
   "voice",
   "speakReplies",
+  "modelSelection",
 ] as const;
 
 const profilePatchSchema = z.object({
@@ -42,6 +43,7 @@ const profilePatchSchema = z.object({
     .max(BOT_PROFILE_LIMITS.voice, { error: "voice must be at most 200 characters" })
     .optional(),
   speakReplies: z.boolean({ error: "speakReplies must be true or false" }).optional(),
+  modelSelection: z.any().optional(),
 });
 
 export type BotProfilePatchInput = z.input<typeof profilePatchSchema>;
@@ -49,7 +51,7 @@ export type BotProfilePatchInput = z.input<typeof profilePatchSchema>;
 export type BotProfilePatch = Partial<
   Pick<
     BotRecord,
-    "name" | "title" | "description" | "notifications" | "avatarUrl" | "avatarCrop" | "voice" | "speakReplies"
+    "name" | "title" | "description" | "notifications" | "avatarUrl" | "avatarCrop" | "voice" | "speakReplies" | "modelSelection"
   >
 >;
 
