@@ -20,7 +20,6 @@ import { MinimaxDriver } from "./minimax.ts";
 
 import { DeepSeekDriver } from "./deepseek.ts";
 import { DeepSeekAgentDriver } from "./acp/deepseek.ts";
-import { DshAgentDriver } from "./acp/dsh.ts";
 
 export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
   GrokDriver,
@@ -28,7 +27,6 @@ export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
   GeminiAgentDriver,
   DeepSeekDriver,
   DeepSeekAgentDriver,
-  DshAgentDriver,
   KimiAgentDriver,
   DroidAgentDriver,
   CursorAgentDriver,
