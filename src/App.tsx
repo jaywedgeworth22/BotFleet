@@ -81,7 +81,7 @@ function Shell() {
 
   useEffect(() => {
     if (!window.ogb?.onMenuAction) return;
-    return window.ogb.onMenuAction((action, payload) => {
+    return window.ogb.onMenuAction((action: string, payload?: unknown) => {
       if (action === "open-settings") {
         const section = (payload as { section?: AppSettingsSection } | undefined)?.section;
         dispatch({ type: "toggleAppSettings", open: true, section });
