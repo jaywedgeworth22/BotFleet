@@ -43,6 +43,8 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1"
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: "iphoneos"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: App/Info.plist
@@ -103,6 +105,8 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_VERSION: "5.9"
         TARGETED_DEVICE_FAMILY: "1"
+        SDKROOT: iphoneos
+        SUPPORTED_PLATFORMS: "iphoneos"
         SKIP_INSTALL: true
     info:
       path: Widgets/Info.plist
