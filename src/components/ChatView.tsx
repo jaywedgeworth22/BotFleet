@@ -286,10 +286,10 @@ function Bubble({
 
   return (
     <div className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start")}>
-      <div className={cn("flex w-full items-end gap-1.5", user ? "flex-row-reverse flex-wrap justify-start" : "flex-wrap justify-start")}>
+      <div className={cn("flex w-full items-end gap-1.5", user ? "flex-wrap justify-end" : "flex-wrap justify-start")}>
         {/* editing rewinds the thread, so it waits for the turn to end —
             same rule as the version switcher below */}
-        <div className={cn("flex items-center gap-1.5 shrink-0", user && "flex-row-reverse")}>
+        <div className={cn("flex items-center gap-1.5 shrink-0")}>
 {user && message.kind === "text" && !webhookView && !bot.busy && (
           <button
             onClick={onStartEdit}
