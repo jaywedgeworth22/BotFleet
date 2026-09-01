@@ -1,3 +1,4 @@
+import cursorMark from "/cursor-mark.png";
 import { cn } from "@/lib/cn";
 
 interface IconProps {
@@ -8,7 +9,7 @@ interface IconProps {
 export function CursorMark({ size = 16, className }: IconProps) {
   return (
     <img 
-      src="/cursor-mark.png" 
+      src={cursorMark} 
       width={size} 
       height={size} 
       className={cn("object-contain", className)} 
