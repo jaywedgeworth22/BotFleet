@@ -284,7 +284,10 @@ function GroupListItem({
 
   return (
     <button
-      onClick={() => dispatch({ type: "select", id: group.id })}
+      onClick={() => {
+        dispatch({ type: "select", id: group.id });
+        window.dispatchEvent(new CustomEvent("focus-composer"));
+      }}
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
       onDragOver={onDragOver}
@@ -1011,7 +1014,10 @@ function BotListItem({
         role="button"
         tabIndex={0}
         aria-label={iconOnly ? bot.name : undefined}
-        onClick={() => dispatch({ type: "select", id: bot.id })}
+        onClick={() => {
+        dispatch({ type: "select", id: bot.id });
+        window.dispatchEvent(new CustomEvent("focus-composer"));
+      }}
         onKeyDown={(event) => {
           if (event.key === "Enter" || event.key === " ") {
             event.preventDefault();
