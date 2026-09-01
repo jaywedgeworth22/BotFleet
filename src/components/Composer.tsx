@@ -427,7 +427,7 @@ export function Composer({
     if (el.value.length > 0) {
       el.setSelectionRange(el.value.length, el.value.length);
     }
-  }, [bot?.id, group?.id, bot?.activeTaskId]);
+  }, [bot?.id, group?.id, bot?.threadId]);
 
   useEffect(() => {
     const onGlobalPaste = (e: ClipboardEvent) => {
