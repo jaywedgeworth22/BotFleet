@@ -10,7 +10,7 @@ import Foundation
 import Security
 
 enum Keychain {
-    private static let service = "com.openmausbot.companion.token"
+    private static let service = "com.botfleet.companion.token"
 
     static func save(_ token: String, for connectionId: String) throws {
         let data = Data(token.utf8)

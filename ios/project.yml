@@ -60,7 +60,7 @@ targets:
         - CFBundleURLName: app.botfleet.companion.pairing
           CFBundleURLSchemes:
           - botfleet
-          - openmausbot
+          - botfleet
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
         - UIInterfaceOrientationPortrait
@@ -81,7 +81,7 @@ targets:
           so you can send it to a bot. Recognition runs on this phone when it can.
         NSBonjourServices:
         - _botfleet._tcp
-        - _openmausbot._tcp
+        - _botfleet._tcp
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
