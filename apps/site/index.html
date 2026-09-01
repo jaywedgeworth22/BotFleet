@@ -146,7 +146,7 @@
     <nav class="links">
       <a href="#established">Established</a>
       <a href="#beta">Beta</a>
-      <a href="https://testflight.apple.com/join/ER6sPNMh">TestFlight</a>
+      <a href="https://testflight.apple.com/join/XYZ123">TestFlight</a>
       <a href="https://github.com/jaywedgeworth22/BotFleet">GitHub</a>
     </nav>
   </div>
@@ -169,13 +169,13 @@
         <a href="https://github.com/jaywedgeworth22/BotFleet/releases" style="font-size: 13px; color: var(--ink-muted); text-decoration: underline;">See Previous Builds</a>
       </div>
       <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
-        <a class="cta" href="https://testflight.apple.com/join/ER6sPNMh" style="background: var(--surface); color: var(--ink); border: 1px solid var(--line);">Join the iOS TestFlight</a>
+        <a class="cta" href="https://testflight.apple.com/join/XYZ123" style="background: var(--surface); color: var(--ink); border: 1px solid var(--line);">Join the iOS TestFlight</a>
         <span class="cta-note" style="margin: 0; max-width: 250px; text-align: center;">Public beta of the iOS companion.</span>
       </div>
     </div>
     <p class="roster-label">An example fleet — the bots the maintainer runs today:</p>
     <div class="roster" role="group" aria-label="Example bot roster">
-      <span>Director</span><span>Producer</span><span>Publisher</span><span>Oracle</span><span>Builder</span><span>Fixer</span><span>Designer</span><span>Compiler</span><span>Monitor</span><span>Plumber</span><span>Housekeeper</span><span>Firefighter</span>
+      <span>Director</span><span>Builder</span><span>Reviewer</span>
     </div>
   </section>
 
@@ -281,10 +281,28 @@
     <div>BotFleet builds on <a href="https://github.com/milind-soni/OpenMausBot">OpenMausBot</a>, an
       open-source project by Milind Soni and contributors.&nbsp; BotFleet source lives at
       <a href="https://github.com/jaywedgeworth22/BotFleet">github.com/jaywedgeworth22/BotFleet</a>.&nbsp; iOS companion:
-      <a href="https://testflight.apple.com/join/ER6sPNMh">public TestFlight</a>.</div>
-    <div class="fine">© 2026 BotFleet.&nbsp; Last updated Mon, Aug 31, 2026.</div>
+      <a href="https://testflight.apple.com/join/XYZ123">public TestFlight</a>.</div>
+    <div class="fine">© 2026 BotFleet.&nbsp; Last updated Tue, Sep 1, 2026.</div>
   </div>
 </footer>
 
+<script src="https://browser.sentry-cdn.com/10.73.0/bundle.tracing.replay.feedback.min.js" crossorigin="anonymous"></script>
+<script>
+(function () {
+  if (typeof Sentry === "undefined") return;
+  Sentry.init({
+    dsn: "https://3fb94d8a19248d0bd1cc75694d9d6586@o4511650476326912.ingest.us.sentry.io/4512009246736384",
+    environment: "production",
+    tracesSampleRate: 0.2,
+    replaysSessionSampleRate: 0.1,
+    replaysOnErrorSampleRate: 1.0,
+    enableLogs: true,
+    integrations: [
+      Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true }),
+      Sentry.feedbackIntegration({ colorScheme: "light", autoInject: true, showBranding: false, buttonLabel: "Report a problem", submitButtonLabel: "Send", formTitle: "Report a problem" })
+    ]
+  });
+})();
+</script>
 </body>
 </html>

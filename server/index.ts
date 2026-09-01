@@ -92,6 +92,8 @@ import { promptWithReply, transcriptText } from "./replies.ts";
 import { _loadPending, discardDelegations, drainDelegations, pendingDelegationSnapshot, pendingThreads, queueDelegation, type QueueResult } from "./delegations.ts";
 import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage } from "./steer-queue.ts";
 import { EventBus } from "./harness/bus.ts";
+import { initSentry } from "./sentry.ts";
+import { observeRuntimeEvent } from "./sentry-ai.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import {
@@ -202,6 +204,8 @@ utilityParentPort?.on("message", (event) => {
 
 const bus = new EventBus();
 bus.attach(registry.instances());
+initSentry();
+bus.subscribe((event: RuntimeEvent) => observeRuntimeEvent(event));
 
 // ── peer-agent comms wiring ────────────────────────────────────────────
 // A shared secret guards the localhost-only /api/internal endpoints the

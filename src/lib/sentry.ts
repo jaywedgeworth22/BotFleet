@@ -4,11 +4,9 @@
  * Gated on VITE_SENTRY_DSN (inlined by Vite at build time).
  * Completely inert in dev/CI when no DSN is provided.
  *
- * Utilizes the fleet's $5,000 sponsored credit with:
- * - Error tracking & boundary capture
- * - Session Replay (100% on error, 10% baseline session)
- * - Distributed tracing & browser navigation spans
- * - Strict text & media masking for agent chat privacy
+ * Replay stays 100% on error / 10% session with mask-all privacy.
+ * User Feedback is the consumer widget.  Agent traces live on the
+ * Node harness (`server/sentry.ts`), not this browser bundle.
  */
 
 import * as Sentry from "@sentry/react";
@@ -46,6 +44,14 @@ export function initSentry(): void {
     replaysOnErrorSampleRate: !replayDisabled && Number.isFinite(replaysOnErrorSampleRate) ? replaysOnErrorSampleRate : 0,
     integrations: [
       Sentry.browserTracingIntegration(),
+      Sentry.feedbackIntegration({
+        colorScheme: "light",
+        autoInject: true,
+        showBranding: false,
+        buttonLabel: "Report a problem",
+        submitButtonLabel: "Send",
+        formTitle: "Report a problem",
+      }),
       ...(!replayDisabled
         ? [
             Sentry.replayIntegration({

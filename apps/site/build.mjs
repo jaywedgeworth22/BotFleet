@@ -47,13 +47,39 @@ const updated = new Date().toLocaleDateString("en-US", {
   timeZone: "America/Chicago",
 });
 
+function sentrySnippet(dsn) {
+  const trimmed = (dsn || "").trim();
+  if (!trimmed.startsWith("https://")) return "";
+  // Public client DSN only.  Do not log the value.
+  const json = JSON.stringify(trimmed);
+  return `<script src="https://browser.sentry-cdn.com/10.73.0/bundle.tracing.replay.feedback.min.js" crossorigin="anonymous"></script>
+<script>
+(function () {
+  if (typeof Sentry === "undefined") return;
+  Sentry.init({
+    dsn: ${json},
+    environment: "production",
+    tracesSampleRate: 0.2,
+    replaysSessionSampleRate: 0.1,
+    replaysOnErrorSampleRate: 1.0,
+    enableLogs: true,
+    integrations: [
+      Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true }),
+      Sentry.feedbackIntegration({ colorScheme: "light", autoInject: true, showBranding: false, buttonLabel: "Report a problem", submitButtonLabel: "Send", formTitle: "Report a problem" })
+    ]
+  });
+})();
+</script>`;
+}
+
 const html = template
   .replaceAll("{{TESTFLIGHT_URL}}", data.site.testflightUrl)
   .replaceAll("{{REPO_URL}}", data.site.repo)
   .replaceAll("{{UPSTREAM_URL}}", data.site.upstream)
   .replaceAll("{{ROSTER}}", data.exampleFleet.map((b) => `<span>${b}</span>`).join(""))
   .replaceAll("{{UPDATED}}", updated)
-  .replaceAll("{{SECTIONS}}", data.sections.map(sectionHtml).join("\n\n"));
+  .replaceAll("{{SECTIONS}}", data.sections.map(sectionHtml).join("\n\n"))
+  .replaceAll("{{SENTRY_SNIPPET}}", sentrySnippet(process.env.VITE_SENTRY_DSN));
 
 writeFileSync(new URL("./index.html", import.meta.url), html);
 console.log(`built index.html — ${data.sections.map((s) => `${s.id}:${s.features.length}`).join(" ")} — updated ${updated}`);
