@@ -3216,7 +3216,6 @@ async function perBotLocalVmCountForModeChange(): Promise<number | null> {
 function configStatus() {
   return {
     xai: { configured: Boolean(cfg.xai?.key) },
-    deepseek: { configured: Boolean(cfg.deepseek?.key) },
     composio: {
       configured: composio.configured(cfg),
       mode: composio.connectionMode(cfg),
@@ -5957,7 +5956,6 @@ const server = createServer(async (req, res) => {
         if (persisted.opencodeGo?.apiKey !== undefined) persisted.opencodeGo.apiKey = "";
         if (persisted.tts?.key !== undefined) persisted.tts.key = "";
         if (persisted.imageGen?.key !== undefined) persisted.imageGen.key = "";
-        if (persisted.deepseek?.key !== undefined) persisted.deepseek.key = "";
         saveConfig(persisted);
         syncCredentialEnv(patch);
         Object.assign(cfg, loadConfig());
