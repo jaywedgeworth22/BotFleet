@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		033C011BEEC98057E2A087A2 /* OpenMausWidgets.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC3E6C28C1988E134D56BC6B /* OpenMausWidgets.swift */; };
+		115E25BE7A069EE32981E824 /* SentryTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6576F199771F1EDD4AA1EED4 /* SentryTelemetry.swift */; };
 		1C8F61AB0339251291D484D1 /* Updates.swift in Sources */ = {isa = PBXBuildFile; fileRef = B56E714A2A8AAA529ECCCCAF /* Updates.swift */; };
 		1ECB0CCDF34062D30980F4A3 /* ConnectedAppsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2FF7BE6DA81FD4DF004E9E07 /* ConnectedAppsView.swift */; };
 		266ED872F01E63DA0B46E5E0 /* MausFaceData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7878DD3B4F7DDE005ED45A96 /* MausFaceData.swift */; };
@@ -29,12 +30,13 @@
 		795B2B0D2A81A30453CB9064 /* StorePreview.json in Resources */ = {isa = PBXBuildFile; fileRef = B320FBB215896FBBAF92028A /* StorePreview.json */; };
 		7DE53FC757ADC40F6479E6D0 /* MausFaceData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7878DD3B4F7DDE005ED45A96 /* MausFaceData.swift */; };
 		8093925BF61880E798079947 /* ChatView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EC6F812477213096F0CE3825 /* ChatView.swift */; };
+		8703DC42A071D69149CD0FA7 /* GroupProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = DF97DEC0F942B1DF64D96D09 /* GroupProfileView.swift */; };
 		93A08AEED22A23A69C21AE37 /* NewGroupSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E83F767A05658DB7C1AFB57 /* NewGroupSheet.swift */; };
 		985C78FE91FAD08FFFC714CE /* TaskManagerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D0841F8B923FBA4A84FA9074 /* TaskManagerView.swift */; };
 		A62D37AFD9E77849993EBDDB /* SQLResultTableView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 53AF4BCC0A60810CED861184 /* SQLResultTableView.swift */; };
 		AA9DCB1648F8DD7385E026DD /* AgentProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20B7A219402F3BE75BCC913A /* AgentProfileView.swift */; };
-		AA9DCB1648F8DD7385E026DE /* GroupProfileView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20B7A219402F3BE75BCC913B /* GroupProfileView.swift */; };
 		B30EC7F62FBE7EF705340FD0 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = DA855AC04B70C8159EF4BFAF /* PrivacyInfo.xcprivacy */; };
+		B53C4919CB8A39EE6F220373 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 14DFFEEDFF3D6C3E24075865 /* Sentry */; };
 		BDE70D8390F9B9E056D65FCB /* SkillExecutionReceiptView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39816A1ED062CEB3BE6186C1 /* SkillExecutionReceiptView.swift */; };
 		BF9C58CB7F24A98EC69AEF35 /* Session.swift in Sources */ = {isa = PBXBuildFile; fileRef = F48A501FB10DDC1D6AEC7559 /* Session.swift */; };
 		C62FBA1C41E0C9BACB586B40 /* GitPRDiffCardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 980FA8A83CC6209596F3BE40 /* GitPRDiffCardView.swift */; };
@@ -87,7 +89,6 @@
 		12CA0CF3D09484DBE6DD7F7C /* CompanionApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CompanionApp.swift; sourceTree = "<group>"; };
 		18A37C5C13FAA221019EF286 /* Discovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Discovery.swift; sourceTree = "<group>"; };
 		20B7A219402F3BE75BCC913A /* AgentProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentProfileView.swift; sourceTree = "<group>"; };
-		20B7A219402F3BE75BCC913B /* GroupProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupProfileView.swift; sourceTree = "<group>"; };
 		295DEC9F0334E7CDB950A183 /* BotAvatarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BotAvatarView.swift; sourceTree = "<group>"; };
 		2B4598D27AE633BCCE095705 /* ios */ = {isa = PBXFileReference; lastKnownFileType = folder; name = ios; path = .; sourceTree = SOURCE_ROOT; };
 		2E83F767A05658DB7C1AFB57 /* NewGroupSheet.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NewGroupSheet.swift; sourceTree = "<group>"; };
@@ -104,6 +105,7 @@
 		5CD309D240B263E2375C7B6F /* SpeechBubble.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechBubble.swift; sourceTree = "<group>"; };
 		5EDD2F1B4F44BC04E6ACE914 /* Glass.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Glass.swift; sourceTree = "<group>"; };
 		5FC1AA5DF1C051E30FA9EB8C /* BotFleet.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BotFleet.entitlements; sourceTree = "<group>"; };
+		6576F199771F1EDD4AA1EED4 /* SentryTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SentryTelemetry.swift; sourceTree = "<group>"; };
 		6B3CA6E831B979FA9CC31EE4 /* PairingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PairingView.swift; sourceTree = "<group>"; };
 		729551C273A4D7DFB169A627 /* SpeechDictation.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechDictation.swift; sourceTree = "<group>"; };
 		751DDE68A0A18CA456083F50 /* MarkdownText.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MarkdownText.swift; sourceTree = "<group>"; };
@@ -128,6 +130,7 @@
 		D903428D2B87B9B313B8C5B2 /* TasksRoutinesView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TasksRoutinesView.swift; sourceTree = "<group>"; };
 		DA855AC04B70C8159EF4BFAF /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		DC3E6C28C1988E134D56BC6B /* OpenMausWidgets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenMausWidgets.swift; sourceTree = "<group>"; };
+		DF97DEC0F942B1DF64D96D09 /* GroupProfileView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupProfileView.swift; sourceTree = "<group>"; };
 		E3B952FA219D0735100D353E /* LiveActivities.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivities.swift; sourceTree = "<group>"; };
 		E69429996A018D97CADBF800 /* Island.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Island.swift; sourceTree = "<group>"; };
 		EC6F812477213096F0CE3825 /* ChatView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatView.swift; sourceTree = "<group>"; };
@@ -142,6 +145,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				FC88266EE0ECEBC98562AE5F /* CompanionCore in Frameworks */,
+				B53C4919CB8A39EE6F220373 /* Sentry in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -151,8 +155,9 @@
 		140EC1FB2C89B2227AEA6D0D /* App */ = {
 			isa = PBXGroup;
 			children = (
+				B1B6B940D803CF2D6B07019D /* Cards */,
+				279294BB5061D8B2F2C0C5FD /* Composer */,
 				20B7A219402F3BE75BCC913A /* AgentProfileView.swift */,
-				20B7A219402F3BE75BCC913B /* GroupProfileView.swift */,
 				BBC89917EE388120035B45E5 /* Assets.xcassets */,
 				295DEC9F0334E7CDB950A183 /* BotAvatarView.swift */,
 				5FC1AA5DF1C051E30FA9EB8C /* BotFleet.entitlements */,
@@ -164,6 +169,7 @@
 				2FF7BE6DA81FD4DF004E9E07 /* ConnectedAppsView.swift */,
 				18A37C5C13FAA221019EF286 /* Discovery.swift */,
 				5EDD2F1B4F44BC04E6ACE914 /* Glass.swift */,
+				DF97DEC0F942B1DF64D96D09 /* GroupProfileView.swift */,
 				F581055AF63610CABDD6164D /* Info.plist */,
 				E69429996A018D97CADBF800 /* Island.swift */,
 				C1E9F9C0ED5805BF3669EC79 /* Keychain.swift */,
@@ -179,6 +185,7 @@
 				6B3CA6E831B979FA9CC31EE4 /* PairingView.swift */,
 				3469EA9EBDB35F3F92450849 /* PlatformBridge.swift */,
 				DA855AC04B70C8159EF4BFAF /* PrivacyInfo.xcprivacy */,
+				6576F199771F1EDD4AA1EED4 /* SentryTelemetry.swift */,
 				F48A501FB10DDC1D6AEC7559 /* Session.swift */,
 				BAE9E43BFEA2E7554A9976A0 /* SettingsView.swift */,
 				5CD309D240B263E2375C7B6F /* SpeechBubble.swift */,
@@ -188,8 +195,6 @@
 				D903428D2B87B9B313B8C5B2 /* TasksRoutinesView.swift */,
 				B56E714A2A8AAA529ECCCCAF /* Updates.swift */,
 				0ACB5BB19D912298FC7902DF /* UpdatesSheet.swift */,
-				B1B6B940D803CF2D6B07019D /* Cards */,
-				279294BB5061D8B2F2C0C5FD /* Composer */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -281,6 +286,7 @@
 			name = BotFleet;
 			packageProductDependencies = (
 				7A80327F4F1AD77B33EFD966 /* CompanionCore */,
+				14DFFEEDFF3D6C3E24075865 /* Sentry */,
 			);
 			productName = BotFleet;
 			productReference = 40A62500D69EA20B3113D034 /* BotFleet.app */;
@@ -310,7 +316,7 @@
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
-				LastUpgradeCheck = 1430;
+				LastUpgradeCheck = 2630;
 				TargetAttributes = {
 					2D181846D5DBE08823FC84E3 = {
 						DevelopmentTeam = CC8UTF7ATG;
@@ -332,6 +338,7 @@
 			mainGroup = 325912F5B09E0FE28D7F659B;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				8D1AE14949026D2E02B5994F /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 				CAF0D7F2BBAC13AA0D2B4108 /* XCLocalSwiftPackageReference "." */,
 			);
 			preferredProjectObjectVersion = 77;
@@ -375,7 +382,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				AA9DCB1648F8DD7385E026DD /* AgentProfileView.swift in Sources */,
-				AA9DCB1648F8DD7385E026DE /* GroupProfileView.swift in Sources */,
 				E134A55073FC619E7A4E2C4B /* AgentThoughtChamberView.swift in Sources */,
 				E4398FC3EE6B60FCC1EC98EF /* BotActivity.swift in Sources */,
 				F92EADDC1A3A066EC90D87A6 /* BotAvatarView.swift in Sources */,
@@ -389,6 +395,7 @@
 				E3FD14480122F1B878591824 /* Discovery.swift in Sources */,
 				C62FBA1C41E0C9BACB586B40 /* GitPRDiffCardView.swift in Sources */,
 				E071B42384652EA3C20DF007 /* Glass.swift in Sources */,
+				8703DC42A071D69149CD0FA7 /* GroupProfileView.swift in Sources */,
 				ED70A77E65170B643A815AA2 /* Island.swift in Sources */,
 				EEB2ADD65BD7929BFA7CED7F /* Keychain.swift in Sources */,
 				2A6D4C4F12C0566DE37C46E4 /* LiveActivities.swift in Sources */,
@@ -404,6 +411,7 @@
 				DAF382EF3976013EA1CD2194 /* PlatformBridge.swift in Sources */,
 				3E1B3E23A8BF5C1705E9D3A3 /* PredictiveActionChipsView.swift in Sources */,
 				A62D37AFD9E77849993EBDDB /* SQLResultTableView.swift in Sources */,
+				115E25BE7A069EE32981E824 /* SentryTelemetry.swift in Sources */,
 				BF9C58CB7F24A98EC69AEF35 /* Session.swift in Sources */,
 				5BFCF348E8FD81D8C893DFFB /* SettingsView.swift in Sources */,
 				BDE70D8390F9B9E056D65FCB /* SkillExecutionReceiptView.swift in Sources */,
@@ -445,8 +453,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = app.botfleet.widgets;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -467,8 +476,9 @@
 				PRODUCT_BUNDLE_IDENTIFIER = app.botfleet.widgets;
 				SDKROOT = iphoneos;
 				SKIP_INSTALL = YES;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -489,8 +499,10 @@
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.botfleet;
 				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Release;
 		};
@@ -511,8 +523,10 @@
 				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = app.botfleet;
 				SDKROOT = iphoneos;
+				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
+				SUPPORTS_MACCATALYST = NO;
 				SWIFT_VERSION = 5.9;
-				TARGETED_DEVICE_FAMILY = 1;
+				TARGETED_DEVICE_FAMILY = "1,2";
 			};
 			name = Debug;
 		};
@@ -549,8 +563,10 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = CC8UTF7ATG;
 				ENABLE_NS_ASSERTIONS = NO;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -568,7 +584,7 @@
 				SDKROOT = iphoneos;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 5.9;
 			};
 			name = Release;
 		};
@@ -605,8 +621,10 @@
 				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Automatic;
 				COPY_PHASE_STRIP = NO;
 				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = CC8UTF7ATG;
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				GCC_C_LANGUAGE_STANDARD = gnu11;
@@ -631,7 +649,7 @@
 				SDKROOT = iphoneos;
 				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
-				SWIFT_VERSION = 5.0;
+				SWIFT_VERSION = 5.9;
 			};
 			name = Debug;
 		};
@@ -674,7 +692,23 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		8D1AE14949026D2E02B5994F /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-cocoa.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 8.44.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
+		14DFFEEDFF3D6C3E24075865 /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 8D1AE14949026D2E02B5994F /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
+		};
 		7A80327F4F1AD77B33EFD966 /* CompanionCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = CompanionCore;

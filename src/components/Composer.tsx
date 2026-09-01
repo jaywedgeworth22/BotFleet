@@ -256,8 +256,8 @@ export function Composer({
     if (!el) return;
     const line = parseFloat(getComputedStyle(el).lineHeight) || 24;
     const cap = line * 6;
-    el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, cap)}px`;
+    el.style.height = "0px";
+    el.style.height = `${Math.max(line, Math.min(el.scrollHeight, cap))}px`;
   }, [text]);
 
   const pickMention = (peer: MentionChoice) => {
@@ -399,6 +399,21 @@ export function Composer({
     baseText.current = text.trim();
     setRecording((r) => !r);
   };
+
+
+  useEffect(() => {
+    const onFocusComposer = () => {
+      const el = inputRef.current;
+      if (!el) return;
+      el.focus();
+      // Move to end of text if already has text
+      if (el.value.length > 0) {
+        el.setSelectionRange(el.value.length, el.value.length);
+      }
+    };
+    window.addEventListener("focus-composer", onFocusComposer);
+    return () => window.removeEventListener("focus-composer", onFocusComposer);
+  }, []);
 
   useEffect(() => {
     const onGlobalPaste = (e: ClipboardEvent) => {
@@ -590,7 +605,7 @@ export function Composer({
               // auto-grow on normal text paste
               setTimeout(() => {
                 if (inputRef.current) {
-                  inputRef.current.style.height = "auto";
+                  inputRef.current.style.height = "0px";
                   inputRef.current.style.height = inputRef.current.scrollHeight + "px";
                 }
               }, 0);

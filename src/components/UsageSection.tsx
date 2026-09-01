@@ -121,7 +121,7 @@ export function UsageSection() {
             </div>
           ))}
           <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-            Prices for API-billed engines (such as DeepSeek) are calculated directly from input and output token counts each turn. CLI-authenticated engines run against your active subscription.
+            Prices for API-billed engines (such as OpenRouter) are calculated directly from input and output token counts each turn. CLI-authenticated engines run against your active subscription.
           </div>
         </div>
       </Card>

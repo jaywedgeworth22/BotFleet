@@ -32,12 +32,6 @@ struct ChatView: View {
     @State private var shareFile: ShareFile?
     @FocusState private var composerFocused: Bool
     @StateObject private var dictation = SpeechDictation()
-    /// The opening beat: the island grows with the bot's face in it, then
-    /// shrinks away as the face settles into the header. `facePhase` is 1
-    /// with the face in the island, 0 with it home in the header.
-    @State private var islandExpanded = false
-    @State private var islandVisible = false
-    @State private var facePhase: CGFloat = 0
 
     /// The live bubble's scroll target. A constant because there is at most
     /// one per chat and it has no message id to borrow.
@@ -163,42 +157,6 @@ struct ChatView: View {
                 // scrolls under the face and name, which float over it.
                 .safeAreaInset(edge: .top, spacing: 0) { headerBar }
                 .overlay(alignment: .top) { headerFace }
-                .overlay(alignment: .top) {
-                    // One face, in one layer, measured from the screen's top
-                    // edge: it sits in the island while that is open and
-                    // glides into its header slot when the island lets go.
-                    let topInset = IslandGeometry.topInset
-                    let hasIsland = IslandGeometry.hasIsland(topInset: topInset)
-                    let islandSide: CGFloat = 220
-                    // centred in the part of the square the hardware island does not cover
-                    let islandFaceCentre = IslandGeometry.top + IslandGeometry.size.height + (islandSide - IslandGeometry.size.height) / 2
-                    let headerFaceCentre = topInset + 26
-                    let faceSize = 60 + 72 * facePhase
-                    let faceCentre = headerFaceCentre + (islandFaceCentre - headerFaceCentre) * facePhase
-                    ZStack(alignment: .top) {
-                        if islandVisible {
-                            IslandShell(expanded: islandExpanded, hasIsland: hasIsland, expandedSize: CGSize(width: islandSide, height: islandSide)) {
-                                Color.clear
-                            }
-                        }
-                        ChatAvatarView(chat: current, size: faceSize, state: MausState.forChat(current, in: session.state), animated: MausState.forChat(current, in: session.state).showsActivity || islandExpanded, comets: islandExpanded)
-                            .offset(y: faceCentre - faceSize / 2)
-                            .allowsHitTesting(false)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .top)
-                    .ignoresSafeArea(edges: .top)
-                }
-                .task {
-                    // grow, hold a beat, shrink — the face rides along
-                    guard !reduceMotion else { return }
-                    islandVisible = true
-                    try? await Task.sleep(for: .milliseconds(40))
-                    withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { islandExpanded = true; facePhase = 1 }
-                    try? await Task.sleep(for: .milliseconds(1000))
-                    withAnimation(.spring(response: 0.55, dampingFraction: 0.82)) { islandExpanded = false; facePhase = 0 }
-                    try? await Task.sleep(for: .milliseconds(600))
-                    islandVisible = false
-                }
                 // A conversation grows from the bottom: a transcript shorter
                 // than the screen rests at the bottom, and opening a chat
                 // starts on the newest message rather than the oldest.
@@ -374,17 +332,19 @@ struct ChatView: View {
             // settled.
             if case .bot = current {
                 Button { showingProfile = true } label: {
-                    Color.clear
+                    ChatAvatarView(chat: current, size: 60, state: MausState.forChat(current, in: session.state), animated: MausState.forChat(current, in: session.state).showsActivity)
                         .frame(width: 60, height: 60)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
-                .allowsHitTesting(!islandVisible)
-                .accessibilityHidden(islandVisible)
                 .accessibilityLabel("Open \(current.name) profile")
                 .accessibilityHint("Edits this agent's identity, avatar, notifications, and voice")
             } else {
-                Color.clear.frame(width: 60, height: 60)
+                Button { showingPlus = true } label: {
+                    ChatAvatarView(chat: current, size: 60, state: MausState.forChat(current, in: session.state), animated: MausState.forChat(current, in: session.state).showsActivity)
+                        .frame(width: 60, height: 60)
+                }
+                .buttonStyle(.plain)
             }
             Button {
                 if case .bot = current { showingProfile = true }

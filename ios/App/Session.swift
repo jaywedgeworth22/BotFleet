@@ -305,7 +305,15 @@ final class Session: ObservableObject {
         }
         // back before the grace period ran out: keep the stream, drop the task
         endLinger()
-        guard client != nil, streamTask == nil else { return }
+        guard client != nil else { return }
+        if let existing = streamTask {
+            if case .offline = status {
+                existing.cancel()
+                streamTask = nil
+            } else {
+                return
+            }
+        }
         reconnectDelay = 0
         streamGeneration += 1
         let generation = streamGeneration
@@ -805,7 +813,7 @@ final class Session: ObservableObject {
 
     @MainActor
     func updateRoom(id: String, name: String?, bulletin: String?, avatarCrop: AvatarCrop?, cwd: String? = nil, extraCwds: [String]? = nil) async {
-        guard let client = activeClient else { return }
+        guard let client else { return }
         do {
             let patch = RoomPatch(name: name, bulletin: bulletin, avatarCrop: avatarCrop, cwd: cwd, extraCwds: extraCwds)
             let updated = try await client.updateRoom(id: id, patch: patch)
@@ -819,7 +827,7 @@ final class Session: ObservableObject {
 
     @MainActor
     func updateRoomAvatar(id: String, avatarUrl: String?) async {
-        guard let client = activeClient else { return }
+        guard let client else { return }
         do {
             let urlVal: BotProfilePatch.AvatarURL?
             if let url = avatarUrl {
@@ -839,7 +847,7 @@ final class Session: ObservableObject {
 
     @MainActor
     func uploadRoomAvatar(id: String, data: Data, mime: String) async {
-        guard let client = activeClient else { return }
+        guard let client else { return }
         do {
             let url = try await client.uploadAvatar(data: data, mime: mime)
             await updateRoomAvatar(id: id, avatarUrl: url)

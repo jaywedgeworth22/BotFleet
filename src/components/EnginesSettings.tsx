@@ -288,7 +288,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
           Set CLI…
         </button>
       </div>
-      {["deepseek", "minimax"].includes(instance.driverKind) && (
+      {["minimax"].includes(instance.driverKind) && (
         <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
           <strong>Limited functionality:</strong> This native HTTP driver does not support BotFleet tools. 
           For full tool support, use the Pi Engine's OpenAI compat, or the DeepSeek Harness (<code>dsh</code>) instead.

@@ -2,7 +2,10 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { applySkin, readSkin } from "./lib/skins";
+import { initSentry } from "./lib/sentry";
 import "./styles.css";
+
+initSentry();
 
 // Before the first paint, not inside a component: stamping the skin during
 // render would show one frame of the default palette first.

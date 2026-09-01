@@ -1,6 +1,6 @@
 import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  AlertTriangle,
+  
   ArrowDown,
   Check,
   ChevronDown,
@@ -155,7 +155,7 @@ class MessageBoundary extends Component<{ children: ReactNode; fallbackText: str
   render() {
     if (this.state.failed) {
       return (
-        <div className="w-fit max-w-[min(42rem,78%)] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap text-ink">
+        <div className="w-fit max-w-[min(42rem,85%)] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed whitespace-pre-wrap text-ink">
           {this.props.fallbackText}
         </div>
       );
@@ -187,7 +187,7 @@ function BubbleEditor({
     if (draft.trim()) onSubmit(draft.trim());
   };
   return (
-    <div className="w-full max-w-[min(42rem,78%)] rounded-2xl border border-hairline/40 bg-bubble-user px-4 py-3">
+    <div className="w-full max-w-[min(42rem,85%)] rounded-2xl border border-hairline/40 bg-bubble-user px-4 py-3">
       <textarea
         ref={ref}
         value={draft}
@@ -286,10 +286,10 @@ function Bubble({
 
   return (
     <div className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start")}>
-      <div className={cn("flex w-full items-end gap-1.5", user ? "flex-row-reverse flex-wrap justify-start" : "flex-wrap justify-start")}>
+      <div className={cn("flex w-full items-end gap-1.5", user ? "flex-wrap justify-end" : "flex-wrap justify-start")}>
         {/* editing rewinds the thread, so it waits for the turn to end —
             same rule as the version switcher below */}
-        <div className={cn("flex items-center gap-1.5 shrink-0", user && "flex-row-reverse")}>
+        <div className={cn("flex items-center gap-1.5 shrink-0")}>
 {user && message.kind === "text" && !webhookView && !bot.busy && (
           <button
             onClick={onStartEdit}
@@ -300,7 +300,6 @@ function Bubble({
             <Pencil size={14} />
           </button>
         )}
-        {user && message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
         {user && (
           <>
             <CopyButton
@@ -313,15 +312,6 @@ function Bubble({
                 setTimeout(() => setCopied(false), 1400);
               }}
             />
-            <button
-              type="button"
-              onClick={onReply}
-              aria-label="Reply to message"
-              className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-              title="Reply"
-            >
-              <MessageSquareReply size={14} />
-            </button>
             <button
               onClick={() =>
                 dispatch({
@@ -345,7 +335,7 @@ function Bubble({
         <div
           onClick={handleBubbleClick}
           className={cn(
-            "w-fit max-w-[min(42rem,78%)] rounded-2xl text-[15px] leading-relaxed cursor-pointer select-text relative",
+            "w-fit max-w-[min(42rem,85%)] rounded-2xl text-[15px] leading-relaxed cursor-pointer select-text relative",
             user && webhookView
               ? "overflow-hidden border border-accent/25 bg-card text-ink shadow-[0_10px_30px_rgba(0,0,0,0.18)]"
               : user
@@ -575,7 +565,7 @@ function ScreenFrame({ png, mime }: { png: string; mime?: string }) {
       <img
         src={`data:${mime ?? "image/png"};base64,${png}`}
         alt="Bot's screen"
-        className="w-fit max-w-[min(42rem,78%)] rounded-2xl border border-hairline/40"
+        className="w-fit max-w-[min(42rem,85%)] rounded-2xl border border-hairline/40"
       />
     </div>
   );
@@ -1199,7 +1189,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             answering={popping !== null}
           >
             {popping ? (
-              <div className="w-fit max-w-[min(42rem,78%)] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
+              <div className="w-fit max-w-[min(42rem,85%)] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">
                 <MessageBoundary fallbackText={popping.text}>
                   <ChatMarkdown text={popping.text} />
                 </MessageBoundary>

@@ -4,7 +4,7 @@ export type RoutineSchedule =
 
 export type RoutineRunOn = "maus" | "cloud";
 
-export type RoutineRunTrigger = "schedule" | "manual" | "webhook";
+export type RoutineRunTrigger = "schedule" | "manual" | "webhook" | "resource";
 
 export type RoutineRunStatus =
   | "queued"

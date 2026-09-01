@@ -97,6 +97,7 @@ describe("what it may not", () => {
       ["POST", "/api/local-computer/start"],
       ["POST", "/api/webhooks"],
       ["POST", "/api/webhooks/wh_1/rotate"],
+      ["POST", "/api/resource-triggers"],
       ["DELETE", "/api/connectors/gmail"],
       ["POST", "/api/teams/import"],
     ] as Array<[string, string]>) {
@@ -173,7 +174,7 @@ describe("what it may not", () => {
     // revocation is a Mac-only affordance: the phone can list and add
     // accounts but the account DELETE route is deliberately not allowed
     expect(allowed("DELETE", "/api/connectors/slack/accounts/ca_123")).toBe(false);
-    expect(allowed("PATCH", "/api/groups/room-1")).toBe(false);
+    expect(allowed("DELETE", "/api/groups/room-1")).toBe(false);
   });
 
   // Patterns are anchored, so a path that merely starts right is still a

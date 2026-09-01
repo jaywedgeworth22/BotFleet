@@ -15,6 +15,10 @@ struct CompanionApp: App {
     @Environment(\.scenePhase) private var scenePhase
     @State private var liveActivities = LiveActivityCoordinator()
 
+    init() {
+        SentryTelemetry.start()
+    }
+
     var body: some Scene {
         WindowGroup {
             RootView()

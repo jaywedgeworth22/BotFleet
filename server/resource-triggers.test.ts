@@ -1,0 +1,106 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+
+import {
+  crossed,
+  ResourceTriggerManager,
+  valueFor,
+  type HostSample,
+} from "./resource-triggers.ts";
+
+function sample(partial: Partial<HostSample> = {}): HostSample {
+  return {
+    at: 1_000,
+    diskFreeGb: 120,
+    diskUsedPct: 70,
+    ramUsedPct: 40,
+    swapUsedPct: 10,
+    swapTotalGb: 2,
+    load1m: 2,
+    ...partial,
+  };
+}
+
+describe("resource trigger math", () => {
+  it("treats below as <= and above as >=", () => {
+    expect(crossed("below", 80, 80)).toBe(true);
+    expect(crossed("below", 80, 79.9)).toBe(true);
+    expect(crossed("below", 80, 80.1)).toBe(false);
+    expect(crossed("above", 16, 16)).toBe(true);
+    expect(crossed("above", 16, 15.9)).toBe(false);
+  });
+
+  it("reads each metric from the sample", () => {
+    const s = sample({ diskFreeGb: 41.2, swapUsedPct: 91, load1m: 22 });
+    expect(valueFor("disk_free_gb", s)).toBe(41.2);
+    expect(valueFor("swap_used_pct", s)).toBe(91);
+    expect(valueFor("load_1m", s)).toBe(22);
+  });
+});
+
+describe("ResourceTriggerManager", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  function make(now: { t: number }, host: { current: HostSample }) {
+    const dir = mkdtempSync(join(tmpdir(), "bf-resource-"));
+    dirs.push(dir);
+    const queued: string[] = [];
+    const manager = new ResourceTriggerManager({
+      file: join(dir, "resource-triggers.json"),
+      now: () => now.t,
+      sample: () => host.current,
+      botState: () => "ready",
+      enqueue: (input) => {
+        queued.push(input.triggerId);
+        return { id: `run-${queued.length}` };
+      },
+      pendingRuns: () => 0,
+    });
+    return { manager, queued };
+  }
+
+  it("fires once then respects cooldown", () => {
+    const now = { t: 1_000 };
+    const host = { current: sample({ diskFreeGb: 40 }) };
+    const { manager, queued } = make(now, host);
+    const trigger = manager.create({
+      name: "Disk low",
+      prompt: "Clean the disk",
+      botId: "housekeeper",
+      metric: "disk_free_gb",
+      cmp: "below",
+      threshold: 80,
+      cooldownMinutes: 45,
+    });
+    expect(manager.tick()).toHaveLength(1);
+    expect(queued).toEqual([trigger.id]);
+    expect(manager.tick()).toHaveLength(0);
+    now.t += 44 * 60_000;
+    expect(manager.tick()).toHaveLength(0);
+    now.t += 2 * 60_000;
+    expect(manager.tick()).toHaveLength(1);
+    expect(queued).toEqual([trigger.id, trigger.id]);
+  });
+
+  it("does not fire a paused trigger", () => {
+    const now = { t: 1_000 };
+    const host = { current: sample({ load1m: 40 }) };
+    const { manager, queued } = make(now, host);
+    manager.create({
+      name: "Load",
+      prompt: "Check load",
+      botId: "housekeeper",
+      metric: "load_1m",
+      cmp: "above",
+      threshold: 16,
+      enabled: false,
+    });
+    expect(manager.tick()).toHaveLength(0);
+    expect(queued).toEqual([]);
+  });
+});

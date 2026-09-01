@@ -90,7 +90,6 @@ const instanceConfigSchema = z.object({
 const instanceConfigMapSchema = z.record(z.string(), instanceConfigSchema);
 const appConfigSchema = z.object({
   xai: z.object({ key: optionalText, url: optionalText }).optional(),
-  deepseek: z.object({ key: optionalText, url: optionalText }).optional(),
   openaiCompat: z.object({ key: optionalText, url: optionalText }).optional(),
   /** Project key used for Sessions, catalog and agent tools. userId/sessionId
    * are non-secret local identifiers used to reuse one Composio Session. */
@@ -132,7 +131,6 @@ export interface AppConfig {
   /** A named host from the user's SSH config. Authentication stays with SSH. */
   vps?: { sshAlias?: string };
   opencodeGo?: { apiKey?: string };
-  deepseek?: { key?: string; url?: string };
   tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system" };
   imageGen?: { key?: string };
   autoUpdate?: { enabled?: boolean };
@@ -222,28 +220,6 @@ export function ensureDirs() {
   for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR]) mkdirSync(dir, { recursive: true });
 }
 
-function loadHandoffSecrets(): Record<string, string> {
-  const map: Record<string, string> = {};
-  const handoff = join(homedir(), ".secrets", "global-api-keys");
-  if (!existsSync(handoff)) return map;
-  try {
-    const raw = readFileSync(handoff, "utf8");
-    for (const line of raw.split("\n")) {
-      const trimmed = line.trim();
-      if (!trimmed || trimmed.startsWith("#")) continue;
-      const eq = trimmed.indexOf("=");
-      if (eq > 0) {
-        const k = trimmed.slice(0, eq).trim();
-        const v = trimmed.slice(eq + 1).trim();
-        if (k && v) map[k] = v;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return map;
-}
-
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
   try {
@@ -251,11 +227,6 @@ export function loadConfig(): AppConfig {
   } catch {
     /* first run — env fallbacks below */
   }
-  const handoff = loadHandoffSecrets();
-  if (process.env.DEEPSEEK_API_KEY === undefined && (handoff.DEEPSEEK_API_KEY || handoff.SHELLULAR2_DEEPSEEK_API_KEY)) {
-    process.env.DEEPSEEK_API_KEY = handoff.DEEPSEEK_API_KEY || handoff.SHELLULAR2_DEEPSEEK_API_KEY;
-  }
-  // Env wins over the file for every credential. The desktop shell keeps
   // these secrets OS-encrypted and hands them to this process as env at
   // spawn, leaving config.json without the plaintext field — so the file
   // value is the dev-mode (no desktop shell) fallback, not the primary.
@@ -276,11 +247,7 @@ export function loadConfig(): AppConfig {
   cfg.tts = { ...cfg.tts };
   if (process.env.OMB_TTS_KEY !== undefined) cfg.tts.key = process.env.OMB_TTS_KEY;
   cfg.imageGen = { ...cfg.imageGen };
-  if (process.env.OMB_OPENAI_IMAGE_KEY !== undefined) cfg.imageGen.key = process.env.OMB_OPENAI_IMAGE_KEY;
-  cfg.deepseek = { ...cfg.deepseek };
-  if (process.env.DEEPSEEK_API_KEY !== undefined) cfg.deepseek.key = process.env.DEEPSEEK_API_KEY;
-  if (process.env.DEEPSEEK_URL !== undefined) cfg.deepseek.url = process.env.DEEPSEEK_URL;
-  return cfg;
+  if (process.env.OMB_OPENAI_IMAGE_KEY !== undefined) cfg.imageGen.key = process.env.OMB_OPENAI_IMAGE_KEY;  return cfg;
 }
 
 /** After saveConfig() writes a credential, the running process's env must
@@ -299,7 +266,6 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
     [patch.opencodeGo?.apiKey, "OPENCODE_API_KEY"],
     [patch.tts?.key, "OMB_TTS_KEY"],
     [patch.imageGen?.key, "OMB_OPENAI_IMAGE_KEY"],
-    [patch.deepseek?.key, "DEEPSEEK_API_KEY"],
   ];
   for (const [value, name] of secrets) {
     if (value === undefined) continue;
@@ -309,10 +275,6 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
   if (patch.openaiCompat?.url !== undefined) {
     if (patch.openaiCompat.url) process.env["OPENAI_COMPAT_URL"] = patch.openaiCompat.url;
     else delete process.env["OPENAI_COMPAT_URL"];
-  }
-  if (patch.deepseek?.url !== undefined) {
-    if (patch.deepseek.url) process.env["DEEPSEEK_URL"] = patch.deepseek.url;
-    else delete process.env["DEEPSEEK_URL"];
   }
 }
 
@@ -331,8 +293,6 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_OPENAI_IMAGE_KEY",
   "COMPOSIO_API_KEY",
   "OMB_COMPOSIO_BROKER_TOKEN",
-  "DEEPSEEK_API_KEY",
-  "DEEPSEEK_URL",
 ] as const;
 
 /** Drop every workspace credential from a child-process env (in place). */
@@ -357,7 +317,6 @@ export const PROVIDER_CREDENTIAL_ENV = [
   "XAI_API_KEY",
   "CURSOR_API_KEY",
   "CURSOR_AUTH_TOKEN",
-  "DEEPSEEK_API_KEY",
 ] as const;
 
 /** Merge a partial config into ~/.botfleet/config.json (secrets never
@@ -372,7 +331,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     /* first write */
   }
   const checkedPatch = appConfigSchema.partial().parse(patch);
-  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "deepseek"] as const) {
+  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -467,7 +426,6 @@ interface InstanceCliUpdate {
 function injectedEnvironment(cfg: AppConfig, driver: string): Map<string, string> {
   const environment = new Map<string, string>();
   if (driver === "grok" && cfg.xai?.key) environment.set("XAI_API_KEY", cfg.xai.key);
-  if (driver === "deepseek" && cfg.deepseek?.key) environment.set("DEEPSEEK_API_KEY", cfg.deepseek.key);
   if (driver === "openai-compat" && cfg.openaiCompat?.key)
     environment.set("OPENAI_COMPAT_API_KEY", cfg.openaiCompat.key);
   if (driver === "openai-compat" && cfg.openaiCompat?.url)
@@ -498,7 +456,6 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // CLI — `{"instances": {"gemini": {"driver": "geminiAgent"}}}` restores it.
   const DEFAULT_FLEET: InstanceConfigMap = {
     grok: { driver: "grokAgent" },
-    deepseek: { driver: "deepseek" },
     dsh: { driver: "dshAgent" },
     kimi: { driver: "kimiAgent" },
     droid: { driver: "droidAgent" },
@@ -524,7 +481,6 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   const PRODUCT_FLEET_ADDITIONS = {
     cursor: { driver: "cursorAgent" },
     openaiCompat: { driver: "openai-compat" },
-    deepseek: { driver: "deepseek" },
     dsh: { driver: "dshAgent" },
     ...CUSTOM_ONLY,
   } as const;
@@ -561,17 +517,6 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
         const current = raw as Record<string, unknown>;
         if (typeof current.url !== "string" || !current.url.trim()) {
           entry.config = { ...current, url: cfg.openaiCompat.url };
-        }
-      }
-    }
-    if (entry.driver === "deepseek" && cfg.deepseek?.url) {
-      const raw = entry.config;
-      if (raw === undefined) {
-        entry.config = { url: cfg.deepseek.url };
-      } else if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
-        const current = raw as Record<string, unknown>;
-        if (typeof current.url !== "string" || !current.url.trim()) {
-          entry.config = { ...current, url: cfg.deepseek.url };
         }
       }
     }

@@ -579,13 +579,18 @@ struct StatusBanner: View {
     }
 
     private func banner(_ text: String, systemImage: String, tint: Color) -> some View {
-        Label(text, systemImage: systemImage)
-            .font(.footnote)
-            .foregroundStyle(tint)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .glassCapsule(interactive: false)
-            .padding(.bottom, 8)
+        Button {
+            Task { await session.refresh() }
+        } label: {
+            Label(text, systemImage: systemImage)
+                .font(.footnote)
+                .foregroundStyle(tint)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .glassCapsule(interactive: true)
+                .padding(.bottom, 8)
+        }
+        .buttonStyle(.plain)
     }
 }
 
