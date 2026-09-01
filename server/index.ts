@@ -2480,6 +2480,15 @@ _loadPending();
       const threadId = bot.inflightThreadId;
       if (!threadId) continue;
       const activeMsgs = store.activePath(threadId);
+
+      // Orphan sweep: tear down any pending permission cards before we re-dispatch,
+      // so the bot doesn't hang waiting for an old card, or double-execute.
+      for (const msg of activeMsgs) {
+        if (msg.kind === "options" && msg.card && !msg.card.answered && !msg.card.dismissed && msg.card.requestId) {
+          store.patchMessage(threadId, msg.id, { card: { ...msg.card, answered: "cancel" } });
+        }
+      }
+
       const lastMsg = activeMsgs[activeMsgs.length - 1];
       const resumeUser = lastMsg?.role === "user" && lastMsg.kind === "text" ? lastMsg : undefined;
       const prompt = resumeUser
@@ -4864,11 +4873,26 @@ const server = createServer(async (req, res) => {
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/profile$/);
     if (m && method === "PATCH") {
-      const parsed = parseBotProfilePatch(await readBody(req), true);
+      const existingBot = store.bot(m[1]);
+      if (!existingBot) return json(res, 404, { error: "no such bot" });
+
+      const body = await readBody(req);
+      const parsed = parseBotProfilePatch(body, true);
       if (!parsed.ok) return json(res, 400, { error: parsed.error });
       if (parsed.patch.avatarUrl && !storedAvatarExists(parsed.patch.avatarUrl)) {
         return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
       }
+      
+      if (parsed.patch.modelSelection !== undefined) {
+        const checked = checkedModelSelection(
+          parsed.patch.modelSelection,
+          { selection: existingBot.modelSelection, busy: Boolean(existingBot.busy) },
+          false
+        );
+        if (!checked.ok) return json(res, checked.status, { error: checked.error });
+        parsed.patch.modelSelection = checked.selection;
+      }
+
       const bot = store.patchBot(m[1], parsed.patch);
       if (!bot) return json(res, 404, { error: "no such bot" });
       const visible = wireBot(bot);

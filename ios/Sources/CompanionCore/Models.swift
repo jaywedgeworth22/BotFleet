@@ -156,17 +156,28 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
 public struct ModelSelection: Codable, Hashable, Sendable {
     public var instanceId: String
     public var model: String
+    public var fallbacks: [ModelSelection]?
 
-    public init(instanceId: String, model: String) {
+    public init(instanceId: String, model: String, fallbacks: [ModelSelection]? = nil) {
         self.instanceId = instanceId
         self.model = model
+        self.fallbacks = fallbacks
     }
+}
+
+public struct TaskUsage: Codable, Hashable, Sendable {
+    public var input: Int
+    public var output: Int
+    public var cachedInput: Int?
+    public var costUsd: Double?
+    public var turns: Int
 }
 
 public struct BotTask: Codable, Hashable, Sendable {
     public var threadId: String
     public var title: String
     public var createdAt: Double
+    public var usage: TaskUsage?
 }
 
 public struct Bot: Codable, Hashable, Identifiable, Sendable {
@@ -238,6 +249,10 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var unread: Bool
     public var createdAt: Double
     public var dm: Bool?
+    public var avatarUrl: String?
+    public var avatarCrop: AvatarCrop?
+    public var cwd: String?
+    public var extraCwds: [String]?
     public var busyBotId: String?
     public var messages: [Message]?
     public var hasMore: Bool?
@@ -885,4 +900,48 @@ struct RoutineRunResponse: Codable, Sendable { var run: RoutineRun }
 
 struct ConnectorAuthorizationResponse: Codable, Sendable {
     var url: String
+}
+
+public struct RoomPatch: Encodable, Sendable {
+    public var name: String?
+    public var bulletin: String?
+    public var avatarUrl: BotProfilePatch.AvatarURL?
+    public var avatarCrop: AvatarCrop?
+    public var cwd: String?
+    public var extraCwds: [String]?
+
+    public init(
+        name: String? = nil,
+        bulletin: String? = nil,
+        avatarUrl: BotProfilePatch.AvatarURL? = nil,
+        avatarCrop: AvatarCrop? = nil,
+        cwd: String? = nil,
+        extraCwds: [String]? = nil
+    ) {
+        self.name = name
+        self.bulletin = bulletin
+        self.avatarUrl = avatarUrl
+        self.avatarCrop = avatarCrop
+        self.cwd = cwd
+        self.extraCwds = extraCwds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case name, bulletin, avatarUrl, avatarCrop, cwd, extraCwds
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encodeIfPresent(name, forKey: .name)
+        try values.encodeIfPresent(bulletin, forKey: .bulletin)
+        if let avatarUrl {
+            switch avatarUrl {
+            case let .set(path): try values.encode(path, forKey: .avatarUrl)
+            case .clear: try values.encodeNil(forKey: .avatarUrl)
+            }
+        }
+        try values.encodeIfPresent(avatarCrop, forKey: .avatarCrop)
+        try values.encodeIfPresent(cwd, forKey: .cwd)
+        try values.encodeIfPresent(extraCwds, forKey: .extraCwds)
+    }
 }

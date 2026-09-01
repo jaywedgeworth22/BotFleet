@@ -781,6 +781,13 @@ struct MessageRow: View {
                 }
                 .disabled(bot.busy == true)
             }
+
+            if let reqId = message.card?.requestId {
+                Divider()
+                Button("Copy Request ID", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = reqId
+                }
+            }
         }
         .alert("Edit and retry", isPresented: $showingEdit) {
             TextField("Message", text: $editingText)

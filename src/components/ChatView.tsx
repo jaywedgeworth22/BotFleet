@@ -34,7 +34,6 @@ import {
   type InstanceInfo,
   type Message,
 } from "@/state/store";
-import { EngineSetup } from "./EngineSetup";
 import { BotAvatar, MausAvatar } from "./Avatar";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
@@ -45,6 +44,7 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
+import { ErrorRow } from "./ErrorRow";
 import { ChatFindBar } from "./ChatFindBar";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
@@ -143,46 +143,7 @@ function TaskTimeline({ messages, busy }: { messages: Message[]; busy: boolean }
 }
 
 
-/** A failed turn: a real error block with a retry, not a truncated pill.
- *
- * A `setup` error — CLI missing, or installed but not signed in — shows what
- * to do instead of a Retry, because retrying hits the same wall every time.
- * Once the engine reports itself fixed the card flips back to Retry, which
- * (with the on-focus re-probe) happens by itself when the user returns from
- * the terminal. */
-function ErrorRow({
-  message,
-  onRetry,
-  setupInstance,
-}: {
-  message: string;
-  onRetry?: () => void;
-  setupInstance?: InstanceInfo;
-}) {
-  return (
-    <div className="flex justify-start">
-      <div className="w-fit max-w-[min(42rem,78%)] rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13.5px] text-danger">
-        <div className="flex items-start gap-2">
-          <AlertTriangle size={15} className="mt-0.5 shrink-0" />
-          <span className="min-w-0 break-words">{message}</span>
-        </div>
-        {setupInstance &&
-        !(setupInstance.snapshot.state === "available" && setupInstance.snapshot.authenticated !== false) ? (
-          <EngineSetup instance={setupInstance} className="mt-2 text-ink-secondary" />
-        ) : (
-          onRetry && (
-            <button
-              onClick={onRetry}
-              className="mt-1.5 flex items-center gap-1.5 rounded-full border border-danger/30 px-2.5 py-1 text-[12.5px] hover:bg-danger/15"
-            >
-              <RefreshCw size={12} /> Retry
-            </button>
-          )
-        )}
-      </div>
-    </div>
-  );
-}
+
 
 /** One bad markdown node must not white-screen the app — the transcript
  * degrades to a plain-text bubble instead. */

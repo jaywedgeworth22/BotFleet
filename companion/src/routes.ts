@@ -83,6 +83,7 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
 
   // rooms — making one, and talking in one
   { method: "POST", path: /^\/api\/groups$/ },
+  { method: "PATCH", path: /^\/api\/groups\/[\w-]+$/ },
   { method: "POST", path: /^\/api\/groups\/[\w-]+\/messages$/ },
   { method: "POST", path: /^\/api\/groups\/[\w-]+\/read$/ },
   { method: "POST", path: /^\/api\/groups\/[\w-]+\/tasks$/ },

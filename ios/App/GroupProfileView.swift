@@ -11,6 +11,7 @@ struct GroupProfileView: View {
     @State private var bulletin = ""
     @State private var avatarCrop: AvatarCrop = .circle
     @State private var cwd = ""
+    @State private var extraCwdsText = ""
     @State private var photo: PhotosPickerItem? = nil
     @State private var busy = false
 
@@ -21,6 +22,7 @@ struct GroupProfileView: View {
         r.avatarUrl = session.state.rooms.first(where: { $0.id == room.id })?.avatarUrl ?? room.avatarUrl
         r.avatarCrop = avatarCrop
         r.cwd = cwd.isEmpty ? nil : cwd
+        r.extraCwds = extraCwdsText.isEmpty ? nil : extraCwdsText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty })
         return r
     }
 
@@ -81,6 +83,14 @@ struct GroupProfileView: View {
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
                 }
+                
+                Section("Additional Repositories") {
+                    TextField("One path per line", text: $extraCwdsText, axis: .vertical)
+                        .disabled(busy)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .lineLimit(3...8)
+                }
 
                 Section {
                     Button("Save profile") { Task { await save() } }
@@ -98,6 +108,7 @@ struct GroupProfileView: View {
                 bulletin = room.bulletin
                 avatarCrop = room.avatarCrop ?? .circle
                 cwd = room.cwd ?? ""
+                extraCwdsText = room.extraCwds?.joined(separator: "\n") ?? ""
             }
             .onChange(of: photo) { _, item in
                 guard let item else { return }
@@ -113,7 +124,9 @@ struct GroupProfileView: View {
             id: room.id,
             name: name,
             bulletin: bulletin,
-            avatarCrop: avatarCrop
+            avatarCrop: avatarCrop,
+            cwd: currentRoom.cwd,
+            extraCwds: currentRoom.extraCwds
         )
     }
 
