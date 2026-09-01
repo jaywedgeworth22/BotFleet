@@ -279,11 +279,13 @@ pnpm package:win   # Windows installer + zip → release/
 pnpm package:linux # Ubuntu x64 .deb + AppImage → release/
 ```
 
-### Routines and webhook triggers
+### Routines, webhooks, and resource triggers
 
 Routines can run once or on selected weekdays, using either a MAUS's configured model/computer or the
 Cloud VM runner. Webhook triggers are independent from schedules but reuse the same queued task executor
-and calendar receipts.
+and calendar receipts. Resource triggers sample local disk, RAM/swap, and optional CPU
+load while BotFleet is running and enqueue the same kind of task when a threshold is
+crossed.
 
 BotFleet starts a webhook-only receiver on `127.0.0.1:8800` by default (or one port above `OMB_PORT`).
 Set `OMB_WEBHOOK_PORT` to choose another port. A webhook secret is shown once when the trigger is created

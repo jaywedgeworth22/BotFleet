@@ -12,6 +12,18 @@ A routine runs once or on selected weekdays. Each run starts a fresh task using 
 
 Run receipts distinguish queued, active, waiting, completed, missed, failed, and cancelled work. BotFleet must be running when a local routine becomes due.
 
+## Resource triggers
+
+A resource trigger samples this computer while BotFleet is running and starts a fresh task when disk, RAM/swap, or CPU load crosses a threshold you set. It uses the same queued executor as routines and webhooks.
+
+Typical Housekeeper setup:
+
+- Disk free at or below 80 GB
+- Swap used at or above 80 percent
+- Optional 1-minute load at or above 16
+
+Each trigger has a cooldown so a stuck metric does not enqueue a new task every sample. Closing the desktop app stops the in-app sampler. On this Mac, `com.jay.mac-resource-watch` also samples every five minutes and can POST the Housekeeper webhook if you want coverage while BotFleet is in the background.
+
 ## Webhook triggers
 
 Webhooks start the same queued task executor from an external HTTP request. They are independent from schedules and use a dedicated receiver on `127.0.0.1:8800` by default.
