@@ -812,3 +812,23 @@ describe("Store task working folder — cloud runs", () => {
     expect(store.pinTaskCwd(bot.id, bot.threadId)).toBeNull();
   });
 });
+
+describe("vmOwnerId", () => {
+  beforeEach(() => {
+    rmSync(DATA_DIR, { recursive: true, force: true });
+  });
+  it("returns the bot id if the bot is not in a shared VM group", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    expect(store.vmOwnerId(bot.id)).toBe(bot.id);
+  });
+  it("returns the group id if the bot is in a shared VM group", () => {
+    const store = new Store(selection);
+    const bot1 = store.createBot();
+    const bot2 = store.createBot();
+    const group = store.createGroup("Shared Team", [bot1.id, bot2.id]);
+    store.patchGroup(group.id, { sharedVm: true });
+    expect(store.vmOwnerId(bot1.id)).toBe(group.id);
+    expect(store.vmOwnerId(bot2.id)).toBe(group.id);
+  });
+});
