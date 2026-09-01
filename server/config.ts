@@ -520,6 +520,6 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
         }
       }
     }
+  }
   return map;
-}
 }
