@@ -196,7 +196,8 @@ public struct PairingInvite: Equatable, Sendable {
     }
 
     public static func parse(_ url: URL) -> PairingInvite? {
-        guard url.scheme?.lowercased() == "openmausbot",
+        guard let scheme = url.scheme?.lowercased(),
+              scheme == "botfleet" || scheme == "openmausbot",
               url.host?.lowercased() == "pair",
               let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
         else { return nil }
@@ -314,7 +315,7 @@ public struct PairingRouteError: Error, LocalizedError, Equatable, Sendable {
 
     public var errorDescription: String? {
         let routes = attemptedHosts.joined(separator: ", ")
-        return "Couldn’t reach this computer through any available route (\(routes)). Keep Phone access turned on in OpenMausBot, then try again."
+        return "Couldn’t reach this computer through any available route (\(routes)). Keep Phone access turned on in BotFleet, then try again."
     }
 }
 
@@ -567,9 +568,11 @@ public struct CompanionClient: Sendable {
             let (data, response) = try await session.data(for: request)
             guard !Task.isCancelled,
                   let http = response as? HTTPURLResponse,
-                  (200...299).contains(http.statusCode),
-                  try JSONDecoder().decode(HealthIdentity.self, from: data).app == "openmausbot"
+                  (200...299).contains(http.statusCode)
             else { return false }
+            let identity = try JSONDecoder().decode(HealthIdentity.self, from: data)
+            let app = identity.app.lowercased()
+            guard app == "botfleet" || app == "openmausbot" else { return false }
             return true
         } catch {
             return false
