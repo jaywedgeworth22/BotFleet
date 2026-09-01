@@ -77,6 +77,8 @@ extraResources:
     to: android-platform-tools
 
 mac:
+  identity: "Developer ID Application: Jay Wedgeworth, LLC (CC8UTF7ATG)"
+
   # Two single-arch artifacts rather than one universal binary: the app is
   # ~177 MB per arch, and universal would make every user download both halves.
   # electron-updater picks by filename (arm64-marked files on Apple silicon,
