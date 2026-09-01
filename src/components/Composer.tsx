@@ -416,6 +416,20 @@ export function Composer({
   }, []);
 
   useEffect(() => {
+    // Automatically focus the composer when opening or switching to a bot, channel, or task
+    const el = inputRef.current;
+    if (!el) return;
+    const active = document.activeElement;
+    if (active && active !== el && (active.tagName === "INPUT" || active.tagName === "TEXTAREA" || (active as HTMLElement).isContentEditable)) {
+      return;
+    }
+    el.focus();
+    if (el.value.length > 0) {
+      el.setSelectionRange(el.value.length, el.value.length);
+    }
+  }, [selectedBot?.id, group?.id, activeTaskId]);
+
+  useEffect(() => {
     const onGlobalPaste = (e: ClipboardEvent) => {
       const target = e.target as HTMLElement | null;
       if (

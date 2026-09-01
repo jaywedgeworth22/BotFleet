@@ -267,6 +267,7 @@ function Bubble({
     void navigator.clipboard?.writeText(copyContent);
     setCopied(true);
     setTimeout(() => setCopied(false), 1400);
+    window.dispatchEvent(new CustomEvent("focus-composer"));
   };
 
   if (user && editing && !webhookView) {

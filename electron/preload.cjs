@@ -130,6 +130,12 @@ contextBridge.exposeInMainWorld("ogb", {
   },
   /** Mirrors durable unread state into the native Dock/taskbar badge. */
   setUnreadCount: (count) => ipcRenderer.send("desktop:unread-count", count),
+  /** Native menu bar actions dispatched from the main process. */
+  onMenuAction: (cb) => {
+    const handler = (_event, action, payload) => cb(action, payload);
+    ipcRenderer.on("menu:action", handler);
+    return () => ipcRenderer.removeListener("menu:action", handler);
+  },
   /** Live VNC/noVNC in a sandboxed window owned by the app window. */
   desktopViewer: {
     open: (url, title, contextId) => ipcRenderer.invoke("desktop-viewer:open", url, title, contextId),
