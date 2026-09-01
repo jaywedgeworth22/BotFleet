@@ -28,7 +28,8 @@ export function initSentry(): void {
   const tracesSampleRate = Number(
     (import.meta.env.VITE_SENTRY_TRACES_SAMPLE_RATE as string | undefined)?.trim() ?? "0.2"
   );
-  const replayDisabled = (import.meta.env.VITE_SENTRY_REPLAY_ENABLED as string | undefined)?.trim() === "false";
+  const replayRaw = (import.meta.env.VITE_SENTRY_REPLAY_ENABLED as string | undefined)?.trim();
+  const replayDisabled = replayRaw ? /^(false|0|off|no)$/i.test(replayRaw) : false;
   const replaysSessionSampleRate = Number(
     (import.meta.env.VITE_SENTRY_REPLAY_SESSION_SAMPLE_RATE as string | undefined)?.trim() ?? "0.1"
   );
@@ -40,6 +41,7 @@ export function initSentry(): void {
     dsn,
     environment: env,
     tracesSampleRate: Number.isFinite(tracesSampleRate) ? Math.min(Math.max(tracesSampleRate, 0), 1) : 0.2,
+    enableLogs: true,
     replaysSessionSampleRate: !replayDisabled && Number.isFinite(replaysSessionSampleRate) ? replaysSessionSampleRate : 0,
     replaysOnErrorSampleRate: !replayDisabled && Number.isFinite(replaysOnErrorSampleRate) ? replaysOnErrorSampleRate : 0,
     integrations: [
