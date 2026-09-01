@@ -114,6 +114,8 @@ mac:
     NSSpeechRecognitionUsageDescription: BotFleet transcribes your voice on-device to type messages for you.
     NSAccessibilityUsageDescription: BotFleet uses Accessibility when you let a bot control this Mac.
     NSScreenCaptureUsageDescription: BotFleet uses Screen Recording so bots can see this Mac before acting.
+    NSLocalNetworkUsageDescription: BotFleet connects to the mobile app on your local network.
+    NSAppleEventsUsageDescription: BotFleet uses Apple Events to launch your configured terminal app when you open a workspace.
   # Notarization runs manually after the build (notarytool + staple),
   # mirroring the BlueyLite ship_release.sh flow.
   notarize: false

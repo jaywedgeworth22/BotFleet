@@ -4665,6 +4665,12 @@ const server = createServer(async (req, res) => {
         }
         patch.avatarUrl = body.avatarUrl;
       }
+      if (body.avatarCrop !== undefined) {
+        if (typeof body.avatarCrop !== "string" || !["mascot", "circle", "rounded", "square"].includes(body.avatarCrop)) {
+          return json(res, 400, { error: "avatarCrop must be a valid crop value" });
+        }
+        patch.avatarCrop = body.avatarCrop;
+      }
       if (body.bulletin !== undefined) {
         if (typeof body.bulletin !== "string") return json(res, 400, { error: "bulletin must be a string" });
         if (body.bulletin.length > 12_000) {

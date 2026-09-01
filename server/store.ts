@@ -1300,6 +1300,13 @@ export class Store {
     return this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
   }
 
+  /** Compat alias.  Older startTurn / webhook dispatch called `store.task()`,
+   *  which threw `store.task is not a function` and failed every Housekeeper
+   *  resource wake in ~8ms.  Keep this until every caller uses taskByThread. */
+  task(botId: string, threadId: string): TaskRecord | undefined {
+    return this.taskByThread(botId, threadId);
+  }
+
   /** A fresh context on the same bot: new thread, new session, same
    * persona/tools/computer. Becomes the active task. */
   createTask(botId: string, title?: string, activate = true): TaskRecord | null {

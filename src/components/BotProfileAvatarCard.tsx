@@ -64,6 +64,7 @@ export function BotProfileAvatarCard({
       if (!avatarUrl) throw new Error("The uploaded image could not be used as an avatar");
       const latestCrop = cropRef.current;
       onPatch({ avatarUrl, avatarCrop: latestCrop === "mascot" ? "circle" : latestCrop });
+      await flushBotPatches(bot.id);
     } catch (uploadError) {
       setError(uploadError instanceof Error ? uploadError.message : String(uploadError));
     } finally {
@@ -72,9 +73,10 @@ export function BotProfileAvatarCard({
     }
   };
 
-  const removeImage = () => {
+  const removeImage = async () => {
     setError(null);
     onPatch({ avatarUrl: null, avatarCrop: "mascot" });
+    await flushBotPatches(bot.id);
   };
 
   const saveImageKey = async () => {
@@ -119,6 +121,7 @@ export function BotProfileAvatarCard({
             ? (result.bot.avatarCrop ?? "circle")
             : latestCrop,
       });
+      await flushBotPatches(bot.id);
     } catch (generateError) {
       setError(generateError instanceof Error ? generateError.message : String(generateError));
     } finally {
@@ -131,7 +134,10 @@ export function BotProfileAvatarCard({
       <div className="flex items-center justify-between border-b border-hairline/40 px-3 py-2.5">
         <span className="rounded-lg bg-control px-3 py-1.5 text-[14px] font-medium text-ink">Avatar</span>
         <button
-          onClick={() => onPatch({ avatarCrop: "mascot", color: "green", mascotExpression: null })}
+          onClick={async () => {
+            onPatch({ avatarCrop: "mascot", color: "green", mascotExpression: null });
+            await flushBotPatches(bot.id);
+          }}
           className="rounded-md px-2 py-1.5 text-[13px] text-ink-secondary hover:bg-control hover:text-ink"
         >
           Reset mascot
@@ -190,7 +196,10 @@ export function BotProfileAvatarCard({
               key={candidate}
               type="button"
               aria-pressed={crop === candidate}
-              onClick={() => onPatch({ avatarCrop: candidate })}
+              onClick={async () => {
+                onPatch({ avatarCrop: candidate });
+                await flushBotPatches(bot.id);
+              }}
               className={cn(
                 "py-1.5 text-[12.5px]",
                 index > 0 && "border-l border-hairline/40",
