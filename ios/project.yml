@@ -91,6 +91,15 @@ targets:
               NSExceptionAllowsInsecureHTTPLoads: true
     entitlements:
       path: App/BotFleet.entitlements
+      properties:
+        com.apple.developer.associated-domains:
+          - applinks:botfleet.app
+          - applinks:agents.jays.services
+          - webcredentials:botfleet.app
+        com.apple.security.application-groups:
+          - group.app.botfleet
+        com.apple.developer.usernotifications.time-sensitive: true
+        com.apple.developer.usernotifications.critical-alerts: true
 
   BotFleetWidgets:
     type: app-extension
@@ -120,6 +129,9 @@ targets:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
     entitlements:
       path: Widgets/BotFleetWidgets.entitlements
+      properties:
+        com.apple.security.application-groups:
+          - group.app.botfleet
 
 schemes:
   BotFleet:
