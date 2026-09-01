@@ -174,7 +174,7 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
     case "cursorAgent":
       return <CursorMark size={size} className={className} />;
     case "antigravityAgent":
-      return <AntigravityMark size={size} className={className} />;
+      return <GeminiMark size={size} className={className} />;
     case "opencodeGo":
       return <OpenCodeMark size={size} className={className} />;
     case "qwenAgent":

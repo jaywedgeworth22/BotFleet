@@ -248,8 +248,10 @@ export class ResourceTriggerManager {
   private readonly sampleFn: () => HostSample;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  private readonly options: ResourceTriggerManagerOptions;
 
-  constructor(private readonly options: ResourceTriggerManagerOptions) {
+  constructor(options: ResourceTriggerManagerOptions) {
+    this.options = options;
     this.file = options.file ?? join(DATA_DIR, "resource-triggers.json");
     this.now = options.now ?? Date.now;
     this.sampleFn = options.sample ?? (() => sampleHost(this.now()));
