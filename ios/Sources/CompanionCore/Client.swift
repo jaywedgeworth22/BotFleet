@@ -740,6 +740,9 @@ public struct CompanionClient: Sendable {
         ).group
     }
 
+    /// Persist an avatar and return the app-owned fetch URL.  Agents need the
+    /// harness disk `path` for chat images; this helper is avatar-only and the
+    /// iOS composer does not attach images yet.
     public func uploadAvatar(data: Data, mime: String) async throws -> String {
         let allowed = ["image/png", "image/jpeg", "image/gif", "image/webp"]
         guard allowed.contains(mime), data.count <= 10 * 1_024 * 1_024 else {
