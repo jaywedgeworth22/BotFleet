@@ -972,10 +972,17 @@ describe("harness HTTP API", () => {
 
     const wrongType = await fetch(`${BASE}/api/attachments`, {
       method: "POST",
+      headers: { "content-type": "text/html" },
+      body: "<script>not an image</script>",
+    });
+    expect(wrongType.status).toBe(400);
+
+    const textFile = await fetch(`${BASE}/api/attachments`, {
+      method: "POST",
       headers: { "content-type": "text/plain" },
       body: "not an image",
     });
-    expect(wrongType.status).toBe(400);
+    expect(textFile.status).toBe(201);
 
     const saved = await fetch(`${BASE}/api/attachments`, {
       method: "POST",
