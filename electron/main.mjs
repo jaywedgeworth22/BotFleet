@@ -20,7 +20,8 @@ import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { buildDiagnosticsReport, decodeLogTail, diagnosticsFileName } from "./diagnostics.mjs";
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
 import { activateExistingWindow } from "./single-instance.mjs";
-import { pollServerIdentity } from "./server-boot-probe.mjs";
+import { pollServerIdentity, probeHarness, resolvePackagedServer } from "./server-boot-probe.mjs";
+import { startUiShim } from "./attached-ui-shim.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
 import { windowChromeOptions } from "./window-chrome.mjs";
 import { parseExternalHttpUrl, windowOpenExternalUrl } from "./external-url.mjs";
@@ -206,6 +207,17 @@ app.on("second-instance", (_event, commandLine) => {
 // our API shape, not just a 200).
 let serverProc = null;
 let serverReady = true;
+// "spawned": this app forked the harness child above. "attached": a BotFleet
+// harness was already answering /api/health (the always-on launchd job, or a
+// dev harness) and the app joined it instead of forking a second server
+// against the same data dir. An attached harness is never killed on quit.
+let serverMode = "spawned";
+// Serves the bundled UI (and streams /api through) when the attached harness
+// runs headless — see attached-ui-shim.mjs.
+let uiShim = null;
+// Origin the window loads. Usually the harness itself; the shim's when attached
+// to a headless harness. Null until the packaged boot settles.
+let rendererBase = null;
 let secureCredentials = {};
 let secureCredentialState = null;
 
@@ -663,6 +675,7 @@ async function gatherDiagnostics() {
       electron: process.versions.electron,
       node: process.versions.node,
       packaged: app.isPackaged,
+      harness: app.isPackaged ? `${serverMode}:${SERVER_PORT}` : "dev",
       uptimeSeconds: Math.round(process.uptime()),
     },
     configSummary: serverStatus ?? {},
@@ -743,24 +756,51 @@ async function startServerOn(port) {
 }
 
 async function startServerPackaged() {
-  // two passes: a quit-and-reopen relaunch can race the dying instance's
-  // server during teardown — one settle-and-retry covers it
-  let everyPortForeignOwned = true;
-  for (let attempt = 0; attempt < 2; attempt++) {
-    for (const port of [8799, 18799, 28799]) {
-      const started = await startServerOn(port);
-      if (started.proc) {
-        serverProc = started.proc;
-        SERVER_PORT = port;
-        return true;
-      }
-      // A child that exited or timed out is not evidence of a port conflict —
-      // only "another process answered health checks" is.
-      if (started.reason !== "foreign-owner") everyPortForeignOwned = false;
-    }
-    await new Promise((r) => setTimeout(r, 2500));
+  // Attach-or-spawn: a port that already answers as a BotFleet harness is
+  // joined, a foreign owner is skipped, a free port gets our own child. Two
+  // passes: a quit-and-reopen relaunch can race the dying instance's server
+  // during teardown — one settle-and-retry covers it.
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799, 28799],
+    probe: (port) => probeHarness({ port }),
+    spawn: startServerOn,
+    log: slog,
+  });
+  if (result.mode === "spawned") {
+    serverProc = result.proc;
+    serverMode = "spawned";
+    SERVER_PORT = result.port;
+    rendererBase = `http://127.0.0.1:${SERVER_PORT}`;
+    return true;
   }
-  serverStartConflictOnly = everyPortForeignOwned;
+  if (result.mode === "attached") {
+    serverProc = null;
+    serverMode = "attached";
+    SERVER_PORT = result.port;
+    if (result.static) {
+      rendererBase = `http://127.0.0.1:${SERVER_PORT}`;
+      return true;
+    }
+    // Headless harness: serve our bundled UI from a sibling port and stream
+    // /api through to it. Prefer the app's own port list so the renderer
+    // origin stays stable across launches.
+    try {
+      uiShim = await startUiShim({
+        uiDir: path.join(process.resourcesPath, "ui"),
+        harnessPort: SERVER_PORT,
+        listenPorts: [8799, 18799, 28799].filter((port) => port !== SERVER_PORT),
+        log: slog,
+      });
+      rendererBase = `http://127.0.0.1:${uiShim.port}`;
+      slog(`serving the bundled UI on port ${uiShim.port} for the attached harness on port ${SERVER_PORT}`);
+      return true;
+    } catch (error) {
+      slog(`could not serve the bundled UI for the attached harness: ${error?.message ?? error}`);
+      serverStartConflictOnly = false;
+      return false;
+    }
+  }
+  serverStartConflictOnly = result.conflictOnly;
   return false;
 }
 
@@ -789,12 +829,12 @@ function buildErrorPage({ allPortsOccupied }) {
   const serverLogPath = path.join(LOG_DIR, "server.log");
   const serverLogHref = pathToFileURL(serverLogPath).href;
   const reason = allPortsOccupied
-    ? "Every BotFleet port answered health checks from another process — likely a second copy of the app, or another program on ports 8799–28799. Quit that program, then quit and reopen BotFleet."
-    : "The background server didn't come up in time — this is usually slow startup, not a port conflict. Quit and reopen BotFleet.";
+    ? "Every BotFleet port answered health checks from another program on ports 8799–28799.\u00a0 Quit that program, then quit and reopen BotFleet."
+    : "The background server didn't come up in time — this is usually slow startup, not a port conflict.\u00a0 Quit and reopen BotFleet.";
   return (
     "data:text/html;charset=utf-8," +
     encodeURIComponent(
-      `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the bot server</h2><p style="color:#fcfcfc99;line-height:1.5">${escapeHtml(reason)} If it keeps happening, check <a target="_blank" rel="noopener" href="${serverLogHref}" style="color:#fcfcfc">${escapeHtml(serverLogPath)}</a>.</p></div></body>`,
+      `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the bot server</h2><p style="color:#fcfcfc99;line-height:1.5">${escapeHtml(reason)}&nbsp; If it keeps happening, check <a target="_blank" rel="noopener" href="${serverLogHref}" style="color:#fcfcfc">${escapeHtml(serverLogPath)}</a>.</p></div></body>`,
     )
   );
 }
@@ -811,8 +851,13 @@ const androidDevice = createAndroidDeviceController({ resourcesPath: process.res
 const displayMediaGuard = createDisplayMediaGuard();
 let displayMediaRequestCount = 0;
 
+function rendererBaseUrl() {
+  if (!app.isPackaged) return DEV_URL;
+  return rendererBase ?? `http://127.0.0.1:${SERVER_PORT}`;
+}
+
 function rendererOrigin() {
-  return new URL(app.isPackaged ? `http://127.0.0.1:${SERVER_PORT}` : DEV_URL).origin;
+  return new URL(rendererBaseUrl()).origin;
 }
 
 function respondToDisplayMediaRequest(callback, response) {
@@ -1137,7 +1182,7 @@ function createWindow() {
             };
           })()
         `);
-        const expectedLocation = `http://127.0.0.1:${SERVER_PORT}/`;
+        const expectedLocation = `${rendererOrigin()}/`;
         if (result.location !== expectedLocation) {
           throw new Error(
             `unexpected packaged renderer URL: ${result.location} (expected ${expectedLocation})`,
@@ -1187,7 +1232,7 @@ function createWindow() {
   }
 
   if (app.isPackaged) {
-    win.loadURL(serverReady ? `http://127.0.0.1:${SERVER_PORT}` : buildErrorPage({ allPortsOccupied: serverStartConflictOnly }));
+    win.loadURL(serverReady ? rendererBaseUrl() : buildErrorPage({ allPortsOccupied: serverStartConflictOnly }));
   } else {
     win.loadURL(DEV_URL);
   }
@@ -1926,7 +1971,11 @@ app.on("before-quit", (e) => {
   if (cuaCleanedUp) return;
   e.preventDefault();
   try {
+    // serverProc is null when attached — the always-on harness outlives us.
     serverProc?.kill();
+  } catch {}
+  try {
+    uiShim?.close();
   } catch {}
   // Release the sleep blocker synchronously; child shutdown is awaited below.
   syncCompanionKeepAwake(false, false);
