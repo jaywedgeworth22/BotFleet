@@ -6,7 +6,20 @@ production hosted service still match this repository.
 - Tracking: **No**
 - Data used for third-party advertising, developer advertising, or marketing:
   **None**
-- Third-party advertising or analytics SDKs: **None**
+- Third-party advertising or analytics SDKs: **None** for advertising or
+  product analytics.  The app links the **Sentry** crash-reporting SDK
+  (`sentry-cocoa`, see `ios/App/SentryTelemetry.swift`).  It is inactive unless
+  the build was cut with a `SENTRY_DSN`; builds shipped through the fleet
+  script and the TestFlight workflow include one.
+- Data used for **App Functionality** (diagnostics, not linked to the user):
+  - Diagnostics: **Crash Data**, **Performance Data** (app hangs longer than
+    two seconds, a 20% sample of traces, and failed HTTP 5xx requests with
+    their URL), and **Other Diagnostic Data** (device model, OS version, app
+    version, an anonymous installation identifier).
+  - Sentry is configured with `sendDefaultPii = false`, no screenshots, and no
+    view hierarchy.  Query parameters named `token`, `key`, `secret`, `auth`,
+    or `password` are redacted on the phone before an event is sent.  Message
+    content, transcripts, and pairing tokens are never attached.
 - Data linked to the user, for **App Functionality**:
   - Contact Info: **Email Address** (the profile email exposed by the paired
     computer)
@@ -23,7 +36,7 @@ production hosted service still match this repository.
   Connect definition of ephemeral processing when answering the collection
   question for the submitted build.
 - Privacy policy URL:
-  `https://github.com/milind-soni/BotFleet/blob/main/docs/ios-privacy.md`
+  `https://github.com/jaywedgeworth22/BotFleet/blob/main/docs/ios-privacy.md`
 
 The iOS app does not receive the hosted account's user ID or the computer's
 hosted installation ID. Email sign-in for optional hosted access happens on the
@@ -34,5 +47,5 @@ remains the only transcript store; the control plane does not receive a
 persistent cloud copy.
 
 Re-evaluate these answers and `PrivacyInfo.xcprivacy` before every upload,
-especially if analytics, push delivery, crash reporting, or content retention
-is added.
+especially if analytics, push delivery, or content retention is added, or if
+the Sentry configuration in `SentryTelemetry.swift` changes what it captures.
