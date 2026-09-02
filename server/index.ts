@@ -5956,7 +5956,15 @@ const server = createServer(async (req, res) => {
       // Windows never pushes PATH changes into a live process, so without
       // this the answer is frozen at boot and "check again" is a no-op.
       resetPathCache();
-      return json(res, 200, { instances: await registry.describe() });
+      // describe() probes every CLI (--version, auth status, model
+      // discovery), which costs real seconds on a machine with many engines
+      // installed. The engine rail's passive refreshes (initial hydrate, the
+      // `config` SSE push, the throttled focus probe) ride a short memo;
+      // ?fresh=1 — sent by the client's explicit "Check again"/"Refresh"
+      // actions and right after a CLI/fullAuto override is saved — bypasses
+      // it so the user's own action is never served a stale answer.
+      const fresh = url.searchParams.get("fresh") === "1";
+      return json(res, 200, { instances: await registry.describe(fresh ? undefined : { maxAgeMs: 15_000 }) });
     }
 
     // ── CLI binary discovery for the Engines "detected" dropdown ──

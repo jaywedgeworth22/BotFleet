@@ -3,6 +3,7 @@
 // which one is active and remembers the choice. Nothing here knows a colour —
 // that keeps the two halves from drifting apart, and it means adding a skin is
 // one CSS block plus one line in SKINS.
+import { useSyncExternalStore } from "react";
 
 export const SKIN_IDS = [
   "system",
@@ -80,6 +81,57 @@ export function getDefaultSkin(): SkinId {
   return "studio";
 }
 
+// Only these two presets paint a dark ground (styles.css --color-app:
+// midnight #070707, foundry #100e0b); everything else, including a "system"
+// still waiting to resolve, is light. Kept as data rather than re-deriving it
+// from CSS at runtime, same tradeoff scripts/check-skin-contrast.mjs makes.
+const DARK_SKINS: ReadonlySet<SkinId> = new Set(["midnight", "foundry"]);
+
+function relativeLightness(hex: string): number {
+  const clean = hex.replace("#", "").trim();
+  const full = clean.length === 3 ? [...clean].map((c) => c + c).join("") : clean;
+  const r = parseInt(full.slice(0, 2), 16) || 0;
+  const g = parseInt(full.slice(2, 4), 16) || 0;
+  const b = parseInt(full.slice(4, 6), 16) || 0;
+  return 0.299 * r + 0.587 * g + 0.114 * b; // 0 = black, 255 = white
+}
+
+/** Whether a *resolved* skin paints a dark ground — used to pick a light- or
+ * dark-mode syntax theme for code fences (a11y-theme-copy:code-fence-dark-shiki-on-light-default).
+ * "custom" has no fixed answer: it is decided by the ground colour the user
+ * actually picked, the same one `[data-skin="custom"]`'s inline
+ * `--color-inset` override renders (applyCustomTheme sets `--color-inset` to
+ * `appBg` directly). "system" is resolved to a concrete id before it ever
+ * reaches `document.documentElement.dataset.skin`, but is handled here too
+ * for callers that pass the raw preference. */
+export function isDarkSkin(id: SkinId): boolean {
+  if (id === "custom") return relativeLightness(readCustomTheme().appBg) < 128;
+  if (id === "system") {
+    return typeof window !== "undefined" && !!window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+  }
+  return DARK_SKINS.has(id);
+}
+
+const skinWatchers = new Set<() => void>();
+
+function notifySkinChange(): void {
+  for (const fn of [...skinWatchers]) fn();
+}
+
+/** The resolved skin actually painted on `<html data-skin>` right now, live —
+ * re-renders the caller whenever `applySkin`/`saveCustomTheme` changes it.
+ * Falls back to `readSkin()` before the DOM attribute exists (SSR/tests). */
+export function useResolvedSkin(): SkinId {
+  return useSyncExternalStore(
+    (fn) => {
+      skinWatchers.add(fn);
+      return () => skinWatchers.delete(fn);
+    },
+    () => (typeof document === "undefined" ? readSkin() : (document.documentElement.dataset.skin as SkinId) || readSkin()),
+    () => readSkin(),
+  );
+}
+
 const KEY = "omb-skin";
 const ACCENT_KEY = "omb-custom-accent";
 const CUSTOM_THEME_KEY = "omb-custom-palette";
@@ -131,6 +183,9 @@ export function saveCustomTheme(theme: CustomThemeConfig): void {
     // ignore
   }
   applyCustomTheme(theme);
+  // The custom skin's darkness can change without `data-skin` changing (it
+  // stays "custom") — isDarkSkin() consumers (code fences) need to hear it.
+  notifySkinChange();
 }
 
 export function applyCustomTheme(theme: CustomThemeConfig): void {
@@ -227,4 +282,6 @@ export function applySkin(id: SkinId): void {
   } catch {
     /* no bridge */
   }
+
+  notifySkinChange();
 }
