@@ -124,6 +124,53 @@ describe("quota and session-limit failover", () => {
     expect(isQuotaOrCapText("Done.")).toBe(false);
   });
 
+  it("matches official provider quota chips and ignores near-cap warnings", () => {
+    const hits = [
+      // Grok TUI / xAI SuperGrok (observed in this room)
+      "You've hit your session limit · resets 12:10am (America/Chicago)",
+      // grok.com consumer
+      "Message limit reached",
+      "You've exceeded your messaging allowance for the moment",
+      // xAI API
+      "429 Too Many Requests",
+      // Claude.ai subscription (support.claude.com)
+      "5-hour limit reached - resets 3:00pm",
+      // Claude API (docs.claude.com / platform.claude.com)
+      "You have reached your API usage limits: your organization has crossed its monthly API usage threshold",
+      "This request would exceed your organization's rate limit of 30,000 input tokens per minute",
+      "rate_limit_error",
+      "enforced_spend_limit_reached",
+      // Gemini API (ai.google.dev)
+      "Resource has been exhausted (e.g. check quota).",
+      "You exceeded your current quota, please check your plan and billing details.",
+      "429 RESOURCE_EXHAUSTED",
+      "Your prepayment credits are depleted.",
+      // Codex CLI (openai/codex + help.openai.com)
+      "You've hit your usage limit. Upgrade to Plus to continue using Codex, or try again later.",
+      "You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 6th, 2026 11:41 PM.",
+      "usage_limit_exceeded",
+      "Rate limit reached for gpt-4.1 in organization org-example on tokens per min (TPM)",
+      // Cursor CLI / editor
+      "You've reached your monthly limit. Set a new on-demand limit to continue.",
+      "Increase limits for faster responses Claude Opus 4.5 is not available in the slow pool. Please switch to Auto.",
+      "You're out of usage. Switch to Auto, or ask your admin to increase your limit to continue.",
+      "You've hit your rate limit on your current plan",
+      "Upgrade your plan to continue",
+      // DeepSeek API (api-docs.deepseek.com)
+      "402 Insufficient Balance",
+      "429 Rate Limit Reached",
+      // Kimi Code (kimi.com/code/docs error-reference)
+      "You've reached your 5-hour usage limit",
+      "You've reached your weekly (7-day) usage limit",
+      "You've reached your monthly usage limit for this billing cycle",
+      "We're receiving too many requests at the moment. Please wait a moment and try again.",
+      "Quota exceeded, please upgrade your plan or retry later",
+    ];
+    expect(hits.filter((text) => !isQuotaOrCapText(text))).toEqual([]);
+    expect(isQuotaOrCapText("Approaching 5-hour limit.")).toBe(false);
+    expect(isQuotaOrCapText("You've used 80% of your included usage")).toBe(false);
+  });
+
   it("fails over after successful tools when the last text is a session-limit chip", () => {
     const afterUser: FallbackScanMessage[] = [
       { role: "bot", kind: "activity", tool: { name: "Bash", ok: true } },
