@@ -223,15 +223,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       const abort = new AbortController();
       active.set(threadId, { abort, turnId });
 
-      const minimaxTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
-        type: "function",
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
-        },
-      })) : undefined;
-      
+      // Tool calling is not wired for MiniMax yet: complete() sends `tools` but
+      // returns text only, so a tool_call in the response would be dropped.
+      // Mirror the DeepSeek driver (tool_calls + onToolCallDelta) before
+      // advertising tools here.
       const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
       ];
