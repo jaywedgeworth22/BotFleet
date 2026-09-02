@@ -31,8 +31,6 @@ export const STATIC_DSH_MODELS: ModelCatalog = {
   options: [
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
-    { id: "deepseek-v4-flash", label: "DeepSeek-V4-Flash" },
-    { id: "deepseek-v4-pro", label: "DeepSeek-V4-Pro" },
     { id: "deepseek-v4-flash-vision-exp", label: "DeepSeek-V4-Flash-Vision-Exp" },
   ],
 };
