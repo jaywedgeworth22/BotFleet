@@ -15,7 +15,7 @@ import {
   credentialIsConfigured,
   isReusableCredentialRequest,
   isCredentialTargetId,
-CredentialTargetId,
+  type CredentialTargetId,
 } from "../shared/credential-request.ts";
 
 import { approvalKey, autoVerdict } from "./auto-approve.ts";
@@ -55,7 +55,7 @@ import {
   
   SHARED_LOCAL_VM_TARGET,
   setupCommands,
-LocalVmTarget,
+type LocalVmTarget,
 
 } from "./container-computer.ts";
 import {
@@ -83,10 +83,10 @@ import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import {
   isEffortLevel,
-ModelSelection,
-ProviderInstance,
-RequestOutcome,
-RuntimeEvent,
+type ModelSelection,
+  type ProviderInstance,
+  type RequestOutcome,
+  type RuntimeEvent,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
@@ -106,11 +106,11 @@ import {
   roomResponders,
   sectionKey,
   Store,
-GroupDefaultResponder,
-GroupRecord,
-GroupTaskRecord,
-Message,
-TaskRecord,
+  type GroupDefaultResponder,
+  type GroupRecord,
+  type GroupTaskRecord,
+  type Message,
+  type TaskRecord,
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";

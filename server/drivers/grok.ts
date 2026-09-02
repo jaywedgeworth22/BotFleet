@@ -95,6 +95,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       }
       let text = "";
       let usage: { input: number; output: number } | null = null;
+      let streamToolCalls: any[] = [];
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -108,10 +109,23 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         } catch {
           return;
         }
-        const delta = chunk.choices?.[0]?.delta?.content;
+        const deltaObj = chunk.choices?.[0]?.delta;
+        const delta = deltaObj?.content;
+        const toolCallsDelta = Array.isArray(deltaObj?.tool_calls) ? deltaObj.tool_calls : undefined;
+        
         if (delta) {
           text += delta;
-          opts.onDelta?.(delta);
+          opts.onDelta?.(delta, "assistant_text");
+        }
+        if (toolCallsDelta) {
+          for (const tc of toolCallsDelta) {
+            const tcIndex = tc.index ?? 0;
+            if (!streamToolCalls[tcIndex]) streamToolCalls[tcIndex] = { id: "", function: { name: "", arguments: "" } };
+            if (tc.id) streamToolCalls[tcIndex].id += tc.id;
+            if (tc.function?.name) streamToolCalls[tcIndex].function.name += tc.function.name;
+            if (tc.function?.arguments) streamToolCalls[tcIndex].function.arguments += tc.function.arguments;
+            opts.onToolCallDelta?.(tcIndex, tc.id, tc.function?.name, tc.function?.arguments);
+          }
         }
         if (chunk.usage) {
           usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
@@ -147,14 +161,27 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       const retryScale = Number(process.env.FAKE_GROK_RETRY_SCALE ?? "1");
       active.set(threadId, { abort, turnId });
 
-      const messages = [
+      const grokTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+        },
+      })) : undefined;
+      
+      const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
-        ...(turn.transcript ?? []).map((m) => ({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: m.text,
-        })),
-        { role: "user", content: turn.text },
       ];
+      
+      for (const m of (turn.transcript ?? [])) {
+        if (m.role === "assistant") {
+          messages.push({ role: "assistant", content: m.text });
+        } else {
+          messages.push({ role: "user", content: m.text });
+        }
+      }
+      messages.push({ role: "user", content: turn.text });
       appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: { model: turn.model, messages } });
 
       emit({ ...base(threadId, turnId), type: "turn.started" });
@@ -249,7 +276,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session" },
+        capabilities: { sessionModelSwitch: "in-session", localComputerMcp: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const, // this engine has no asks to answer

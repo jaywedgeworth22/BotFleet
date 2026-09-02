@@ -59,7 +59,7 @@ export type LifecycleAction = "pull" | "run" | "start" | "stop" | "remove";
 const INTERNAL_VIEWER_PORT = 6901;
 const HOST_VIEWER_PORT = 6080;
 const MEMORY_BYTES = 8 * 1024 * 1024 * 1024;
-const NANO_CPUS = 2_000_000_000;
+const NANO_CPUS = 4_000_000_000;
 const PIDS_LIMIT = 512;
 const SHM_BYTES = 512 * 1024 * 1024;
 
