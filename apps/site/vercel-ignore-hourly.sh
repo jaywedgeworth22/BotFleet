@@ -29,7 +29,7 @@ if [[ -n "${VERCEL_IGNORE_WATCH:-}" ]]; then
   # shellcheck disable=SC2206
   watch_args=(${VERCEL_IGNORE_WATCH})
 elif [[ -n "$git_root" && "$script_dir" != "$git_root" ]]; then
-  watch_args=("${script_dir#"$git_root"/}")
+  watch_args=(":(top)${script_dir#"$git_root"/}")
 else
   watch_args=(
     .
