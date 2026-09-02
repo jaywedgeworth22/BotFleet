@@ -6,10 +6,8 @@ import type { ModelCatalog } from "../../contracts.ts";
 import { createAcpDriver, type AcpSupport } from "./core.ts";
 
 export const STATIC_DSH_MODELS: ModelCatalog = {
-  default: "deepseek-chat",
+  default: "deepseek-v4-flash",
   options: [
-    { id: "deepseek-chat", label: "DeepSeek Chat" },
-    { id: "deepseek-reasoner", label: "DeepSeek Reasoner" },
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
   ],

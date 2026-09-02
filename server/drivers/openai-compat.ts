@@ -133,7 +133,9 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           "content-type": "application/json",
         },
         body: JSON.stringify(bodyPayload),
-        signal: opts.signal ?? AbortSignal.timeout(120_000),
+        signal: opts.signal
+          ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
+          : AbortSignal.timeout(120_000),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
@@ -165,52 +167,59 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
+      const takeSseLine = (line: string) => {
+        if (!line.startsWith("data:")) return;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") return;
+        let chunk: any;
+        try {
+          chunk = JSON.parse(data);
+        } catch {
+          return;
+        }
+        const delta = chunk.choices?.[0]?.delta;
+        const contentDelta = typeof delta?.content === "string" ? delta.content : undefined;
+        const reasoningDelta = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : undefined;
+        const toolCallsDelta = Array.isArray(delta?.tool_calls) ? delta.tool_calls : undefined;
+
+        if (reasoningDelta) {
+          reasoning += reasoningDelta;
+          opts.onDelta?.(reasoningDelta, "reasoning_text");
+        }
+        if (contentDelta) {
+          text += contentDelta;
+          opts.onDelta?.(contentDelta, "assistant_text");
+        }
+        if (toolCallsDelta) {
+          for (const tc of toolCallsDelta) {
+            const tcIndex = tc.index ?? 0;
+            if (!streamToolCalls[tcIndex]) streamToolCalls[tcIndex] = { id: "", function: { name: "", arguments: "" } };
+            if (tc.id) streamToolCalls[tcIndex].id += tc.id;
+            if (tc.function?.name) streamToolCalls[tcIndex].function.name += tc.function.name;
+            if (tc.function?.arguments) streamToolCalls[tcIndex].function.arguments += tc.function.arguments;
+            opts.onToolCallDelta?.(tcIndex, tc.id, tc.function?.name, tc.function?.arguments);
+          }
+        }
+        if (chunk.usage) {
+          usage = {
+            input: chunk.usage.prompt_tokens ?? 0,
+            output: chunk.usage.completion_tokens ?? 0,
+          };
+        }
+      };
       for (;;) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          buf += decoder.decode();
+          if (buf.trim()) takeSseLine(buf.trim());
+          break;
+        }
         buf += decoder.decode(value, { stream: true });
         let nl;
         while ((nl = buf.indexOf("\n")) !== -1) {
           const line = buf.slice(0, nl).trim();
           buf = buf.slice(nl + 1);
-          if (!line.startsWith("data:")) continue;
-          const data = line.slice(5).trim();
-          if (data === "[DONE]") continue;
-          let chunk: any;
-          try {
-            chunk = JSON.parse(data);
-          } catch {
-            continue;
-          }
-          const delta = chunk.choices?.[0]?.delta;
-          const contentDelta = typeof delta?.content === "string" ? delta.content : undefined;
-          const reasoningDelta = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : undefined;
-          const toolCallsDelta = Array.isArray(delta?.tool_calls) ? delta.tool_calls : undefined;
-          
-          if (reasoningDelta) {
-            reasoning += reasoningDelta;
-            opts.onDelta?.(reasoningDelta, "reasoning_text");
-          }
-          if (contentDelta) {
-            text += contentDelta;
-            opts.onDelta?.(contentDelta, "assistant_text");
-          }
-          if (toolCallsDelta) {
-            for (const tc of toolCallsDelta) {
-              const tcIndex = tc.index ?? 0;
-              if (!streamToolCalls[tcIndex]) streamToolCalls[tcIndex] = { id: "", function: { name: "", arguments: "" } };
-              if (tc.id) streamToolCalls[tcIndex].id += tc.id;
-              if (tc.function?.name) streamToolCalls[tcIndex].function.name += tc.function.name;
-              if (tc.function?.arguments) streamToolCalls[tcIndex].function.arguments += tc.function.arguments;
-              opts.onToolCallDelta?.(tcIndex, tc.id, tc.function?.name, tc.function?.arguments);
-            }
-          }
-          if (chunk.usage) {
-            usage = {
-              input: chunk.usage.prompt_tokens ?? 0,
-              output: chunk.usage.completion_tokens ?? 0,
-            };
-          }
+          takeSseLine(line);
         }
       }
       return { text, reasoning, usage, tool_calls: streamToolCalls.length > 0 ? streamToolCalls : undefined };
