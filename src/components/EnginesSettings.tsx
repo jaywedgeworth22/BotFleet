@@ -226,7 +226,10 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
     })
       // The reset already succeeded once PATCH returns 200. A follow-up list
       // refresh failure should not tell the user the reset itself failed.
-      .then(() => Promise.resolve(refreshInstances()).catch(() => {}))
+      // fresh: true — the describe() memo has no way to know this override
+      // just changed, and serving it stale would show the old cli for up
+      // to 15s right after the user cleared it.
+      .then(() => Promise.resolve(refreshInstances({ fresh: true })).catch(() => {}))
       .catch((e) => setError(e.message))
       .finally(() => setSwitching(false));
   };
@@ -270,7 +273,9 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
                 method: "PATCH",
                 body: JSON.stringify({ fullAuto: checked }),
               })
-                .then(() => Promise.resolve(refreshInstances()).catch(() => {}))
+                // fresh: true — same reason as reset() above: the checkbox
+                // must reflect the value just saved, not a memoed one.
+                .then(() => Promise.resolve(refreshInstances({ fresh: true })).catch(() => {}))
                 .catch((e) => setError(e.message))
                 .finally(() => setSwitching(false));
             }}
@@ -300,7 +305,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
           instance={instance}
           cliDefault={instance.cliDefault}
           onClose={() => setOpen(false)}
-          onSaved={refreshInstances}
+          onSaved={() => refreshInstances({ fresh: true })}
         />
       )}
     </div>

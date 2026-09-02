@@ -4,8 +4,8 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
-import { describe, expect, it } from "vitest";
-import { SKINS, SKIN_IDS } from "./skins";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { isDarkSkin, SKINS, SKIN_IDS } from "./skins";
 
 const css = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "../styles.css"),
@@ -59,5 +59,45 @@ describe("skins", () => {
     expect(root).toContain("--color-scrollbar: #c2cbd4");
     expect(root).toContain("--color-maus-line: #57606a");
     expect(css).toContain('[data-skin="midnight"]');
+  });
+});
+
+// isDarkSkin() picks the Shiki theme for code fences
+// (a11y-theme-copy:code-fence-dark-shiki-on-light-default) — a wrong answer
+// here means dark-on-dark or light-on-light tokens somewhere.
+describe("isDarkSkin", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("is true only for the two dark presets", () => {
+    for (const id of STYLE_SKIN_IDS) {
+      expect(isDarkSkin(id)).toBe(id === "midnight" || id === "foundry");
+    }
+  });
+
+  it("reads custom from the palette the user actually picked, not a guess", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) =>
+        key === "omb-custom-palette" ? JSON.stringify({ appBg: "#0b0d10" }) : null,
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    });
+    expect(isDarkSkin("custom")).toBe(true);
+
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) =>
+        key === "omb-custom-palette" ? JSON.stringify({ appBg: "#f8fafc" }) : null,
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    });
+    expect(isDarkSkin("custom")).toBe(false);
+  });
+
+  it("falls back to the light default custom palette when nothing is stored", () => {
+    vi.stubGlobal("localStorage", {
+      getItem: () => null,
+      setItem: () => undefined,
+      removeItem: () => undefined,
+    });
+    expect(isDarkSkin("custom")).toBe(false);
   });
 });

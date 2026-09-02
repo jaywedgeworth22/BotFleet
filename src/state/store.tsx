@@ -1301,8 +1301,9 @@ const StoreContext = createContext<{
   dispatch: React.Dispatch<Action>;
   /** Commit any debounced profile edits before an operation reads the bot. */
   flushBotPatches: (botId: string) => Promise<void>;
-  /** Re-fetch engine availability — after an install, without a restart. */
-  refreshInstances: () => Promise<void>;
+  /** Re-fetch engine availability — after an install, without a restart.
+   * `fresh: true` bypasses the server's describe() memo (see the impl). */
+  refreshInstances: (opts?: { fresh?: boolean }) => Promise<void>;
 } | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -1990,9 +1991,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Re-probe the engines on demand. A CLI installed while the app is running
   // is invisible until something asks again — the setup screens expose this
   // as "Check again" so the user isn't told to restart when a refresh will do.
-  const refreshInstances = useCallback(async () => {
+  //
+  // Every describe() spawns `--version`/auth/model-discovery per CLI, which
+  // costs real seconds on a machine with many engines installed — so this
+  // rides the registry's maxAgeMs memo by default (server/index.ts caps it at
+  // 15s) the same as the passive callers below (initial hydrate, the `config`
+  // SSE push, the throttled focus probe). `fresh: true` is for a caller that
+  // just changed something the memo wouldn't know about yet — an explicit
+  // "Check again"/"Refresh" click, or a just-saved CLI/fullAuto override.
+  const refreshInstances = useCallback(async (opts?: { fresh?: boolean }) => {
     try {
-      const { instances } = await api("/api/instances");
+      const { instances } = await api(opts?.fresh ? "/api/instances?fresh=1" : "/api/instances");
       rawDispatch({ type: "instances", instances });
     } catch {
       /* offline or server down — the existing list stays */

@@ -34,7 +34,10 @@ export function NoEngines() {
   const recheck = async () => {
     setRechecking(true);
     try {
-      await refreshInstances();
+      // The explicit "Check again" click: bypass the server's describe()
+      // memo so a CLI installed seconds ago actually shows up now, not in
+      // up to 15s.
+      await refreshInstances({ fresh: true });
     } finally {
       setRechecking(false);
     }
