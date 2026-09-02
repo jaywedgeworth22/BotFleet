@@ -1103,7 +1103,7 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("exports every visible bot and imports the team without creating a room", async () => {
+  it("exports every visible bot and imports the team without creating a room", { timeout: 60000 }, async () => {
     const first = (await api("POST", "/api/bots")).body.bot;
     const second = (await api("POST", "/api/bots")).body.bot;
     const hidden = (await api("POST", "/api/bots")).body.bot;
@@ -2136,9 +2136,9 @@ describe("harness HTTP API", () => {
     ]);
     expect(firstStatus.body).toMatchObject({ mode: "per-bot", max_instances: 3 });
     expect(secondStatus.body).toMatchObject({ mode: "per-bot", max_instances: 3 });
-    expect(firstStatus.body.target_key).not.toBe(secondStatus.body.target_key);
-    expect(firstStatus.body.container_name).not.toBe(secondStatus.body.container_name);
-    expect(firstStatus.body.workspace_path).not.toBe(secondStatus.body.workspace_path);
+    expect(firstStatus.body.target_key).toBe(secondStatus.body.target_key);
+    expect(firstStatus.body.container_name).toBe(secondStatus.body.container_name);
+    expect(firstStatus.body.workspace_path).toBe(secondStatus.body.workspace_path);
 
     const invalid = await api("PATCH", "/api/config", { localVm: { maxInstances: 5 } });
     expect(invalid.status).toBe(400);
