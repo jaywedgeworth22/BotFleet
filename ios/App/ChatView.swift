@@ -142,7 +142,11 @@ struct ChatView: View {
             TasksRoutinesView()
         }
         .sheet(isPresented: $showingProfile) {
-            if case let .bot(bot) = current { AgentProfileView(bot: bot) }
+            if case let .bot(bot) = current {
+                AgentProfileView(bot: bot)
+            } else if case let .room(room) = current {
+                GroupProfileView(room: room)
+            }
         }
         .sheet(item: $shareFile) { file in
             ActivityShareSheet(items: [file.url])
@@ -154,6 +158,7 @@ struct ChatView: View {
     /// exceeded the type-check budget on CI.
     private var transcriptColumn: some View {
         let transcript = messages
+        let items = groupActivityRuns(transcript)
         return ScrollViewReader { proxy in
                 ScrollView {
                     // VStack, not LazyVStack. A lazy stack does not know how
@@ -184,25 +189,33 @@ struct ChatView: View {
                             .padding(.vertical, 8)
                         }
 
-                        ForEach(Array(transcript.enumerated()), id: \.element.id) { index, message in
+                        ForEach(Array(items.enumerated()), id: \.element.id) { index, item in
                             VStack(alignment: .leading, spacing: 6) {
                                 // a gap in time is worth marking; a timestamp
                                 // on every message is just noise
-                                if startsANewStretch(at: index, in: transcript) {
-                                    Text(RelativeStamp.separator(message.date))
+                                if startsANewStretch(at: index, in: items) {
+                                    Text(RelativeStamp.separator(item.date))
                                         .font(.system(size: 12, weight: .medium))
                                         .foregroundStyle(Color.secondary.opacity(0.7))
                                         .frame(maxWidth: .infinity)
                                         .padding(.top, 10)
                                         .padding(.bottom, 4)
                                 }
-                                MessageRow(
-                                    chat: current,
-                                    message: message,
-                                    endsRun: endsRun(at: index, in: transcript)
-                                )
+                                switch item {
+                                case let .message(message):
+                                    MessageRow(
+                                        chat: current,
+                                        message: message,
+                                        endsRun: endsRun(at: index, in: items)
+                                    )
+                                case let .run(_, runMessages):
+                                    ActivityRunView(
+                                        chat: current,
+                                        messages: runMessages
+                                    )
+                                }
                             }
-                            .id(message.id)
+                            .id(item.id)
                         }
 
                         // The reply as it is typed. It sits after the last
@@ -346,25 +359,17 @@ struct ChatView: View {
             // still only one animated avatar. This transparent seat becomes
             // its independent profile button once the opening transition has
             // settled.
-            if case .bot = current {
-                Button { showingProfile = true } label: {
-                    ChatAvatarView(chat: current, size: 60, state: MausState.forChat(current, in: session.state), animated: MausState.forChat(current, in: session.state).showsActivity)
-                        .frame(width: 60, height: 60)
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Open \(current.name) profile")
-                .accessibilityHint("Edits this agent's identity, avatar, notifications, and voice")
-            } else {
-                Button { showingPlus = true } label: {
-                    ChatAvatarView(chat: current, size: 60, state: MausState.forChat(current, in: session.state), animated: MausState.forChat(current, in: session.state).showsActivity)
-                        .frame(width: 60, height: 60)
-                }
-                .buttonStyle(.plain)
+            Button { showingProfile = true } label: {
+                ChatAvatarView(chat: current, size: 60, state: MausState.forChat(current, in: session.state), animated: MausState.forChat(current, in: session.state).showsActivity)
+                    .frame(width: 60, height: 60)
+                    .contentShape(Circle())
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(current.name) profile")
+            .accessibilityHint("Edits this \(current.isBot ? "agent" : "room")'s identity, settings, and options")
+
             Button {
-                if case .bot = current { showingProfile = true }
-                else { showingPlus = true }
+                showingProfile = true
             } label: {
                 HStack(spacing: 6) {
                     Text(current.name)
@@ -377,7 +382,7 @@ struct ChatView: View {
                             .foregroundStyle(Color.secondary)
                             .lineLimit(1)
                     }
-                    Image(systemName: current.isBot ? "person.crop.circle" : "ellipsis")
+                    Image(systemName: current.isBot ? "person.crop.circle" : "slider.horizontal.3")
                         .font(.system(size: 11, weight: .bold))
                         .foregroundStyle(Color.secondary)
                 }
@@ -388,7 +393,7 @@ struct ChatView: View {
             }
             .buttonStyle(.plain)
             .glassCapsule()
-            .accessibilityLabel(current.isBot ? "Open \(current.name) profile" : "Open \(current.name) chat options")
+            .accessibilityLabel("Open \(current.name) settings")
         }
         .padding(.top, -4)
     }
@@ -524,17 +529,20 @@ struct ChatView: View {
 
     /// True when this message opens a fresh stretch of conversation — the
     /// first one, or one that follows a gap of half an hour or more.
-    private func startsANewStretch(at index: Int, in messages: [Message]) -> Bool {
+    private func startsANewStretch(at index: Int, in items: [TranscriptItem]) -> Bool {
         guard index > 0 else { return true }
-        return messages[index].at - messages[index - 1].at > 30 * 60 * 1000
+        return items[index].date.timeIntervalSince(items[index - 1].date) > 30 * 60
     }
 
     /// True when the next message is from someone else (or there is none),
     /// which is where a run of bubbles gets its tail — one per run, like
     /// every messaging app, rather than one per bubble.
-    private func endsRun(at index: Int, in messages: [Message]) -> Bool {
-        guard index + 1 < messages.count else { return true }
-        let this = messages[index], next = messages[index + 1]
+    private func endsRun(at index: Int, in items: [TranscriptItem]) -> Bool {
+        guard index + 1 < items.count else { return true }
+        guard case let .message(this) = items[index],
+              case let .message(next) = items[index + 1] else {
+            return true
+        }
         if this.role != next.role { return true }
         if this.from?.name != next.from?.name { return true }
         // a card or a tool chip between two texts breaks the run visually
@@ -1269,6 +1277,135 @@ struct ActivityChip: View {
                 status: tool.ok.map { $0 ? "success" : "error" } ?? "running"
             )
             .padding(.leading, 2)
+        }
+    }
+}
+
+/// An interactive folded summary card for a run of tool calls.
+/// Shows a live summary statement (e.g. "14 tool calls • run_command ×10, view_file, call_mcp_tool")
+/// and expands on tap to display the full individual skill execution receipts.
+struct ActivityRunView: View {
+    let chat: Chat
+    let messages: [Message]
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isExpanded: Bool = false
+
+    private var hasFailure: Bool {
+        messages.contains { $0.tool?.ok == false }
+    }
+
+    private var isRunning: Bool {
+        messages.contains { $0.tool?.ok == nil }
+    }
+
+    private var tint: Color {
+        MausPalette.color(chat.color)
+    }
+
+    var body: some View {
+        let isDark = colorScheme == .dark
+        let desc = describeActivityRun(messages)
+
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.76)) {
+                    isExpanded.toggle()
+                }
+                Haptics.selection()
+            } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    ZStack {
+                        Circle()
+                            .fill(hasFailure ? Color.red.opacity(0.18) : (isRunning ? tint.opacity(0.18) : Color.purple.opacity(0.14)))
+                            .frame(width: 26, height: 26)
+
+                        if isRunning {
+                            ProgressView()
+                                .scaleEffect(0.65)
+                        } else if hasFailure {
+                            Image(systemName: "exclamationmark.triangle.fill")
+                                .font(.system(size: 11, weight: .bold))
+                                .foregroundStyle(Color.red)
+                        } else {
+                            Image(systemName: "wrench.and.screwdriver.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.purple)
+                        }
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 5) {
+                            Text(desc.headline)
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(isDark ? Color.white : Color.primary)
+
+                            if hasFailure {
+                                Text("• \(desc.failedCount) failed")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(Color.red)
+                            } else if !isRunning {
+                                Text("• Complete")
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundStyle(Color.green)
+                            }
+                        }
+
+                        Text(desc.summary)
+                            .font(.system(size: 11.5))
+                            .foregroundStyle(Color.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+
+                    Spacer()
+
+                    HStack(spacing: 4) {
+                        Text(isExpanded ? "Collapse" : "Details")
+                            .font(.system(size: 11.5, weight: .medium))
+                            .foregroundStyle(tint)
+
+                        Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                            .font(.system(size: 10, weight: .bold))
+                            .foregroundStyle(tint)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(tint.opacity(0.1))
+                    .clipShape(Capsule())
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.03))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(hasFailure ? Color.red.opacity(0.3) : Color.secondary.opacity(0.15), lineWidth: 0.75)
+                )
+            }
+            .buttonStyle(.plain)
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(messages) { msg in
+                        if let tool = msg.tool {
+                            SkillExecutionReceiptView(
+                                skillName: tool.name,
+                                status: tool.ok.map { $0 ? "success" : "error" } ?? "running"
+                            )
+                        }
+                    }
+                }
+                .padding(.leading, 6)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.vertical, 2)
+        .onAppear {
+            if hasFailure {
+                isExpanded = true
+            }
         }
     }
 }
