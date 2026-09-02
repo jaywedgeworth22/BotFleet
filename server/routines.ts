@@ -135,11 +135,22 @@ export interface RoutineManagerOptions {
   ) => Promise<void>;
   interruptTurn?: (botId: string, threadId: string, runOn: RoutineRunOn) => Promise<void>;
   onRunFailed?: (run: RoutineRun) => void;
+  /** Is this run's turn still in flight on the harness? Consulted by the
+   * periodic sweep for runs stuck in running/waiting: the completion path
+   * settles a run on `turn.completed`, but a harness path that settles the
+   * bot without one (a stall, a provider reload, a crash) must not leave the
+   * receipt `running` forever — that also holds a slot against the webhook
+   * and resource-trigger pending caps until the app restarts. */
+  turnLive?: (run: RoutineRun) => boolean;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
 const CATCH_UP_MS = 12 * 60 * 60_000;
 const MAX_RUNS = 2_000;
+/** A run is marked running just before its turn is dispatched; give the
+ * dispatch this long to mark the bot busy before the sweep may call it an
+ * orphan. */
+const ORPHAN_GRACE_MS = 30_000;
 const ROUTINE_REQUEST_ACTIONS = new Set<RoutineRequestOperation["action"]>([
   "create",
   "update",
@@ -619,6 +630,7 @@ export class RoutineManager {
     this.ticking = true;
     try {
       const now = this.now();
+      this.reconcileOrphanedRuns(now);
       let changed = false;
       for (const routine of this.routines) {
         if (!routine.enabled || routine.nextRunAt == null || routine.nextRunAt > now) continue;
@@ -731,6 +743,25 @@ export class RoutineManager {
     if (!run) return;
     this.failRun(run, message);
     queueMicrotask(() => void this.tick());
+  }
+
+  /** Fail runs whose turn is no longer in flight. `turnLive` is the harness's
+   * view (the bot is busy on this run's thread); a run that only just started
+   * gets a grace so the sweep never races the dispatch that marks the bot
+   * busy. Returns the receipts it settled. */
+  reconcileOrphanedRuns(now = this.now()): RoutineRun[] {
+    const live = this.options.turnLive;
+    if (!live) return [];
+    const orphaned: RoutineRun[] = [];
+    for (const run of this.runs) {
+      if (run.status !== "running" && run.status !== "waiting") continue;
+      if (!run.threadId || run.startedAt === undefined) continue;
+      if (now - run.startedAt < ORPHAN_GRACE_MS) continue;
+      if (live(run)) continue;
+      this.failRun(run, "The bot stopped before this run finished");
+      orphaned.push({ ...run });
+    }
+    return orphaned;
   }
 
   private failRun(run: RoutineRun, message: string) {

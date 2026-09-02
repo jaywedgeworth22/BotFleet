@@ -191,7 +191,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
     async create(input: DriverCreateInput<AcpConfig>): Promise<ProviderInstance> {
       const { instanceId, config } = input;
-      const childEnv = () => {
+      const childEnv = (effective: AcpConfig = config) => {
         const env: Record<string, string | undefined> = {
           ...process.env,
           ...input.environment,
@@ -206,7 +206,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         for (const key of [...PROVIDER_CREDENTIAL_ENV, ...WORKSPACE_CREDENTIAL_ENV]) {
           if (!allowedCredentials.has(key)) delete env[key];
         }
-        support.transformEnv?.(env, config);
+        support.transformEnv?.(env, effective);
         return env;
       };
       let models = support.models;
@@ -310,15 +310,24 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
-        const controlsHost = Boolean(turn.integrations?.localComputer);
+        // Host control means the user's real desktop (the Local VM and a VPS
+        // also arrive as `localComputer`, but they are isolated and carry no
+        // scope). A full-auto instance keeps its yolo switch for everything
+        // else, but a turn that can click on this computer runs brokered:
+        // the CLI is spawned in its asking mode and every ask reaches the
+        // harness, where the bot's Auto policy, the destructive and sensitive
+        // guards, and the unattended block decide. That is what lets a
+        // full-auto bot mount the local computer at all.
+        const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
+        const turnConfig: AcpConfig = controlsHost && config.fullAuto ? { ...config, fullAuto: false } : config;
         if (active.has(threadId)) throw new Error("a turn is already running on this thread");
         const turnId = newId();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
-        const env = childEnv();
+        const env = childEnv(turnConfig);
         if (
           support.requireAuthenticationBeforeSpawn
           && !skipSubscriptionAuthForLocalInject(turn.model)
-          && !(await support.isAuthenticated(env, config))
+          && !(await support.isAuthenticated(env, turnConfig))
         ) {
           emit({ ...base(threadId, turnId), type: "turn.started" });
           emit({ ...base(threadId, turnId), type: "runtime.error", message: support.loginNote, setup: true });
@@ -333,7 +342,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             : turn;
         const mcpServers = acpMcpServers(turn);
 
-        const child = spawnCli(config.cli, support.spawnArgs(config, cliTurn), {
+        const child = spawnCli(config.cli, support.spawnArgs(turnConfig, cliTurn), {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
@@ -416,7 +425,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             });
 
           const toolCall = params.toolCall ?? {};
-          if (config.fullAuto) {
+          if (turnConfig.fullAuto) {
             const allow = optionFor("allow");
             if (!allow) missing("allow");
             return send({
@@ -668,7 +677,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   request: (method, params, timeoutMs) =>
                     request(method, params, timeoutMs ?? SESSION_CONFIG_TIMEOUT),
                   sessionId,
-                  config,
+                  config: turnConfig,
                   turn: cliTurn,
                   sessionModels: Array.isArray(sessionResult?.models?.availableModels)
                     ? sessionResult.models.availableModels

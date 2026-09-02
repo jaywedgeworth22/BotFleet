@@ -873,6 +873,10 @@ const watchdog = new TurnWatchdog({
       tool: { name: `error: no activity for ${minutes} minutes — the turn was stopped`, ok: false },
     });
     finalizeDelegationWatch(turn.threadId, false, "", "Delegated turn stalled and was stopped");
+    // The run receipt settles here too: a wedged provider may never send
+    // turn.completed, and a run left `running` holds a slot against the
+    // webhook and resource-trigger pending caps until the app restarts.
+    routines?.failThread(turn.threadId, `no activity for ${minutes} minutes — the turn was stopped`);
     turnUsage.delete(turn.threadId);
     roomStallCompletions.stall(turn.threadId);
     // The 6s grace is about bot busy, not the VM fence. Release the lease
@@ -1867,8 +1871,18 @@ async function startTurn(
   }
   if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
   const threadId = opts?.threadId ?? bot.threadId;
-  // a webhook turn, or one inherited from a bot already running unattended
-  if (opts?.automationSource === "webhook" || opts?.automationSource === "resource" || opts?.unattended) markUnattended(bot.id);
+  // Nobody is at the keyboard for a turn an outside event started — a
+  // webhook, a resource threshold, the calendar — or for one inherited from
+  // a bot already running unattended. A manual "Run now" is a person
+  // clicking, so it stays attended.
+  if (
+    opts?.automationSource === "webhook" ||
+    opts?.automationSource === "resource" ||
+    opts?.automationSource === "schedule" ||
+    opts?.unattended
+  ) {
+    markUnattended(bot.id);
+  }
   // a person typing into this bot ends the unattended window immediately
   else if (opts?.automationSource === undefined && !opts?.commsDepth && !opts?.cardContinuation) clearUnattended(bot.id);
   const task = store.taskByThread(bot.id, threadId);
@@ -2066,17 +2080,36 @@ async function startTurn(
         );
         computerKind = "vm";
       } else if (wants === "local") {
-        if (!shouldMountLocalComputer({
+        // This computer is the one destination that degrades instead of
+        // refusing: the safe direction is "no computer", never a different
+        // one, and a routine or webhook that only needs the shell must not
+        // die because the desktop is unavailable. The chip says why the
+        // tools are missing so a person can fix the cause. Engines that
+        // broker host asks (ACP, Claude, pi, codex) mount it in every mode;
+        // an engine with no approval channel never does.
+        const hostSupportsLocal = shouldMountLocalComputer({
           requested: "local",
           hostPlatform: process.platform,
-          providerSupportsLocal: mountsLocalComputer,
-        })) {
-          throw new Error("this model engine cannot control this computer — choose Claude or an ACP engine, or select another destination");
+          providerSupportsLocal: true,
+        });
+        const cua = hostSupportsLocal && mountsLocalComputer ? readCuaConnection() : null;
+        const unavailable = !hostSupportsLocal
+          ? "local computer control is not available on this platform"
+          : !mountsLocalComputer
+            ? "this model engine has no approval channel for actions on this computer, so BotFleet did not mount it"
+            : !cua
+              ? "CUA Driver is not ready for this computer — check permissions and restart BotFleet"
+              : null;
+        if (unavailable) {
+          store.appendMessage(threadId, {
+            role: "bot",
+            kind: "activity",
+            tool: { name: `local computer not mounted: ${unavailable}`, ok: false },
+          });
+        } else if (cua) {
+          integrations.localComputer = cua;
+          computerKind = "local";
         }
-        const cua = readCuaConnection();
-        if (!cua) throw new Error("CUA Driver is not ready for this computer — check permissions and restart BotFleet");
-        integrations.localComputer = cua;
-        computerKind = "local";
       }
 
       // A VPS is a local-agent computer mount, never a remote agent runner.
@@ -2346,6 +2379,12 @@ routines = new RoutineManager({
         ? registry.get(bot.modelSelection.instanceId)
         : null;
     await instance?.adapter.interruptTurn(threadId);
+  },
+  // The harness's view of "still running": the bot is busy on this run's
+  // thread. Anything else means a settle path skipped turn.completed.
+  turnLive: (run) => {
+    const bot = store.bot(run.botId);
+    return Boolean(bot?.busy && bot.inflightThreadId === run.threadId);
   },
   onRunFailed: (run) => {
     const bot = store.bot(run.botId);
@@ -3353,14 +3392,22 @@ function configStatus() {
 /** Rebuild the provider fleet after a config change so new keys take
  * effect without a server restart (kills any in-flight turns). */
 async function reloadProviders() {
+  const RELOAD_REASON = "The turn was interrupted — provider settings changed";
   bus.detachAll();
   await registry.disposeAll();
+  // Every watched turn died with the old fleet. Forget them now, or the
+  // watchdog reports a "no activity" stall on a dead thread twenty minutes
+  // later, and settle each one's routine receipt the way the stall path does.
+  const killedTurns = watchdog.settleAll();
   await registry.load(instanceConfigs(cfg));
   bus.attach(registry.instances());
+  for (const turn of killedTurns) routines?.failThread(turn.threadId, RELOAD_REASON);
   // A killed turn's terminal events can die with the old fleet (dispose is
   // async under the hood), stranding the bot busy — and its screen poller —
-  // forever. Settle anything still marked busy.
+  // forever. Settle anything still marked busy, on the thread that was
+  // actually in flight: a routine runs in a detached task, not the open chat.
   for (const b of store.bots.filter((b) => b.busy)) {
+    const inflight = b.inflightThreadId ?? b.threadId;
     const vmThread = [...localVmThreadTargets.entries()].find(([, target]) =>
       localVmLeaseFor(target).current(localVmOwnerBusy)?.botId === b.id
     )?.[0];
@@ -3368,16 +3415,17 @@ async function reloadProviders() {
     stopScreenPoller(b.id);
     activeVpsThreads.delete(b.id);
     finalizeDelegationWatch(
-      b.threadId,
+      inflight,
       false,
       "",
       "Delegated turn did not finish — provider settings changed",
     );
-    store.appendMessage(b.threadId, {
+    store.appendMessage(inflight, {
       role: "bot",
       kind: "activity",
       tool: { name: "error: turn interrupted — provider settings changed", ok: false },
     });
+    routines?.failThread(inflight, RELOAD_REASON);
     store.setActivity(b.id, "idle");
     store.patchBot(b.id, { inflightThreadId: undefined });
   }

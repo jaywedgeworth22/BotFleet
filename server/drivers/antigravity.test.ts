@@ -365,7 +365,7 @@ describe("Antigravity computer MCP config", () => {
     }
   });
 
-  it("advertises full computerMcp, localComputerMcp, and tools capabilities", async () => {
+  it("advertises computerMcp and the tool integrations, but never host control (print mode has no approval channel)", async () => {
     ensureDirs();
     const fullAuto = await AntigravityDriver.create({
       instanceId: "agy-caps-full",
@@ -383,13 +383,13 @@ describe("Antigravity computer MCP config", () => {
     });
     try {
       expect(fullAuto.adapter.capabilities.computerMcp).toBe(true);
-      expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(true);
+      expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(false);
       expect(fullAuto.adapter.capabilities.agentsMcp).toBe(true);
       expect(fullAuto.adapter.capabilities.composioMcp).toBe(true);
       expect(fullAuto.adapter.capabilities.phoneMcp).toBe(true);
       expect(fullAuto.adapter.capabilities.qdrantMcp).toBe(true);
       expect(acceptEdits.adapter.capabilities.computerMcp).toBe(true);
-      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBe(true);
+      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBe(false);
       expect(acceptEdits.adapter.capabilities.agentsMcp).toBe(true);
     } finally {
       await fullAuto.dispose();

@@ -551,9 +551,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       const { threadId } = turn;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
-      if (controlsHost && config.permissionMode === "bypassPermissions") {
-        throw new Error("local computer control requires the interactive approval broker");
-      }
+      // A bypassPermissions instance keeps its bypass for everything else,
+      // but a turn that can click on the user's real desktop runs brokered:
+      // the CLI gets acceptEdits plus the permission-prompt tool, so every
+      // ask reaches the harness and the bot's Auto policy decides. Nothing
+      // else could make host control safe on a bypass instance.
+      const permissionMode: ClaudeConfig["permissionMode"] =
+        controlsHost && config.permissionMode === "bypassPermissions" ? "auto" : config.permissionMode;
       const turnId = newId();
       const retryAbort = new AbortController();
       const retry = retryState.get(threadId) ?? { attempt: 0, cancelled: false };
@@ -573,7 +577,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // token-level streaming: content_block_delta events between the
         // whole-message frames, so the bubble grows as the model writes
         "--include-partial-messages",
-        "--permission-mode", config.permissionMode === "auto" ? "acceptEdits" : config.permissionMode,
+        "--permission-mode", permissionMode === "auto" ? "acceptEdits" : permissionMode,
       ];
       if (config.tools !== undefined) args.push("--tools", config.tools.join(","));
       if (config.disallowedTools?.length) {
@@ -660,7 +664,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // bypassPermissions (fullAuto) — nothing would ever ask.
       let broker: ReturnType<typeof createPermissionBroker> | undefined;
       let socketPath: string | null = null;
-      if (config.permissionMode !== "bypassPermissions") {
+      if (permissionMode !== "bypassPermissions") {
         socketPath = permissionSocketPath(threadId);
         args.push("--permission-prompt-tool", "mcp__ogb__approve");
         mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
@@ -1155,7 +1159,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           effortLevels: ["low", "medium", "high", "xhigh", "max"],
           queueing: true,
           qdrantMcp: true,
-          localComputerMcp: config.permissionMode !== "bypassPermissions",
+          // Offered in every mode: a bypass instance runs a host-control turn
+          // through the broker (see sendTurn), so the asks still reach a person.
+          localComputerMcp: true,
         },
         sendTurn,
         steer,
