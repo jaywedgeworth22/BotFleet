@@ -146,6 +146,12 @@ export class DeviceRegistry {
    * either dropping the device or teaching every reader to doubt the type. */
   constructor() {
     try {
+      // Before the read, not after: this is where a predecessor's directory
+      // is moved into place, and a fleet loaded from the old location only
+      // counts if it is loaded at all.  Adopting it on the first write
+      // instead renamed the old file into place and then overwrote it with
+      // the empty fleet read a moment earlier.
+      ensureDataDir();
       const parsed = JSON.parse(readFileSync(DEVICES_FILE, "utf8"));
       if (Array.isArray(parsed?.devices)) {
         this.devices = parsed.devices

@@ -18,7 +18,7 @@ The app is native Swift and uses XcodeGen; EAS commands do not apply.
 4. Increment `CURRENT_PROJECT_VERSION` for every upload. Update `MARKETING_VERSION` only for a new App Store version.
 5. Archive a generic iOS device build and validate it in Xcode Organizer.
 6. Upload to App Store Connect and distribute to internal TestFlight testers first.
-7. Complete a real-iPhone pass for pairing, Bonjour permission, Keychain restore, Tailscale, optional hosted HTTPS, approvals, background/foreground reconciliation, sign-out/revocation, and transcript sharing.
+7. Complete a real-iPhone pass for pairing, Bonjour permission, Keychain restore (including an install upgraded from an OpenMausBot-era build: its token moves from the old keychain service on first launch and the phone must stay paired), Tailscale, optional hosted HTTPS, approvals, background/foreground reconciliation, sign-out/revocation, and transcript sharing.
 8. After internal testing, submit to an external TestFlight group before App Review.
 
 ## App Store Connect

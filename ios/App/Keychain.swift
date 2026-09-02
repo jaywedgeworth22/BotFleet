@@ -6,11 +6,16 @@
 // iTunes backup — hence `ThisDeviceOnly`, which also matches the server's
 // model, where a token belongs to one paired device and is revoked per
 // device.
+import CompanionCore
 import Foundation
 import Security
 
 enum Keychain {
-    private static let service = "com.botfleet.companion.token"
+    /// The service this build reads and writes. Earlier builds wrote under
+    /// `CompanionTokenService.legacy`; `token(for:)` moves an item found
+    /// there across on first read, so a phone that paired before the
+    /// rename stays paired after it.
+    private static let service = CompanionTokenService.current
 
     static func save(_ token: String, for connectionId: String) throws {
         let data = Data(token.utf8)
@@ -72,7 +77,34 @@ enum Keychain {
     ///
     /// So: `errSecItemNotFound` is the only nil. Everything else throws, and
     /// the caller decides whether to wait or to give up.
+    ///
+    /// "Not found" is decided across every service this app has ever used,
+    /// not just the current one. A token a previous build wrote under its
+    /// own service name is still this phone's pairing; it is handed back,
+    /// copied under the current service, and only then removed from the
+    /// old one — so a copy that fails leaves the pairing exactly where the
+    /// next launch will look for it again.
     static func token(for connectionId: String) throws -> String? {
+        let resolution = try CompanionTokenMigration.resolve { service in
+            try read(connectionId, service: service)
+        }
+        switch resolution {
+        case let .current(token):
+            return token
+        case let .migrate(token, fromService):
+            do {
+                try save(token, for: connectionId)
+                delete(connectionId, service: fromService)
+            } catch {
+                // the old copy stays put; the next read finds it and retries
+            }
+            return token
+        case .unpaired:
+            return nil
+        }
+    }
+
+    private static func read(_ connectionId: String, service: String) throws -> String? {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -92,8 +124,20 @@ enum Keychain {
         return token
     }
 
+    /// Forget the pairing under every service this app has ever used. A
+    /// token a previous build wrote and this one has not read yet is still
+    /// a credential, and signing out has to take it with it.
     @discardableResult
     static func remove(_ connectionId: String) -> Bool {
+        var removed = delete(connectionId, service: service)
+        for legacy in CompanionTokenService.legacy {
+            removed = delete(connectionId, service: legacy) && removed
+        }
+        return removed
+    }
+
+    @discardableResult
+    private static func delete(_ connectionId: String, service: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
