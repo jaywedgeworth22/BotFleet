@@ -58,7 +58,7 @@ export type LifecycleAction = "pull" | "run" | "start" | "stop" | "remove";
 
 const INTERNAL_VIEWER_PORT = 6901;
 const HOST_VIEWER_PORT = 6080;
-const MEMORY_BYTES = 4 * 1024 * 1024 * 1024;
+const MEMORY_BYTES = 8 * 1024 * 1024 * 1024;
 const NANO_CPUS = 2_000_000_000;
 const PIDS_LIMIT = 512;
 const SHM_BYTES = 512 * 1024 * 1024;
@@ -513,7 +513,7 @@ export async function containerComputerStatus(
         : "unsafe";
       const resources = detail?.configuration?.resources;
       status.security =
-        (resources?.memoryInBytes ?? 0) >= MEMORY_BYTES && resources?.cpus === 2 ? "hardened" : "unsafe";
+        (resources?.memoryInBytes ?? 0) >= MEMORY_BYTES && resources?.cpus === 4 ? "hardened" : "unsafe";
       status.viewer_url = viewerUrl(viewerPassword(detail?.configuration?.environment), status.viewer_port);
     } else {
       const inspected = JSON.parse(stdout) as Array<{
@@ -855,9 +855,9 @@ export function containerRunArgs(
     // Apple container already places each Linux container in a lightweight VM.
     common.push(
       "--memory",
-      "4g",
+      "8g",
       "--cpus",
-      "2",
+      "4",
       "--cap-drop",
       "ALL",
       "--cap-add",
@@ -872,11 +872,11 @@ export function containerRunArgs(
       "--hostname",
       target.containerName,
       "--memory",
-      "4g",
+      "8g",
       "--memory-swap",
-      "4g",
+      "8g",
       "--cpus",
-      "2",
+      "4",
       "--pids-limit",
       String(PIDS_LIMIT),
       // Pinned explicitly rather than trusting daemon defaults: the shared
