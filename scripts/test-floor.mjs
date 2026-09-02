@@ -41,13 +41,16 @@ export function isTargetedRun(args) {
   });
 }
 
-export function vitestArguments(vitestBin, summaryFile, cliArgs) {
+export function vitestArguments(vitestBin, summaryFile, cliArgs, opts = {}) {
   return [
     vitestBin,
     "run",
     ...cliArgs,
     "--reporter=default",
     "--reporter=json",
+    // On GitHub Actions, also emit workflow-command annotations so a failing
+    // test is readable from the check run (public API) without the job log.
+    ...(opts.annotations ? ["--reporter=github-actions"] : []),
     `--outputFile.json=${summaryFile}`,
   ];
 }
@@ -128,7 +131,7 @@ async function main(cliArgs = process.argv.slice(2)) {
   const exitCode = await new Promise((resolve, reject) => {
     const child = spawn(
       process.execPath,
-      vitestArguments(vitestBin, summaryFile, cliArgs),
+      vitestArguments(vitestBin, summaryFile, cliArgs, { annotations: Boolean(process.env.GITHUB_ACTIONS) }),
       { stdio: "inherit" },
     );
     child.on("error", reject);
