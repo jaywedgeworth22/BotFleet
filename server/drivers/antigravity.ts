@@ -11,6 +11,11 @@
 // approves everything. Real per-action approval cards are a future path via
 // native ACP (agy issue #31), which would reuse acp/core.ts like grok/gemini.
 //
+// fullAuto is OFF unless the person turns it on in Settings › Engines.  The
+// bypass skips BotFleet's permission broker entirely — no card, no
+// destructive/sensitive guard, no decision-log row — so it is an opt-in the
+// Engines row spells out, never a default a fresh bot inherits.
+//
 // Computer use: agy has no per-turn MCP flag, so the bot's computer (cloud
 // box / Local VM / VPS) is mounted by upserting one key into the global
 // `~/.gemini/config/mcp_config.json` before each spawn — see
@@ -304,12 +309,15 @@ function decodeConfig(raw: unknown): AntigravityConfig {
   }
   return {
     cli: typeof o.cli === "string" ? o.cli : "agy",
-    // Default fullAuto to TRUE: agy's headless print harness invokes tools even
-    // for trivial prompts and, with no interactive approval channel, auto-denies
-    // them — producing no output, so a non-fullAuto bot's turns frequently fail.
-    // Default to fullAuto for a usable bot; per-action consent returns with the
-    // ACP v2 path. Still throws above on a non-boolean fullAuto.
-    fullAuto: o.fullAuto === undefined ? true : o.fullAuto === true,
+    // Default fullAuto to FALSE.  `--dangerously-skip-permissions` runs every
+    // tool on this computer with nothing standing in for the permission
+    // broker, which is the consent layer SECURITY.md promises.  Without it,
+    // print mode runs `--mode accept-edits`: file edits go through and shell
+    // commands come back as tool errors — a less capable bot, but one whose
+    // reach the person chose.  Turning the bypass on is an explicit opt-in
+    // on the Engines settings row, and the toggle there reflects this value.
+    // Still throws above on a non-boolean fullAuto.
+    fullAuto: o.fullAuto === true,
   };
 }
 
