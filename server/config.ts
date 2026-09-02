@@ -63,6 +63,7 @@ const roomConfigSchema = z.object({
     .max(MAX_ROOM_TURN_TIMEOUT_MINUTES),
 });
 const localVmConfigSchema = z.object({
+  mode: z.enum(["shared", "per-bot"]).optional(),
   maxInstances: z
     .number()
     .int()
@@ -148,7 +149,6 @@ export interface AppConfig {
   /** Shared Qdrant Agent RAG vector database settings. */
   qdrant?: { enabled?: boolean; url?: string; apiKey?: string; collection?: string };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  localVm?: { maxInstances?: number };
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
   instances?: InstanceConfigMap;
 }

@@ -15,7 +15,7 @@ import {
   credentialIsConfigured,
   isReusableCredentialRequest,
   isCredentialTargetId,
-CredentialTargetId,
+type CredentialTargetId,
 } from "../shared/credential-request.ts";
 
 import { approvalKey, autoVerdict } from "./auto-approve.ts";
@@ -58,7 +58,7 @@ import {
   
   SHARED_LOCAL_VM_TARGET,
   setupCommands,
-LocalVmTarget,
+type LocalVmTarget,
 
 } from "./container-computer.ts";
 import {
@@ -86,10 +86,10 @@ import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import {
   isEffortLevel,
-ModelSelection,
-ProviderInstance,
-RequestOutcome,
-RuntimeEvent,
+type ModelSelection,
+type ProviderInstance,
+type RequestOutcome,
+type RuntimeEvent,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
@@ -109,11 +109,11 @@ import {
   roomResponders,
   sectionKey,
   Store,
-GroupDefaultResponder,
-GroupRecord,
-GroupTaskRecord,
-Message,
-TaskRecord,
+type GroupDefaultResponder,
+type GroupRecord,
+type GroupTaskRecord,
+type Message,
+type TaskRecord,
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
@@ -3354,7 +3354,7 @@ async function localVmPayload(target: LocalVmTarget) {
     ...status,
     commands: setupCommands(status.runtime, process.platform, target),
     idle_timeout_ms: LOCAL_VM_IDLE_MS,
-    mode: "shared",
+    mode: cfg.localVm?.mode ?? "shared",
     max_instances: localVmMaxInstances(cfg),
   };
 }
@@ -3380,7 +3380,7 @@ function configStatus() {
     rooms: { turnTimeoutMinutes: roomTurnTimeoutMinutes(cfg) },
     ingress: { publicUrl: cfg.ingress?.publicUrl || "" },
     localVm: {
-      mode: "shared",
+      mode: cfg.localVm?.mode ?? "shared",
       maxInstances: localVmMaxInstances(cfg),
     },
     qdrant: {
@@ -4115,7 +4115,7 @@ const server = createServer(async (req, res) => {
       const limit = pageSize(url.searchParams.get("messages"));
       if (limit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
       return json(res, 200, {
-        bots: store.bots.map((bot) => ({ ...publicBot(bot), ...messagePage(bot.threadId, limit) })),
+        bots: store.bots.map((bot) => { console.log("BOT MESSAGES:", store.messagesFor(bot.threadId).length); return { ...publicBot(bot), ...messagePage(bot.threadId, limit) }; }),
         groups: store.groups.map((g) => ({ ...publicGroupState(g), ...messagePage(g.threadId, limit) })),
         computerControl: Object.fromEntries(
           store.bots.map((bot) => {
@@ -5195,11 +5195,11 @@ const server = createServer(async (req, res) => {
         if (typeof body.composio !== "boolean") return json(res, 400, { error: "composio must be true or false" });
         patch.composio = body.composio;
       }
-      if (
-        body.computer !== undefined &&
-        !["cloud", "vm", "local", "off"].includes(String(body.computer))
-      ) {
-        return json(res, 400, { error: "computer must be cloud, vm, local, or off" });
+      if (body.computers !== undefined) {
+        if (!Array.isArray(body.computers) || body.computers.some((c: unknown) => !["cloud", "vm", "local"].includes(String(c)))) {
+          return json(res, 400, { error: "computers must be an array containing cloud, vm, or local" });
+        }
+        patch.computers = [...new Set(body.computers as ("cloud" | "vm" | "local")[])];
       }
       if (body.cloudBackend !== undefined && !["box", "vps"].includes(String(body.cloudBackend))) {
         return json(res, 400, { error: "cloudBackend must be box or vps" });
@@ -5821,7 +5821,7 @@ const server = createServer(async (req, res) => {
           ...status,
           commands: setupCommands(status.runtime, process.platform, SHARED_LOCAL_VM_TARGET),
           idle_timeout_ms: LOCAL_VM_IDLE_MS,
-          mode: "shared",
+          mode: cfg.localVm?.mode ?? "shared",
           max_instances: localVmMaxInstances(cfg),
         });
       } finally {
@@ -5879,7 +5879,7 @@ const server = createServer(async (req, res) => {
           ...status,
           commands: setupCommands(status.runtime, process.platform, target),
           idle_timeout_ms: LOCAL_VM_IDLE_MS,
-          mode: "shared",
+          mode: cfg.localVm?.mode ?? "shared",
           max_instances: localVmMaxInstances(cfg),
         });
       } finally {

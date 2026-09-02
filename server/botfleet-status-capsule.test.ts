@@ -92,7 +92,7 @@ function successCapsule(options: {
     dual_view_sha256: expected,
     refresh_status: "success",
     runtime_state: "degraded",
-    mode: "per-bot",
+    mode: "shared",
     max_instances: 2,
     ready_count: 0,
     slots: [
@@ -158,7 +158,7 @@ posixOnly("readBotFleetStatus", () => {
     // Cross-language receipt produced by scripts/aos_botfleet_status.py
     // for this exact normalized fixture.
     expect(capsule.receipt_sha256).toBe(
-      "sha256:4472d01ae83b01e0877733bb51f0124ac8bb940ffca2db0984e4e7957a58921f",
+      "sha256:f0b42fe2b23ab6eefd339c02867cfc756e22b3aa5ae8c8f10a68c990e364ec84",
     );
     const path = cachePath(capsule);
 
@@ -167,7 +167,7 @@ posixOnly("readBotFleetStatus", () => {
     expect(status).toMatchObject({
       freshness: "fresh",
       runtimeState: "degraded",
-      mode: "per-bot",
+      mode: "shared",
       maxInstances: 2,
       readyCount: 0,
       sourceSha256: DUAL_VIEW_SHA,

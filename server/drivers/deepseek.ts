@@ -111,6 +111,7 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
           model,
           messages,
           stream: opts.stream,
+          ...(opts.tools ? { tools: opts.tools } : {}),
           ...(opts.stream ? { stream_options: { include_usage: true } } : {}),
         }),
         signal: opts.signal
@@ -125,11 +126,13 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
         const json: any = await res.json();
         return {
           text: json.choices?.[0]?.message?.content ?? "",
+          tool_calls: json.choices?.[0]?.message?.tool_calls,
           usage: usageFromDeepSeekApi(json.usage),
         };
       }
       let text = "";
       let usage: { input: number; output: number; cachedInput?: number } | null = null;
+      let streamToolCalls: any[] = [];
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -143,14 +146,27 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
         } catch {
           return;
         }
-        const delta = chunk.choices?.[0]?.delta?.content;
-        const reasoning = chunk.choices?.[0]?.delta?.reasoning_content;
+        const deltaObj = chunk.choices?.[0]?.delta;
+        const delta = deltaObj?.content;
+        const reasoning = deltaObj?.reasoning_content;
+        const toolCallsDelta = Array.isArray(deltaObj?.tool_calls) ? deltaObj.tool_calls : undefined;
+        
         if (reasoning) {
-          opts.onDelta?.(reasoning);
+          opts.onDelta?.(reasoning, "reasoning_text");
         }
         if (delta) {
           text += delta;
-          opts.onDelta?.(delta);
+          opts.onDelta?.(delta, "assistant_text");
+        }
+        if (toolCallsDelta) {
+          for (const tc of toolCallsDelta) {
+            const tcIndex = tc.index ?? 0;
+            if (!streamToolCalls[tcIndex]) streamToolCalls[tcIndex] = { id: "", function: { name: "", arguments: "" } };
+            if (tc.id) streamToolCalls[tcIndex].id += tc.id;
+            if (tc.function?.name) streamToolCalls[tcIndex].function.name += tc.function.name;
+            if (tc.function?.arguments) streamToolCalls[tcIndex].function.arguments += tc.function.arguments;
+            opts.onToolCallDelta?.(tcIndex, tc.id, tc.function?.name, tc.function?.arguments);
+          }
         }
         if (chunk.usage) {
           usage = usageFromDeepSeekApi(chunk.usage);
@@ -186,14 +202,29 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
       const retryScale = Number(process.env.FAKE_DEEPSEEK_RETRY_SCALE ?? "1");
       active.set(threadId, { abort, turnId });
 
-      const messages = [
+      const deepseekTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+        },
+      })) : undefined;
+      
+      const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
-        ...(turn.transcript ?? []).map((m) => ({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: m.text,
-        })),
-        { role: "user", content: turn.text },
       ];
+      
+      for (const m of (turn.transcript ?? [])) {
+        if (m.role === "assistant") {
+          messages.push({ role: "assistant", content: m.text });
+        } else {
+          // In a real robust implementation this would map tools in the transcript too,
+          // but for parity with BotFleet's HTTP APIs, we just map basic user messages.
+          messages.push({ role: "user", content: m.text });
+        }
+      }
+      messages.push({ role: "user", content: turn.text });
       appendNative(threadId, { dir: "out", source: "deepseek.chat.completions", msg: { model: turn.model, messages } });
 
       emit({ ...base(threadId, turnId), type: "turn.started" });
@@ -203,28 +234,43 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
         let attempt = 0;
         for (;;) {
           try {
-            const { text, usage } = await complete(messages, turn.model || MODELS.default, {
+            const { text, tool_calls, usage } = await complete(messages, turn.model || MODELS.default, {
               stream: true,
               signal: abort.signal,
-              onDelta: (delta) => {
+              tools: deepseekTools,
+              onDelta: (delta, streamKind = "assistant_text") => {
                 streamedText = true;
-                emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
+                emit({ ...base(threadId, turnId), type: "content.delta", streamKind: streamKind as any, delta });
+              },
+              onToolCallDelta: (index, id, name, args) => {
+                emit({
+                  ...base(threadId, turnId),
+                  type: "tool_call.delta",
+                  index,
+                  toolCallId: id,
+                  name,
+                  args,
+                } as any);
               },
             });
-            appendNative(threadId, { dir: "in", source: "deepseek.chat.completions", msg: { text, usage } });
+            appendNative(threadId, { dir: "in", source: "deepseek.chat.completions", msg: { text, tool_calls, usage } });
             if (text.trim()) {
               emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
             }
             if (usage) {
               emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
             }
+            const toolNames = (tool_calls ?? [])
+              .map((tc: any) => tc.function?.name)
+              .filter(Boolean)
+              .join(", ");
             const cost = computeDeepSeekCost(turn.model || MODELS.default, usage);
             active.delete(threadId);
             emit({
               ...base(threadId, turnId),
               type: "turn.completed",
               ok: true,
-              stopReason: null,
+              stopReason: toolNames ? `tool_calls: ${toolNames}` : null,
               cost,
               ...(usage ? { usage } : {}),
             });
@@ -296,7 +342,7 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session" },
+        capabilities: { sessionModelSwitch: "in-session", localComputerMcp: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const, // this engine has no asks to answer

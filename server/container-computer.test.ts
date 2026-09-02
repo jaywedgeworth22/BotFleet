@@ -97,9 +97,9 @@ function readyInspect(overrides: Record<string, unknown> = {}) {
       // the full hardened HostConfig the stricter shared check now demands:
       // unprivileged, private IPC/cgroup namespaces, pinned shm, no devices
       HostConfig: {
-        Memory: 4 * 1024 * 1024 * 1024,
-        MemorySwap: 4 * 1024 * 1024 * 1024,
-        NanoCpus: 2_000_000_000,
+        Memory: 8 * 1024 * 1024 * 1024,
+        MemorySwap: 8 * 1024 * 1024 * 1024,
+        NanoCpus: 4_000_000_000,
         PidsLimit: 512,
         CapDrop: ["ALL"],
         CapAdd: ["CAP_SETUID", "CAP_SETGID"],
@@ -204,9 +204,9 @@ describe("containerComputerStatus", () => {
 
   it("rejects extra effective or bounding capabilities in Podman inspect output", () => {
     const config = {
-      Memory: 4 * 1024 * 1024 * 1024,
-      MemorySwap: 4 * 1024 * 1024 * 1024,
-      NanoCpus: 2_000_000_000,
+      Memory: 8 * 1024 * 1024 * 1024,
+      MemorySwap: 8 * 1024 * 1024 * 1024,
+      NanoCpus: 4_000_000_000,
       PidsLimit: 512,
       CapDrop: ["CAP_CHOWN"],
       CapAdd: [],
@@ -326,7 +326,7 @@ describe("containerComputerStatus", () => {
         {
           configuration: {
             image: { reference: IMAGE, descriptor: { digest: "sha256:managed-image-id" } },
-            resources: { cpus: 2, memoryInBytes: 4 * 1024 * 1024 * 1024 },
+            resources: { cpus: 4, memoryInBytes: 8 * 1024 * 1024 * 1024 },
             publishedPorts: [{ hostAddress: "127.0.0.1", containerPort: 6901 }],
             labels: {
               [MANAGED_LABEL]: "1",
@@ -358,9 +358,9 @@ describe("containerComputerStatus", () => {
       [`docker image inspect ${IMAGE}`]: preparedImageInspect(),
       [`docker inspect ${CONTAINER}`]: readyInspect({
         HostConfig: {
-          Memory: 4 * 1024 * 1024 * 1024,
-          MemorySwap: 4 * 1024 * 1024 * 1024,
-          NanoCpus: 2_000_000_000,
+          Memory: 8 * 1024 * 1024 * 1024,
+          MemorySwap: 8 * 1024 * 1024 * 1024,
+          NanoCpus: 4_000_000_000,
           PidsLimit: 512,
           CapDrop: ["ALL"],
           CapAdd: ["CAP_SETUID", "CAP_SETGID"],
@@ -740,8 +740,8 @@ describe("setupCommands", () => {
 
   it("limits resources and retains only the sandbox supervisor's identity-switch caps", () => {
     const command = setupCommands("docker", "linux").run!;
-    expect(command).toContain("--memory 4g --memory-swap 4g");
-    expect(command).toContain("--cpus 2 --pids-limit 512");
+    expect(command).toContain("--memory 8g --memory-swap 8g");
+    expect(command).toContain("--cpus 4 --pids-limit 512");
     expect(command).toContain("--ipc private --cgroupns private");
     expect(command).toContain("--cap-drop ALL --cap-add SETUID --cap-add SETGID");
     expect(command).toContain(`--label ${MANAGED_LABEL}=1`);
@@ -775,7 +775,7 @@ describe("setupCommands", () => {
     const commands = setupCommands("container", "darwin");
     expect(commands.runtimeStart).toBe("container system start");
     expect(commands.remove).toBe(`container rm --force ${CONTAINER}`);
-    expect(commands.run).toContain("--memory 4g --cpus 2 --cap-drop ALL");
+    expect(commands.run).toContain("--memory 8g --cpus 4 --cap-drop ALL");
     expect(commands.run).not.toContain("--memory-swap");
   });
 

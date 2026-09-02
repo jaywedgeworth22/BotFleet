@@ -152,6 +152,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         stream: opts.stream,
         reasoning_split: true,
         stream_options: opts.stream ? { include_usage: true } : undefined,
+        ...(opts.tools ? { tools: opts.tools } : {}),
       };
       const res = await fetch(`${apiUrl}/chat/completions`, {
         method: "POST",
@@ -172,6 +173,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         const json: any = await res.json();
         return {
           text: json.choices?.[0]?.message?.content ?? "",
+          tool_calls: json.choices?.[0]?.message?.tool_calls,
           usage: json.usage
             ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
             : null,
@@ -221,14 +223,27 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       const abort = new AbortController();
       active.set(threadId, { abort, turnId });
 
-      const messages = [
+      const minimaxTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+        },
+      })) : undefined;
+      
+      const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
-        ...(turn.transcript ?? []).map((m) => ({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: m.text,
-        })),
-        { role: "user", content: turn.text },
       ];
+      
+      for (const m of (turn.transcript ?? [])) {
+        if (m.role === "assistant") {
+          messages.push({ role: "assistant", content: m.text });
+        } else {
+          messages.push({ role: "user", content: m.text });
+        }
+      }
+      messages.push({ role: "user", content: turn.text });
 
       appendNative(threadId, {
         dir: "out",
@@ -308,7 +323,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session" },
+        capabilities: { sessionModelSwitch: "in-session", localComputerMcp: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async (): Promise<"unavailable"> => "unavailable",
