@@ -76,7 +76,9 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
         body: JSON.stringify({ model, messages, stream: opts.stream }),
-        signal: opts.signal ?? AbortSignal.timeout(120_000),
+        signal: opts.signal
+          ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
+          : AbortSignal.timeout(120_000),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
@@ -96,31 +98,38 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
+      const takeSseLine = (line: string) => {
+        if (!line.startsWith("data:")) return;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]") return;
+        let chunk: any;
+        try {
+          chunk = JSON.parse(data);
+        } catch {
+          return;
+        }
+        const delta = chunk.choices?.[0]?.delta?.content;
+        if (delta) {
+          text += delta;
+          opts.onDelta?.(delta);
+        }
+        if (chunk.usage) {
+          usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
+        }
+      };
       for (;;) {
         const { done, value } = await reader.read();
-        if (done) break;
+        if (done) {
+          buf += decoder.decode();
+          if (buf.trim()) takeSseLine(buf.trim());
+          break;
+        }
         buf += decoder.decode(value, { stream: true });
         let nl;
         while ((nl = buf.indexOf("\n")) !== -1) {
           const line = buf.slice(0, nl).trim();
           buf = buf.slice(nl + 1);
-          if (!line.startsWith("data:")) continue;
-          const data = line.slice(5).trim();
-          if (data === "[DONE]") continue;
-          let chunk: any;
-          try {
-            chunk = JSON.parse(data);
-          } catch {
-            continue;
-          }
-          const delta = chunk.choices?.[0]?.delta?.content;
-          if (delta) {
-            text += delta;
-            opts.onDelta?.(delta);
-          }
-          if (chunk.usage) {
-            usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
-          }
+          takeSseLine(line);
         }
       }
       return { text, usage };

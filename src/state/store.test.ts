@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import {
   configStatusFromFrame,
   initialState,
+  mergeHydrateBots,
+  mergeHydrateGroups,
   openNotificationTarget,
   reducer,
   type Bot,
@@ -481,3 +483,117 @@ describe("pending queued chip", () => {
     expect(cancelled.pendingQueued).toEqual({});
   });
 });
+
+describe("hydrate vs in-flight patches", () => {
+  const bot = (overrides: Partial<Bot> = {}): Bot => ({
+    id: "echo",
+    threadId: "t1",
+    name: "Echo",
+    title: "",
+    description: "",
+    notifications: true,
+    color: "green",
+    unread: false,
+    modelSelection: { instanceId: "x", model: "y" },
+    messages: [],
+    ...overrides,
+  });
+
+  const group = (overrides: Partial<Group> = {}): Group => ({
+    id: "room",
+    threadId: "room-t",
+    name: "Launch",
+    memberIds: ["echo"],
+    defaultResponder: { kind: "everyone" },
+    bulletin: "",
+    unread: false,
+    createdAt: 1,
+    messages: [],
+    ...overrides,
+  });
+
+  it("overlays in-flight profile fields onto a stale REST snapshot", () => {
+    const local = bot({ name: "Echo", title: "Old" });
+    const server = bot({ name: "Echo", title: "Old" });
+    const merged = mergeHydrateBots(
+      [local],
+      [server],
+      { echo: { title: "Ops" } },
+      {},
+      {},
+    );
+    expect(merged[0]?.title).toBe("Ops");
+  });
+
+  it("keeps a locally newer bot when epoch advanced during the fetch", () => {
+    const local = bot({ name: "Renamed" });
+    const server = bot({ name: "Echo" });
+    const merged = mergeHydrateBots([local], [server], {}, { echo: 2 }, { echo: 1 });
+    expect(merged[0]?.name).toBe("Renamed");
+  });
+
+  it("takes the server snapshot when nothing changed during the fetch", () => {
+    const local = bot({ name: "Echo" });
+    const server = bot({ name: "FromServer", busy: true });
+    const merged = mergeHydrateBots([local], [server], {}, { echo: 1 }, { echo: 1 });
+    expect(merged[0]?.name).toBe("FromServer");
+    expect(merged[0]?.busy).toBe(true);
+  });
+
+  it("keeps an optimistic room roster across a stale hydrate", () => {
+    const local = group({ memberIds: ["echo", "ada"] });
+    const server = group({ memberIds: ["echo"] });
+    const merged = mergeHydrateGroups([local], [server], { room: 3 }, { room: 2 });
+    expect(merged[0]?.memberIds).toEqual(["echo", "ada"]);
+  });
+
+  it("bumps bot epoch on updateBot and skips clobbering that bot on hydrate", () => {
+    const seeded = reducer(initialState, { type: "botPatched", bot: bot() });
+    const edited = reducer(seeded, { type: "updateBot", botId: "echo", patch: { name: "Renamed" } });
+    expect(edited.botEpoch.echo).toBe(1);
+    const hydrated = reducer(edited, {
+      type: "hydrate",
+      bots: [bot({ name: "Echo" })],
+      groups: [],
+      computerControl: {},
+      botEpochAtFetch: seeded.botEpoch,
+    });
+    expect(hydrated.bots[0]?.name).toBe("Renamed");
+  });
+
+  it("routes setModel through epoch so a concurrent hydrate cannot snap the model back", () => {
+    const seeded = reducer(initialState, { type: "botPatched", bot: bot() });
+    const picked = reducer(seeded, {
+      type: "setModel",
+      botId: "echo",
+      selection: { instanceId: "grok", model: "grok-4" },
+    });
+    const hydrated = reducer(picked, {
+      type: "hydrate",
+      bots: [bot()],
+      groups: [],
+      computerControl: {},
+      botEpochAtFetch: seeded.botEpoch,
+    });
+    expect(hydrated.bots[0]?.modelSelection).toEqual({ instanceId: "grok", model: "grok-4" });
+  });
+
+  it("restores the previous room roster after an optimistic patch is rejected", () => {
+    const seeded = reducer(initialState, {
+      type: "groupPatched",
+      group: group({ memberIds: ["echo"] }),
+    });
+    const optimistic = reducer(seeded, {
+      type: "patchGroup",
+      groupId: "room",
+      patch: { memberIds: ["echo", "ada"] },
+    });
+    expect(optimistic.groups[0]?.memberIds).toEqual(["echo", "ada"]);
+    const rolled = reducer(optimistic, {
+      type: "groupPatched",
+      group: group({ memberIds: ["echo"] }),
+    });
+    expect(rolled.groups[0]?.memberIds).toEqual(["echo"]);
+  });
+});
+

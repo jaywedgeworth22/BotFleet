@@ -344,16 +344,20 @@ describe("the sidecar in front of an unmodified harness", () => {
     }
   });
 
-  it("only remembers an always-allow key carried by a pending card", async () => {
+  it("does not let a phone widen Auto or start connector OAuth", async () => {
     const { body } = await device("GET", "/api/bots");
     const bot = body.bots[0];
-    const attempt = await device("POST", `/api/bots/${bot.id}/always-allow`, {
+    const alwaysAllow = await device("POST", `/api/bots/${bot.id}/always-allow`, {
       body: { allowKey: "Bash" },
     });
-    expect(attempt.status).toBe(409);
+    expect(alwaysAllow.status).toBe(404);
+    expect(alwaysAllow.body.error).toMatch(/no route/);
 
-    const refreshed = await device("GET", "/api/bots");
-    expect(refreshed.body.bots.find((candidate: any) => candidate.id === bot.id).alwaysAllow ?? []).not.toContain("Bash");
+    const authorize = await device("POST", "/api/connectors/slack/authorize", {
+      body: {},
+    });
+    expect(authorize.status).toBe(403);
+    expect(authorize.body.error).toMatch(/on your computer/);
   });
 
   it("never passes the provider session cursors through", async () => {

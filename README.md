@@ -5,28 +5,28 @@
 
 **Your own fleet of AI bots, in a chat app.**
 
-<sub>A distribution of the open-source <a href="https://github.com/jaywedgeworth22/BotFleet">BotFleet</a> — extended with fleet-grade add-ons for running a coordinated team of bots on your own Mac, with an iOS companion.</sub>
+<sub>A distribution of the open-source <a href="https://github.com/milind-soni/OpenMausBot">OpenMausBot</a> — extended with fleet-grade add-ons for running a coordinated team of bots on your own Mac, with an iPhone companion.</sub>
 
 <br>
 <br>
 
-<a href="https://botfleet.app"><b>botfleet.app</b></a> &nbsp;·&nbsp; <a href="https://testflight.apple.com/join/ER6sPNMh">iOS companion on TestFlight (public beta)</a> &nbsp;·&nbsp; <a href="https://github.com/jaywedgeworth22/BotFleet">upstream BotFleet</a>
+<a href="https://botfleet.app"><b>botfleet.app</b></a> &nbsp;·&nbsp; <a href="https://testflight.apple.com/join/ER6sPNMh">iPhone companion on TestFlight (public beta)</a> &nbsp;·&nbsp; <a href="https://github.com/jaywedgeworth22/BotFleet">source</a> &nbsp;·&nbsp; <a href="https://github.com/milind-soni/OpenMausBot">upstream OpenMausBot</a>
 
 </div>
 
 ## What BotFleet Adds
 
-BotFleet tracks upstream BotFleet closely and layers fleet-oriented add-ons on top.  The live status of every add-on — Established vs Beta — is kept at **[botfleet.app](https://botfleet.app)**.  Highlights:
+BotFleet tracks upstream OpenMausBot closely and layers fleet-oriented add-ons on top.  The live status of every add-on — Established vs Beta — is kept at **[botfleet.app](https://botfleet.app)**.  Highlights:
 
-- **Always-on iMessage relay** — a host daemon plus LaunchBots keep every bot group chat in Messages.app wired to the BotFleet backend in both directions, so the fleet stays reachable from a phone.
-- **iOS companion infrastructure** — App Groups and Associated Domains entitlements, universal links, and a public TestFlight for the companion app.
-- **Multi-tier model fallbacks** — first, second, and third choice models per bot with automatic failover and retry on rate limits, quota, or outages.
+- **Always-on iMessage relay** — a host daemon plus LaunchAgents keep every bot group chat in Messages.app wired to the BotFleet backend in both directions while the relay is running.
+- **iOS companion infrastructure** — App Groups and Associated Domains entitlements, universal links, and a public TestFlight for the iPhone companion (iPad runs in compatibility mode).  Alerts are SSE plus local notifications while the companion is open; a killed app does not wake.
+- **Multi-tier model fallbacks** — first, second, and third choice models per bot.  Failover after some streamed error paths is in review; the full automatic chain is not established yet.
 - **Native DeepSeek driver** — DeepSeek V3 and R1 join Claude, Codex, and Cursor via a native ACP driver plus the dsh bot.
 - **Mid-task restart recovery**, **usage and cost telemetry**, **multi-repo channels with clickable file links**, **custom webhook domains**, **menu bar tray integration**, **dynamic system theme**, and more — see [botfleet.app](https://botfleet.app) for the full, current list with per-feature provenance.
 
-## Relationship to BotFleet
+## Relationship to OpenMausBot
 
-BotFleet is a friendly fork of [jaywedgeworth22/BotFleet](https://github.com/jaywedgeworth22/BotFleet) by Milind Soni and contributors, and inherits its architecture, license, and most of its documentation.  Everything below this line documents the BotFleet foundation that BotFleet ships with; where upstream's name appears, BotFleet behaves the same unless an add-on listed at [botfleet.app](https://botfleet.app) says otherwise.
+This distribution is [jaywedgeworth22/BotFleet](https://github.com/jaywedgeworth22/BotFleet), a friendly fork of [milind-soni/OpenMausBot](https://github.com/milind-soni/OpenMausBot) by Milind Soni and contributors.  Packaged releases live in [jaywedgeworth22/botfleet-releases](https://github.com/jaywedgeworth22/botfleet-releases).  BotFleet inherits OpenMausBot's architecture, license, and most of its documentation.  Everything below this line documents the OpenMausBot foundation that BotFleet ships with; where upstream's name appears, BotFleet behaves the same unless an add-on listed at [botfleet.app](https://botfleet.app) says otherwise.
 
 ---
 
@@ -199,14 +199,14 @@ See [MCP server setup and tool reference](docs/mcp-server.md).
 
 ## Quick start
 
-**Released builds ([v0.1.37](https://github.com/jaywedgeworth22/botfleet-releases/releases/tag/v0.1.37)):** the harness server is embedded, so no separate server setup is required.
+**Released builds ([latest](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest)):** the harness server is embedded, so no separate server setup is required.  Desktop `package.json` is currently 0.1.38; this page always points at the latest packaged assets rather than a frozen tag.
 
 | | Download | Install |
 |---|---|---|
-| **macOS** (Apple silicon) | [BotFleet.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/download/v0.1.37/BotFleet.dmg) | Drag it to Applications, open it. Signed & notarized. |
-| **macOS** (Intel) | [BotFleet-intel.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/download/v0.1.37/BotFleet-intel.dmg) | Same app, built for Intel Macs. Signed & notarized. |
-| **Windows** (x64) | [BotFleet-setup.exe](https://github.com/jaywedgeworth22/botfleet-releases/releases/download/v0.1.37/BotFleet-setup.exe) | Run it — one-click, per-user, no admin rights. The installer isn't code-signed yet, so SmartScreen shows "unknown publisher": **More info → Run anyway**. |
-| **Ubuntu 24.04** (x64) | [BotFleet-amd64.deb](https://github.com/jaywedgeworth22/botfleet-releases/releases/download/v0.1.37/BotFleet-amd64.deb) · [BotFleet.AppImage](https://github.com/jaywedgeworth22/botfleet-releases/releases/download/v0.1.37/BotFleet.AppImage) | Install the `.deb` with APT (recommended), or make the AppImage executable and run it. Beta; GNOME is the supported desktop. |
+| **macOS** (Apple silicon) | [BotFleet.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet.dmg) | Drag it to Applications, open it.  Signed & notarized. |
+| **macOS** (Intel) | [BotFleet-intel.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet-intel.dmg) | Same app, built for Intel Macs.  Signed & notarized. |
+| **Windows** (x64) | [BotFleet-setup.exe](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet-setup.exe) | Run it — one-click, per-user, no admin rights. The installer isn't code-signed yet, so SmartScreen shows "unknown publisher": **More info → Run anyway**. |
+| **Ubuntu 24.04** (x64) | [BotFleet-amd64.deb](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet-amd64.deb) · [BotFleet.AppImage](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet.AppImage) | Install the `.deb` with APT (recommended), or make the AppImage executable and run it. Beta; GNOME is the supported desktop. |
 
 See the [Ubuntu Desktop guide](docs/linux-desktop.md) for installation, capabilities, and troubleshooting.
 

@@ -330,9 +330,10 @@ const Transcript = memo(function Transcript({
           ) : m.kind === "activity" && m.tool ? (
             m.tool.name.startsWith("error:") ? (
               <div className="flex justify-start max-w-full">
-                <ErrorRow 
-                  message={m.tool.name.slice(6).trim()} 
-                  onRetry={() => {}} 
+                <ErrorRow
+                  message={m.tool.name.slice(6).trim()}
+                  onRetry={() => {}}
+                  botId={m.from?.botId}
                 />
               </div>
             ) : m.tool.ok === false || showToolCalls ? (

@@ -267,6 +267,44 @@ describe("DeviceRegistry", () => {
     }
   });
 
+  it("does not re-issue a revoked device token through pairing replay", () => {
+    const registry = new DeviceRegistry();
+    const { token: credential } = registry.openPairing();
+    const requestId = "4c825d5b-cf40-4db7-aac5-2455f805a8ec";
+    const first = registry.redeem(credential, "iPhone", requestId);
+    if ("error" in first) throw new Error(`pairing failed: ${first.error}`);
+
+    expect(registry.revoke(first.device.id)).toBe(true);
+    const memory = registry as unknown as { replay: unknown };
+    expect(memory.replay).toBeNull();
+    expect(registry.authenticate(first.token)).toBeNull();
+
+    const replay = registry.redeem(credential, "iPhone", requestId);
+    expect(replay).toMatchObject({ error: expect.stringContaining("no pairing") });
+    expect(replay).not.toHaveProperty("token");
+    expect(registry.count()).toBe(0);
+  });
+
+  it("refuses a leftover replay after the paired device is gone", () => {
+    const registry = new DeviceRegistry();
+    const { token: credential } = registry.openPairing();
+    const requestId = "4c825d5b-cf40-4db7-aac5-2455f805a8ec";
+    const first = registry.redeem(credential, "iPhone", requestId);
+    if ("error" in first) throw new Error(`pairing failed: ${first.error}`);
+
+    const memory = registry as unknown as { replay: unknown };
+    const leftover = memory.replay;
+    expect(leftover).not.toBeNull();
+    expect(registry.revoke(first.device.id)).toBe(true);
+    // A race or a missed clear must still not hand the bearer back.
+    memory.replay = leftover;
+
+    const replay = registry.redeem(credential, "iPhone", requestId);
+    expect(replay).toMatchObject({ error: expect.stringContaining("no pairing") });
+    expect(replay).not.toHaveProperty("token");
+    expect(memory.replay).toBeNull();
+  });
+
   it("revokes one device without touching the others", () => {
     const registry = new DeviceRegistry();
     const phone = pair(registry, "iPhone");

@@ -78,6 +78,17 @@ describe("GrokDriver turns (fake fetch)", () => {
     });
   });
 
+  it("keeps a final unterminated data line from the SSE stream", async () => {
+    script = [{ sse: `data: ${JSON.stringify({ choices: [{ delta: { content: "tail token" } }] })}` }];
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-tail", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+    expect(recorder.events.find((e) => e.type === "item.completed")).toMatchObject({
+      itemType: "assistant_text",
+      text: "tail token",
+    });
+  });
+
   it("auto-retries transient 429/5xx responses, then completes once", async () => {
     script = [{ status: 429 }, { status: 503 }];
     await create();

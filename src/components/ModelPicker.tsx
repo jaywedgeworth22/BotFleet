@@ -179,9 +179,9 @@ export function ModelPicker({
     } else {
        nextSelection.fallbacks = bot.modelSelection.fallbacks;
        dispatch({
-         type: "setModel",
+         type: "updateBot",
          botId: bot.id,
-         selection: nextSelection,
+         patch: { modelSelection: nextSelection },
        });
     }
     setOpen(false);

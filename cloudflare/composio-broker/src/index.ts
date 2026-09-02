@@ -5,6 +5,7 @@ interface InstallationRow {
   composio_user_id: string;
   session_id: string | null;
   disabled_at: number | null;
+  session_upgrade_attempted?: number | null;
 }
 
 interface ComposioSession {
@@ -206,28 +207,44 @@ async function createSession(env: Env, userId: string) {
   return parseSession(sessionWireSchema.parse(await response.json()));
 }
 
-/** Session ids this isolate already tried to upgrade once. If the fresh
- *  Session STILL doesn't echo multi-account, Composio isn't granting it —
- *  serve single-account behavior instead of recreating a Session and writing
- *  D1 on every request. */
+/** Same-isolate cache for Session upgrade attempts.  Durable copy is D1
+ *  `installations.session_upgrade_attempted` so a cold isolate does not
+ *  recreate Sessions forever when Composio still withholds multi-account. */
 const multiAccountUpgradeAttempted = new Set<string>();
+
+function sessionUpgradeAttempted(installation: InstallationRow, session: ComposioSession | null) {
+  if (Number(installation.session_upgrade_attempted) === 1) return true;
+  return Boolean(session && multiAccountUpgradeAttempted.has(session.sessionId));
+}
 
 async function ensureSession(installation: InstallationRow, env: Env, ctx: ExecutionContext) {
   if (!(await env.SESSION_LIMITER.limit({ key: installation.id })).success) {
     throw new Response(JSON.stringify({ error: "too many connected-app requests" }), { status: 429, headers: JSON_HEADERS });
   }
   let session = installation.session_id ? await getSession(env, installation.session_id) : null;
-  if (session && !session.multiAccountConfigured && multiAccountUpgradeAttempted.has(session.sessionId)) {
+  if (session && !session.multiAccountConfigured && sessionUpgradeAttempted(installation, session)) {
     return session;
   }
   if (!session?.multiAccountConfigured) {
     // Connected accounts are attached to this stable Composio user ID. A new
     // Session upgrades legacy installations without relinking OAuth grants.
+    const previousSessionId = installation.session_id;
     session = await createSession(env, installation.composio_user_id);
     multiAccountUpgradeAttempted.add(session.sessionId);
-    await env.DB.prepare("UPDATE installations SET session_id = ?, last_seen_at = ? WHERE id = ?")
-      .bind(session.sessionId, Date.now(), installation.id)
-      .run();
+    const result = await env.DB.prepare(
+      "UPDATE installations SET session_id = ?, last_seen_at = ?, session_upgrade_attempted = 1 WHERE id = ? AND (session_id IS NULL OR session_id = ?)",
+    ).bind(session.sessionId, Date.now(), installation.id, previousSessionId).run();
+    if ((result.meta?.changes ?? 0) === 0) {
+      const winner = await env.DB.prepare(
+        "SELECT id, composio_user_id, session_id, disabled_at, session_upgrade_attempted FROM installations WHERE id = ?",
+      ).bind(installation.id).first<InstallationRow>();
+      if (winner?.session_id) {
+        const existing = await getSession(env, winner.session_id);
+        if (existing) return existing;
+      }
+    }
+    installation.session_id = session.sessionId;
+    installation.session_upgrade_attempted = 1;
   } else {
     ctx.waitUntil(
       env.DB.prepare("UPDATE installations SET last_seen_at = ? WHERE id = ?")
@@ -243,7 +260,7 @@ async function authenticate(request: Request, env: Env) {
   const token = request.headers.get("authorization")?.match(/^Bearer ([0-9a-f]{64})$/)?.[1];
   if (!token) return null;
   const row = await env.DB.prepare(
-    "SELECT id, composio_user_id, session_id, disabled_at FROM installations WHERE token_hash = ?",
+    "SELECT id, composio_user_id, session_id, disabled_at, session_upgrade_attempted FROM installations WHERE token_hash = ?",
   ).bind(await sha256(token)).first<InstallationRow>();
   return row && row.disabled_at === null ? row : null;
 }

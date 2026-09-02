@@ -375,6 +375,25 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("persists room avatarCrop the same way bot avatars do", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Crop", memberIds: [bot.id] })).body.group;
+    try {
+      const cropped = await api("PATCH", `/api/groups/${room.id}`, { avatarCrop: "rounded" });
+      expect(cropped.status).toBe(200);
+      expect(cropped.body.group.avatarCrop).toBe("rounded");
+      const cleared = await api("PATCH", `/api/groups/${room.id}`, { avatarCrop: null });
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.group.avatarCrop).toBeNull();
+      const bad = await api("PATCH", `/api/groups/${room.id}`, { avatarCrop: "hexagon" });
+      expect(bad.status).toBe(400);
+      expect(bad.body.error).toMatch(/avatarCrop must be mascot, circle, rounded, or square/);
+    } finally {
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("refuses to empty a room's roster", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     const room = (await api("POST", "/api/groups", { name: "Never empty", memberIds: [bot.id] })).body.group;

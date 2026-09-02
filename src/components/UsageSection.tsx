@@ -6,24 +6,27 @@ import * as React from "react";
 import { useStore } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
+import { deepSeekPriceRows } from "@/lib/deepseek-prices";
+import { telemetryBadge, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
 export function UsageSection() {
   const { state } = useStore();
-  const [telemetryError, setTelemetryError] = React.useState<string | null>(null);
+  const [telemetryStatus, setTelemetryStatus] = React.useState<TelemetryStatusView | null>(null);
+  const [telemetryFetchError, setTelemetryFetchError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     fetch("/api/telemetry/status")
       .then((res) => res.json())
       .then((data) => {
-        if (data && data.lastError) {
-          setTelemetryError(data.lastError);
-        }
+        setTelemetryStatus(data && typeof data === "object" ? data : null);
+        setTelemetryFetchError(null);
       })
       .catch(() => {
-        setTelemetryError("Failed to fetch telemetry status");
+        setTelemetryFetchError("Failed to fetch telemetry status");
       });
   }, []);
+  const badge = telemetryBadge(telemetryStatus, telemetryFetchError);
 
   const rows = state.bots
     .filter((b) => !b.hidden)
@@ -102,9 +105,7 @@ export function UsageSection() {
             <span className="text-right">Output / 1M</span>
           </div>
           {[
-            { model: "DeepSeek V4 Flash", provider: "DeepSeek", input: "$0.07", cache: "$0.007", output: "$0.14", badge: "Ultra Cheap" },
-            { model: "DeepSeek V4 Pro", provider: "DeepSeek", input: "$0.14", cache: "$0.014", output: "$0.28", badge: "Default MoE" },
-            { model: "DeepSeek R1", provider: "DeepSeek", input: "$0.55", cache: "$0.14", output: "$2.19", badge: "Reasoner" },
+            ...deepSeekPriceRows(),
             { model: "Grok 3 (CLI)", provider: "xAI", input: "Subscription", cache: "Included", output: "Included", badge: "CLI" },
             { model: "Claude 3.7 Sonnet (CLI)", provider: "Anthropic", input: "Subscription", cache: "Included", output: "Included", badge: "CLI" },
             { model: "Codex / GPT-5.4 (CLI)", provider: "OpenAI", input: "Subscription", cache: "Included", output: "Included", badge: "CLI" },
@@ -133,19 +134,32 @@ export function UsageSection() {
         <div className="flex flex-col gap-3 text-[13px]">
           <div className="flex items-center justify-between rounded-xl border border-hairline/30 bg-inset/40 px-3.5 py-2.5">
             <div className="flex items-center gap-2">
-              <span className={`flex size-2 rounded-full ${telemetryError ? 'bg-danger shadow-[0_0_8px_rgba(239,68,68,0.6)]' : 'bg-success shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse'}`} />
+              <span
+                className={`flex size-2 rounded-full ${
+                  badge.tone === "error"
+                    ? "bg-danger shadow-[0_0_8px_rgba(239,68,68,0.6)]"
+                    : badge.tone === "active"
+                      ? "bg-success shadow-[0_0_8px_rgba(34,197,94,0.6)] animate-pulse"
+                      : badge.tone === "waiting"
+                        ? "bg-warning"
+                        : "bg-ink-secondary/40"
+                }`}
+              />
               <span className="font-medium text-ink">Usage Monitor</span>
               <span className="text-[11.5px] text-ink-secondary font-mono">usage.jays.services</span>
             </div>
-            {telemetryError ? (
-              <span className="rounded bg-danger/15 px-2 py-0.5 text-[11px] font-medium text-danger" title={telemetryError}>
-                Error
-              </span>
-            ) : (
-              <span className="rounded bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
-                Active Telemetry
-              </span>
-            )}
+            <span
+              className={`rounded px-2 py-0.5 text-[11px] font-medium ${
+                badge.tone === "error"
+                  ? "bg-danger/15 text-danger"
+                  : badge.tone === "active"
+                    ? "bg-success/15 text-success"
+                    : "bg-inset text-ink-secondary"
+              }`}
+              title={telemetryFetchError || telemetryStatus?.lastError || undefined}
+            >
+              {badge.label}
+            </span>
           </div>
 
           <div className="grid grid-cols-2 gap-2 text-[12px] sm:grid-cols-4">

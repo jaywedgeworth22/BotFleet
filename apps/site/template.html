@@ -19,6 +19,7 @@
     --surface: #ffffff;
     --ink: #111318;
     --ink-soft: #4b5160;
+    --ink-muted: #6b7280;
     --line: #e4e6ea;
     --tile: #000000;
     --silver-hi: #e6e8eb;
@@ -148,6 +149,7 @@
       <a href="#beta">Beta</a>
       <a href="{{TESTFLIGHT_URL}}">TestFlight</a>
       <a href="{{REPO_URL}}">GitHub</a>
+      <a href="{{RELEASES_URL}}">Releases</a>
     </nav>
   </div>
 </header>
@@ -165,8 +167,8 @@
     </p>
     <div class="cta-row" style="gap: 16px;">
       <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
-        <a class="cta" href="https://github.com/jaywedgeworth22/BotFleet/releases/latest">Download for Mac (Apple Silicon)</a>
-        <a href="https://github.com/jaywedgeworth22/BotFleet/releases" style="font-size: 13px; color: var(--ink-muted); text-decoration: underline;">See Previous Builds</a>
+        <a class="cta" href="{{MAC_DOWNLOAD_URL}}">Download for Mac (Apple Silicon)</a>
+        <a href="{{RELEASES_URL}}/releases" style="font-size: 13px; color: var(--ink-muted); text-decoration: underline;">See Previous Builds</a>
       </div>
       <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
         <a class="cta" href="{{TESTFLIGHT_URL}}" style="background: var(--surface); color: var(--ink); border: 1px solid var(--line);">Join the iOS TestFlight</a>
@@ -182,8 +184,8 @@
   <div class="legend">
     <div><span class="badge est">Established</span>&nbsp; Merged to main, or deployed and verified in daily use.</div>
     <div><span class="badge beta">Beta</span>&nbsp; Shipped in a BotFleet branch or pull request and still under review or active testing.</div>
-    <div class="lineage">The open pull requests build on one another, so a feature can appear in more than
-      one PR's diff.&nbsp; Each card cites the pull request where the work originated.</div>
+    <div class="lineage">Cards cite a pull request only when that number is verified.&nbsp; Host or main
+      notes mean the work is on this Mac or already on BotFleet main without a single originating PR.</div>
   </div>
 
   {{SECTIONS}}

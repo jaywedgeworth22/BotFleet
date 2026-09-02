@@ -45,7 +45,6 @@ describe("what the app may do", () => {
     ["POST", "/api/bots/bot_123/messages"],
     ["POST", "/api/bots/bot_123/interrupt"],
     ["POST", "/api/bots/bot_123/read"],
-    ["POST", "/api/bots/bot_123/always-allow"],
     ["POST", "/api/bots/bot_123/messages/msg_2/edit"],
     ["POST", "/api/bots/bot_123/active-branch"],
     ["POST", "/api/bots/bot_123/tasks"],
@@ -79,7 +78,6 @@ describe("what the app may do", () => {
     ["GET", "/api/connectors/catalog"],
     ["GET", "/api/connectors/connected"],
     ["GET", "/api/connectors"],
-    ["POST", "/api/connectors/slack/authorize"],
   ];
 
   for (const [method, path] of calls) {
@@ -88,6 +86,21 @@ describe("what the app may do", () => {
 });
 
 describe("what it may not", () => {
+  it("keeps always-allow and connector authorize on the computer", () => {
+    expect(ask("POST", "/api/bots/bot_123/always-allow")).toEqual({
+      status: 404,
+      error: "no route: POST /api/bots/bot_123/always-allow",
+    });
+    expect(ask("POST", "/api/connectors/slack/authorize")).toEqual({
+      status: 403,
+      error: "connected apps are set up on your computer",
+    });
+    // Profile subset and approval answers stay on the phone.  Privilege
+    // fields on profile are still refused by the harness, not widened here.
+    expect(ask("PATCH", "/api/bots/bot_123/profile")).toBeNull();
+    expect(ask("POST", "/api/threads/th_1/respond")).toBeNull();
+  });
+
   it("refuses host configuration, and says where it happens", () => {
     for (const [method, path] of [
       ["PUT", "/api/config"],
@@ -171,8 +184,8 @@ describe("what it may not", () => {
     expect(allowed("POST", "/api/routine-runs/run_1/cancel")).toBe(false);
     expect(allowed("DELETE", "/api/connectors/slack")).toBe(false);
     expect(allowed("GET", "/api/connectors/connected/all")).toBe(false);
-    // revocation is a Mac-only affordance: the phone can list and add
-    // accounts but the account DELETE route is deliberately not allowed
+    // listing is allowed; starting OAuth and detaching an account are not
+    expect(allowed("POST", "/api/connectors/slack/authorize")).toBe(false);
     expect(allowed("DELETE", "/api/connectors/slack/accounts/ca_123")).toBe(false);
     expect(allowed("DELETE", "/api/groups/room-1")).toBe(false);
   });

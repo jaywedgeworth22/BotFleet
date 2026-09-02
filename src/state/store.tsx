@@ -429,6 +429,9 @@ export interface AppState {
   /** queueIds whose drain frame beat the POST continuation. One-shot and
    * bounded to a short event window so other clients cannot grow it forever. */
   consumedQueueIds: Record<string, true>;
+  /** Bumps on optimistic bot edits so a stale REST hydrate cannot clobber them. */
+  botEpoch: Record<string, number>;
+  groupEpoch: Record<string, number>;
 }
 
 const MAX_CONSUMED_QUEUE_IDS = 64;
@@ -450,6 +453,9 @@ export type Action =
       bots: Bot[];
       groups: Group[];
       computerControl: Record<string, { held: boolean; helpReason: string | null }>;
+      overlays?: Record<string, BotUpdatePatch>;
+      botEpochAtFetch?: Record<string, number>;
+      groupEpochAtFetch?: Record<string, number>;
     }
   | { type: "showRoutines"; routineId?: string }
   | { type: "showTeamMap" }
@@ -579,6 +585,47 @@ function updateBot(state: AppState, botId: string, fn: (b: Bot) => Bot): AppStat
   return { ...state, bots: state.bots.map((b) => (b.id === botId ? fn(b) : b)) };
 }
 
+function bumpEpoch(map: Record<string, number>, id: string): Record<string, number> {
+  return { ...map, [id]: (map[id] ?? 0) + 1 };
+}
+
+/** REST hydrate must not wipe in-flight profile patches. Overlay is the same
+ * map SSE `bot` frames already apply; epoch keeps a local bot that changed
+ * after the snapshot request started, even once the queue has drained. */
+export function mergeHydrateBots(
+  localBots: Bot[],
+  serverBots: Bot[],
+  overlays: Record<string, BotUpdatePatch>,
+  localEpoch: Record<string, number>,
+  epochAtFetch: Record<string, number>,
+): Bot[] {
+  const localById = new Map(localBots.map((bot) => [bot.id, bot]));
+  return serverBots.map((serverBot) => {
+    const overlay = overlays[serverBot.id] ?? {};
+    const local = localById.get(serverBot.id);
+    const started = epochAtFetch[serverBot.id] ?? 0;
+    const now = localEpoch[serverBot.id] ?? 0;
+    if (local && now > started) return { ...local, ...overlay };
+    return { ...serverBot, ...overlay };
+  });
+}
+
+export function mergeHydrateGroups(
+  localGroups: Group[],
+  serverGroups: Group[],
+  localEpoch: Record<string, number>,
+  epochAtFetch: Record<string, number>,
+): Group[] {
+  const localById = new Map(localGroups.map((group) => [group.id, group]));
+  return serverGroups.map((serverGroup) => {
+    const local = localById.get(serverGroup.id);
+    const started = epochAtFetch[serverGroup.id] ?? 0;
+    const now = localEpoch[serverGroup.id] ?? 0;
+    if (local && now > started) return local;
+    return serverGroup;
+  });
+}
+
 function withMascotMotion(
   state: AppState,
   botId: string,
@@ -624,8 +671,19 @@ export function reducer(state: AppState, action: Action): AppState {
         state.selectedId && known(state.selectedId) ? state.selectedId : (action.bots[0]?.id ?? "");
       return {
         ...state,
-        bots: action.bots,
-        groups: action.groups,
+        bots: mergeHydrateBots(
+          state.bots,
+          action.bots,
+          action.overlays ?? {},
+          state.botEpoch,
+          action.botEpochAtFetch ?? {},
+        ),
+        groups: mergeHydrateGroups(
+          state.groups,
+          action.groups,
+          state.groupEpoch,
+          action.groupEpochAtFetch ?? {},
+        ),
         computerControl: action.computerControl,
         selectedId,
       };
@@ -743,18 +801,22 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     case "select": {
       if (state.groups.some((g) => g.id === action.id)) {
+        const wasUnread = state.groups.find((g) => g.id === action.id)?.unread;
         return {
           ...state,
           activeView: "chat",
           selectedId: action.id,
           groups: state.groups.map((g) => (g.id === action.id ? { ...g, unread: false } : g)),
+          groupEpoch: wasUnread ? bumpEpoch(state.groupEpoch, action.id) : state.groupEpoch,
         };
       }
-      return updateBot(
+      const wasUnread = state.bots.find((b) => b.id === action.id)?.unread;
+      const next = updateBot(
         withMascotMotion({ ...state, activeView: "chat", selectedId: action.id }, action.id, "switch"),
         action.id,
         (b) => ({ ...b, unread: false }),
       );
+      return wasUnread ? { ...next, botEpoch: bumpEpoch(next.botEpoch, action.id) } : next;
     }
     // optimistic card settle; the server's message.patch confirms it later
     case "answerCard": {
@@ -789,8 +851,10 @@ export function reducer(state: AppState, action: Action): AppState {
         state.selectedId === action.botId ? (bots.find((b) => !b.hidden)?.id ?? bots[0]?.id ?? "") : state.selectedId;
       return { ...state, bots, selectedId };
     }
-    case "markUnread":
-      return updateBot(withMascotMotion(state, action.botId, "surprise"), action.botId, (b) => ({ ...b, unread: true }));
+    case "markUnread": {
+      const next = updateBot(withMascotMotion(state, action.botId, "surprise"), action.botId, (b) => ({ ...b, unread: true }));
+      return { ...next, botEpoch: bumpEpoch(next.botEpoch, action.botId) };
+    }
     case "botPatched": {
       const before = state.bots.find((b) => b.id === action.bot.id);
       // Bot frames are complete except for their transcript. An unknown one
@@ -932,8 +996,10 @@ export function reducer(state: AppState, action: Action): AppState {
           [action.botId]: { held: action.held, helpReason: action.helpReason },
         },
       };
-    case "setModel":
-      return updateBot(state, action.botId, (b) => ({ ...b, modelSelection: action.selection }));
+    case "setModel": {
+      const next = updateBot(state, action.botId, (b) => ({ ...b, modelSelection: action.selection }));
+      return { ...next, botEpoch: bumpEpoch(next.botEpoch, action.botId) };
+    }
     case "connected":
       return { ...state, connected: action.value };
     case "error":
@@ -1021,7 +1087,8 @@ export function reducer(state: AppState, action: Action): AppState {
           }
         : animated;
       const { acknowledgeLocalAuto: _ack, ...botPatch } = action.patch;
-      return updateBot(next, action.botId, (b) => ({ ...b, ...botPatch }));
+      const patched = updateBot(next, action.botId, (b) => ({ ...b, ...botPatch }));
+      return { ...patched, botEpoch: bumpEpoch(patched.botEpoch, action.botId) };
     }
     case "threadActive": {
       const bot = state.bots.find((b) => b.threadId === action.threadId);
@@ -1048,6 +1115,7 @@ export function reducer(state: AppState, action: Action): AppState {
       return {
         ...state,
         groups: state.groups.map((g) => (g.id === action.groupId ? { ...g, ...action.patch } : g)),
+        groupEpoch: bumpEpoch(state.groupEpoch, action.groupId),
       };
     case "toggleReaction": {
       const toggle = (m: Message): Message => {
@@ -1193,6 +1261,8 @@ export const initialState: AppState = {
   mascotMotion: null,
   pendingQueued: {},
   consumedQueueIds: {},
+  botEpoch: {},
+  groupEpoch: {},
 };
 
 // ── API client ─────────────────────────────────────────────────────────
@@ -1310,6 +1380,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => botPatchQueue.dispose();
   }, [botPatchQueue]);
 
+  const groupPatchGen = useRef<Record<string, number>>({});
+
   const dispatch = useMemo(() => {
     const showError = (e: unknown) => {
       rawDispatch({ type: "error", message: e instanceof Error ? e.message : String(e) });
@@ -1325,9 +1397,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     const wrapped: React.Dispatch<Action> = (action) => {
       const botBeforeUpdate =
-        action.type === "updateBot"
+        action.type === "updateBot" || action.type === "setModel" || action.type === "markUnread"
           ? stateRef.current.bots.find((candidate) => candidate.id === action.botId)
-          : undefined;
+          : action.type === "select"
+            ? stateRef.current.bots.find((candidate) => candidate.id === action.id)
+            : undefined;
+      const groupBeforePatch =
+        action.type === "patchGroup"
+          ? stateRef.current.groups.find((candidate) => candidate.id === action.groupId)
+          : action.type === "select"
+            ? stateRef.current.groups.find((candidate) => candidate.id === action.id)
+            : undefined;
       const quizBeforeSend = (() => {
         if (action.type !== "send") return undefined;
         const bot = stateRef.current.bots.find((candidate) => candidate.id === action.botId);
@@ -1507,17 +1587,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/bots/${action.botId}`, { method: "DELETE" }).catch(showError);
           break;
         case "markUnread":
-          api(`/api/bots/${action.botId}`, { method: "PATCH", body: JSON.stringify({ unread: true }) }).catch(
-            () => {},
-          );
+          if (botBeforeUpdate) {
+            botPatchQueue.enqueue(action.botId, { unread: true }, botBeforeUpdate);
+          }
           break;
         case "select": {
-          const bot = stateRef.current.bots.find((b) => b.id === action.id);
-          const group = stateRef.current.groups.find((g) => g.id === action.id);
-          if (bot?.unread) {
-            api(`/api/bots/${action.id}`, { method: "PATCH", body: JSON.stringify({ unread: false }) }).catch(() => {});
-          } else if (group?.unread) {
-            api(`/api/groups/${action.id}`, { method: "PATCH", body: JSON.stringify({ unread: false }) }).catch(() => {});
+          if (botBeforeUpdate?.unread) {
+            botPatchQueue.enqueue(action.id, { unread: false }, botBeforeUpdate);
+          } else if (groupBeforePatch?.unread) {
+            api(`/api/groups/${action.id}`, { method: "PATCH", body: JSON.stringify({ unread: false }) }).catch(
+              (error) => {
+                rawDispatch({ type: "groupPatched", group: { id: action.id, unread: true } });
+                showError(error);
+              },
+            );
           }
           break;
         }
@@ -1538,12 +1621,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             body: JSON.stringify({ text: action.text, replyToId: action.replyToId }),
           }).catch(showError);
           break;
-        case "patchGroup":
+        case "patchGroup": {
+          const previous = groupBeforePatch;
+          const gen = (groupPatchGen.current[action.groupId] =
+            (groupPatchGen.current[action.groupId] ?? 0) + 1);
           api(`/api/groups/${action.groupId}`, {
             method: "PATCH",
             body: JSON.stringify(action.patch),
-          }).catch(showError);
+          }).catch((error) => {
+            if (groupPatchGen.current[action.groupId] !== gen) return;
+            if (previous) rawDispatch({ type: "groupPatched", group: previous });
+            showError(error);
+          });
           break;
+        }
         case "deleteGroup":
           api(`/api/groups/${action.groupId}`, { method: "DELETE" }).catch(showError);
           break;
@@ -1554,10 +1645,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }).catch(showError);
           break;
         case "setModel":
-          api(`/api/bots/${action.botId}`, {
-            method: "PATCH",
-            body: JSON.stringify({ modelSelection: action.selection }),
-          }).catch(showError);
+          if (botBeforeUpdate) {
+            botPatchQueue.enqueue(action.botId, { modelSelection: action.selection }, botBeforeUpdate);
+          }
           break;
         case "interrupt":
           api(`/api/bots/${action.botId}/interrupt`, { method: "POST" }).catch(showError);
@@ -1627,16 +1717,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // ── initial load + SSE fold ──────────────────────────────────────────
   useEffect(() => {
     let alive = true;
-    const loadAll = () =>
+    const loadAll = (botEpochAtFetch: Record<string, number>, groupEpochAtFetch: Record<string, number>) =>
       Promise.all([
         api("/api/bots")
-          .then(({ bots, groups, computerControl }) =>
-            alive && rawDispatch({
+          .then(({ bots, groups, computerControl }) => {
+            if (!alive) return;
+            const overlays: Record<string, BotUpdatePatch> = {};
+            for (const bot of bots ?? []) {
+              const overlay = botPatchQueue.overlayFor(bot.id);
+              if (Object.keys(overlay).length) overlays[bot.id] = overlay;
+            }
+            rawDispatch({
               type: "hydrate",
               bots,
               groups: groups ?? [],
               computerControl: computerControl ?? {},
-            }))
+              overlays,
+              botEpochAtFetch,
+              groupEpochAtFetch,
+            });
+          })
           .catch(() => {}),
         api("/api/instances")
           .then(({ instances }) => alive && rawDispatch({ type: "instances", instances }))
@@ -1674,7 +1774,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
       hydrating = true;
       hydrated = false;
-      void loadAll().finally(() => {
+      const botEpochAtFetch = { ...stateRef.current.botEpoch };
+      const groupEpochAtFetch = { ...stateRef.current.groupEpoch };
+      void loadAll(botEpochAtFetch, groupEpochAtFetch).finally(() => {
         if (!alive) return;
         hydrating = false;
         if (rehydrateRequested) {
@@ -1740,11 +1842,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           // reading the selected chat clears its badge immediately
           if (bot.unread && bot.id === stateRef.current.selectedId) {
             bot.unread = false;
-            fetch(`/api/bots/${bot.id}`, {
-              method: "PATCH",
-              headers: { "content-type": "application/json" },
-              body: JSON.stringify({ unread: false }),
-            }).catch(() => {});
+            botPatchQueue.enqueue(bot.id, { unread: false }, bot);
           }
           rawDispatch({
             type: "botPatched",
