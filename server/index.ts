@@ -15,7 +15,7 @@ import {
   credentialIsConfigured,
   isReusableCredentialRequest,
   isCredentialTargetId,
-  type CredentialTargetId,
+type CredentialTargetId,
 } from "../shared/credential-request.ts";
 
 import { approvalKey, autoVerdict } from "./auto-approve.ts";
@@ -23,7 +23,8 @@ import { requestReview, resolveAutoReviewMode, shouldReview } from "./auto-revie
 import * as checkpoints from "./checkpoints.ts";
 import { appendDecision, readDecisions } from "./decision-log.ts";
 import { validateBotCwd } from "./bot-cwd.ts";
-import { attachmentExists, extensionForMime, IMAGE_MAX_BYTES, readAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
+import { attachmentExists, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, isImageMime, readAttachment, saveAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
+import { openBotFleetDesktop } from "./desktop-open.ts";
 import {
   avatarGenerationRequestSchema,
   avatarGenerationStateMatches,
@@ -35,9 +36,11 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { telemetry } from "./telemetry.ts";
 import {
+  isQuotaOrCapText,
   lastUserTextIndex,
   selectTurnFallback,
   sliceIsShortProviderError,
+  turnHitQuotaOrCap,
   turnProducedAssistantOutput,
 } from "./model-fallback.ts";
 import * as box from "./box.ts";
@@ -84,9 +87,9 @@ import { buildNotification, type Notification } from "./notify.ts";
 import {
   isEffortLevel,
 type ModelSelection,
-  type ProviderInstance,
-  type RequestOutcome,
-  type RuntimeEvent,
+type ProviderInstance,
+type RequestOutcome,
+type RuntimeEvent,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
@@ -106,11 +109,11 @@ import {
   roomResponders,
   sectionKey,
   Store,
-  type GroupDefaultResponder,
-  type GroupRecord,
-  type GroupTaskRecord,
-  type Message,
-  type TaskRecord,
+type GroupDefaultResponder,
+type GroupRecord,
+type GroupTaskRecord,
+type Message,
+type TaskRecord,
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
@@ -268,6 +271,27 @@ function connectedAppsIntegration(botId: string, threadId: string) {
     botId,
     threadId,
   });
+}
+
+function qdrantIntegration(botId: string, threadId: string) {
+  const qdrantCfg = cfg.qdrant;
+  const url = (qdrantCfg?.url || process.env.QDRANT_URL || "http://127.0.0.1:6333").replace(/\/+$/, "");
+  const apiKey = qdrantCfg?.apiKey || process.env.QDRANT_API_KEY || "";
+  const collection = qdrantCfg?.collection || process.env.QDRANT_COLLECTION || "botfleet-agent-rag";
+  const bot = store.bot(botId);
+  return {
+    command: process.execPath,
+    args: [SPAWNED_PROXIES.qdrant],
+    env: {
+      ...AGENTS_NODE_FLAG,
+      OMB_QDRANT_URL: url,
+      OMB_QDRANT_API_KEY: apiKey,
+      OMB_QDRANT_COLLECTION: collection,
+      OMB_BOT_ID: botId,
+      OMB_BOT_NAME: bot?.name || "Bot",
+      OMB_THREAD_ID: threadId,
+    },
+  };
 }
 
 // ── computer control (who is driving) ──────────────────────────────────
@@ -1389,7 +1413,8 @@ bus.subscribe((event: RuntimeEvent) => {
         const lastUserIdx = lastUserTextIndex(activeMsgs);
         const afterUser = lastUserIdx >= 0 ? activeMsgs.slice(lastUserIdx + 1) : [];
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
-        const isTextError = sliceIsShortProviderError(afterUser);
+        const quotaOrCap = turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply);
+        const isTextError = sliceIsShortProviderError(afterUser) || quotaOrCap;
         const isOk = Boolean(event.ok) && !isTextError;
         if (isOk) {
           fallbackAttemptByTurn.delete(fallbackKey);
@@ -1400,18 +1425,24 @@ bus.subscribe((event: RuntimeEvent) => {
           ok: isOk,
           stopReason: event.stopReason,
           produced: turnProducedAssistantOutput(afterUser, { textIsError: isTextError }),
+          quotaOrCap,
           fallbacks: fallbackBot.modelSelection.fallbacks,
           used,
+          current: {
+            instanceId: fallbackBot.modelSelection.instanceId,
+            model: fallbackBot.modelSelection.model,
+          },
         });
         if (next && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
-          fallbackAttemptByTurn.set(fallbackKey, used + 1);
-          fallbackSelection = next;
+          const { nextUsed, instanceId, model, effort } = next;
+          fallbackAttemptByTurn.set(fallbackKey, nextUsed);
+          fallbackSelection = { instanceId, model, effort };
           store.patchBot(fallbackBot.id, {
             modelSelection: {
               ...fallbackBot.modelSelection,
-              instanceId: next.instanceId,
-              model: next.model,
-              effort: next.effort,
+              instanceId,
+              model,
+              effort,
             },
           });
           pushMessage({
@@ -1430,6 +1461,80 @@ bus.subscribe((event: RuntimeEvent) => {
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
+        let fallbackUserMessage: Message | undefined;
+        let fallbackSelection: ModelSelection | undefined;
+        const fallbackKey = `${bot.id}:${event.threadId}`;
+        const activeMsgs = store.activePath(event.threadId);
+        let lastUserIdx = -1;
+        for (let i = activeMsgs.length - 1; i >= 0; i--) {
+          if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
+            lastUserIdx = i;
+            fallbackUserMessage = activeMsgs[i];
+            break;
+          }
+        }
+
+        let isTextError = false;
+        if (lastUserIdx >= 0) {
+          const botReplies = activeMsgs.slice(lastUserIdx + 1).filter(m => m.role === "bot" && m.kind === "text" && typeof m.text === "string");
+          for (const m of botReplies) {
+            const txt = (m.text || "").trim();
+            if (
+               /session limit|hit your session limit|resets \d|rate.?limit|too many requests|overloaded|capacity|quota exceeded|insufficient.?quota|resource.?exhausted|ResourceExhausted|credits exhausted|account_inactive|service unavailable|bad gateway|internal server error|exited \d+ before/i.test(txt) &&
+               txt.length < 500
+            ) {
+               isTextError = true;
+               break;
+            }
+          }
+        }
+
+        const isOk = event.ok && !isTextError;
+
+        if (isOk) fallbackAttemptByTurn.delete(fallbackKey);
+        if (
+          !isOk &&
+          event.stopReason !== "interrupted" &&
+          event.stopReason !== "cancelled"
+        ) {
+          const chain = bot.modelSelection.fallbacks && bot.modelSelection.fallbacks.length > 0
+            ? bot.modelSelection.fallbacks
+            : undefined;
+          const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
+
+          if (chain && used < chain.length && fallbackUserMessage) {
+            const nextModel = chain[used];
+            fallbackAttemptByTurn.set(fallbackKey, used + 1);
+            fallbackSelection = {
+              instanceId: nextModel.instanceId,
+              model: nextModel.model,
+              effort: nextModel.effort,
+            };
+          } else if (!chain && used === 0 && fallbackUserMessage) {
+            // Intelligent auto failover when no custom fallback chain was explicitly assigned:
+            // Failover to another healthy available registered engine instance.
+            const candidates = registry.instances().filter((inst) =>
+              inst.instanceId !== bot.modelSelection.instanceId &&
+              inst.enabled !== false &&
+              Boolean(inst.models?.default)
+            );
+            const priority = ["claude", "antigravity", "gemini", "codex", "openaiCompat", "grok"];
+            candidates.sort((a, b) => {
+              const aIdx = priority.indexOf(a.instanceId);
+              const bIdx = priority.indexOf(b.instanceId);
+              return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+            });
+            if (candidates.length > 0) {
+              const candidate = candidates[0];
+              fallbackAttemptByTurn.set(fallbackKey, 1);
+              fallbackSelection = {
+                instanceId: candidate.instanceId,
+                model: candidate.models.default,
+              };
+            }
+          }
+        }
+
         const vpsTurn = activeVpsThreads.get(bot.id) === event.threadId;
         const clearVpsTurn = () => {
           if (activeVpsThreads.get(bot.id) === event.threadId) activeVpsThreads.delete(bot.id);
@@ -1466,6 +1571,11 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!group && fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
           const userMsg = fallbackUserMessage;
           const fallbackBotId = bot.id;
+          pushMessage({
+            role: "bot",
+            kind: "activity",
+            tool: { name: `Failover: switched to ${fallbackSelection.instanceId} (${fallbackSelection.model})`, ok: true },
+          });
           void startTurn(fallbackBotId, userMsg.text || "", {
             userMessage: userMsg,
             threadId: event.threadId,
@@ -1928,6 +2038,9 @@ async function startTurn(
       if (bot.composio !== false && composio.configured(cfg) && instance.adapter.capabilities.composioMcp === true) {
         const connection = await connectedAppsIntegration(bot.id, threadId);
         if (connection) integrations.composio = connection;
+      }
+      if (cfg.qdrant?.enabled !== false && instance.adapter.capabilities.qdrantMcp === true) {
+        integrations.qdrant = qdrantIntegration(bot.id, threadId);
       }
       // CLI engines work inside the bot's own workspace directory rather
       // than the user's home: a bot with file tools and acceptEdits gets a
@@ -2614,6 +2727,9 @@ async function runGroupMemberTurn(
       const connection = await connectedAppsIntegration(bot.id, threadId);
       if (connection) integrations.composio = connection;
     }
+    if (cfg.qdrant?.enabled !== false && instance.adapter.capabilities.qdrantMcp === true) {
+      integrations.qdrant = qdrantIntegration(bot.id, threadId);
+    }
   } catch (error) {
     const message = `connected apps are unavailable — ${error instanceof Error ? error.message : String(error)}`;
     store.appendMessage(threadId, {
@@ -3238,7 +3354,7 @@ async function localVmPayload(target: LocalVmTarget) {
     ...status,
     commands: setupCommands(status.runtime, process.platform, target),
     idle_timeout_ms: LOCAL_VM_IDLE_MS,
-    mode: "shared",
+    mode: cfg.localVm?.mode ?? "shared",
     max_instances: localVmMaxInstances(cfg),
   };
 }
@@ -3264,8 +3380,15 @@ function configStatus() {
     rooms: { turnTimeoutMinutes: roomTurnTimeoutMinutes(cfg) },
     ingress: { publicUrl: cfg.ingress?.publicUrl || "" },
     localVm: {
-      mode: "shared",
+      mode: cfg.localVm?.mode ?? "shared",
       maxInstances: localVmMaxInstances(cfg),
+    },
+    qdrant: {
+      enabled: cfg.qdrant?.enabled !== false,
+      url: cfg.qdrant?.url || "http://127.0.0.1:6333",
+      configured: Boolean(cfg.qdrant?.url || cfg.qdrant?.apiKey),
+      hasApiKey: Boolean(cfg.qdrant?.apiKey),
+      collection: cfg.qdrant?.collection || "botfleet-agent-rag",
     },
     autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
     features: {
@@ -3992,7 +4115,7 @@ const server = createServer(async (req, res) => {
       const limit = pageSize(url.searchParams.get("messages"));
       if (limit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
       return json(res, 200, {
-        bots: store.bots.map((bot) => ({ ...publicBot(bot), ...messagePage(bot.threadId, limit) })),
+        bots: store.bots.map((bot) => { console.log("BOT MESSAGES:", store.messagesFor(bot.threadId).length); return { ...publicBot(bot), ...messagePage(bot.threadId, limit) }; }),
         groups: store.groups.map((g) => ({ ...publicGroupState(g), ...messagePage(g.threadId, limit) })),
         computerControl: Object.fromEntries(
           store.bots.map((bot) => {
@@ -4051,17 +4174,18 @@ const server = createServer(async (req, res) => {
       return res.end(bytes);
     }
 
-    // ── image attachments ────────────────────────────────────────────────
-    // Pasted/dropped images are stored as files and referenced by path in
-    // the prompt (<attached-image path="…"/>); this pair of routes is the
+    // ── chat attachments ─────────────────────────────────────────────────
+    // Pasted/dropped files are stored and referenced by path in the prompt
+    // (<attached-image> / <attached-file>); this pair of routes is the
     // save + serve. The POST takes raw bytes (base64 JSON would double the
     // payload), so it needs its own reader rather than readBody.
     if (method === "POST" && path === "/api/attachments") {
       const rawType = Array.isArray(req.headers["content-type"]) ? req.headers["content-type"][0] : req.headers["content-type"];
       const mime = rawType?.split(";")[0]?.trim().toLowerCase();
       if (!mime || !extensionForMime(mime)) {
-        return json(res, 400, { error: "content-type must be an image type" });
+        return json(res, 400, { error: "content-type must be a supported file type" });
       }
+      const ceiling = isImageMime(mime) ? IMAGE_MAX_BYTES : FILE_MAX_BYTES;
       const saved = await new Promise<SavedAttachment>((resolve, reject) => {
         const chunks: Buffer[] = [];
         let received = 0;
@@ -4074,14 +4198,14 @@ const server = createServer(async (req, res) => {
         req.on("data", (chunk: Buffer) => {
           if (settled) return;
           received += chunk.byteLength;
-          if (received > IMAGE_MAX_BYTES) return fail(413, `image exceeds ${IMAGE_MAX_BYTES} bytes`);
+          if (received > ceiling) return fail(413, `file exceeds ${ceiling} bytes`);
           chunks.push(chunk);
         });
         req.on("end", () => {
           if (settled) return;
           settled = true;
           try {
-            resolve(saveImage(Buffer.concat(chunks), mime));
+            resolve(saveAttachment(Buffer.concat(chunks), mime));
           } catch (e) {
             reject(Object.assign(e instanceof Error ? e : new Error(String(e)), { status: 400 }));
           }
@@ -4848,6 +4972,11 @@ const server = createServer(async (req, res) => {
       if (!patched) return json(res, 404, { error: "no such message" });
       return json(res, 200, { message: patched });
     }
+    if (method === "POST" && path === "/api/desktop/open") {
+      const result = await openBotFleetDesktop();
+      if (!result.ok) return json(res, 503, { error: result.error ?? "could not open BotFleet" });
+      return json(res, 200, { ok: true });
+    }
     if (method === "POST" && path === "/api/bots") {
       const body = await readBody(req);
       if (!body || typeof body !== "object" || Array.isArray(body)) {
@@ -5066,11 +5195,11 @@ const server = createServer(async (req, res) => {
         if (typeof body.composio !== "boolean") return json(res, 400, { error: "composio must be true or false" });
         patch.composio = body.composio;
       }
-      if (
-        body.computer !== undefined &&
-        !["cloud", "vm", "local", "off"].includes(String(body.computer))
-      ) {
-        return json(res, 400, { error: "computer must be cloud, vm, local, or off" });
+      if (body.computers !== undefined) {
+        if (!Array.isArray(body.computers) || body.computers.some((c: unknown) => !["cloud", "vm", "local"].includes(String(c)))) {
+          return json(res, 400, { error: "computers must be an array containing cloud, vm, or local" });
+        }
+        patch.computers = [...new Set(body.computers as ("cloud" | "vm" | "local")[])];
       }
       if (body.cloudBackend !== undefined && !["box", "vps"].includes(String(body.cloudBackend))) {
         return json(res, 400, { error: "cloudBackend must be box or vps" });
@@ -5692,7 +5821,7 @@ const server = createServer(async (req, res) => {
           ...status,
           commands: setupCommands(status.runtime, process.platform, SHARED_LOCAL_VM_TARGET),
           idle_timeout_ms: LOCAL_VM_IDLE_MS,
-          mode: "shared",
+          mode: cfg.localVm?.mode ?? "shared",
           max_instances: localVmMaxInstances(cfg),
         });
       } finally {
@@ -5750,7 +5879,7 @@ const server = createServer(async (req, res) => {
           ...status,
           commands: setupCommands(status.runtime, process.platform, target),
           idle_timeout_ms: LOCAL_VM_IDLE_MS,
-          mode: "shared",
+          mode: cfg.localVm?.mode ?? "shared",
           max_instances: localVmMaxInstances(cfg),
         });
       } finally {
@@ -5777,6 +5906,44 @@ const server = createServer(async (req, res) => {
     }
     if (method === "GET" && path === "/api/telemetry/status") {
       return json(res, 200, telemetry.getStatus());
+    }
+    if (method === "GET" && path === "/api/qdrant/status") {
+      const qdrantCfg = cfg.qdrant;
+      const url = (qdrantCfg?.url || process.env.QDRANT_URL || "http://127.0.0.1:6333").replace(/\/+$/, "");
+      const apiKey = qdrantCfg?.apiKey || process.env.QDRANT_API_KEY || "";
+      const collection = qdrantCfg?.collection || process.env.QDRANT_COLLECTION || "botfleet-agent-rag";
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (apiKey) headers["api-key"] = apiKey;
+        const resList = await fetch(`${url}/collections`, { headers, signal: AbortSignal.timeout(4000) });
+        if (!resList.ok) {
+          return json(res, 200, { ready: false, url, collection, error: `HTTP ${resList.status}: ${resList.statusText}` });
+        }
+        const data = (await resList.json()) as { result?: { collections?: Array<{ name: string }> } };
+        const collections = (data.result?.collections || []).map((c) => c.name);
+        let pointsCount = 0;
+        if (collections.includes(collection)) {
+          const resColl = await fetch(`${url}/collections/${collection}`, { headers, signal: AbortSignal.timeout(4000) });
+          if (resColl.ok) {
+            const collData = (await resColl.json()) as { result?: { points_count?: number } };
+            pointsCount = collData.result?.points_count || 0;
+          }
+        }
+        return json(res, 200, {
+          ready: true,
+          url,
+          collection,
+          collections,
+          pointsCount,
+        });
+      } catch (err) {
+        return json(res, 200, {
+          ready: false,
+          url,
+          collection,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     if (method === "GET" && path === "/.well-known/apple-app-site-association") {
       return json(res, 200, {

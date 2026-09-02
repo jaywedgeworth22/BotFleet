@@ -228,7 +228,7 @@ beforeAll(async () => {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stderr!.on("data", (c) => (stderr += c));
+  child.stderr!.on("data", (c) => (stderr += c)); child.stdout!.on("data", (c) => console.log(c.toString()));
 
   const deadline = Date.now() + 20_000;
   for (;;) {
@@ -315,7 +315,7 @@ describe("harness HTTP API", () => {
     const { status, body } = await api("GET", "/api/bots");
     expect(status).toBe(200);
     expect(body.bots.length).toBeGreaterThanOrEqual(1);
-    expect(body.bots[0].messages.length).toBeGreaterThanOrEqual(2);
+    if (body.bots[0].messages.length < 2) console.log("MESSAGES:", body.bots[0].messages); expect(body.bots[0].messages.length).toBeGreaterThanOrEqual(2);
   });
 
   it("projects privacy-safe live team-map metadata", async () => {
@@ -972,10 +972,17 @@ describe("harness HTTP API", () => {
 
     const wrongType = await fetch(`${BASE}/api/attachments`, {
       method: "POST",
+      headers: { "content-type": "text/html" },
+      body: "<script>not an image</script>",
+    });
+    expect(wrongType.status).toBe(400);
+
+    const textFile = await fetch(`${BASE}/api/attachments`, {
+      method: "POST",
       headers: { "content-type": "text/plain" },
       body: "not an image",
     });
-    expect(wrongType.status).toBe(400);
+    expect(textFile.status).toBe(201);
 
     const saved = await fetch(`${BASE}/api/attachments`, {
       method: "POST",
@@ -1425,7 +1432,7 @@ describe("harness HTTP API", () => {
       approvePeerComms: true,
       chiefOfStaff: true,
       composio: true,
-      computer: "off",
+      computers: [],
     });
     const groupsBefore = (await api("GET", "/api/bots")).body.groups.length;
     const room = (await api("POST", "/api/groups", { memberIds: [trusted.id], name: "War Room" })).body.group;
@@ -1452,7 +1459,7 @@ describe("harness HTTP API", () => {
             chiefOfStaff: true,
             approvePeerComms: false,
             composio: true,
-            computer: "local",
+            computers: ["local"],
             cloudBackend: "vps",
             cwd: "/",
             hidden: false,
@@ -1476,7 +1483,7 @@ describe("harness HTTP API", () => {
     expect(impostor.chiefOfStaff).toBeUndefined();
     expect(impostor.approvePeerComms).toBeUndefined();
     expect(impostor.composio).toBe(false);
-    expect(impostor.computer).toBeUndefined();
+    expect(impostor.computers).toBeUndefined();
     expect(impostor.cloudBackend).toBeUndefined();
     expect(impostor.cwd).toBeUndefined();
 
@@ -1494,7 +1501,7 @@ describe("harness HTTP API", () => {
       approvePeerComms: true,
       chiefOfStaff: true,
       composio: true,
-      computer: "off",
+      computers: [],
     });
     // the single-Chief invariant survives the manifest's chiefOfStaff claim
     expect(after.bots.filter((bot: { chiefOfStaff?: boolean }) => bot.chiefOfStaff).map((bot: { id: string }) => bot.id)).toEqual([
@@ -1832,17 +1839,17 @@ describe("harness HTTP API", () => {
     // The important half: a blind PATCH — exactly what a bot curling the
     // loopback API from a tool call would send — must be refused. The
     // renderer's warning dialog is not a boundary; this 400 is.
-    const blind = await api("PATCH", `/api/bots/${bot.id}`, { computer: "local" });
+    const blind = await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"] });
     expect(blind.status).toBe(400);
-    const oneShot = await api("PATCH", `/api/bots/${bot.id}`, { computer: "local", autoApprove: true });
+    const oneShot = await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"], autoApprove: true });
     expect(oneShot.status).toBe(400);
     const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot.id);
-    expect(after.computer).not.toBe("local");
+    expect(after.computers || []).not.toContain("local");
 
     // The dialog's acknowledgement grants it, and the flag is not persisted.
-    const local = await api("PATCH", `/api/bots/${bot.id}`, { computer: "local", acknowledgeLocalAuto: true });
+    const local = await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"], acknowledgeLocalAuto: true });
     expect(local.status).toBe(200);
-    expect(local.body.bot).toMatchObject({ computer: "local", autoApprove: true });
+    expect(local.body.bot).toMatchObject({ computers: ["local"], autoApprove: true });
     expect(local.body.bot.acknowledgeLocalAuto).toBeUndefined();
 
     // Once granted, re-asserting auto and unrelated PATCHes need no re-ack.
@@ -1858,8 +1865,8 @@ describe("harness HTTP API", () => {
     expect(autoAcked.status).toBe(200);
 
     // Leaving local ends the grant; coming back needs the warning again.
-    await api("PATCH", `/api/bots/${bot.id}`, { computer: "off" });
-    const back = await api("PATCH", `/api/bots/${bot.id}`, { computer: "local" });
+    await api("PATCH", `/api/bots/${bot.id}`, { computers: [] });
+    const back = await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"] });
     expect(back.status).toBe(400);
     await api("DELETE", `/api/bots/${bot.id}`);
   });

@@ -46,6 +46,20 @@ describe("classifyError", () => {
     });
     expect(classifyError(new Error("invalid api key"))).toEqual({ transient: false, reason: "auth" });
     expect(classifyError(new Error("quota exceeded for this plan"))).toEqual({ transient: false, reason: "quota" });
+    expect(classifyError(new Error("You've hit your session limit · resets 12:10am (America/Chicago)"))).toEqual({
+      transient: false,
+      reason: "quota",
+    });
+    expect(classifyError(new Error("usage cap reached"))).toEqual({ transient: false, reason: "quota" });
+    expect(classifyError(new Error("You've hit your usage limit. Upgrade to Plus to continue using Codex"))).toEqual({
+      transient: false,
+      reason: "quota",
+    });
+    expect(classifyError(new Error("You've reached your 5-hour usage limit"))).toEqual({
+      transient: false,
+      reason: "quota",
+    });
+    expect(classifyError(new Error("429 RESOURCE_EXHAUSTED"))).toEqual({ transient: false, reason: "quota" });
     expect(classifyError(new Error("model not found: grok-99"))).toEqual({
       transient: false,
       reason: "unknown_model",

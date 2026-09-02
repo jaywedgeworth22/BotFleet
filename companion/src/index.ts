@@ -36,6 +36,7 @@ import {
   type ServiceInfo,
 } from "./mdns.ts";
 import { createProxyHandler } from "./proxy.ts";
+import { watchHarnessNotifications } from "./apns.ts";
 import { companionOriginSocket, listenCompanionOrigin } from "./origin.ts";
 
 /** A port from the environment, or the default. Anything that is not a whole
@@ -148,7 +149,13 @@ const proxy = createProxyHandler({
     hosts: () => hostCandidates(),
     endpoints: () => companionEndpointCandidates(COMPANION_PORT, undefined, undefined, hostedUrl),
     connected: connectedDevices.open,
+    setPushToken: (id, token) => devices.setPushToken(id, token),
   });
+watchHarnessNotifications({
+  harnessPort: HARNESS_PORT,
+  connectedIds: connectedDevices.ids,
+  tokensForDisconnected: () => devices.pushTokens(),
+});
 const companion = createServer(proxy);
 const managedOrigin = PRIVATE_ORIGIN ? createServer(proxy) : null;
 

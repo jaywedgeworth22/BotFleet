@@ -740,9 +740,9 @@ public struct CompanionClient: Sendable {
         ).group
     }
 
-    /// Persist an avatar and return the app-owned fetch URL.  Agents need the
-    /// harness disk `path` for chat images; this helper is avatar-only and the
-    /// iOS composer does not attach images yet.
+    /// Persist an avatar and return the app-owned fetch URL.  Chat prompts
+    /// must use `uploadChatAttachment` and embed the disk `path` instead —
+    /// agents cannot open `/api/attachments/:name`.
     public func uploadAvatar(data: Data, mime: String) async throws -> String {
         let allowed = ["image/png", "image/jpeg", "image/gif", "image/webp"]
         guard allowed.contains(mime), data.count <= 10 * 1_024 * 1_024 else {
@@ -755,6 +755,52 @@ public struct CompanionClient: Sendable {
         let name = URL(fileURLWithPath: saved.path).lastPathComponent
         guard !name.isEmpty, !name.contains("/") else { throw APIError.transport("The uploaded image could not be used.") }
         return "/api/attachments/\(name)"
+    }
+
+    /// Persist a chat file and return the harness disk path.  The prompt
+    /// embeds that path in `<attached-image>` / `<attached-file>` tags.
+    public func uploadChatAttachment(
+        data: Data,
+        mime: String,
+        filename: String
+    ) async throws -> (path: String, mime: String, bytes: Int) {
+        let normalized = ChatAttachments.normalizeMIME(mime)
+        guard ChatAttachments.isAllowedMIME(normalized) else {
+            throw APIError.transport("\(filename) is not a type this chat can send.")
+        }
+        let ceiling = ChatAttachments.maxBytes(forMIME: normalized)
+        guard !data.isEmpty else {
+            throw APIError.transport("\(filename) is empty.")
+        }
+        guard data.count <= ceiling else {
+            let megabytes = ceiling / (1_024 * 1_024)
+            throw APIError.transport("\(filename) is larger than \(megabytes) MB.")
+        }
+        var request = try makeRequest("POST", "/api/attachments")
+        request.setValue(normalized, forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        if data.count > 2 * 1_024 * 1_024 { request.timeoutInterval = 60 }
+        let saved = try await send(request, as: AttachmentResponse.self)
+        guard !saved.path.isEmpty, !saved.path.contains("\0") else {
+            throw APIError.transport("The uploaded file could not be used.")
+        }
+        return (saved.path, saved.mime, saved.bytes)
+    }
+
+    /// Hand the APNs device token to the sidecar so a killed app can be woken.
+    /// The sidecar stores it per paired device; iOS never sends a push itself.
+    public func registerPushToken(_ hex: String) async throws {
+        let token = hex.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard token.utf8.count >= 64,
+              token.utf8.allSatisfy({
+                  (48...57).contains($0) || (97...102).contains($0)
+              })
+        else {
+            throw APIError.transport("That push token is not usable.")
+        }
+        try await send(
+            try makeRequest("POST", "/api/companion/push-token", body: ["token": token])
+        )
     }
 
     public func generateAvatar(botId: String, prompt: String) async throws -> Bot {

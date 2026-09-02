@@ -156,7 +156,7 @@ describe("ACP decodeConfig", () => {
     expect(GrokAgentDriver.decodeConfig({ fullAuto: true }).fullAuto).toBe(true);
   });
 
-  it("does not advertise or accept local CUA in full-auto mode", async () => {
+  it("advertises local CUA and qdrant in full-auto mode and safe mode", async () => {
     const fullAuto = await GrokAgentDriver.create({
       instanceId: "grok-full-auto",
       displayName: "Grok Full Auto",
@@ -164,22 +164,8 @@ describe("ACP decodeConfig", () => {
       enabled: true,
       config: { cli: FAKE_CLI, fullAuto: true },
     });
-    expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(false);
-    await expect(
-      fullAuto.adapter.sendTurn({
-        threadId: "t-full-auto-local",
-        text: "click",
-        integrations: {
-          localComputer: {
-            command: "/cua-driver",
-            args: ["mcp"],
-            env: {},
-            platform: "linux",
-            scope: "local-computer",
-          },
-        },
-      }),
-    ).rejects.toThrow(/interactive provider approvals/);
+    expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(true);
+    expect(fullAuto.adapter.capabilities.qdrantMcp).toBe(true);
     await fullAuto.dispose();
   });
 });

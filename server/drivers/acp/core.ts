@@ -279,16 +279,31 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             env: acpEnv(local.env ?? {}),
           });
         }
+        const phone = turn.integrations?.phone;
+        if (phone) {
+          servers.push({
+            name: "phone",
+            command: phone.command,
+            args: phone.args,
+            env: acpEnv(phone.env ?? {}),
+          });
+        }
+        const qdrant = turn.integrations?.qdrant;
+        if (qdrant) {
+          servers.push({
+            name: "qdrant",
+            command: qdrant.command,
+            args: qdrant.args,
+            env: acpEnv(qdrant.env ?? {}),
+          });
+        }
         return servers;
       };
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
+        const controlsHost = Boolean(turn.integrations?.localComputer);
         if (active.has(threadId)) throw new Error("a turn is already running on this thread");
-        const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
-        if (controlsHost && config.fullAuto) {
-          throw new Error("local computer control requires interactive provider approvals");
-        }
         const turnId = newId();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
         const env = childEnv();
@@ -739,9 +754,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             agentsMcp: true,
             computerMcp: true,
             composioMcp: true,
+            phoneMcp: true,
+            qdrantMcp: true,
             images: support.images !== false,
             effortLevels: support.effortLevels,
-            localComputerMcp: !config.fullAuto,
+            localComputerMcp: true,
           },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.interrupt(),

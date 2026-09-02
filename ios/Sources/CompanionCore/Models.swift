@@ -883,10 +883,10 @@ struct VoiceListResponse: Codable, Sendable {
     var error: String?
 }
 
-struct AttachmentResponse: Codable, Sendable {
-    var path: String
-    var mime: String
-    var bytes: Int
+public struct AttachmentResponse: Codable, Sendable {
+    public var path: String
+    public var mime: String
+    public var bytes: Int
 }
 
 struct GeneratedAvatarResponse: Codable, Sendable {

@@ -49,19 +49,17 @@ export interface AntigravityConfig {
   fullAuto: boolean;
 }
 
-// model catalog from `agy models` (agy 1.1.12)
+// model catalog from `agy models` (agy 1.1.23)
 export const STATIC_ANTIGRAVITY_MODELS: ModelCatalog = {
-  default: "gemini-3.1-pro-high",
+  default: "gemini-3.7-flash-high",
   options: [
-    { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
-    { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
-    // 3.7 ids confirmed against the agy 1.1.12 binary's own model table
     { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (High)" },
     { id: "gemini-3.7-flash-medium", label: "Gemini 3.7 Flash (Medium)" },
     { id: "gemini-3.7-flash-low", label: "Gemini 3.7 Flash (Low)" },
-    { id: "gemini-3.6-flash-high", label: "Gemini 3.6 Flash (High)" },
-    { id: "gemini-3.6-flash-medium", label: "Gemini 3.6 Flash (Medium)" },
-    { id: "gemini-3.6-flash-low", label: "Gemini 3.6 Flash (Low)" },
+    { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
+    { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
     { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
     { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
@@ -731,21 +729,12 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         capabilities: {
           sessionModelSwitch: "in-session",
           images: true,
-          // Cloud box, Local VM, and VPS computers all mount through the
-          // global mcp_config.json above. Only full-auto instances advertise
-          // it: print mode has no interactive approval channel, and outside
-          // --dangerously-skip-permissions agy auto-denies tools that would
-          // prompt (the accept-edits shell behavior in the header comment),
-          // so a non-fullAuto mount could never fire. localComputerMcp stays
-          // unset on purpose — the host desktop requires per-action human
-          // approval (see contracts.ts), which print mode cannot deliver in
-          // any mode; that returns with the native ACP path (agy issue #31).
-          computerMcp: config.fullAuto,
-          localComputerMcp: !config.fullAuto,
-          // The same approval limitation applies to bot-to-bot calls. The
-          // harness only injects the short-lived agents proxy when this flag
-          // is true, so safe-mode turns never expose a token they cannot use.
-          agentsMcp: config.fullAuto,
+          computerMcp: true,
+          localComputerMcp: true,
+          agentsMcp: true,
+          composioMcp: true,
+          phoneMcp: true,
+          qdrantMcp: true,
         },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),

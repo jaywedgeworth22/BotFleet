@@ -63,6 +63,7 @@ const roomConfigSchema = z.object({
     .max(MAX_ROOM_TURN_TIMEOUT_MINUTES),
 });
 const localVmConfigSchema = z.object({
+  mode: z.enum(["shared", "per-bot"]).optional(),
   maxInstances: z
     .number()
     .int()
@@ -116,6 +117,12 @@ const appConfigSchema = z.object({
       }),
   }).optional(),
   localVm: localVmConfigSchema.optional(),
+  qdrant: z.object({
+    enabled: z.boolean().optional(),
+    url: z.string().optional(),
+    apiKey: z.string().optional(),
+    collection: z.string().optional(),
+  }).optional(),
   features: featureConfigSchema.optional(),
   instances: instanceConfigMapSchema.optional(),
 });
@@ -138,8 +145,10 @@ export interface AppConfig {
   ingress?: { publicUrl?: string };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */
+  localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
+  /** Shared Qdrant Agent RAG vector database settings. */
+  qdrant?: { enabled?: boolean; url?: string; apiKey?: string; collection?: string };
   /** Opt-in product experiments. Every flag defaults to disabled. */
-  localVm?: { maxInstances?: number };
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
   instances?: InstanceConfigMap;
 }
@@ -461,6 +470,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     claude: { driver: "claudeAgent" },
     codex: { driver: "codex" },
     antigravity: { driver: "antigravityAgent" },
+    gemini: { driver: "geminiAgent" },
     opencodeGo: { driver: "opencodeGo" },
     computer: { driver: "boxAgent" },
     openaiCompat: { driver: "openai-compat" },
@@ -480,6 +490,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     cursor: { driver: "cursorAgent" },
     openaiCompat: { driver: "openai-compat" },
     dsh: { driver: "dshAgent" },
+    gemini: { driver: "geminiAgent" },
     ...CUSTOM_ONLY,
   } as const;
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;

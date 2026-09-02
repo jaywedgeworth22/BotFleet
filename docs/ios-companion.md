@@ -26,24 +26,29 @@ The first version includes:
 - Markdown rendering and Keychain storage for the phone's pairing trust.
 
 Alerts work while the app is open or for the short period it remains connected
-after moving to the background. Once iOS suspends or closes the app, new alerts
-cannot arrive. Closed-app push delivery, voice, and App Store release
-automation are not part of this version.  Live Activities stay local
-(`pushType: nil`); this version does not register APNs.  The optional hosted
-transport connects to the user's own computer; it is not a cloud transcript
-store and cannot wake a terminated iOS app.
+after moving to the background.  After notification authorization, the app
+registers for remote notifications and POSTs the device token as hex to
+`POST /api/companion/push-token` (sidecar-local, like endpoints).  The Mac
+sidecar stores the token on the paired device and can APNs-wake a killed app;
+iOS never sends a push itself.  Live Activities stay local (`pushType: nil`).
+The optional hosted transport connects to the user's own computer; it is not a
+cloud transcript store.
 
 The first launch is light.  `CompanionApp` pins `.preferredColorScheme(.light)`
 until an in-app picker exists; the phone does not boot dark from system
 appearance.
 
-Chat image attachments from the phone are not in this version.  The composer
-sends text only.  Desktop paste and drop write `~/.botfleet/attachments/<uuid>.<ext>`
-and embed that disk path in `<attached-image path="…"/>` so agents can open
-the file.  iOS `uploadAvatar` still returns an `/api/attachments/:name` URL,
-which is correct for bot and room avatars (the phone then GETs the bytes with
-the pairing token).  There is no chat `uploadAttachment` helper and no composer
-picker; adding the helper without a send path would not reach agents.
+Chat attachments from the phone match desktop compose.  Photos, Files, paste,
+and drag-drop upload raw bytes to `POST /api/attachments` and embed the
+returned disk path in `<attached-image path="…"/>` or `<attached-file path="…"/>`.
+Do not put `/api/attachments/:name` in the prompt — agents need the path.
+`uploadAvatar` still returns the fetch URL for bot and room avatars.  Transcript
+bubbles render `<attached-image>` via `GET /api/attachments/:name` with the
+pairing token.
+
+iPad uses `TARGETED_DEVICE_FAMILY` 1,2 and a `NavigationSplitView` roster +
+detail when `horizontalSizeClass == .regular`.  Phone layout stays a
+`NavigationStack`.
 
 The Mac must be running BotFleet and must not be asleep. Desktop
 **Settings → Phone** offers an off-by-default **Keep this computer awake**

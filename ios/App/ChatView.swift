@@ -15,6 +15,8 @@ import CompanionCore
 // lives.
 import UIKit
 import AVFoundation
+import PhotosUI
+import UniformTypeIdentifiers
 
 struct ChatView: View {
     let chat: Chat
@@ -22,13 +24,19 @@ struct ChatView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var draft = ""
+    @State private var pendingAttachments: [PendingChatAttachment] = []
     @State private var showingTasks = false
     @State private var showingRoutines = false
     @State private var showingComputer = false
     @State private var showingPlus = false
     @State private var showingProfile = false
     @State private var showCommandHUD = false
+    @State private var pickingPhoto = false
+    @State private var photoItem: PhotosPickerItem?
+    @State private var pickingFile = false
+    @State private var sending = false
     @State private var shareFile: ShareFile?
     @FocusState private var composerFocused: Bool
     @StateObject private var dictation = SpeechDictation()
@@ -62,17 +70,91 @@ struct ChatView: View {
     }
 
     var body: some View {
-        // Read the transcript once for this render. Pagination changes the
-        // array as a unit; repeatedly reaching through ObservableObject for
-        // every row only recomputes the same value.
-        let transcript = messages
-        // A VStack with the composer as a sibling, rather than a scroll view
-        // with `.safeAreaInset`. The inset version sized itself to its
-        // content, so a short transcript left the composer floating in the
-        // middle of the screen with black beneath it. Here the scroll area is
-        // explicitly told to take everything the composer does not.
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
+            transcriptColumn
+            composer
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .overlay(alignment: .bottom) { plusSheet }
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .photosPicker(isPresented: $pickingPhoto, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task { await addPhoto(item); photoItem = nil }
+        }
+        .fileImporter(
+            isPresented: $pickingFile,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            if case let .success(urls) = result {
+                Task { await addFiles(urls) }
+            }
+        }
+        .navigationDestination(isPresented: $showingComputer) {
+            if case let .bot(bot) = current { ComputerView(bot: bot) }
+        }
+        .task(id: threadId) {
+            if current.unread { await session.markRead(current) }
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-open-plus") { showingPlus = true }
+            if ProcessInfo.processInfo.arguments.contains("-open-profile") { showingProfile = true }
+#endif
+        }
+        .onChange(of: current.unread) { _, unread in
+            if unread { Task { await session.markRead(current) } }
+        }
+        .onDisappear { dictation.stop() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { dictation.stop() }
+        }
+        .onChange(of: showingComputer) { _, shown in
+            if shown { dictation.stop() }
+        }
+        .onChange(of: showingTasks) { _, shown in
+            if shown { dictation.stop() }
+        }
+        .onChange(of: showingProfile) { _, shown in
+            if shown { dictation.stop() }
+        }
+        .onChange(of: showingPlus) { _, shown in
+            if shown { dictation.stop() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { note in
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey]
+            let value = (raw as? NSNumber)?.uintValue ?? (raw as? UInt)
+            if value == AVAudioSession.InterruptionType.began.rawValue {
+                dictation.stop()
+            }
+        }
+        .onChange(of: dictation.transcript) { _, spoken in
+            draft = Dictation.draft(base: dictation.base, transcript: spoken)
+        }
+        .onChange(of: dictation.isListening) { _, listening in
+            if listening { composerFocused = false }
+        }
+        .sheet(isPresented: $showingTasks) {
+            if case let .bot(bot) = current { TaskManagerView(bot: bot) }
+        }
+        .navigationDestination(isPresented: $showingRoutines) {
+            TasksRoutinesView()
+        }
+        .sheet(isPresented: $showingProfile) {
+            if case let .bot(bot) = current { AgentProfileView(bot: bot) }
+        }
+        .sheet(item: $shareFile) { file in
+            ActivityShareSheet(items: [file.url])
+        }
+    }
+
+    /// Split out of `body` so the Swift compiler can type-check the chat
+    /// chrome and the transcript independently.  The combined expression
+    /// exceeded the type-check budget on CI.
+    private var transcriptColumn: some View {
+        let transcript = messages
+        return ScrollViewReader { proxy in
                 ScrollView {
                     // VStack, not LazyVStack. A lazy stack does not know how
                     // tall it is until its rows have been built, so
@@ -190,76 +272,6 @@ struct ChatView: View {
             }
             .id(threadId)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            composer
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .overlay(alignment: .bottom) { plusSheet }
-        .toolbar(.hidden, for: .navigationBar)
-        .navigationBarBackButtonHidden(true)
-        .navigationDestination(isPresented: $showingComputer) {
-            if case let .bot(bot) = current { ComputerView(bot: bot) }
-        }
-        .task(id: threadId) {
-            // opening a chat is what marks it read, exactly as on the desktop
-            if current.unread { await session.markRead(current) }
-#if DEBUG
-            // `-open-plus`: the + sheet up, for the screenshot harness
-            if ProcessInfo.processInfo.arguments.contains("-open-plus") { showingPlus = true }
-            // Profile parity screenshots without automating a tap through the
-            // animated island/header transition.
-            if ProcessInfo.processInfo.arguments.contains("-open-profile") { showingProfile = true }
-#endif
-        }
-        .onChange(of: current.unread) { _, unread in
-            // A message can arrive while this chat is already on screen. The
-            // initial task above will not run again, so clear that new unread
-            // bit here rather than leaving a badge on an open conversation.
-            if unread { Task { await session.markRead(current) } }
-        }
-        .onDisappear { dictation.stop() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { dictation.stop() }
-        }
-        .onChange(of: showingComputer) { _, shown in
-            if shown { dictation.stop() }
-        }
-        .onChange(of: showingTasks) { _, shown in
-            if shown { dictation.stop() }
-        }
-        .onChange(of: showingProfile) { _, shown in
-            if shown { dictation.stop() }
-        }
-        .onChange(of: showingPlus) { _, shown in
-            if shown { dictation.stop() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { note in
-            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey]
-            let value = (raw as? NSNumber)?.uintValue ?? (raw as? UInt)
-            if value == AVAudioSession.InterruptionType.began.rawValue {
-                dictation.stop()
-            }
-        }
-        .onChange(of: dictation.transcript) { _, spoken in
-            // Always join against the text frozen at capture start. A newer
-            // partial then replaces the older partial instead of duplicating it.
-            draft = Dictation.draft(base: dictation.base, transcript: spoken)
-        }
-        .onChange(of: dictation.isListening) { _, listening in
-            if listening { composerFocused = false }
-        }
-        .sheet(isPresented: $showingTasks) {
-            if case let .bot(bot) = current { TaskManagerView(bot: bot) }
-        }
-        .navigationDestination(isPresented: $showingRoutines) {
-            TasksRoutinesView()
-        }
-        .sheet(isPresented: $showingProfile) {
-            if case let .bot(bot) = current { AgentProfileView(bot: bot) }
-        }
-        .sheet(item: $shareFile) { file in
-            ActivityShareSheet(items: [file.url])
-        }
     }
 
     // MARK: - Header
@@ -268,27 +280,31 @@ struct ChatView: View {
     /// computer on the right — a blurred strip to the top edge.
     private var headerBar: some View {
         HStack(alignment: .top) {
-            Button { dismiss() } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: "chevron.left")
-                        .font(.system(size: 17, weight: .semibold))
-                    if unreadElsewhere > 0 {
-                        Text("\(unreadElsewhere)")
-                            .font(.system(size: 13, weight: .semibold))
-                            .padding(.horizontal, 7)
-                            .frame(minWidth: 22, minHeight: 22)
-                            .background(Capsule().fill(Color.secondary.opacity(0.22)))
+            if sizeClass != .regular {
+                Button { dismiss() } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 17, weight: .semibold))
+                        if unreadElsewhere > 0 {
+                            Text("\(unreadElsewhere)")
+                                .font(.system(size: 13, weight: .semibold))
+                                .padding(.horizontal, 7)
+                                .frame(minWidth: 22, minHeight: 22)
+                                .background(Capsule().fill(Color.secondary.opacity(0.22)))
+                        }
                     }
+                    .foregroundStyle(Color.primary)
+                    .padding(.leading, 12)
+                    .padding(.trailing, unreadElsewhere > 0 ? 8 : 12)
+                    .frame(height: 44)
+                    .contentShape(Capsule())
                 }
-                .foregroundStyle(Color.primary)
-                .padding(.leading, 12)
-                .padding(.trailing, unreadElsewhere > 0 ? 8 : 12)
-                .frame(height: 44)
-                .contentShape(Capsule())
+                .buttonStyle(.plain)
+                .glassCapsule()
+                .accessibilityLabel("Back")
+            } else {
+                Color.clear.frame(width: 44, height: 44)
             }
-            .buttonStyle(.plain)
-            .glassCapsule()
-            .accessibilityLabel("Back")
 
             Spacer(minLength: 4)
 
@@ -445,6 +461,20 @@ struct ChatView: View {
 
     private var plusActions: [PlusAction] {
         var out: [PlusAction] = []
+        out.append(PlusAction(
+            id: "photo", systemImage: "photo", title: "Photo",
+            subtitle: "Attach a photo from your library"
+        ) { pickingPhoto = true })
+        out.append(PlusAction(
+            id: "file", systemImage: "doc", title: "File",
+            subtitle: "Attach any file from Files"
+        ) { pickingFile = true })
+        if clipboardHasAttachment {
+            out.append(PlusAction(
+                id: "paste", systemImage: "doc.on.clipboard", title: "Paste from clipboard",
+                subtitle: "Add the copied image or file"
+            ) { pasteFromClipboard() })
+        }
         if case let .bot(bot) = current {
             out.append(PlusAction(
                 id: "task", systemImage: "plus.square.on.square", title: "New task",
@@ -512,11 +542,24 @@ struct ChatView: View {
     }
 
     private var canSend: Bool {
-        !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (!text.isEmpty || !pendingAttachments.isEmpty) && !sending
     }
 
     private var hasPendingApproval: Bool {
         messages.contains { $0.card?.isPending == true }
+    }
+
+    private var clipboardHasAttachment: Bool {
+        let board = UIPasteboard.general
+        if board.hasImages { return true }
+        if !(board.urls ?? []).isEmpty { return true }
+        return board.contains(pasteboardTypes: [
+            UTType.pdf.identifier,
+            "com.adobe.pdf",
+            UTType.fileURL.identifier,
+            UTType.data.identifier,
+        ])
     }
 
     private func submit(_ explicitText: String? = nil) {
@@ -524,12 +567,22 @@ struct ChatView: View {
         // open the microphone after the message has already been sent.
         dictation.stop()
         let text = (explicitText ?? draft).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else { return }
+        let outgoing = pendingAttachments
+        guard !text.isEmpty || !outgoing.isEmpty, !sending else { return }
         draft = ""
+        pendingAttachments = []
         showCommandHUD = false
         SoundEffects.playSent()
         Haptics.impact(.medium)
-        Task { await session.send(text, to: current) }
+        sending = true
+        Task {
+            let ok = await session.send(text, to: current, attachments: outgoing)
+            sending = false
+            if !ok {
+                if draft.isEmpty { draft = text }
+                if pendingAttachments.isEmpty { pendingAttachments = outgoing }
+            }
+        }
     }
 
     // MARK: - Composer
@@ -570,6 +623,41 @@ struct ChatView: View {
                     submit(chip.prompt)
                 }
                 .transition(.opacity)
+            }
+
+            if !pendingAttachments.isEmpty {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(pendingAttachments) { item in
+                            HStack(spacing: 6) {
+                                Image(systemName: item.kind == .image ? "photo" : "doc")
+                                    .font(.system(size: 13, weight: .semibold))
+                                VStack(alignment: .leading, spacing: 1) {
+                                    Text(item.name)
+                                        .font(.subheadline.weight(.medium))
+                                        .lineLimit(1)
+                                    Text(ChatAttachments.formatSize(item.size))
+                                        .font(.caption2)
+                                        .foregroundStyle(Color.secondary)
+                                }
+                                Button {
+                                    pendingAttachments.removeAll { $0.id == item.id }
+                                } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(Color.secondary)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel("Remove \(item.name)")
+                            }
+                            .padding(.leading, 10)
+                            .padding(.trailing, 8)
+                            .padding(.vertical, 8)
+                            .background(Capsule().fill(Color.secondary.opacity(0.14)))
+                        }
+                    }
+                    .padding(.horizontal, 4)
+                }
+                .frame(minHeight: 44)
             }
 
             GlassGroup(spacing: 10) {
@@ -614,11 +702,11 @@ struct ChatView: View {
                             text: $draft,
                             axis: .vertical
                         )
-                            .lineLimit(1...5)
-                            .font(.system(size: 17))
+                            .lineLimit(1...8)
+                            .font(.body)
                             .padding(.vertical, 11)
                             .focused($composerFocused)
-                            .submitLabel(.send)
+                            .submitLabel(sizeClass == .regular ? .return : .send)
                             // Partial transcripts rebuild from a frozen base;
                             // prevent competing edits without dimming the text.
                             .allowsHitTesting(!dictation.isListening && !dictation.isStarting)
@@ -628,11 +716,16 @@ struct ChatView: View {
                                 }
                             }
                             .onKeyPress(.return, phases: .down) { press in
+                                // iPad: Return inserts a newline; send is the button.
+                                // Phone: Return sends, Shift-Return is a soft return.
+                                if sizeClass == .regular { return .ignored }
                                 guard !press.modifiers.contains(.shift) else { return .ignored }
                                 submit()
                                 return .handled
                             }
-                            .onSubmit { submit() }
+                            .onSubmit {
+                                if sizeClass != .regular { submit() }
+                            }
 
                         Button {
                             composerFocused = false
@@ -678,6 +771,169 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 8)
+        .onDrop(of: [.image, .fileURL, .pdf, .data], isTargeted: nil) { providers in
+            Task { await addDropItems(providers) }
+            return true
+        }
+    }
+
+    private func pasteFromClipboard() {
+        let board = UIPasteboard.general
+        if board.hasImages, let image = board.image {
+            addUIImage(image, name: "pasted-image.jpg")
+            return
+        }
+        if let urls = board.urls, !urls.isEmpty {
+            Task { await addFiles(urls) }
+            return
+        }
+        if let data = board.data(forPasteboardType: UTType.pdf.identifier)
+            ?? board.data(forPasteboardType: "com.adobe.pdf") {
+            enqueue(name: "pasted.pdf", mime: "application/pdf", data: data)
+            return
+        }
+        for item in board.items {
+            for (type, value) in item {
+                if type.hasPrefix("public.text") || type.hasPrefix("public.utf8-plain-text") {
+                    continue
+                }
+                guard let data = value as? Data, !data.isEmpty else { continue }
+                let ut = UTType(type)
+                let mime = ChatAttachments.sniffImageMIME(data)
+                    ?? ChatAttachments.mime(forExtension: ut?.preferredFilenameExtension ?? "")
+                let ext = ut?.preferredFilenameExtension.map { ".\($0)" } ?? ""
+                enqueue(name: "pasted-file\(ext)", mime: mime, data: data)
+                return
+            }
+        }
+        session.actionError = "The clipboard has no image or file to attach."
+    }
+
+    private func addPhoto(_ item: PhotosPickerItem) async {
+        guard let data = try? await item.loadTransferable(type: Data.self) else {
+            session.actionError = "That photo could not be read."
+            return
+        }
+        if let mime = ChatAttachments.sniffImageMIME(data) {
+            enqueue(name: suggestedPhotoName(mime: mime), mime: mime, data: data)
+            return
+        }
+        if let image = UIImage(data: data) {
+            addUIImage(image, name: "photo.jpg")
+            return
+        }
+        session.actionError = "Choose a PNG, JPEG, GIF, or WebP image."
+    }
+
+    private func suggestedPhotoName(mime: String) -> String {
+        switch ChatAttachments.normalizeMIME(mime) {
+        case "image/png": return "photo.png"
+        case "image/gif": return "photo.gif"
+        case "image/webp": return "photo.webp"
+        default: return "photo.jpg"
+        }
+    }
+
+    private func addUIImage(_ image: UIImage, name: String) {
+        guard let data = image.jpegData(compressionQuality: 0.9) else {
+            session.actionError = "That image could not be attached."
+            return
+        }
+        enqueue(name: name, mime: "image/jpeg", data: data)
+    }
+
+    private func addFiles(_ urls: [URL]) async {
+        for url in urls {
+            let accessed = url.startAccessingSecurityScopedResource()
+            defer { if accessed { url.stopAccessingSecurityScopedResource() } }
+            do {
+                let data = try Data(contentsOf: url)
+                let mime = ChatAttachments.sniffImageMIME(data)
+                    ?? ChatAttachments.mime(forExtension: url.pathExtension)
+                enqueue(name: url.lastPathComponent, mime: mime, data: data)
+            } catch {
+                session.actionError = "Could not read \(url.lastPathComponent)."
+            }
+        }
+    }
+
+    private func addDropItems(_ providers: [NSItemProvider]) async {
+        for provider in providers {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                if let url = await loadFileURL(from: provider) {
+                    await addFiles([url])
+                }
+                continue
+            }
+            if provider.hasItemConformingToTypeIdentifier(UTType.image.identifier) {
+                if let data = try? await loadData(from: provider, type: UTType.image) {
+                    if let mime = ChatAttachments.sniffImageMIME(data) {
+                        enqueue(name: "dropped-image", mime: mime, data: data)
+                    } else if let image = UIImage(data: data) {
+                        addUIImage(image, name: "dropped-image.jpg")
+                    }
+                }
+                continue
+            }
+            if let data = try? await loadData(from: provider, type: UTType.data) {
+                enqueue(name: "dropped-file", mime: "application/octet-stream", data: data)
+            }
+        }
+    }
+
+    private func loadFileURL(from provider: NSItemProvider) async -> URL? {
+        await withCheckedContinuation { continuation in
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                if let url = item as? URL {
+                    continuation.resume(returning: url)
+                } else if let data = item as? Data,
+                          let url = URL(dataRepresentation: data, relativeTo: nil) {
+                    continuation.resume(returning: url)
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+        }
+    }
+
+    private func loadData(from provider: NSItemProvider, type: UTType) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            provider.loadDataRepresentation(forTypeIdentifier: type.identifier) { data, error in
+                if let data {
+                    continuation.resume(returning: data)
+                } else {
+                    continuation.resume(throwing: error ?? APIError.transport("That drop could not be read."))
+                }
+            }
+        }
+    }
+
+    private func enqueue(name: String, mime: String, data: Data) {
+        let normalized = ChatAttachments.normalizeMIME(mime)
+        let resolved = ChatAttachments.isAllowedMIME(normalized) ? normalized : "application/octet-stream"
+        let ceiling = ChatAttachments.maxBytes(forMIME: resolved)
+        if data.isEmpty {
+            session.actionError = "\(name) is empty."
+            return
+        }
+        if data.count > ceiling {
+            session.actionError = "\(name) is larger than \(ceiling / (1_024 * 1_024)) MB."
+            return
+        }
+        if pendingAttachments.count >= 8 {
+            session.actionError = "Remove an attachment before adding another."
+            return
+        }
+        // Sidecar GET only serves png/jpg/gif/webp.  Convert camera HEIC so
+        // the transcript can draw the image this phone just sent.
+        if ["image/heic", "image/heif", "image/avif"].contains(resolved),
+           let image = UIImage(data: data),
+           let jpeg = image.jpegData(compressionQuality: 0.9) {
+            let jpegName = (name as NSString).deletingPathExtension + ".jpg"
+            pendingAttachments.append(PendingChatAttachment(name: jpegName, mime: "image/jpeg", data: jpeg))
+            return
+        }
+        pendingAttachments.append(PendingChatAttachment(name: name, mime: resolved, data: data))
     }
 }
 
@@ -866,6 +1122,7 @@ struct TextBubble: View {
     let message: Message
     let chat: Chat
     var tailed = true
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     private var parsedDiff: (filename: String, diff: String)? {
         guard message.role != .user, let source = message.text else { return nil }
@@ -962,21 +1219,35 @@ struct TextBubble: View {
                     GitPRDiffCardView(filename: diff.filename, diffText: diff.diff)
                 } else if let table = parsedTable {
                     SQLResultTableView(columns: table.headers, rows: table.rows)
-                } else if mine {
-                    Text(message.text ?? "")
-                        .font(.system(size: 17))
-                        .foregroundStyle(BubbleColor.mineText)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
                 } else {
-                    MarkdownText(source: message.text ?? "")
-                        .foregroundStyle(Color.primary)
-                        .textSelection(.enabled)
-                        .fixedSize(horizontal: false, vertical: true)
+                    let split = ChatAttachments.split(message.text ?? "")
+                    if mine {
+                        if !split.display.isEmpty {
+                            Text(split.display)
+                                .font(.body)
+                                .foregroundStyle(BubbleColor.mineText)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    } else if !split.display.isEmpty {
+                        MarkdownText(source: split.display)
+                            .foregroundStyle(Color.primary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    ForEach(Array(split.images.enumerated()), id: \.offset) { _, path in
+                        AttachedImageView(path: path)
+                    }
+                    ForEach(Array(split.files.enumerated()), id: \.offset) { _, path in
+                        Label(ChatAttachments.attachmentBasename(path), systemImage: "doc")
+                            .font(.footnote.weight(.medium))
+                            .foregroundStyle(mine ? BubbleColor.mineText.opacity(0.9) : Color.secondary)
+                    }
                 }
             }
             .padding(.horizontal, customCard ? 0 : 15)
             .padding(.vertical, customCard ? 0 : 11)
+            .frame(maxWidth: sizeClass == .regular ? 560 : .infinity, alignment: .leading)
             .background(
                 Group {
                     if !customCard {
@@ -1137,6 +1408,35 @@ struct CardView: View {
 
 /// A frame of the bot's computer. In the paged shape the pixels are not in
 /// the transcript — they are fetched here, once, when the row appears.
+/// A transcript image fetched with the pairing token, never as a bare URL.
+struct AttachedImageView: View {
+    let path: String
+    @EnvironmentObject private var session: Session
+    @State private var image: UIImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            } else {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(Color.secondary.opacity(0.13))
+                    .frame(height: 140)
+                    .overlay { ProgressView() }
+            }
+        }
+        .frame(maxWidth: 280)
+        .task {
+            guard image == nil, let fetch = ChatAttachments.fetchPath(forDiskPath: path) else { return }
+            let data = await session.avatarData(forPath: fetch)
+            image = data.flatMap(UIImage.init(data:))
+        }
+    }
+}
+
 struct ScreenShot: View {
     let threadId: String
     let message: Message

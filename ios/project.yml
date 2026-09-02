@@ -14,6 +14,9 @@ settings:
     DEVELOPMENT_TEAM: CC8UTF7ATG
     ASSETCATALOG_FILTER_FOR_THINNING: false
     ENABLE_ASSET_THINNING: false
+    # Native Sentry. Empty unless xcodebuild/CI passes SENTRY_DSN=...
+    # Do not put a live DSN in this file or in Info.plist.
+    SENTRY_DSN: ""
 packages:
   CompanionCore:
     path: .
@@ -26,6 +29,7 @@ targets:
     platform: iOS
     sources:
     - path: App
+    - path: App/Assets.xcassets
     - path: Shared
     - path: Assets.xcassets
     dependencies:
@@ -43,9 +47,10 @@ targets:
         MARKETING_VERSION: "1.0.27"
         CURRENT_PROJECT_VERSION: "202609010933"
         SWIFT_VERSION: '5.9'
-        TARGETED_DEVICE_FAMILY: '1'
+        TARGETED_DEVICE_FAMILY: '1,2'
         SUPPORTS_MACCATALYST: false
         ENABLE_ON_DEMAND_RESOURCES: false
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: false
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: false
     info:
@@ -56,7 +61,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
         ITSAppUsesNonExemptEncryption: false
-        SENTRY_DSN: "https://3fb94d8a19248d0bd1cc75694d9d6586@o4511650476326912.ingest.us.sentry.io/4512009246736384"
+        SENTRY_DSN: $(SENTRY_DSN)
         NSSupportsLiveActivities: true
         CFBundleURLTypes:
         - CFBundleURLName: app.botfleet.companion.pairing
@@ -76,6 +81,10 @@ targets:
           so your bots can reach you here.
         NSCameraUsageDescription: BotFleet uses the camera only to scan a pairing
           QR code shown on your computer.
+        NSPhotoLibraryUsageDescription: BotFleet reads photos you choose to send in
+          a chat. They are uploaded to your paired computer.
+        UIBackgroundModes:
+        - remote-notification
         NSMicrophoneUsageDescription: BotFleet listens while you dictate a message
           to a bot.
         NSSpeechRecognitionUsageDescription: BotFleet converts your speech into text
@@ -98,6 +107,7 @@ targets:
         com.apple.security.application-groups:
         - group.app.botfleet
         com.apple.developer.usernotifications.time-sensitive: true
+        aps-environment: production
   BotFleetWidgets:
     type: app-extension
     platform: iOS
@@ -115,7 +125,7 @@ targets:
         MARKETING_VERSION: "1.0.27"
         CURRENT_PROJECT_VERSION: "202609010933"
         SWIFT_VERSION: '5.9'
-        TARGETED_DEVICE_FAMILY: '1'
+        TARGETED_DEVICE_FAMILY: '1,2'
         ENABLE_ON_DEMAND_RESOURCES: false
         ASSETCATALOG_COMPILER_GENERATE_ASSET_SYMBOLS: false
         ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS: false

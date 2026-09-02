@@ -31,6 +31,9 @@ export const STATIC_DSH_MODELS: ModelCatalog = {
   options: [
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    { id: "deepseek-v4-flash", label: "DeepSeek-V4-Flash" },
+    { id: "deepseek-v4-pro", label: "DeepSeek-V4-Pro" },
+    { id: "deepseek-v4-flash-vision-exp", label: "DeepSeek-V4-Flash-Vision-Exp" },
   ],
 };
 
@@ -40,6 +43,7 @@ const support: AcpSupport = {
   images: false,
   models: STATIC_DSH_MODELS,
   resolveModels: () => STATIC_DSH_MODELS,
+  effortLevels: ["low", "medium", "high", "max"] as const,
   defaultCli: "dsh",
   nativeSource: "dsh.acp",
   loginNote: "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",
@@ -64,8 +68,12 @@ const support: AcpSupport = {
   transformEnv: (_env) => {},
 
   pickAuthMethod: () => null,
-  authFailure: "fail",
-  isAuthenticated: () => existsSync(join(homedir(), ".dsh", ".credentials.yaml")),
+  authFailure: "continue",
+  isAuthenticated: (env) =>
+    existsSync(join(homedir(), ".dsh", ".credentials.yaml")) ||
+    existsSync(join(homedir(), ".deepseek", "credentials.json")) ||
+    existsSync(join(homedir(), ".deepseek-code", "credentials", "deepseek-code.json")) ||
+    Boolean(env.DEEPSEEK_API_KEY),
 
   buildPromptText: (turn) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),
 };

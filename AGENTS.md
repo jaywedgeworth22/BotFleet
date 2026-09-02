@@ -39,3 +39,7 @@ All icon assets and design explorations must be generated as standard, uncropped
 
 When the owner gives you a secret, read it from `chmod 600` files under `/Users/jay/.secrets/` and NEVER print/echo it.
 Never grep `KEY=value` lines in transcript logs.
+
+## Fleet recall
+
+Search `fleet-agents` before re-deriving a lesson (`recall "<topic>"` or MCP `recall_search`).  Contribute every reusable lesson at closeout (`recall contribute "…" --category lesson --app botfleet`).  Cloud seats: https://agents.jays.services/mcp .  Do not dump chat logs into the corpus.  Canonical: ai-fleet-coordinator/docs/RAG-FLEET-INFRA.md.

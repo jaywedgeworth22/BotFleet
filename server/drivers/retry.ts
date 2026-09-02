@@ -50,7 +50,11 @@ const TERMINAL_PATTERNS: Array<{ pattern: RegExp; reason: TerminalReason }> = [
     pattern: /\b(?:40[13]|unauthorized|forbidden|invalid api key|missing bearer|authentication required|not logged in|logged out)\b/i,
     reason: "auth",
   },
-  { pattern: /\b402\b|\bquota\b|\bbilling\b|\bsubscription\b/i, reason: "quota" },
+  {
+    pattern:
+      /\b402\b|\bquota\b|\bbilling\b|\bsubscription\b|session limit|usage cap|usage limit|credits exhausted|insufficient.?balance|resource.?exhausted|resource_exhausted|slow pool|out of (?:usage|credits)/i,
+    reason: "quota",
+  },
   { pattern: /\bmodel not found\b|\bunknown model\b|\bdoes not exist for model\b|\bunsupported model\b/i, reason: "unknown_model" },
   { pattern: /\b400\b|\b422\b|\binvalid request\b|\bmalformed\b|\bunexpected status\b/i, reason: "invalid_request" },
   { pattern: /\b404\b|\bno such thread\b|\bthread gone\b/i, reason: "not_found" },

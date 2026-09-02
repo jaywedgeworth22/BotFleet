@@ -53,7 +53,7 @@ const capsuleSchema = z.object({
     "source_hash_mismatch",
   ]).optional(),
   runtime_state: z.enum(["ready", "degraded", "unknown"]),
-  mode: z.enum(["shared", "unknown"]),
+  mode: z.enum(["shared", "per-bot", "unknown"]),
   max_instances: z.number().int().min(1).max(4).nullable(),
   ready_count: z.number().int().min(0).max(4),
   slots: z.array(slotSchema).max(4),
