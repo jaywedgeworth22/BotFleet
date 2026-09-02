@@ -50,6 +50,8 @@ export interface ProxyOptions {
    * it synchronously when that device is revoked; the returned disposer is
    * called exactly once when either side closes it. */
   connected?: (deviceId: string, disconnect: () => void) => () => void;
+  /** Store an APNs device token for closed-app wake. */
+  setPushToken?: (deviceId: string, token: string) => boolean;
   /** How long the harness may take to produce response *headers*. Optional,
    * and only ever set by tests — the default is the one that ships. */
   headersTimeoutMs?: number;
@@ -293,6 +295,25 @@ export function createProxyHandler(options: ProxyOptions) {
     // default-deny checks above and never send it to the harness.
     if (method === "GET" && path === "/api/companion/endpoints") {
       return sendJson(res, 200, endpointSnapshot(options));
+    }
+
+    if (method === "POST" && path === "/api/companion/push-token") {
+      const device = options.authenticate(token);
+      const deviceId = device?.id;
+      if (!deviceId) {
+        return sendJson(res, 401, { error: "pair this device from Phone settings in BotFleet on your computer" });
+      }
+      readJson(req).then(
+        (body) => {
+          const push = String(body.token ?? "");
+          if (!options.setPushToken?.(deviceId, push)) {
+            return sendJson(res, 400, { error: "that push token is not usable" });
+          }
+          return sendJson(res, 200, { ok: true });
+        },
+        (error: Error) => sendJson(res, 400, { error: error.message }),
+      );
+      return;
     }
 
     const upstream = httpRequest(

@@ -25,10 +25,17 @@ describe("extensionForMime", () => {
     expect(extensionForMime("  image/webp  ")).toBe(".webp");
   });
 
-  it("refuses everything else — including svg, which executes script", () => {
+  it("refuses html/svg/js, which execute in a browser", () => {
     expect(extensionForMime("image/svg+xml")).toBeNull();
-    expect(extensionForMime("text/plain")).toBeNull();
+    expect(extensionForMime("text/html")).toBeNull();
+    expect(extensionForMime("application/javascript")).toBeNull();
     expect(extensionForMime(undefined)).toBeNull();
+  });
+
+  it("maps ordinary chat files", () => {
+    expect(extensionForMime("application/pdf")).toBe(".pdf");
+    expect(extensionForMime("text/plain")).toBe(".txt");
+    expect(extensionForMime("application/octet-stream")).toBe(".bin");
   });
 });
 
@@ -60,8 +67,15 @@ describe("saveImage", () => {
     expect(back?.mime).toBe("image/gif");
   });
 
+  it("saves a pdf as a generated .pdf path", async () => {
+    const { saveAttachment } = await import("./attachments.ts");
+    const saved = saveAttachment(Buffer.from("%PDF-1.4"), "application/pdf");
+    expect(saved.path.endsWith(".pdf")).toBe(true);
+    expect(saved.mime).toBe("application/pdf");
+  });
+
   it("rejects unsupported mimes, empty bodies, and oversize bodies", () => {
-    expect(() => saveImage(Buffer.from("x"), "image/svg+xml")).toThrow(/unsupported image type/);
+    expect(() => saveImage(Buffer.from("x"), "image/svg+xml")).toThrow(/unsupported file type/);
     expect(() => saveImage(Buffer.alloc(0), "image/png")).toThrow(/empty/);
     expect(() => saveImage(Buffer.alloc(IMAGE_MAX_BYTES + 1), "image/png")).toThrow(/exceeds/);
   });

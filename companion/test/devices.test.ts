@@ -217,6 +217,19 @@ describe("DeviceRegistry", () => {
     expect(registry.setCloudDesktopAccess("missing", true)).toBe(false);
   });
 
+  it("stores a hex APNs token for closed-app wake", () => {
+    const registry = new DeviceRegistry();
+    const { device } = pair(registry);
+    const token = "a".repeat(64);
+
+    expect(registry.setPushToken(device.id, token)).toBe(true);
+    expect(registry.pushTokens()).toEqual([{ deviceId: device.id, token }]);
+    expect(registry.list()[0]).not.toHaveProperty("pushToken");
+    expect(registry.setPushToken(device.id, "not-hex")).toBe(false);
+    expect(registry.setPushToken("missing", token)).toBe(false);
+    expect(new DeviceRegistry().pushTokens()).toEqual([{ deviceId: device.id, token }]);
+  });
+
   it("rolls cloud desktop access back when it cannot be saved", () => {
     const registry = new DeviceRegistry();
     const { token, device } = pair(registry);

@@ -53,6 +53,7 @@ describe("intakeFiles", () => {
     });
     expect(out.attachments).toHaveLength(0);
     expect(out.notice).toMatch(/ghost\.bin/);
+    expect(out.notice).toMatch(/could not be attached/);
   });
 
   it("reports an upload that failed without losing the files that worked", async () => {

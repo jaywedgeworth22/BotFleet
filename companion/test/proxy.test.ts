@@ -689,6 +689,51 @@ describe("live companion endpoint refresh", () => {
   });
 });
 
+describe("APNs token registration", () => {
+  it("stores a hex token locally and never forwards it to the harness", async () => {
+    const stored: { id?: string; token?: string } = {};
+    const pushServer = createServer(
+      createProxyHandler({
+        harnessPort: 1,
+        authenticate: (token) => (token === TOKEN ? { id: "d1", cloudDesktopAccess: false } : null),
+        redeem: () => ({ error: "not used" }),
+        serverName: () => "Test computer",
+        setPushToken: (id, token) => {
+          if (!/^[0-9a-f]{64,}$/.test(token)) return false;
+          stored.id = id;
+          stored.token = token;
+          return true;
+        },
+      }),
+    );
+    await new Promise<void>((resolve) => pushServer.listen(0, "127.0.0.1", resolve));
+    const port = (pushServer.address() as { port: number }).port;
+    const hex = "ab".repeat(32);
+    try {
+      const denied = await fetch(`http://127.0.0.1:${port}/api/companion/push-token`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ token: hex }),
+      });
+      expect(denied.status).toBe(401);
+
+      const ok = await fetch(`http://127.0.0.1:${port}/api/companion/push-token`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({ token: hex }),
+      });
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ ok: true });
+      expect(stored).toEqual({ id: "d1", token: hex });
+    } finally {
+      await new Promise<void>((resolve) => pushServer.close(() => resolve()));
+    }
+  });
+});
+
 // The whole loop, with the real registry rather than a stub: open a pairing
 // window on the control surface, redeem its QR credential the way the phone
 // does, and

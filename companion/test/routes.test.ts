@@ -40,6 +40,7 @@ describe("what the app may do", () => {
     ["GET", "/api/events"],
     ["GET", "/api/instances"],
     ["GET", "/api/companion/endpoints"],
+    ["POST", "/api/companion/push-token"],
     ["GET", "/api/bots"],
     ["POST", "/api/bots"],
     ["POST", "/api/bots/bot_123/messages"],
@@ -133,6 +134,12 @@ describe("what it may not", () => {
     expect(ask("GET", "/api/companion/endpoints")).toBeNull();
     expect(ask("POST", "/api/companion/endpoints")?.status).toBe(403);
     expect(ask("GET", "/api/companion/endpoints/extra")?.status).toBe(403);
+  });
+
+  it("lets a paired phone register an APNs token on the sidecar", () => {
+    expect(ask("POST", "/api/companion/push-token", false)?.status).toBe(401);
+    expect(ask("POST", "/api/companion/push-token")).toBeNull();
+    expect(ask("GET", "/api/companion/push-token")?.status).toBe(403);
   });
 
   it("describes only refused routine operations as computer-only", () => {

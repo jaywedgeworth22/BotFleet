@@ -23,7 +23,8 @@ import { requestReview, resolveAutoReviewMode, shouldReview } from "./auto-revie
 import * as checkpoints from "./checkpoints.ts";
 import { appendDecision, readDecisions } from "./decision-log.ts";
 import { validateBotCwd } from "./bot-cwd.ts";
-import { attachmentExists, extensionForMime, IMAGE_MAX_BYTES, readAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
+import { attachmentExists, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, isImageMime, readAttachment, saveAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
+import { openBotFleetDesktop } from "./desktop-open.ts";
 import {
   avatarGenerationRequestSchema,
   avatarGenerationStateMatches,
@@ -4074,17 +4075,18 @@ const server = createServer(async (req, res) => {
       return res.end(bytes);
     }
 
-    // ── image attachments ────────────────────────────────────────────────
-    // Pasted/dropped images are stored as files and referenced by path in
-    // the prompt (<attached-image path="…"/>); this pair of routes is the
+    // ── chat attachments ─────────────────────────────────────────────────
+    // Pasted/dropped files are stored and referenced by path in the prompt
+    // (<attached-image> / <attached-file>); this pair of routes is the
     // save + serve. The POST takes raw bytes (base64 JSON would double the
     // payload), so it needs its own reader rather than readBody.
     if (method === "POST" && path === "/api/attachments") {
       const rawType = Array.isArray(req.headers["content-type"]) ? req.headers["content-type"][0] : req.headers["content-type"];
       const mime = rawType?.split(";")[0]?.trim().toLowerCase();
       if (!mime || !extensionForMime(mime)) {
-        return json(res, 400, { error: "content-type must be an image type" });
+        return json(res, 400, { error: "content-type must be a supported file type" });
       }
+      const ceiling = isImageMime(mime) ? IMAGE_MAX_BYTES : FILE_MAX_BYTES;
       const saved = await new Promise<SavedAttachment>((resolve, reject) => {
         const chunks: Buffer[] = [];
         let received = 0;
@@ -4097,14 +4099,14 @@ const server = createServer(async (req, res) => {
         req.on("data", (chunk: Buffer) => {
           if (settled) return;
           received += chunk.byteLength;
-          if (received > IMAGE_MAX_BYTES) return fail(413, `image exceeds ${IMAGE_MAX_BYTES} bytes`);
+          if (received > ceiling) return fail(413, `file exceeds ${ceiling} bytes`);
           chunks.push(chunk);
         });
         req.on("end", () => {
           if (settled) return;
           settled = true;
           try {
-            resolve(saveImage(Buffer.concat(chunks), mime));
+            resolve(saveAttachment(Buffer.concat(chunks), mime));
           } catch (e) {
             reject(Object.assign(e instanceof Error ? e : new Error(String(e)), { status: 400 }));
           }
@@ -4870,6 +4872,11 @@ const server = createServer(async (req, res) => {
       const patched = store.toggleReaction(m[1], m[2], emoji, typeof body.by === "string" ? body.by : "user");
       if (!patched) return json(res, 404, { error: "no such message" });
       return json(res, 200, { message: patched });
+    }
+    if (method === "POST" && path === "/api/desktop/open") {
+      const result = await openBotFleetDesktop();
+      if (!result.ok) return json(res, 503, { error: result.error ?? "could not open BotFleet" });
+      return json(res, 200, { ok: true });
     }
     if (method === "POST" && path === "/api/bots") {
       const body = await readBody(req);

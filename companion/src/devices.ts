@@ -26,10 +26,12 @@ export interface DeviceRecord {
   /** Full interactive access to a bot's cloud desktop. Deliberately off on
    * every new and migrated device until the computer owner enables it. */
   cloudDesktopAccess: boolean;
+  /** Hex APNs device token.  Used only to wake a killed companion. */
+  pushToken?: string;
 }
 
 /** What the UI is allowed to see: a device without its secret. */
-export type PublicDevice = Omit<DeviceRecord, "tokenHash">;
+export type PublicDevice = Omit<DeviceRecord, "tokenHash" | "pushToken">;
 
 /** A pairing window: two short-lived credentials, deliberately single-use.
  *
@@ -118,6 +120,9 @@ function normalizeDevice(record: Partial<DeviceRecord> & { id: string; tokenHash
     createdAt,
     lastSeenAt: timestamp(record.lastSeenAt, createdAt),
     cloudDesktopAccess: record.cloudDesktopAccess === true,
+    pushToken: typeof record.pushToken === "string" && /^[0-9a-fA-F]{64,}$/.test(record.pushToken)
+      ? record.pushToken.toLowerCase()
+      : undefined,
   };
 }
 
@@ -165,7 +170,7 @@ export class DeviceRegistry {
 
   /** Every paired device, without the hash — this is what the page renders. */
   list(): PublicDevice[] {
-    return this.devices.map(({ tokenHash, ...rest }) => rest);
+    return this.devices.map(({ tokenHash, pushToken: _push, ...rest }) => rest);
   }
 
   /** How many phones are paired, against MAX_DEVICES. */
@@ -292,7 +297,7 @@ export class DeviceRegistry {
       this.devices.pop();
       return { error: `could not save the pairing: ${(e as Error).message}` };
     }
-    const { tokenHash, ...pub } = device;
+    const { tokenHash, pushToken: _push, ...pub } = device;
     const result = { device: pub, token };
     if (requestId) {
       this.replay = {
@@ -365,6 +370,22 @@ export class DeviceRegistry {
       throw error;
     }
     return true;
+  }
+
+  setPushToken(id: string, token: string): boolean {
+    const device = this.devices.find((candidate) => candidate.id === id);
+    if (!device) return false;
+    const cleaned = token.replace(/\s+/g, "").toLowerCase();
+    if (!/^[0-9a-f]{64,}$/.test(cleaned)) return false;
+    device.pushToken = cleaned;
+    this.persist();
+    return true;
+  }
+
+  pushTokens(): { deviceId: string; token: string }[] {
+    return this.devices
+      .filter((device) => typeof device.pushToken === "string")
+      .map((device) => ({ deviceId: device.id, token: device.pushToken as string }));
   }
 }
 
