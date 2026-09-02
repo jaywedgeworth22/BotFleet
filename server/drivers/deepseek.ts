@@ -102,8 +102,14 @@ export const DeepSeekDriver: ProviderDriver<DeepSeekConfig> = {
     const complete = async (
       messages: Array<{ role: string; content: string }>,
       model: string,
-      opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void },
-    ): Promise<{ text: string; usage: { input: number; output: number } | null }> => {
+      opts: {
+        stream: boolean;
+        signal?: AbortSignal;
+        onDelta?: (d: string, streamKind?: string) => void;
+        onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void;
+        tools?: unknown[];
+      },
+    ): Promise<{ text: string; tool_calls?: unknown[]; usage: { input: number; output: number } | null }> => {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },

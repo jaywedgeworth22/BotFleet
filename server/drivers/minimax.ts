@@ -142,8 +142,8 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     const complete = async (
       messages: Array<{ role: string; content: string }>,
       model: string,
-      opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void },
-    ): Promise<{ text: string; usage: { input: number; output: number } | null }> => {
+      opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void; tools?: unknown[] },
+    ): Promise<{ text: string; tool_calls?: unknown; usage: { input: number; output: number } | null }> => {
       const timeout = AbortSignal.timeout(180_000);
       const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
       const body = {
@@ -223,15 +223,19 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       const abort = new AbortController();
       active.set(threadId, { abort, turnId });
 
-      const minimaxTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
-        type: "function",
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
-        },
-      })) : undefined;
-      
+      // OpenAI-style function tools, mirrored from the DeepSeek driver. The
+      // non-streaming path returns tool_calls; the streaming path reports
+      // text only, so a tool round trip completes with a tool_calls stop reason.
+      const minimaxTools = (turn as any).tools
+        ? (turn as any).tools.map((t: any) => ({
+            type: "function",
+            function: {
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+            },
+          }))
+        : undefined;
       const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
       ];
@@ -256,9 +260,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
 
       (async () => {
         try {
-          const { text, usage } = await complete(messages, turn.model || models.default, {
+          const { text, tool_calls, usage } = await complete(messages, turn.model || models.default, {
             stream: true,
             signal: abort.signal,
+            tools: minimaxTools,
             onDelta: (delta) =>
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
           });
@@ -276,11 +281,15 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
             emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
           }
           active.delete(threadId);
+          const toolNames = ((tool_calls as any[] | undefined) ?? [])
+            .map((tc: any) => tc?.function?.name)
+            .filter(Boolean)
+            .join(", ");
           const completed: RuntimeEvent = {
             ...base(threadId, turnId),
             type: "turn.completed",
             ok: true,
-            stopReason: null,
+            stopReason: toolNames ? `tool_calls: ${toolNames}` : null,
             cost: null,
           };
           emit(usage ? { ...completed, usage } : completed);

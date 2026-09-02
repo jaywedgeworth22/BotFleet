@@ -363,8 +363,12 @@ function askBotAndWait(targetBotId: string, message: string, depth: number, from
 }
 
 // default selection for new bots: first available instance, claude preferred
+const DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS = 15_000;
+
 async function defaultSelection() {
-  const described = await registry.describe();
+  // A bot being created can ride a probe taken moments ago; the engine rail
+  // still refreshes on demand.
+  const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
   const available = described.filter((d) => d.snapshot.state === "available");
   // Deliberately NO fallback to described[0]. Handing a bot an engine whose
   // CLI isn't installed makes it look ready and then fail on send with a raw
@@ -1421,12 +1425,23 @@ bus.subscribe((event: RuntimeEvent) => {
           pendingMemberFallback.delete(event.threadId);
         }
         const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
+        // No configured chain: on a quota or session-cap hit, fail over once
+        // to the healthiest other engine (#90's auto failover), through the
+        // same produced / stop-reason gate a configured chain gets. Plain
+        // errors without a chain settle as before — a bot that was not given
+        // a fallback must not wander to another engine on any failure.
+        const configuredChain = fallbackBot.modelSelection.fallbacks;
+        const chain = configuredChain && configuredChain.length > 0
+          ? configuredChain
+          : quotaOrCap
+            ? autoFallbackChain(fallbackBot.modelSelection.instanceId)
+            : undefined;
         const next = selectTurnFallback({
           ok: isOk,
           stopReason: event.stopReason,
           produced: turnProducedAssistantOutput(afterUser, { textIsError: isTextError }),
           quotaOrCap,
-          fallbacks: fallbackBot.modelSelection.fallbacks,
+          fallbacks: chain,
           used,
           current: {
             instanceId: fallbackBot.modelSelection.instanceId,
@@ -1461,80 +1476,6 @@ bus.subscribe((event: RuntimeEvent) => {
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
-        let fallbackUserMessage: Message | undefined;
-        let fallbackSelection: ModelSelection | undefined;
-        const fallbackKey = `${bot.id}:${event.threadId}`;
-        const activeMsgs = store.activePath(event.threadId);
-        let lastUserIdx = -1;
-        for (let i = activeMsgs.length - 1; i >= 0; i--) {
-          if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
-            lastUserIdx = i;
-            fallbackUserMessage = activeMsgs[i];
-            break;
-          }
-        }
-
-        let isTextError = false;
-        if (lastUserIdx >= 0) {
-          const botReplies = activeMsgs.slice(lastUserIdx + 1).filter(m => m.role === "bot" && m.kind === "text" && typeof m.text === "string");
-          for (const m of botReplies) {
-            const txt = (m.text || "").trim();
-            if (
-               /session limit|hit your session limit|resets \d|rate.?limit|too many requests|overloaded|capacity|quota exceeded|insufficient.?quota|resource.?exhausted|ResourceExhausted|credits exhausted|account_inactive|service unavailable|bad gateway|internal server error|exited \d+ before/i.test(txt) &&
-               txt.length < 500
-            ) {
-               isTextError = true;
-               break;
-            }
-          }
-        }
-
-        const isOk = event.ok && !isTextError;
-
-        if (isOk) fallbackAttemptByTurn.delete(fallbackKey);
-        if (
-          !isOk &&
-          event.stopReason !== "interrupted" &&
-          event.stopReason !== "cancelled"
-        ) {
-          const chain = bot.modelSelection.fallbacks && bot.modelSelection.fallbacks.length > 0
-            ? bot.modelSelection.fallbacks
-            : undefined;
-          const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
-
-          if (chain && used < chain.length && fallbackUserMessage) {
-            const nextModel = chain[used];
-            fallbackAttemptByTurn.set(fallbackKey, used + 1);
-            fallbackSelection = {
-              instanceId: nextModel.instanceId,
-              model: nextModel.model,
-              effort: nextModel.effort,
-            };
-          } else if (!chain && used === 0 && fallbackUserMessage) {
-            // Intelligent auto failover when no custom fallback chain was explicitly assigned:
-            // Failover to another healthy available registered engine instance.
-            const candidates = registry.instances().filter((inst) =>
-              inst.instanceId !== bot.modelSelection.instanceId &&
-              inst.enabled !== false &&
-              Boolean(inst.models?.default)
-            );
-            const priority = ["claude", "antigravity", "gemini", "codex", "openaiCompat", "grok"];
-            candidates.sort((a, b) => {
-              const aIdx = priority.indexOf(a.instanceId);
-              const bIdx = priority.indexOf(b.instanceId);
-              return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
-            });
-            if (candidates.length > 0) {
-              const candidate = candidates[0];
-              fallbackAttemptByTurn.set(fallbackKey, 1);
-              fallbackSelection = {
-                instanceId: candidate.instanceId,
-                model: candidate.models.default,
-              };
-            }
-          }
-        }
-
         const vpsTurn = activeVpsThreads.get(bot.id) === event.threadId;
         const clearVpsTurn = () => {
           if (activeVpsThreads.get(bot.id) === event.threadId) activeVpsThreads.delete(bot.id);
@@ -1571,11 +1512,6 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!group && fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
           const userMsg = fallbackUserMessage;
           const fallbackBotId = bot.id;
-          pushMessage({
-            role: "bot",
-            kind: "activity",
-            tool: { name: `Failover: switched to ${fallbackSelection.instanceId} (${fallbackSelection.model})`, ok: true },
-          });
           void startTurn(fallbackBotId, userMsg.text || "", {
             userMessage: userMsg,
             threadId: event.threadId,
@@ -1623,6 +1559,24 @@ bus.subscribe((event: RuntimeEvent) => {
     }
   }
 });
+
+/** #90 auto-failover: with no configured chain, the next healthiest engine
+ * instance (by fleet priority) is offered as a one-step chain. The caller
+ * still runs it through selectTurnFallback, so the produced / quota /
+ * stop-reason rules apply exactly as they do for a configured chain. */
+function autoFallbackChain(currentInstanceId: string): ModelSelection[] {
+  const priority = ["claude", "antigravity", "gemini", "codex", "openaiCompat", "grok"];
+  const candidates = registry
+    .instances()
+    .filter((inst) => inst.instanceId !== currentInstanceId && inst.enabled !== false && Boolean(inst.models?.default))
+    .sort((a, b) => {
+      const aIdx = priority.indexOf(a.instanceId);
+      const bIdx = priority.indexOf(b.instanceId);
+      return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+    });
+  const pick = candidates[0];
+  return pick ? [{ instanceId: pick.instanceId, model: pick.models.default }] : [];
+}
 
 // Delegated turns are fire-and-forget, so the drain cannot hand the
 // peer's reply back to the caller the way ask_bot does. This watch map
@@ -5175,7 +5129,7 @@ const server = createServer(async (req, res) => {
           else section = trimmed;
         }
       }
-      for (const key of ["unread", "computer", "cloudBackend", "color", "mascotExpression", "pinned", "hidden"] as const) {
+      for (const key of ["unread", "cloudBackend", "color", "mascotExpression", "pinned", "hidden"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (normalizedSelection) patch.modelSelection = normalizedSelection;
@@ -5200,6 +5154,11 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { error: "computers must be an array containing cloud, vm, or local" });
         }
         patch.computers = [...new Set(body.computers as ("cloud" | "vm" | "local")[])];
+      } else if (body.computer !== undefined) {
+        // legacy singular field from older clients and scripts: fold it into
+        // the stored array rather than persisting a stray key the runtime
+        // never reads ("off" clears)
+        patch.computers = body.computer === "off" ? [] : [body.computer as "cloud" | "vm" | "local"];
       }
       if (body.cloudBackend !== undefined && !["box", "vps"].includes(String(body.cloudBackend))) {
         return json(res, 400, { error: "cloudBackend must be box or vps" });

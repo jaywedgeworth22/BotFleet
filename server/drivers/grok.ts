@@ -70,12 +70,18 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
     const complete = async (
       messages: Array<{ role: string; content: string }>,
       model: string,
-      opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void },
-    ): Promise<{ text: string; usage: { input: number; output: number } | null }> => {
+      opts: {
+        stream: boolean;
+        signal?: AbortSignal;
+        onDelta?: (d: string, streamKind?: string) => void;
+        onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void;
+        tools?: unknown[];
+      },
+    ): Promise<{ text: string; tool_calls?: unknown[]; usage: { input: number; output: number } | null }> => {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, stream: opts.stream }),
+        body: JSON.stringify({ model, messages, stream: opts.stream, ...(opts.tools ? { tools: opts.tools } : {}) }),
         signal: opts.signal
           ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
           : AbortSignal.timeout(120_000),
@@ -88,6 +94,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         const json: any = await res.json();
         return {
           text: json.choices?.[0]?.message?.content ?? "",
+          tool_calls: json.choices?.[0]?.message?.tool_calls,
           usage: json.usage
             ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
             : null,
@@ -146,7 +153,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           takeSseLine(line);
         }
       }
-      return { text, usage };
+      return { text, tool_calls: streamToolCalls.length ? streamToolCalls : undefined, usage };
     };
 
     const sendTurn = async (turn: SendTurnInput) => {
@@ -191,9 +198,10 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         let attempt = 0;
         for (;;) {
           try {
-            const { text, usage } = await complete(messages, turn.model || MODELS.default, {
+            const { text, tool_calls, usage } = await complete(messages, turn.model || MODELS.default, {
               stream: true,
               signal: abort.signal,
+              tools: grokTools,
               onDelta: (delta) => {
                 streamedText = true;
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
@@ -207,7 +215,17 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
               emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
             }
             active.delete(threadId);
-            emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: null });
+            const toolNames = ((tool_calls as any[] | undefined) ?? [])
+              .map((tc: any) => tc?.function?.name)
+              .filter(Boolean)
+              .join(", ");
+            emit({
+              ...base(threadId, turnId),
+              type: "turn.completed",
+              ok: true,
+              stopReason: toolNames ? `tool_calls: ${toolNames}` : null,
+              cost: null,
+            });
             return;
           } catch (e) {
             const aborted = (e as Error).name === "AbortError";
