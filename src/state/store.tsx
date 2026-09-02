@@ -280,7 +280,12 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 export interface ConfigStatus {
   xai?: { configured: boolean };
   deepseek?: { configured: boolean };
-  composio: { configured: boolean; mode?: "managed" | "self-hosted" | "unavailable" };
+  composio: {
+    configured: boolean;
+    mode?: "managed" | "self-hosted" | "unavailable";
+    /** Why the managed connected-apps service is or is not in use. */
+    managedSetup?: { status: "unconfigured" | "ready" | "failed"; message?: string };
+  };
   box: { configured: boolean };
   vps: { configured: boolean; sshAlias: string };
   rooms: { turnTimeoutMinutes: number };

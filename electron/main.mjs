@@ -67,7 +67,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // 127.0.0.1 explicitly — vite binds IPv4; a bare "localhost" here can
 // resolve to ::1 and paint a black window
 const DEV_URL = process.env.ELECTRON_START_URL ?? "http://127.0.0.1:5199";
-const DEFAULT_COMPOSIO_BROKER_URL = "https://botfleet-composio.milindsoni201.workers.dev";
+// There is deliberately no built-in connected-apps broker. The previous
+// default pointed at a Worker this project does not operate (it answers 404
+// today), so every packaged install registered against a stranger's host and
+// failed silently. A packaged build only talks to a broker the operator set:
+// OMB_COMPOSIO_BROKER_URL, or composio.brokerUrl in ~/.botfleet/config.json.
 let SERVER_PORT = 8799;
 const APP_ICON = path.join(__dirname, "resources/app-icon.png");
 // Windows groups notifications and the taskbar by this id.  Packaged builds
@@ -264,8 +268,7 @@ async function saveSecureCredentials(credentials) {
 }
 
 async function secureComposioConfig() {
-  const dataDir = process.env.OMB_DATA_DIR || path.join(app.getPath("home"), ".botfleet");
-  const configPath = path.join(dataDir, "config.json");
+  const configPath = desktopConfigPath();
   try {
     const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
     if (!config?.composio || typeof config.composio !== "object") return;
@@ -325,12 +328,32 @@ async function secureWorkspaceConfig() {
   }
 }
 
-function composioBrokerUrl() {
-  const configured = process.env.OMB_COMPOSIO_BROKER_URL?.trim();
-  return normalizeManagedComposioBrokerUrl(
-    configured || (app.isPackaged ? DEFAULT_COMPOSIO_BROKER_URL : ""),
-  );
+function desktopConfigPath() {
+  const dataDir = process.env.OMB_DATA_DIR || path.join(app.getPath("home"), ".botfleet");
+  return path.join(dataDir, "config.json");
 }
+
+/** composio.brokerUrl from config.json, or "" — read fresh so a value the
+ * operator adds while the app runs is picked up by the next registration. */
+function configuredComposioBrokerUrl() {
+  try {
+    const config = JSON.parse(fs.readFileSync(desktopConfigPath(), "utf8"));
+    const value = config?.composio?.brokerUrl;
+    return typeof value === "string" ? value.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+function composioBrokerUrl() {
+  const configured = process.env.OMB_COMPOSIO_BROKER_URL?.trim() || configuredComposioBrokerUrl();
+  return normalizeManagedComposioBrokerUrl(configured || "");
+}
+
+// The outcome of the last connected-apps registration, forwarded to the
+// server child so Connected Apps can show a real notice ("could not be set
+// up: …") instead of the generic "needs setup" a log line leaves behind.
+let managedComposioSetup = { status: "unconfigured" };
 
 // The packaged app has no terminal: everything about the server child's life
 // goes to server.log in the OS log dir (~/Library/Logs/BotFleet on macOS,
@@ -810,6 +833,7 @@ function syncManagedComposioCredentials() {
     serverProc.postMessage({
       type: "botfleet:managed-composio",
       access: managedComposioAccess(composioBrokerUrl(), secureCredentials),
+      setup: managedComposioSetup,
     });
   } catch (error) {
     slog(`connected-apps credential sync failed: ${error?.message ?? error}`);
@@ -1926,9 +1950,17 @@ app.whenReady().then(async () => {
         // write after this registration has derived its complete document.
         saveCredentials: async () => {},
         log: slog,
+        report: (setup) => {
+          managedComposioSetup = setup;
+        },
       });
       return credentials;
     }).finally(syncManagedComposioCredentials);
+  } else if (app.isPackaged && !composioBrokerUrl()) {
+    // No broker configured: tell the server so the UI says "not configured"
+    // rather than "temporarily unavailable, restart to retry".
+    managedComposioSetup = { status: "unconfigured" };
+    syncManagedComposioCredentials();
   }
   // in-app auto-update (packaged only) — checks GitHub releases, downloads on
   // the user's click, installs on "Restart to update"

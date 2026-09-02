@@ -152,8 +152,18 @@ relay or create a cloud copy of local transcript data.
 
 ### Optional hosted HTTPS
 
-In desktop **Settings → Phone**, **Use your phone anywhere** accepts a
-passwordless email code and provisions one HTTPS address for that computer.
+Hosted HTTPS is **not available in current builds**.  The desktop ships with no
+hosted control plane: it only offers the sign-in card when
+`OMB_CONTROL_PLANE_URL` names a control plane on the `botfleet.app` domain (or
+a loopback Worker under development), and it refuses any other host.  The
+former default, `accounts.botfleet.com`, is not a domain this project
+operates, so it was removed rather than trusted.  Without a configured control
+plane the Phone settings show only Wi-Fi, Bonjour, and Tailscale pairing, and
+the desktop makes no hosted network calls at all.
+
+When a fleet-operated control plane is configured, desktop **Settings → Phone**,
+**Use your phone anywhere** accepts a passwordless email code and provisions
+one HTTPS address for that computer.
 This desktop sign-in is only for hosted HTTPS. The iPhone never signs in; it
 trusts the computer through the same pairing QR. Nearby, manual, and Tailscale
 connections continue to work without an account.

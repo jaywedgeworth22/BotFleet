@@ -25,7 +25,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 const MAX_TEAM_FILE_BYTES = 1_000_000;
-const COMMUNITY_TEAMS_REPOSITORY = "https://github.com/milind-soni/botfleet-teams";
 
 interface TeamCatalogEntry {
   slug: string;
@@ -44,7 +43,10 @@ interface TeamCatalogEntry {
 }
 
 interface TeamCatalog {
+  /** Empty when no library repository is configured for this build. */
   repositoryUrl: string;
+  /** False when the server has no catalog to read; browse is then simply off. */
+  configured?: boolean;
   teams: TeamCatalogEntry[];
 }
 
@@ -462,9 +464,9 @@ export function TeamLibraryPanel({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-1">
-            {!pending && (
+            {!pending && catalog?.repositoryUrl && (
               <button
-                onClick={() => void openExternal(catalog?.repositoryUrl ?? COMMUNITY_TEAMS_REPOSITORY)}
+                onClick={() => void openExternal(catalog.repositoryUrl)}
                 className="flex items-center gap-1.5 rounded-lg px-2.5 py-2 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
                 title="Open the community teams repository"
               >
@@ -638,7 +640,18 @@ export function TeamLibraryPanel({
                       <button onClick={() => void loadCatalog()} className="mt-3 rounded-full bg-raised px-3.5 py-2 text-ink hover:bg-raised-hover">Try again</button>
                     </div>
                   )}
-                  {!catalogLoading && catalog && (
+                  {!catalogLoading && catalog && catalog.configured === false && (
+                    <div className="rounded-xl bg-raised/70 p-4 text-[13px] text-ink-secondary">
+                      <p>Team library is not configured for this build.&nbsp; Import a team from a Markdown playbook file or a public GitHub link instead.</p>
+                      <button
+                        onClick={() => setTab("import")}
+                        className="mt-3 rounded-full bg-raised px-3.5 py-2 text-ink hover:bg-raised-hover"
+                      >
+                        Import a team
+                      </button>
+                    </div>
+                  )}
+                  {!catalogLoading && catalog && catalog.configured !== false && (
                     <div className="grid grid-cols-1 gap-x-10 md:grid-cols-2">
                       {visibleTeams.map((entry, index) => (
                         <article key={entry.slug} className="flex min-h-[104px] items-center gap-3 border-b border-hairline/35 px-1 py-4">

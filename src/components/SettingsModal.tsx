@@ -621,12 +621,16 @@ export function SettingsModal() {
             {section === "connections" && (
               <Card
                 title="Connections"
-                subtitle="Connected apps work automatically in the installed app. Other optional service keys stay on this computer."
+                subtitle={"Connected apps use a connected-apps service when one is configured, or your own Composio project key.\u00a0 Other optional service keys stay on this computer."}
               >
                 <div className="flex flex-col gap-4">
                   {state.config?.composio.mode === "managed" ? (
                     <div className="rounded-lg border border-success/25 bg-success/10 px-3 py-2 text-[13px] text-success">
                       Connected apps service is ready
+                    </div>
+                  ) : state.config?.composio.managedSetup?.status === "failed" ? (
+                    <div role="status" className="rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-[13px] text-warning">
+                      {state.config.composio.managedSetup.message ?? "Connected apps could not be set up."}
                     </div>
                   ) : null}
                   <ElevenLabsConnection />
