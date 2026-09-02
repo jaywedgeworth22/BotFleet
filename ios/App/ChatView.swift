@@ -70,17 +70,91 @@ struct ChatView: View {
     }
 
     var body: some View {
-        // Read the transcript once for this render. Pagination changes the
-        // array as a unit; repeatedly reaching through ObservableObject for
-        // every row only recomputes the same value.
-        let transcript = messages
-        // A VStack with the composer as a sibling, rather than a scroll view
-        // with `.safeAreaInset`. The inset version sized itself to its
-        // content, so a short transcript left the composer floating in the
-        // middle of the screen with black beneath it. Here the scroll area is
-        // explicitly told to take everything the composer does not.
         VStack(spacing: 0) {
-            ScrollViewReader { proxy in
+            transcriptColumn
+            composer
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .overlay(alignment: .bottom) { plusSheet }
+        .toolbar(.hidden, for: .navigationBar)
+        .navigationBarBackButtonHidden(true)
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .photosPicker(isPresented: $pickingPhoto, selection: $photoItem, matching: .images)
+        .onChange(of: photoItem) { _, item in
+            guard let item else { return }
+            Task { await addPhoto(item); photoItem = nil }
+        }
+        .fileImporter(
+            isPresented: $pickingFile,
+            allowedContentTypes: [.item],
+            allowsMultipleSelection: true
+        ) { result in
+            if case let .success(urls) = result {
+                Task { await addFiles(urls) }
+            }
+        }
+        .navigationDestination(isPresented: $showingComputer) {
+            if case let .bot(bot) = current { ComputerView(bot: bot) }
+        }
+        .task(id: threadId) {
+            if current.unread { await session.markRead(current) }
+#if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("-open-plus") { showingPlus = true }
+            if ProcessInfo.processInfo.arguments.contains("-open-profile") { showingProfile = true }
+#endif
+        }
+        .onChange(of: current.unread) { _, unread in
+            if unread { Task { await session.markRead(current) } }
+        }
+        .onDisappear { dictation.stop() }
+        .onChange(of: scenePhase) { _, phase in
+            if phase != .active { dictation.stop() }
+        }
+        .onChange(of: showingComputer) { _, shown in
+            if shown { dictation.stop() }
+        }
+        .onChange(of: showingTasks) { _, shown in
+            if shown { dictation.stop() }
+        }
+        .onChange(of: showingProfile) { _, shown in
+            if shown { dictation.stop() }
+        }
+        .onChange(of: showingPlus) { _, shown in
+            if shown { dictation.stop() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { note in
+            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey]
+            let value = (raw as? NSNumber)?.uintValue ?? (raw as? UInt)
+            if value == AVAudioSession.InterruptionType.began.rawValue {
+                dictation.stop()
+            }
+        }
+        .onChange(of: dictation.transcript) { _, spoken in
+            draft = Dictation.draft(base: dictation.base, transcript: spoken)
+        }
+        .onChange(of: dictation.isListening) { _, listening in
+            if listening { composerFocused = false }
+        }
+        .sheet(isPresented: $showingTasks) {
+            if case let .bot(bot) = current { TaskManagerView(bot: bot) }
+        }
+        .navigationDestination(isPresented: $showingRoutines) {
+            TasksRoutinesView()
+        }
+        .sheet(isPresented: $showingProfile) {
+            if case let .bot(bot) = current { AgentProfileView(bot: bot) }
+        }
+        .sheet(item: $shareFile) { file in
+            ActivityShareSheet(items: [file.url])
+        }
+    }
+
+    /// Split out of `body` so the Swift compiler can type-check the chat
+    /// chrome and the transcript independently.  The combined expression
+    /// exceeded the type-check budget on CI.
+    private var transcriptColumn: some View {
+        let transcript = messages
+        return ScrollViewReader { proxy in
                 ScrollView {
                     // VStack, not LazyVStack. A lazy stack does not know how
                     // tall it is until its rows have been built, so
@@ -198,94 +272,6 @@ struct ChatView: View {
             }
             .id(threadId)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-
-            composer
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-        .overlay(alignment: .bottom) { plusSheet }
-        .toolbar(.hidden, for: .navigationBar)
-        .navigationBarBackButtonHidden(true)
-        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
-        .photosPicker(isPresented: $pickingPhoto, selection: $photoItem, matching: .images)
-        .onChange(of: photoItem) { _, item in
-            guard let item else { return }
-            Task { await addPhoto(item); photoItem = nil }
-        }
-        .fileImporter(
-            isPresented: $pickingFile,
-            allowedContentTypes: [.item],
-            allowsMultipleSelection: true
-        ) { result in
-            if case let .success(urls) = result {
-                Task { await addFiles(urls) }
-            }
-        }
-        .onPasteCommand(of: [.image, .fileURL, .pdf, .data]) { providers in
-            Task { await addDropItems(providers) }
-        }
-        .navigationDestination(isPresented: $showingComputer) {
-            if case let .bot(bot) = current { ComputerView(bot: bot) }
-        }
-        .task(id: threadId) {
-            // opening a chat is what marks it read, exactly as on the desktop
-            if current.unread { await session.markRead(current) }
-#if DEBUG
-            // `-open-plus`: the + sheet up, for the screenshot harness
-            if ProcessInfo.processInfo.arguments.contains("-open-plus") { showingPlus = true }
-            // Profile parity screenshots without automating a tap through the
-            // animated island/header transition.
-            if ProcessInfo.processInfo.arguments.contains("-open-profile") { showingProfile = true }
-#endif
-        }
-        .onChange(of: current.unread) { _, unread in
-            // A message can arrive while this chat is already on screen. The
-            // initial task above will not run again, so clear that new unread
-            // bit here rather than leaving a badge on an open conversation.
-            if unread { Task { await session.markRead(current) } }
-        }
-        .onDisappear { dictation.stop() }
-        .onChange(of: scenePhase) { _, phase in
-            if phase != .active { dictation.stop() }
-        }
-        .onChange(of: showingComputer) { _, shown in
-            if shown { dictation.stop() }
-        }
-        .onChange(of: showingTasks) { _, shown in
-            if shown { dictation.stop() }
-        }
-        .onChange(of: showingProfile) { _, shown in
-            if shown { dictation.stop() }
-        }
-        .onChange(of: showingPlus) { _, shown in
-            if shown { dictation.stop() }
-        }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { note in
-            let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey]
-            let value = (raw as? NSNumber)?.uintValue ?? (raw as? UInt)
-            if value == AVAudioSession.InterruptionType.began.rawValue {
-                dictation.stop()
-            }
-        }
-        .onChange(of: dictation.transcript) { _, spoken in
-            // Always join against the text frozen at capture start. A newer
-            // partial then replaces the older partial instead of duplicating it.
-            draft = Dictation.draft(base: dictation.base, transcript: spoken)
-        }
-        .onChange(of: dictation.isListening) { _, listening in
-            if listening { composerFocused = false }
-        }
-        .sheet(isPresented: $showingTasks) {
-            if case let .bot(bot) = current { TaskManagerView(bot: bot) }
-        }
-        .navigationDestination(isPresented: $showingRoutines) {
-            TasksRoutinesView()
-        }
-        .sheet(isPresented: $showingProfile) {
-            if case let .bot(bot) = current { AgentProfileView(bot: bot) }
-        }
-        .sheet(item: $shareFile) { file in
-            ActivityShareSheet(items: [file.url])
-        }
     }
 
     // MARK: - Header
@@ -788,9 +774,6 @@ struct ChatView: View {
         .onDrop(of: [.image, .fileURL, .pdf, .data], isTargeted: nil) { providers in
             Task { await addDropItems(providers) }
             return true
-        }
-        .onPasteCommand(of: [.image, .fileURL, .pdf, .data]) { providers in
-            Task { await addDropItems(providers) }
         }
     }
 
