@@ -70,6 +70,16 @@ struct RoomAvatarView: View {
     @State private var image: UIImage?
     @State private var failed = false
 
+    private var crop: AvatarCrop { room.avatarCrop ?? .circle }
+    
+    private var mask: AnyShape {
+        switch crop {
+        case .circle: AnyShape(Circle())
+        case .rounded: AnyShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+        case .square, .mascot: AnyShape(Rectangle())
+        }
+    }
+
     var body: some View {
         Group {
             if room.avatarUrl != nil, !failed, let image {
@@ -77,7 +87,7 @@ struct RoomAvatarView: View {
                     .resizable()
                     .scaledToFill()
                     .frame(width: size, height: size)
-                    .clipShape(Circle())
+                    .clipShape(mask)
             } else {
                 MausAvatar(color: "blue", size: size, state: state, animated: animated, comets: comets)
             }
