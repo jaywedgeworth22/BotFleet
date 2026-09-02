@@ -1032,7 +1032,9 @@ struct MessageRow: View {
             messageContent
         }
         .contextMenu {
-            Text(message.at, style: .time)
+            // `at` is epoch milliseconds on the wire, like every other timestamp
+            // the harness sends; SwiftUI's time style wants a Date.
+            Text(Date(timeIntervalSince1970: message.at / 1_000), style: .time)
             if let text = message.text, !text.isEmpty {
                 Button("Copy", systemImage: "doc.on.doc") {
                     UIPasteboard.general.string = text
