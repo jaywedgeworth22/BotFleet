@@ -1210,10 +1210,10 @@ struct TextBubble: View {
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
                     }
-                    ForEach(split.images, id: \.self) { path in
+                    ForEach(Array(split.images.enumerated()), id: \.offset) { _, path in
                         AttachedImageView(path: path)
                     }
-                    ForEach(split.files, id: \.self) { path in
+                    ForEach(Array(split.files.enumerated()), id: \.offset) { _, path in
                         Label(ChatAttachments.attachmentBasename(path), systemImage: "doc")
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(mine ? BubbleColor.mineText.opacity(0.9) : Color.secondary)

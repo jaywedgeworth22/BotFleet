@@ -1,4 +1,5 @@
 # BotFleet Effort Log — cross-agent board
+- **2026-09-01 — GROK — IN PROGRESS — Sentry DSN hygiene: no hardcoded iOS fallback (branch `grok/sentry-dsn-hygiene`, worktree `~/apps/botfleet-grok-sentry-dsn`).**  Board `aecc129faf6842b480b229ca92b143dc`.  Cocoa init is plist-only / build-injected; empty DSN = no-op.
 Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this file
 (mirror: docs/EFFORT-LOG.md in the repo). As of 2026-08-29.
 
@@ -15,6 +16,8 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 ## In Progress
 - **2026-09-01 - GROK - IN_PROGRESS - Product reach: iPad, chat files, APNs wake, iMessage LaunchAgent, Vercel 1/hour, desktop release host.**  Board `b43584ea` `a9683ae2` `4677da28` `af8f2776` `02ca3c98` `80dd2680` `9051c3ac`.  Issue #107.  Worktree `~/apps/botfleet-grok-reach` @ `grok/product-reach`.
+- **2026-09-01 — GROK — IN PROGRESS — Add fleet sentry-ci-report.yml + scripts/sentry-ci-report.py (branch `grok/sentry-ci-report`, worktree `~/apps/botfleet-grok-sentry-ci`, board `e70a89f7`).**  Gold copy UM PR #1394.  APP=`botfleet`.  Fingerprint `[ci-failure, botfleet, workflow]`.  <!-- wb-agent-report:e70a89f7 -->
+- **2026-09-01 — GROK — IN PROGRESS — Sentry production deploy records (`sentry-cli releases deploys new -e production`) (branch `grok/sentry-deploys`, worktree `~/apps/botfleet-grok-sentry-deploys`, board `2d1c8565`).**  Additive workflow for `botfleet` project on CI success for `main` push.  VERSION = full git SHA.  Soft-fail.
 - **2026-09-01 — GROK — IN PROGRESS — Pickup CLAUDE cap: BotFleet analysis v2 (`claude/analysis-v2`, `~/apps/botfleet-claude`).**  Board `781554fd`.  PR #97.  Report `docs/audits/2026-09-01-botfleet-analysis-v2.md`.  Raw 238 / Claude tech-confirmed 144 / unique P0 still open 5.  No product code.
 - **2026-09-01 — GROK — IN PROGRESS — Delta-audit Batch 2: iOS ATS rollback + light-first + iOS truth (branch `grok/delta-audit-ios`, worktree `~/apps/botfleet-grok-delta-ios`).**  Board `95e445e5` `a9683ae2`.  Remove `NSAllowsArbitraryLoads` and `botfleet.app` cleartext; keep local networking + `ts.net`; `preferredColorScheme(.light)`; no APNs.  I2 chat image composer remains a documented gap.  GROK note 2026-09-01: ATS rollback landed as #92 on main; this row is the remaining iOS-truth slice.
 - **2026-09-01 - GROK - IN_PROGRESS - Implement 2026-09-01 delta audit batches. Worktree ~/apps/botfleet-grok-delta @ grok/delta-audit-fixes.**  Board `9e922f65`.  Fallbacks, honesty/docs, data/permissions, companion trust.  Electron #91 and iOS ATS #92 already merged.

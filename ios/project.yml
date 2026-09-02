@@ -14,6 +14,9 @@ settings:
     DEVELOPMENT_TEAM: CC8UTF7ATG
     ASSETCATALOG_FILTER_FOR_THINNING: false
     ENABLE_ASSET_THINNING: false
+    # Native Sentry. Empty unless xcodebuild/CI passes SENTRY_DSN=...
+    # Do not put a live DSN in this file or in Info.plist.
+    SENTRY_DSN: ""
 packages:
   CompanionCore:
     path: .
@@ -56,7 +59,7 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSApplicationCategoryType: public.app-category.productivity
         ITSAppUsesNonExemptEncryption: false
-        SENTRY_DSN: "https://3fb94d8a19248d0bd1cc75694d9d6586@o4511650476326912.ingest.us.sentry.io/4512009246736384"
+        SENTRY_DSN: $(SENTRY_DSN)
         NSSupportsLiveActivities: true
         CFBundleURLTypes:
         - CFBundleURLName: app.botfleet.companion.pairing
