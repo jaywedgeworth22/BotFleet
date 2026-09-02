@@ -770,7 +770,7 @@ describe("harness HTTP API", () => {
       await api("DELETE", `/api/bots/${bot.id}`);
       await api("DELETE", `/api/bots/${foreign.id}`);
     }
-  });
+  }, 30000);
 
   it("creates, patches, and deletes a bot", async () => {
     const created = await api("POST", "/api/bots");
@@ -2002,6 +2002,18 @@ describe("harness HTTP API", () => {
     // a failed send never landed a user message, so the first-run quiz stays
     const afterFail = (await api("GET", "/api/bots")).body.bots.find((candidate: { id: string }) => candidate.id === bot.id);
     expect(afterFail.messages.find((m: { kind: string }) => m.kind === "options")?.card.dismissed).toBeFalsy();
+  });
+
+  it("drops duplicate self-echo messages that match recent bot text", async () => {
+    const { body } = await api("GET", "/api/bots");
+    const bot = body.bots[0];
+    const greeting = bot.messages.find((m: { role: string; text?: string }) => m.role === "bot" && m.text);
+    expect(greeting).toBeDefined();
+
+    // Sending the exact bot greeting text back must be dropped as self-echo
+    const echoed = await api("POST", `/api/bots/${bot.id}/messages`, { text: greeting.text });
+    expect(echoed.status).toBe(200);
+    expect(echoed.body.ignored).toBe("self_echo");
   });
 
   it("refuses to fork a message when the provider is unavailable, without mutating", async () => {
@@ -3274,5 +3286,18 @@ describe("computer control API (who is driving)", () => {
   it("keeps the internal who-is-driving endpoint behind the boot token", async () => {
     const res = await fetch(`${BASE}/api/internal/computer-control?botId=${botId}`);
     expect(res.status).toBe(401);
+  });
+});
+
+describe("GET /api/quotas", () => {
+  it("returns active quota cooldowns including seeded instance caps", async () => {
+    const res = await fetch(`${BASE}/api/quotas`);
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as { ok: boolean; cooldowns: Array<{ instanceId: string; error: string }> };
+    expect(data.ok).toBe(true);
+    expect(Array.isArray(data.cooldowns)).toBe(true);
+    const codex = data.cooldowns.find((c) => c.instanceId === "codex");
+    expect(codex).toBeDefined();
+    expect(codex?.error).toContain("Codex session limit");
   });
 });

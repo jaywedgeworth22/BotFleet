@@ -267,6 +267,58 @@ function UpdateNotificationsRow() {
  * matters more than the switch: people who cannot see the scope assume the
  * worst, and the worst — conversation text — is exactly what this never
  * sends (autocapture is off; see lib/analytics.ts). */
+function TerminologyRow() {
+  const { state, dispatch } = useStore();
+  const current = state.config?.terminology ?? "channels";
+  const [saving, setSaving] = useState(false);
+
+  const setTerminology = async (terminology: "channels" | "groups" | "projects") => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const config: ConfigStatus = await api("/api/config", {
+        method: "PATCH",
+        body: JSON.stringify({ terminology }),
+      });
+      dispatch({ type: "configStatus", config });
+    } catch {
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Card
+      title="Terminology"
+      subtitle="Choose what you prefer to call multi-bot shared spaces across the app."
+    >
+      <div className="flex rounded-lg border border-hairline/40 bg-inset p-0.5">
+        {(
+          [
+            ["channels", "Channels"],
+            ["groups", "Groups"],
+            ["projects", "Projects"],
+          ] as const
+        ).map(([val, label]) => (
+          <button
+            key={val}
+            disabled={saving}
+            onClick={() => setTerminology(val)}
+            className={cn(
+              "flex-1 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
+              current === val
+                ? "bg-raised text-ink shadow-sm"
+                : "text-ink-secondary hover:text-ink",
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
 function AnalyticsRow() {
   const [on, setOn] = useState(analyticsEnabled);
   return (
@@ -604,6 +656,7 @@ export function SettingsModal() {
                 <Card title="Skin" subtitle="Applies instantly and is remembered on this machine.">
                   <SkinPicker />
                 </Card>
+                <TerminologyRow />
                 <Card title="Channel turns" subtitle="Set one maximum duration for every bot turn in a channel.">
                   <RoomTurnTimeoutSettings />
                 </Card>

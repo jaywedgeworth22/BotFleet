@@ -55,6 +55,10 @@ export const STATIC_ANTIGRAVITY_MODELS: ModelCatalog = {
   options: [
     { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
     { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+    // 3.8 ids confirmed against `agy models`
+    { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
+    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
+    { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
     // 3.7 ids confirmed against the agy 1.1.12 binary's own model table
     { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (High)" },
     { id: "gemini-3.7-flash-medium", label: "Gemini 3.7 Flash (Medium)" },
@@ -571,6 +575,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // conversation_id from the init event → the resumeCursor (session.started
       // is what the harness persists as the cursor). Also seeds tool item ids.
       let conversationId: string | null = null;
+      let streamedAssistantText = "";
 
       const handleLine = (line: string) => {
         let o: any;
@@ -602,21 +607,28 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
               } else if (payload.state === "ERROR") {
                 emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool", itemId, ok: false });
               }
-            } else if (payload.step_type === "agent_response" && payload.usage) {
-              emit({
-                ...base(threadId, turnId),
-                type: "thread.token-usage.updated",
-                input: (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0),
-                output: payload.usage.output_tokens || 0,
-              });
+            } else if (payload.step_type === "agent_response") {
+              if (typeof payload.text_delta === "string" && payload.text_delta.length > 0) {
+                streamedAssistantText += payload.text_delta;
+                emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: payload.text_delta });
+              }
+              if (payload.usage) {
+                emit({
+                  ...base(threadId, turnId),
+                  type: "thread.token-usage.updated",
+                  input: (payload.usage.input_tokens || 0) + (payload.usage.cache_read_tokens || 0),
+                  output: payload.usage.output_tokens || 0,
+                });
+              }
             }
             break;
           }
           case "result": {
-            // agy delivers the assistant text in result.response (not streamed)
-            const response = typeof payload.response === "string" ? payload.response : "";
-            if (response) {
+            const response = typeof payload.response === "string" ? payload.response : streamedAssistantText;
+            if (response && !streamedAssistantText) {
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta: response });
+            }
+            if (response) {
               emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text: response });
             }
             if (payload.usage) {
@@ -627,8 +639,6 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                 output: payload.usage.output_tokens || 0,
               });
             }
-            // result.usage is the turn total (the per-step agent_response
-            // figures above are its parts, not additions to it)
             settle(
               payload.status === "SUCCESS",
               payload.status ?? null,
@@ -746,6 +756,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           // harness only injects the short-lived agents proxy when this flag
           // is true, so safe-mode turns never expose a token they cannot use.
           agentsMcp: config.fullAuto,
+          composioMcp: config.fullAuto,
         },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),

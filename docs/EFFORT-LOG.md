@@ -15,6 +15,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
+- **2026-09-02 — AG — IN PROGRESS — Quota/cap telemetry parity, Gemini 3.8 Flash, Kimi/Gemini/DeepSeek-API driver cleanup, header protection & acoustic echo suppression (branch `ag/dsh-antigravity-fallback-parity-terminology`).**
 - **2026-09-01 — BF-DIRECTOR — IN PROGRESS — Quota/session-limit must fail over even after tools and in rooms (branch `grok/quota-cap-fallback`, worktree `~/apps/botfleet-director-quota-fallback`).**  Board `96f2ec55`.  Issue #118.  Owner: anytime a bot hits usage cap/quota, use the saved fallback model.  <!-- wb-agent-report:96f2ec55370d437bb68cef79049fb0d1 -->
 - **2026-09-01 - GROK - IN_PROGRESS - Vercel auto-deploys skip unless site files changed, plus 1/hour (branch `grok/vercel-site-watch`, worktree `~/apps/botfleet-grok-vercel-watch`).**  Board `46837afd`.  Script `apps/site/vercel-ignore-hourly.sh` watches `apps/site` so iOS/docs commits do not ship botfleet.app.
 - **2026-09-01 - GROK - IN_PROGRESS - Product reach: iPad, chat files, APNs wake, iMessage LaunchAgent, Vercel 1/hour, desktop release host.**  Board `b43584ea` `a9683ae2` `4677da28` `af8f2776` `02ca3c98` `80dd2680` `9051c3ac`.  Issue #107.  Worktree `~/apps/botfleet-grok-reach` @ `grok/product-reach`.

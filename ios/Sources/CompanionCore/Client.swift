@@ -655,6 +655,14 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("GET", "/api/config"), as: ConfigStatus.self)
     }
 
+    public func updateTerminology(_ terminology: String) async throws -> ConfigStatus {
+        struct TerminologyPatch: Encodable { let terminology: String }
+        return try await send(
+            try makeRequest("PATCH", "/api/config", encodedBody: TerminologyPatch(terminology: terminology)),
+            as: ConfigStatus.self
+        )
+    }
+
     public func connectorCatalog() async throws -> ConnectorCatalog {
         try await send(try makeRequest("GET", "/api/connectors/catalog"), as: ConnectorCatalog.self)
     }

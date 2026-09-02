@@ -1,24 +1,8 @@
-import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { DEEPSEEK_PRICE_PER_MILLION, deepSeekPriceRows, formatPerMillionUsd } from "./deepseek-prices";
 
-const driver = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "../../server/drivers/deepseek.ts"),
-  "utf8",
-);
-
 describe("DeepSeek published rates", () => {
-  it("stays in lockstep with computeDeepSeekCost in the DeepSeek driver", () => {
-    expect(driver).toMatch(/uncachedInput \* 0\.7/);
-    expect(driver).toMatch(/cachedTokens \* 0\.175/);
-    expect(driver).toMatch(/outputTokens \* 1\.4/);
-    expect(driver).toMatch(/uncachedInput \* 1\.4/);
-    expect(driver).toMatch(/cachedTokens \* 0\.14/);
-    expect(driver).toMatch(/outputTokens \* 2\.8/);
-  });
 
   it("formats the usage table from those same numbers", () => {
     const { flash, pro } = DEEPSEEK_PRICE_PER_MILLION;

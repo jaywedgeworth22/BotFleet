@@ -3,7 +3,7 @@
 // does not become a wall of competing motion. Plain messages go to the room's
 // default responder; @mentions override that routing.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ArrowDown, Check, ChevronDown, Folder, FolderOpen, Loader2, MessageSquareReply, Pin, PinOff, Plus, Search, X } from "lucide-react";
+import { ArrowDown, Check, ChevronDown, Folder, FolderOpen, Loader2, MessageSquareReply, Pin, PinOff, Plus, Search, SlidersHorizontal, X } from "lucide-react";
 import {
   api,
   useStore,
@@ -1163,7 +1163,7 @@ export function GroupView({ group }: { group: Group }) {
           "pl-11 md:pl-5",
         )}
       >
-        <div className="flex min-w-0 shrink items-center gap-2">
+        <div className="flex shrink-0 min-w-0 max-w-[45%] items-center gap-2">
           <button
             type="button"
             onClick={() => dispatch({ type: "toggleSettings", open: true })}
@@ -1189,11 +1189,10 @@ export function GroupView({ group }: { group: Group }) {
                 ))}
               </div>
             )}
-            <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
+            <span className="truncate min-w-[80px] text-[15px] font-semibold text-ink">{group.name}</span>
           </button>
-          {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
           <button
             type="button"
             onClick={() => setFindOpen((open) => !open)}
@@ -1207,6 +1206,7 @@ export function GroupView({ group }: { group: Group }) {
           >
             <Search size={18} />
           </button>
+          {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
           <GroupCallButton group={group} members={members} />
           {!setupPending && !group.dm && <RoomWorkingFolderChip group={group} onToggle={() => setFolderOpen((open) => !open)} />}
           {!setupPending && !group.dm && <DefaultResponderSelect group={group} members={members} />}
@@ -1229,6 +1229,18 @@ export function GroupView({ group }: { group: Group }) {
               </span>
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => dispatch({ type: "toggleSettings", open: true })}
+            className={cn(
+              "flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink",
+              state.settingsOpen && "bg-raised text-ink",
+            )}
+            title="Channel settings"
+            aria-label="Channel settings"
+          >
+            <SlidersHorizontal size={18} />
+          </button>
         </div>
       </div>
 

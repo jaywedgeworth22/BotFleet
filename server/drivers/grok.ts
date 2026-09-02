@@ -202,7 +202,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
               },
               onToolCallDelta: (index, id, name, args) => {
-                emit({ ...base(threadId, turnId), type: "tool_call.delta", index, toolCallId: id, name, args });
+                emit({ ...base(threadId, turnId), type: "tool_call.delta", index, toolCallId: id, name, args } as any);
               },
             });
             appendNative(threadId, { dir: "in", source: "xai.chat.completions", msg: { text, usage } });
@@ -211,7 +211,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
             }
             if (tool_calls && tool_calls.length > 0) {
               for (const tc of tool_calls) {
-                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool_call", toolCallId: tc.id, name: tc.function.name, args: tc.function.arguments });
+                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool_call", toolCallId: tc.id, name: tc.function.name, args: tc.function.arguments } as any);
               }
             }
             if (usage) {

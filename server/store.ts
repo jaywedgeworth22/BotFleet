@@ -405,6 +405,10 @@ export interface BotRecord {
    * start false — a shared persona must not reach the user's Gmail on
    * turn one. */
   composio?: boolean;
+  /** Additional repo paths for context. */
+  extraCwds?: string[];
+  /** Custom user-provided instructions and persistent memory notes. */
+  userNotes?: string;
   /** Public, package-authored playbooks installed for this bot. They carry
    * process guidance only—never executable code, credentials, or grants. */
   playbooks?: InstalledPlaybook[];

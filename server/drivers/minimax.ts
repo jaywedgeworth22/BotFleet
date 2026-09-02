@@ -183,6 +183,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       // SSE streaming — identical to grok.ts pattern
       let text = "";
       let usage: { input: number; output: number } | null = null;
+      const streamToolCalls: any[] = [];
       if (!res.body) throw new Error("MiniMax returned no response body");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
@@ -203,6 +204,19 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
             try { chunk = JSON.parse(data); } catch { continue; }
             const delta = chunk.choices?.[0]?.delta?.content;
             if (delta) { text += delta; opts.onDelta?.(delta); }
+            const toolCalls = chunk.choices?.[0]?.delta?.tool_calls;
+            if (toolCalls && Array.isArray(toolCalls)) {
+              for (const tc of toolCalls) {
+                const index = tc.index ?? 0;
+                if (!streamToolCalls[index]) {
+                  streamToolCalls[index] = { id: tc.id ?? "", type: "function", function: { name: tc.function?.name ?? "", arguments: "" } };
+                }
+                if (tc.id) streamToolCalls[index].id = tc.id;
+                if (tc.function?.name) streamToolCalls[index].function.name = tc.function.name;
+                if (tc.function?.arguments) streamToolCalls[index].function.arguments += tc.function.arguments;
+                opts.onToolCallDelta?.(index, streamToolCalls[index].id, tc.function?.name, tc.function?.arguments);
+              }
+            }
             if (chunk.usage) {
               usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
             }
@@ -277,7 +291,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
             onDelta: (delta) =>
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
             onToolCallDelta: (index, id, name, args) => {
-              emit({ ...base(threadId, turnId), type: "tool_call.delta", index, toolCallId: id, name, args });
+              emit({ ...base(threadId, turnId), type: "tool_call.delta", index, toolCallId: id, name, args } as any);
             },
           });
 
@@ -292,7 +306,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
             }
             if (tool_calls && tool_calls.length > 0) {
               for (const tc of tool_calls) {
-                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool_call", toolCallId: tc.id, name: tc.function.name, args: tc.function.arguments });
+                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool_call", toolCallId: tc.id, name: tc.function.name, args: tc.function.arguments } as any);
               }
             }
           if (usage) {

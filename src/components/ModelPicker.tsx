@@ -20,6 +20,8 @@ function modelLabel(instance: InstanceInfo | undefined, model: string): string {
 }
 
 function engineStatus(instance: InstanceInfo): string {
+  if (instance.snapshot.quota?.capped) return "Quota Cap";
+  if (instance.snapshot.reason === "Disabled in settings") return "Disabled";
   if (needsCli(instance)) return "Not installed";
   if (needsSignIn(instance)) return "Sign-in required";
   return instance.snapshot.version ?? "Ready";
@@ -281,7 +283,7 @@ export function ModelPicker({
               const { subscription, custom: local } = splitEngineRail(availableInstances);
               const railButton = (instance: InstanceInfo) => {
                 const selected = instance.instanceId === railInstance?.instanceId;
-                const attention = needsCli(instance) || needsSignIn(instance);
+                const attention = needsCli(instance) || needsSignIn(instance) || Boolean(instance.snapshot.quota?.capped);
                 return (
                   <button
                     type="button"
@@ -297,7 +299,12 @@ export function ModelPicker({
                   >
                     <ProviderMark driverKind={instance.driverKind} size={18} />
                     {attention && (
-                      <span className="absolute bottom-0.5 right-0.5 size-1.5 rounded-full bg-warning ring-2 ring-panel" />
+                      <span
+                        className={cn(
+                          "absolute bottom-0.5 right-0.5 size-1.5 rounded-full ring-2 ring-panel",
+                          instance.snapshot.quota?.capped ? "bg-amber-500" : "bg-warning",
+                        )}
+                      />
                     )}
                   </button>
                 );
@@ -326,7 +333,11 @@ export function ModelPicker({
                     <span
                       className={cn(
                         "shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-medium",
-                        blocked ? "bg-warning/10 text-warning" : "bg-success/10 text-success",
+                        railInstance.snapshot.quota?.capped
+                          ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
+                          : blocked
+                          ? "bg-warning/10 text-warning"
+                          : "bg-success/10 text-success",
                       )}
                     >
                       {pane === "custom" && !blocked ? "Local models" : engineStatus(railInstance)}
@@ -337,6 +348,11 @@ export function ModelPicker({
                       ? "Run this agent with a model already on your machine."
                       : "Choose a model for this bot."}
                   </div>
+                  {railInstance.snapshot.quota?.capped && (
+                    <div className="mt-2 rounded bg-amber-500/10 px-2.5 py-1.5 text-[11px] leading-relaxed text-amber-700 dark:text-amber-300 border border-amber-500/20">
+                      <strong>Usage cap in effect:</strong> {railInstance.snapshot.quota?.error ?? "Session limit or quota reached."} Turns automatically fail over to configured fallbacks until reset.
+                    </div>
+                  )}
                   {["minimax"].includes(railInstance.driverKind) && (
                     <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
                       <strong>Limited functionality:</strong> This native HTTP driver does not support BotFleet tools. 

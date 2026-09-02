@@ -31,7 +31,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, type Bot, type Group } from "@/state/store";
+import { api, useStore, formatTime, visibleMessages, getRoomTerminology, type Bot, type Group } from "@/state/store";
 
 import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
@@ -363,6 +363,7 @@ function RoomContextMenu({
   }, [onClose]);
 
   if (!group) return null;
+  const terminology = getRoomTerminology(state.config);
   const saveRename = () => {
     const name = nextRename(group.name, draft);
     if (name) dispatch({ type: "patchGroup", groupId: group.id, patch: { name } });
@@ -427,8 +428,8 @@ function RoomContextMenu({
           </button>
           <button
             type="button"
-            onClick={onClose}
-            aria-label="Cancel channel rename"
+            onClick={() => setRenaming(false)}
+            aria-label="Cancel"
             title="Cancel"
             className="flex size-8 shrink-0 items-center justify-center rounded-lg text-ink-secondary hover:bg-raised hover:text-ink"
           >
@@ -444,7 +445,7 @@ function RoomContextMenu({
           className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
         >
           <Pencil size={16} className="text-ink-secondary" />
-          Rename Channel
+          Rename {terminology.singular}
         </button>
       )}
       <button
@@ -508,7 +509,7 @@ function RoomContextMenu({
         className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-danger hover:bg-raised/70"
       >
         <Trash2 size={16} />
-        Delete Channel
+        Delete {terminology.singular}
       </button>
     </div>,
     document.body,
@@ -518,6 +519,7 @@ function RoomContextMenu({
 /** Pick members and an optional Work/Personal/project context, then create. */
 function NewRoomPanel({ onClose }: { onClose: () => void }) {
   const { state, dispatch } = useStore();
+  const terminology = getRoomTerminology(state.config);
   const [name, setName] = useState("");
   const [section, setSection] = useState("");
   const [picked, setPicked] = useState<Set<string>>(new Set());
@@ -546,7 +548,7 @@ function NewRoomPanel({ onClose }: { onClose: () => void }) {
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="w-[340px] rounded-2xl border border-hairline/50 bg-card p-4 shadow-2xl">
-        <div className="mb-3 text-[15px] font-semibold text-ink">New Channel</div>
+        <div className="mb-3 text-[15px] font-semibold text-ink">New {terminology.singular}</div>
         <input
           autoFocus
           maxLength={100}
@@ -556,7 +558,7 @@ function NewRoomPanel({ onClose }: { onClose: () => void }) {
             if (e.key === "Enter") create();
             if (e.key === "Escape") onClose();
           }}
-          placeholder="Channel name (for example, Website launch)"
+          placeholder={`${terminology.singular} name (for example, Website launch)`}
           className="mb-3 w-full rounded-lg bg-raised/70 px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
         <input
@@ -568,21 +570,21 @@ function NewRoomPanel({ onClose }: { onClose: () => void }) {
             if (e.key === "Escape") onClose();
           }}
           placeholder="Context (optional): Work, Personal, Client…"
-          aria-label="Channel context"
+          aria-label={`${terminology.singular} context`}
           className="mb-3 w-full rounded-lg bg-raised/70 px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
         <BotPickerList
           bots={bots}
           picked={picked}
           onToggle={toggle}
-          emptyHint="Create a bot first — channels are made of bots."
+          emptyHint={`Create a bot first — ${terminology.plural.toLowerCase()} are made of bots.`}
         />
         <button
           onClick={create}
           disabled={!picked.size}
           className="mt-3 w-full rounded-lg bg-accent py-2 text-[14px] font-medium text-white hover:brightness-110 disabled:opacity-40"
         >
-          Create Channel{picked.size ? ` · ${picked.size} ${picked.size === 1 ? "bot" : "bots"}` : ""}
+          Create {terminology.singular}{picked.size ? ` · ${picked.size} ${picked.size === 1 ? "bot" : "bots"}` : ""}
         </button>
       </div>
     </div>
@@ -1415,6 +1417,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     .filter((bot) => !bot.chiefOfStaff && !bot.section)
     .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
   const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q));
+  const terminology = getRoomTerminology(state.config);
   const sectionedGroups = visibleGroups.filter((g) => g.section);
   const unsectionedGroups = visibleGroups.filter((g) => !g.section);
   // sections keep first-appearance order within the current list; a section
@@ -1554,7 +1557,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
                 >
                   <Users size={16} className="text-ink-secondary" />
-                  New Channel
+                  New {terminology.singular}
                 </button>
                 <button
                   onClick={() => {
@@ -1628,7 +1631,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               />
             </div>
           )}
-          {unsectionedGroups.length > 0 && density !== "icons" && <SectionDivider name="Channels" />}
+          {unsectionedGroups.length > 0 && density !== "icons" && <SectionDivider name={terminology.plural} />}
           {unsectionedGroups.map((g) => (
             <GroupListItem key={g.id} group={g} density={density} onMenu={setRoomMenu} />
           ))}

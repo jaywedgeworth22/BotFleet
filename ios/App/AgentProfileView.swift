@@ -22,6 +22,16 @@ struct AgentProfileView: View {
     @State private var modelId: String
     @State private var fallbacks: [ModelSelection]
     @State private var computers: Set<String>
+    @State private var chiefOfStaff: Bool
+    @State private var approvePeerComms: Bool
+    @State private var autoApprove: Bool
+    @State private var autoReview: String
+    @State private var composio: Bool
+    @State private var cloudBackend: String
+    @State private var autoStartVps: Bool
+    @State private var cwd: String
+    @State private var extraCwdsText: String
+    @State private var userNotes: String
     @State private var photo: PhotosPickerItem?
     @State private var prompt = ""
     @State private var voices: [Voice] = []
@@ -44,6 +54,16 @@ struct AgentProfileView: View {
         _modelId = State(initialValue: bot.modelSelection.model)
         _fallbacks = State(initialValue: bot.modelSelection.fallbacks ?? [])
         _computers = State(initialValue: Set(bot.computers ?? []))
+        _chiefOfStaff = State(initialValue: bot.chiefOfStaff == true)
+        _approvePeerComms = State(initialValue: bot.approvePeerComms == true)
+        _autoApprove = State(initialValue: bot.autoApprove == true)
+        _autoReview = State(initialValue: bot.autoReview ?? "off")
+        _composio = State(initialValue: bot.composio ?? true)
+        _cloudBackend = State(initialValue: bot.cloudBackend ?? "box")
+        _autoStartVps = State(initialValue: bot.autoStartVps == true)
+        _cwd = State(initialValue: bot.cwd ?? "")
+        _extraCwdsText = State(initialValue: bot.extraCwds?.joined(separator: "\n") ?? "")
+        _userNotes = State(initialValue: bot.userNotes ?? "")
         _baseline = State(initialValue: ProfileFormSnapshot(bot: bot))
     }
 
@@ -116,64 +136,116 @@ struct AgentProfileView: View {
                     Toggle("Agent notifications", isOn: $notifications)
                 }
 
-                Section("Model") {
+                Section("Model & Fallbacks") {
                     if instances.isEmpty {
                         Text("Loading models...")
                             .foregroundStyle(.secondary)
                     } else {
-                        Picker("Provider", selection: $instanceId) {
-                            ForEach(instances) { instance in
-                                Text(instance.displayName ?? instance.instanceId).tag(instance.id)
-                            }
-                        }
-                        .onChange(of: instanceId) { _, newInstanceId in
-                            if let instance = instances.first(where: { $0.id == newInstanceId }) {
-                                if !instance.models.options.contains(where: { $0.id == modelId }) {
-                                    modelId = instance.models.default
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Primary Model")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                            
+                            Picker("Provider", selection: $instanceId) {
+                                ForEach(instances) { instance in
+                                    Text(instance.displayName ?? instance.instanceId).tag(instance.id)
                                 }
                             }
-                        }
+                            .onChange(of: instanceId) { _, newInstanceId in
+                                if let instance = instances.first(where: { $0.id == newInstanceId }) {
+                                    if !instance.models.options.contains(where: { $0.id == modelId }) {
+                                        modelId = instance.models.default
+                                    }
+                                }
+                            }
 
-                        if let selectedInstance = instances.first(where: { $0.id == instanceId }) {
-                            Picker("Model", selection: $modelId) {
-                                ForEach(selectedInstance.models.options) { option in
-                                    Text(option.label).tag(option.id)
+                            if let selectedInstance = instances.first(where: { $0.id == instanceId }) {
+                                Picker("Model", selection: $modelId) {
+                                    ForEach(selectedInstance.models.options) { option in
+                                        Text(option.label).tag(option.id)
+                                    }
                                 }
                             }
                         }
                         
                         ForEach(fallbacks.indices, id: \.self) { index in
                             let fallback = fallbacks[index]
-                            if let instance = instances.first(where: { $0.id == fallback.instanceId }) {
-                                Picker("Fallback \(index + 1)", selection: Binding(
-                                    get: { fallback.model },
-                                    set: { newModel in
-                                        fallbacks[index].model = newModel
-                                    }
-                                )) {
-                                    ForEach(instance.models.options) { option in
-                                        Text(option.label).tag(option.id)
-                                    }
-                                }
-                                .swipeActions {
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text("Fallback \(index + 1)")
+                                        .font(.caption)
+                                        .fontWeight(.semibold)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
                                     Button(role: .destructive) {
                                         fallbacks.remove(at: index)
                                     } label: {
-                                        Label("Delete", systemImage: "trash")
+                                        Image(systemName: "trash")
+                                            .font(.caption)
+                                            .foregroundStyle(.red)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+
+                                Picker("Provider", selection: Binding(
+                                    get: { fallback.instanceId },
+                                    set: { newInstanceId in
+                                        fallbacks[index].instanceId = newInstanceId
+                                        if let inst = instances.first(where: { $0.id == newInstanceId }) {
+                                            fallbacks[index].model = inst.models.default
+                                        }
+                                    }
+                                )) {
+                                    ForEach(instances) { instance in
+                                        Text(instance.displayName ?? instance.instanceId).tag(instance.id)
+                                    }
+                                }
+
+                                if let fallbackInstance = instances.first(where: { $0.id == fallback.instanceId }) {
+                                    Picker("Model", selection: Binding(
+                                        get: { fallback.model },
+                                        set: { newModel in
+                                            fallbacks[index].model = newModel
+                                        }
+                                    )) {
+                                        ForEach(fallbackInstance.models.options) { option in
+                                            Text(option.label).tag(option.id)
+                                        }
                                     }
                                 }
                             }
+                            .padding(.vertical, 4)
                         }
                         
                         if fallbacks.count < 2 {
-                            Button("Add fallback") {
-                                fallbacks.append(ModelSelection(instanceId: instanceId, model: modelId))
+                            Button {
+                                let firstInst = instances.first
+                                let instId = firstInst?.id ?? instanceId
+                                let mdl = firstInst?.models.default ?? modelId
+                                fallbacks.append(ModelSelection(instanceId: instId, model: mdl))
+                            } label: {
+                                Label("Add fallback model", systemImage: "plus.circle")
                             }
                         }
                     }
                 }
 
-                Section("Computers") {
+                Section("Coordination") {
+                    Toggle("Chief of Staff", isOn: $chiefOfStaff)
+                    Toggle("Ask before contacting peers", isOn: $approvePeerComms)
+                    Toggle("Connected apps (Composio)", isOn: $composio)
+                }
+
+                Section("Autonomous Execution") {
+                    Toggle("Auto mode", isOn: $autoApprove)
+                    Picker("Routine reviews", selection: $autoReview) {
+                        Text("Off").tag("off")
+                        Text("Shadow").tag("shadow")
+                        Text("Enforce").tag("enforce")
+                    }
+                }
+
+                Section("Computers & Environment") {
                     ForEach(["local", "cloud", "vm"], id: \.self) { comp in
                         let label = comp == "local" ? "This computer" : comp == "vm" ? "VPS" : "Cloud VM"
                         Toggle(label, isOn: Binding(
@@ -187,6 +259,22 @@ struct AgentProfileView: View {
                             }
                         ))
                     }
+
+                    Picker("Cloud backend", selection: $cloudBackend) {
+                        Text("Box VM").tag("box")
+                        Text("VPS").tag("vps")
+                    }
+
+                    Toggle("Start VPS automatically", isOn: $autoStartVps)
+
+                    TextField("Working directory (cwd)", text: $cwd)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+
+                    TextField("Additional repos (one per line)", text: $extraCwdsText, axis: .vertical)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.never)
+                        .lineLimit(2...5)
                 }
 
                 Section {
@@ -231,11 +319,6 @@ struct AgentProfileView: View {
                     Text("Voice")
                 } footer: {
                     if !voiceConfigured {
-                        // Under the built-in engine "not configured" is not a
-                        // missing credential — there is none — so the remedy
-                        // cannot be a key. `providerConfigured` in
-                        // `server/tts/index.ts` is reporting that this
-                        // computer has no built-in voices to speak with.
                         if usesSystemVoices {
                             Text("Built-in Mac voices need no key, and this computer has none available. Switch the voice engine to ElevenLabs in this agent's profile on the computer to keep using voice.")
                         } else {
@@ -252,6 +335,10 @@ struct AgentProfileView: View {
                     }
                 }
 
+                Section("Memory & Notes") {
+                    TextField("Custom instructions & persistent notes", text: $userNotes, axis: .vertical)
+                        .lineLimit(4...10)
+                }
 
                 if let tasks = current.tasks, !tasks.isEmpty {
                     let totalTurns = tasks.compactMap { $0.usage?.turns }.reduce(0, +)
@@ -285,16 +372,25 @@ struct AgentProfileView: View {
                         }
                     }
                 }
-
-                Section {
-                    Button("Save profile") { Task { await save() } }
-                        .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
             }
-            .navigationTitle("Agent profile")
+            .navigationTitle("Agent Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Save") {
+                        Task {
+                            await save()
+                            dismiss()
+                        }
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Discard") {
+                        dismiss()
+                    }
+                }
             }
             .overlay { if busy { ProgressView().controlSize(.large) } }
             .task {
@@ -303,8 +399,10 @@ struct AgentProfileView: View {
                 async let fetchedInstances = session.instances()
                 let loadedConfig = await status
                 config = loadedConfig
-                voices = await options
-                instances = await fetchedInstances
+                let rawInstances = await fetchedInstances
+                instances = rawInstances.filter { inst in
+                    inst.snapshot.isAvailable || inst.id == current.modelSelection.instanceId
+                }
                 if let loadedConfig, !loadedConfig.canSpeak(agentVoice: voice) {
                     speakReplies = false
                 }
@@ -321,21 +419,28 @@ struct AgentProfileView: View {
         let newModelSelection = ModelSelection(instanceId: instanceId, model: modelId, fallbacks: fallbacks.isEmpty ? nil : fallbacks)
         let newComputers = Array(computers).sorted()
         let baselineComputers = (baseline.computers ?? []).sorted()
+        let splitExtraCwds = extraCwdsText.isEmpty ? nil : extraCwdsText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty })
         return BotProfilePatch(
-            // The shared server contract owns the 100/200/4000 limits. Do not
-            // silently apply narrower iOS-only limits to a user's profile.
             name: name == baseline.name ? nil : name.trimmingCharacters(in: .whitespacesAndNewlines),
             title: title == baseline.title ? nil : title.trimmingCharacters(in: .whitespacesAndNewlines),
             description: description == baseline.description
                 ? nil : description.trimmingCharacters(in: .whitespacesAndNewlines),
             notifications: notifications == baseline.notifications ? nil : notifications,
             avatarCrop: crop == baseline.crop ? nil : crop,
-            // Empty is the server's explicit "use workspace default" value;
-            // nil would mean the voice field is not part of this patch.
             voice: voice == baseline.voice ? nil : voice,
             speakReplies: savedSpeakReplies == baseline.speakReplies ? nil : savedSpeakReplies,
             modelSelection: newModelSelection == baseline.modelSelection ? nil : newModelSelection,
-            computers: newComputers == baselineComputers ? nil : newComputers
+            computers: newComputers == baselineComputers ? nil : newComputers,
+            chiefOfStaff: chiefOfStaff == baseline.chiefOfStaff ? nil : chiefOfStaff,
+            approvePeerComms: approvePeerComms == baseline.approvePeerComms ? nil : approvePeerComms,
+            autoApprove: autoApprove == baseline.autoApprove ? nil : autoApprove,
+            autoReview: autoReview == baseline.autoReview ? nil : autoReview,
+            composio: composio == baseline.composio ? nil : composio,
+            cloudBackend: cloudBackend == baseline.cloudBackend ? nil : cloudBackend,
+            autoStartVps: autoStartVps == baseline.autoStartVps ? nil : autoStartVps,
+            cwd: cwd == baseline.cwd ? nil : cwd.trimmingCharacters(in: .whitespacesAndNewlines),
+            extraCwds: splitExtraCwds == baseline.extraCwds ? nil : splitExtraCwds,
+            userNotes: userNotes == baseline.userNotes ? nil : userNotes
         )
     }
 
@@ -387,16 +492,11 @@ struct AgentProfileView: View {
             prompt: String(prompt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(400)),
             for: current
         ) else { return }
-        // Generation chooses a safe default crop server-side. The selector is
-        // the user's explicit choice, so persist it immediately against the
-        // returned attachment rather than leaving UI and server out of sync.
         let shapePatch = BotProfilePatch(avatarCrop: intendedCrop)
         if let updated = await session.updateProfile(shapePatch, for: generated) {
             crop = updated.avatarCrop ?? intendedCrop
             baseline.crop = crop
         } else {
-            // Generation itself succeeded. Reflect its authoritative fallback
-            // rather than claiming the requested crop was persisted.
             crop = generated.avatarCrop ?? .mascot
             baseline.crop = crop
         }
@@ -453,6 +553,16 @@ struct AgentProfileView: View {
         modelId = bot.modelSelection.model
         fallbacks = bot.modelSelection.fallbacks ?? []
         computers = Set(bot.computers ?? [])
+        chiefOfStaff = bot.chiefOfStaff == true
+        approvePeerComms = bot.approvePeerComms == true
+        autoApprove = bot.autoApprove == true
+        autoReview = bot.autoReview ?? "off"
+        composio = bot.composio ?? true
+        cloudBackend = bot.cloudBackend ?? "box"
+        autoStartVps = bot.autoStartVps == true
+        cwd = bot.cwd ?? ""
+        extraCwdsText = bot.extraCwds?.joined(separator: "\n") ?? ""
+        userNotes = bot.userNotes ?? ""
         baseline = ProfileFormSnapshot(bot: bot)
     }
 }
@@ -467,6 +577,16 @@ private struct ProfileFormSnapshot {
     var speakReplies: Bool
     var modelSelection: ModelSelection
     var computers: [String]?
+    var chiefOfStaff: Bool
+    var approvePeerComms: Bool
+    var autoApprove: Bool
+    var autoReview: String
+    var composio: Bool
+    var cloudBackend: String
+    var autoStartVps: Bool
+    var cwd: String
+    var extraCwds: [String]?
+    var userNotes: String
 
     init(bot: Bot) {
         name = bot.name
@@ -478,6 +598,16 @@ private struct ProfileFormSnapshot {
         speakReplies = bot.speakReplies == true
         modelSelection = bot.modelSelection
         computers = bot.computers
+        chiefOfStaff = bot.chiefOfStaff == true
+        approvePeerComms = bot.approvePeerComms == true
+        autoApprove = bot.autoApprove == true
+        autoReview = bot.autoReview ?? "off"
+        composio = bot.composio ?? true
+        cloudBackend = bot.cloudBackend ?? "box"
+        autoStartVps = bot.autoStartVps == true
+        cwd = bot.cwd ?? ""
+        extraCwds = bot.extraCwds
+        userNotes = bot.userNotes ?? ""
     }
 }
 
@@ -491,3 +621,4 @@ private extension AvatarCrop {
         }
     }
 }
+

@@ -43,6 +43,7 @@ final class Session: ObservableObject {
     @Published private(set) var notificationAuthorizationResolved = false
     /// A short-lived desktop handoff waiting for PairingView to present it.
     @Published private(set) var pairingInvite: PairingInvite?
+    @Published var config: ConfigStatus?
 
     /// A notification response that should be pushed by the roster's
     /// NavigationStack after the exact detached task has been activated.
@@ -840,10 +841,27 @@ final class Session: ObservableObject {
     // MARK: - Agent profile
 
     @MainActor
-    func updateRoom(id: String, name: String?, bulletin: String?, avatarCrop: AvatarCrop?, cwd: String? = nil, extraCwds: [String]? = nil) async {
+    func updateRoom(
+        id: String,
+        name: String?,
+        bulletin: String?,
+        avatarCrop: AvatarCrop?,
+        cwd: String? = nil,
+        extraCwds: [String]? = nil,
+        defaultResponder: GroupResponder? = nil,
+        memberIds: [String]? = nil
+    ) async {
         guard let client else { return }
         do {
-            let patch = RoomPatch(name: name, bulletin: bulletin, avatarCrop: avatarCrop, cwd: cwd, extraCwds: extraCwds)
+            let patch = RoomPatch(
+                name: name,
+                bulletin: bulletin,
+                avatarCrop: avatarCrop,
+                cwd: cwd,
+                extraCwds: extraCwds,
+                defaultResponder: defaultResponder,
+                memberIds: memberIds
+            )
             let updated = try await client.updateRoom(id: id, patch: patch)
             if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
                 state.rooms[index] = updated
@@ -970,9 +988,25 @@ final class Session: ObservableObject {
         catch { actionError = error.localizedDescription; return nil }
     }
 
+    @MainActor
     func configStatus() async -> ConfigStatus? {
         guard let client else { return nil }
-        return try? await client.config()
+        let status = try? await client.config()
+        if let status { self.config = status }
+        return status
+    }
+
+    @MainActor
+    func updateTerminology(_ terminology: String) async -> ConfigStatus? {
+        guard let client else { return nil }
+        do {
+            let updated = try await client.updateTerminology(terminology)
+            self.config = updated
+            return updated
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
     }
 
     func instances() async -> [Instance] {

@@ -63,9 +63,11 @@ const support: AcpSupport = {
 
   transformEnv: (_env) => {},
 
+  credentialEnv: ["DEEPSEEK_API_KEY", "DSH_HOME", "DSH_RUNTIME_ROOT", "DSH_PERMISSION_MODE"],
+
   pickAuthMethod: () => null,
-  authFailure: "fail",
-  isAuthenticated: () => existsSync(join(homedir(), ".dsh", ".credentials.yaml")),
+  authFailure: "continue",
+  isAuthenticated: (env) => existsSync(join(homedir(), ".dsh", ".credentials.yaml")) || Boolean(env.DEEPSEEK_API_KEY),
 
   buildPromptText: (turn) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),
 };

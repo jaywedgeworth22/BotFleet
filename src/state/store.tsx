@@ -296,13 +296,32 @@ export interface ConfigStatus {
   /** who's using the app — collected in onboarding, shown in the sidebar */
   profile?: { name: string; email: string };
   autoUpdate?: { enabled: boolean };
+  terminology?: "channels" | "groups" | "projects";
   /** Opt-in flags. Absent means off. */
   features?: { skillRecorder: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
 }
 
+export type RoomTerminology = "channels" | "groups" | "projects";
+
+export function getRoomTerminology(config?: ConfigStatus | null): {
+  key: RoomTerminology;
+  singular: string;
+  plural: string;
+  uppercasePlural: string;
+} {
+  const term = config?.terminology ?? "channels";
+  if (term === "groups") {
+    return { key: "groups", singular: "Group", plural: "Groups", uppercasePlural: "GROUPS" };
+  }
+  if (term === "projects") {
+    return { key: "projects", singular: "Project", plural: "Projects", uppercasePlural: "PROJECTS" };
+  }
+  return { key: "channels", singular: "Channel", plural: "Channels", uppercasePlural: "CHANNELS" };
+}
+
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "features"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -320,6 +339,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     imageGen: frame.imageGen,
     profile: frame.profile,
     autoUpdate: frame.autoUpdate,
+    terminology: frame.terminology,
     features: frame.features,
   };
 }
@@ -346,6 +366,11 @@ export interface InstanceInfo {
     version?: string | null;
     /** a reported cost on a subscription is notional; the UI says so */
     billing?: "metered" | "subscription";
+    quota?: {
+      capped: boolean;
+      resetsAt?: number | null;
+      error?: string;
+    };
   };
   models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean }> };
   capabilities?: {

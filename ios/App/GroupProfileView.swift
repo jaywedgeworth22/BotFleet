@@ -12,10 +12,21 @@ struct GroupProfileView: View {
     @State private var avatarCrop: AvatarCrop = .circle
     @State private var cwd = ""
     @State private var extraCwdsText = ""
+    @State private var responderKind = "all"
+    @State private var leadBotId = ""
+    @State private var memberIds: Set<String> = []
     @State private var photo: PhotosPickerItem? = nil
     @State private var busy = false
 
-    var currentRoom: CompanionCore.Room {
+    private var roomTerm: String {
+        session.config?.roomTerminologyLabel ?? "Channel"
+    }
+
+    private var availableBots: [Bot] {
+        session.state.bots
+    }
+
+    private var currentRoom: CompanionCore.Room {
         var r = room
         r.name = name
         r.bulletin = bulletin
@@ -23,6 +34,8 @@ struct GroupProfileView: View {
         r.avatarCrop = avatarCrop
         r.cwd = cwd.isEmpty ? nil : cwd
         r.extraCwds = extraCwdsText.isEmpty ? nil : extraCwdsText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+        r.defaultResponder = GroupResponder(kind: responderKind, botId: responderKind == "bot" ? (leadBotId.isEmpty ? nil : leadBotId) : nil)
+        r.memberIds = Array(memberIds)
         return r
     }
 
@@ -68,13 +81,62 @@ struct GroupProfileView: View {
                     }
                 }
 
-                Section("Channel Details") {
+                Section("\(roomTerm) Details") {
                     TextField("Name", text: $name)
                         .disabled(busy)
                         .autocorrectionDisabled()
                     TextField("Bulletin (Instructions for the team)", text: $bulletin, axis: .vertical)
                         .disabled(busy)
                         .lineLimit(2...6)
+                }
+
+                Section("Default Responder") {
+                    Picker("Responder Mode", selection: $responderKind) {
+                        Text("Everyone responds").tag("all")
+                        Text("Lead bot").tag("bot")
+                        Text("Only when mentioned").tag("none")
+                    }
+
+                    if responderKind == "bot" {
+                        Picker("Lead Bot", selection: $leadBotId) {
+                            Text("Select lead bot").tag("")
+                            ForEach(availableBots.filter { memberIds.contains($0.id) }) { bot in
+                                Text(bot.name).tag(bot.id)
+                            }
+                        }
+                    }
+                }
+
+                Section("Members") {
+                    ForEach(availableBots) { bot in
+                        Toggle(isOn: Binding(
+                            get: { memberIds.contains(bot.id) },
+                            set: { isMember in
+                                if isMember {
+                                    memberIds.insert(bot.id)
+                                    if leadBotId.isEmpty { leadBotId = bot.id }
+                                } else {
+                                    memberIds.remove(bot.id)
+                                    if leadBotId == bot.id {
+                                        leadBotId = memberIds.first ?? ""
+                                    }
+                                }
+                            }
+                        )) {
+                            HStack(spacing: 10) {
+                                BotAvatarView(bot: bot, size: 28)
+                                VStack(alignment: .leading) {
+                                    Text(bot.name)
+                                        .font(.body)
+                                    if !bot.title.isEmpty {
+                                        Text(bot.title)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
 
                 Section("Working Directory") {
@@ -91,16 +153,25 @@ struct GroupProfileView: View {
                         .textInputAutocapitalization(.never)
                         .lineLimit(3...8)
                 }
-
-                Section {
-                    Button("Save profile") { Task { await save() } }
-                        .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                }
             }
-            .navigationTitle("Group profile")
+            .navigationTitle("\(roomTerm) Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Done") { dismiss() } }
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Save") {
+                        Task {
+                            await save()
+                            dismiss()
+                        }
+                    }
+                    .fontWeight(.semibold)
+                    .disabled(busy || name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Discard") {
+                        dismiss()
+                    }
+                }
             }
             .overlay { if busy { ProgressView().controlSize(.large) } }
             .onAppear {
@@ -109,6 +180,9 @@ struct GroupProfileView: View {
                 avatarCrop = room.avatarCrop ?? .circle
                 cwd = room.cwd ?? ""
                 extraCwdsText = room.extraCwds?.joined(separator: "\n") ?? ""
+                responderKind = room.defaultResponder.kind
+                leadBotId = room.defaultResponder.botId ?? ""
+                memberIds = Set(room.memberIds)
             }
             .onChange(of: photo) { _, item in
                 guard let item else { return }
@@ -126,7 +200,9 @@ struct GroupProfileView: View {
             bulletin: bulletin,
             avatarCrop: avatarCrop,
             cwd: currentRoom.cwd,
-            extraCwds: currentRoom.extraCwds
+            extraCwds: currentRoom.extraCwds,
+            defaultResponder: currentRoom.defaultResponder,
+            memberIds: currentRoom.memberIds
         )
     }
 

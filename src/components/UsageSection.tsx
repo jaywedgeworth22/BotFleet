@@ -6,14 +6,36 @@ import * as React from "react";
 import { useStore } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
+import { ProviderMark } from "./ProviderIcons";
 import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { telemetryBadge, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
+
+interface QuotaCooldownInfo {
+  botId: string;
+  instanceId: string;
+  model: string;
+  resetsAt?: number | null;
+  error: string;
+  recordedAt: number;
+}
+
+function formatCountdown(resetsAt?: number | null): string {
+  if (!resetsAt) return "Rolling refresh window";
+  const diffMs = resetsAt - Date.now();
+  if (diffMs <= 0) return "Refreshing now";
+  const diffSec = Math.floor(diffMs / 1000);
+  const hours = Math.floor(diffSec / 3600);
+  const minutes = Math.floor((diffSec % 3600) / 60);
+  if (hours > 0) return `Resets in ${hours}h ${minutes}m`;
+  return `Resets in ${minutes}m`;
+}
 
 export function UsageSection() {
   const { state } = useStore();
   const [telemetryStatus, setTelemetryStatus] = React.useState<TelemetryStatusView | null>(null);
   const [telemetryFetchError, setTelemetryFetchError] = React.useState<string | null>(null);
+  const [quotas, setQuotas] = React.useState<QuotaCooldownInfo[]>([]);
 
   React.useEffect(() => {
     fetch("/api/telemetry/status")
@@ -25,6 +47,15 @@ export function UsageSection() {
       .catch(() => {
         setTelemetryFetchError("Failed to fetch telemetry status");
       });
+
+    fetch("/api/quotas")
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.ok && Array.isArray(data.cooldowns)) {
+          setQuotas(data.cooldowns);
+        }
+      })
+      .catch(() => {});
   }, []);
   const badge = telemetryBadge(telemetryStatus, telemetryFetchError);
 
@@ -91,6 +122,60 @@ export function UsageSection() {
             )}
           </div>
         )}
+      </Card>
+
+      <Card
+        title="Fleet Quotas & Provider Caps"
+        subtitle="Live quota tracking and session limits across fleet engines, mirroring the Usage Monitor app."
+      >
+        <div className="flex flex-col divide-y divide-hairline/20">
+          {state.instances.map((instance) => {
+            const isCapped = Boolean(instance.snapshot.quota?.capped) || quotas.some((q) => q.instanceId === instance.instanceId);
+            const quotaCooldown = quotas.find((q) => q.instanceId === instance.instanceId);
+            const isDisabled = instance.snapshot.reason === "Disabled in settings";
+            const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
+
+            return (
+              <div key={instance.instanceId} className="flex items-center justify-between py-2.5 text-[13px]">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-control/60">
+                    <ProviderMark driverKind={instance.driverKind} size={16} />
+                  </div>
+                  <div className="flex flex-col min-w-0">
+                    <span className="truncate font-medium text-ink">{instance.displayName}</span>
+                    <span className="truncate text-[11.5px] text-ink-secondary">
+                      {isCapped
+                        ? `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
+                        : isDisabled
+                        ? "Disabled in settings · subscription inactive"
+                        : isAvailable
+                        ? instance.snapshot.version ? `v${instance.snapshot.version} · Ready` : "Active and ready for turns"
+                        : instance.snapshot.reason ?? "Unavailable"}
+                    </span>
+                  </div>
+                </div>
+                <div className="shrink-0 pl-3">
+                  <span
+                    className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                      isCapped
+                        ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                        : isDisabled
+                        ? "bg-inset text-ink-secondary"
+                        : isAvailable
+                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                        : "bg-inset text-ink-secondary"
+                    }`}
+                  >
+                    {isCapped ? "At Usage Cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
+                  </span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+        <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
+          BotFleet automatically routes turns to configured fallback models when any engine hits a session limit or rate quota, ensuring seamless continuity.
+        </div>
       </Card>
 
       <Card

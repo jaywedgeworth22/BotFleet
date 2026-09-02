@@ -38,9 +38,13 @@ async function boxJson(cfg: AppConfig, path: string, opts: RequestInit = {}) {
 
 // deterministic per-bot name; the hash kills truncated-uuid collisions
 async function boxNameFor(botId: string) {
+  const prefix = botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(botId));
-  const poolIndex = new Uint8Array(digest)[0] % 4;
-  return `ogb-pool-${poolIndex}`;
+  const hash = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("")
+    .slice(0, 6);
+  return `ogb-${prefix}-${hash}`;
 }
 
 export async function runCommand(cfg: AppConfig, boxId: string, command: string, { timeoutMs = 120_000 } = {}) {

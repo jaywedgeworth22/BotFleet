@@ -200,13 +200,20 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     public var pinned: Bool?
     public var hidden: Bool?
     public var chiefOfStaff: Bool?
+    public var approvePeerComms: Bool?
     public var autoApprove: Bool?
+    public var autoReview: String?
     public var alwaysAllow: [String]?
+    public var composio: Bool?
     public var computers: [String]?
     /// Which cloud computer backs `computer == "cloud"`. Absent (older
     /// harnesses included) means the hosted Box; "vps" means the user's own
     /// server, which has no interactive desktop to offer a phone.
     public var cloudBackend: String?
+    public var autoStartVps: Bool?
+    public var cwd: String?
+    public var extraCwds: [String]?
+    public var userNotes: String?
     public var speakReplies: Bool?
     public var voice: String?
     public var mascotExpression: String?
@@ -501,6 +508,23 @@ public struct ConfigStatus: Codable, Sendable {
     public var tts: ConfigFlag?
     public var imageGen: ConfigFlag?
     public var profile: Profile?
+    public var terminology: String?
+
+    public var roomTerminologyLabel: String {
+        switch terminology?.lowercased() {
+        case "groups": return "Group"
+        case "projects": return "Project"
+        default: return "Channel"
+        }
+    }
+
+    public var roomTerminologyPlural: String {
+        switch terminology?.lowercased() {
+        case "groups": return "Groups"
+        case "projects": return "Projects"
+        default: return "Channels"
+        }
+    }
 
     /// Whether synthesis is available on the paired computer. Deliberately
     /// provider-neutral: under ElevenLabs this is a key on file, while under
@@ -551,6 +575,16 @@ public struct BotProfilePatch: Encodable, Sendable {
     public var speakReplies: Bool?
     public var modelSelection: ModelSelection?
     public var computers: [String]?
+    public var chiefOfStaff: Bool?
+    public var approvePeerComms: Bool?
+    public var autoApprove: Bool?
+    public var autoReview: String?
+    public var composio: Bool?
+    public var cloudBackend: String?
+    public var autoStartVps: Bool?
+    public var cwd: String?
+    public var extraCwds: [String]?
+    public var userNotes: String?
 
     /// `avatarUrl` needs three wire states: omitted, a stored path, or JSON
     /// null to clear. A nested optional would technically represent that, but
@@ -570,7 +604,17 @@ public struct BotProfilePatch: Encodable, Sendable {
         voice: String? = nil,
         speakReplies: Bool? = nil,
         modelSelection: ModelSelection? = nil,
-        computers: [String]? = nil
+        computers: [String]? = nil,
+        chiefOfStaff: Bool? = nil,
+        approvePeerComms: Bool? = nil,
+        autoApprove: Bool? = nil,
+        autoReview: String? = nil,
+        composio: Bool? = nil,
+        cloudBackend: String? = nil,
+        autoStartVps: Bool? = nil,
+        cwd: String? = nil,
+        extraCwds: [String]? = nil,
+        userNotes: String? = nil
     ) {
         self.name = name
         self.title = title
@@ -582,10 +626,21 @@ public struct BotProfilePatch: Encodable, Sendable {
         self.speakReplies = speakReplies
         self.modelSelection = modelSelection
         self.computers = computers
+        self.chiefOfStaff = chiefOfStaff
+        self.approvePeerComms = approvePeerComms
+        self.autoApprove = autoApprove
+        self.autoReview = autoReview
+        self.composio = composio
+        self.cloudBackend = cloudBackend
+        self.autoStartVps = autoStartVps
+        self.cwd = cwd
+        self.extraCwds = extraCwds
+        self.userNotes = userNotes
     }
 
     private enum CodingKeys: String, CodingKey {
         case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection, computers
+        case chiefOfStaff, approvePeerComms, autoApprove, autoReview, composio, cloudBackend, autoStartVps, cwd, extraCwds, userNotes
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -605,6 +660,16 @@ public struct BotProfilePatch: Encodable, Sendable {
         try values.encodeIfPresent(speakReplies, forKey: .speakReplies)
         try values.encodeIfPresent(modelSelection, forKey: .modelSelection)
         try values.encodeIfPresent(computers, forKey: .computers)
+        try values.encodeIfPresent(chiefOfStaff, forKey: .chiefOfStaff)
+        try values.encodeIfPresent(approvePeerComms, forKey: .approvePeerComms)
+        try values.encodeIfPresent(autoApprove, forKey: .autoApprove)
+        try values.encodeIfPresent(autoReview, forKey: .autoReview)
+        try values.encodeIfPresent(composio, forKey: .composio)
+        try values.encodeIfPresent(cloudBackend, forKey: .cloudBackend)
+        try values.encodeIfPresent(autoStartVps, forKey: .autoStartVps)
+        try values.encodeIfPresent(cwd, forKey: .cwd)
+        try values.encodeIfPresent(extraCwds, forKey: .extraCwds)
+        try values.encodeIfPresent(userNotes, forKey: .userNotes)
     }
 }
 
@@ -913,6 +978,8 @@ public struct RoomPatch: Encodable, Sendable {
     public var avatarCrop: AvatarCrop?
     public var cwd: String?
     public var extraCwds: [String]?
+    public var defaultResponder: GroupResponder?
+    public var memberIds: [String]?
 
     public init(
         name: String? = nil,
@@ -920,7 +987,9 @@ public struct RoomPatch: Encodable, Sendable {
         avatarUrl: BotProfilePatch.AvatarURL? = nil,
         avatarCrop: AvatarCrop? = nil,
         cwd: String? = nil,
-        extraCwds: [String]? = nil
+        extraCwds: [String]? = nil,
+        defaultResponder: GroupResponder? = nil,
+        memberIds: [String]? = nil
     ) {
         self.name = name
         self.bulletin = bulletin
@@ -928,10 +997,12 @@ public struct RoomPatch: Encodable, Sendable {
         self.avatarCrop = avatarCrop
         self.cwd = cwd
         self.extraCwds = extraCwds
+        self.defaultResponder = defaultResponder
+        self.memberIds = memberIds
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, bulletin, avatarUrl, avatarCrop, cwd, extraCwds
+        case name, bulletin, avatarUrl, avatarCrop, cwd, extraCwds, defaultResponder, memberIds
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -947,5 +1018,7 @@ public struct RoomPatch: Encodable, Sendable {
         try values.encodeIfPresent(avatarCrop, forKey: .avatarCrop)
         try values.encodeIfPresent(cwd, forKey: .cwd)
         try values.encodeIfPresent(extraCwds, forKey: .extraCwds)
+        try values.encodeIfPresent(defaultResponder, forKey: .defaultResponder)
+        try values.encodeIfPresent(memberIds, forKey: .memberIds)
     }
 }
