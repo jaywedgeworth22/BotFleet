@@ -220,6 +220,9 @@ struct ChatView: View {
                 Task { await addFiles(urls) }
             }
         }
+        .onPasteCommand(of: [.image, .fileURL, .pdf, .data]) { providers in
+            Task { await addDropItems(providers) }
+        }
         .navigationDestination(isPresented: $showingComputer) {
             if case let .bot(bot) = current { ComputerView(bot: bot) }
         }
@@ -563,7 +566,14 @@ struct ChatView: View {
 
     private var clipboardHasAttachment: Bool {
         let board = UIPasteboard.general
-        return board.hasImages || !(board.urls ?? []).isEmpty
+        if board.hasImages { return true }
+        if !(board.urls ?? []).isEmpty { return true }
+        return board.contains(pasteboardTypes: [
+            UTType.pdf.identifier,
+            "com.adobe.pdf",
+            UTType.fileURL.identifier,
+            UTType.data.identifier,
+        ])
     }
 
     private func submit(_ explicitText: String? = nil) {
@@ -775,9 +785,12 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.top, 6)
         .padding(.bottom, 8)
-        .onDrop(of: [.image, .fileURL, .data], isTargeted: nil) { providers in
+        .onDrop(of: [.image, .fileURL, .pdf, .data], isTargeted: nil) { providers in
             Task { await addDropItems(providers) }
             return true
+        }
+        .onPasteCommand(of: [.image, .fileURL, .pdf, .data]) { providers in
+            Task { await addDropItems(providers) }
         }
     }
 
@@ -789,7 +802,28 @@ struct ChatView: View {
         }
         if let urls = board.urls, !urls.isEmpty {
             Task { await addFiles(urls) }
+            return
         }
+        if let data = board.data(forPasteboardType: UTType.pdf.identifier)
+            ?? board.data(forPasteboardType: "com.adobe.pdf") {
+            enqueue(name: "pasted.pdf", mime: "application/pdf", data: data)
+            return
+        }
+        for item in board.items {
+            for (type, value) in item {
+                if type.hasPrefix("public.text") || type.hasPrefix("public.utf8-plain-text") {
+                    continue
+                }
+                guard let data = value as? Data, !data.isEmpty else { continue }
+                let ut = UTType(type)
+                let mime = ChatAttachments.sniffImageMIME(data)
+                    ?? ChatAttachments.mime(forExtension: ut?.preferredFilenameExtension ?? "")
+                let ext = ut?.preferredFilenameExtension.map { ".\($0)" } ?? ""
+                enqueue(name: "pasted-file\(ext)", mime: mime, data: data)
+                return
+            }
+        }
+        session.actionError = "The clipboard has no image or file to attach."
     }
 
     private func addPhoto(_ item: PhotosPickerItem) async {
@@ -1098,6 +1132,7 @@ struct TextBubble: View {
     let message: Message
     let chat: Chat
     var tailed = true
+    @Environment(\.horizontalSizeClass) private var sizeClass
 
     private var parsedDiff: (filename: String, diff: String)? {
         guard message.role != .user, let source = message.text else { return nil }
@@ -1222,6 +1257,7 @@ struct TextBubble: View {
             }
             .padding(.horizontal, customCard ? 0 : 15)
             .padding(.vertical, customCard ? 0 : 11)
+            .frame(maxWidth: sizeClass == .regular ? 560 : .infinity, alignment: .leading)
             .background(
                 Group {
                     if !customCard {

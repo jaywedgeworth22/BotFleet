@@ -83,6 +83,40 @@ describe("composer paste attachments", () => {
     expect(result.rejectedNames).toEqual(["image.png"]);
   });
 
+  it("uploads a pathless non-image drop so the prompt gets a disk path", async () => {
+    const previous = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ path: "/tmp/attachments/a.pdf", mime: "application/pdf", bytes: 4 }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof fetch;
+    try {
+      const result = await attachmentsFromDroppedFiles(
+        [
+          {
+            name: "notes.pdf",
+            size: 4,
+            type: "application/pdf",
+            text: async () => "",
+            arrayBuffer: async () => new Uint8Array([1, 2, 3, 4]).buffer,
+          },
+        ],
+        () => "",
+      );
+      expect(result.rejectedNames).toEqual([]);
+      expect(result.attachments).toEqual([
+        expect.objectContaining({
+          kind: "file",
+          name: "notes.pdf",
+          path: "/tmp/attachments/a.pdf",
+          size: 4,
+        }),
+      ]);
+    } finally {
+      globalThis.fetch = previous;
+    }
+  });
+
   it("rejects malformed persisted attachments", () => {
     expect(isAttachment({ kind: "paste", id: "a", text: "ok", size: 2, lines: 1 })).toBe(true);
     expect(
