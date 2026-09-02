@@ -54,6 +54,24 @@ async function waitForCard(threadId: string, ms = 30_000) {
   return null;
 }
 
+type RoutineRunView = { id: string; routineId: string; status: string; threadId?: string; error?: string };
+
+/** The latest receipt for a routine, once it satisfies `ready`. */
+async function waitForRoutineRun(
+  routineId: string,
+  ready: (run: RoutineRunView) => boolean,
+  ms = 30_000,
+): Promise<RoutineRunView | null> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const { body } = await api("GET", "/api/routines");
+    const run = (body.runs ?? []).find((r: RoutineRunView) => r.routineId === routineId);
+    if (run && ready(run)) return run;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return null;
+}
+
 /** The detached task a webhook delivery created. */
 async function waitForRunThread(runId: string, ms = 20_000) {
   const deadline = Date.now() + ms;
@@ -94,6 +112,13 @@ posixOnly("unattended turns keep asking", () => {
             driver: "grokAgent",
             environment: { FAKE_ACP_MODE: "ask-peer" },
             config: { cli: FAKE_CLI, fullAuto: false },
+          },
+          // the shape every fleet bot has: a full-auto instance with the bot
+          // pointed at this computer, which used to die at dispatch
+          "grok-full": {
+            driver: "grokAgent",
+            environment: { FAKE_ACP_MODE: "permission" },
+            config: { cli: FAKE_CLI, fullAuto: true },
           },
         },
       }),
@@ -167,6 +192,87 @@ posixOnly("unattended turns keep asking", () => {
       expect(card.card.requestId).toBeTruthy();
       // and it must not already be answered
       expect(card.card.answered).toBeUndefined();
+    },
+    60_000,
+  );
+
+  it(
+    "still asks a human when the calendar starts the turn, even with auto mode on",
+    async () => {
+      // The scheduled routine is the other unattended door: nobody is at the
+      // keyboard at 3am either, so the calendar must not inherit Auto mode.
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      expect(
+        (
+          await api("PATCH", `/api/bots/${bot.id}`, {
+            name: "Night owl",
+            autoApprove: true,
+            modelSelection: { instanceId: "grok", model: "fake-model" },
+          })
+        ).status,
+      ).toBe(200);
+      const created = await api("POST", "/api/routines", {
+        name: "Nightly sweep",
+        prompt: "Tidy the workspace",
+        botId: bot.id,
+        runOn: "maus",
+        schedule: { type: "once", at: Date.now() - 1_000 },
+      });
+      expect(created.status).toBe(201);
+
+      const run = await waitForRoutineRun(created.body.routine.id, (r) => Boolean(r.threadId));
+      expect(run?.threadId, "the scheduled routine never started a task").toBeTruthy();
+
+      const card = await waitForCard(run!.threadId!);
+      expect(card, "a scheduled turn auto-approved instead of asking").not.toBeNull();
+      expect(card.card.requestId).toBeTruthy();
+      expect(card.card.answered).toBeUndefined();
+    },
+    60_000,
+  );
+
+  it(
+    "starts a scheduled turn on a full-auto engine whose bot is pointed at this computer",
+    async () => {
+      // Every fleet bot has this shape, and every one of its routine runs
+      // used to fail in under 40 ms with "this model engine cannot control
+      // this computer". The turn must start; when the desktop is not
+      // available it runs without the mount and says so in the transcript.
+      const bot = (await api("POST", "/api/bots")).body.bot;
+      expect(
+        (
+          await api("PATCH", `/api/bots/${bot.id}`, {
+            name: "Housekeeper",
+            autoApprove: true,
+            computers: ["local"],
+            // the desktop confirms the Auto-on-this-computer warning first
+            acknowledgeLocalAuto: true,
+            modelSelection: { instanceId: "grok-full", model: "fake-model" },
+          })
+        ).status,
+      ).toBe(200);
+      const created = await api("POST", "/api/routines", {
+        name: "Disk sweep",
+        prompt: "Free some disk space",
+        botId: bot.id,
+        runOn: "maus",
+        schedule: { type: "once", at: Date.now() - 1_000 },
+      });
+      expect(created.status).toBe(201);
+
+      const run = await waitForRoutineRun(
+        created.body.routine.id,
+        (r) => r.status !== "queued" && r.status !== "running" && r.status !== "waiting",
+      );
+      expect(run, "the scheduled routine never settled").not.toBeNull();
+      expect(run, "the run died instead of starting").toMatchObject({ status: "completed" });
+
+      const { body } = await api("GET", `/api/threads/${run!.threadId}/messages`);
+      const chips = (body.messages ?? [])
+        .filter((m: { kind: string; tool?: { name?: string } }) => m.kind === "activity")
+        .map((m: { tool?: { name?: string } }) => m.tool?.name ?? "");
+      expect(chips.some((name: string) => name.startsWith("local computer not mounted:"))).toBe(true);
+      expect(chips.some((name: string) => name.includes("cannot control this computer"))).toBe(false);
     },
     60_000,
   );

@@ -242,8 +242,11 @@ export interface ProviderAdapter {
      * others keep the queue-one-and-wait behaviour. Same rule as the other
      * flags: never show a control the driver cannot honour. */
     queueing?: boolean;
-    /** True only when local MCP calls can reach the human approval channel.
-     * Full-auto/bypass provider instances must leave this false. */
+    /** True only when host-control asks can reach the harness permission
+     * broker. A full-auto/bypass instance may advertise it only because it
+     * runs a host-control turn in its asking mode (see the ACP core, Claude,
+     * and pi drivers); an engine with no approval channel at all must leave
+     * this false. */
     localComputerMcp?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;

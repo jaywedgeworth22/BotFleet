@@ -232,7 +232,7 @@ export function ComputerPanel({
     }
     if ((bot.computers ?? []).includes("local")) {
       if (!providerSupportsLocal) {
-        setError("This model engine cannot control this computer. Choose Claude or an ACP engine.");
+        setError("This model engine has no approval channel for actions on this computer, so it cannot control it.  Choose another engine, or another destination.");
       }
       setPhase(capabilitiesReady && localAvailable && providerSupportsLocal ? "local" : "local-unavailable");
       return;

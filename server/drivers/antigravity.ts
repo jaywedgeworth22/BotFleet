@@ -738,7 +738,10 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           sessionModelSwitch: "in-session",
           images: true,
           computerMcp: true,
-          localComputerMcp: true,
+          // Print mode has no approval channel (see the header), so there is
+          // no way to broker a click on the user's real desktop. The harness
+          // runs a "This computer" turn without the mount and says so.
+          localComputerMcp: false,
           agentsMcp: true,
           composioMcp: true,
           phoneMcp: true,

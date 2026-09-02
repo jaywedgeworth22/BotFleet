@@ -119,7 +119,7 @@ describe("ClaudeDriver.decodeConfig", () => {
     expect(permissionSocketPath("t-perm-dup-1")).not.toBe(permissionSocketPath("t-perm-dup-2"));
   });
 
-  it("does not advertise or accept local CUA in bypassPermissions mode", async () => {
+  it("advertises local CUA in bypassPermissions mode because the host turn runs brokered", async () => {
     const bypass = await ClaudeDriver.create({
       instanceId: "claude-bypass",
       displayName: "Claude Bypass",
@@ -127,22 +127,7 @@ describe("ClaudeDriver.decodeConfig", () => {
       enabled: true,
       config: { cli: FAKE_CLI, permissionMode: "bypassPermissions" },
     });
-    expect(bypass.adapter.capabilities.localComputerMcp).toBe(false);
-    await expect(
-      bypass.adapter.sendTurn({
-        threadId: "t-bypass-local",
-        text: "click",
-        integrations: {
-          localComputer: {
-            command: "/cua-driver",
-            args: ["mcp"],
-            env: {},
-            platform: "linux",
-            scope: "local-computer",
-          },
-        },
-      }),
-    ).rejects.toThrow(/interactive approval broker/);
+    expect(bypass.adapter.capabilities.localComputerMcp).toBe(true);
     await bypass.dispose();
   });
 
@@ -496,6 +481,41 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const allowed = seen.argv[seen.argv.indexOf("--allowedTools") + 1];
     expect(allowed).not.toContain("mcp__computer");
     expect(instance.adapter.capabilities.localComputerMcp).toBe(true);
+  });
+
+  it("runs a host-control turn on a bypassPermissions instance through the broker instead of refusing it", async () => {
+    await create(undefined, {}, { permissionMode: "bypassPermissions" });
+    const dump = join(scratch, "bypass-local-dump.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await instance.adapter.sendTurn({
+      threadId: "t-bypass-local",
+      text: "click the button",
+      integrations: {
+        localComputer: {
+          command: "/cua-driver",
+          args: ["mcp"],
+          env: {},
+          platform: "linux",
+          scope: "local-computer",
+        },
+      },
+    });
+    await recorder.until((event) => event.type === "turn.completed" && event.threadId === "t-bypass-local");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    // the desktop turn is spawned in the asking mode with the permission
+    // broker attached, and the computer namespace is still not pre-allowed
+    expect(seen.argv[seen.argv.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
+    expect(seen.argv).toContain("--permission-prompt-tool");
+    expect(seen.argv[seen.argv.indexOf("--allowedTools") + 1]).not.toContain("mcp__computer");
+
+    // a turn without the desktop keeps the instance's bypass
+    const shellDump = join(scratch, "bypass-shell-dump.json");
+    process.env.FAKE_CLAUDE_DUMP = shellDump;
+    await instance.adapter.sendTurn({ threadId: "t-bypass-shell", text: "list the files" });
+    await recorder.until((event) => event.type === "turn.completed" && event.threadId === "t-bypass-shell");
+    const shell = JSON.parse(readFileSync(shellDump, "utf8"));
+    expect(shell.argv[shell.argv.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
+    expect(shell.argv).not.toContain("--permission-prompt-tool");
   });
 
   it("resumes with --resume when a cursor exists and reports that session id", async () => {

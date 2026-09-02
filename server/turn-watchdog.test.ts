@@ -82,4 +82,22 @@ describe("TurnWatchdog", () => {
     dog.sweep();
     expect(stalls).toEqual([expect.objectContaining({ botId: "bot2" })]);
   });
+
+  it("settleAll forgets every turn at once and reports which were in flight", () => {
+    const { dog, stalls, tick } = rig();
+    dog.watch("t1", "bot1");
+    dog.watch("t2", "bot2");
+    dog.settle("t2");
+    dog.watch("t3", "bot3");
+    // a provider reload kills every turn at once: the caller gets the list
+    // so it can settle each one's bookkeeping, and nothing stalls later
+    const killed = dog.settleAll();
+    expect(killed.map((turn) => turn.threadId).sort()).toEqual(["t1", "t3"]);
+    expect(dog.watching("t1")).toBe(false);
+    expect(dog.watching("t3")).toBe(false);
+    tick(STALL * 2);
+    dog.sweep();
+    expect(stalls).toHaveLength(0);
+    expect(dog.settleAll()).toEqual([]);
+  });
 });
