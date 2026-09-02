@@ -134,9 +134,9 @@ in **Teams → Import**.
 The format stays portable: BotFleet reads the structured YAML frontmatter for a reliable one-click
 install, while Grok, Claude, ChatGPT, and people can follow the ordinary Markdown playbook. Connections
 remain off until you approve them, routines arrive paused, and packages never carry credentials,
-conversations, permissions, memory, or computer access. Browse the
-[open-source playbook repository](https://github.com/milind-soni/botfleet-teams) or read its
-[portable format](https://github.com/milind-soni/botfleet-teams/blob/main/FORMAT.md).
+conversations, permissions, memory, or computer access.  The **Community teams** tab browses a
+catalog from a public GitHub repository you name in `OMB_TEAM_LIBRARY_REPOSITORY`; no library is
+bundled with this build, and importing from a file or a pasted GitHub link never needs one.
 
 ### 🎧 Bots that talk back
 
@@ -203,10 +203,13 @@ See [MCP server setup and tool reference](docs/mcp-server.md).
 
 | | Download | Install |
 |---|---|---|
-| **macOS** (Apple silicon) | [BotFleet.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet.dmg) | Drag it to Applications, open it.  Signed & notarized. |
-| **macOS** (Intel) | [BotFleet-intel.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet-intel.dmg) | Same app, built for Intel Macs.  Signed & notarized. |
-| **Windows** (x64) | [BotFleet-setup.exe](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet-setup.exe) | Run it — one-click, per-user, no admin rights. The installer isn't code-signed yet, so SmartScreen shows "unknown publisher": **More info → Run anyway**. |
-| **Ubuntu 24.04** (x64) | [BotFleet-amd64.deb](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet-amd64.deb) · [BotFleet.AppImage](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet.AppImage) | Install the `.deb` with APT (recommended), or make the AppImage executable and run it. Beta; GNOME is the supported desktop. |
+| **macOS** (Apple silicon) | [BotFleet.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet.dmg) | Drag it to Applications, open it.  Signed with the BotFleet Developer ID. |
+| **macOS** (Intel) | [BotFleet-intel.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet-intel.dmg) | Same app, built for Intel Macs. |
+| **Windows** (x64) | Not published yet | The Windows installer is built by the release workflow but no Windows build has shipped.  Watch the [releases page](https://github.com/jaywedgeworth22/botfleet-releases/releases) or build from source below. |
+| **Ubuntu 24.04** (x64) | Not published yet | Ubuntu packages are built by the release workflow but no Ubuntu build has shipped.  See the [Ubuntu Desktop guide](docs/linux-desktop.md) to build one from source. |
+
+In-app **Check for updates** needs the `latest-mac.yml` feed and zip artifacts on the release; the current
+release carries DMGs only, so updates are manual until the release workflow publishes a full asset set.
 
 See the [Ubuntu Desktop guide](docs/linux-desktop.md) for installation, capabilities, and troubleshooting.
 

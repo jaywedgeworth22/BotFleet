@@ -1,12 +1,13 @@
 ---
 name: windows-release
-description: Build, verify, and publish the Windows desktop build (NSIS installer + latest.yml) to the botfleet-releases repo. Use when cutting a release, shipping a new version to Windows users, or when a Windows user reports they are stuck on an old version. Windows only — does not cover the macOS dmg/notarization flow.
+description: Build, verify, and publish the Windows desktop build (NSIS installer + latest.yml) to the jaywedgeworth22/botfleet-releases repo. Use when cutting a release, shipping a new version to Windows users, or when a Windows user reports they are stuck on an old version. Windows only — does not cover the macOS dmg/notarization flow.
 ---
 
 # Windows release
 
 Ships `BotFleet-<version>-setup.exe` and its update feed to
-[milind-soni/botfleet-releases](https://github.com/milind-soni/botfleet-releases).
+[jaywedgeworth22/botfleet-releases](https://github.com/jaywedgeworth22/botfleet-releases),
+the only publish target (see `electron-builder.yml` `publish`).
 
 **Scope: Windows only.** The macOS build is a separate flow (dmg + notarytool +
 staple) that must run on a Mac. This skill never touches mac artifacts — but see
@@ -59,7 +60,7 @@ Get-Content release\win-unpacked\resources\app-update.yml  # feed config
 - Missing `server/index.js` → `utilityProcess.fork` fails → the 🐭 "Couldn't start
   the bot server" page.
 - Missing `ui/index.html` → server has nothing to serve → black window.
-- `app-update.yml` must point at `milind-soni/botfleet-releases` and, while the
+- `app-update.yml` must carry `owner: jaywedgeworth22` / `repo: botfleet-releases` and, while the
   build is unsigned, **must not contain `publisherName`** — electron-updater would
   reject every update as untrusted.
 
@@ -80,7 +81,7 @@ carries both platforms.
 
 ```powershell
 Copy-Item release/BotFleet-<version>-setup.exe release/BotFleet-setup.exe
-gh release upload v<version> --repo milind-soni/botfleet-releases `
+gh release upload v<version> --repo jaywedgeworth22/botfleet-releases `
   release/BotFleet-<version>-setup.exe `
   release/BotFleet-setup.exe `
   release/BotFleet-<version>-setup.exe.blockmap `

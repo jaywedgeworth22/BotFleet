@@ -951,6 +951,10 @@ export function PhoneSetupFlowView({
   }
 
   if (c.phase === "sign-in") {
+    // No hosted control plane in this build: say so plainly and offer the
+    // routes that do exist, instead of "needs attention" plus a retry that
+    // can never succeed.
+    const unconfigured = c.account?.configured === false;
     const unavailable = !c.account?.available;
     const failed = c.account?.status === "error" || c.setupTimedOut;
     return (
@@ -962,13 +966,19 @@ export function PhoneSetupFlowView({
           <Mail size={20} />
         </div>
         <h2 className="mt-3 text-[18px] font-semibold text-ink">
-          {unavailable || failed ? "Secure access needs attention" : "Sign in to pair securely"}
+          {unconfigured
+            ? "Pair on your own network"
+            : unavailable || failed
+              ? "Secure access needs attention"
+              : "Sign in to pair securely"}
         </h2>
         <p
           role={c.setupTimedOut ? "alert" : undefined}
           className="mt-1 text-[13px] leading-relaxed text-ink-secondary"
         >
-          {unavailable
+          {unconfigured
+            ? "Secure online access is not configured in this build.\u00a0 Pair directly on the same Wi-Fi, or over Tailscale when both devices share a tailnet."
+            : unavailable
             ? "Online phone access is not available right now. You can still pair directly on the same Wi-Fi."
             : c.setupTimedOut
               ? "Secure access is taking longer than expected. You can try again or pair directly on this Wi-Fi."
@@ -1035,7 +1045,7 @@ export function PhoneSetupFlowView({
           </div>
         )}
 
-        {(unavailable || failed) && (
+        {(unavailable || failed) && !unconfigured && (
           <button
             disabled={c.accountBusy}
             onClick={c.retryAccount}

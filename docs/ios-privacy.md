@@ -3,7 +3,10 @@
 BotFleetMobile is a companion for an BotFleet service chosen and operated
 by the user. Local Wi-Fi and Tailscale connections work without an BotFleet
 account. A user may separately sign in on the desktop to enable the optional
-**Use your phone anywhere** HTTPS connection.
+**Use your phone anywhere** HTTPS connection.  Current desktop builds do not
+include a hosted control plane; that option appears only when the desktop is
+configured with a BotFleet-operated control plane, and no hosted data is sent
+otherwise.
 
 ## Data handling
 

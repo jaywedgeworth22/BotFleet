@@ -2536,7 +2536,13 @@ describe("harness HTTP API", () => {
       profile: { name: "External Store" },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.composio).toEqual({ configured: true, mode: "self-hosted" });
+    // managedSetup describes the desktop-managed broker; a self-hosted key
+    // works without one, so it stays "unconfigured" here.
+    expect(saved.body.composio).toEqual({
+      configured: true,
+      mode: "self-hosted",
+      managedSetup: { status: "unconfigured" },
+    });
     expect(saved.body.opencodeGo).toEqual({ configured: true });
     expect(saved.body.profile).toEqual({ name: "External Store", email: "" });
     expect(JSON.stringify(saved.body)).not.toContain("ak_good");
@@ -2551,7 +2557,11 @@ describe("harness HTTP API", () => {
     // A later ordinary setting save reloads config; the in-process secure-env
     // override must keep Composio configured until the next app launch.
     expect((await api("PUT", "/api/config", { profile: { name: "Grace" } })).status).toBe(200);
-    expect((await api("GET", "/api/config")).body.composio).toEqual({ configured: true, mode: "self-hosted" });
+    expect((await api("GET", "/api/config")).body.composio).toEqual({
+      configured: true,
+      mode: "self-hosted",
+      managedSetup: { status: "unconfigured" },
+    });
   });
 
   it.skipIf(process.platform === "win32")("stores the credentials file with owner-only permissions", () => {

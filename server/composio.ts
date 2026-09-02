@@ -146,6 +146,24 @@ interface IntegrationContext {
 
 let managedBrokerAccess: { url: string; token: string } | null | undefined;
 
+/** What the desktop learned when it last tried to set up the managed
+ * connected-apps service. "unconfigured" is the shipped default: no broker
+ * is built in, so a packaged install without OMB_COMPOSIO_BROKER_URL (or
+ * composio.brokerUrl) is not broken, it is simply not set up. */
+export interface ManagedBrokerSetup {
+  status: "unconfigured" | "ready" | "failed";
+  message?: string;
+}
+
+const managedBrokerSetupSchema = z
+  .object({
+    status: z.enum(["unconfigured", "ready", "failed"]),
+    message: z.string().max(400).optional(),
+  })
+  .strict();
+
+let managedBrokerSetup: ManagedBrokerSetup = { status: "unconfigured" };
+
 const managedBrokerMessageSchema = z.record(z.string(), z.unknown());
 const managedBrokerToken = /^[0-9a-f]{64}$/;
 
@@ -171,7 +189,21 @@ export function applyManagedBrokerMessage(message: unknown): boolean {
     return false;
   }
   setManagedBrokerAccess(parsed.data.access);
+  if (Object.hasOwn(parsed.data, "setup")) setManagedBrokerSetup(parsed.data.setup);
   return true;
+}
+
+export function setManagedBrokerSetup(setup: unknown): void {
+  const parsed = managedBrokerSetupSchema.safeParse(setup);
+  managedBrokerSetup = parsed.success ? parsed.data : { status: "unconfigured" };
+}
+
+/** Secret-free: the status word plus a human sentence, nothing else. */
+export function managedSetup(): ManagedBrokerSetup {
+  if (brokerAccess()) return { status: "ready" };
+  return managedBrokerSetup.message
+    ? { status: managedBrokerSetup.status, message: managedBrokerSetup.message }
+    : { status: managedBrokerSetup.status };
 }
 
 export function setManagedBrokerAccess(access: unknown): void {

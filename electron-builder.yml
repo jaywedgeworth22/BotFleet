@@ -4,21 +4,20 @@ artifactName: BotFleet-${version}-${arch}.${ext}
 
 protocols:
   - name: BotFleet package install
-    schemes: [botfleet, botfleet]
+    schemes: [botfleet]
 
 # In-app auto-update reads latest-mac.yml + the .zip (macOS) or latest.yml +
 # the NSIS .exe (Windows) from this PUBLIC releases repo (separate from the
-# source repo). Public → no token on users' machines. Baked into
+# source repo): jaywedgeworth22/botfleet-releases, the only place BotFleet
+# releases exist. Public → no token on users' machines. Baked into
 # app-update.yml; both metadata files are emitted here even with
 # --publish never, and must be uploaded to the GitHub release alongside the
-# artifacts — a release missing latest.yml leaves every Windows install
-# stranded on its installed version.
+# artifacts — a release missing latest-mac.yml or latest.yml leaves every
+# install stranded on its installed version. Exactly one provider entry:
+# electron-updater reads the first and a duplicate only invites drift.
 publish:
   - provider: github
-    owner: milind-soni
-    repo: botfleet-releases
-  - provider: github
-    owner: milind-soni
+    owner: jaywedgeworth22
     repo: botfleet-releases
 
 directories:
@@ -167,7 +166,7 @@ linux:
   executableName: botfleet
   synopsis: Your own team of AI bots, in a chat app
   description: A local-first chat app for running a team of AI agents.
-  maintainer: Milind Soni <46266943+milind-soni@users.noreply.github.com>
+  maintainer: Jay Wedgeworth <12656028+jaywedgeworth22@users.noreply.github.com>
   vendor: BotFleet
   # The reviewed x64 CLI runtime is staged before packaging and remains
   # outside ASAR so executable modes and adjacent sidecars are preserved.

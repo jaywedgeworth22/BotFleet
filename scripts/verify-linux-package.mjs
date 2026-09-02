@@ -394,10 +394,12 @@ const fields = execFileSync(
   ["--field", deb, "Package", "Version", "Architecture", "Maintainer", "Section", "Priority"],
   { encoding: "utf8" },
 );
+// Maintainer must match electron-builder.yml `linux.maintainer` (the owner,
+// not the upstream fork author); dpkg-deb reports the full "Name <email>".
 for (const expected of [
   "Package: botfleet",
   "Architecture: amd64",
-  "Maintainer: Milind Soni",
+  "Maintainer: Jay Wedgeworth",
   "Section: utils",
   "Priority: optional",
 ]) {

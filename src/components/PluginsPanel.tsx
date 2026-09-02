@@ -197,6 +197,9 @@ export function PluginsPanel() {
   const [source, setSource] = useState<"api" | "curated">("curated");
   const [configured, setConfigured] = useState(true);
   const [mode, setMode] = useState<"managed" | "self-hosted" | "unavailable">("unavailable");
+  const [managedSetup, setManagedSetup] = useState<
+    { status: "unconfigured" | "ready" | "failed"; message?: string } | null
+  >(null);
   // Paint what we last knew before any request goes out: the module cache if
   // this window already fetched, otherwise the inventory saved on disk. An
   // empty panel is never the first thing a connected user sees.
@@ -326,6 +329,7 @@ export function PluginsPanel() {
         setSource(r.source ?? "curated");
         setConfigured(Boolean(r.configured));
         setMode(r.mode ?? "unavailable");
+        setManagedSetup(r.managedSetup ?? null);
       })
       .catch((e) => {
         if (!alive) return;
@@ -554,11 +558,14 @@ export function PluginsPanel() {
         </div>
 
         {/* Two notices about the same fact is one too many: the stale banner
-            above already explains this launch, and "configure your own
-            connection service" is advice for someone who never set one up. */}
+            above already explains this launch. Say WHY connected apps are off:
+            a broker that failed its identity check is a different situation
+            from a build that never had one. */}
         {!configured && !stale && (
-          <div className="mx-6 mb-1 rounded-xl bg-warning/10 px-4 py-3 text-[13px] text-warning sm:mx-8">
-            Connected apps are temporarily unavailable. You can retry after restarting, or configure your own connection service.{" "}
+          <div role="status" className="mx-6 mb-1 rounded-xl bg-warning/10 px-4 py-3 text-[13px] text-warning sm:mx-8">
+            {managedSetup?.status === "failed"
+              ? `${managedSetup.message ?? "Connected apps could not be set up."}\u00a0 Check the connected-apps service address, or add your own Composio project key.`
+              : "Connected apps are not configured in this build.\u00a0 Add your own Composio project key to use them."}{" "}
             <button
               className="font-medium underline underline-offset-2"
               onClick={() => {
