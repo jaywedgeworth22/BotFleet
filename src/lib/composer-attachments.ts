@@ -98,7 +98,12 @@ export function isImageFile(file: { type: string; size: number }): boolean {
 /** Persist a pasted image server-side and return the attachment chip data.
  * The server writes ~/.botfleet/attachments/<uuid>.<ext> and answers
  * with the path; the prompt references that path so every CLI can open it. */
-export async function imageAttachmentFromFile(file: File): Promise<ImageAttachment | null> {
+export async function imageAttachmentFromFile(file: {
+  name: string;
+  size: number;
+  type: string;
+  arrayBuffer: () => Promise<ArrayBuffer>;
+}): Promise<ImageAttachment | null> {
   if (!isImageFile(file)) return null;
   if (file.size > IMAGE_MAX_BYTES) throw Object.assign(new Error(`${file.name} exceeds 10 MB`), { status: 413 });
   const bytes = new Uint8Array(await file.arrayBuffer());
@@ -157,7 +162,9 @@ export async function uploadPathlessFile(file: {
 
 export const INLINE_DROP_LIMIT = 512 * 1024;
 
-export type DroppedFile = Pick<File, "name" | "size" | "type" | "text">;
+export type DroppedFile = Pick<File, "name" | "size" | "type" | "text"> & {
+  arrayBuffer?: () => Promise<ArrayBuffer>;
+};
 
 /** Turn a browser drop into composer attachments. Electron-backed files
  * keep their disk path; small pathless text drops keep their contents.
@@ -176,9 +183,14 @@ export async function attachmentsFromDroppedFiles<T extends DroppedFile>(
         // A browser or older desktop shell has no disk path to expose.
       }
       if (path) return { attachment: fileAttachment(file.name, path, file.size) };
-      if (isImageFile(file as { type: string; size: number })) {
+      if (isImageFile(file) && file.arrayBuffer) {
         try {
-          const image = await imageAttachmentFromFile(file as File);
+          const image = await imageAttachmentFromFile({
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            arrayBuffer: file.arrayBuffer,
+          });
           if (image) return { attachment: image };
         } catch {
           // Fall through to generic upload or reject.
@@ -191,9 +203,14 @@ export async function attachmentsFromDroppedFiles<T extends DroppedFile>(
           // Treat an unreadable browser drag like any other pathless file.
         }
       }
-      if (typeof (file as { arrayBuffer?: () => Promise<ArrayBuffer> }).arrayBuffer === "function") {
+      if (file.arrayBuffer) {
         try {
-          const uploaded = await uploadPathlessFile(file as File);
+          const uploaded = await uploadPathlessFile({
+            name: file.name,
+            size: file.size,
+            type: file.type,
+            arrayBuffer: file.arrayBuffer,
+          });
           if (uploaded) return { attachment: uploaded };
         } catch {
           // Named below as rejected.

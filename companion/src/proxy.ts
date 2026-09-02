@@ -299,13 +299,14 @@ export function createProxyHandler(options: ProxyOptions) {
 
     if (method === "POST" && path === "/api/companion/push-token") {
       const device = options.authenticate(token);
-      if (!device?.id) {
+      const deviceId = device?.id;
+      if (!deviceId) {
         return sendJson(res, 401, { error: "pair this device from Phone settings in BotFleet on your computer" });
       }
       readJson(req).then(
         (body) => {
           const push = String(body.token ?? "");
-          if (!options.setPushToken?.(device.id, push)) {
+          if (!options.setPushToken?.(deviceId, push)) {
             return sendJson(res, 400, { error: "that push token is not usable" });
           }
           return sendJson(res, 200, { ok: true });
