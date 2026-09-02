@@ -185,3 +185,202 @@ test("an answer that arrives while the pid is still unknown is a foreign owner",
   });
   assert.equal(outcome.outcome, "foreign-owner");
 });
+
+// ---------------------------------------------------------------------------
+// probeHarness + resolvePackagedServer (attach-or-spawn)
+
+import { probeHarness, resolvePackagedServer } from "./server-boot-probe.mjs";
+
+const HARNESS = { app: "botfleet", pid: 82972, static: false };
+
+test("probeHarness: a BotFleet health answer identifies a harness", async () => {
+  const seen = await probeHarness({
+    port: 8799,
+    fetchImpl: async () => ({ ok: true, status: 200, json: async () => HARNESS }),
+  });
+  assert.deepEqual(seen, { kind: "botfleet", pid: 82972, static: false });
+});
+
+test("probeHarness: connection refused means nobody is home", async () => {
+  const seen = await probeHarness({
+    port: 8799,
+    fetchImpl: async () => {
+      throw new Error("ECONNREFUSED");
+    },
+  });
+  assert.deepEqual(seen, { kind: "none" });
+});
+
+test("probeHarness: any other answer on the port is a foreign owner", async () => {
+  for (const reply of [
+    { ok: false, status: 404, json: async () => ({ error: "nope" }) },
+    { ok: true, status: 200, json: async () => "text" },
+    { ok: true, status: 200, json: async () => ({ app: "something-else", pid: 1 }) },
+    { ok: true, status: 200, json: async () => ({ app: "botfleet" }) },
+  ]) {
+    const seen = await probeHarness({ port: 8799, fetchImpl: async () => reply });
+    assert.equal(seen.kind, "foreign", JSON.stringify(await reply.json()));
+  }
+});
+
+const noSleep = async () => {};
+
+test("attaches to an existing BotFleet harness on 8799 and never spawns", async () => {
+  let spawned = 0;
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799, 28799],
+    probe: async (port) => (port === 8799 ? { kind: "botfleet", pid: 82972, static: false } : { kind: "none" }),
+    spawn: async () => {
+      spawned += 1;
+      return { proc: {} };
+    },
+    sleep: noSleep,
+  });
+  assert.deepEqual(result, { mode: "attached", port: 8799, pid: 82972, static: false });
+  assert.equal(spawned, 0, "must not fork a second harness against the same data dir");
+});
+
+test("spawns our own child when nothing BotFleet-shaped is listening", async () => {
+  const proc = { pid: 4242 };
+  const spawnedOn = [];
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799, 28799],
+    probe: async () => ({ kind: "none" }),
+    spawn: async (port) => {
+      spawnedOn.push(port);
+      return { proc };
+    },
+    sleep: noSleep,
+  });
+  assert.deepEqual(result, { mode: "spawned", port: 8799, proc });
+  assert.deepEqual(spawnedOn, [8799]);
+});
+
+test("a foreign owner on 8799 is skipped; a harness on 18799 is attached", async () => {
+  let spawned = 0;
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799, 28799],
+    probe: async (port) => {
+      if (port === 8799) return { kind: "foreign" };
+      if (port === 18799) return { kind: "botfleet", pid: 7, static: true };
+      return { kind: "none" };
+    },
+    spawn: async () => {
+      spawned += 1;
+      return { proc: {} };
+    },
+    sleep: noSleep,
+  });
+  assert.equal(result.mode, "attached");
+  assert.equal(result.port, 18799);
+  assert.equal(result.static, true);
+  assert.equal(spawned, 0);
+});
+
+test("a foreign owner on 8799 with nothing else listening spawns on 18799", async () => {
+  const spawnedOn = [];
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799, 28799],
+    probe: async (port) => (port === 8799 ? { kind: "foreign" } : { kind: "none" }),
+    spawn: async (port) => {
+      spawnedOn.push(port);
+      return { proc: {} };
+    },
+    sleep: noSleep,
+  });
+  assert.equal(result.mode, "spawned");
+  assert.equal(result.port, 18799);
+  assert.deepEqual(spawnedOn, [18799]);
+});
+
+test("a harness that vanishes during the settle window frees the port for our own child", async () => {
+  // quit-and-reopen: the previous instance's child still answers the first
+  // probe, then finishes dying.
+  let probes = 0;
+  const spawnedOn = [];
+  const result = await resolvePackagedServer({
+    ports: [8799],
+    probe: async () => {
+      probes += 1;
+      return probes === 1 ? { kind: "botfleet", pid: 1, static: true } : { kind: "none" };
+    },
+    spawn: async (port) => {
+      spawnedOn.push(port);
+      return { proc: {} };
+    },
+    sleep: noSleep,
+  });
+  assert.equal(result.mode, "spawned");
+  assert.deepEqual(spawnedOn, [8799]);
+  assert.equal(probes, 2, "the settle re-probe must run before trusting an existing harness");
+});
+
+test("a harness that restarts during the settle window (new pid) is still attached", async () => {
+  let probes = 0;
+  const logs = [];
+  const result = await resolvePackagedServer({
+    ports: [8799],
+    probe: async () => {
+      probes += 1;
+      return { kind: "botfleet", pid: probes === 1 ? 1 : 2, static: false };
+    },
+    spawn: async () => ({ proc: {} }),
+    sleep: noSleep,
+    log: (line) => logs.push(line),
+  });
+  assert.deepEqual(result, { mode: "attached", port: 8799, pid: 2, static: false });
+  assert.ok(logs.some((line) => /restarted during settle/.test(line)));
+});
+
+test("attachSettleMs: 0 attaches on the first probe", async () => {
+  let probes = 0;
+  const result = await resolvePackagedServer({
+    ports: [8799],
+    probe: async () => {
+      probes += 1;
+      return { kind: "botfleet", pid: 9, static: false };
+    },
+    spawn: async () => ({ proc: {} }),
+    attachSettleMs: 0,
+    sleep: noSleep,
+  });
+  assert.equal(result.mode, "attached");
+  assert.equal(probes, 1);
+});
+
+test("every port foreign-owned reports a conflict; a child that died does not", async () => {
+  const allForeign = await resolvePackagedServer({
+    ports: [8799, 18799],
+    probe: async () => ({ kind: "foreign" }),
+    spawn: async () => {
+      throw new Error("must not spawn on a foreign-owned port");
+    },
+    sleep: noSleep,
+  });
+  assert.deepEqual(allForeign, { mode: "failed", conflictOnly: true });
+
+  const childDied = await resolvePackagedServer({
+    ports: [8799, 18799],
+    probe: async () => ({ kind: "none" }),
+    spawn: async () => ({ proc: null, reason: "exited" }),
+    sleep: noSleep,
+  });
+  assert.deepEqual(childDied, { mode: "failed", conflictOnly: false });
+});
+
+test("the second pass re-probes, so a harness that came up meanwhile is attached", async () => {
+  // pass 1: nothing listens but our child dies (e.g. lost a bind race);
+  // pass 2: whoever won the race is a BotFleet harness — join it.
+  let pass = 0;
+  const result = await resolvePackagedServer({
+    ports: [8799],
+    probe: async () => (pass === 0 ? { kind: "none" } : { kind: "botfleet", pid: 55, static: false }),
+    spawn: async () => {
+      pass += 1;
+      return { proc: null, reason: "exited" };
+    },
+    attachSettleMs: 0,
+    sleep: noSleep,
+  });
+  assert.deepEqual(result, { mode: "attached", port: 8799, pid: 55, static: false });
+});
