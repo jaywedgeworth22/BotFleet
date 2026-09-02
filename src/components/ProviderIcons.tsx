@@ -158,9 +158,10 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
       return <GrokMark size={size} className={className} />;
     case "deepseek":
     case "deepseekAgent":
-      return <DeepSeekMark size={size} className={cn("fill-blue-500 dark:fill-blue-400", className)} />;
+    case "dsh":
     case "dshAgent":
-      return <DeepSeekMark size={size} className={cn("fill-neutral-600 dark:fill-neutral-400", className)} />;
+      return <DeepSeekMark size={size} className={cn("fill-blue-500 dark:fill-blue-400", className)} />;
+    case "claude":
     case "claudeAgent":
       return <ClaudeMark size={size} className={className} />;
     case "gemini":
@@ -168,14 +169,18 @@ export function ProviderMark({ driverKind, size, className }: IconProps & { driv
       return <GeminiMark size={size} className={className} />;
     case "codex":
       return <CodexMark size={size} className={className} />;
+    case "kimi":
     case "kimiAgent":
       return <KimiMark size={size} className={className} />;
+    case "droid":
     case "droidAgent":
       return <DroidMark size={size} className={className} />;
+    case "cursor":
     case "cursorAgent":
       return <CursorMark size={size} className={className} />;
+    case "antigravity":
     case "antigravityAgent":
-      return <GeminiMark size={size} className={className} />;
+      return <AntigravityMark size={size} className={className} />;
     case "opencodeGo":
       return <OpenCodeMark size={size} className={className} />;
     case "qwenAgent":

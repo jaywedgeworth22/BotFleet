@@ -6,6 +6,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-29 — Always-on iMessage bidirectional relay daemon (`botfleet-imessage-relay`) and LaunchAgents (`com.jay.botfleet-imessage-relay` + `com.jay.botfleet-server`) connecting 12 BotFleet bot group chats in Messages.app with BotFleet backend.
 
 ## Completed
+- [AG] 2026-09-01 — iOS fallback provider dropdowns, DeepSeek harness GUI availability & blue logo, and Antigravity logo separation (branch `ag/ios-fallback-provider-deepseek-logos`). Adds Provider and Model pickers for every fallback row in iOS Agent Profile, fixes AntigravityMark in ProviderMark, ensures DeepSeek harness (dsh) is discoverable in GUI with official blue whale logo. Gate: Swift tests clean, typecheck clean, build clean.
 - [AG] 2026-08-31 — Sentry client observability: Session Replay, error capture & distributed tracing (PR #44 merged to `main`). Integrated `@sentry/react` client error monitoring, Session Replay (100% on error, 10% baseline session, privacy-masked), and distributed browser tracing in `src/lib/sentry.ts` and `src/main.tsx`. Gated on `VITE_SENTRY_DSN`. Gate: typecheck clean, 2,271/2,271 tests clean. Rollout: `docs/rollouts/2026-09-01-sentry-client-observability.md`.
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 

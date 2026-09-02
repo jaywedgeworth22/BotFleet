@@ -141,23 +141,49 @@ struct AgentProfileView: View {
                         }
                         
                         ForEach(fallbacks.indices, id: \.self) { index in
-                            let fallback = fallbacks[index]
-                            if let instance = instances.first(where: { $0.id == fallback.instanceId }) {
-                                Picker("Fallback \(index + 1)", selection: Binding(
-                                    get: { fallback.model },
-                                    set: { newModel in
-                                        fallbacks[index].model = newModel
-                                    }
-                                )) {
-                                    ForEach(instance.models.options) { option in
-                                        Text(option.label).tag(option.id)
-                                    }
-                                }
-                                .swipeActions {
+                            VStack(alignment: .leading, spacing: 4) {
+                                HStack {
+                                    Text("Fallback \(index + 1)")
+                                        .font(.subheadline)
+                                        .foregroundStyle(.secondary)
+                                    Spacer()
                                     Button(role: .destructive) {
                                         fallbacks.remove(at: index)
                                     } label: {
-                                        Label("Delete", systemImage: "trash")
+                                        Image(systemName: "trash")
+                                            .font(.caption)
+                                            .foregroundStyle(.red)
+                                    }
+                                    .buttonStyle(.borderless)
+                                }
+                                .padding(.top, 4)
+
+                                Picker("Provider", selection: Binding(
+                                    get: { fallbacks[index].instanceId },
+                                    set: { newInstanceId in
+                                        fallbacks[index].instanceId = newInstanceId
+                                        if let inst = instances.first(where: { $0.id == newInstanceId }) {
+                                            if !inst.models.options.contains(where: { $0.id == fallbacks[index].model }) {
+                                                fallbacks[index].model = inst.models.default
+                                            }
+                                        }
+                                    }
+                                )) {
+                                    ForEach(instances) { instance in
+                                        Text(instance.displayName ?? instance.instanceId).tag(instance.id)
+                                    }
+                                }
+
+                                if let fallbackInstance = instances.first(where: { $0.id == fallbacks[index].instanceId }) {
+                                    Picker("Model", selection: Binding(
+                                        get: { fallbacks[index].model },
+                                        set: { newModel in
+                                            fallbacks[index].model = newModel
+                                        }
+                                    )) {
+                                        ForEach(fallbackInstance.models.options) { option in
+                                            Text(option.label).tag(option.id)
+                                        }
                                     }
                                 }
                             }
