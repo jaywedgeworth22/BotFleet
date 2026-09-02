@@ -32,7 +32,9 @@ import {
   clampBytes,
   defaultHostName,
   dnsLabel,
+  LEGACY_SERVICE_TYPES,
   MdnsResponder,
+  SERVICE_TYPE,
   type ServiceInfo,
 } from "./mdns.ts";
 import { createProxyHandler } from "./proxy.ts";
@@ -50,8 +52,6 @@ const HARNESS_PORT = num(process.env.OMB_PORT, 8799);
 const WEBHOOK_PORT = num(process.env.OMB_WEBHOOK_PORT, HARNESS_PORT + 1);
 const COMPANION_PORT = num(process.env.OMB_COMPANION_PORT, 8810);
 const CONTROL_PORT = num(process.env.OMB_CONTROL_PORT, 8811);
-const SERVICE_TYPE = "_botfleet._tcp";
-const LEGACY_SERVICE_TYPE = "_botfleet._tcp";
 let hostedUrl = hostedCompanionUrl(process.env.OMB_COMPANION_HOSTED_URL);
 const PRIVATE_ORIGIN = companionOriginSocket(process.env.OMB_COMPANION_INTERNAL_ORIGIN);
 
@@ -125,7 +125,7 @@ const service = (): ServiceInfo => ({
   // one DNS label: no dots, and inside the 63-byte limit
   name: dnsLabel(machineName()),
   type: SERVICE_TYPE,
-  legacyTypes: [LEGACY_SERVICE_TYPE],
+  legacyTypes: [...LEGACY_SERVICE_TYPES],
   port: COMPANION_PORT,
   host: defaultHostName(),
   addresses: advertisableAddresses(),
