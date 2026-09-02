@@ -30,8 +30,20 @@ account. A user may separately sign in on the desktop to enable the optional
 - Connector tokens stay in the desktop operating system's encrypted credential
   store. Pairing and device tokens are not stored in the hosted control-plane
   database.
-- The app contains no advertising or analytics SDKs, does not track users
-  across other companies' apps or websites, and does not sell personal data.
+- The app contains no advertising or product-analytics SDK, does not track
+  users across other companies' apps or websites, and does not sell personal
+  data.
+- The app includes the Sentry crash-reporting SDK.  When a build is cut with a
+  Sentry DSN, the app sends crash reports, app-hang reports, a sample of
+  performance traces, and failed-request diagnostics (HTTP 5xx responses and
+  their URL) to Sentry, together with the device model, OS version, app
+  version, and an anonymous installation identifier.  These reports never
+  include message content, transcripts, screenshots, the view hierarchy, or
+  pairing tokens; query parameters named token, key, secret, auth, or password
+  are redacted on the phone before anything is sent.  Sentry processes this
+  data as BotFleet's service provider under Sentry's privacy terms and may
+  see the connection's IP address in transit.  Crash and performance data is
+  used only to find and fix defects and is not used for tracking.
 
 Local HTTP connections should only be used on a network the user trusts.
 Tailscale and hosted HTTPS access are encrypted alternatives for untrusted or
@@ -44,6 +56,10 @@ Revoking the phone in BotFleet's Companion settings invalidates that device
 credential. Transcript deletion is controlled by the BotFleet installation
 that stores the transcript.
 
+Crash and performance reports are kept on Sentry only as long as they are
+needed to diagnose a defect, within Sentry's retention limits, and are not
+linked to a BotFleet account.
+
 Signing out of optional hosted access stops advertising the hosted address,
 revokes the computer installation credential, and schedules deletion of its
 Cloudflare Tunnel and DNS record. Account email, account identifiers,
@@ -53,7 +69,7 @@ holder asks for deletion. Some minimal records may be retained when required
 for security, fraud prevention, dispute resolution, or law.
 
 To request a copy or deletion of hosted account data, open an
-[BotFleet Support](https://github.com/milind-soni/BotFleet/issues) request
+[BotFleet Support](https://github.com/jaywedgeworth22/BotFleet/issues) request
 without posting an OTP, pairing code, device token, connector token, or other
 secret. The maintainer will provide a private way to verify control of the
 email address. Deleting hosted account data does not delete transcripts stored
@@ -62,4 +78,4 @@ on the user's own computer.
 ## Support
 
 Privacy questions can be opened at
-[BotFleet Support](https://github.com/milind-soni/BotFleet/issues).
+[BotFleet Support](https://github.com/jaywedgeworth22/BotFleet/issues).
