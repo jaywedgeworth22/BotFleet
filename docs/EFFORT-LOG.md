@@ -15,6 +15,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
+- **2026-09-01 - GROK - IN_PROGRESS - Vercel auto-deploys skip unless site files changed, plus 1/hour (branch `grok/vercel-site-watch`, worktree `~/apps/botfleet-grok-vercel-watch`).**  Board `46837afd`.  Script `apps/site/vercel-ignore-hourly.sh` watches `apps/site` so iOS/docs commits do not ship botfleet.app.
 - **2026-09-01 - GROK - IN_PROGRESS - Product reach: iPad, chat files, APNs wake, iMessage LaunchAgent, Vercel 1/hour, desktop release host.**  Board `b43584ea` `a9683ae2` `4677da28` `af8f2776` `02ca3c98` `80dd2680` `9051c3ac`.  Issue #107.  Worktree `~/apps/botfleet-grok-reach` @ `grok/product-reach`.
 - **2026-09-01 — GROK — IN PROGRESS — Add fleet sentry-ci-report.yml + scripts/sentry-ci-report.py (branch `grok/sentry-ci-report`, worktree `~/apps/botfleet-grok-sentry-ci`, board `e70a89f7`).**  Gold copy UM PR #1394.  APP=`botfleet`.  Fingerprint `[ci-failure, botfleet, workflow]`.  <!-- wb-agent-report:e70a89f7 -->
 - **2026-09-01 — GROK — IN PROGRESS — Sentry production deploy records (`sentry-cli releases deploys new -e production`) (branch `grok/sentry-deploys`, worktree `~/apps/botfleet-grok-sentry-deploys`, board `2d1c8565`).**  Additive workflow for `botfleet` project on CI success for `main` push.  VERSION = full git SHA.  Soft-fail.
