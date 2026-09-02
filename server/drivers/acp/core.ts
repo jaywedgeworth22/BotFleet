@@ -150,6 +150,8 @@ export interface AcpSupport {
 
 const INIT_TIMEOUT = 20_000;
 const SESSION_CONFIG_TIMEOUT = 20_000; // configureSession's per-request default
+/** Upper bound on per-driver model discovery during registry load. */
+const BOOT_MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
 const NEW_SESSION_TIMEOUT = 30_000;
 const LOAD_SESSION_TIMEOUT = 120_000; // history replay on a long thread is slow
 
@@ -217,7 +219,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           // Keep the last usable catalog when an optional discovery source is down.
         }
       };
-      await refreshModels();
+      // Model discovery is best-effort at boot: a CLI that stalls must not
+      // keep the whole harness from listening. Past the deadline the static
+      // catalog stands and the refresh finishes in the background.
+      await Promise.race([
+        refreshModels(),
+        new Promise<void>((resolve) => setTimeout(resolve, BOOT_MODEL_DISCOVERY_TIMEOUT_MS).unref?.()),
+      ]);
       const listeners = new Set<RuntimeEventListener>();
       interface Turn {
         stop: () => void;

@@ -15,6 +15,9 @@ import {
   type ExecFileOptions,
   type SpawnOptions,
 } from "node:child_process";
+
+/** How long past a probe's soft `timeout` execCli waits for stdio to close before forcing the callback. */
+const HARD_EXEC_GRACE_MS = 2_000;
 import type { Readable, Writable } from "node:stream";
 import { join } from "node:path";
 import { resolveCliSpawn, type ResolvedSpawn } from "./env-path.ts";
@@ -58,9 +61,36 @@ export function execCli(
   cb: (err: Error | null, stdout: string, stderr?: string) => void,
 ): void {
   const resolved = resolveCli(cli, args);
-  execFile(resolved.command, resolved.args, { ...opts, windowsHide: true, encoding: "utf8" }, (err, stdout, stderr) =>
-    cb(err, stdout, stderr),
+  // execFile's own `timeout` only sends the kill signal; the callback still
+  // waits for the child's stdio to close. A CLI that ignores SIGTERM, or
+  // leaves a grandchild holding the pipe (Cursor 2026.08 prints and never
+  // exits), would otherwise hang every probe — and the harness boot with it.
+  // A hard deadline a little past the soft one guarantees the caller settles.
+  let settled = false;
+  const finish = (err: Error | null, stdout: string, stderr?: string) => {
+    if (settled) return;
+    settled = true;
+    if (hardTimer) clearTimeout(hardTimer);
+    cb(err, stdout, stderr);
+  };
+  const child = execFile(
+    resolved.command,
+    resolved.args,
+    { ...opts, windowsHide: true, encoding: "utf8" },
+    (err, stdout, stderr) => finish(err, stdout, stderr),
   );
+  const softTimeout = typeof opts.timeout === "number" && opts.timeout > 0 ? opts.timeout : 0;
+  const hardTimer = softTimeout
+    ? setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // already gone
+        }
+        finish(new Error(`\`${cli}\` did not exit within ${softTimeout}ms`), "");
+      }, softTimeout + HARD_EXEC_GRACE_MS)
+    : undefined;
+  hardTimer?.unref?.();
 }
 
 /** Human wording for a failed CLI spawn.
