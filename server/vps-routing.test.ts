@@ -98,6 +98,9 @@ function containerInspectTemplate(): string {
         ShmSize: 512 * 1024 * 1024,
         Devices: [],
         DeviceRequests: [],
+        RestartPolicy: { Name: "unless-stopped" },
+        CgroupnsMode: "private",
+        SecurityOpt: [],
         SecurityOpt: [],
         UsernsMode: "",
         CgroupnsMode: "private",
@@ -255,6 +258,7 @@ posixOnly("VPS turn routing e2e (fake ACP fleet + fake docker over SSH)", () => 
       let snapshot: any;
       await until(async () => {
         snapshot = await botById(bot.id);
+        if (!snapshot?.busy) console.log("SNAPSHOT_DEBUG:", snapshot.messages);
         return (
           snapshot?.busy === false &&
           snapshot.messages.some((m: any) => m.kind === "text" && m.text?.startsWith("echo: "))
