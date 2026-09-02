@@ -776,6 +776,13 @@ struct MessageRow: View {
             messageContent
         }
         .contextMenu {
+            Text(message.at, style: .time)
+            if let text = message.text, !text.isEmpty {
+                Button("Copy", systemImage: "doc.on.doc") {
+                    UIPasteboard.general.string = text
+                }
+            }
+            Divider()
             ForEach(Self.reactionChoices, id: \.self) { emoji in
                 Button(emoji) { Task { await session.react(to: message, in: chat.threadId, emoji: emoji) } }
             }
