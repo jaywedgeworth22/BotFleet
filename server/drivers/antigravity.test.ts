@@ -365,7 +365,8 @@ describe("Antigravity computer MCP config", () => {
     }
   });
 
-  it("advertises computerMcp only on full-auto instances, and never localComputerMcp", async () => {
+  it("advertises full computerMcp, localComputerMcp, and tools capabilities", async () => {
+    ensureDirs();
     const fullAuto = await AntigravityDriver.create({
       instanceId: "agy-caps-full",
       displayName: undefined,
@@ -382,15 +383,14 @@ describe("Antigravity computer MCP config", () => {
     });
     try {
       expect(fullAuto.adapter.capabilities.computerMcp).toBe(true);
-      // accept-edits print mode auto-denies tools that would prompt, so a
-      // mount there could never fire — the capability must not be offered.
-      expect(acceptEdits.adapter.capabilities.computerMcp).toBe(false);
-      // The host desktop needs per-action human approval; Gemini throws
-      // an error without this capability, so we expose it as !fullAuto.
-      expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(false);
-      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBe(true);
+      expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(true);
       expect(fullAuto.adapter.capabilities.agentsMcp).toBe(true);
-      expect(acceptEdits.adapter.capabilities.agentsMcp).toBe(false);
+      expect(fullAuto.adapter.capabilities.composioMcp).toBe(true);
+      expect(fullAuto.adapter.capabilities.phoneMcp).toBe(true);
+      expect(fullAuto.adapter.capabilities.qdrantMcp).toBe(true);
+      expect(acceptEdits.adapter.capabilities.computerMcp).toBe(true);
+      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBe(true);
+      expect(acceptEdits.adapter.capabilities.agentsMcp).toBe(true);
     } finally {
       await fullAuto.dispose();
       await acceptEdits.dispose();

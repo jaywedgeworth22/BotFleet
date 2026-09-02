@@ -273,6 +273,27 @@ function connectedAppsIntegration(botId: string, threadId: string) {
   });
 }
 
+function qdrantIntegration(botId: string, threadId: string) {
+  const qdrantCfg = cfg.qdrant;
+  const url = (qdrantCfg?.url || process.env.QDRANT_URL || "http://127.0.0.1:6333").replace(/\/+$/, "");
+  const apiKey = qdrantCfg?.apiKey || process.env.QDRANT_API_KEY || "";
+  const collection = qdrantCfg?.collection || process.env.QDRANT_COLLECTION || "botfleet-agent-rag";
+  const bot = store.bot(botId);
+  return {
+    command: process.execPath,
+    args: [SPAWNED_PROXIES.qdrant],
+    env: {
+      ...AGENTS_NODE_FLAG,
+      OMB_QDRANT_URL: url,
+      OMB_QDRANT_API_KEY: apiKey,
+      OMB_QDRANT_COLLECTION: collection,
+      OMB_BOT_ID: botId,
+      OMB_BOT_NAME: bot?.name || "Bot",
+      OMB_THREAD_ID: threadId,
+    },
+  };
+}
+
 // ── computer control (who is driving) ──────────────────────────────────
 // The person can take the wheel of a bot's computer from the panel; while
 // they hold it, the bot's computer proxies refuse every action. The record
@@ -1440,6 +1461,80 @@ bus.subscribe((event: RuntimeEvent) => {
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
+        let fallbackUserMessage: Message | undefined;
+        let fallbackSelection: ModelSelection | undefined;
+        const fallbackKey = `${bot.id}:${event.threadId}`;
+        const activeMsgs = store.activePath(event.threadId);
+        let lastUserIdx = -1;
+        for (let i = activeMsgs.length - 1; i >= 0; i--) {
+          if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
+            lastUserIdx = i;
+            fallbackUserMessage = activeMsgs[i];
+            break;
+          }
+        }
+
+        let isTextError = false;
+        if (lastUserIdx >= 0) {
+          const botReplies = activeMsgs.slice(lastUserIdx + 1).filter(m => m.role === "bot" && m.kind === "text" && typeof m.text === "string");
+          for (const m of botReplies) {
+            const txt = (m.text || "").trim();
+            if (
+               /session limit|hit your session limit|resets \d|rate.?limit|too many requests|overloaded|capacity|quota exceeded|insufficient.?quota|resource.?exhausted|ResourceExhausted|credits exhausted|account_inactive|service unavailable|bad gateway|internal server error|exited \d+ before/i.test(txt) &&
+               txt.length < 500
+            ) {
+               isTextError = true;
+               break;
+            }
+          }
+        }
+
+        const isOk = event.ok && !isTextError;
+
+        if (isOk) fallbackAttemptByTurn.delete(fallbackKey);
+        if (
+          !isOk &&
+          event.stopReason !== "interrupted" &&
+          event.stopReason !== "cancelled"
+        ) {
+          const chain = bot.modelSelection.fallbacks && bot.modelSelection.fallbacks.length > 0
+            ? bot.modelSelection.fallbacks
+            : undefined;
+          const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
+
+          if (chain && used < chain.length && fallbackUserMessage) {
+            const nextModel = chain[used];
+            fallbackAttemptByTurn.set(fallbackKey, used + 1);
+            fallbackSelection = {
+              instanceId: nextModel.instanceId,
+              model: nextModel.model,
+              effort: nextModel.effort,
+            };
+          } else if (!chain && used === 0 && fallbackUserMessage) {
+            // Intelligent auto failover when no custom fallback chain was explicitly assigned:
+            // Failover to another healthy available registered engine instance.
+            const candidates = registry.instances().filter((inst) =>
+              inst.instanceId !== bot.modelSelection.instanceId &&
+              inst.enabled !== false &&
+              Boolean(inst.models?.default)
+            );
+            const priority = ["claude", "antigravity", "gemini", "codex", "openaiCompat", "grok"];
+            candidates.sort((a, b) => {
+              const aIdx = priority.indexOf(a.instanceId);
+              const bIdx = priority.indexOf(b.instanceId);
+              return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+            });
+            if (candidates.length > 0) {
+              const candidate = candidates[0];
+              fallbackAttemptByTurn.set(fallbackKey, 1);
+              fallbackSelection = {
+                instanceId: candidate.instanceId,
+                model: candidate.models.default,
+              };
+            }
+          }
+        }
+
         const vpsTurn = activeVpsThreads.get(bot.id) === event.threadId;
         const clearVpsTurn = () => {
           if (activeVpsThreads.get(bot.id) === event.threadId) activeVpsThreads.delete(bot.id);
@@ -1476,6 +1571,11 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!group && fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
           const userMsg = fallbackUserMessage;
           const fallbackBotId = bot.id;
+          pushMessage({
+            role: "bot",
+            kind: "activity",
+            tool: { name: `Failover: switched to ${fallbackSelection.instanceId} (${fallbackSelection.model})`, ok: true },
+          });
           void startTurn(fallbackBotId, userMsg.text || "", {
             userMessage: userMsg,
             threadId: event.threadId,
@@ -1938,6 +2038,9 @@ async function startTurn(
       if (bot.composio !== false && composio.configured(cfg) && instance.adapter.capabilities.composioMcp === true) {
         const connection = await connectedAppsIntegration(bot.id, threadId);
         if (connection) integrations.composio = connection;
+      }
+      if (cfg.qdrant?.enabled !== false && instance.adapter.capabilities.qdrantMcp === true) {
+        integrations.qdrant = qdrantIntegration(bot.id, threadId);
       }
       // CLI engines work inside the bot's own workspace directory rather
       // than the user's home: a bot with file tools and acceptEdits gets a
@@ -2624,6 +2727,9 @@ async function runGroupMemberTurn(
       const connection = await connectedAppsIntegration(bot.id, threadId);
       if (connection) integrations.composio = connection;
     }
+    if (cfg.qdrant?.enabled !== false && instance.adapter.capabilities.qdrantMcp === true) {
+      integrations.qdrant = qdrantIntegration(bot.id, threadId);
+    }
   } catch (error) {
     const message = `connected apps are unavailable — ${error instanceof Error ? error.message : String(error)}`;
     store.appendMessage(threadId, {
@@ -3276,6 +3382,13 @@ function configStatus() {
     localVm: {
       mode: "shared",
       maxInstances: localVmMaxInstances(cfg),
+    },
+    qdrant: {
+      enabled: cfg.qdrant?.enabled !== false,
+      url: cfg.qdrant?.url || "http://127.0.0.1:6333",
+      configured: Boolean(cfg.qdrant?.url || cfg.qdrant?.apiKey),
+      hasApiKey: Boolean(cfg.qdrant?.apiKey),
+      collection: cfg.qdrant?.collection || "botfleet-agent-rag",
     },
     autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
     features: {
@@ -5793,6 +5906,44 @@ const server = createServer(async (req, res) => {
     }
     if (method === "GET" && path === "/api/telemetry/status") {
       return json(res, 200, telemetry.getStatus());
+    }
+    if (method === "GET" && path === "/api/qdrant/status") {
+      const qdrantCfg = cfg.qdrant;
+      const url = (qdrantCfg?.url || process.env.QDRANT_URL || "http://127.0.0.1:6333").replace(/\/+$/, "");
+      const apiKey = qdrantCfg?.apiKey || process.env.QDRANT_API_KEY || "";
+      const collection = qdrantCfg?.collection || process.env.QDRANT_COLLECTION || "botfleet-agent-rag";
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (apiKey) headers["api-key"] = apiKey;
+        const resList = await fetch(`${url}/collections`, { headers, signal: AbortSignal.timeout(4000) });
+        if (!resList.ok) {
+          return json(res, 200, { ready: false, url, collection, error: `HTTP ${resList.status}: ${resList.statusText}` });
+        }
+        const data = (await resList.json()) as { result?: { collections?: Array<{ name: string }> } };
+        const collections = (data.result?.collections || []).map((c) => c.name);
+        let pointsCount = 0;
+        if (collections.includes(collection)) {
+          const resColl = await fetch(`${url}/collections/${collection}`, { headers, signal: AbortSignal.timeout(4000) });
+          if (resColl.ok) {
+            const collData = (await resColl.json()) as { result?: { points_count?: number } };
+            pointsCount = collData.result?.points_count || 0;
+          }
+        }
+        return json(res, 200, {
+          ready: true,
+          url,
+          collection,
+          collections,
+          pointsCount,
+        });
+      } catch (err) {
+        return json(res, 200, {
+          ready: false,
+          url,
+          collection,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     if (method === "GET" && path === "/.well-known/apple-app-site-association") {
       return json(res, 200, {

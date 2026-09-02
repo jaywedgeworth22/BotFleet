@@ -638,6 +638,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.phone = { ...turn.integrations.phone };
         allowed.push("mcp__phone");
       }
+      if (turn.integrations?.qdrant) {
+        mcpServers.qdrant = { ...turn.integrations.qdrant };
+        allowed.push("mcp__qdrant");
+      }
       // dweb network daemon (status / repo / opencode model access) via
       // server/drivers/dweb-proxy.ts — points at the configured dweb instance
       if (turn.integrations?.dweb) {
@@ -1150,6 +1154,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           images: true,
           effortLevels: ["low", "medium", "high", "xhigh", "max"],
           queueing: true,
+          qdrantMcp: true,
           localComputerMcp: config.permissionMode !== "bypassPermissions",
         },
         sendTurn,

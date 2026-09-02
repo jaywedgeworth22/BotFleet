@@ -129,6 +129,8 @@ function ErrorRow({
           </div>
         ) : isProviderError(message) ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
+        ) : /provider|api key|rate.?limit|model|quota|session limit|exited|capacity|overloaded|unavailable|exhausted/i.test(message) ? (
+          <div className="flex items-center flex-wrap gap-2 mt-1.5">
             {onRetry && (
               <RecoveryButton icon={RefreshCw} label="Retry With Fallback" onClick={onRetry} />
             )}

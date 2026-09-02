@@ -31,6 +31,9 @@ export const STATIC_DSH_MODELS: ModelCatalog = {
   options: [
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    { id: "deepseek-v4-flash", label: "DeepSeek-V4-Flash" },
+    { id: "deepseek-v4-pro", label: "DeepSeek-V4-Pro" },
+    { id: "deepseek-v4-flash-vision-exp", label: "DeepSeek-V4-Flash-Vision-Exp" },
   ],
 };
 
@@ -40,6 +43,7 @@ const support: AcpSupport = {
   images: false,
   models: STATIC_DSH_MODELS,
   resolveModels: () => STATIC_DSH_MODELS,
+  effortLevels: ["low", "medium", "high", "max"] as const,
   defaultCli: "dsh",
   nativeSource: "dsh.acp",
   loginNote: "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",

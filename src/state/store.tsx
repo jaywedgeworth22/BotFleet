@@ -296,13 +296,15 @@ export interface ConfigStatus {
   /** who's using the app — collected in onboarding, shown in the sidebar */
   profile?: { name: string; email: string };
   autoUpdate?: { enabled: boolean };
+  /** Shared Qdrant Agent RAG vector database status */
+  qdrant?: { enabled: boolean; url: string; configured: boolean; hasApiKey: boolean; collection: string };
   /** Opt-in flags. Absent means off. */
   features?: { skillRecorder: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
 }
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "qdrant" | "features"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -320,6 +322,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     imageGen: frame.imageGen,
     profile: frame.profile,
     autoUpdate: frame.autoUpdate,
+    qdrant: frame.qdrant,
     features: frame.features,
   };
 }

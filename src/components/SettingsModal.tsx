@@ -17,6 +17,7 @@ import { UsageSection } from "./UsageSection";
 import { SkinPicker } from "./SkinPicker";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
 import { TranscriptionSettings } from "./TranscriptionSettings";
+import { QdrantRagConnection } from "./QdrantRagConnection";
 import { cn } from "@/lib/cn";
 
 const SECTIONS: Array<{
@@ -631,6 +632,7 @@ export function SettingsModal() {
                   <ApiKeyRow section="box" />
                   <VpsConnection />
                   <ApiKeyRow section="opencodeGo" />
+                  <QdrantRagConnection />
                   <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
                     <summary className="cursor-pointer text-[13px] text-ink-secondary">Custom Webhook Domain / Ingress</summary>
                     <div className="mt-3">
