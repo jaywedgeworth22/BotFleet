@@ -1,6 +1,12 @@
-# botfleet-site
+# botfleet-site (apps/site)
 
 The marketing / status site for **[BotFleet.app](https://botfleet.app)**.  A static page listing the add-on features BotFleet has added on top of upstream [OpenMausBot](https://github.com/milind-soni/OpenMausBot), badged **Beta** or **Established** by how far along each one is.
+
+## Deploy source of truth
+
+This directory (`apps/site` in the `jaywedgeworth22/BotFleet` monorepo) is the **only** deploy source for `botfleet.app`.  Vercel project `botfleet-site` has Root Directory set to `apps/site` and builds (`npm run build` → `node build.mjs`) on every push to this monorepo's `main` — whatever is committed here is what ships, gated by `vercel-ignore-hourly.sh` (skips previews, skips commits that did not touch site files, production at most once an hour unless `VERCEL_FORCE_DEPLOY=1`).  There is no GitHub Actions workflow for the site in this monorepo; Vercel's own Git integration does the build, no Action needed.
+
+A separate `jaywedgeworth22/botfleet-site` repo previously also deployed to the same Vercel project and the two fought over which build won.  That repo no longer exists (confirmed 404 via the GitHub API on 2026-09-02) so there is nothing left to disable.  If it is ever recreated or reconnected to the `botfleet-site` Vercel project, its deploy workflow must be disabled (or the project's Git integration repointed here) before it is allowed to push again — otherwise the dual-deploy race comes back.
 
 ## Stack
 
@@ -10,12 +16,12 @@ Static HTML/CSS rendered from `features.json` via `node build.mjs`, hosted on Ve
 - `template.html` + `build.mjs` — render `index.html` from the data.
 - `sync-status.mjs` — refreshes each card's PR state from GitHub and reports merged-but-unlisted PRs and promotion candidates; it never moves a card between sections on its own.
 - `logo-256.png` / `icon-1024.png` / `apple-touch-icon.png` / `favicon-64.png` — BotFleet brand assets (from the BotFleet repo's `build/` icons).
-- `vercel.json` — clean URLs.
-- `.github/workflows/deploy.yml` — every push to `main` builds and deploys to Vercel; a daily run also syncs PR states.
+- `.well-known/apple-app-site-association` — associated-domains file for the iOS app's Universal Links (`applinks:botfleet.app`) and shared web credentials (`webcredentials:botfleet.app`); appIDs use Team `CC8UTF7ATG` / bundle `app.botfleet`.  Must stay in sync with `ios/App/BotFleet.entitlements`.
+- `vercel.json` — clean URLs plus a header rule that serves the AASA file as `application/json`.
 
 ## Updating the feature list
 
-Edit `features.json`, run `node build.mjs`, commit, push — the Action deploys.  Rules:
+Edit `features.json`, run `node build.mjs`, commit `index.html` too, push to `main` — Vercel deploys.  Rules:
 
 - Feature statuses: `Established` = merged to BotFleet `main` or deployed and verified; `Beta` = shipped in a branch or open PR.  The builder hides any section with zero features (owner rule for Established).
 - `node sync-status.mjs` after PRs merge; it updates states in `features.json` and prints promotion candidates — moving a card to Established stays a judgment call.
@@ -23,8 +29,8 @@ Edit `features.json`, run `node build.mjs`, commit, push — the Action deploys.
 - No internal agent seat names on the public site.
 - The bot roster is an example fleet, not a product claim — keep it framed that way.
 
-Manual deploy fallback: `vercel deploy --prod` from the repo root (project `botfleet-site`).
+Manual deploy fallback: `vercel deploy --prod` from `apps/site` (project `botfleet-site`).
 
 ## Coordination
 
-Fleet coordination happens on THE BOARD and #agent-sync per `/Users/jay/apps/AGENT-SYNC.md`.  This repo mirrors its effort rows in `docs/EFFORT-LOG.md`.
+Fleet coordination happens on THE BOARD and #agent-sync per `/Users/jay/apps/AGENT-SYNC.md`.  This directory mirrors its effort rows in `docs/EFFORT-LOG.md`.
