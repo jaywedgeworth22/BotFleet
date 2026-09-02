@@ -951,9 +951,9 @@ export class Store {
   appendMessage(threadId: string, message: Omit<Message, "id" | "at"> & { at?: number }): Message {
     const t = this.thread(threadId);
     const full: Message = { id: newId(), at: Date.now(), parentId: t.activeLeafId, ...redactBotAuthored(message) };
+    mdb.appendMessage(threadId, full);
     t.messages.push(full);
     t.activeLeafId = full.id;
-    mdb.appendMessage(threadId, full);
     if (full.kind === "screen") {
       for (const pruned of this.pruneScreenFrames(t)) {
         mdb.updateMessage(threadId, pruned);
@@ -1014,9 +1014,9 @@ export class Store {
       parentId: source.parentId ?? null,
       replyToId: source.replyToId,
     };
+    mdb.appendMessage(threadId, full);
     t.messages.push(full);
     t.activeLeafId = full.id;
-    mdb.appendMessage(threadId, full);
     this.emit({ type: "message", threadId, message: full });
     return full;
   }
@@ -1104,6 +1104,21 @@ export class Store {
     const bot = this.bot(id);
     if (!bot) return false;
     this.bots = this.bots.filter((b) => b.id !== id);
+    // Rooms keep their own roster.  Strip the deleted id so memberIds and
+    // defaultResponder never point at a ghost.  A remaining member becomes
+    // the lead; an empty roster falls back to mentions.
+    for (const group of [...this.groups]) {
+      if (!group.memberIds.includes(id)) continue;
+      const memberIds = group.memberIds.filter((memberId) => memberId !== id);
+      this.patchGroup(group.id, {
+        memberIds,
+        defaultResponder: normalizeGroupDefaultResponder(
+          group.defaultResponder,
+          memberIds,
+          Boolean(group.dm),
+        ),
+      });
+    }
     // every task's transcript goes with the bot, not just the open one
     for (const threadId of new Set([bot.threadId, ...(bot.tasks ?? []).map((t) => t.threadId)])) {
       this.deleteThreadRecord(threadId);

@@ -8,7 +8,7 @@ import { isIP } from "node:net";
 import { extname, join } from "node:path";
 
 import { z } from "zod";
-import { botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
+import { BOT_AVATAR_CROPS, botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
 import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
@@ -34,6 +34,12 @@ import { parseBotProfilePatch } from "./bot-profile.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { telemetry } from "./telemetry.ts";
+import {
+  lastUserTextIndex,
+  selectTurnFallback,
+  sliceIsShortProviderError,
+  turnProducedAssistantOutput,
+} from "./model-fallback.ts";
 import * as box from "./box.ts";
 import { cloudBackendChangeError, vpsAliasChangeError } from "./cloud-backend.ts";
 import * as composio from "./composio.ts";
@@ -788,9 +794,12 @@ function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
 const lastReply = new Map<string, string>();
 /** Per-thread fallback steps already used this user request.  Reset on a
  * successful turn and on a user-initiated startTurn so a later message
- * gets the full saved chain.  One-shot fallbacks never rewrite the bot's
- * configured primary. */
+ * gets the full saved chain.  A successful failover also patches the bot's
+ * modelSelection so the rest of the thread stays on the fallback engine. */
 const fallbackAttemptByTurn = new Map<string, number>();
+/** Room turns re-enter the member engine after turn.completed so failover
+ * does not race the sequential roster walk. */
+const pendingMemberFallback = new Map<string, { groupId: string; botId: string }>();
 
 /** Put a notification on the wire. Clients decide what to do with it — a
  * desktop notification now, a push to a paired phone later. */
@@ -839,6 +848,11 @@ const watchdog = new TurnWatchdog({
     finalizeDelegationWatch(turn.threadId, false, "", "Delegated turn stalled and was stopped");
     turnUsage.delete(turn.threadId);
     roomStallCompletions.stall(turn.threadId);
+    // The 6s grace is about bot busy, not the VM fence. Release the lease
+    // immediately so another thread can claim the desktop; releaseLocalVmThread
+    // is a no-op when this thread never held one, and turn.completed is safe
+    // to call again.
+    releaseLocalVmThread(turn.threadId);
     // ACP interruption settles within five seconds; other adapters settle
     // sooner. Keep ownership during that grace period so another turn cannot
     // overlap the process we are stopping. The normal turn.completed fold
@@ -1367,66 +1381,58 @@ bus.subscribe((event: RuntimeEvent) => {
       lastReply.delete(event.threadId);
       const lastReported = turnUsage.get(event.threadId);
       turnUsage.delete(event.threadId);
+      const speaker = groupSpeakers.get(event.threadId);
+      const group = store.groupByThread(event.threadId);
+      const fallbackBot = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
+      let fallbackUserMessage: Message | undefined;
+      let fallbackSelection: ModelSelection | undefined;
+      if (fallbackBot) {
+        const fallbackKey = `${fallbackBot.id}:${event.threadId}`;
+        const activeMsgs = store.activePath(event.threadId);
+        const lastUserIdx = lastUserTextIndex(activeMsgs);
+        const afterUser = lastUserIdx >= 0 ? activeMsgs.slice(lastUserIdx + 1) : [];
+        if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
+        const isTextError = sliceIsShortProviderError(afterUser);
+        const isOk = Boolean(event.ok) && !isTextError;
+        if (isOk) {
+          fallbackAttemptByTurn.delete(fallbackKey);
+          pendingMemberFallback.delete(event.threadId);
+        }
+        const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
+        const next = selectTurnFallback({
+          ok: isOk,
+          stopReason: event.stopReason,
+          produced: turnProducedAssistantOutput(afterUser, { textIsError: isTextError }),
+          fallbacks: fallbackBot.modelSelection.fallbacks,
+          used,
+        });
+        if (next && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
+          fallbackAttemptByTurn.set(fallbackKey, used + 1);
+          fallbackSelection = next;
+          store.patchBot(fallbackBot.id, {
+            modelSelection: {
+              ...fallbackBot.modelSelection,
+              instanceId: next.instanceId,
+              model: next.model,
+              effort: next.effort,
+            },
+          });
+          pushMessage({
+            role: "bot",
+            kind: "activity",
+            tool: { name: `Fell over to ${next.model}` },
+          });
+          if (group && speaker?.botId === fallbackBot.id) {
+            pendingMemberFallback.set(event.threadId, { groupId: group.id, botId: fallbackBot.id });
+          }
+        } else {
+          fallbackUserMessage = undefined;
+        }
+      }
       // group turns run on the room's thread — the speaking bot's task
       // tally is not the right home for a shared room's spend, so only
       // 1:1 task turns are tallied for now.
       if (bot) {
-        let fallbackUserMessage: Message | undefined;
-        let fallbackSelection: ModelSelection | undefined;
-        const fallbackKey = `${bot.id}:${event.threadId}`;
-        const activeMsgs = store.activePath(event.threadId);
-        let lastUserIdx = -1;
-        for (let i = activeMsgs.length - 1; i >= 0; i--) {
-          if (activeMsgs[i].role === "user" && activeMsgs[i].kind === "text") {
-            lastUserIdx = i;
-            fallbackUserMessage = activeMsgs[i];
-            break;
-          }
-        }
-
-        let isTextError = false;
-        if (lastUserIdx >= 0) {
-          const botReplies = activeMsgs.slice(lastUserIdx + 1).filter(m => m.role === "bot" && m.kind === "text" && typeof m.text === "string");
-          if (botReplies.length === 1) {
-            const txt = botReplies[0].text!.trim();
-            if (
-               /session limit|rate.?limit|too many requests|overloaded|capacity|internal server error|bad gateway|service unavailable|account_inactive/i.test(txt) &&
-               txt.length < 300
-            ) {
-               isTextError = true;
-            }
-          }
-        }
-
-        const isOk = event.ok && !isTextError;
-
-        if (isOk) fallbackAttemptByTurn.delete(fallbackKey);
-        if (
-          !isOk &&
-          event.stopReason !== "interrupted" &&
-          event.stopReason !== "cancelled" &&
-          bot.modelSelection.fallbacks?.length
-        ) {
-          const produced =
-            lastUserIdx >= 0 &&
-            activeMsgs.slice(lastUserIdx + 1).some(
-              (message) => message.role === "bot" && ((message.kind === "text" && !isTextError) || (message.kind === "activity" && message.tool?.ok !== false)),
-            );
-          const chain = bot.modelSelection.fallbacks;
-          const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
-          if (!produced && fallbackUserMessage && used < chain.length) {
-            const nextModel = chain[used];
-            fallbackAttemptByTurn.set(fallbackKey, used + 1);
-            fallbackSelection = {
-              instanceId: nextModel.instanceId,
-              model: nextModel.model,
-              effort: nextModel.effort,
-            };
-          } else {
-            fallbackUserMessage = undefined;
-          }
-        }
-
         const vpsTurn = activeVpsThreads.get(bot.id) === event.threadId;
         const clearVpsTurn = () => {
           if (activeVpsThreads.get(bot.id) === event.threadId) activeVpsThreads.delete(bot.id);
@@ -1460,7 +1466,7 @@ bus.subscribe((event: RuntimeEvent) => {
         // settled → idle; a setup failure already marked it dead, keep that
         if (store.bot(bot.id)?.activity !== "dead") store.setActivity(bot.id, "idle");
         store.patchBot(bot.id, { unread: true, inflightThreadId: undefined });
-        if (fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
+        if (!group && fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
           const userMsg = fallbackUserMessage;
           const fallbackBotId = bot.id;
           void startTurn(fallbackBotId, userMsg.text || "", {
@@ -1490,8 +1496,6 @@ bus.subscribe((event: RuntimeEvent) => {
           clearVpsTurn();
         }
       }
-      const speaker = groupSpeakers.get(event.threadId);
-      const group = store.groupByThread(event.threadId);
       if (speaker && group?.busyBotId === speaker.botId) {
         groupSpeakers.delete(event.threadId);
         store.patchGroup(group.id, { busyBotId: null, unread: true });
@@ -1792,7 +1796,7 @@ async function startTurn(
     /** Earlier text message this user turn is replying to. */
     replyTo?: Message;
     onDispatchError?: (message: string) => void;
-    /** One-shot engine for a fallback turn.  Does not persist. */
+    /** Override engine for this turn (model fallback).  Persistence is the caller's job. */
     modelSelection?: ModelSelection;
   },
 ) {
@@ -2774,6 +2778,15 @@ async function runGroupMemberTurn(
     drainQueuedSends();
     drainConnectorResumes();
     drainSecretResumes();
+  }
+
+  const pendingFallback = pendingMemberFallback.get(threadId);
+  if (pendingFallback && pendingFallback.botId === bot.id && pendingFallback.groupId === groupId) {
+    pendingMemberFallback.delete(threadId);
+    if (!isCancelled?.() && outcome === "settled") {
+      spoken.delete(bot.id);
+      return runGroupMemberTurn(groupId, threadId, bot.id, hop, spoken, cardContinuation, onDispatchError, isCancelled);
+    }
   }
 
   // chained mentions: a member's reply can summon teammates — one hop only
@@ -4693,6 +4706,17 @@ const server = createServer(async (req, res) => {
           return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
         }
         patch.avatarUrl = body.avatarUrl;
+      }
+      if (body.avatarCrop !== undefined) {
+        if (body.avatarCrop === null) patch.avatarCrop = null;
+        else if (
+          typeof body.avatarCrop === "string" &&
+          (BOT_AVATAR_CROPS as readonly string[]).includes(body.avatarCrop)
+        ) {
+          patch.avatarCrop = body.avatarCrop;
+        } else {
+          return json(res, 400, { error: "avatarCrop must be mascot, circle, rounded, or square" });
+        }
       }
       if (body.bulletin !== undefined) {
         if (typeof body.bulletin !== "string") return json(res, 400, { error: "bulletin must be a string" });

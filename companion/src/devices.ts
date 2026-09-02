@@ -238,6 +238,14 @@ export class DeviceRegistry {
       sameCredential(this.replay.requestId, requestId) &&
       sameDigest(this.replay.credentialHash, sha256(presented))
     ) {
+      // Revoke must not leave a recoverable bearer in the replay window.
+      // A lost pairing response is not a reason to re-issue a token the
+      // owner already took away.
+      const replayedId = this.replay.result.device.id;
+      if (!this.devices.some((device) => device.id === replayedId)) {
+        this.clearReplay();
+        return { error: "no pairing is in progress — open Phone settings on your computer" };
+      }
       return this.replay.result;
     }
 
@@ -335,6 +343,9 @@ export class DeviceRegistry {
     this.devices = this.devices.filter((d) => d.id !== id);
     if (this.devices.length === before) return false;
     this.lastSeenWrites.delete(id);
+    // The pairing replay stores the raw device token in memory.  Clearing it
+    // here is what keeps a retry after revoke from handing the bearer back.
+    this.clearReplay();
     this.persist();
     return true;
   }

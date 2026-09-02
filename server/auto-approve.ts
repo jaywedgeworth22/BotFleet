@@ -18,6 +18,9 @@ const DESTRUCTIVE = [
   /\bgit\s+push\s+[^|]*--force(-with-lease)?\b|\bgit\s+reset\s+--hard\b/i,
   /\bDROP\s+(TABLE|DATABASE)\b|\bTRUNCATE\s+TABLE\b/i,
   /\bsudo\s+rm\b|\bchmod\s+-R\s+777\s+\//i,
+  // Pipe a fetch into a shell or interpreter.  Auto / Always-allow must
+  // never cover `curl | sh`, `wget | bash`, or `curl | python -c`.
+  /\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?((ba)?sh|bash|zsh|fish|ksh|python3?|perl|ruby|node)\b/i,
 ];
 
 // Not destructive, but exactly what you don't hand over unattended: a

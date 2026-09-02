@@ -19,6 +19,7 @@
     --surface: #ffffff;
     --ink: #111318;
     --ink-soft: #4b5160;
+    --ink-muted: #6b7280;
     --line: #e4e6ea;
     --tile: #000000;
     --silver-hi: #e6e8eb;
@@ -146,8 +147,9 @@
     <nav class="links">
       <a href="#established">Established</a>
       <a href="#beta">Beta</a>
-      <a href="https://testflight.apple.com/join/XYZ123">TestFlight</a>
+      <a href="https://testflight.apple.com/join/ER6sPNMh">TestFlight</a>
       <a href="https://github.com/jaywedgeworth22/BotFleet">GitHub</a>
+      <a href="https://github.com/jaywedgeworth22/botfleet-releases">Releases</a>
     </nav>
   </div>
 </header>
@@ -165,25 +167,25 @@
     </p>
     <div class="cta-row" style="gap: 16px;">
       <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
-        <a class="cta" href="https://github.com/jaywedgeworth22/BotFleet/releases/latest">Download for Mac (Apple Silicon)</a>
-        <a href="https://github.com/jaywedgeworth22/BotFleet/releases" style="font-size: 13px; color: var(--ink-muted); text-decoration: underline;">See Previous Builds</a>
+        <a class="cta" href="https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet.dmg">Download for Mac (Apple Silicon)</a>
+        <a href="https://github.com/jaywedgeworth22/botfleet-releases/releases" style="font-size: 13px; color: var(--ink-muted); text-decoration: underline;">See Previous Builds</a>
       </div>
       <div style="display: flex; flex-direction: column; gap: 8px; align-items: center;">
-        <a class="cta" href="https://testflight.apple.com/join/XYZ123" style="background: var(--surface); color: var(--ink); border: 1px solid var(--line);">Join the iOS TestFlight</a>
+        <a class="cta" href="https://testflight.apple.com/join/ER6sPNMh" style="background: var(--surface); color: var(--ink); border: 1px solid var(--line);">Join the iOS TestFlight</a>
         <span class="cta-note" style="margin: 0; max-width: 250px; text-align: center;">Public beta of the iOS companion.</span>
       </div>
     </div>
     <p class="roster-label">An example fleet — the bots the maintainer runs today:</p>
     <div class="roster" role="group" aria-label="Example bot roster">
-      <span>Director</span><span>Builder</span><span>Reviewer</span>
+      <span>Builder</span><span>Reviewer</span><span>Scout</span>
     </div>
   </section>
 
   <div class="legend">
     <div><span class="badge est">Established</span>&nbsp; Merged to main, or deployed and verified in daily use.</div>
     <div><span class="badge beta">Beta</span>&nbsp; Shipped in a BotFleet branch or pull request and still under review or active testing.</div>
-    <div class="lineage">The open pull requests build on one another, so a feature can appear in more than
-      one PR's diff.&nbsp; Each card cites the pull request where the work originated.</div>
+    <div class="lineage">Cards cite a pull request only when that number is verified.&nbsp; Host or main
+      notes mean the work is on this Mac or already on BotFleet main without a single originating PR.</div>
   </div>
 
     <section class="features" id="established">
@@ -194,25 +196,25 @@
       <article class="card">
         <h3>Chat Bubble &amp; Request ID Copy Controls</h3>
         <p>Click any user or bot message bubble to instantly copy its text.&nbsp; Hover for a dedicated copy button with right-click options to copy the Request ID or Message ID for quick logging.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/5">#5</a> · Verified in daily use</div>
+        <div class="prov">Merged to <a href="https://github.com/jaywedgeworth22/BotFleet">main</a> · Verified in daily use</div>
       </article>
 
       <article class="card">
         <h3>Usage Telemetry &amp; Central Accounting</h3>
         <p>Live token consumption (prompt, completion, cache hits) and model costs stream to Usage Monitor (usage.jays.services) with automatic project and repo classification.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/5">#5</a> · Live on usage.jays.services</div>
+        <div class="prov">Live on usage.jays.services</div>
       </article>
 
       <article class="card">
         <h3>Multi-Repo Channels &amp; Interactive File Links</h3>
         <p>Channels can attach multiple repositories (e.g. AI Fleet Coordinator + Fleet Ops) with automatic context injection.&nbsp; Local file links open in default Mac apps with 1 click or reveal in Finder on Option-click.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/5">#5</a> · Verified in daily use</div>
+        <div class="prov">Merged to <a href="https://github.com/jaywedgeworth22/BotFleet">main</a> · Verified in daily use</div>
       </article>
 
       <article class="card">
-        <h3>Dynamic System Theme &amp; Update Controls</h3>
-        <p>Theme auto-switches between dark and light to match macOS.&nbsp; Includes update toggle preferences and refined in-app banner controls.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/5">#5</a> · Verified in daily use</div>
+        <h3>Studio Light Default &amp; Update Controls</h3>
+        <p>First visit uses Studio (light).&nbsp; Dark and System Auto are explicit picker rows, not the default.&nbsp; Includes update toggle preferences and in-app banner controls.</p>
+        <div class="prov">Merged to <a href="https://github.com/jaywedgeworth22/BotFleet">main</a> · Verified in daily use</div>
       </article>
 
     </div>
@@ -226,19 +228,19 @@
       <article class="card">
         <h3>Native DeepSeek Engine &amp; Pricing Breakdown</h3>
         <p>Native API and ACP drivers for DeepSeek V4 Flash, V4 Pro, and R1 Reasoner, complete with an in-app model rates and token pricing reference in Settings.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/5">#5</a> · Under active test</div>
+        <div class="prov">Under active test</div>
       </article>
 
       <article class="card">
         <h3>Multi-Tier Model Fallback Chains</h3>
-        <p>Assign 1st, 2nd, and 3rd choice fallback models to each bot.&nbsp; When primary engines hit rate limits or downtime, BotFleet degrades down the chain automatically without interrupting work.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/5">#5</a> · In review</div>
+        <p>Assign 1st, 2nd, and 3rd choice fallback models to each bot.&nbsp; Failover after some streamed error paths is in review on main.&nbsp; Automatic degrade down the full chain is not established yet.</p>
+        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/89">#89</a> · In review</div>
       </article>
 
       <article class="card">
         <h3>Mid-Task Crash &amp; Restart Recovery</h3>
         <p>Interrupted turns and mid-flight tool executions are automatically detected on boot, prompting immediate resumption instead of leaving tasks stuck in an unknown state.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/5">#5</a> · In review</div>
+        <div class="prov">In review</div>
       </article>
 
       <article class="card">
@@ -249,26 +251,26 @@
 
       <article class="card">
         <h3>iOS Companion Deep-Link Infrastructure</h3>
-        <p>Universal Links (BotFleet.app), App Groups, and Remote Control companion for iPhone and iPad, prepared for public TestFlight.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/5">#5</a> · open</div>
+        <p>Universal Links (botfleet.app), App Groups, and Remote Control companion for iPhone (iPad runs in compatibility mode).&nbsp; Alerts are SSE plus local notifications while the companion is open.&nbsp; A killed app does not wake.</p>
+        <div class="prov">Pull requests <a href="https://github.com/jaywedgeworth22/BotFleet/pull/12">#12</a>, <a href="https://github.com/jaywedgeworth22/BotFleet/pull/26">#26</a> · Public TestFlight</div>
       </article>
 
       <article class="card">
         <h3>Fleet MCP Tools &amp; Standard Skills</h3>
         <p>Global MCP servers from Claude desktop configurations merged into BotFleet bots, alongside standard fleet repo skills.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/1">#1</a> · open</div>
+        <div class="prov">Under active test</div>
       </article>
 
       <article class="card">
         <h3>Custom Webhook Ingress Domain</h3>
         <p>Route webhook triggers to a dedicated custom domain with token validation for external CI/CD pipelines.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/5">#5</a> · open</div>
+        <div class="prov">Under active test</div>
       </article>
 
       <article class="card">
         <h3>One-Command TestFlight Ship</h3>
         <p>Automated signing, archiving, and TestFlight upload pipeline from the Mac build environment.</p>
-        <div class="prov">Pull request <a href="https://github.com/jaywedgeworth22/BotFleet/pull/4">#4</a> · Merged to integration branch</div>
+        <div class="prov">In review</div>
       </article>
 
     </div>
@@ -281,28 +283,11 @@
     <div>BotFleet builds on <a href="https://github.com/milind-soni/OpenMausBot">OpenMausBot</a>, an
       open-source project by Milind Soni and contributors.&nbsp; BotFleet source lives at
       <a href="https://github.com/jaywedgeworth22/BotFleet">github.com/jaywedgeworth22/BotFleet</a>.&nbsp; iOS companion:
-      <a href="https://testflight.apple.com/join/XYZ123">public TestFlight</a>.</div>
+      <a href="https://testflight.apple.com/join/ER6sPNMh">public TestFlight</a>.</div>
     <div class="fine">© 2026 BotFleet.&nbsp; Last updated Tue, Sep 1, 2026.</div>
   </div>
 </footer>
 
-<script src="https://browser.sentry-cdn.com/10.73.0/bundle.tracing.replay.feedback.min.js" crossorigin="anonymous"></script>
-<script>
-(function () {
-  if (typeof Sentry === "undefined") return;
-  Sentry.init({
-    dsn: "https://3fb94d8a19248d0bd1cc75694d9d6586@o4511650476326912.ingest.us.sentry.io/4512009246736384",
-    environment: "production",
-    tracesSampleRate: 0.2,
-    replaysSessionSampleRate: 0.1,
-    replaysOnErrorSampleRate: 1.0,
-    enableLogs: true,
-    integrations: [
-      Sentry.replayIntegration({ maskAllText: true, blockAllMedia: true }),
-      Sentry.feedbackIntegration({ colorScheme: "light", autoInject: true, showBranding: false, buttonLabel: "Report a problem", submitButtonLabel: "Send", formTitle: "Report a problem" })
-    ]
-  });
-})();
-</script>
+
 </body>
 </html>

@@ -4,7 +4,7 @@ The marketing / status site for **[BotFleet.app](https://botfleet.app)**.  A sta
 
 ## Stack
 
-Plain static HTML/CSS (no build step), hosted on Vercel.  DNS is a Cloudflare zone (`botfleet.app`) on the Usage.Jays.Services account; the registrar is Namecheap with nameservers pointed at Cloudflare.
+Static HTML/CSS rendered from `features.json` via `node build.mjs`, hosted on Vercel.  DNS is a Cloudflare zone (`botfleet.app`) on the Usage.Jays.Services account; the registrar is Namecheap with nameservers pointed at Cloudflare.
 
 - `features.json` — the feature list (the only file to edit for content changes).
 - `template.html` + `build.mjs` — render `index.html` from the data.

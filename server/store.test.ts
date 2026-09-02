@@ -411,6 +411,24 @@ describe("Store", () => {
     expect(new Store(selection).messagesFor(bot.threadId)).toHaveLength(0);
     expect(store.deleteBot(bot.id)).toBe(false);
   });
+
+  it("deleteBot strips the id from every room roster and reassigns the lead", () => {
+    const store = new Store(selection);
+    const lead = store.createBot({ name: "Lead" });
+    const other = store.createBot({ name: "Other" });
+    const room = store.createGroup("Ops", [lead.id, other.id]);
+    expect(room.defaultResponder).toEqual({ kind: "member", botId: lead.id });
+
+    expect(store.deleteBot(lead.id)).toBe(true);
+    const leftover = store.group(room.id);
+    expect(leftover?.memberIds).toEqual([other.id]);
+    expect(leftover?.defaultResponder).toEqual({ kind: "member", botId: other.id });
+
+    expect(store.deleteBot(other.id)).toBe(true);
+    const empty = store.group(room.id);
+    expect(empty?.memberIds).toEqual([]);
+    expect(empty?.defaultResponder).toEqual({ kind: "mentions" });
+  });
   it("migrates a pre-branching flat transcript file", () => {
     const store = new Store(selection);
     // seedMessages:false — a legacy-era thread has its history ONLY in the

@@ -20,5 +20,10 @@ the IDs in `wrangler.jsonc`, deploy under their own Worker name, and set
 `OMB_COMPOSIO_BROKER_URL` in their packaged build. Running only the local
 server with a Composio project key remains the no-Cloudflare self-host path.
 
-Set `REGISTRATION_MODE` to `closed` to stop issuing new installation tokens
-without affecting existing users.
+Production `wrangler.jsonc` vars set `REGISTRATION_MODE` to `closed` so strangers
+cannot `POST /v1/installations` on the shared `workers.dev` Worker.  Existing
+installations keep working.  Set it back to `open` only for a controlled bootstrap.
+
+Session upgrade attempts persist on the existing D1 `installations` row
+(`session_upgrade_attempted`).  Apply migration `0002_session_upgrade.sql` before
+or with the next `pnpm broker:deploy`.

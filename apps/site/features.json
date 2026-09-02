@@ -1,10 +1,12 @@
 {
   "site": {
-    "testflightUrl": "https://testflight.apple.com/join/XYZ123",
+    "testflightUrl": "https://testflight.apple.com/join/ER6sPNMh",
     "repo": "https://github.com/jaywedgeworth22/BotFleet",
-    "upstream": "https://github.com/milind-soni/OpenMausBot"
+    "upstream": "https://github.com/milind-soni/OpenMausBot",
+    "releases": "https://github.com/jaywedgeworth22/botfleet-releases",
+    "macDownload": "https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet.dmg"
   },
-  "exampleFleet": ["Director", "Builder", "Reviewer"],
+  "exampleFleet": ["Builder", "Reviewer", "Scout"],
   "sections": [
     {
       "id": "established",
@@ -16,22 +18,22 @@
         {
           "title": "Chat Bubble &amp; Request ID Copy Controls",
           "desc": "Click any user or bot message bubble to instantly copy its text.&nbsp; Hover for a dedicated copy button with right-click options to copy the Request ID or Message ID for quick logging.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "prov": { "type": "main", "note": "Verified in daily use" }
         },
         {
           "title": "Usage Telemetry &amp; Central Accounting",
           "desc": "Live token consumption (prompt, completion, cache hits) and model costs stream to Usage Monitor (usage.jays.services) with automatic project and repo classification.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Live on usage.jays.services" }
+          "prov": { "type": "host", "note": "Live on usage.jays.services" }
         },
         {
           "title": "Multi-Repo Channels &amp; Interactive File Links",
           "desc": "Channels can attach multiple repositories (e.g. AI Fleet Coordinator + Fleet Ops) with automatic context injection.&nbsp; Local file links open in default Mac apps with 1 click or reveal in Finder on Option-click.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "prov": { "type": "main", "note": "Verified in daily use" }
         },
         {
-          "title": "Dynamic System Theme &amp; Update Controls",
-          "desc": "Theme auto-switches between dark and light to match macOS.&nbsp; Includes update toggle preferences and refined in-app banner controls.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Verified in daily use" }
+          "title": "Studio Light Default &amp; Update Controls",
+          "desc": "First visit uses Studio (light).&nbsp; Dark and System Auto are explicit picker rows, not the default.&nbsp; Includes update toggle preferences and in-app banner controls.",
+          "prov": { "type": "main", "note": "Verified in daily use" }
         }
       ]
     },
@@ -45,17 +47,17 @@
         {
           "title": "Native DeepSeek Engine &amp; Pricing Breakdown",
           "desc": "Native API and ACP drivers for DeepSeek V4 Flash, V4 Pro, and R1 Reasoner, complete with an in-app model rates and token pricing reference in Settings.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "Under active test" }
+          "prov": { "type": "host", "note": "Under active test" }
         },
         {
           "title": "Multi-Tier Model Fallback Chains",
-          "desc": "Assign 1st, 2nd, and 3rd choice fallback models to each bot.&nbsp; When primary engines hit rate limits or downtime, BotFleet degrades down the chain automatically without interrupting work.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "In review" }
+          "desc": "Assign 1st, 2nd, and 3rd choice fallback models to each bot.&nbsp; Failover after some streamed error paths is in review on main.&nbsp; Automatic degrade down the full chain is not established yet.",
+          "prov": { "type": "pr", "prs": [89], "state": "merged", "note": "In review" }
         },
         {
           "title": "Mid-Task Crash &amp; Restart Recovery",
           "desc": "Interrupted turns and mid-flight tool executions are automatically detected on boot, prompting immediate resumption instead of leaving tasks stuck in an unknown state.",
-          "prov": { "type": "pr", "prs": [5], "state": "open", "note": "In review" }
+          "prov": { "type": "host", "note": "In review" }
         },
         {
           "title": "Always-On iMessage Relay Daemon",
@@ -64,23 +66,23 @@
         },
         {
           "title": "iOS Companion Deep-Link Infrastructure",
-          "desc": "Universal Links (BotFleet.app), App Groups, and Remote Control companion for iPhone and iPad, prepared for public TestFlight.",
-          "prov": { "type": "pr", "prs": [5], "state": "open" }
+          "desc": "Universal Links (botfleet.app), App Groups, and Remote Control companion for iPhone (iPad runs in compatibility mode).&nbsp; Alerts are SSE plus local notifications while the companion is open.&nbsp; A killed app does not wake.",
+          "prov": { "type": "pr", "prs": [12, 26], "state": "merged", "note": "Public TestFlight" }
         },
         {
           "title": "Fleet MCP Tools &amp; Standard Skills",
           "desc": "Global MCP servers from Claude desktop configurations merged into BotFleet bots, alongside standard fleet repo skills.",
-          "prov": { "type": "pr", "prs": [1], "state": "open" }
+          "prov": { "type": "host", "note": "Under active test" }
         },
         {
           "title": "Custom Webhook Ingress Domain",
           "desc": "Route webhook triggers to a dedicated custom domain with token validation for external CI/CD pipelines.",
-          "prov": { "type": "pr", "prs": [5], "state": "open" }
+          "prov": { "type": "host", "note": "Under active test" }
         },
         {
           "title": "One-Command TestFlight Ship",
           "desc": "Automated signing, archiving, and TestFlight upload pipeline from the Mac build environment.",
-          "prov": { "type": "pr", "prs": [4], "state": "merged", "note": "Merged to integration branch" }
+          "prov": { "type": "host", "note": "In review" }
         }
       ]
     }

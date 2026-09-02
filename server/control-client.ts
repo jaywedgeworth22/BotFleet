@@ -5,13 +5,10 @@
 // straight to the box's REST API, and a Local VM / VPS click rides a
 // transparent stdio bridge into Cua Driver.
 //
-// Failure posture: OPEN. Control is cooperation between the person and
-// their own bot — "hold my hands while you're driving" — not a security
-// boundary against a hostile agent (a hostile agent could reach the same
-// REST endpoint without this proxy). Failing closed would mean a harness
-// hiccup bricks every computer mid-turn, which costs more than the race
-// it would prevent: while the person is driving they are watching the
-// screen, and the panel shows the hold either way.
+// Failure posture: CLOSED when configured.  A harness hiccup must not let
+// the bot keep driving; read() returns held:true on fetch failure or a
+// non-ok response.  When this client is not configured (no URL/token) the
+// posture stays DISENGAGED (held:false) so local-only setups are unchanged.
 //
 // The state is cached briefly so a computer_batch of two dozen actions
 // doesn't turn into two dozen loopback round trips.
@@ -55,13 +52,15 @@ export function createControlClient(options?: {
   let cached: ControlState = DISENGAGED;
 
   async function read(): Promise<ControlState> {
+    const closed: ControlState = { held: true, helpOpen: false };
     try {
       const res = await fetchImpl(url, { headers, signal: AbortSignal.timeout(2_000) });
-      if (!res.ok) return DISENGAGED;
+      if (!res.ok) return closed;
       const body: any = await res.json().catch(() => null);
-      return { held: body?.held === true, helpOpen: body?.helpOpen === true };
+      if (!body || typeof body !== "object") return closed;
+      return { held: body.held === true, helpOpen: body.helpOpen === true };
     } catch {
-      return DISENGAGED;
+      return closed;
     }
   }
 

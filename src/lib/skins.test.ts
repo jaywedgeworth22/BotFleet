@@ -49,4 +49,15 @@ describe("skins", () => {
       expect(skin.tagline.length).toBeGreaterThan(0);
     }
   });
+
+  it("defaults @theme and :root to Studio so a FOUC is light-first", () => {
+    expect(css).toMatch(/Defaults = Studio \(light-first\)/);
+    const theme = css.match(/@theme \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    const root = css.match(/:root \{([\s\S]*?)\n\}/)?.[1] ?? "";
+    expect(theme).toContain("--color-app: #f6f8fa");
+    expect(theme).toContain("--color-ink: #111418");
+    expect(root).toContain("--color-scrollbar: #c2cbd4");
+    expect(root).toContain("--color-maus-line: #57606a");
+    expect(css).toContain('[data-skin="midnight"]');
+  });
 });

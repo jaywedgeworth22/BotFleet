@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
+import worker, {
   authorize,
   connectedServices,
   connectionStatus,
@@ -40,6 +40,11 @@ function testEnv(fetchCalls: Array<{ url: string; init?: RequestInit }>) {
             return {
               run: async () => {
                 dbRuns.push({ sql, values });
+                return { success: true, meta: { changes: 1 } };
+              },
+              first: async () => {
+                dbRuns.push({ sql, values });
+                return null;
               },
             };
           },
@@ -282,5 +287,39 @@ describe("connected-apps broker boundaries", () => {
   it("validates aliases at the broker boundary", () => {
     expect(normalizeAccountAlias("  work gmail  ")).toBe("work gmail");
     expect(() => normalizeAccountAlias("bad\nalias")).toThrow(/printable/i);
+  });
+
+  it("does not recreate a Session after D1 records the upgrade attempt", async () => {
+    const fetchCalls: Array<{ url: string; init?: RequestInit }> = [];
+    const { env, ctx } = testEnv(fetchCalls);
+    vi.stubGlobal("fetch", async (input: string | URL | Request, init?: RequestInit) => {
+      fetchCalls.push({ url: String(input), init });
+      return Response.json(session("trs_legacy", "omb_stable", false));
+    });
+
+    await expect(ensureSession({
+      id: "install-1",
+      composio_user_id: "omb_stable",
+      session_id: "trs_legacy",
+      disabled_at: null,
+      session_upgrade_attempted: 1,
+    }, env as never, ctx as never)).resolves.toMatchObject({ sessionId: "trs_legacy", multiAccountConfigured: false });
+    expect(fetchCalls.some((call) => call.init?.method === "POST")).toBe(false);
+  });
+
+  it("rejects new installations when REGISTRATION_MODE is closed", async () => {
+    const { env, ctx } = testEnv([]);
+    const closedEnv = {
+      ...env,
+      REGISTRATION_MODE: "closed",
+      REGISTRATION_LIMITER: { limit: async () => ({ success: true }) },
+    };
+    const response = await worker.fetch(
+      new Request("https://broker.test/v1/installations", { method: "POST" }),
+      closedEnv as never,
+      ctx as never,
+    );
+    expect(response.status).toBe(503);
+    await expect(response.json()).resolves.toEqual({ error: "registration is temporarily closed" });
   });
 });

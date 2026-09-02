@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Menu } from "lucide-react";
+import { Loader2, Menu, X } from "lucide-react";
 import { StoreProvider, useStore, type AppSettingsSection } from "@/state/store";
+import { ERROR_RECOVERY_EVENT, type ErrorRecoveryDetail } from "@/components/ErrorRow";
 import { Onboarding } from "@/components/Onboarding";
 import { emailGateDone, initAnalytics } from "@/lib/analytics";
 import { unreadConversationCount } from "@/lib/unread";
@@ -78,6 +79,40 @@ function Shell() {
   useEffect(() => {
     window.ogb?.setUnreadCount?.(unreadCount);
   }, [unreadCount]);
+
+  useEffect(() => {
+    const onRecovery = (event: Event) => {
+      const detail = (event as CustomEvent<ErrorRecoveryDetail>).detail;
+      if (!detail) return;
+      const targetId = detail.botId || state.selectedId;
+      switch (detail.action) {
+        case "switch-model":
+          if (detail.botId) dispatch({ type: "select", id: detail.botId });
+          dispatch({ type: "toggleSettings", open: true });
+          break;
+        case "add-key":
+          dispatch({ type: "toggleAppSettings", open: true, section: "connections" });
+          break;
+        case "open-computer":
+          if (targetId) dispatch({ type: "select", id: targetId });
+          dispatch({ type: "toggleComputer", open: true });
+          break;
+        case "use-this-computer":
+          if (targetId && state.bots.some((candidate) => candidate.id === targetId)) {
+            dispatch({ type: "updateBot", botId: targetId, patch: { computer: "local" } });
+            dispatch({ type: "select", id: targetId });
+          }
+          dispatch({ type: "toggleComputer", open: true });
+          break;
+        case "create-local-vm":
+          if (targetId) dispatch({ type: "select", id: targetId });
+          dispatch({ type: "toggleComputer", open: true });
+          break;
+      }
+    };
+    window.addEventListener(ERROR_RECOVERY_EVENT, onRecovery);
+    return () => window.removeEventListener(ERROR_RECOVERY_EVENT, onRecovery);
+  }, [dispatch, state.selectedId, state.bots]);
 
   useEffect(() => {
     if (!window.ogb?.onMenuAction) return;
@@ -189,6 +224,22 @@ function Shell() {
     <div className="flex h-full flex-col">
       {/* fixed-position popup, bottom-left — outside the layout flow */}
       <UpdateBanner />
+      {state.error && (
+        <div
+          role="alert"
+          className="flex items-start justify-between gap-3 border-b border-danger/30 bg-danger/10 px-4 py-2 text-[13px] text-danger"
+        >
+          <span className="min-w-0 break-words">{state.error}</span>
+          <button
+            type="button"
+            aria-label="Dismiss error"
+            onClick={() => dispatch({ type: "error", message: null })}
+            className="shrink-0 rounded-md p-0.5 hover:bg-danger/15"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
       <div className="relative flex min-h-0 flex-1">
       <button
         type="button"

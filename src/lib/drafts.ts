@@ -2,7 +2,7 @@
 // id, so switching threads unmounts it and its local text state dies with
 // it. Drafts live in localStorage, so coming back to a bot — in this
 // session or after a restart — finds what you were typing still there.
-import { useCallback, useState, type SetStateAction } from "react";
+import { useCallback, useEffect, useState, type SetStateAction } from "react";
 import { isAttachment, type Attachment } from "./composer-attachments.js";
 
 const KEY = "omb-drafts";
@@ -60,6 +60,25 @@ interface EventTargetLike {
   dispatchEvent(event: unknown): boolean;
   addEventListener(type: string, listener: (event: unknown) => void): void;
   removeEventListener(type: string, listener: (event: unknown) => void): void;
+}
+
+/** Live composer chips listen here so a sidebar drop lands in the open draft. */
+export function subscribeDraftAttachmentUpdates(
+  id: string,
+  onChange: (attachments: Attachment[]) => void,
+): () => void {
+  if (typeof globalThis === "undefined" || !("addEventListener" in globalThis)) {
+    return () => {};
+  }
+  const target = globalThis as unknown as EventTargetLike;
+  const handler = (e: unknown) => {
+    const detail = (e as { detail?: { id?: string } })?.detail;
+    if (detail?.id === id) {
+      onChange(getDraftAttachments(getStore(), id));
+    }
+  };
+  target.addEventListener("omb-draft-attachments-updated", handler);
+  return () => target.removeEventListener("omb-draft-attachments-updated", handler);
 }
 
 export function appendDraftAttachments(id: string, newAttachments: Attachment[]): void {
@@ -128,19 +147,13 @@ export function useComposerDraft(
     [store, id],
   );
 
-  // Sync if attachments were appended externally (e.g. dropped onto sidebar row)
-  useState(() => {
-    if (typeof globalThis === "undefined" || !("addEventListener" in globalThis)) return;
-    const target = globalThis as unknown as EventTargetLike;
-    const handler = (e: unknown) => {
-      const detail = (e as { detail?: { id?: string } })?.detail;
-      if (detail?.id === id) {
-        setAttachmentState(getDraftAttachments(getStore(), id));
-      }
-    };
-    target.addEventListener("omb-draft-attachments-updated", handler);
-    return () => target.removeEventListener("omb-draft-attachments-updated", handler);
-  });
+  // Sidebar drops write storage then fire this event. useEffect so StrictMode
+  // and unmount actually remove the listener — useState initializers never run
+  // the returned cleanup.
+  useEffect(() => {
+    setAttachmentState(getDraftAttachments(getStore(), id));
+    return subscribeDraftAttachmentUpdates(id, setAttachmentState);
+  }, [id]);
 
   return [text, setText, attachments, setAttachments];
 }
