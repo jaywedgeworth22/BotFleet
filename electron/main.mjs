@@ -23,6 +23,8 @@ import { activateExistingWindow } from "./single-instance.mjs";
 import { pollServerIdentity } from "./server-boot-probe.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
 import { windowChromeOptions } from "./window-chrome.mjs";
+import { parseExternalHttpUrl, windowOpenExternalUrl } from "./external-url.mjs";
+import { resolveOpenablePath } from "./open-file.mjs";
 import { defaultSaveName, withSavableFile } from "./save-file.mjs";
 import {
   ensureManagedComposioCredentials,
@@ -67,6 +69,12 @@ const DEV_URL = process.env.ELECTRON_START_URL ?? "http://127.0.0.1:5199";
 const DEFAULT_COMPOSIO_BROKER_URL = "https://botfleet-composio.milindsoni201.workers.dev";
 let SERVER_PORT = 8799;
 const APP_ICON = path.join(__dirname, "resources/app-icon.png");
+// Windows groups notifications and the taskbar by this id.  Packaged builds
+// inherit it from electron-builder's appId; set it here so unpackaged runs
+// still match.
+if (process.platform === "win32") {
+  app.setAppUserModelId("com.botfleet.app");
+}
 let desktopViewerWindow = null;
 let desktopViewerOwner = null;
 let desktopViewerContextId = null;
@@ -1033,7 +1041,8 @@ function createWindow() {
   });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url);
+    const external = windowOpenExternalUrl(url);
+    if (external) void shell.openExternal(external);
     return { action: "deny" };
   });
   win.webContents.on("did-finish-load", () => deliverPackageInstall(win));
@@ -1290,37 +1299,20 @@ ipcMain.handle("desktop:save-file", async (event, rawPath) => {
   });
 });
 
+// Same confinement as save-file: fileURLToPath for file://, realpath, then
+// ~/.botfleet.  A path outside that tree must throw, not open.
 ipcMain.handle("desktop:open-file", async (_event, rawPath) => {
-  if (typeof rawPath !== "string") throw new Error("A file path is required");
-  let normPath = rawPath.trim();
-  if (normPath.startsWith("file://")) {
-    try {
-      normPath = decodeURIComponent(new URL(normPath).pathname);
-    } catch {
-      // keep normPath
-    }
-  }
-  if (!fs.existsSync(normPath)) {
-    throw new Error(`File does not exist: ${normPath}`);
-  }
-  const openError = await shell.openPath(normPath);
+  const filePath = await resolveOpenablePath(rawPath, { home: os.homedir() });
+  const openError = await shell.openPath(filePath);
   if (openError) {
-    shell.showItemInFolder(normPath);
+    shell.showItemInFolder(filePath);
   }
   return true;
 });
 
 ipcMain.handle("desktop:show-in-folder", async (_event, rawPath) => {
-  if (typeof rawPath !== "string") throw new Error("A file path is required");
-  let normPath = rawPath.trim();
-  if (normPath.startsWith("file://")) {
-    try {
-      normPath = decodeURIComponent(new URL(normPath).pathname);
-    } catch {
-      // keep normPath
-    }
-  }
-  shell.showItemInFolder(normPath);
+  const filePath = await resolveOpenablePath(rawPath, { home: os.homedir() });
+  shell.showItemInFolder(filePath);
   return true;
 });
 
@@ -1333,16 +1325,7 @@ ipcMain.handle("desktop:skin", (_event, skin) => {
 });
 
 ipcMain.handle("desktop:open-external", async (_event, rawUrl) => {
-  if (typeof rawUrl !== "string") throw new Error("A web address is required");
-  let url;
-  try {
-    url = new URL(rawUrl);
-  } catch {
-    throw new Error("That web address is invalid");
-  }
-  if (url.protocol !== "https:" && url.protocol !== "http:") {
-    throw new Error("Only web links can be opened");
-  }
+  const url = parseExternalHttpUrl(rawUrl);
   await shell.openExternal(url.toString());
   return true;
 });
