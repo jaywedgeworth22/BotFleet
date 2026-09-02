@@ -33,7 +33,16 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
-      - run: pnpm test
+      # `pnpm test` is one chain; running its parts as named steps makes the
+      # failing part visible from the check run without opening the job log.
+      - name: vitest suite (test floor)
+        run: node scripts/test-floor.mjs
+      - name: Composio broker tests
+        run: pnpm broker:test
+      - name: Electron node tests
+        run: pnpm test:updater && pnpm test:desktop-viewer && pnpm test:package-link && pnpm test:save-file && pnpm test:server-boot-probe
+      - name: packaged server smoke
+        run: pnpm test:packaged-server
       - run: pnpm check:electron
       - name: production UI build
         if: matrix.os == 'ubuntu-latest'
