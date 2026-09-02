@@ -20,7 +20,7 @@ BotFleet tracks upstream OpenMausBot closely and layers fleet-oriented add-ons o
 
 - **Always-on iMessage relay** — a host daemon plus LaunchAgents keep every bot group chat in Messages.app wired to the BotFleet backend in both directions while the relay is running.
 - **iOS companion infrastructure** — App Groups and Associated Domains entitlements, universal links, and a public TestFlight for the iPhone companion (iPad runs in compatibility mode).  Alerts are SSE plus local notifications while the companion is open; a killed app does not wake.
-- **Multi-tier model fallbacks** — first, second, and third choice models per bot.  Failover after some streamed error paths is in review; the full automatic chain is not established yet.
+- **Multi-tier model fallbacks** — first, second, and third choice models per bot.  Quota, usage-cap, and session-limit chips fail over to the saved chain automatically, including after tools already ran and in rooms.  Other streamed error paths are still in review.
 - **Native DeepSeek driver** — DeepSeek V3 and R1 join Claude, Codex, and Cursor via a native ACP driver plus the dsh bot.
 - **Mid-task restart recovery**, **usage and cost telemetry**, **multi-repo channels with clickable file links**, **custom webhook domains**, **menu bar tray integration**, **dynamic system theme**, and more — see [botfleet.app](https://botfleet.app) for the full, current list with per-feature provenance.
 

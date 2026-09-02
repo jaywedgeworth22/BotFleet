@@ -36,9 +36,11 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { telemetry } from "./telemetry.ts";
 import {
+  isQuotaOrCapText,
   lastUserTextIndex,
   selectTurnFallback,
   sliceIsShortProviderError,
+  turnHitQuotaOrCap,
   turnProducedAssistantOutput,
 } from "./model-fallback.ts";
 import * as box from "./box.ts";
@@ -1390,7 +1392,8 @@ bus.subscribe((event: RuntimeEvent) => {
         const lastUserIdx = lastUserTextIndex(activeMsgs);
         const afterUser = lastUserIdx >= 0 ? activeMsgs.slice(lastUserIdx + 1) : [];
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
-        const isTextError = sliceIsShortProviderError(afterUser);
+        const quotaOrCap = turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply);
+        const isTextError = sliceIsShortProviderError(afterUser) || quotaOrCap;
         const isOk = Boolean(event.ok) && !isTextError;
         if (isOk) {
           fallbackAttemptByTurn.delete(fallbackKey);
@@ -1401,18 +1404,24 @@ bus.subscribe((event: RuntimeEvent) => {
           ok: isOk,
           stopReason: event.stopReason,
           produced: turnProducedAssistantOutput(afterUser, { textIsError: isTextError }),
+          quotaOrCap,
           fallbacks: fallbackBot.modelSelection.fallbacks,
           used,
+          current: {
+            instanceId: fallbackBot.modelSelection.instanceId,
+            model: fallbackBot.modelSelection.model,
+          },
         });
         if (next && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
-          fallbackAttemptByTurn.set(fallbackKey, used + 1);
-          fallbackSelection = next;
+          const { nextUsed, instanceId, model, effort } = next;
+          fallbackAttemptByTurn.set(fallbackKey, nextUsed);
+          fallbackSelection = { instanceId, model, effort };
           store.patchBot(fallbackBot.id, {
             modelSelection: {
               ...fallbackBot.modelSelection,
-              instanceId: next.instanceId,
-              model: next.model,
-              effort: next.effort,
+              instanceId,
+              model,
+              effort,
             },
           });
           pushMessage({

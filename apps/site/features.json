@@ -51,8 +51,8 @@
         },
         {
           "title": "Multi-Tier Model Fallback Chains",
-          "desc": "Assign 1st, 2nd, and 3rd choice fallback models to each bot.&nbsp; Failover after some streamed error paths is in review on main.&nbsp; Automatic degrade down the full chain is not established yet.",
-          "prov": { "type": "pr", "prs": [89], "state": "merged", "note": "In review" }
+          "desc": "Assign 1st, 2nd, and 3rd choice fallback models to each bot.&nbsp; Quota, usage-cap, and session-limit chips fail over automatically, including after tools already ran and in rooms.&nbsp; Other streamed error paths are still in review.",
+          "prov": { "type": "pr", "prs": [89, 95], "state": "merged", "note": "Quota and session-limit failover in review" }
         },
         {
           "title": "Mid-Task Crash &amp; Restart Recovery",

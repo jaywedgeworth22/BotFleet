@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import type { ModelSelection } from "./contracts.ts";
 import {
+  isQuotaOrCapText,
   isShortProviderErrorText,
   lastUserTextIndex,
   selectTurnFallback,
   sliceIsShortProviderError,
+  turnHitQuotaOrCap,
   turnProducedAssistantOutput,
   type FallbackScanMessage,
 } from "./model-fallback.ts";
@@ -20,15 +22,19 @@ function decide(messagesAfterUser: FallbackScanMessage[], opts: {
   stopReason?: string | null;
   used?: number;
   chain?: ModelSelection[];
+  current?: { instanceId: string; model: string } | null;
 } = {}) {
   const textIsError = sliceIsShortProviderError(messagesAfterUser);
-  const produced = turnProducedAssistantOutput(messagesAfterUser, { textIsError });
+  const quotaOrCap = turnHitQuotaOrCap(messagesAfterUser);
+  const produced = turnProducedAssistantOutput(messagesAfterUser, { textIsError: textIsError || quotaOrCap });
   return selectTurnFallback({
-    ok: (opts.ok ?? false) && !textIsError,
+    ok: (opts.ok ?? false) && !textIsError && !quotaOrCap,
     stopReason: opts.stopReason,
     produced,
+    quotaOrCap,
     fallbacks: opts.chain ?? fallbacks,
     used: opts.used ?? 0,
+    current: opts.current,
   });
 }
 
@@ -38,7 +44,11 @@ describe("turnProducedAssistantOutput", () => {
       { role: "bot", kind: "activity", tool: { name: "Bash" } },
     ];
     expect(turnProducedAssistantOutput(afterUser)).toBe(false);
-    expect(decide(afterUser, { ok: false })).toEqual({ instanceId: "grok", model: "grok-4" });
+    expect(decide(afterUser, { ok: false })).toEqual({
+      instanceId: "grok",
+      model: "grok-4",
+      nextUsed: 1,
+    });
   });
 
   it("room messages with sender attribution use the same gate", () => {
@@ -47,7 +57,11 @@ describe("turnProducedAssistantOutput", () => {
       { role: "bot", kind: "activity", tool: { name: "error: HTTP 401", ok: false } },
     ];
     expect(turnProducedAssistantOutput(afterUser)).toBe(false);
-    expect(decide(afterUser, { ok: false })).toEqual({ instanceId: "grok", model: "grok-4" });
+    expect(decide(afterUser, { ok: false })).toEqual({
+      instanceId: "grok",
+      model: "grok-4",
+      nextUsed: 1,
+    });
   });
 
   it("counts a successful terminal tool result as produced", () => {
@@ -88,7 +102,83 @@ describe("turnProducedAssistantOutput", () => {
     const textIsError = sliceIsShortProviderError(afterUser);
     expect(textIsError).toBe(true);
     expect(turnProducedAssistantOutput(afterUser, { textIsError })).toBe(false);
-    expect(decide(afterUser, { ok: true })).toEqual({ instanceId: "grok", model: "grok-4" });
+    expect(decide(afterUser, { ok: true })).toEqual({
+      instanceId: "grok",
+      model: "grok-4",
+      nextUsed: 1,
+    });
+  });
+});
+
+describe("quota and session-limit failover", () => {
+  it("matches Grok's session-limit chip", () => {
+    const text = "You've hit your session limit · resets 12:10am (America/Chicago)";
+    expect(isQuotaOrCapText(text)).toBe(true);
+    expect(isShortProviderErrorText(text)).toBe(true);
+  });
+
+  it("matches usage-cap and quota chips", () => {
+    expect(isQuotaOrCapText("usage cap reached for this model")).toBe(true);
+    expect(isQuotaOrCapText("quota exceeded for this plan")).toBe(true);
+    expect(isQuotaOrCapText("Here is a long successful answer about quotas that is well over five hundred characters. ".repeat(8))).toBe(false);
+    expect(isQuotaOrCapText("Done.")).toBe(false);
+  });
+
+  it("fails over after successful tools when the last text is a session-limit chip", () => {
+    const afterUser: FallbackScanMessage[] = [
+      { role: "bot", kind: "activity", tool: { name: "Bash", ok: true } },
+      { role: "bot", kind: "activity", tool: { name: "Read", ok: true } },
+      { role: "bot", kind: "text", text: "You've hit your session limit · resets 12:10am (America/Chicago)" },
+    ];
+    expect(turnProducedAssistantOutput(afterUser)).toBe(true);
+    expect(turnHitQuotaOrCap(afterUser)).toBe(true);
+    expect(decide(afterUser, { ok: true })).toEqual({
+      instanceId: "grok",
+      model: "grok-4",
+      nextUsed: 1,
+    });
+  });
+
+  it("fails over from an error activity chip that names the quota", () => {
+    const afterUser: FallbackScanMessage[] = [
+      { role: "bot", kind: "activity", tool: { name: "Bash", ok: true } },
+      { role: "bot", kind: "activity", tool: { name: "error: quota exceeded for this plan", ok: false } },
+    ];
+    expect(turnHitQuotaOrCap(afterUser)).toBe(true);
+    expect(decide(afterUser, { ok: false })).toEqual({
+      instanceId: "grok",
+      model: "grok-4",
+      nextUsed: 1,
+    });
+  });
+
+  it("skips a fallback that is the same engine as the current primary", () => {
+    const afterUser: FallbackScanMessage[] = [
+      { role: "bot", kind: "text", text: "You've hit your session limit · resets 12:10am (America/Chicago)" },
+    ];
+    expect(
+      decide(afterUser, {
+        ok: true,
+        current: { instanceId: "grok", model: "grok-4" },
+      }),
+    ).toEqual({
+      instanceId: "claude",
+      model: "claude-sonnet-5",
+      nextUsed: 2,
+    });
+  });
+
+  it("does not invent an engine when every saved fallback matches the primary", () => {
+    const afterUser: FallbackScanMessage[] = [
+      { role: "bot", kind: "text", text: "quota exceeded" },
+    ];
+    expect(
+      decide(afterUser, {
+        ok: true,
+        current: { instanceId: "claude", model: "claude-opus-5" },
+        chain: [{ instanceId: "claude", model: "claude-opus-5" }],
+      }),
+    ).toBeUndefined();
   });
 });
 
@@ -104,6 +194,7 @@ describe("selectTurnFallback", () => {
     expect(decide(afterUser, { ok: false, used: 1 })).toEqual({
       instanceId: "claude",
       model: "claude-sonnet-5",
+      nextUsed: 2,
     });
     expect(decide(afterUser, { ok: false, used: 2 })).toBeUndefined();
   });
