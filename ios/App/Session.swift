@@ -835,7 +835,8 @@ final class Session: ObservableObject {
             } else {
                 urlVal = .clear
             }
-            let patch = RoomPatch(avatarUrl: urlVal, avatarCrop: .circle)
+            let currentCrop = state.rooms.first(where: { $0.id == id })?.avatarCrop ?? .circle
+            let patch = RoomPatch(avatarUrl: urlVal, avatarCrop: currentCrop)
             let updated = try await client.updateRoom(id: id, patch: patch)
             if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
                 state.rooms[index] = updated
