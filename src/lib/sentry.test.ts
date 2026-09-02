@@ -24,6 +24,8 @@ describe("browser Sentry", () => {
     expect(swift).not.toMatch(/ingest\.sentry\.io/);
     expect(swift).not.toMatch(/\?\? "https:\/\//);
     const yml = readFileSync(join(ROOT, "ios/project.yml"), "utf8");
-    expect(yml).toMatch(/^\s+SENTRY_DSN:\s+"https:\/\//m);
+    expect(yml).toMatch(/^\s+SENTRY_DSN:\s*""\s*$/m);
+    expect(yml).toMatch(/^\s+SENTRY_DSN:\s*\$\(SENTRY_DSN\)\s*$/m);
+    expect(yml).not.toMatch(/SENTRY_DSN:\s*"https:\/\//);
   });
 });
