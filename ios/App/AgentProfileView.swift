@@ -21,6 +21,7 @@ struct AgentProfileView: View {
     @State private var instanceId: String
     @State private var modelId: String
     @State private var fallbacks: [ModelSelection]
+    @State private var computers: Set<String>
     @State private var photo: PhotosPickerItem?
     @State private var prompt = ""
     @State private var voices: [Voice] = []
@@ -42,6 +43,7 @@ struct AgentProfileView: View {
         _instanceId = State(initialValue: bot.modelSelection.instanceId)
         _modelId = State(initialValue: bot.modelSelection.model)
         _fallbacks = State(initialValue: bot.modelSelection.fallbacks ?? [])
+        _computers = State(initialValue: Set(bot.computers ?? []))
         _baseline = State(initialValue: ProfileFormSnapshot(bot: bot))
     }
 
@@ -168,6 +170,22 @@ struct AgentProfileView: View {
                                 fallbacks.append(ModelSelection(instanceId: instanceId, model: modelId))
                             }
                         }
+                    }
+                }
+
+                Section("Computers") {
+                    ForEach(["local", "cloud", "vm"], id: \.self) { comp in
+                        let label = comp == "local" ? "This computer" : comp == "vm" ? "VPS" : "Cloud VM"
+                        Toggle(label, isOn: Binding(
+                            get: { computers.contains(comp) },
+                            set: { isOn in
+                                if isOn {
+                                    computers.insert(comp)
+                                } else {
+                                    computers.remove(comp)
+                                }
+                            }
+                        ))
                     }
                 }
 
@@ -301,6 +319,8 @@ struct AgentProfileView: View {
     private func profilePatch() -> BotProfilePatch {
         let savedSpeakReplies = config.map { $0.canSpeak(agentVoice: voice) && speakReplies } ?? speakReplies
         let newModelSelection = ModelSelection(instanceId: instanceId, model: modelId, fallbacks: fallbacks.isEmpty ? nil : fallbacks)
+        let newComputers = Array(computers).sorted()
+        let baselineComputers = (baseline.computers ?? []).sorted()
         return BotProfilePatch(
             // The shared server contract owns the 100/200/4000 limits. Do not
             // silently apply narrower iOS-only limits to a user's profile.
@@ -314,7 +334,8 @@ struct AgentProfileView: View {
             // nil would mean the voice field is not part of this patch.
             voice: voice == baseline.voice ? nil : voice,
             speakReplies: savedSpeakReplies == baseline.speakReplies ? nil : savedSpeakReplies,
-            modelSelection: newModelSelection == baseline.modelSelection ? nil : newModelSelection
+            modelSelection: newModelSelection == baseline.modelSelection ? nil : newModelSelection,
+            computers: newComputers == baselineComputers ? nil : newComputers
         )
     }
 
@@ -431,6 +452,7 @@ struct AgentProfileView: View {
         instanceId = bot.modelSelection.instanceId
         modelId = bot.modelSelection.model
         fallbacks = bot.modelSelection.fallbacks ?? []
+        computers = Set(bot.computers ?? [])
         baseline = ProfileFormSnapshot(bot: bot)
     }
 }
@@ -444,6 +466,7 @@ private struct ProfileFormSnapshot {
     var voice: String
     var speakReplies: Bool
     var modelSelection: ModelSelection
+    var computers: [String]?
 
     init(bot: Bot) {
         name = bot.name
@@ -454,6 +477,7 @@ private struct ProfileFormSnapshot {
         voice = bot.voice ?? ""
         speakReplies = bot.speakReplies == true
         modelSelection = bot.modelSelection
+        computers = bot.computers
     }
 }
 

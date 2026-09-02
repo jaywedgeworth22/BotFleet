@@ -1,0 +1,94 @@
+ version: '3.8'                                           +
+ services:                                                +
+   congress-app:                                          +
+     build: .                                             +
+     container_name: congress-app                         +
+     cpus: '2.0'                                          +
+     mem_limit: 5g                                        +
+     pids_limit: 512                                      +
+     restart: unless-stopped                              +
+     ports:                                               +
+       - '127.0.0.1:5000:5000'                            +
+     volumes:                                             +
+       - '/data/congress-trade:/data/congress-trade'      +
+     env_file:                                            +
+       - .env                                             +
+     environment:                                         +
+       - DENO_KV_PATH=/data/congress-trade/kv.sqlite      +
+       - PORT=5000                                        +
+     healthcheck:                                         +
+       test:                                              +
+         - CMD                                            +
+         - wget                                           +
+         - '-q'                                           +
+         - '-O'                                           +
+         - /dev/null                                      +
+         - 'http://127.0.0.1:5000/api/health'             +
+       interval: 30s                                      +
+       timeout: 10s                                       +
+       retries: 5                                         +
+       start_period: 120s                                 +
+   sqlite-web:                                            +
+     build:                                               +
+       context: .                                         +
+       dockerfile: Dockerfile.sqlite-web                  +
+     container_name: congress-sqlite-web                  +
+     cpus: '1.0'                                          +
+     mem_limit: 1g                                      +
+     pids_limit: 128                                      +
+     restart: 'on-failure:3'                              +
+     ports:                                               +
+       - '127.0.0.1:18080:8080'                           +
+     volumes:                                             +
+       - '/data/congress-trade:/data/congress-trade'      +
+     env_file:                                            +
+       - .env                                             +
+     environment:                                         +
+       - 'SQLITE_WEB_PASSWORD=${SQLITE_WEB_PASSWORD}'     +
+     healthcheck:                                         +
+       test:                                              +
+         - CMD                                            +
+         - nc                                             +
+         - '-z'                                           +
+         - 127.0.0.1                                      +
+         - '8080'                                         +
+       interval: 30s                                      +
+       timeout: 10s                                       +
+       retries: 3                                         +
+       start_period: 30s                                  +
+   scan-cpu-worker:                                       +
+     build:                                               +
+       context: ../services/scan-cpu-worker               +
+     container_name: congress-scan-cpu-worker             +
+     cpus: '3.0'                                          +
+     mem_limit: 2g                                        +
+     pids_limit: 256                                      +
+     restart: unless-stopped                              +
+     env_file:                                            +
+       - .env                                             +
+     environment:                                         +
+       - 'CONGRESS_TRADE_API_URL=http://congress-app:5000'+
+       - WORKER_ID=server_cpu_1                           +
+       - OCR_BACKEND=tesseract                            +
+       - CHECKBOX_INK_RATIO=0.10                          +
+       - POLL_INTERVAL_SEC=30                             +
+       - HEARTBEAT_INTERVAL_SEC=60                        +
+       - EXTRACTOR=server_cpu_v1                          +
+     depends_on:                                          +
+       - congress-app                                     +
+     healthcheck:                                         +
+       test:                                              +
+         - CMD                                            +
+         - python3                                        +
+         - '-c'                                           +
+         - 'import sys; sys.exit(0)'                      +
+       interval: 30s                                      +
+       timeout: 10s                                       +
+       retries: 3                                         +
+       start_period: 30s                                  +
+ networks:                                                +
+   default:                                               +
+     name: coolify                                        +
+     external: true                                       +
+ 
+

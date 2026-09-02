@@ -99,7 +99,7 @@ function Shell() {
           break;
         case "use-this-computer":
           if (targetId && state.bots.some((candidate) => candidate.id === targetId)) {
-            dispatch({ type: "updateBot", botId: targetId, patch: { computer: "local" } });
+            dispatch({ type: "updateBot", botId: targetId, patch: { computers: ["local"] } });
             dispatch({ type: "select", id: targetId });
           }
           dispatch({ type: "toggleComputer", open: true });

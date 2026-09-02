@@ -61,14 +61,14 @@ export function linuxAutoDescription(): string {
 
 export function autoSelectsLocalComputer({
   platform,
-  computer,
+  computers,
   capabilitiesReady,
   localSelectable,
 }: {
   platform: DesktopCapabilities["host"]["platform"];
-  computer: Bot["computer"];
+  computers: Bot["computers"];
   capabilitiesReady: boolean;
   localSelectable: boolean;
 }): boolean {
-  return platform !== "linux" && computer !== "cloud" && capabilitiesReady && localSelectable;
+  return platform !== "linux" && !(computers ?? []).includes("cloud") && capabilitiesReady && localSelectable;
 }

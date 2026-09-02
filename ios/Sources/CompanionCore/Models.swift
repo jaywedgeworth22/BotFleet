@@ -202,7 +202,7 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     public var chiefOfStaff: Bool?
     public var autoApprove: Bool?
     public var alwaysAllow: [String]?
-    public var computer: String?
+    public var computers: [String]?
     /// Which cloud computer backs `computer == "cloud"`. Absent (older
     /// harnesses included) means the hosted Box; "vps" means the user's own
     /// server, which has no interactive desktop to offer a phone.
@@ -550,6 +550,7 @@ public struct BotProfilePatch: Encodable, Sendable {
     public var voice: String?
     public var speakReplies: Bool?
     public var modelSelection: ModelSelection?
+    public var computers: [String]?
 
     /// `avatarUrl` needs three wire states: omitted, a stored path, or JSON
     /// null to clear. A nested optional would technically represent that, but
@@ -568,7 +569,8 @@ public struct BotProfilePatch: Encodable, Sendable {
         avatarCrop: AvatarCrop? = nil,
         voice: String? = nil,
         speakReplies: Bool? = nil,
-        modelSelection: ModelSelection? = nil
+        modelSelection: ModelSelection? = nil,
+        computers: [String]? = nil
     ) {
         self.name = name
         self.title = title
@@ -579,10 +581,11 @@ public struct BotProfilePatch: Encodable, Sendable {
         self.voice = voice
         self.speakReplies = speakReplies
         self.modelSelection = modelSelection
+        self.computers = computers
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection
+        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection, computers
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -601,6 +604,7 @@ public struct BotProfilePatch: Encodable, Sendable {
         try values.encodeIfPresent(voice, forKey: .voice)
         try values.encodeIfPresent(speakReplies, forKey: .speakReplies)
         try values.encodeIfPresent(modelSelection, forKey: .modelSelection)
+        try values.encodeIfPresent(computers, forKey: .computers)
     }
 }
 

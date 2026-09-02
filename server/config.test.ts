@@ -9,7 +9,6 @@ import {
   isValidSshAlias,
   loadConfig,
   localVmMaxInstances,
-  localVmMode,
   parseConfigPatch,
   parseStoredConfig,
   roomTurnTimeoutMinutes,
@@ -72,13 +71,11 @@ describe("configuration boundaries", () => {
     },
   );
 
-  it("preserves shared Local VM behavior by default and accepts bounded per-bot mode", () => {
-    expect(localVmMode({})).toBe("shared");
+  it("accepts localVm maxInstances patch", () => {
     expect(localVmMaxInstances({})).toBe(2);
-    expect(parseConfigPatch({ localVm: { mode: "per-bot", maxInstances: 4 } })).toEqual({
-      localVm: { mode: "per-bot", maxInstances: 4 },
+    expect(parseConfigPatch({ localVm: { maxInstances: 4 } })).toEqual({
+      localVm: { maxInstances: 4 },
     });
-    expect(localVmMode({ localVm: { mode: "per-bot" } })).toBe("per-bot");
     expect(localVmMaxInstances({ localVm: { maxInstances: 3 } })).toBe(3);
   });
 

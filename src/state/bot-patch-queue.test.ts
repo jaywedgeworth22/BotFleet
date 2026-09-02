@@ -212,13 +212,13 @@ describe("bot patch queue", () => {
       onError: vi.fn(),
     });
 
-    queue.enqueue("bot-1", { computer: "local", acknowledgeLocalAuto: true }, bot());
+    queue.enqueue("bot-1", { computers: ["local"], acknowledgeLocalAuto: true }, bot());
     queue.enqueue("bot-1", { title: "Ops" }, bot());
-    expect(queue.overlayFor("bot-1")).toEqual({ computer: "local", title: "Ops" });
+    expect(queue.overlayFor("bot-1")).toEqual({ computers: ["local"], title: "Ops" });
     await vi.advanceTimersByTimeAsync(400);
     await queue.flush("bot-1");
 
-    expect(sent).toEqual([{ computer: "local", acknowledgeLocalAuto: true, title: "Ops" }]);
+    expect(sent).toEqual([{ computers: ["local"], acknowledgeLocalAuto: true, title: "Ops" }]);
     for (const overlay of overlays) expect(overlay).not.toHaveProperty("acknowledgeLocalAuto");
   });
 

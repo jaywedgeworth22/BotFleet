@@ -63,7 +63,6 @@ const roomConfigSchema = z.object({
     .max(MAX_ROOM_TURN_TIMEOUT_MINUTES),
 });
 const localVmConfigSchema = z.object({
-  mode: z.enum(["shared", "per-bot"]).optional(),
   maxInstances: z
     .number()
     .int()
@@ -139,8 +138,8 @@ export interface AppConfig {
   ingress?: { publicUrl?: string };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */
-  localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
   /** Opt-in product experiments. Every flag defaults to disabled. */
+  localVm?: { maxInstances?: number };
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
   instances?: InstanceConfigMap;
 }
@@ -173,9 +172,6 @@ export function publicIngressUrl(cfg: AppConfig): string | null {
   return raw && isAbsoluteHttpUrl(raw) ? raw.replace(/\/+$/, "") : null;
 }
 
-export function localVmMode(cfg: AppConfig): "shared" | "per-bot" {
-  return cfg.localVm?.mode ?? DEFAULT_LOCAL_VM_MODE;
-}
 
 export function localVmMaxInstances(cfg: AppConfig): number {
   return cfg.localVm?.maxInstances ?? DEFAULT_LOCAL_VM_MAX_INSTANCES;

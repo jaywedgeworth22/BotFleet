@@ -504,7 +504,7 @@ export function LocalVmWorkspace({
 }: LocalVmWorkspaceProps) {
   const { state, dispatch } = useStore();
   const eligibleBots = useMemo(
-    () => state.bots.filter((bot) => bot.computer === "vm" && !bot.hidden),
+    () => state.bots.filter((bot) => (bot.computers ?? []).includes("vm") && !bot.hidden),
     [state.bots],
   );
   const [slots, setSlots] = useState<LocalVmWorkspaceSlots>(() =>

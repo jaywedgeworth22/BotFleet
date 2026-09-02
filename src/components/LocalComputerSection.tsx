@@ -39,7 +39,6 @@ interface Status {
   workspace_guest_path: string;
   viewer_url: string;
   idle_timeout_ms: number;
-  mode: "shared" | "per-bot";
   max_instances: number;
   commands: {
     install: string | null;
@@ -105,8 +104,7 @@ export function LocalComputerSection() {
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [policyPending, setPolicyPending] = useState(false);
-  const [refreshKey, setRefreshKey] = useState(0);
+    const [refreshKey, setRefreshKey] = useState(0);
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch("/api/local-computer", { signal });
@@ -183,25 +181,7 @@ export function LocalComputerSection() {
     }
   };
 
-  const savePolicy = async (mode: Status["mode"], maxInstances: number) => {
-    setPolicyPending(true);
-    setError(null);
-    try {
-      const response = await fetch("/api/config", {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ localVm: { mode, maxInstances } }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(body.error ?? "Could not save the Local VM isolation policy");
-      setStatus((current) => current ? { ...current, mode, max_instances: maxInstances } : current);
-      await refresh();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setPolicyPending(false);
-    }
-  };
+
 
   const c = status?.commands;
   const ready = status?.ready === true;
@@ -217,7 +197,7 @@ export function LocalComputerSection() {
   );
   const unavailable = !loading && !status;
   const host = status?.platform === "darwin" ? "Mac" : "computer";
-  const perBot = status?.mode === "per-bot";
+  const perBot = false;
   const perBotRuntimeUnsupported = perBot && status?.runtime === "container";
   const headerReady = perBot ? Boolean(status?.daemonUp && status?.image && !perBotRuntimeUnsupported) : ready;
 
@@ -273,44 +253,7 @@ export function LocalComputerSection() {
         {error && <div className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger">{error}</div>}
       </Card>
 
-      <Card
-        title="Isolation"
-        subtitle="Shared keeps the original single-desktop behavior. Per bot gives each bot its own container, workspace, viewer port, lease, and idle timer."
-      >
-        <div className="flex overflow-hidden rounded-lg border border-hairline/40">
-          {(["shared", "per-bot"] as const).map((mode, index) => (
-            <button
-              key={mode}
-              type="button"
-              disabled={!status || policyPending}
-              onClick={() => void savePolicy(mode, status?.max_instances ?? 2)}
-              className={cn(
-                "flex-1 px-3 py-2 text-[13px] disabled:opacity-50",
-                index > 0 && "border-l border-hairline/40",
-                status?.mode === mode ? "bg-control text-ink" : "text-ink-secondary hover:text-ink",
-              )}
-            >
-              {mode === "shared" ? "Shared" : "Per bot"}
-            </button>
-          ))}
-        </div>
-        <div className="mt-3 flex items-center justify-between gap-3">
-          <div>
-            <div className="text-[13px] text-ink">Maximum per-bot desktops</div>
-            <div className="text-[11.5px] text-ink-secondary">Limits storage and host resource use; each running desktop may use up to 4 GB and 2 CPUs.</div>
-          </div>
-          <select
-            aria-label="Maximum per-bot desktops"
-            value={status?.max_instances ?? 2}
-            disabled={!status || policyPending}
-            onChange={(event) => void savePolicy(status?.mode ?? "shared", Number(event.target.value))}
-            className="rounded-lg border border-hairline/40 bg-control px-2.5 py-1.5 text-[13px] text-ink disabled:opacity-50"
-          >
-            {[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}</option>)}
-          </select>
-        </div>
-        {policyPending && <div className="mt-2 flex items-center gap-1.5 text-[12px] text-ink-secondary"><Loader2 size={12} className="animate-spin" /> Saving…</div>}
-      </Card>
+
 
       <Card title="Setup" subtitle="Once a container runtime is open, BotFleet prepares Cua and the VM for you.">
         <div className="flex flex-col gap-4">
