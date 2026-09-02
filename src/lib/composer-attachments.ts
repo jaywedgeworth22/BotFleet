@@ -129,6 +129,32 @@ export function appendPastedText(text: string, pasted: string): string {
   return `${text}${text.endsWith("\n") ? "" : "\n\n"}${pasted}`;
 }
 
+/** Persist a pathless drop (browser paste, iOS share) so the prompt can
+ * carry a disk path every engine can open. */
+export async function uploadPathlessFile(file: {
+  name: string;
+  size: number;
+  type: string;
+  arrayBuffer: () => Promise<ArrayBuffer>;
+}): Promise<FileAttachment | ImageAttachment | null> {
+  const mime = (file.type || "application/octet-stream").split(";")[0]!.trim().toLowerCase() || "application/octet-stream";
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  const response = await fetch("/api/attachments", {
+    method: "POST",
+    headers: { "content-type": mime },
+    body: bytes,
+  });
+  if (!response.ok) {
+    const detail = (await response.json().catch(() => ({ error: response.statusText }))) as { error?: string };
+    throw Object.assign(new Error(detail.error ?? "upload failed"), { status: response.status });
+  }
+  const saved = (await response.json()) as { path: string; mime: string; bytes: number };
+  if (saved.mime.startsWith("image/")) {
+    return { kind: "image", id: newId(), path: saved.path, name: file.name || "pasted image", size: saved.bytes, mime: saved.mime };
+  }
+  return fileAttachment(file.name || "attachment", saved.path, saved.bytes);
+}
+
 export const INLINE_DROP_LIMIT = 512 * 1024;
 
 export type DroppedFile = Pick<File, "name" | "size" | "type" | "text">;
@@ -150,11 +176,27 @@ export async function attachmentsFromDroppedFiles<T extends DroppedFile>(
         // A browser or older desktop shell has no disk path to expose.
       }
       if (path) return { attachment: fileAttachment(file.name, path, file.size) };
+      if (isImageFile(file as { type: string; size: number })) {
+        try {
+          const image = await imageAttachmentFromFile(file as File);
+          if (image) return { attachment: image };
+        } catch {
+          // Fall through to generic upload or reject.
+        }
+      }
       if (isInlineText(file) && file.size <= INLINE_DROP_LIMIT) {
         try {
           return { attachment: pasteAttachment(await file.text()) };
         } catch {
           // Treat an unreadable browser drag like any other pathless file.
+        }
+      }
+      if (typeof (file as { arrayBuffer?: () => Promise<ArrayBuffer> }).arrayBuffer === "function") {
+        try {
+          const uploaded = await uploadPathlessFile(file as File);
+          if (uploaded) return { attachment: uploaded };
+        } catch {
+          // Named below as rejected.
         }
       }
       return { rejectedName: file.name };

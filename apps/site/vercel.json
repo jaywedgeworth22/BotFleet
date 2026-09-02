@@ -1,5 +1,6 @@
 {
   "outputDirectory": ".",
   "cleanUrls": true,
-  "trailingSlash": false
+  "trailingSlash": false,
+  "ignoreCommand": "bash vercel-ignore-hourly.sh"
 }

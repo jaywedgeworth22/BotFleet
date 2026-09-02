@@ -43,6 +43,7 @@ ios/
     Frames.swift                 SSE frames, unknown kinds absorbed
     SSE.swift                    line parser + URLSession event stream
     Client.swift                 every call the phone is allowed to make
+    ChatAttachments.swift        compose/split <attached-image> / <attached-file>
     Store.swift                  the fold: frames → state
     Dictation.swift              composer text + transcript join
   Tests/CompanionCoreTests/

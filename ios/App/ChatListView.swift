@@ -11,11 +11,14 @@ import CompanionCore
 
 struct ChatListView: View {
     @EnvironmentObject private var session: Session
+    @Environment(\.horizontalSizeClass) private var sizeClass
     @State private var query = ""
     /// Driven so that making a bot can open it. Value-based navigation alone
     /// cannot push without a tap, and a new bot appearing silently at the
     /// bottom of the roster is a poor answer to pressing +.
     @State private var path = NavigationPath()
+    /// iPad split view selection. Phone keeps `path` and a pushed ChatView.
+    @State private var selectedChat: Chat?
     @State private var searchHits: [SearchHit] = []
     @State private var searching = false
     @State private var searchOpen = false
@@ -26,9 +29,100 @@ struct ChatListView: View {
     /// Room for the floating bar, so the last row can scroll clear of it.
     private static let barClearance: CGFloat = 96
 
+    /// Regular width (iPad, some landscape) gets a sidebar + detail. Compact
+    /// (phone, Slide Over) keeps the existing stack so phone layout is unchanged.
+    private var usesSplitView: Bool { sizeClass == .regular }
+
     var body: some View {
-        NavigationStack(path: $path) {
-            GeometryReader { geo in
+        Group {
+            if usesSplitView {
+                NavigationSplitView {
+                    NavigationStack {
+                        roster
+                    }
+                    .navigationSplitViewColumnWidth(min: 280, ideal: 360, max: 480)
+                } detail: {
+                    NavigationStack {
+                        if let selectedChat {
+                            ChatView(chat: selectedChat)
+                                .id(selectedChat.id)
+                        } else {
+                            ContentUnavailableView(
+                                "Select a chat",
+                                systemImage: "bubble.left.and.bubble.right",
+                                description: Text("Pick a bot or group from the sidebar.")
+                            )
+                        }
+                    }
+                }
+            } else {
+                NavigationStack(path: $path) {
+                    roster
+                        .navigationDestination(for: Chat.self) { ChatView(chat: $0) }
+                }
+            }
+        }
+        .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .onChange(of: session.notificationChat) { _, chat in
+            guard let chat else { return }
+            open(chat)
+            session.consumeNotificationChat()
+        }
+        .task {
+            if let chat = session.notificationChat {
+                open(chat)
+                session.consumeNotificationChat()
+            }
+        }
+#if DEBUG
+        // `-store-preview -open-first`: land on the first chat, for the
+        // screenshot harness and for looking at the chat screen without
+        // a pairing.
+        .task {
+            if ProcessInfo.processInfo.arguments.contains("-open-first"),
+               let first = chats.first {
+                open(first.chat)
+            }
+        }
+#endif
+        .sheet(isPresented: $showingUpdates) {
+            UpdatesSheet { chat in
+                showingUpdates = false
+                open(chat)
+            }
+        }
+        .sheet(isPresented: $showingNewGroup) {
+            NewGroupSheet { room in
+                showingNewGroup = false
+                open(Chat.room(room))
+            }
+        }
+        .task(id: query) {
+            let expected = query
+            guard expected.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
+                searchHits = []
+                searching = false
+                return
+            }
+            searching = true
+            try? await Task.sleep(for: .milliseconds(250))
+            guard !Task.isCancelled, query == expected else { return }
+            searchHits = await session.search(expected)
+            searching = false
+        }
+    }
+
+    private func open(_ chat: Chat) {
+        if usesSplitView {
+            selectedChat = chat
+        } else {
+            path.append(chat)
+        }
+    }
+
+    /// The roster column, shared by the phone stack and the iPad sidebar.
+    private var roster: some View {
+        GeometryReader { geo in
             VStack(spacing: 0) {
                 header
                 StatusBanner()
@@ -54,7 +148,7 @@ struct ChatListView: View {
                             ForEach(searchHits) { hit in
                                 Button {
                                     Task {
-                                        if let chat = await session.open(hit) { path.append(chat) }
+                                        if let chat = await session.open(hit) { open(chat) }
                                     }
                                 } label: {
                                     SearchHitRow(hit: hit)
@@ -69,7 +163,7 @@ struct ChatListView: View {
 
                         let rows = chats
                         ForEach(Array(rows.enumerated()), id: \.element.id) { index, summary in
-                            NavigationLink(value: summary.chat) {
+                            chatOpener(for: summary.chat) {
                                 ChatRow(
                                     chat: summary.chat,
                                     preview: summary.preview,
@@ -79,7 +173,6 @@ struct ChatListView: View {
                                     last: index == rows.count - 1
                                 )
                             }
-                            .buttonStyle(.plain)
                         }
                     }
                     .padding(.bottom, Self.barClearance)
@@ -107,58 +200,21 @@ struct ChatListView: View {
                 NeedsYouIsland(
                     update: session.state.updates.first { $0.kind == .needsYou },
                     hasIsland: IslandGeometry.hasIsland(topInset: geo.safeAreaInsets.top)
-                ) { chat in path.append(chat) }
+                ) { chat in open(chat) }
             }
-            }
-            .toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: Chat.self) { ChatView(chat: $0) }
-            .onChange(of: session.notificationChat) { _, chat in
-                guard let chat else { return }
-                path.append(chat)
-                session.consumeNotificationChat()
-            }
-            .task {
-                if let chat = session.notificationChat {
-                    path.append(chat)
-                    session.consumeNotificationChat()
-                }
-            }
-#if DEBUG
-            // `-store-preview -open-first`: land on the first chat, for the
-            // screenshot harness and for looking at the chat screen without
-            // a pairing.
-            .task {
-                if ProcessInfo.processInfo.arguments.contains("-open-first"),
-                   path.isEmpty, let first = chats.first {
-                    path.append(first.chat)
-                }
-            }
-#endif
-            .sheet(isPresented: $showingUpdates) {
-                UpdatesSheet { chat in
-                    showingUpdates = false
-                    path.append(chat)
-                }
-            }
-            .sheet(isPresented: $showingNewGroup) {
-                NewGroupSheet { room in
-                    showingNewGroup = false
-                    path.append(Chat.room(room))
-                }
-            }
-            .task(id: query) {
-                let expected = query
-                guard expected.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
-                    searchHits = []
-                    searching = false
-                    return
-                }
-                searching = true
-                try? await Task.sleep(for: .milliseconds(250))
-                guard !Task.isCancelled, query == expected else { return }
-                searchHits = await session.search(expected)
-                searching = false
-            }
+        }
+        .toolbar(.hidden, for: .navigationBar)
+    }
+
+    @ViewBuilder
+    private func chatOpener<Label: View>(for chat: Chat, @ViewBuilder label: () -> Label) -> some View {
+        if usesSplitView {
+            Button { open(chat) } label: { label() }
+                .buttonStyle(.plain)
+                .background(selectedChat == chat ? Color.primary.opacity(0.06) : Color.clear)
+        } else {
+            NavigationLink(value: chat) { label() }
+                .buttonStyle(.plain)
         }
     }
 
@@ -222,10 +278,9 @@ struct ChatListView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(session.state.rooms) { room in
-                        NavigationLink(value: Chat.room(room)) {
+                        chatOpener(for: Chat.room(room)) {
                             GroupTile(room: room)
                         }
-                        .buttonStyle(.plain)
                     }
                     Button {
                         showingNewGroup = true
@@ -252,7 +307,7 @@ struct ChatListView: View {
                             .font(.system(size: 15, weight: .semibold))
                             .foregroundStyle(Color.secondary)
                         TextField("Search chats", text: $query)
-                            .font(.system(size: 17))
+                            .font(.body)
                             .submitLabel(.search)
                             .autocorrectionDisabled()
                             .focused($searchFocused)
@@ -291,7 +346,7 @@ struct ChatListView: View {
 
                     GlassButton(systemImage: "square.and.pencil", size: 48, weight: .medium) {
                         Task {
-                            if let bot = await session.createBot() { path.append(Chat.bot(bot)) }
+                            if let bot = await session.createBot() { open(Chat.bot(bot)) }
                         }
                     }
                     .accessibilityLabel("New bot")

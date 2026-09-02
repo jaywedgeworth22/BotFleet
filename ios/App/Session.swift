@@ -616,13 +616,41 @@ final class Session: ObservableObject {
     // the source of truth, and a phone that draws its own version of events
     // is a phone that disagrees with the laptop.
 
-    func send(_ text: String, to chat: Chat) async {
-        await perform {
-            switch chat {
-            case let .bot(bot): try await $0.send(text: text, toBot: bot.id)
-            case let .room(room): try await $0.send(text: text, toRoom: room.id)
+    @discardableResult
+    func send(_ text: String, to chat: Chat, attachments: [PendingChatAttachment] = []) async -> Bool {
+        guard let client else { return false }
+        do {
+            var prompt = text
+            if !attachments.isEmpty {
+                var uploaded: [ChatPromptAttachment] = []
+                uploaded.reserveCapacity(attachments.count)
+                for item in attachments {
+                    let saved = try await client.uploadChatAttachment(
+                        data: item.data,
+                        mime: item.mime,
+                        filename: item.name
+                    )
+                    uploaded.append(ChatPromptAttachment(kind: item.kind, path: saved.path))
+                }
+                prompt = ChatAttachments.composeMessage(text: text, attachments: uploaded)
             }
+            guard !prompt.isEmpty else { return false }
+            switch chat {
+            case let .bot(bot): try await client.send(text: prompt, toBot: bot.id)
+            case let .room(room): try await client.send(text: prompt, toRoom: room.id)
+            }
+            return true
+        } catch let error as APIError where error.isUnauthorized {
+            status = .unauthorized
+            return false
+        } catch {
+            actionError = error.localizedDescription
+            return false
         }
+    }
+
+    func registerPushToken(_ hex: String) async {
+        await perform(quietly: true) { try await $0.registerPushToken(hex) }
     }
 
     func answer(chat: Chat, card: OptionCard, choice: String, rememberingPermission: Bool = true) async {
@@ -1103,6 +1131,7 @@ final class Session: ObservableObject {
     func refreshNotificationAuthorization() async {
         notificationAuthorization = await NotificationCoordinator.shared.authorizationStatus()
         notificationAuthorizationResolved = true
+        registerForRemoteNotificationsIfAllowed()
     }
 
     func enableNotifications() async {
@@ -1115,6 +1144,17 @@ final class Session: ObservableObject {
         _ = await NotificationCoordinator.shared.requestAuthorization()
         await refreshNotificationAuthorization()
         NotificationCoordinator.shared.setBadge(state.unreadCount)
+    }
+
+    /// APNs registration is what lets a killed app wake.  Local alerts still
+    /// work without it; the token is posted to the sidecar, not sent from here.
+    func registerForRemoteNotificationsIfAllowed() {
+        switch notificationAuthorization {
+        case .authorized, .provisional, .ephemeral:
+            UIApplication.shared.registerForRemoteNotifications()
+        default:
+            break
+        }
     }
 
     var notificationStatusText: String {

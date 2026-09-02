@@ -7,10 +7,12 @@
 // than asking for everything.
 import SwiftUI
 import CompanionCore
+import UIKit
 import UserNotifications
 
 @main
 struct CompanionApp: App {
+    @UIApplicationDelegateAdaptor(CompanionAppDelegate.self) private var appDelegate
     @StateObject private var session = Session()
     @Environment(\.scenePhase) private var scenePhase
     @State private var liveActivities = LiveActivityCoordinator()
@@ -25,7 +27,14 @@ struct CompanionApp: App {
                 .preferredColorScheme(.light)
                 .environmentObject(session)
                 .onAppear {
+                    appDelegate.onDeviceToken = { hex in
+                        Task { await session.registerPushToken(hex) }
+                    }
+                    appDelegate.onRemoteWake = {
+                        session.connect()
+                    }
                     session.connect()
+                    session.registerForRemoteNotificationsIfAllowed()
                     liveActivities.attach(to: session)
                 }
                 .onOpenURL { session.receivePairingURL($0) }
@@ -40,6 +49,37 @@ struct CompanionApp: App {
                     }
                 }
         }
+    }
+}
+
+/// Registers for remote notifications after the user allows alerts.  The
+/// token is posted to the sidecar; this process never sends an APNs push.
+final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
+    var onDeviceToken: ((String) -> Void)?
+    var onRemoteWake: (() -> Void)?
+
+    func application(
+        _ application: UIApplication,
+        didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data
+    ) {
+        let hex = deviceToken.map { String(format: "%02x", $0) }.joined()
+        onDeviceToken?(hex)
+    }
+
+    func application(
+        _ application: UIApplication,
+        didFailToRegisterForRemoteNotificationsWithError error: Error
+    ) {
+        // Simulator and missing entitlements land here.  Local alerts still work.
+    }
+
+    func application(
+        _ application: UIApplication,
+        didReceiveRemoteNotification userInfo: [AnyHashable: Any],
+        fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
+    ) {
+        onRemoteWake?()
+        completionHandler(.newData)
     }
 }
 
