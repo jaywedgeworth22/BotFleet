@@ -28,9 +28,22 @@ The first version includes:
 Alerts work while the app is open or for the short period it remains connected
 after moving to the background. Once iOS suspends or closes the app, new alerts
 cannot arrive. Closed-app push delivery, voice, and App Store release
-automation are not part of this version. The optional hosted transport connects
-to the user's own computer; it is not a cloud transcript store and cannot wake
-a terminated iOS app.
+automation are not part of this version.  Live Activities stay local
+(`pushType: nil`); this version does not register APNs.  The optional hosted
+transport connects to the user's own computer; it is not a cloud transcript
+store and cannot wake a terminated iOS app.
+
+The first launch is light.  `CompanionApp` pins `.preferredColorScheme(.light)`
+until an in-app picker exists; the phone does not boot dark from system
+appearance.
+
+Chat image attachments from the phone are not in this version.  The composer
+sends text only.  Desktop paste and drop write `~/.botfleet/attachments/<uuid>.<ext>`
+and embed that disk path in `<attached-image path="…"/>` so agents can open
+the file.  iOS `uploadAvatar` still returns an `/api/attachments/:name` URL,
+which is correct for bot and room avatars (the phone then GETs the bytes with
+the pairing token).  There is no chat `uploadAttachment` helper and no composer
+picker; adding the helper without a send path would not reach agents.
 
 The Mac must be running BotFleet and must not be asleep. Desktop
 **Settings → Phone** offers an off-by-default **Keep this computer awake**
@@ -124,8 +137,10 @@ default hosted HTTPS route. Manual entry remains available as a fallback.
 
 The URL is still `http`, but the path is encrypted and authenticated by
 WireGuard inside the tailnet. Use the MagicDNS name rather than the
-`100.64.0.0/10` address: App Transport Security exceptions are domain-based,
-and `ios/project.yml` narrowly allows insecure HTTP for `ts.net` subdomains.
+`100.64.0.0/10` address: App Transport Security exceptions are domain-based.
+`ios/project.yml` allows local networking (`NSAllowsLocalNetworking`) plus
+insecure HTTP for `ts.net` subdomains only.  Production `botfleet.app` stays
+HTTPS and is not excepted.  The app does not set `NSAllowsArbitraryLoads`.
 
 Tailscale is optional. The direct path does not use an BotFleet-operated
 relay or create a cloud copy of local transcript data.

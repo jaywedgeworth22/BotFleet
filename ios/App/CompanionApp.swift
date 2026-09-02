@@ -22,6 +22,7 @@ struct CompanionApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .preferredColorScheme(.light)
                 .environmentObject(session)
                 .onAppear {
                     session.connect()
