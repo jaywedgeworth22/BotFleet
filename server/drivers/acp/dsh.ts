@@ -2,8 +2,29 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { ModelCatalog } from "../../contracts.ts";
-import { createAcpDriver, type AcpSupport } from "./core.ts";
+import type { ModelCatalog, SendTurnInput } from "../../contracts.ts";
+import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
+
+/** Quote one argv token inside a `--mcp name=command args` spec.  JSON
+ * string quoting survives spaces, quotes, and backslashes without a shell,
+ * and stays one spawn() argument because the spec is not split. */
+export function quoteDshMcpToken(value: string): string {
+  return JSON.stringify(value);
+}
+
+/** CLI argv after `dsh` for ACP.  MCP command and args stay distinct even
+ * when a path contains spaces — join(" ") without quoting is the failure. */
+export function dshSpawnArgs(_config: AcpConfig, turn: Pick<SendTurnInput, "integrations">): string[] {
+  const args: string[] = [];
+  if (!turn.integrations) return args;
+  for (const [name, def] of Object.entries(turn.integrations)) {
+    if (!def || typeof def !== "object" || !("command" in def)) continue;
+    const command = String(def.command);
+    const extra = "args" in def && Array.isArray(def.args) ? def.args.map(String) : [];
+    args.push("--mcp", `${name}=${[command, ...extra].map(quoteDshMcpToken).join(" ")}`);
+  }
+  return args;
+}
 
 export const STATIC_DSH_MODELS: ModelCatalog = {
   default: "deepseek-chat",
@@ -31,17 +52,7 @@ const support: AcpSupport = {
 
   resolveTurnModel: (model) => model,
 
-  spawnArgs: (_config, turn) => {
-    const args = [];
-    if (turn.integrations) {
-      for (const [name, def] of Object.entries(turn.integrations)) {
-        if (def && typeof def === "object" && "command" in def) {
-          args.push("--mcp", `${name}=${def.command} ${(def.args || []).join(" ")}`);
-        }
-      }
-    }
-    return args;
-  },
+  spawnArgs: dshSpawnArgs,
 
   async configureSession({ request, sessionId, turn }) {
     if (!turn.model) return;

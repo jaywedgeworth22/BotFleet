@@ -66,7 +66,7 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/messages$/ },
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/interrupt$/ },
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/read$/ },
-  { method: "POST", path: /^\/api\/bots\/[\w-]+\/always-allow$/ },
+  // always-allow is Mac-only: a stolen phone token must not widen Auto.
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/messages\/[\w-]+\/edit$/ },
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/active-branch$/ },
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/tasks$/ },
@@ -117,13 +117,12 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "DELETE", path: /^\/api\/routines\/[\w-]+$/ },
   { method: "POST", path: /^\/api\/routines\/[\w-]+\/run$/ },
 
-  // Multi-account Composio management exposes opaque ids and aliases only.
-  // Revocation stays on the Mac: the account DELETE route is deliberately
-  // absent — a paired phone can see and add accounts, never remove one.
+  // Multi-account Composio listing exposes opaque ids and aliases only.
+  // Authorize and revoke stay on the Mac: a stolen phone token must not
+  // start OAuth or detach an account.  EXPLAINED covers the write family.
   { method: "GET", path: /^\/api\/connectors\/catalog$/ },
   { method: "GET", path: /^\/api\/connectors\/connected$/ },
   { method: "GET", path: /^\/api\/connectors$/ },
-  { method: "POST", path: /^\/api\/connectors\/[\w-]+\/authorize$/ },
 ];
 
 /** Route families worth naming in the refusal.
