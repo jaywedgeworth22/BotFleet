@@ -52,7 +52,7 @@ const TERMINAL_PATTERNS: Array<{ pattern: RegExp; reason: TerminalReason }> = [
   },
   {
     pattern:
-      /\b402\b|\bquota\b|\bbilling\b|\bsubscription\b|session limit|usage cap|credits exhausted|resource.?exhausted/i,
+      /\b402\b|\bquota\b|\bbilling\b|\bsubscription\b|session limit|usage cap|usage limit|credits exhausted|insufficient.?balance|resource.?exhausted|resource_exhausted|slow pool|out of (?:usage|credits)/i,
     reason: "quota",
   },
   { pattern: /\bmodel not found\b|\bunknown model\b|\bdoes not exist for model\b|\bunsupported model\b/i, reason: "unknown_model" },

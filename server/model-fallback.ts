@@ -18,10 +18,13 @@ export interface TurnFallbackPick extends ModelSelection {
 }
 
 const SHORT_PROVIDER_ERROR =
-  /session limit|rate.?limit|too many requests|overloaded|capacity|internal server error|bad gateway|service unavailable|account_inactive|quota|usage cap|credits exhausted/i;
+  /session limit|rate.?limit|too many requests|overloaded|capacity|internal server error|bad gateway|service unavailable|account_inactive|quota|usage cap|usage limit|credits exhausted|insufficient.?balance|out of (?:usage|credits)|resource_exhausted|slow pool/i;
 
+// Official provider chips (docs + observed CLIs).  Keep this in sync with
+// the corpus in model-fallback.test.ts.  Do not match "approaching … limit"
+// warnings — those are near-cap, not a hit.
 const QUOTA_OR_CAP =
-  /session limit|hit your session limit|usage cap|quota exceeded|insufficient.?quota|resource.?exhausted|credits exhausted|\bbilling\b|\bsubscription\b|rate.?limit|too many requests|overloaded|capacity|account_inactive/i;
+  /session limit|hit your session limit|hit your usage limit|usage cap|usage limit|quota exceeded|insufficient.?quota|insufficient.?balance|resource.?exhausted|resource.{0,24}exhausted|resource_exhausted|credits exhausted|credits? (?:are )?depleted|out of (?:usage|credits)|message limit reached|messaging allowance|5-hour limit reached|reached your .{0,80}limit|monthly limit|weekly (?:\([^)]+\) )?usage limit|slow pool|upgrade (?:your )?plan|upgrade to (?:plus|pro)|\b402\b|\bbilling\b|\bsubscription\b|rate.?limit|rate_limit_error|usage_limit_exceeded|too many requests|overloaded|capacity|account_inactive|enforced_spend_limit/i;
 
 const QUOTA_TEXT_MAX = 500;
 
