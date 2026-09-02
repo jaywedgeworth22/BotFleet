@@ -14,6 +14,8 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
+- **2026-09-01 — GROK — IN PROGRESS — Pickup CLAUDE cap: BotFleet analysis v2 (`claude/analysis-v2`, `~/apps/botfleet-claude`).**  Board `781554fd`.  PR #97.  Report `docs/audits/2026-09-01-botfleet-analysis-v2.md`.  Raw 238 / Claude tech-confirmed 144 / unique P0 still open 5.  No product code.
+- **2026-09-01 — GROK — IN PROGRESS — Delta-audit Batch 2: iOS ATS rollback + light-first + iOS truth (branch `grok/delta-audit-ios`, worktree `~/apps/botfleet-grok-delta-ios`).**  Board `95e445e5` `a9683ae2`.  Remove `NSAllowsArbitraryLoads` and `botfleet.app` cleartext; keep local networking + `ts.net`; `preferredColorScheme(.light)`; no APNs.  I2 chat image composer remains a documented gap.  GROK note 2026-09-01: ATS rollback landed as #92 on main; this row is the remaining iOS-truth slice.
 - **2026-09-01 - GROK - IN_PROGRESS - Implement 2026-09-01 delta audit batches. Worktree ~/apps/botfleet-grok-delta @ grok/delta-audit-fixes.**  Board `9e922f65`.  Fallbacks, honesty/docs, data/permissions, companion trust.  Electron #91 and iOS ATS #92 already merged.
 - **2026-09-01 — GROK — IN PROGRESS — Companion trust leftovers C3/C4/D2 (`grok/delta-companion-trust`).**  Board `149843e8`.  Pairing replay after revoke, phone always-allow/authorize deny, DSH `--mcp` quoting.  Merging into `grok/delta-audit-fixes`.
 - **2026-09-01 — GROK — IN PROGRESS — Sentry fleet adoption: Vercel `VITE_SENTRY_DSN`, User Feedback widget, harness gen_ai agent spans (conversation/tool/model/tokens/errors, no prompts) (branch `grok/sentry-fleet-adoption`, worktree `~/apps/botfleet-grok-sentry-adopt`).**  Board `d99cee7f21ad4a2ba6f74b50c85fda04`.  Rollout: `docs/rollouts/2026-09-01-sentry-fleet-adoption.md`.
@@ -22,6 +24,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - (none)
 
 ## Changelog of this log
+- 2026-09-01 — GROK picked up CLAUDE analysis v2 (`781554fd`) after the finder journal died at verify/synthesis.  Report-only.
 - 2026-09-01 — GROK moved resource-triggers (#65/#80) and iOS Sentry Cocoa (#55) from In Progress to Completed after merge.  Added delta-audit Batch 4+6 claim on `grok/delta-audit-fixes`.
 - 2026-08-29 — Deployed always-on iMessage bidirectional relay for 12 BotFleet bots (AG).
 - 2026-08-28 — bootstrapped by onboard-new-app.sh.
