@@ -66,6 +66,7 @@ on:
       - Package Ubuntu
       - Package Windows
       - Release
+      - Sentry Deploy
     types: [completed]
 
 permissions:
