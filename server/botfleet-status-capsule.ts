@@ -53,7 +53,7 @@ const capsuleSchema = z.object({
     "source_hash_mismatch",
   ]).optional(),
   runtime_state: z.enum(["ready", "degraded", "unknown"]),
-  mode: z.enum(["shared", "per-bot", "unknown"]),
+  mode: z.enum(["shared", "unknown"]),
   max_instances: z.number().int().min(1).max(4).nullable(),
   ready_count: z.number().int().min(0).max(4),
   slots: z.array(slotSchema).max(4),
@@ -200,7 +200,7 @@ function validateCapsule(value: JsonValue): BotFleetCapsule | null {
   if (capsule.ready_count !== readyCount) return null;
   const twoUp = Boolean(
     capsule.refresh_status === "success" &&
-      capsule.mode === "per-bot" &&
+      capsule.mode === "shared" &&
       capsule.max_instances !== null &&
       capsule.max_instances >= 2 &&
       capsule.source_sha256 !== null &&
@@ -224,7 +224,7 @@ function validateCapsule(value: JsonValue): BotFleetCapsule | null {
     if (
       capsule.failure_reason !== undefined ||
       capsule.runtime_state !== expectedRuntime ||
-      (capsule.mode !== "shared" && capsule.mode !== "per-bot") ||
+      (capsule.mode !== "shared") ||
       capsule.max_instances === null ||
       readyCount > capsule.max_instances ||
       capsule.source_sha256 === null ||

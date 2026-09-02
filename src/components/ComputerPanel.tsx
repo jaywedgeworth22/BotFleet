@@ -179,7 +179,7 @@ export function ComputerPanel({
   }, [androidConnected, panelView]);
   useEffect(() => {
     vmReadinessAttempts.current = 0;
-  }, [bot.id, bot.computer]);
+  }, [bot.id, bot.computers]);
   const vmSupported = Boolean(
     selectedInstance?.snapshot.state === "available" &&
       selectedInstance.capabilities?.computerMcp &&
@@ -202,13 +202,13 @@ export function ComputerPanel({
     (run) => run.botId === bot.id && ["queued", "running", "waiting"].includes(run.status),
   );
   const computerDestination =
-    bot.computer === "cloud"
+    (bot.computers ?? []).includes("cloud")
       ? cloudBackend === "vps" ? "this self-hosted VPS" : "this cloud box"
-      : bot.computer === "vm"
+      : (bot.computers ?? []).includes("vm")
         ? "the Local VM"
-      : bot.computer === "local"
+      : (bot.computers ?? []).includes("local")
         ? "this computer"
-        : bot.computer === "off"
+        : (bot.computers ?? []).length === 0
           ? null
           : phase === "ready"
             ? cloudBackend === "vps" ? "the self-hosted VPS selected by Auto" : "the cloud box selected by Auto"
@@ -226,18 +226,18 @@ export function ComputerPanel({
     setVpsStatus(null);
     setLocalFrame(null);
     setError(null);
-    if (bot.computer === "off") {
+    if ((bot.computers ?? []).length === 0) {
       setPhase("off");
       return;
     }
-    if (bot.computer === "local") {
+    if ((bot.computers ?? []).includes("local")) {
       if (!providerSupportsLocal) {
         setError("This model engine cannot control this computer. Choose Claude or an ACP engine.");
       }
       setPhase(capabilitiesReady && localAvailable && providerSupportsLocal ? "local" : "local-unavailable");
       return;
     }
-    if (bot.computer === "vm") {
+    if ((bot.computers ?? []).includes("vm")) {
       if (!vmSupported) {
         setError("This model engine cannot use the Local VM. Choose Claude or an ACP engine.");
         setPhase("vm-unavailable");
@@ -290,15 +290,15 @@ export function ComputerPanel({
         if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       };
     }
-    if (bot.computer === "cloud" && !cloudSupported) {
+    if ((bot.computers ?? []).includes("cloud") && !cloudSupported) {
       setError("This model engine cannot use cloud computer tools. Choose Claude, an ACP engine, or the Computer engine.");
       setPhase("error");
       return;
     }
-    if (bot.computer !== "cloud" && !capabilitiesReady) return;
+    if (!(bot.computers ?? []).includes("cloud") && !capabilitiesReady) return;
     if (cloudBackend === "vps") {
       const autoLocal =
-        !isLinux && bot.computer !== "cloud" && capabilitiesReady && localSelectable;
+        !isLinux && !(bot.computers ?? []).includes("cloud") && capabilitiesReady && localSelectable;
       if (!vpsSupported) {
         if (autoLocal) setPhase("local");
         else {
@@ -334,7 +334,7 @@ export function ComputerPanel({
             setPhase("vps-incompatible");
             return;
           }
-          if (bot.computer === "cloud") {
+          if ((bot.computers ?? []).includes("cloud")) {
             setPhase("starting");
             return api(`/api/bots/${bot.id}/computer/provision`, { method: "POST" }).then((result) => {
               if (!alive) return;
@@ -373,7 +373,7 @@ export function ComputerPanel({
         if (!alive) return;
         const autoLocal = autoSelectsLocalComputer({
           platform: capabilities.host.platform,
-          computer: bot.computer,
+          computers: bot.computers,
           capabilitiesReady,
           localSelectable,
         });
@@ -402,7 +402,7 @@ export function ComputerPanel({
     };
   }, [
     bot.id,
-    bot.computer,
+    bot.computers,
     bot.autoStartVps,
     cloudBackend,
     retry,
@@ -866,7 +866,7 @@ export function ComputerPanel({
                 </button>
               )}
               {(phase === "vps-stopped" || (phase === "vps-unconfigured" && vpsStatus?.configured)) &&
-                (bot.computer === "cloud" || bot.autoStartVps) && (
+                ((bot.computers ?? []).includes("cloud") || bot.autoStartVps) && (
                 <button
                   onClick={() => run("provision")}
                   disabled={pending === "provision"}
@@ -877,7 +877,7 @@ export function ComputerPanel({
                 </button>
               )}
               {phase === "vps-incompatible" && vpsStatus?.managed &&
-                (bot.computer === "cloud" || bot.autoStartVps) && (
+                ((bot.computers ?? []).includes("cloud") || bot.autoStartVps) && (
                 <button
                   onClick={() => void replaceVpsComputer()}
                   disabled={pending === "vps-replace"}
@@ -1065,7 +1065,7 @@ export function ComputerPanel({
           <div className="mt-4 rounded-xl bg-card p-4">
             <div className="text-[15px] font-medium text-ink">Runs on</div>
             <div className="mt-0.5 text-[13px] text-ink-secondary">
-              {!bot.computer &&
+              {!bot.computers &&
                 (isLinux || !localSelectable
                   ? cloudBackend === "vps"
                     ? "Auto reuses a ready VPS when one is configured; otherwise computer use stays off. "
@@ -1105,15 +1105,23 @@ export function ComputerPanel({
                 disabled={disabled}
                 title={unavailableTitle}
                 onClick={() => {
-                  if (mode === bot.computer) return;
-                  if (mode === "local" && bot.autoApprove) setLocalAutoWarning(true);
-                  else dispatch({ type: "updateBot", botId: bot.id, patch: { computer: mode } });
+                  if (mode === "off") {
+                    dispatch({ type: "updateBot", botId: bot.id, patch: { computers: [] } });
+                    return;
+                  }
+                  if (mode === "local" && bot.autoApprove) {
+                    setLocalAutoWarning(true);
+                    return;
+                  }
+                  const cur = bot.computers ?? [];
+                  const nxt = cur.includes(mode) ? cur.filter(c => c !== mode) : [...cur, mode];
+                  dispatch({ type: "updateBot", botId: bot.id, patch: { computers: nxt } });
                 }}
                 className={cn(
                   "flex-1 py-1.5 text-[13px]",
                   i > 0 && "border-l border-hairline/40",
                   disabled && "cursor-not-allowed opacity-40",
-                  bot.computer === mode
+                  (mode === "off" ? (bot.computers ?? []).length === 0 : (bot.computers ?? []).includes(mode as any))
                     ? "bg-control text-ink"
                     : "text-ink-secondary hover:bg-control/60 hover:text-ink",
                 )}
@@ -1124,14 +1132,14 @@ export function ComputerPanel({
               })()
             ))}
           </div>
-          {(!bot.computer || bot.computer === "cloud") && (
+          {(!bot.computers || (bot.computers ?? []).includes("cloud")) && (
             <>
               <CloudBackendPicker
                 value={cloudBackend}
                 vpsSupported={vpsSupported}
                 onChange={(backend) => dispatch({ type: "updateBot", botId: bot.id, patch: { cloudBackend: backend } })}
               />
-              {!bot.computer && cloudBackend === "vps" && (
+              {!(bot.computers?.length) && cloudBackend === "vps" && (
                 <div className="mt-3 flex items-center justify-between gap-4 rounded-lg bg-inset px-3 py-2.5">
                   <div className="min-w-0">
                     <div className="text-[13px] text-ink">Start VPS automatically</div>
@@ -1252,7 +1260,7 @@ export function ComputerPanel({
       open={localAutoWarning}
       onCancel={() => setLocalAutoWarning(false)}
       onConfirm={() => {
-        dispatch({ type: "updateBot", botId: bot.id, patch: { computer: "local", acknowledgeLocalAuto: true } });
+        dispatch({ type: "updateBot", botId: bot.id, patch: { computers: [...(bot.computers ?? []), "local"], acknowledgeLocalAuto: true } });
         setLocalAutoWarning(false);
       }}
     />

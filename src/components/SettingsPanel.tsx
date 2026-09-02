@@ -329,7 +329,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
         | "title"
         | "description"
         | "notifications"
-        | "computer"
+        | "computers"
         | "cloudBackend"
         | "autoStartVps"
         | "color"
@@ -636,7 +636,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           <div className="rounded-xl bg-card p-4">
             <div className="text-[15px] font-medium text-ink">Computer</div>
             <div className="mt-0.5 text-[13px] text-ink-secondary">
-              Where this bot's computer runs{bot.computer ? "" : " (currently: auto)"}
+              Where this bot's computer runs{bot.computers?.length ? "" : " (currently: auto)"}
             </div>
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
               {([
@@ -650,15 +650,22 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                   disabled={mode === "local" && !localSelectable}
                   title={mode === "local" && !localSelectable ? localDisabledReason ?? undefined : undefined}
                   onClick={() => {
-                    if (mode === bot.computer) return;
-                    if (mode === "local" && bot.autoApprove) setLocalAutoWarning("local");
-                    else patch({ computer: mode });
+                    if (mode === "off") {
+                      patch({ computers: [] });
+                      return;
+                    }
+                    if (mode === "local" && bot.autoApprove) {
+                      setLocalAutoWarning("local");
+                    }
+                    const cur = bot.computers ?? [];
+                    const nxt = cur.includes(mode as any) ? cur.filter(c => c !== mode) : [...cur, mode as any];
+                    patch({ computers: nxt });
                   }}
                   className={cn(
                     "flex-1 py-1.5 text-[13px] capitalize",
                     i > 0 && "border-l border-hairline/40",
                     mode === "local" && !localSelectable && "cursor-not-allowed opacity-40",
-                    bot.computer === mode
+                    (mode === "off" ? (bot.computers ?? []).length === 0 : (bot.computers ?? []).includes(mode as any))
                       ? "bg-control text-ink"
                       : "text-ink-secondary hover:bg-control/60 hover:text-ink",
                   )}
@@ -667,14 +674,14 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 </button>
               ))}
             </div>
-            {(!bot.computer || bot.computer === "cloud") && (
+            {(!(bot.computers?.length) || bot.computers?.includes("cloud")) && (
               <>
                 <CloudBackendPicker
                   value={bot.cloudBackend ?? "box"}
                   vpsSupported={canUseVps}
                   onChange={(backend) => patch({ cloudBackend: backend })}
                 />
-                {!bot.computer && bot.cloudBackend === "vps" && (
+                {!(bot.computers?.length) && bot.cloudBackend === "vps" && (
                   <div className="mt-3 flex items-center justify-between gap-4 rounded-lg bg-inset px-3 py-2.5">
                     <div className="min-w-0">
                       <div className="text-[13px] text-ink">Start VPS automatically</div>
@@ -715,7 +722,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <div>
               <div className="text-[15px] font-medium text-ink">Auto mode</div>
               <div className="mt-0.5 text-[13px] text-ink-secondary">
-                {bot.computer === "local"
+                {(bot.computers ?? []).includes("local")
                   ? bot.autoApprove
                     ? "Keeps going on this computer — you'll still be asked about anything destructive, and about questions it asks you."
                     : "Approve each action on this computer yourself. Turn on to let this bot keep working without stopping to ask."
@@ -729,7 +736,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               aria-checked={Boolean(bot.autoApprove)}
               aria-label="Auto mode"
               onClick={() => {
-                if (!bot.autoApprove && bot.computer === "local") setLocalAutoWarning("auto");
+                if (!bot.autoApprove && (bot.computers ?? []).includes("local")) setLocalAutoWarning("auto");
                 else patch({ autoApprove: !bot.autoApprove });
               }}
               className={cn(
@@ -822,7 +829,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
       onCancel={() => setLocalAutoWarning(null)}
       onConfirm={() => {
         if (localAutoWarning === "auto") patch({ autoApprove: true, acknowledgeLocalAuto: true });
-        if (localAutoWarning === "local") patch({ computer: "local", acknowledgeLocalAuto: true });
+        if (localAutoWarning === "local") patch({ computers: [...(bot.computers ?? []), "local"], acknowledgeLocalAuto: true });
         setLocalAutoWarning(null);
       }}
     />

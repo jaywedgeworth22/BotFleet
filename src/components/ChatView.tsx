@@ -35,6 +35,7 @@ import {
   type Message,
 } from "@/state/store";
 import { BotAvatar, MausAvatar } from "./Avatar";
+import { ProviderMark } from "./ProviderIcons";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
 import { stateForBot } from "@/lib/mascot";
@@ -245,8 +246,8 @@ function Bubble({
   replyTarget?: Message;
   onReply: () => void;
 }) {
-  const { dispatch } = useStore();
-  const user = message.role === "user";
+  const { state, dispatch } = useStore();
+  const user = message.role === "user" && !message.from;
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const text = message.text ?? "";
@@ -313,6 +314,14 @@ function Bubble({
                 setTimeout(() => setCopied(false), 1400);
               }}
             />
+            {bot && bot.modelSelection && (
+              <div
+                className="flex items-center justify-center p-1.5 text-ink-secondary opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                title={bot.modelSelection.model}
+              >
+                <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={14} />
+              </div>
+            )}
             <button
               onClick={() =>
                 dispatch({
@@ -425,6 +434,14 @@ function Bubble({
             >
               <MessageSquareReply size={14} />
             </button>
+            {bot && bot.modelSelection && (
+              <div
+                className="flex items-center justify-center p-1.5 text-ink-secondary opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+                title={bot.modelSelection.model}
+              >
+                <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={14} />
+              </div>
+            )}
             <button
               onClick={() =>
                 dispatch({
@@ -517,16 +534,42 @@ function Bubble({
 /** A tool run: spinner while live, check/cross once settled. */
 function ActivityChip({ message }: { message: Message }) {
   const { dispatch } = useStore();
+  const [expanded, setExpanded] = useState(false);
   const tool = message.tool;
   if (!tool) return null;
   // bot⇄bot comm chip: opens the channel where the exchange lives
   const comm = message.comm;
   if (comm) {
+    if (expanded) {
+      return (
+        <div className="flex justify-start">
+          <div className="flex flex-col gap-2 rounded-xl border border-hairline/40 bg-panel p-3 shadow-sm min-w-[320px] max-w-[480px]">
+             <div className="flex items-center justify-between">
+                <button onClick={() => setExpanded(false)} className="flex items-center gap-2 text-[13px] text-ink-secondary hover:text-ink">
+                  <MausAvatar color={comm.withColor} state="happy" size={16} />
+                  <span className="font-medium truncate">{tool.name}</span>
+                  <ChevronDown size={13} />
+                </button>
+                <button
+                  onClick={() => dispatch({ type: "select", id: comm.groupId })}
+                  title={`Open the conversation with ${comm.withName}`}
+                  className="rounded bg-control px-2 py-1 text-[11px] font-medium text-ink hover:bg-raised-hover"
+                >
+                  View Chat
+                </button>
+             </div>
+             <div className="mt-1 text-[13px] text-ink whitespace-pre-wrap">
+               {message.text}
+             </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className="flex justify-start">
         <button
-          onClick={() => dispatch({ type: "select", id: comm.groupId })}
-          title={`Open the conversation with ${comm.withName}`}
+          onClick={() => setExpanded(true)}
+          title={`Expand message`}
           className="flex items-center gap-2 rounded-xl border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
         >
           <MausAvatar color={comm.withColor} state="happy" size={16} />

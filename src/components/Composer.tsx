@@ -309,7 +309,7 @@ export function Composer({
     // has to be acknowledged first. The flag the dialog sends is stripped by
     // the reducer rather than stored, so — exactly like the settings panel —
     // the warning is shown on every switch-on, not just the first.
-    if (auto && !autoBot.autoApprove && autoBot.computer === "local") {
+    if (auto && !autoBot.autoApprove && autoBot.computers?.includes("local")) {
       setAutoWarn(true);
       return;
     }

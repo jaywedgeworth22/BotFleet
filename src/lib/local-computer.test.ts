@@ -57,7 +57,7 @@ describe("local computer UI eligibility", () => {
     expect(
       autoSelectsLocalComputer({
         platform: "linux",
-        computer: undefined,
+        computers: undefined,
         capabilitiesReady: true,
         localSelectable: true,
       }),
@@ -85,7 +85,7 @@ describe("local computer UI eligibility", () => {
     expect(
       autoSelectsLocalComputer({
         platform: "darwin",
-        computer: undefined,
+        computers: undefined,
         capabilitiesReady: true,
         localSelectable: true,
       }),
@@ -93,7 +93,7 @@ describe("local computer UI eligibility", () => {
     expect(
       autoSelectsLocalComputer({
         platform: "darwin",
-        computer: "cloud",
+        computers: ["cloud"],
         capabilitiesReady: true,
         localSelectable: true,
       }),

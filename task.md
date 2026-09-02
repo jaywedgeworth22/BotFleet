@@ -1,0 +1,10 @@
+- `[x]` **Configuration Changes**
+  - `[x]` Remove `localVm.mode` from `server/config.ts`.
+  - `[x]` Update `Bot` interface in `server/store.ts` to replace `computer?: string` with `computers?: Array<"cloud" | "vm" | "local">`.
+- `[x]` **Backend Execution Logic**
+  - `[x]` Update `server/local-computer.ts` to always route `vm` targets to `SHARED_LOCAL_VM_TARGET`.
+  - `[x]` Update MCP/Tool injection to inject multiple computer tools (`computer_mac`, `computer_vm`, `computer_cloud`) based on `bot.computers`.
+  - `[x]` Implement basic Hetzner pooling logic in `server/box.ts` to limit active cloud boxes to a max of 4.
+- `[x]` **Frontend Changes**
+  - `[x]` Update `LocalComputerSection.tsx` to remove "per-bot" wording/logic.
+  - `[x]` Update `AgentProfileView.swift` and `EnginesSettings.tsx` to handle array-based computer selection.

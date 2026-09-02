@@ -213,7 +213,7 @@ export interface Bot {
   activity?: "working" | "waiting-on-you" | "idle" | "no-signal" | "dead";
   modelSelection: ModelSelection;
   /** Where this bot's computer runs; unset = auto (cloud box if one exists, else local). */
-  computer?: "cloud" | "vm" | "local" | "off";
+  computers?: Array<"cloud" | "vm" | "local" | "off">;
   /** Which cloud computer backs `computer: "cloud"`; absent means Box. */
   cloudBackend?: CloudBackend;
   /** Allow Auto to prepare/start the managed VPS container. Off by default. */
@@ -380,7 +380,7 @@ export type AppSettingsSection =
   | "connections"
   | "engines"
   | "companion"
-  | "computer"
+  | "computers"
   | "usage";
 
 export interface AppState {
@@ -1563,7 +1563,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             description: source.description,
             notifications: source.notifications,
             modelSelection: source.modelSelection,
-            computer: source.computer,
+            computers: source.computers,
             cloudBackend: source.cloudBackend,
             autoStartVps: source.autoStartVps,
             avatarUrl: source.avatarUrl,
