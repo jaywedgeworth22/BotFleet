@@ -6,7 +6,7 @@ The app is native Swift and uses XcodeGen; EAS commands do not apply.
 
 1. Enrol in the Apple Developer Program.
 2. Register the bundle IDs `com.botfleet.app` and `com.botfleet.app.widgets` (or change them in `project.yml` before the first upload).
-3. Create the matching app in App Store Connect with the name **OpenMaus Mobile**, primary category **Productivity**, and a unique SKU.
+3. Create the matching app in App Store Connect with the name **BotFleet**, primary category **Productivity**, and a unique SKU.
 4. Create or select an Apple Distribution certificate and App Store provisioning profile.
 5. Add the review contact details in App Store Connect; do not commit private contact data or App Store Connect keys.
 
@@ -26,8 +26,8 @@ The app is native Swift and uses XcodeGen; EAS commands do not apply.
 - Copy the localized text from `en-US/`.
 - Use `privacy-answers.md` and verify it still matches the binary.
 - Use `review-notes.md`, adding a real review contact in App Store Connect.
-- Support URL: `https://github.com/milind-soni/BotFleet/issues`
-- Privacy policy URL: `https://github.com/milind-soni/BotFleet/blob/main/docs/ios-privacy.md`
+- Support URL: `https://github.com/jaywedgeworth22/BotFleet/issues`
+- Privacy policy URL: `https://github.com/jaywedgeworth22/BotFleet/blob/main/docs/ios-privacy.md`
 - Choose manual release for 1.0; enable a phased release after the first production build is stable.
 
 The unsigned simulator CI proves compilation, not distribution signing. A TestFlight upload cannot be automated until the Apple team, App Store Connect record, and protected signing/API-key secrets exist.
