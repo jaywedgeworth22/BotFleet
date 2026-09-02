@@ -61,7 +61,6 @@ targets:
         - CFBundleURLName: app.botfleet.companion.pairing
           CFBundleURLSchemes:
           - botfleet
-          - botfleet
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
         - UIInterfaceOrientationPortrait
@@ -82,14 +81,9 @@ targets:
           so you can send it to a bot. Recognition runs on this phone when it can.
         NSBonjourServices:
         - _botfleet._tcp
-        - _botfleet._tcp
         NSAppTransportSecurity:
-          NSAllowsArbitraryLoads: true
           NSAllowsLocalNetworking: true
           NSExceptionDomains:
-            botfleet.app:
-              NSIncludesSubdomains: true
-              NSExceptionAllowsInsecureHTTPLoads: true
             ts.net:
               NSIncludesSubdomains: true
               NSExceptionAllowsInsecureHTTPLoads: true
