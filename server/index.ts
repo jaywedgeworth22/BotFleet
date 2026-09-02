@@ -1425,14 +1425,17 @@ bus.subscribe((event: RuntimeEvent) => {
           pendingMemberFallback.delete(event.threadId);
         }
         const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
-        // No configured chain: fail over once to the healthiest other engine
-        // (#90), but only through the same produced / quota / stop-reason
-        // gate a configured chain gets — never on an interrupted turn or one
-        // that already answered.
+        // No configured chain: on a quota or session-cap hit, fail over once
+        // to the healthiest other engine (#90's auto failover), through the
+        // same produced / stop-reason gate a configured chain gets. Plain
+        // errors without a chain settle as before — a bot that was not given
+        // a fallback must not wander to another engine on any failure.
         const configuredChain = fallbackBot.modelSelection.fallbacks;
         const chain = configuredChain && configuredChain.length > 0
           ? configuredChain
-          : autoFallbackChain(fallbackBot.modelSelection.instanceId);
+          : quotaOrCap
+            ? autoFallbackChain(fallbackBot.modelSelection.instanceId)
+            : undefined;
         const next = selectTurnFallback({
           ok: isOk,
           stopReason: event.stopReason,
