@@ -27,6 +27,7 @@ import { cwdConfinementError, protectedCwdDirs, validateBotCwd, type CwdConfinem
 import { resolveStaticFile } from "./static-files.ts";
 import { attachmentExists, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, isImageMime, readAttachment, saveAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
 import { openBotFleetDesktop } from "./desktop-open.ts";
+import { IdempotencyCache } from "./idempotency.ts";
 import {
   avatarGenerationRequestSchema,
   avatarGenerationStateMatches,
@@ -819,6 +820,28 @@ function closeOpenApprovals(threadId: string): void {
 function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
   return value === "allow" || value === "deny" || value === "answer" ? value : null;
 }
+
+/** One HTTP reply, held so an idempotent retry can answer with the first. */
+type RouteReply = { status: number; body: Record<string, unknown> };
+/** Bot and channel sends remember their outcome per client key for ten
+ * minutes: an MCP client or phone that times out and retries must not hand
+ * the same instruction to a bot twice. */
+const messageIdempotency = new IdempotencyCache<RouteReply>();
+const IDEMPOTENCY_KEY_ERROR =
+  "idempotencyKey must be 1-200 characters of letters, digits, dot, colon, underscore, or dash";
+function idempotencyKeyFrom(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  return typeof value === "string" && /^[\w.:-]{1,200}$/.test(value) ? value : null;
+}
+async function replyOnce(key: string | undefined, deliver: () => Promise<RouteReply>): Promise<RouteReply> {
+  if (!key) return deliver();
+  const { replayed, result } = messageIdempotency.run(key, deliver);
+  const reply = await result;
+  return replayed ? { status: reply.status, body: { ...reply.body, replayed: true } } : reply;
+}
+/** How far back a filtered decision-log read looks.  Both log files are
+ * rotation-capped at 4 MB, so this comfortably covers everything on disk. */
+const DECISION_FILTER_WINDOW = 50_000;
 // the last settled assistant text per thread, so a "finished" notification
 // can carry what the bot actually said
 const lastReply = new Map<string, string>();
@@ -3545,6 +3568,13 @@ function isAllowedOrigin(origin: string | undefined | null): boolean {
   }
 }
 
+/** The peer address of a socket, judged by the same loopback rule as Host. */
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false;
+  const bare = address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+  return isLoopbackHost(bare.includes(":") ? `[${bare}]` : bare);
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -4974,9 +5004,14 @@ const server = createServer(async (req, res) => {
       if (body.threadId !== undefined && body.threadId !== group.threadId) {
         return json(res, 409, { error: "the channel switched tasks before it could receive the message" });
       }
+      const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
+      if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const replyTo = resolveReplyTarget(group.threadId, body.replyToId);
-      startGroupTurn(group.id, text, replyTo);
-      return json(res, 202, { ok: true });
+      const reply = await replyOnce(idempotencyKey && `channel:${group.id}:${group.threadId}:${idempotencyKey}`, async () => {
+        startGroupTurn(group.id, text, replyTo);
+        return { status: 202, body: { ok: true } };
+      });
+      return json(res, reply.status, reply.body);
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
     if (m && method === "POST") {
@@ -5015,6 +5050,11 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { message: patched });
     }
     if (method === "POST" && path === "/api/desktop/open") {
+      // Raising the desktop is a physical action on this computer, so only a
+      // connection from this computer may ask for it, whatever Host it sends.
+      if (!isLoopbackAddress(req.socket.remoteAddress)) {
+        return json(res, 403, { error: "forbidden: the desktop can only be opened from this computer" });
+      }
       const result = await openBotFleetDesktop();
       if (!result.ok) return json(res, 503, { error: result.error ?? "could not open BotFleet" });
       return json(res, 200, { ok: true });
@@ -5584,36 +5624,44 @@ const server = createServer(async (req, res) => {
       if (body.threadId !== undefined && body.threadId !== bot.threadId) {
         return json(res, 409, { error: "the bot switched tasks before it could receive the message" });
       }
+      const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
+      if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const replyTo = resolveReplyTarget(bot.threadId, body.replyToId);
-      // Claude can accept the message inside its live turn. If the write
-      // loses a race with turn settlement, or the engine cannot steer, the
-      // existing server-side queue records it atomically for the next turn.
-      if (bot.busy) {
-        const instance = registry.get(bot.modelSelection.instanceId);
-        if (instance?.adapter.capabilities.queueing && instance.adapter.steer) {
-          const steered = await instance.adapter
-            .steer(bot.threadId, promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"))
-            .catch(() => false);
-          if (steered) {
-            clearUnattended(bot.id);
-            store.appendMessage(bot.threadId, {
-              role: "user",
-              kind: "text",
-              text,
-              replyToId: replyTo?.id,
-              steered: true,
-            });
-            return json(res, 202, { ok: true, steered: true });
+      const deliver = async (): Promise<RouteReply> => {
+        // Claude can accept the message inside its live turn. If the write
+        // loses a race with turn settlement, or the engine cannot steer, the
+        // existing server-side queue records it atomically for the next turn.
+        if (bot.busy) {
+          const instance = registry.get(bot.modelSelection.instanceId);
+          if (instance?.adapter.capabilities.queueing && instance.adapter.steer) {
+            const steered = await instance.adapter
+              .steer(bot.threadId, promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"))
+              .catch(() => false);
+            if (steered) {
+              clearUnattended(bot.id);
+              store.appendMessage(bot.threadId, {
+                role: "user",
+                kind: "text",
+                text,
+                replyToId: replyTo?.id,
+                steered: true,
+              });
+              return { status: 202, body: { ok: true, steered: true } };
+            }
           }
+          const queued = queueSteeredMessage(bot, text, {
+            replyToId: replyTo?.id,
+            prompt: promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"),
+          });
+          return { status: 202, body: { ok: true, queued: true, queueId: queued.id, threadId: bot.threadId } };
         }
-        const queued = queueSteeredMessage(bot, text, {
-          replyToId: replyTo?.id,
-          prompt: promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"),
-        });
-        return json(res, 202, { ok: true, queued: true, queueId: queued.id, threadId: bot.threadId });
-      }
-      await startTurn(bot.id, text, { replyTo });
-      return json(res, 202, { ok: true });
+        await startTurn(bot.id, text, { replyTo });
+        return { status: 202, body: { ok: true } };
+      };
+      // A retried send must not run the instruction twice: the key is scoped
+      // to this bot and task, and a replay answers with the first outcome.
+      const reply = await replyOnce(idempotencyKey && `bot:${bot.id}:${bot.threadId}:${idempotencyKey}`, deliver);
+      return json(res, reply.status, reply.body);
     }
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/queue\/([\w-]+)$/);
@@ -6047,7 +6095,19 @@ const server = createServer(async (req, res) => {
       if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
         return json(res, 400, { error: "limit must be a positive whole number" });
       }
-      return json(res, 200, { decisions: readDecisions(DATA_DIR, parsedLimit ?? 200) });
+      const botId = url.searchParams.get("botId");
+      const threadId = url.searchParams.get("threadId");
+      if ((botId !== null && !/^[\w-]+$/.test(botId)) || (threadId !== null && !/^[\w-]+$/.test(threadId))) {
+        return json(res, 400, { error: "botId and threadId must be ids" });
+      }
+      const limit = parsedLimit ?? 200;
+      if (botId === null && threadId === null) return json(res, 200, { decisions: readDecisions(DATA_DIR, limit) });
+      // Filters read the whole (rotation-capped) log and keep the newest
+      // matches, so a busy fleet cannot push one bot's rows out of the window.
+      const matching = readDecisions(DATA_DIR, DECISION_FILTER_WINDOW).filter(
+        (row) => (botId === null || row.botId === botId) && (threadId === null || row.threadId === threadId),
+      );
+      return json(res, 200, { decisions: matching.slice(-limit) });
     }
 
     // ── provider instances (model picker) ──
