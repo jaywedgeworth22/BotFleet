@@ -140,10 +140,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     });
 
     const complete = async (
-      messages: Array<{ role: string; content: string }>,
+      messages: any[],
       model: string,
-      opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void },
-    ): Promise<{ text: string; usage: { input: number; output: number } | null }> => {
+      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
+    ): Promise<{ text: string; tool_calls?: any[]; usage: { input: number; output: number } | null }> => {
       const timeout = AbortSignal.timeout(180_000);
       const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
       const body = {
@@ -152,6 +152,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         stream: opts.stream,
         reasoning_split: true,
         stream_options: opts.stream ? { include_usage: true } : undefined,
+        ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools } : {}),
       };
       const res = await fetch(`${apiUrl}/chat/completions`, {
         method: "POST",
@@ -172,6 +173,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         const json: any = await res.json();
         return {
           text: json.choices?.[0]?.message?.content ?? "",
+          tool_calls: json.choices?.[0]?.message?.tool_calls,
           usage: json.usage
             ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
             : null,
@@ -209,10 +211,18 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       } finally {
         await reader.cancel().catch(() => {});
       }
-      return { text, usage };
+      return { text, usage, tool_calls: streamToolCalls.length > 0 ? streamToolCalls : undefined };
     };
 
     const sendTurn = async (turn: SendTurnInput) => {
+      const openAiTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+        },
+      })) : undefined;
       const { threadId } = turn;
       if (!apiKey) throw new Error(`no MiniMax key — set ${API_KEY_ENV} or run mmx auth login --api-key …`);
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
@@ -223,10 +233,29 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
 
       const messages = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
-        ...(turn.transcript ?? []).map((m) => ({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: m.text,
-        })),
+        ...(turn.transcript ?? []).flatMap((m: any) => {
+          const res = [];
+          if (m.role === "assistant") {
+            const assistantMsg: any = { role: "assistant", content: m.text || "" };
+            if (m.toolCalls && m.toolCalls.length > 0) {
+              assistantMsg.tool_calls = m.toolCalls.map((tc: any) => ({
+                id: tc.id,
+                type: "function",
+                function: { name: tc.name, arguments: tc.arguments },
+              }));
+            }
+            res.push(assistantMsg);
+          } else {
+            if (m.toolResults && m.toolResults.length > 0) {
+              for (const tr of m.toolResults) {
+                res.push({ role: "tool", tool_call_id: tr.id, content: tr.result });
+              }
+            } else {
+              res.push({ role: "user", content: m.text });
+            }
+          }
+          return res;
+        }),
         { role: "user", content: turn.text },
       ];
 
@@ -241,11 +270,15 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
 
       (async () => {
         try {
-          const { text, usage } = await complete(messages, turn.model || models.default, {
+          const { text, usage, tool_calls } = await complete(messages, turn.model || models.default, {
             stream: true,
+            tools: openAiTools,
             signal: abort.signal,
             onDelta: (delta) =>
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
+            onToolCallDelta: (index, id, name, args) => {
+              emit({ ...base(threadId, turnId), type: "tool_call.delta", index, toolCallId: id, name, args });
+            },
           });
 
           appendNative(threadId, {
@@ -255,8 +288,13 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
           });
 
           if (text.trim()) {
-            emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
-          }
+              emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
+            }
+            if (tool_calls && tool_calls.length > 0) {
+              for (const tc of tool_calls) {
+                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool_call", toolCallId: tc.id, name: tc.function.name, args: tc.function.arguments });
+              }
+            }
           if (usage) {
             emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
           }
@@ -308,7 +346,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session" },
+        capabilities: { sessionModelSwitch: "in-session", localComputerMcp: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async (): Promise<"unavailable"> => "unavailable",

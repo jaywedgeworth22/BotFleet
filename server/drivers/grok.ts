@@ -68,14 +68,14 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
     });
 
     const complete = async (
-      messages: Array<{ role: string; content: string }>,
+      messages: any[],
       model: string,
-      opts: { stream: boolean; signal?: AbortSignal; onDelta?: (d: string) => void },
-    ): Promise<{ text: string; usage: { input: number; output: number } | null }> => {
+      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
+    ): Promise<{ text: string; tool_calls?: any[]; usage: { input: number; output: number } | null }> => {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, stream: opts.stream }),
+        body: JSON.stringify({ model, messages, stream: opts.stream, ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools } : {}) }),
         signal: opts.signal
           ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
           : AbortSignal.timeout(120_000),
@@ -88,6 +88,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         const json: any = await res.json();
         return {
           text: json.choices?.[0]?.message?.content ?? "",
+          tool_calls: json.choices?.[0]?.message?.tool_calls,
           usage: json.usage
             ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
             : null,
@@ -95,6 +96,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       }
       let text = "";
       let usage: { input: number; output: number } | null = null;
+      let streamToolCalls: any[] = [];
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
@@ -132,10 +134,18 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           takeSseLine(line);
         }
       }
-      return { text, usage };
+      return { text, usage, tool_calls: streamToolCalls.length > 0 ? streamToolCalls : undefined };
     };
 
     const sendTurn = async (turn: SendTurnInput) => {
+      const openAiTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+        },
+      })) : undefined;
       const { threadId } = turn;
       if (!apiKey) throw new Error(`no xAI key — set ${config.apiKeyEnv} or config.json xai.key`);
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
@@ -149,10 +159,29 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
 
       const messages = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
-        ...(turn.transcript ?? []).map((m) => ({
-          role: m.role === "assistant" ? "assistant" : "user",
-          content: m.text,
-        })),
+        ...(turn.transcript ?? []).flatMap((m: any) => {
+          const res = [];
+          if (m.role === "assistant") {
+            const assistantMsg: any = { role: "assistant", content: m.text || "" };
+            if (m.toolCalls && m.toolCalls.length > 0) {
+              assistantMsg.tool_calls = m.toolCalls.map((tc: any) => ({
+                id: tc.id,
+                type: "function",
+                function: { name: tc.name, arguments: tc.arguments },
+              }));
+            }
+            res.push(assistantMsg);
+          } else {
+            if (m.toolResults && m.toolResults.length > 0) {
+              for (const tr of m.toolResults) {
+                res.push({ role: "tool", tool_call_id: tr.id, content: tr.result });
+              }
+            } else {
+              res.push({ role: "user", content: m.text });
+            }
+          }
+          return res;
+        }),
         { role: "user", content: turn.text },
       ];
       appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: { model: turn.model, messages } });
@@ -164,17 +193,26 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         let attempt = 0;
         for (;;) {
           try {
-            const { text, usage } = await complete(messages, turn.model || MODELS.default, {
+            const { text, usage, tool_calls } = await complete(messages, turn.model || MODELS.default, {
               stream: true,
+              tools: openAiTools,
               signal: abort.signal,
               onDelta: (delta) => {
                 streamedText = true;
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
               },
+              onToolCallDelta: (index, id, name, args) => {
+                emit({ ...base(threadId, turnId), type: "tool_call.delta", index, toolCallId: id, name, args });
+              },
             });
             appendNative(threadId, { dir: "in", source: "xai.chat.completions", msg: { text, usage } });
             if (text.trim()) {
               emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
+            }
+            if (tool_calls && tool_calls.length > 0) {
+              for (const tc of tool_calls) {
+                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool_call", toolCallId: tc.id, name: tc.function.name, args: tc.function.arguments });
+              }
             }
             if (usage) {
               emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
@@ -249,7 +287,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session" },
+        capabilities: { sessionModelSwitch: "in-session", localComputerMcp: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const, // this engine has no asks to answer
