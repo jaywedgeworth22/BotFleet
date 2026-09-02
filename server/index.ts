@@ -3,6 +3,7 @@
 // folds one SSE event stream; every provider process runs here.
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {  readFileSync, unlinkSync, appendFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { extname, join } from "node:path";
@@ -18,11 +19,12 @@ import {
 type CredentialTargetId,
 } from "../shared/credential-request.ts";
 
-import { approvalKey, autoVerdict } from "./auto-approve.ts";
+import { approvalKey, autoVerdict, isCoarseApprovalKey } from "./auto-approve.ts";
 import { requestReview, resolveAutoReviewMode, shouldReview } from "./auto-review.ts";
 import * as checkpoints from "./checkpoints.ts";
 import { appendDecision, readDecisions } from "./decision-log.ts";
-import { validateBotCwd } from "./bot-cwd.ts";
+import { cwdConfinementError, protectedCwdDirs, validateBotCwd, type CwdConfinement } from "./bot-cwd.ts";
+import { resolveStaticFile } from "./static-files.ts";
 import { attachmentExists, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, isImageMime, readAttachment, saveAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
 import { openBotFleetDesktop } from "./desktop-open.ts";
 import {
@@ -121,6 +123,7 @@ import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
   ensureWorkspace,
+  WORKSPACES_DIR,
   listMemoryTopics,
   isMemoryTopicName,
   memorySystemPrompt,
@@ -3397,6 +3400,22 @@ async function reloadProviders() {
 let providerConfigBusy = false;
 
 // ── HTTP plumbing ─────────────────────────────────────────────────────
+/** Folders a paired phone may point a room at.  Only what this computer
+ * already handed to a bot or room, plus the app-owned workspaces: the phone
+ * can reuse or narrow workspace access, never introduce a folder — that
+ * decision stays with the person at the keyboard.  Rebuilt per request so it
+ * always reflects the desktop's latest grants. */
+function phoneCwdConfinement(): CwdConfinement {
+  const roots = new Set<string>([WORKSPACES_DIR]);
+  for (const bot of store.bots) if (bot.cwd) roots.add(bot.cwd);
+  for (const group of store.groups) {
+    if (group.cwd) roots.add(group.cwd);
+    if (group.pinnedCwd) roots.add(group.pinnedCwd);
+    for (const extra of group.extraCwds ?? []) roots.add(extra);
+  }
+  return { roots: [...roots], protectedDirs: protectedCwdDirs(homedir(), DATA_DIR) };
+}
+
 function json(res: ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body);
   res.writeHead(status, { "content-type": "application/json" });
@@ -4797,6 +4816,16 @@ const server = createServer(async (req, res) => {
         if (!responder) return json(res, 400, { error: "invalid default responder" });
         patch.defaultResponder = responder;
       }
+      // A paired phone reaches this route through the sidecar, which stamps
+      // every forwarded request (companion/src/proxy.ts forwardHeaders); the
+      // phone cannot drop the header, and a loopback desktop caller gains
+      // nothing by adding it.  From a phone, a folder may only reuse or
+      // narrow what this computer already granted; the desktop picker stays
+      // unconfined because the person choosing is at the keyboard.
+      const fromPhone = req.headers["x-botfleet-companion"] === "1";
+      const confinement = fromPhone ? phoneCwdConfinement() : null;
+      const refuseFolder = (reason: string) =>
+        json(res, 403, { error: `${reason} — pick it in BotFleet on your computer` });
       if (body.cwd !== undefined) {
         if (existing.dm) return json(res, 400, { error: "direct-message channels cannot have a working folder" });
         if (existing.pinnedCwd !== undefined) {
@@ -4804,6 +4833,10 @@ const server = createServer(async (req, res) => {
         }
         const checked = validateBotCwd(body.cwd);
         if (!checked.ok) return json(res, 400, { error: checked.error });
+        if (confinement && checked.cwd) {
+          const refused = cwdConfinementError(checked.cwd, confinement);
+          if (refused) return refuseFolder(refused);
+        }
         patch.cwd = checked.cwd ?? undefined;
       }
       if (body.extraCwds !== undefined) {
@@ -4814,7 +4847,14 @@ const server = createServer(async (req, res) => {
         for (const item of body.extraCwds) {
           if (typeof item === "string" && item.trim()) {
             const checked = validateBotCwd(item.trim());
-            if (checked.ok && checked.cwd) cleaned.push(checked.cwd);
+            if (!checked.ok || !checked.cwd) continue;
+            if (confinement) {
+              // refused loudly rather than dropped: a folder that silently
+              // never appears reads as a bug on the phone, not a decision
+              const refused = cwdConfinementError(checked.cwd, confinement);
+              if (refused) return refuseFolder(refused);
+            }
+            cleaned.push(checked.cwd);
           }
         }
         patch.extraCwds = cleaned;
@@ -5057,6 +5097,9 @@ const server = createServer(async (req, res) => {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       if (!allowKey) return json(res, 400, { error: "allowKey required" });
+      if (isCoarseApprovalKey(allowKey)) {
+        return json(res, 400, { error: `${allowKey} would cover every shell command — approve this one instead` });
+      }
       const pending = store.messagesFor(bot.threadId).some((message) =>
         message.card?.requestId &&
         !message.card.answered &&
@@ -5219,7 +5262,17 @@ const server = createServer(async (req, res) => {
         if (!Array.isArray(body.alwaysAllow) || body.alwaysAllow.some((t: unknown) => typeof t !== "string")) {
           return json(res, 400, { error: "alwaysAllow must be a list of tool keys" });
         }
-        patch.alwaysAllow = [...new Set(body.alwaysAllow as string[])].slice(0, 200);
+        const requested = [...new Set(body.alwaysAllow as string[])];
+        // A shell in disguise (Bash:bash, Bash:env, a bare Bash) is refused
+        // when it is new; one stored before this rule existed is dropped
+        // rather than failing every later save that carries it along.
+        const introduced = requested.find(
+          (key) => isCoarseApprovalKey(key) && !existingBot?.alwaysAllow?.includes(key),
+        );
+        if (introduced) {
+          return json(res, 400, { error: `${introduced} would cover every shell command — approve it once instead` });
+        }
+        patch.alwaysAllow = requested.filter((key) => !isCoarseApprovalKey(key)).slice(0, 200);
       }
       if (existingBot?.computers?.includes("local") && body.computers !== undefined && !body.computers.includes("local")) {
         await registry
@@ -6428,21 +6481,25 @@ const server = createServer(async (req, res) => {
     // packaged app: the server serves the built UI too (window → :8799 for
     // everything, no dev proxy to die). OMB_STATIC_DIR is set by Electron.
     if (method === "GET" && !path.startsWith("/api/") && STATIC_DIR) {
-      const safe = path === "/" ? "/index.html" : path.replace(/\.\./g, "");
-      const file = join(STATIC_DIR, safe);
-      try {
-        const data = readFileSync(file);
-        res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
-        return res.end(data);
-      } catch {
-        // SPA fallback
+      // resolveStaticFile decides on real paths: nothing outside the UI
+      // folder is served, however the request spelled it, symlinks included.
+      const file = resolveStaticFile(STATIC_DIR, path);
+      if (file) {
         try {
-          const data = readFileSync(join(STATIC_DIR, "index.html"));
-          res.writeHead(200, { "content-type": "text/html" });
+          const data = readFileSync(file);
+          res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
           return res.end(data);
         } catch {
-          /* fall through to 404 */
+          /* a folder, or a file that vanished: SPA fallback below */
         }
+      }
+      // SPA fallback
+      try {
+        const data = readFileSync(join(STATIC_DIR, "index.html"));
+        res.writeHead(200, { "content-type": "text/html" });
+        return res.end(data);
+      } catch {
+        /* fall through to 404 */
       }
     }
 

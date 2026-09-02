@@ -5,7 +5,7 @@
 // the shadow-instance behavior end to end while it's at it.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, request, type Server } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -3252,5 +3252,103 @@ describe("computer control API (who is driving)", () => {
   it("keeps the internal who-is-driving endpoint behind the boot token", async () => {
     const res = await fetch(`${BASE}/api/internal/computer-control?botId=${botId}`);
     expect(res.status).toBe(401);
+  });
+});
+
+describe("trust boundaries: phone-originated room folders, coarse always-allow, and the packaged UI folder", () => {
+  const phone = { "x-botfleet-companion": "1" };
+  const apiAs = async (
+    headers: Record<string, string>,
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; body: any }> => {
+    const res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: res.status, body: await res.json() };
+  };
+
+  it("confines a phone's room folder to what this computer already shares, and refuses key stores", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "From the phone", memberIds: [bot.id] })).body.group;
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "omb-phone-project-")));
+    const nested = join(project, "src");
+    mkdirSync(nested);
+    const ssh = join(home, ".ssh");
+    mkdirSync(ssh, { recursive: true });
+    const workspaces = join(home, ".botfleet", "workspaces");
+    mkdirSync(workspaces, { recursive: true });
+    try {
+      // nobody on the computer granted this folder yet
+      const refused = await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: project });
+      expect(refused.status).toBe(403);
+      expect(refused.body.error).toMatch(/not one this computer already shares/);
+      expect(refused.body.error).toMatch(/on your computer/);
+
+      // the desktop picker is not confined
+      const granted = await api("PATCH", `/api/groups/${room.id}`, { cwd: project });
+      expect(granted.status).toBe(200);
+      expect(granted.body.group.cwd).toBe(project);
+
+      // now the phone may reuse or narrow within it
+      const narrowed = await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: nested });
+      expect(narrowed.status).toBe(200);
+      expect(narrowed.body.group.cwd).toBe(nested);
+
+      // keys and BotFleet's own state stay off-limits — loudly, not silently dropped
+      const keys = await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { extraCwds: [nested, ssh] });
+      expect(keys.status).toBe(403);
+      expect(keys.body.error).toMatch(/keys or BotFleet/);
+      expect((await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: join(home, ".botfleet") })).status).toBe(403);
+
+      // the app-owned workspaces under it are a root of their own
+      expect((await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: workspaces })).status).toBe(200);
+
+      // clearing is never a widening
+      const cleared = await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: null });
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.group).not.toHaveProperty("cwd");
+    } finally {
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to remember an always-allow that is a shell in disguise", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const coarse = await api("PATCH", `/api/bots/${bot.id}`, { alwaysAllow: ["Bash:git", "Bash:bash"] });
+      expect(coarse.status).toBe(400);
+      expect(coarse.body.error).toMatch(/every shell command/);
+      const direct = await api("POST", `/api/bots/${bot.id}/always-allow`, { allowKey: "Bash:sh" });
+      expect(direct.status).toBe(400);
+      expect(direct.body.error).toMatch(/every shell command/);
+      const narrow = await api("PATCH", `/api/bots/${bot.id}`, { alwaysAllow: ["Bash:git"] });
+      expect(narrow.status).toBe(200);
+      expect(narrow.body.bot.alwaysAllow).toEqual(["Bash:git"]);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("does not follow a symlink out of the packaged UI folder", async () => {
+    const secret = join(home, "not-for-the-browser.txt");
+    writeFileSync(secret, "top secret");
+    const link = join(staticDir, "assets", "leak.txt");
+    try {
+      symlinkSync(secret, link);
+    } catch {
+      return; // no symlink permission on this runner
+    }
+    const leaked = await fetch(`${BASE}/assets/leak.txt`);
+    expect(leaked.status).toBe(200);
+    // the SPA fallback, never the target
+    expect(await leaked.text()).toContain("Packaged BotFleet");
+    const inside = await fetch(`${BASE}/assets/smoke.css`);
+    expect(await inside.text()).toContain("color: white");
   });
 });

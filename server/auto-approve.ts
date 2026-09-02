@@ -21,6 +21,11 @@ const DESTRUCTIVE = [
   // Pipe a fetch into a shell or interpreter.  Auto / Always-allow must
   // never cover `curl | sh`, `wget | bash`, or `curl | python -c`.
   /\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?((ba)?sh|bash|zsh|fish|ksh|python3?|perl|ruby|node)\b/i,
+  // The same download-and-run spelled without a pipe: `bash -c "$(curl …)"`,
+  // `eval "$(wget …)"`, `sh <(curl …)`, `source <(curl …)`.  A plain
+  // `echo "$(curl …)"` captures the output without running it and stays out.
+  /(^|[\s;&|(])(sudo\s+)?((ba|z|da|k|c|tc)?sh|fish|eval|exec)\s+(-[a-zA-Z]+\s+)*["']?\$\(\s*(curl|wget)\b/i,
+  /(^|[\s;&|(])(sudo\s+)?((ba|z|da|k|c|tc)?sh|fish|source|\.)\s+(-[a-zA-Z]+\s+)*<\(\s*(curl|wget)\b/i,
 ];
 
 // Not destructive, but exactly what you don't hand over unattended: a
@@ -71,6 +76,32 @@ export function approvalKey(tool: string, summary: string, scope?: "local-comput
   const program = (words[i] ?? "").split("/").pop()?.replace(/[^\w.-]/g, "") ?? "";
   const key = program ? `${tool}:${program}` : tool;
   return scope ? `${scope}:${key}` : key;
+}
+
+/** Program names that run whatever follows them.  An Always-allow keyed on
+ * one of these is the bare "Bash" grant in disguise — `Bash:bash` covers
+ * `bash -c <anything>`, `Bash:env` covers `env sh -c …` — so it is never
+ * remembered, and a stored one is ignored.  The only way through is the
+ * card, every time. */
+const COARSE_PROGRAMS = new Set([
+  "sh", "bash", "zsh", "fish", "ksh", "dash", "csh", "tcsh",
+  "eval", "exec", "source", ".", "env", "xargs", "nohup", "command", "builtin", "time", "timeout", "nice", "su",
+  "cmd", "cmd.exe", "powershell", "powershell.exe", "pwsh", "pwsh.exe",
+]);
+
+/** True when remembering this key would hand the bot an unattended shell:
+ * a command tool with no program at all, or one whose program is itself a
+ * command runner.  Non-command tools (`Read`, `mcp__x__search`) are never
+ * coarse — their key is the whole tool, which is what "always allow" means
+ * for them. */
+export function isCoarseApprovalKey(key: string): boolean {
+  const unscoped = key.startsWith("local-computer:") ? key.slice("local-computer:".length) : key;
+  const colon = unscoped.indexOf(":");
+  const tool = colon === -1 ? unscoped : unscoped.slice(0, colon);
+  if (!COMMAND_TOOLS.has(tool.replace(/^mcp__[^_]+__/, "").toLowerCase())) return false;
+  if (colon === -1) return true;
+  const program = unscoped.slice(colon + 1).toLowerCase();
+  return program === "" || COARSE_PROGRAMS.has(program);
 }
 
 export interface AutoApprover {
@@ -129,7 +160,7 @@ export function autoVerdict(
   const grant =
     destructive || sensitive
       ? null
-      : bot.alwaysAllow?.includes(key)
+      : bot.alwaysAllow?.includes(key) && !isCoarseApprovalKey(key)
         ? { approve: `auto-approved ${key} (always allowed)`, source: "always-allow" as const, rule: key }
         : bot.autoApprove
           ? { approve: `auto-approved ${tool}`, source: "auto-mode" as const, rule: undefined }
