@@ -17,6 +17,7 @@ import { UsageSection } from "./UsageSection";
 import { SkinPicker } from "./SkinPicker";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
 import { TranscriptionSettings } from "./TranscriptionSettings";
+import { ElevenLabsConnection } from "./ElevenLabsConnection";
 import { cn } from "@/lib/cn";
 
 const SECTIONS: Array<{
@@ -26,7 +27,7 @@ const SECTIONS: Array<{
   keywords: string[];
 }> = [
   { id: "general", label: "General", icon: User, keywords: ["profile", "name", "email", "skin", "theme", "appearance", "analytics", "updates", "tools", "tool calls"] },
-  { id: "connections", label: "Connections", icon: KeyRound, keywords: ["keys", "api", "composio", "box", "xai", "vps"] },
+  { id: "connections", label: "Connections", icon: KeyRound, keywords: ["keys", "api", "composio", "box", "xai", "vps", "elevenlabs", "voice", "tts", "speech"] },
   { id: "engines", label: "Engines", icon: Terminal, keywords: ["models", "claude", "grok", "providers", "cli"] },
   { id: "companion", label: "Phone", icon: Smartphone, keywords: ["companion", "phone", "pair", "mobile"] },
   { id: "computer", label: "Local VM", icon: Monitor, keywords: ["vm", "virtual", "desktop"] },
@@ -627,6 +628,7 @@ export function SettingsModal() {
                       Connected apps service is ready
                     </div>
                   ) : null}
+                  <ElevenLabsConnection />
                   <TranscriptionSettings />
                   <ApiKeyRow section="box" />
                   <VpsConnection />
