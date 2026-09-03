@@ -59,6 +59,7 @@ posixOnly("routine failure notification wiring", () => {
     writeFileSync(
       join(home, ".botfleet", "config.json"),
       JSON.stringify({
+        conversationMode: "projects",
         instances: {
           grok: {
             driver: "grokAgent",
