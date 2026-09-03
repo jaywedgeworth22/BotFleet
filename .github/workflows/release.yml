@@ -371,6 +371,18 @@ jobs:
           import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
           const sha512 = (f) => createHash("sha512").update(readFileSync(f)).digest("base64");
           let bad = 0;
+          // Mac auto-update is a product promise.  Skipping a missing
+          // latest-mac.yml is how v0.1.38 shipped DMGs only and Check
+          // for updates could not find the feed.
+          if (!existsSync("latest-mac.yml")) {
+            console.error("REQUIRED missing latest-mac.yml (macOS auto-update feed)");
+            bad++;
+          }
+          const macZips = readdirSync(".").filter((name) => /BotFleet-.*-(arm64|x64)\.zip$/.test(name));
+          if (macZips.length < 2) {
+            console.error(`REQUIRED missing macOS zip artifacts (found ${macZips.join(", ") || "none"})`);
+            bad++;
+          }
           for (const feed of ["latest-mac.yml", "latest.yml", "latest-linux.yml"]) {
             if (!existsSync(feed)) continue;
             const text = readFileSync(feed, "utf8");

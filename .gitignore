@@ -27,3 +27,15 @@ cloudflare/control-plane/worker-configuration.d.ts
 .vercel
 .env*
 .pr-screenshots-scratch/
+# One-off mutation scripts that used to sit in the repo root and rewrite
+# source or ~/.botfleet at runtime.  Keep them out of git status so a
+# later seat cannot run them by accident.
+/patch*.py
+/patch*.js
+/patch*.cjs
+/patch*.mjs
+/fix-*.py
+/fix_*.py
+/trace*.py
+/trace*.out
+/test-time.js

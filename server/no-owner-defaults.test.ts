@@ -9,7 +9,7 @@
 // everything else that ships to a user or a visitor: the marketing site under
 // apps/ and the iOS app's source and build configuration under ios/.
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, extname, join } from "node:path";
+import { dirname, extname, join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -83,7 +83,7 @@ describe("shipped source carries no owner-specific defaults", () => {
     // The runtime dirs alone already clear the floor above, so a typo that
     // dropped apps/ or ios/ would otherwise go unnoticed.
     for (const dir of ["apps", "ios"]) {
-      const prefix = join(REPO_ROOT, dir) + "/";
+      const prefix = join(REPO_ROOT, dir) + sep;
       expect(files.filter((file) => file.startsWith(prefix)).length).toBeGreaterThan(0);
     }
   });

@@ -21,7 +21,8 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
-- **2026-09-03 — GROK — IN PROGRESS — iOS opaque chat chrome, compose menus, Simple/Projects workspace modes, room crop, quota Available fix (board `4498c349`, issue #180, branch `grok/ios-chrome-workspace-modes`, worktree `~/apps/botfleet-grok-ios-chrome`).**  Claimed Thu, Sep 3, 2026.
+- **2026-09-03 — GROK — IN PROGRESS — MiniMax review hygiene: delete congress compose.yml, gitignore patch junk, Windows path tests, require latest-mac.yml (board `41169a1e`, branch `grok/minimax-hygiene`, worktree `~/apps/botfleet-grok-minimax-hygiene`).**  Claimed Thu, Sep 3, 2026.
+- **2026-09-03 — GROK — COMPLETED — iOS opaque chat chrome, compose menus, Simple/Projects workspace modes, room crop, quota Available fix.**  PR #181 merged `18e66cdd`.  Board `4498c349`.  Issue #180.  GitHub TestFlight job lacks Apple API secrets; Mac wrapper is the ship path.
 - **2026-09-03 — GROK — IN PROGRESS — Thread lanes, drag-reassign/merge, hourly TestFlight without tags (board `8aee326915b34c7c8c27a4cdb93fafca`, branch `grok/thread-lanes`, worktree `~/apps/botfleet-grok-followups`).**
 - **2026-09-03 — GROK — IN PROGRESS — Sticky 8799 banner auto-clear, calendar Auto, curl|python3 -c, routine copy (board `6251b088`, branch `grok/sticky-8799`, worktree `~/apps/botfleet-grok-followups`).**  #175 merged (retry, thinking chip, thread reuse).  TestFlight 1.0.29 in flight for the new iOS icon.
 - **2026-09-03 — GROK — IN PROGRESS — Ship trio app icon on iOS and macOS from `botfleet-ios-app-icon-1024x1024.png`; favicon from transparent just-bots (board `a959d7bf`, issue #164, branch `grok/app-icons-trio`, worktree `~/apps/botfleet-grok-icons`).**
