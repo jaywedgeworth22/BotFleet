@@ -6060,6 +6060,37 @@ const server = createServer(async (req, res) => {
     }
     if (m && method === "PATCH") {
       const body = await readBody(req);
+      // Reassigning a conversation to another bot, or into a channel. The
+      // thread keeps its id, so the transcript moves rather than being copied.
+      if (body.botId !== undefined) {
+        const target = String(body.botId);
+        if (!store.bot(target)) return json(res, 404, { error: "no such bot" });
+        const moved = store.moveTaskToBot(m[1], m[2], target);
+        if (!moved) {
+          return json(res, 400, {
+            error: "that conversation cannot move — a bot keeps its last one",
+          });
+        }
+        for (const record of moved) broadcast({ kind: "bot", bot: botWithThread(record) });
+        return json(res, 200, { ok: true });
+      }
+      if (body.groupId !== undefined) {
+        const target = String(body.groupId);
+        const destination = store.group(target);
+        if (!destination) return json(res, 404, { error: "no such channel" });
+        if (destination.dm) {
+          return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
+        }
+        const moved = store.moveTaskToGroup(m[1], m[2], target);
+        if (!moved) {
+          return json(res, 400, {
+            error: "that conversation cannot move — a bot keeps its last one",
+          });
+        }
+        broadcast({ kind: "bot", bot: botWithThread(moved.bot) });
+        broadcast({ kind: "group", group: groupWithThread(moved.group) });
+        return json(res, 200, { ok: true });
+      }
       const task = store.renameTask(m[1], m[2], String(body.title ?? ""));
       if (!task) return json(res, 404, { error: "no such task" });
       const fresh = botWithThread(store.bot(m[1])!);
