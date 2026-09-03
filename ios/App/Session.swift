@@ -241,6 +241,14 @@ final class Session: ObservableObject {
         connect()
     }
 
+    func receiveOpenURL(_ url: URL) {
+        if let link = ChatDeepLink.parse(url) {
+            Task { await openChat(botId: link.botId, threadId: link.threadId) }
+            return
+        }
+        receivePairingURL(url)
+    }
+
     func receivePairingURL(_ url: URL) {
         guard CompanionPairingInvitePolicy.allowsIncomingInvite(
             hasConnection: connection != nil,
@@ -1108,6 +1116,13 @@ final class Session: ObservableObject {
 
     func consumeNotificationChat() { notificationChat = nil }
 
+    /// Lock-screen Live Activity (and any `botfleet://chat` URL) lands on
+    /// the named bot, switching task when the thread is not the active one.
+    func openChat(botId: String, threadId: String) async {
+        guard let target = NotificationTarget(botId: botId, threadId: threadId) else { return }
+        await openNotification(target)
+    }
+
     func react(to message: Message, in threadId: String, emoji: String) async {
         guard let client else { return }
         do {
@@ -1295,8 +1310,7 @@ enum Chat: Identifiable, Hashable {
 }
 
 /// A chat plus the two things a roster row shows that the record itself does
-/// not carry: the preview line, and when the thread last moved. Both come out
-/// of the same message — the last one in the transcript.
+/// not carry: the preview line, and when any of its tasks last moved.
 struct ChatSummary: Identifiable, Hashable {
     let chat: Chat
     let preview: String
@@ -1322,11 +1336,11 @@ extension CompanionState {
         let rooms = self.rooms.map(Chat.room)
         return (bots + rooms)
             .map { chat in
-                let last = visibleTranscript(forThread: chat.threadId).last
+                let last = newestLoadedMessage(for: chat)
                 return ChatSummary(
                     chat: chat,
                     preview: Self.preview(of: last),
-                    lastActivity: last?.at ?? 0,
+                    lastActivity: latestActivity(for: chat),
                     pinned: Self.pinned(chat)
                 )
             }
@@ -1340,6 +1354,38 @@ extension CompanionState {
     private static func pinned(_ chat: Chat) -> Bool {
         if case let .bot(bot) = chat { return bot.pinned ?? false }
         return false
+    }
+
+    /// Newest loaded message across this chat's threads. Other tasks may
+    /// not be hydrated yet; `latestActivity` still reads their stamps.
+    func newestLoadedMessage(for chat: Chat) -> Message? {
+        threadIds(for: chat)
+            .compactMap { visibleTranscript(forThread: $0).last }
+            .max { $0.at < $1.at }
+    }
+
+    /// Roster timestamp: max of loaded transcripts and each task's
+    /// `lastActivity`, so an unread update on a background task does not
+    /// keep showing yesterday from the currently selected thread.
+    func latestActivity(for chat: Chat) -> Double {
+        let fromMessages = newestLoadedMessage(for: chat)?.at ?? 0
+        switch chat {
+        case let .bot(bot):
+            let fromTasks = (bot.tasks ?? []).compactMap { $0.lastActivity ?? $0.createdAt }.max() ?? 0
+            return max(fromMessages, fromTasks, bot.createdAt)
+        case let .room(room):
+            return max(fromMessages, room.createdAt)
+        }
+    }
+
+    private func threadIds(for chat: Chat) -> [String] {
+        switch chat {
+        case let .bot(bot):
+            let ids = (bot.tasks ?? []).map(\.threadId) + [bot.threadId]
+            return Array(Set(ids))
+        case let .room(room):
+            return [room.threadId]
+        }
     }
 
     /// The one line a roster row shows under the name, from whichever kind of

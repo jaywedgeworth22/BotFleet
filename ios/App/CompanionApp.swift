@@ -37,7 +37,7 @@ struct CompanionApp: App {
                     session.registerForRemoteNotificationsIfAllowed()
                     liveActivities.attach(to: session)
                 }
-                .onOpenURL { session.receivePairingURL($0) }
+                .onOpenURL { session.receiveOpenURL($0) }
                 .onChange(of: scenePhase) { _, phase in
                     switch phase {
                     case .active:
