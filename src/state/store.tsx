@@ -17,6 +17,12 @@ import type { CloudBackend, EffortLevel } from "../../server/contracts.ts";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import type { RoutineRequestCardData } from "../../shared/routine-request";
+import {
+  DEFAULT_ROOM_TERMINOLOGY,
+  resolveRoomLabels,
+  type RoomLabels,
+  type RoomTerminology,
+} from "../../shared/terminology";
 import type { Routine, RoutineInput, RoutineRun } from "@/lib/routines";
 import type { ResourceTrigger } from "@/lib/resource-triggers";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
@@ -317,7 +323,10 @@ export interface ConfigStatus {
   /** who's using the app — collected in onboarding, shown in the sidebar */
   profile?: { name: string; email: string };
   autoUpdate?: { enabled: boolean };
-  terminology?: "channels" | "groups" | "projects";
+  terminology?: RoomTerminology;
+  /** The finished words, resolved by the harness so every client
+   * agrees. Absent only when talking to an older harness. */
+  roomLabels?: RoomLabels;
   /** Shared Qdrant Agent RAG vector database status. `url` and `collection`
    * are empty until the operator sets them — BotFleet ships no endpoint. */
   qdrant?: { enabled: boolean; url: string; configured: boolean; hasApiKey: boolean; collection: string };
@@ -333,27 +342,25 @@ export interface ConfigStatus {
   features?: { skillRecorder: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
 }
 
-export type RoomTerminology = "channels" | "groups" | "projects";
+export type { RoomTerminology };
 
+/** The words to call a room, for any component that renders one.
+ *
+ * The harness resolves these and sends them as `roomLabels`; resolving
+ * locally is the fallback for an older harness that only sends the key. */
 export function getRoomTerminology(config?: ConfigStatus | null): {
   key: RoomTerminology;
   singular: string;
   plural: string;
-  uppercasePlural: string;
 } {
-  const term = config?.terminology ?? "channels";
-  if (term === "groups") {
-    return { key: "groups", singular: "Group", plural: "Groups", uppercasePlural: "GROUPS" };
-  }
-  if (term === "projects") {
-    return { key: "projects", singular: "Project", plural: "Projects", uppercasePlural: "PROJECTS" };
-  }
-  return { key: "channels", singular: "Channel", plural: "Channels", uppercasePlural: "CHANNELS" };
+  const key = config?.terminology ?? DEFAULT_ROOM_TERMINOLOGY;
+  const labels = config?.roomLabels ?? resolveRoomLabels(key);
+  return { key, singular: labels.singular, plural: labels.plural };
 }
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "qdrant" | "usage" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "qdrant" | "usage" | "features"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -372,6 +379,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     profile: frame.profile,
     autoUpdate: frame.autoUpdate,
     terminology: frame.terminology,
+    roomLabels: frame.roomLabels,
     qdrant: frame.qdrant,
     usage: frame.usage,
     features: frame.features,

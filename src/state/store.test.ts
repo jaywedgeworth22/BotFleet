@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   configStatusFromFrame,
+  getRoomTerminology,
   initialState,
   latestChatActivity,
   mergeHydrateBots,
@@ -617,3 +618,32 @@ describe("hydrate vs in-flight patches", () => {
   });
 });
 
+
+describe("room terminology", () => {
+  it("defaults to Channels when nothing is configured", () => {
+    expect(getRoomTerminology(null)).toEqual({
+      key: "channels",
+      singular: "Channel",
+      plural: "Channels",
+    });
+  });
+
+  it("prefers the words the harness resolved", () => {
+    // The harness owns the pair so the Mac app and the phone cannot drift.
+    expect(
+      getRoomTerminology({
+        terminology: "custom",
+        roomLabels: { singular: "Person", plural: "People" },
+      } as never),
+    ).toEqual({ key: "custom", singular: "Person", plural: "People" });
+  });
+
+  it("resolves a preset locally when talking to an older harness", () => {
+    // An older harness sends the key without roomLabels.
+    expect(getRoomTerminology({ terminology: "repos" } as never)).toEqual({
+      key: "repos",
+      singular: "Repo",
+      plural: "Repos",
+    });
+  });
+});

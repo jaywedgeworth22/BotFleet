@@ -3,7 +3,7 @@
 // so App.tsx only mounts it.
 import { useEffect, useRef, useState } from "react";
 import { Bot as BotIcon, MessageSquare, Search, Users } from "lucide-react";
-import { api, useStore, type Bot, type Group } from "@/state/store";
+import { api, getRoomTerminology, useStore, type Bot, type Group } from "@/state/store";
 import { rankByName } from "@/lib/palette-rank";
 import { cn } from "@/lib/cn";
 import type { SearchHit } from "@/lib/search-hit";
@@ -16,6 +16,7 @@ type PaletteEntry =
 
 export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean) => void }) {
   const { state, dispatch } = useStore();
+  const terminology = getRoomTerminology(state.config);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [messageHits, setMessageHits] = useState<SearchHit[]>([]);
@@ -165,7 +166,7 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
             autoFocus
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search bots, channels, messages…"
+            placeholder={`Search bots, ${terminology.plural.toLowerCase()}, messages\u2026`}
             className="w-full bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
           <kbd className="shrink-0 rounded-md border border-hairline/40 px-1.5 py-0.5 text-[11px] text-ink-secondary">
@@ -199,7 +200,7 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
           )}
           {rooms.length > 0 && (
             <div className="px-3 pb-1 pt-2 text-[11px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
-              Channels
+              {terminology.plural}
             </div>
           )}
           {rooms.map((group, i) =>
