@@ -39,13 +39,9 @@ async function boxJson(cfg: AppConfig, path: string, opts: RequestInit = {}) {
 // Deterministic pool slot (#117 hetzner pooling): a bot's id hashes into
 // one of four shared boxes, so every lookup and rename uses this name.
 async function boxNameFor(botId: string) {
-  const prefix = botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(botId));
-  const hash = Array.from(new Uint8Array(digest))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("")
-    .slice(0, 6);
-  return `ogb-${prefix}-${hash}`;
+  const poolIndex = new Uint8Array(digest)[0] % 4;
+  return `ogb-pool-${poolIndex}`;
 }
 
 export async function runCommand(cfg: AppConfig, boxId: string, command: string, { timeoutMs = 120_000 } = {}) {
