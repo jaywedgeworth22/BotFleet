@@ -7,7 +7,6 @@
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:botfleet.app</string>
-		<string>applinks:agents.jays.services</string>
 		<string>webcredentials:botfleet.app</string>
 	</array>
 	<key>com.apple.developer.usernotifications.time-sensitive</key>
