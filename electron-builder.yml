@@ -7,9 +7,10 @@ protocols:
     schemes: [botfleet]
 
 # In-app auto-update reads latest-mac.yml + the .zip (macOS) or latest.yml +
-# the NSIS .exe (Windows) from this PUBLIC releases repo (separate from the
-# source repo): jaywedgeworth22/botfleet-releases, the only place BotFleet
-# releases exist. Public → no token on users' machines. Baked into
+# the NSIS .exe (Windows) from this repository's own GitHub Releases:
+# jaywedgeworth22/BotFleet, the only place BotFleet releases exist (owner
+# rule, 2026-09-02: one repository per app; no separate releases repo).
+# The repo is public, so no token ever reaches a user's machine. Baked into
 # app-update.yml; both metadata files are emitted here even with
 # --publish never, and must be uploaded to the GitHub release alongside the
 # artifacts — a release missing latest-mac.yml or latest.yml leaves every
@@ -18,7 +19,7 @@ protocols:
 publish:
   - provider: github
     owner: jaywedgeworth22
-    repo: botfleet-releases
+    repo: BotFleet
 
 directories:
   buildResources: build
