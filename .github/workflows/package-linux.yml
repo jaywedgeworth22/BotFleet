@@ -4,7 +4,7 @@
 # separate public releases repository. That keeps cross-repository credentials
 # out of the source repository while still making every release candidate
 # reproducible from an exact ref. Attach the resulting files to the matching
-# botfleet-releases release after the smoke test passes.
+# jaywedgeworth22/BotFleet release after the smoke test passes.
 name: Package Ubuntu
 
 on:

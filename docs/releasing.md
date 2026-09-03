@@ -3,19 +3,22 @@
 One workflow builds everything: **Actions → Release → Run workflow**.  It
 builds macOS (arm64 + x64, signed, notarized, stapled), Windows, and Ubuntu
 from a single pinned commit, verifies every artifact the way a user would
-receive it, assembles a complete draft on
-[jaywedgeworth22/botfleet-releases](https://github.com/jaywedgeworth22/botfleet-releases),
+receive it, assembles a complete draft on this repository's own
+[Releases page](https://github.com/jaywedgeworth22/BotFleet/releases),
 and — if you ticked **publish** — flips it live.
 Leave publish unticked to review the draft notes first, then publish from the
 GitHub UI.
 
-There is exactly one publish target.  `electron-builder.yml` `publish` names
-`jaywedgeworth22/botfleet-releases`, which electron-builder bakes into every
-packaged app's `app-update.yml`; `release.yml` uploads to the same repository
-through its `RELEASES_REPO` variable.  Keep the two in step, or installed apps
-check a feed no release ever lands on.  The releases repo is public and
-separate from the source repo so no token ever reaches a user's machine.
-Nothing under `milind-soni/*` is ours to publish to.
+There is exactly one publish target: this repository.  `electron-builder.yml`
+`publish` names `jaywedgeworth22/BotFleet`, which electron-builder bakes into
+every packaged app's `app-update.yml`; `release.yml` uploads to the same
+repository through its `RELEASES_REPO` variable.  Keep the two in step, or
+installed apps check a feed no release ever lands on.  The repository is
+public, so no token ever reaches a user's machine.  Upstream kept a separate
+`*-releases` repo so its source could stay private; BotFleet never was, and the
+owner's rule (2026-09-02) is one repository per app, so the separate
+`botfleet-releases` repo is retired.  Nothing under `milind-soni/*` is ours to
+publish to.
 
 The workflow refuses to overwrite an already-published version, so the only
 prerequisite per release is that `package.json`'s version is bumped on the
@@ -33,7 +36,7 @@ electron-updater reads a feed file, not the DMG:
 - **Ubuntu:** `latest-linux.yml` plus the AppImage.
 
 A release that carries only DMGs, as
-[`v0.1.38`](https://github.com/jaywedgeworth22/botfleet-releases/releases/tag/v0.1.38)
+[`v0.1.38`](https://github.com/jaywedgeworth22/BotFleet/releases/tag/v0.1.38)
 does today, cannot be found by any installed app: **Check for updates** fails
 on every platform.  Until the
 workflow runs green, the fix is manual: run `pnpm package:mac` locally,
@@ -95,7 +98,7 @@ base64 -i AuthKey_XXXXXXXX.p8 | pbcopy   # → APPLE_API_KEY_P8_BASE64
 
 A fine-grained personal access token that lets the workflow create and edit
 releases: **GitHub → Settings → Developer settings → Fine-grained tokens** →
-repository access: only `jaywedgeworth22/botfleet-releases` → permissions:
+repository access: only `jaywedgeworth22/BotFleet` → permissions:
 **Contents: Read and write**.  Set a long expiry and a calendar reminder.
 
 ### Local Fallback
@@ -105,5 +108,5 @@ surgery: `pnpm package:mac`, gate with `codesign --verify --deep --strict`,
 notarize with the local keychain profile (`xcrun notarytool submit …
 --keychain-profile AC_PASSWORD`), staple, re-zip, regenerate blockmaps and
 `node scripts/regenerate-mac-feed.mjs`, upload to the matching
-`jaywedgeworth22/botfleet-releases` release, publish, and always verify the
+`jaywedgeworth22/BotFleet` release, publish, and always verify the
 published bytes against the published feed by downloading them back.

@@ -26,7 +26,7 @@ BotFleet tracks upstream OpenMausBot closely and layers fleet-oriented add-ons o
 
 ## Relationship to OpenMausBot
 
-This distribution is [jaywedgeworth22/BotFleet](https://github.com/jaywedgeworth22/BotFleet), a friendly fork of [milind-soni/OpenMausBot](https://github.com/milind-soni/OpenMausBot) by Milind Soni and contributors.  Packaged releases live in [jaywedgeworth22/botfleet-releases](https://github.com/jaywedgeworth22/botfleet-releases).  BotFleet inherits OpenMausBot's architecture, license, and most of its documentation.  Everything below this line documents the OpenMausBot foundation that BotFleet ships with; where upstream's name appears, BotFleet behaves the same unless an add-on listed at [botfleet.app](https://botfleet.app) says otherwise.
+This distribution is [jaywedgeworth22/BotFleet](https://github.com/jaywedgeworth22/BotFleet), a friendly fork of [milind-soni/OpenMausBot](https://github.com/milind-soni/OpenMausBot) by Milind Soni and contributors.  Packaged releases live on this repository's [Releases page](https://github.com/jaywedgeworth22/BotFleet/releases).  BotFleet inherits OpenMausBot's architecture, license, and most of its documentation.  Everything below this line documents the OpenMausBot foundation that BotFleet ships with; where upstream's name appears, BotFleet behaves the same unless an add-on listed at [botfleet.app](https://botfleet.app) says otherwise.
 
 ---
 
@@ -199,13 +199,13 @@ See [MCP server setup and tool reference](docs/mcp-server.md).
 
 ## Quick start
 
-**Released builds ([latest](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest)):** the harness server is embedded, so no separate server setup is required.  Desktop `package.json` is currently 0.1.38; this page always points at the latest packaged assets rather than a frozen tag.
+**Released builds ([latest](https://github.com/jaywedgeworth22/BotFleet/releases/latest)):** the harness server is embedded, so no separate server setup is required.  Desktop `package.json` is currently 0.1.38; this page always points at the latest packaged assets rather than a frozen tag.
 
 | | Download | Install |
 |---|---|---|
-| **macOS** (Apple silicon) | [BotFleet.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet.dmg) | Drag it to Applications, open it.  Signed with the BotFleet Developer ID. |
-| **macOS** (Intel) | [BotFleet-intel.dmg](https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet-intel.dmg) | Same app, built for Intel Macs. |
-| **Windows** (x64) | Not published yet | The Windows installer is built by the release workflow but no Windows build has shipped.  Watch the [releases page](https://github.com/jaywedgeworth22/botfleet-releases/releases) or build from source below. |
+| **macOS** (Apple silicon) | [BotFleet-0.1.38-arm64.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-0.1.38-arm64.dmg) | Drag it to Applications, open it.  Signed with the BotFleet Developer ID. |
+| **macOS** (Intel) | [BotFleet-0.1.38-x64.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-0.1.38-x64.dmg) | Same app, built for Intel Macs. |
+| **Windows** (x64) | Not published yet | The Windows installer is built by the release workflow but no Windows build has shipped.  Watch the [releases page](https://github.com/jaywedgeworth22/BotFleet/releases) or build from source below. |
 | **Ubuntu 24.04** (x64) | Not published yet | Ubuntu packages are built by the release workflow but no Ubuntu build has shipped.  See the [Ubuntu Desktop guide](docs/linux-desktop.md) to build one from source. |
 
 In-app **Check for updates** needs the `latest-mac.yml` feed and zip artifacts on the release; the current
