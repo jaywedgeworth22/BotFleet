@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ensureDirs } from "../config.ts";
+import { isQuotaOrCapText, parseQuotaResetTime } from "../model-fallback.ts";
 import type { ProviderInstance } from "../contracts.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
@@ -18,6 +19,8 @@ import {
   ANTIGRAVITY_COMPUTER_MCP_KEY,
   AntigravityDriver,
   antigravityMcpServers,
+  antigravityTurnErrorMessage,
+  parseAntigravityTurnResult,
   ensureAntigravityMcp,
   readAntigravityModelCatalog,
   STATIC_ANTIGRAVITY_MODELS,
@@ -78,15 +81,70 @@ describe("Antigravity decodeConfig", () => {
   });
 });
 
+// The real shapes agy 1.1.12–1.1.25 writes into `result.error` when a turn
+// fails, copied verbatim from BotFleet's own native stream logs.
+const AGY_QUOTA_ERROR =
+  "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 44h3m45s.";
+const AGY_ELIGIBILITY_ERROR =
+  'Eligibility check failed: Post "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist": read tcp 192.168.1.253:55172->172.217.116.4:443: read: connection reset by peer';
+
+describe("antigravityTurnErrorMessage", () => {
+  it("names the engine and keeps agy's quota wording and reset window", () => {
+    const message = antigravityTurnErrorMessage({ status: "ERROR", error: AGY_QUOTA_ERROR });
+    expect(message).toBe(`Antigravity: ${AGY_QUOTA_ERROR}`);
+    // The harness classifies the chip from this text: it has to read as a
+    // quota hit, and the reset window has to parse, or the bot silently
+    // retries the same exhausted provider on the next turn.
+    expect(isQuotaOrCapText(`error: ${message}`)).toBe(true);
+    const parsed = parseQuotaResetTime(message, Date.parse("2026-09-03T07:54:39Z"));
+    expect(parsed.isQuotaOrCap).toBe(true);
+    expect(parsed.resetsAt).toBe(Date.parse("2026-09-03T07:54:39Z") + 44 * 3600 * 1000);
+  });
+
+  it("passes through a non-quota failure without inventing a cap", () => {
+    const message = antigravityTurnErrorMessage({ status: "ERROR", error: AGY_ELIGIBILITY_ERROR });
+    expect(message.startsWith("Antigravity: Eligibility check failed:")).toBe(true);
+    // A network reset must not be read as a usage cap — that would burn the
+    // one auto-failover hop and park the engine on a cooldown it never hit.
+    expect(isQuotaOrCapText(`error: ${message}`)).toBe(false);
+    expect(antigravityTurnErrorMessage({ status: "ERROR", error: "timeout waiting for response" })).toBe(
+      "Antigravity: timeout waiting for response",
+    );
+  });
+
+  it("trims a long message but never drops the reset window", () => {
+    const long = `Individual quota reached. Please upgrade your subscription to increase your limits. ${"provider detail ".repeat(40)}Resets in 12h30m0s.`;
+    const message = antigravityTurnErrorMessage({ status: "ERROR", error: long });
+    expect(message.length).toBeLessThan(500); // model-fallback's quota-chip ceiling
+    expect(message).toContain("Resets in 12h30m0s.");
+    expect(isQuotaOrCapText(`error: ${message}`)).toBe(true);
+  });
+
+  it("still says something when agy sends a bare status", () => {
+    expect(antigravityTurnErrorMessage({ status: "ERROR", error: null })).toBe(
+      "Antigravity: the turn ended with status ERROR and no reply",
+    );
+    expect(antigravityTurnErrorMessage({ status: null, error: "   " })).toBe(
+      "Antigravity: the turn ended with status ERROR and no reply",
+    );
+    // Shape drift must still end the turn, never widen a failure into success.
+    expect(parseAntigravityTurnResult({ status: 7, error: { message: "x" } })).toEqual({
+      status: null,
+      error: null,
+    });
+    expect(parseAntigravityTurnResult("not an object")).toEqual({ status: null, error: null });
+  });
+});
+
 describe("Antigravity turns (fake CLI)", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
 
-  const create = async () => {
+  const create = async (environment: Record<string, string> = {}) => {
     instance = await AntigravityDriver.create({
       instanceId: "agy-test",
       displayName: "Antigravity Test",
-      environment: {},
+      environment,
       enabled: true,
       config: { cli: FAKE_CLI, fullAuto: true },
     });
@@ -139,6 +197,76 @@ describe("Antigravity turns (fake CLI)", () => {
     expect(done).toMatchObject({ type: "turn.completed", ok: true, usage: { input: 105, output: 20 } });
     expect(instance.adapter.hasSession("t-happy")).toBe(false);
   });
+
+  // The stuck-forever bug. Every one of these used to leave the turn
+  // unsettled or settled in silence, so the mascot kept counting seconds
+  // with nothing ever arriving in its place.
+  it("surfaces a provider quota as a runtime error and ends the turn", async () => {
+    await create({ FAKE_AGY_RESULT_ERROR: AGY_QUOTA_ERROR });
+    await instance.adapter.sendTurn({ threadId: "t-quota", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const error = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect(error).toBeDefined();
+    expect((error as any).message).toBe(`Antigravity: ${AGY_QUOTA_ERROR}`);
+    // the error has to reach the fold BEFORE the turn settles, or the chip
+    // is not there yet when turn.completed decides whether to fail over
+    const types = recorder.events.map((e) => e.type);
+    expect(types.indexOf("runtime.error")).toBeLessThan(types.indexOf("turn.completed"));
+
+    const done = recorder.events.at(-1)!;
+    expect(done).toMatchObject({ type: "turn.completed", ok: false, stopReason: "ERROR" });
+    expect(instance.adapter.hasSession("t-quota")).toBe(false);
+  });
+
+  it("ends the turn on a bare non-zero exit, with the CLI's stderr", async () => {
+    await create({ FAKE_AGY_DIE: "3", FAKE_AGY_STDERR: "agy: authentication expired\n" });
+    await instance.adapter.sendTurn({ threadId: "t-crash", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const error = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect((error as any).message).toContain("agy exited 3 before result");
+    expect((error as any).message).toContain("authentication expired");
+    expect(recorder.events.at(-1)).toMatchObject({
+      type: "turn.completed",
+      ok: false,
+      stopReason: "exit_before_result",
+    });
+    expect(instance.adapter.hasSession("t-crash")).toBe(false);
+  });
+
+  it("ends the turn on a silent EOF — exit 0, no stream, no result", async () => {
+    await create({ FAKE_AGY_DIE: "0" });
+    await instance.adapter.sendTurn({ threadId: "t-silent", text: "hi" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const error = recorder.events.find((e) => e.type === "runtime.error")!;
+    expect((error as any).message).toBe("agy exited 0 before result");
+    expect(recorder.events.at(-1)).toMatchObject({
+      type: "turn.completed",
+      ok: false,
+      stopReason: "exit_before_result",
+    });
+    expect(instance.adapter.hasSession("t-silent")).toBe(false);
+  });
+
+  // `close` waits on the stdio pipes, so a grandchild that outlives agy —
+  // one of agy's own MCP servers — holds it back forever. `exit` is the
+  // process's real death, and the turn has to end on that alone.
+  it.skipIf(process.platform === "win32")(
+    "ends the turn on exit even when a grandchild holds stdout open",
+    async () => {
+      await create({ FAKE_AGY_LEAK_STDOUT: "1" });
+      await instance.adapter.sendTurn({ threadId: "t-leak", text: "hi" });
+      await recorder.until((e) => e.type === "turn.completed");
+
+      const error = recorder.events.find((e) => e.type === "runtime.error")!;
+      expect((error as any).message).toContain("before result");
+      expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: false });
+      expect(instance.adapter.hasSession("t-leak")).toBe(false);
+    },
+    10_000,
+  );
 
   it("respondToRequest resolves `unavailable` — no interactive permission channel, so the caller denies", async () => {
     await create();
