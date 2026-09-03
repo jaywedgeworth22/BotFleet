@@ -87,19 +87,35 @@ struct SettingsView: View {
                         get: { session.config?.terminology ?? "channels" },
                         set: { newTerm in
                             Task {
-                                _ = await session.updateTerminology(newTerm)
+                                if newTerm == "custom" {
+                                    // Keep whatever is already stored so
+                                    // switching back does not blank the word.
+                                    _ = await session.updateTerminology(
+                                        "custom",
+                                        custom: session.config?.roomLabels
+                                    )
+                                } else {
+                                    _ = await session.updateTerminology(newTerm)
+                                }
                             }
                         }
                     )) {
                         Text("Channels").tag("channels")
                         Text("Groups").tag("groups")
                         Text("Projects").tag("projects")
+                        Text("Apps").tag("apps")
+                        Text("Topics").tag("topics")
+                        Text("Repos").tag("repos")
+                        Text("Custom").tag("custom")
                     } label: {
                         Label {
                             Text("Room Terminology")
                         } icon: {
                             SettingsIcon(symbol: "text.bubble", color: .indigo)
                         }
+                    }
+                    if session.config?.terminology == "custom" {
+                        CustomRoomTermFields(session: session)
                     }
                 }
             }
@@ -353,5 +369,75 @@ private extension Session.Status {
         case .unauthorized: return "Needs pairing"
         case .offline: return "Offline"
         }
+    }
+}
+
+/// The custom room word, in both forms.
+///
+/// Two fields rather than one because English plurals are not reliably an
+/// added "s".  The plural follows the singular until it is edited by hand,
+/// so the ordinary case is still one word to type.
+struct CustomRoomTermFields: View {
+    @ObservedObject var session: Session
+    @State private var singular = ""
+    @State private var plural = ""
+    @State private var pluralEdited = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Enter both forms.  The plural is not always just an added \"s\", so it has its own box — Category and Categories.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                TextField("App", text: $singular)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .onChange(of: singular) { _, next in
+                        if !pluralEdited { plural = Self.suggestPlural(next) }
+                    }
+                    .onSubmit(save)
+                TextField("Apps", text: $plural)
+                    .textFieldStyle(.roundedBorder)
+                    .autocorrectionDisabled()
+                    .onChange(of: plural) { _, _ in pluralEdited = true }
+                    .onSubmit(save)
+            }
+            Button("Save", action: save)
+                .disabled(singular.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        .onAppear {
+            singular = session.config?.roomLabels?.singular ?? ""
+            plural = session.config?.roomLabels?.plural ?? ""
+            pluralEdited = !plural.isEmpty
+        }
+    }
+
+    private func save() {
+        let one = singular.trimmingCharacters(in: .whitespaces)
+        guard !one.isEmpty else { return }
+        let many = plural.trimmingCharacters(in: .whitespaces)
+        let labels = RoomLabels(singular: one, plural: many.isEmpty ? Self.suggestPlural(one) : many)
+        Task { _ = await session.updateTerminology("custom", custom: labels) }
+    }
+
+    /// Mirrors `suggestPlural` in shared/terminology.ts.  It is a pre-fill,
+    /// never a rule: whatever is left in the field is what gets stored.
+    static func suggestPlural(_ singular: String) -> String {
+        let word = singular.trimmingCharacters(in: .whitespaces)
+        guard !word.isEmpty else { return "" }
+        let lower = word.lowercased()
+        let letters = word.filter(\.isLetter)
+        let shouting = letters.count > 1 && letters == letters.uppercased()
+        func suffix(_ value: String) -> String { shouting ? value.uppercased() : value }
+        if lower.hasSuffix("s") || lower.hasSuffix("x") || lower.hasSuffix("z")
+            || lower.hasSuffix("ch") || lower.hasSuffix("sh") {
+            return word + suffix("es")
+        }
+        if lower.hasSuffix("y"), let before = lower.dropLast().last, !"aeiou".contains(before) {
+            return word.dropLast() + suffix("ies")
+        }
+        if lower.hasSuffix("fe") { return word.dropLast(2) + suffix("ves") }
+        if lower.hasSuffix("f"), !lower.hasSuffix("ff") { return word.dropLast() + suffix("ves") }
+        return word + suffix("s")
     }
 }
