@@ -8,6 +8,7 @@ import {
   Bot as BotIcon,
   CalendarDays,
   Check,
+  ChevronRight,
   ClipboardCopy,
   Copy,
   Crown,
@@ -31,7 +32,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, getRoomTerminology, latestChatActivity, type Bot, type Group } from "@/state/store";
+import { api, useStore, formatTime, visibleMessages, getRoomTerminology, latestChatActivity, type Bot, type Group, type GroupTask } from "@/state/store";
 
 import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
@@ -51,7 +52,10 @@ import { TeamLibraryPanel, type TeamImportResult } from "./TeamLibraryPanel";
 import { RenameTitle } from "./RenameTitle";
 import { BotPickerList } from "./BotPickerList";
 import {
+  loadCollapsedRooms,
   loadSidebarDensity,
+  loadSidebarThreadCount,
+  saveCollapsedRooms,
   saveSidebarDensity,
   type SidebarDensity,
 } from "@/lib/sidebar-preferences";
@@ -228,6 +232,198 @@ function StackedMauses({ group, members, density }: { group: Group; members: Bot
   );
 }
 
+/** A conversation dragged from one channel to another.  A private MIME type
+ * rather than text/plain so a stray text drop from anywhere else cannot be
+ * mistaken for one of ours. */
+const THREAD_DRAG_TYPE = "application/x-botfleet-thread";
+
+interface ThreadDrag {
+  threadId: string;
+  fromGroupId: string;
+}
+
+function readThreadDrag(event: React.DragEvent): ThreadDrag | null {
+  const raw = event.dataTransfer?.getData(THREAD_DRAG_TYPE);
+  if (!raw) return null;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return null;
+    const { threadId, fromGroupId } = parsed as Partial<ThreadDrag>;
+    if (typeof threadId !== "string" || typeof fromGroupId !== "string") return null;
+    return { threadId, fromGroupId };
+  } catch {
+    return null;
+  }
+}
+
+/** One conversation inside a channel.
+ *
+ * The server already names these from the first thing said in them and lets
+ * them be renamed, so this row is the missing half: somewhere to see the
+ * name, change it, and move the conversation somewhere else. */
+function ThreadListItem({
+  group,
+  task,
+  density,
+}: {
+  group: Group;
+  task: GroupTask;
+  density: SidebarDensity;
+}) {
+  const { state, dispatch } = useStore();
+  const [renaming, setRenaming] = useState(false);
+  const [draft, setDraft] = useState(task.title);
+  const active =
+    state.activeView === "chat" && state.selectedId === group.id && group.threadId === task.threadId;
+
+  const commit = () => {
+    const title = draft.trim();
+    setRenaming(false);
+    if (!title || title === task.title) return;
+    dispatch({ type: "renameGroupTask", groupId: group.id, threadId: task.threadId, title });
+  };
+
+  const label = task.title || "New task";
+
+  if (renaming) {
+    return (
+      <div className="flex items-center pl-9 pr-2 py-1">
+        <input
+          autoFocus
+          value={draft}
+          maxLength={80}
+          aria-label={`Rename ${label}`}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") commit();
+            if (event.key === "Escape") {
+              setDraft(task.title);
+              setRenaming(false);
+            }
+          }}
+          className="w-full rounded-md border border-hairline/50 bg-inset px-2 py-1 text-[13px] text-ink focus:outline-none"
+        />
+      </div>
+    );
+  }
+
+  return (
+    <button
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData(
+          THREAD_DRAG_TYPE,
+          JSON.stringify({ threadId: task.threadId, fromGroupId: group.id }),
+        );
+        event.dataTransfer.effectAllowed = "move";
+      }}
+      onClick={() => {
+        dispatch({ type: "select", id: group.id });
+        if (group.threadId !== task.threadId) {
+          dispatch({ type: "switchGroupTask", groupId: group.id, threadId: task.threadId });
+        }
+      }}
+      onDoubleClick={(event) => {
+        event.preventDefault();
+        setDraft(task.title);
+        setRenaming(true);
+      }}
+      title={`${label}\u00a0 — double-click to rename, drag to move`}
+      className={cn(
+        "flex w-full items-center gap-2 rounded-lg py-1 pr-2 text-left transition-colors",
+        density === "compact" ? "pl-8" : "pl-9",
+        active ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
+      )}
+    >
+      <span className="size-1.5 shrink-0 rounded-full bg-current opacity-40" />
+      <span className="truncate text-[13px]">{label}</span>
+    </button>
+  );
+}
+
+/** A channel row plus the conversations inside it.
+ *
+ * Collapsed state and how many to show are presentation, so they live in
+ * this device's storage rather than the harness — the phone has its own
+ * screen and its own idea of how much fits. */
+function GroupBranch({
+  group,
+  density,
+  onMenu,
+  threadCount,
+  collapsed,
+  onToggle,
+}: {
+  group: Group;
+  density: SidebarDensity;
+  onMenu: (menu: { groupId: string; x: number; y: number }) => void;
+  threadCount: number;
+  collapsed: boolean;
+  onToggle: () => void;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const tasks = group.tasks ?? [];
+  // Most recently active first, where activity is the last thing that
+  // happened in the thread whoever caused it — a person, a webhook or a
+  // schedule all land as messages.
+  const ordered = [...tasks].sort(
+    (a, b) => (b.lastActivity ?? b.createdAt) - (a.lastActivity ?? a.createdAt),
+  );
+  const branching = ordered.length > 1 && density !== "icons";
+  const shown = showAll ? ordered : ordered.slice(0, threadCount);
+  const hidden = ordered.length - shown.length;
+
+  return (
+    <div>
+      <div className="flex items-center">
+        {branching && (
+          <button
+            onClick={onToggle}
+            aria-expanded={!collapsed}
+            aria-label={`${collapsed ? "Show" : "Hide"} conversations in ${group.name}`}
+            className="shrink-0 rounded-md p-0.5 text-ink-secondary hover:bg-raised/50 hover:text-ink"
+          >
+            <ChevronRight size={14} className={cn("transition-transform", !collapsed && "rotate-90")} />
+          </button>
+        )}
+        <div className="min-w-0 flex-1">
+          <GroupListItem group={group} density={density} onMenu={onMenu} />
+        </div>
+      </div>
+      {branching && !collapsed && (
+        <div className="mt-0.5 flex flex-col gap-0.5">
+          {shown.map((task) => (
+            <ThreadListItem key={task.threadId} group={group} task={task} density={density} />
+          ))}
+          {hidden > 0 && (
+            <button
+              onClick={() => setShowAll(true)}
+              className={cn(
+                "w-full rounded-lg py-1 pr-2 text-left text-[12px] text-ink-secondary hover:bg-raised/50 hover:text-ink",
+                density === "compact" ? "pl-8" : "pl-9",
+              )}
+            >
+              More Threads&hellip; ({hidden})
+            </button>
+          )}
+          {showAll && ordered.length > threadCount && (
+            <button
+              onClick={() => setShowAll(false)}
+              className={cn(
+                "w-full rounded-lg py-1 pr-2 text-left text-[12px] text-ink-secondary hover:bg-raised/50 hover:text-ink",
+                density === "compact" ? "pl-8" : "pl-9",
+              )}
+            >
+              Show Fewer
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function GroupListItem({
   group,
   density,
@@ -247,29 +443,52 @@ function GroupListItem({
   const last = group.messages.at(-1);
   const activityAt = latestChatActivity(group.tasks, last?.at, group.createdAt);
 
+  const acceptsThread = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes(THREAD_DRAG_TYPE);
+
+  const carriesFiles = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes("Files");
+
   const onDragEnter = (e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    if (!carriesFiles(e) && !acceptsThread(e)) return;
     e.preventDefault();
     dragDepth.current += 1;
     setIsDragTarget(true);
   };
   const onDragLeave = (e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    if (!carriesFiles(e) && !acceptsThread(e)) return;
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (dragDepth.current === 0) setIsDragTarget(false);
   };
   const onDragOver = (e: React.DragEvent) => {
-    if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+    if (carriesFiles(e)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
+    } else if (acceptsThread(e)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
     }
   };
   const onDrop = async (e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    if (!carriesFiles(e) && !acceptsThread(e)) return;
     e.preventDefault();
     e.stopPropagation();
     dragDepth.current = 0;
     setIsDragTarget(false);
+    const dragged = readThreadDrag(e);
+    if (dragged) {
+      // Dropping a conversation on the channel it already lives in is a
+      // no-op rather than an error — the gesture just did not go anywhere.
+      if (dragged.fromGroupId !== group.id) {
+        dispatch({
+          type: "moveGroupTask",
+          groupId: dragged.fromGroupId,
+          threadId: dragged.threadId,
+          toGroupId: group.id,
+        });
+      }
+      return;
+    }
     const files = Array.from(e.dataTransfer?.files ?? []);
     if (!files.length) return;
     dispatch({ type: "select", id: group.id });
@@ -1201,6 +1420,17 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const [roomSectionPicker, setRoomSectionPicker] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [newRoom, setNewRoom] = useState(false);
+  const [threadCount] = useState(() => loadSidebarThreadCount());
+  const [collapsedRooms, setCollapsedRooms] = useState<Set<string>>(() => loadCollapsedRooms());
+  const toggleRoom = (groupId: string) => {
+    setCollapsedRooms((current) => {
+      const next = new Set(current);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      saveCollapsedRooms(next);
+      return next;
+    });
+  };
   const [teamLibraryOpen, setTeamLibraryOpen] = useState(false);
   const [teamInstallUrl, setTeamInstallUrl] = useState<string | null>(null);
   const [archivedBotsOpen, setArchivedBotsOpen] = useState(false);
@@ -1635,7 +1865,15 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           )}
           {unsectionedGroups.length > 0 && density !== "icons" && <SectionDivider name={terminology.plural} />}
           {unsectionedGroups.map((g) => (
-            <GroupListItem key={g.id} group={g} density={density} onMenu={setRoomMenu} />
+            <GroupBranch
+              key={g.id}
+              group={g}
+              density={density}
+              onMenu={setRoomMenu}
+              threadCount={threadCount}
+              collapsed={collapsedRooms.has(g.id)}
+              onToggle={() => toggleRoom(g.id)}
+            />
           ))}
           {visibleBots.length > 0 && density !== "icons" && <SectionDivider name="Bots" />}
           {visibleBots.map((b) => (
@@ -1666,7 +1904,15 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               {sectionedGroups
                 .filter((g) => g.section === name)
                 .map((g) => (
-                  <GroupListItem key={g.id} group={g} density={density} onMenu={setRoomMenu} />
+                  <GroupBranch
+              key={g.id}
+              group={g}
+              density={density}
+              onMenu={setRoomMenu}
+              threadCount={threadCount}
+              collapsed={collapsedRooms.has(g.id)}
+              onToggle={() => toggleRoom(g.id)}
+            />
                 ))}
               {sectionedBots
                 .filter((b) => b.section === name)
