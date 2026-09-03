@@ -2515,6 +2515,12 @@ routines = new RoutineManager({
     if (task && bot) broadcast({ kind: "bot", bot: publicBot(bot) });
     return task;
   },
+  activateTask: (botId, threadId) => {
+    const bot = store.bot(botId);
+    if (!bot || bot.busy || bot.threadId === threadId) return;
+    const switched = store.switchTask(botId, threadId);
+    if (switched) broadcast({ kind: "bot", bot: publicBot(switched) });
+  },
   taskExists: (botId, threadId) => Boolean(store.taskByThread(botId, threadId)),
   startTurn: (botId, threadId, prompt, runOn, triggerSource, onDispatchError) =>
     startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError }),
@@ -6169,6 +6175,19 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       // Reassigning a conversation to another bot, or into a channel. The
       // thread keeps its id, so the transcript moves rather than being copied.
+      if (body.mergeInto !== undefined) {
+        const bot = store.bot(m[1]);
+        if (bot?.busy) return json(res, 409, { error: "this bot is working — stop it before merging tasks" });
+        const into = String(body.mergeInto);
+        const merged = store.mergeBotTasks(m[1], m[2], into);
+        if (!merged) {
+          return json(res, 400, {
+            error: "those conversations cannot merge — a bot keeps its last one",
+          });
+        }
+        broadcast({ kind: "bot", bot: botWithThread(merged) });
+        return json(res, 200, { bot: botWithThread(merged) });
+      }
       if (body.botId !== undefined) {
         const target = String(body.botId);
         if (!store.bot(target)) return json(res, 404, { error: "no such bot" });

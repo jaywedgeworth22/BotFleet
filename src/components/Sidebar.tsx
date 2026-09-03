@@ -33,6 +33,13 @@ import {
   X,
 } from "lucide-react";
 import { api, useStore, formatTime, visibleMessages, getRoomTerminology, latestChatActivity, type Bot, type Group } from "@/state/store";
+import {
+  THREAD_DRAG_TYPE,
+  beginThreadDrag,
+  endThreadDrag,
+  readThreadDragEvent,
+  threadDragTypes,
+} from "@/lib/thread-drag";
 
 import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
@@ -246,29 +253,7 @@ interface ThreadOwner {
   threadId: string;
 }
 
-/** A conversation dragged from one channel to another.  A private MIME type
- * rather than text/plain so a stray text drop from anywhere else cannot be
- * mistaken for one of ours. */
-const THREAD_DRAG_TYPE = "application/x-botfleet-thread";
-
-interface ThreadDrag {
-  threadId: string;
-  fromGroupId: string;
-}
-
-function readThreadDrag(event: React.DragEvent): ThreadDrag | null {
-  const raw = event.dataTransfer?.getData(THREAD_DRAG_TYPE);
-  if (!raw) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    const { threadId, fromGroupId } = parsed as Partial<ThreadDrag>;
-    if (typeof threadId !== "string" || typeof fromGroupId !== "string") return null;
-    return { threadId, fromGroupId };
-  } catch {
-    return null;
-  }
-}
+const THREAD_DROP_CLASS = "bg-ink/15 ring-2 ring-ink/25";
 
 /** One conversation inside a channel.
  *
@@ -279,12 +264,14 @@ function ThreadListItem({
   owner,
   task,
   density,
+  siblingCount,
   onMenu,
   renameSignal,
 }: {
   owner: ThreadOwner;
   task: { threadId: string; title: string; createdAt: number; lastActivity?: number };
   density: SidebarDensity;
+  siblingCount: number;
   onMenu: (menu: { ownerId: string; threadId: string; x: number; y: number }) => void;
   /** Bumped by the context menu's Rename, which lives outside this row. */
   renameSignal: number;
@@ -292,6 +279,7 @@ function ThreadListItem({
   const { state, dispatch } = useStore();
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(task.title);
+  const [isDragTarget, setIsDragTarget] = useState(false);
   const active =
     state.activeView === "chat" &&
     state.selectedId === owner.id &&
@@ -341,18 +329,18 @@ function ThreadListItem({
 
   return (
     <button
-      draggable
+      draggable={siblingCount > 1}
       onDragStart={(event) => {
-        event.dataTransfer.setData(
-          THREAD_DRAG_TYPE,
-          JSON.stringify({
-            threadId: task.threadId,
-            fromId: owner.id,
-            fromKind: owner.kind,
-          }),
-        );
+        const payload = beginThreadDrag({
+          threadId: task.threadId,
+          fromId: owner.id,
+          fromKind: owner.kind,
+        });
+        event.dataTransfer.setData(THREAD_DRAG_TYPE, payload);
+        event.dataTransfer.setData("text/plain", payload);
         event.dataTransfer.effectAllowed = "move";
       }}
+      onDragEnd={() => endThreadDrag()}
       onClick={() => {
         dispatch({ type: "select", id: owner.id });
         if (owner.threadId === task.threadId) return;
@@ -382,11 +370,50 @@ function ThreadListItem({
           y: rect.top + rect.height / 2,
         });
       }}
-      title={`${label}\u00a0 — double-click to rename, drag to move`}
+      onDragEnter={(event) => {
+        if (!threadDragTypes(event)) return;
+        event.preventDefault();
+        setIsDragTarget(true);
+      }}
+      onDragLeave={() => setIsDragTarget(false)}
+      onDragOver={(event) => {
+        if (!threadDragTypes(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setIsDragTarget(false);
+        const dragged = readThreadDragEvent(event);
+        if (!dragged || dragged.threadId === task.threadId) return;
+        if (dragged.fromKind === "bot" && owner.kind === "bot" && dragged.fromId === owner.id) {
+          dispatch({
+            type: "mergeTasks",
+            botId: owner.id,
+            threadId: dragged.threadId,
+            intoThreadId: task.threadId,
+          });
+          return;
+        }
+        if (dragged.fromKind === "bot" && owner.kind === "bot") {
+          dispatch({
+            type: "moveTaskToBot",
+            botId: dragged.fromId,
+            threadId: dragged.threadId,
+            toBotId: owner.id,
+          });
+        }
+      }}
+      title={`${label}\u00a0 — double-click to rename, drag onto a bot to move, onto a thread to merge`}
       className={cn(
         "flex w-full items-center gap-2 rounded-lg py-1 pr-2 text-left transition-colors",
         density === "compact" ? "pl-8" : "pl-9",
-        active ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
+        isDragTarget
+          ? THREAD_DROP_CLASS
+          : active
+            ? "bg-raised text-ink"
+            : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
       )}
     >
       <span className="size-1.5 shrink-0 rounded-full bg-current opacity-40" />
@@ -579,8 +606,7 @@ function GroupListItem({
   const last = group.messages.at(-1);
   const activityAt = latestChatActivity(group.tasks, last?.at, group.createdAt);
 
-  const acceptsThread = (e: React.DragEvent) =>
-    Array.from(e.dataTransfer?.types ?? []).includes(THREAD_DRAG_TYPE);
+  const acceptsThread = (e: React.DragEvent) => threadDragTypes(e);
 
   const carriesFiles = (e: React.DragEvent) =>
     Array.from(e.dataTransfer?.types ?? []).includes("Files");
@@ -611,14 +637,19 @@ function GroupListItem({
     e.stopPropagation();
     dragDepth.current = 0;
     setIsDragTarget(false);
-    const dragged = readThreadDrag(e);
+    const dragged = readThreadDragEvent(e);
     if (dragged) {
-      // Dropping a conversation on the channel it already lives in is a
-      // no-op rather than an error — the gesture just did not go anywhere.
-      if (dragged.fromGroupId !== group.id) {
+      if (dragged.fromKind === "group" && dragged.fromId !== group.id) {
         dispatch({
           type: "moveGroupTask",
-          groupId: dragged.fromGroupId,
+          groupId: dragged.fromId,
+          threadId: dragged.threadId,
+          toGroupId: group.id,
+        });
+      } else if (dragged.fromKind === "bot") {
+        dispatch({
+          type: "moveTaskToGroup",
+          botId: dragged.fromId,
           threadId: dragged.threadId,
           toGroupId: group.id,
         });
@@ -665,7 +696,7 @@ function GroupListItem({
         "relative flex w-full items-center rounded-xl text-left transition-all",
         density === "icons" ? "justify-center px-1 py-1.5" : density === "compact" ? "gap-2 px-2 py-1.5" : "gap-3 px-3 py-2.5",
         isDragTarget
-          ? "ring-2 ring-accent bg-accent/20 scale-[1.02]"
+          ? THREAD_DROP_CLASS
           : selected
             ? "bg-raised"
             : "hover:bg-raised/50",
@@ -735,6 +766,7 @@ function ThreadBranch({
           owner={owner}
           task={task}
           density={density}
+          siblingCount={ordered.length}
           onMenu={setThreadMenu}
           renameSignal={renameSignals[task.threadId] ?? 0}
         />
@@ -1452,29 +1484,55 @@ function BotListItem({
   const [isDragTarget, setIsDragTarget] = useState(false);
   const dragDepth = useRef(0);
 
+  const acceptsThread = (e: React.DragEvent) => threadDragTypes(e);
+  const carriesFiles = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes("Files");
+
   const onDragEnter = (e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    if (!carriesFiles(e) && !acceptsThread(e)) return;
     e.preventDefault();
     dragDepth.current += 1;
     setIsDragTarget(true);
   };
   const onDragLeave = (e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    if (!carriesFiles(e) && !acceptsThread(e)) return;
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (dragDepth.current === 0) setIsDragTarget(false);
   };
   const onDragOver = (e: React.DragEvent) => {
-    if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+    if (carriesFiles(e)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
+    } else if (acceptsThread(e)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
     }
   };
   const onDrop = async (e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    if (!carriesFiles(e) && !acceptsThread(e)) return;
     e.preventDefault();
     e.stopPropagation();
     dragDepth.current = 0;
     setIsDragTarget(false);
+    const dragged = readThreadDragEvent(e);
+    if (dragged) {
+      if (dragged.fromKind === "bot" && dragged.fromId !== bot.id) {
+        dispatch({
+          type: "moveTaskToBot",
+          botId: dragged.fromId,
+          threadId: dragged.threadId,
+          toBotId: bot.id,
+        });
+      } else if (dragged.fromKind === "group") {
+        dispatch({
+          type: "moveGroupTaskToBot",
+          groupId: dragged.fromId,
+          threadId: dragged.threadId,
+          botId: bot.id,
+        });
+      }
+      return;
+    }
     const files = Array.from(e.dataTransfer?.files ?? []);
     if (!files.length) return;
     dispatch({ type: "select", id: bot.id });
@@ -1513,7 +1571,7 @@ function BotListItem({
       onDrop={onDrop}
       className={cn(
         "group relative rounded-xl transition-all",
-        isDragTarget && "ring-2 ring-accent bg-accent/20 scale-[1.02]",
+        isDragTarget && THREAD_DROP_CLASS,
       )}
       title={iconOnly ? bot.name : undefined}
     >

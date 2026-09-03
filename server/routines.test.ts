@@ -368,6 +368,68 @@ describe("RoutineManager", () => {
     expect(h.taskActivations).toEqual([true]);
   });
 
+  it("puts every webhook delivery for a bot on one Triggers thread", async () => {
+    const h = harness();
+    h.manager.enqueueWebhook({
+      webhookId: "hook-1",
+      webhookName: "New ticket",
+      prompt: "Handle ticket 42",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d1",
+      receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
+    });
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "thread-1",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    h.manager.enqueueWebhook({
+      webhookId: "hook-2",
+      webhookName: "Pager",
+      prompt: "Handle page",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d2",
+      receivedAt: new Date(2026, 7, 17, 8, 3).getTime(),
+    });
+    await h.manager.tick();
+    expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1"]);
+    expect(h.taskActivations).toEqual([true]);
+  });
+
+  it("puts every scheduled routine for a bot on one Routines thread", async () => {
+    const h = harness();
+    const morning = h.manager.create({
+      name: "Morning brief",
+      prompt: "Morning",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    h.setNow(morning.nextRunAt!);
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "thread-1",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    const evening = h.manager.create({
+      name: "Evening sweep",
+      prompt: "Evening",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "18:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    h.setNow(evening.nextRunAt!);
+    await h.manager.tick();
+    expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1"]);
+    expect(h.started.map((row) => row.prompt)).toEqual(["Morning", "Evening"]);
+  });
+
   it("folds provider lifecycle events into the calendar receipt", async () => {
     const h = harness();
     const routine = h.manager.create({

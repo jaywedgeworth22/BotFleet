@@ -17,6 +17,18 @@ export type RoutineRunOn = "maus" | "cloud";
 
 export type RoutineRunTrigger = "schedule" | "manual" | "webhook" | "resource";
 
+/** One shared task per bot for incoming events, one for calendar work. */
+export type AutomationLane = "trigger" | "schedule";
+
+export function automationLane(source?: RoutineRunTrigger): AutomationLane {
+  return source === "webhook" || source === "resource" ? "trigger" : "schedule";
+}
+
+export const AUTOMATION_LANE_TITLE: Record<AutomationLane, string> = {
+  trigger: "Triggers",
+  schedule: "Routines",
+};
+
 export type RoutineRunStatus =
   | "queued"
   | "running"
@@ -125,6 +137,8 @@ export interface RoutineManagerOptions {
   emit?: (payload: Record<string, unknown>) => void;
   botState: (botId: string) => "ready" | "busy" | "missing";
   createTask: (botId: string, title: string, activate?: boolean) => { threadId: string } | null;
+  /** Switch the bot's live chat to this thread (webhook deliveries). */
+  activateTask?: (botId: string, threadId: string) => void;
   /** True when this bot still has a task for `threadId`. Used so a later
    * scheduled run of the same routine can keep writing in the previous thread
    * instead of minting a new one every tick. */
@@ -667,28 +681,35 @@ export class RoutineManager {
           this.failRun(run, "The assigned bot no longer exists");
           continue;
         }
-        // A webhook is an incoming message, so make its task the bot's live
-        // chat immediately. Scheduled work remains detached and unobtrusive.
-        // Later ticks of the same scheduled routine keep the previous thread
-        // so the transcript is one conversation, not a new task every morning.
+        // A bot can only run one thread at a time.  Every webhook/resource
+        // delivery shares that bot's Triggers task; every calendar tick
+        // shares Routines.  Interactive chat stays on the default task
+        // unless the person mints another.  A webhook still becomes the
+        // live chat so the incoming event is visible.
+        const lane = automationLane(run.triggerSource);
         let threadId: string | undefined;
-        if (run.triggerSource !== "webhook") {
-          const previous = [...this.runs].reverse().find(
-            (candidate) =>
-              candidate.routineId === run.routineId &&
-              candidate.id !== run.id &&
-              Boolean(candidate.threadId) &&
-              this.options.taskExists?.(run.botId, candidate.threadId!),
-          );
-          threadId = previous?.threadId;
-        }
+        const previous = [...this.runs].reverse().find(
+          (candidate) =>
+            candidate.botId === run.botId &&
+            candidate.id !== run.id &&
+            Boolean(candidate.threadId) &&
+            automationLane(candidate.triggerSource) === lane &&
+            this.options.taskExists?.(run.botId, candidate.threadId!),
+        );
+        threadId = previous?.threadId;
         if (!threadId) {
-          const task = this.options.createTask(run.botId, run.routineName, run.triggerSource === "webhook");
+          const task = this.options.createTask(
+            run.botId,
+            AUTOMATION_LANE_TITLE[lane],
+            run.triggerSource === "webhook",
+          );
           if (!task) {
             this.failRun(run, "Could not create a task for this run");
             continue;
           }
           threadId = task.threadId;
+        } else if (run.triggerSource === "webhook") {
+          this.options.activateTask?.(run.botId, threadId);
         }
         run.threadId = threadId;
         run.startedAt = this.now();
