@@ -62,7 +62,7 @@ struct SettingsView: View {
             }
 
             if session.connection != nil {
-                Section("Workspace") {
+                Section {
                     NavigationLink {
                         TasksRoutinesView()
                     } label: {
@@ -133,18 +133,22 @@ struct SettingsView: View {
                     if session.config?.terminology == "custom" {
                         CustomRoomTermFields(session: session)
                     }
+                } header: {
+                    Text("Workspace")
                 } footer: {
-                    Text(
-                        session.config?.isProjectsMode == true
-                            ? "Projects hides named bots.  That word is a category that any number of threads can sit under."
-                            : "Simple is one conversation per bot.  That word is a group thread invited bots and you can all write in."
-                    )
+                    Text(workspaceFooter)
                 }
             }
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .task { await session.refreshNotificationAuthorization() }
+    }
+
+    private var workspaceFooter: String {
+        session.config?.isProjectsMode == true
+            ? "Projects hides named bots.  That word is a category that any number of threads can sit under."
+            : "Simple is one conversation per bot.  That word is a group thread invited bots and you can all write in."
     }
 
     private var notificationsAreEnabled: Bool {
