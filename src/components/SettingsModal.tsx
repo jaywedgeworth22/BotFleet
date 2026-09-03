@@ -5,6 +5,15 @@
 import { useEffect, useRef, useState } from "react";
 import { Coins, KeyRound, Monitor, Search, Smartphone, Terminal, User, X } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
+import {
+  DEFAULT_ROOM_TERMINOLOGY,
+  ROOM_LABEL_MAX_LENGTH,
+  ROOM_TERMINOLOGY_OPTIONS,
+  ROOM_TERMINOLOGY_PRESETS,
+  suggestPlural,
+  type RoomLabels,
+  type RoomTerminology,
+} from "../../shared/terminology";
 import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
 import { showToolCallsEnabled, skillRecorderEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
 import { ApiKeyRow, VpsConnection } from "./ApiKeys";
@@ -271,16 +280,24 @@ function UpdateNotificationsRow() {
  * sends (autocapture is off; see lib/analytics.ts). */
 function TerminologyRow() {
   const { state, dispatch } = useStore();
-  const current = state.config?.terminology ?? "channels";
+  const current = state.config?.terminology ?? DEFAULT_ROOM_TERMINOLOGY;
+  const stored = state.config?.roomLabels;
   const [saving, setSaving] = useState(false);
+  // Held locally so typing stays responsive; only a finished pair is saved.
+  const [draft, setDraft] = useState<RoomLabels>(() =>
+    current === "custom" && stored ? stored : { singular: "", plural: "" },
+  );
+  const [pluralEdited, setPluralEdited] = useState(
+    () => current === "custom" && Boolean(stored?.plural),
+  );
 
-  const setTerminology = async (terminology: "channels" | "groups" | "projects") => {
+  const save = async (body: Record<string, unknown>) => {
     if (saving) return;
     setSaving(true);
     try {
-      const config: ConfigStatus = await api("/api/config", {
+      const config: ConfigStatus = await api("/api/terminology", {
         method: "PATCH",
-        body: JSON.stringify({ terminology }),
+        body: JSON.stringify(body),
       });
       dispatch({ type: "configStatus", config });
     } catch {
@@ -289,34 +306,102 @@ function TerminologyRow() {
     }
   };
 
+  const choose = async (terminology: RoomTerminology) => {
+    if (terminology !== "custom") return save({ terminology });
+    // Switching to Custom keeps whatever is already in the fields, and seeds
+    // them from the current word so the boxes are never blank to start.
+    const seed = draft.singular ? draft : (stored ?? { singular: "", plural: "" });
+    setDraft(seed);
+    await save({ terminology: "custom", terminologyCustom: seed });
+  };
+
+  const commitCustom = (next: RoomLabels) => {
+    setDraft(next);
+    if (!next.singular.trim()) return;
+    void save({ terminology: "custom", terminologyCustom: next });
+  };
+
   return (
     <Card
       title="Terminology"
-      subtitle="Choose what you prefer to call multi-bot shared spaces across the app."
+      subtitle="Choose what you prefer to call multi-bot shared spaces across the app.  It applies on this computer and on your phone."
     >
-      <div className="flex rounded-lg border border-hairline/40 bg-inset p-0.5">
-        {(
-          [
-            ["channels", "Channels"],
-            ["groups", "Groups"],
-            ["projects", "Projects"],
-          ] as const
-        ).map(([val, label]) => (
-          <button
-            key={val}
-            disabled={saving}
-            onClick={() => setTerminology(val)}
-            className={cn(
-              "flex-1 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
-              current === val
-                ? "bg-raised text-ink shadow-sm"
-                : "text-ink-secondary hover:text-ink",
-            )}
-          >
-            {label}
-          </button>
-        ))}
+      <div className="flex flex-wrap gap-1 rounded-lg border border-hairline/40 bg-inset p-0.5">
+        {ROOM_TERMINOLOGY_OPTIONS.map((option) => {
+          const label =
+            option === "custom" ? "Custom" : ROOM_TERMINOLOGY_PRESETS[option].plural;
+          return (
+            <button
+              key={option}
+              disabled={saving}
+              onClick={() => void choose(option)}
+              aria-pressed={current === option}
+              className={cn(
+                "flex-1 rounded-md px-3 py-1.5 text-[13px] font-medium transition-colors",
+                current === option
+                  ? "bg-raised text-ink shadow-sm"
+                  : "text-ink-secondary hover:text-ink",
+              )}
+            >
+              {label}
+            </button>
+          );
+        })}
       </div>
+      {current === "custom" && (
+        <div className="mt-3 space-y-2">
+          <p className="text-[12px] text-ink-secondary">
+            Enter both forms.&nbsp; The plural is not always just an added
+            &ldquo;s&rdquo;, so it has its own box &mdash; Category and Categories.
+          </p>
+          <div className="flex gap-2">
+            <label className="flex-1">
+              <span className="mb-1 block text-[12px] font-medium text-ink-secondary">
+                One of them
+              </span>
+              <input
+                value={draft.singular}
+                disabled={saving}
+                maxLength={ROOM_LABEL_MAX_LENGTH}
+                placeholder="App"
+                onChange={(event) => {
+                  const singular = event.target.value;
+                  // The plural follows along until it is edited by hand, so
+                  // the usual case stays one thing to type.
+                  setDraft({
+                    singular,
+                    plural: pluralEdited ? draft.plural : suggestPlural(singular),
+                  });
+                }}
+                onBlur={() =>
+                  commitCustom({
+                    singular: draft.singular,
+                    plural: draft.plural || suggestPlural(draft.singular),
+                  })
+                }
+                className="w-full rounded-md border border-hairline/40 bg-inset px-2 py-1.5 text-[13px] text-ink"
+              />
+            </label>
+            <label className="flex-1">
+              <span className="mb-1 block text-[12px] font-medium text-ink-secondary">
+                More than one
+              </span>
+              <input
+                value={draft.plural}
+                disabled={saving}
+                maxLength={ROOM_LABEL_MAX_LENGTH}
+                placeholder="Apps"
+                onChange={(event) => {
+                  setPluralEdited(true);
+                  setDraft({ singular: draft.singular, plural: event.target.value });
+                }}
+                onBlur={() => commitCustom(draft)}
+                className="w-full rounded-md border border-hairline/40 bg-inset px-2 py-1.5 text-[13px] text-ink"
+              />
+            </label>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }
@@ -448,7 +533,7 @@ function ExperimentalFeaturesRow() {
     >
       <div className="flex items-center justify-between gap-4">
         <div className="min-w-0">
-          <div className="text-[14px] font-medium text-ink">Teach a skill</div>
+          <div className="text-[14px] font-medium text-ink">Teach a Skill</div>
           <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
             Show the workflow recorder in the sidebar.
           </div>
@@ -456,7 +541,7 @@ function ExperimentalFeaturesRow() {
         <button
           role="switch"
           aria-checked={enabled}
-          aria-label="Show Teach a skill"
+          aria-label="Show Teach a Skill"
           disabled={saving}
           onClick={() => void toggle()}
           className={`${cnSwitch(enabled)} disabled:cursor-wait disabled:opacity-50`}

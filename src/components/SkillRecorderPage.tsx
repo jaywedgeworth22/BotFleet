@@ -351,7 +351,7 @@ export function SkillRecorderPage() {
       <video ref={videoRef} muted playsInline className="pointer-events-none absolute size-px opacity-0" />
       <header className="flex h-[60px] shrink-0 items-center justify-between border-b border-hairline px-6">
         <div>
-          <h1 className="text-[15px] font-semibold">Teach a skill</h1>
+          <h1 className="text-[15px] font-semibold">Teach a Skill</h1>
           <p className="text-[11px] text-ink-secondary">Show it once. Let every bot repeat it.</p>
         </div>
         {recording && (

@@ -322,7 +322,7 @@ export function TeamMapPage() {
         <div>
           <div className="flex items-center gap-2.5">
             <Network size={20} className="text-accent" />
-            <h1 className="text-[18px] font-semibold">Team map</h1>
+            <h1 className="text-[18px] font-semibold">Team Map</h1>
             <span className="flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[10.5px] font-medium text-success">
               <Radio size={10} /> Live
             </span>

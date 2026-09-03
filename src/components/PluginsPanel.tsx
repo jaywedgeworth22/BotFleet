@@ -486,7 +486,7 @@ export function PluginsPanel() {
       >
         <header className="flex items-start justify-between gap-4 px-6 pb-3 pt-6 sm:px-8 sm:pt-7">
           <div>
-            <h2 id="connected-apps-title" className="text-[22px] font-semibold tracking-[-0.01em] text-ink">Connected apps</h2>
+            <h2 id="connected-apps-title" className="text-[22px] font-semibold tracking-[-0.01em] text-ink">Connected Apps</h2>
             <p className="mt-1 text-[13px] text-ink-secondary">Connect the apps your bots can use.</p>
           </div>
           <div className="flex items-center gap-1">
@@ -521,7 +521,7 @@ export function PluginsPanel() {
         )}
 
         <div className="flex flex-col gap-3 px-6 pb-4 pt-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
-          <div className="flex w-fit rounded-xl bg-raised/70 p-1" role="tablist" aria-label="Connected apps view">
+          <div className="flex w-fit rounded-xl bg-raised/70 p-1" role="tablist" aria-label="Connected Apps view">
             <button
               role="tab"
               aria-selected={tab === "marketplace"}
