@@ -269,10 +269,15 @@ function ThreadListItem({
   group,
   task,
   density,
+  onMenu,
+  renameSignal,
 }: {
   group: Group;
   task: GroupTask;
   density: SidebarDensity;
+  onMenu: (menu: { groupId: string; threadId: string; x: number; y: number }) => void;
+  /** Bumped by the context menu's Rename, which lives outside this row. */
+  renameSignal: number;
 }) {
   const { state, dispatch } = useStore();
   const [renaming, setRenaming] = useState(false);
@@ -286,6 +291,12 @@ function ThreadListItem({
     if (!title || title === task.title) return;
     dispatch({ type: "renameGroupTask", groupId: group.id, threadId: task.threadId, title });
   };
+
+  useEffect(() => {
+    if (renameSignal === 0) return;
+    setDraft(task.title);
+    setRenaming(true);
+  }, [renameSignal, task.title]);
 
   const label = task.title || "New task";
 
@@ -333,6 +344,21 @@ function ThreadListItem({
         setDraft(task.title);
         setRenaming(true);
       }}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        onMenu({ groupId: group.id, threadId: task.threadId, x: event.clientX, y: event.clientY });
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
+        event.preventDefault();
+        const rect = event.currentTarget.getBoundingClientRect();
+        onMenu({
+          groupId: group.id,
+          threadId: task.threadId,
+          x: rect.left + rect.width / 2,
+          y: rect.top + rect.height / 2,
+        });
+      }}
       title={`${label}\u00a0 — double-click to rename, drag to move`}
       className={cn(
         "flex w-full items-center gap-2 rounded-lg py-1 pr-2 text-left transition-colors",
@@ -351,6 +377,131 @@ function ThreadListItem({
  * Collapsed state and how many to show are presentation, so they live in
  * this device's storage rather than the harness — the phone has its own
  * screen and its own idea of how much fits. */
+/** Right-click menu for one conversation.
+ *
+ * The two move options open on hover rather than click, because picking a
+ * destination is the whole point of the menu — a second click to reveal the
+ * list would be a step with nothing in it. */
+function ThreadContextMenu({
+  menu,
+  onClose,
+  onRename,
+}: {
+  menu: { groupId: string; threadId: string; x: number; y: number };
+  onClose: () => void;
+  onRename: () => void;
+}) {
+  const { state, dispatch } = useStore();
+  const [open, setOpen] = useState<"channels" | "bots" | null>(null);
+  const group = state.groups.find((g) => g.id === menu.groupId);
+  const terminology = getRoomTerminology(state.config);
+
+  useEffect(() => {
+    const onDown = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest("[data-thread-menu]")) {
+        onClose();
+      }
+    };
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && onClose();
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  if (!group) return null;
+  // A channel keeps its last conversation, so with only one there is
+  // nowhere for this one to go.
+  const movable = (group.tasks ?? []).length > 1;
+  const otherRooms = state.groups.filter((g) => g.id !== group.id && !g.dm);
+  const bots = state.bots.filter((b) => !b.hidden);
+
+  const top = Math.min(menu.y, window.innerHeight - 220);
+  const left = Math.min(menu.x, window.innerWidth - 250);
+  const itemClass =
+    "flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[13px] text-ink hover:bg-raised/70";
+
+  const submenu = (entries: Array<{ id: string; name: string }>, move: (id: string) => void) => (
+    <div className="absolute left-full top-0 -ml-1 max-h-[280px] w-[200px] overflow-y-auto rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/60">
+      {entries.length === 0 ? (
+        <div className="px-3 py-2 text-[12px] text-ink-secondary">Nothing to move it to</div>
+      ) : (
+        entries.map((entry) => (
+          <button
+            key={entry.id}
+            type="button"
+            onClick={() => {
+              move(entry.id);
+              onClose();
+            }}
+            className="block w-full truncate px-3 py-2 text-left text-[13px] text-ink hover:bg-raised/70"
+          >
+            {entry.name}
+          </button>
+        ))
+      )}
+    </div>
+  );
+
+  return createPortal(
+    <div
+      data-thread-menu
+      style={{ top, left }}
+      className="fixed z-40 w-[228px] rounded-xl border border-hairline/50 bg-card py-1.5 shadow-2xl shadow-black/60"
+    >
+      <button type="button" className={itemClass} onClick={() => { onRename(); onClose(); }}>
+        Rename
+      </button>
+      {movable && (
+        <>
+          <div className="relative" onMouseEnter={() => setOpen("channels")} onMouseLeave={() => setOpen(null)}>
+            <button type="button" className={itemClass} aria-haspopup="menu" aria-expanded={open === "channels"}>
+              Move to {terminology.singular}
+              <ChevronRight size={14} className="text-ink-secondary" />
+            </button>
+            {open === "channels" &&
+              submenu(
+                otherRooms.map((room) => ({ id: room.id, name: room.name })),
+                (id) =>
+                  dispatch({
+                    type: "moveGroupTask",
+                    groupId: group.id,
+                    threadId: menu.threadId,
+                    toGroupId: id,
+                  }),
+              )}
+          </div>
+          <div className="relative" onMouseEnter={() => setOpen("bots")} onMouseLeave={() => setOpen(null)}>
+            <button type="button" className={itemClass} aria-haspopup="menu" aria-expanded={open === "bots"}>
+              Move to Bot
+              <ChevronRight size={14} className="text-ink-secondary" />
+            </button>
+            {open === "bots" &&
+              submenu(
+                bots.map((bot) => ({ id: bot.id, name: bot.name })),
+                (id) =>
+                  dispatch({
+                    type: "moveGroupTaskToBot",
+                    groupId: group.id,
+                    threadId: menu.threadId,
+                    botId: id,
+                  }),
+              )}
+          </div>
+        </>
+      )}
+      {!movable && (
+        <div className="px-3 py-2 text-[12px] text-ink-secondary">
+          A {terminology.singular.toLowerCase()} keeps its last conversation.
+        </div>
+      )}
+    </div>,
+    document.body,
+  );
+}
+
 function GroupBranch({
   group,
   density,
@@ -367,6 +518,13 @@ function GroupBranch({
   onToggle: () => void;
 }) {
   const [showAll, setShowAll] = useState(false);
+  const [threadMenu, setThreadMenu] = useState<{
+    groupId: string;
+    threadId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [renameSignals, setRenameSignals] = useState<Record<string, number>>({});
   const tasks = group.tasks ?? [];
   // Most recently active first, where activity is the last thing that
   // happened in the thread whoever caused it — a person, a webhook or a
@@ -398,7 +556,14 @@ function GroupBranch({
       {branching && !collapsed && (
         <div className="mt-0.5 flex flex-col gap-0.5">
           {shown.map((task) => (
-            <ThreadListItem key={task.threadId} group={group} task={task} density={density} />
+            <ThreadListItem
+              key={task.threadId}
+              group={group}
+              task={task}
+              density={density}
+              onMenu={setThreadMenu}
+              renameSignal={renameSignals[task.threadId] ?? 0}
+            />
           ))}
           {hidden > 0 && (
             <button
@@ -423,6 +588,18 @@ function GroupBranch({
             </button>
           )}
         </div>
+      )}
+      {threadMenu && (
+        <ThreadContextMenu
+          menu={threadMenu}
+          onClose={() => setThreadMenu(null)}
+          onRename={() =>
+            setRenameSignals((current) => ({
+              ...current,
+              [threadMenu.threadId]: (current[threadMenu.threadId] ?? 0) + 1,
+            }))
+          }
+        />
       )}
     </div>
   );
