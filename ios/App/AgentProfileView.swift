@@ -400,6 +400,7 @@ struct AgentProfileView: View {
                 async let fetchedInstances = session.instances()
                 let loadedConfig = await status
                 config = loadedConfig
+                voices = await options
                 let rawInstances = await fetchedInstances
                 instances = rawInstances.filter { inst in
                     inst.snapshot.isAvailable || inst.id == current.modelSelection.instanceId

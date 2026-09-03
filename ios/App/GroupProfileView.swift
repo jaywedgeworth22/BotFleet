@@ -12,7 +12,7 @@ struct GroupProfileView: View {
     @State private var avatarCrop: AvatarCrop = .circle
     @State private var cwd = ""
     @State private var extraCwdsText = ""
-    @State private var responderKind = "all"
+    @State private var responderKind = "everyone"
     @State private var leadBotId = ""
     @State private var memberIds: Set<String> = []
     @State private var photo: PhotosPickerItem? = nil
@@ -34,7 +34,8 @@ struct GroupProfileView: View {
         r.avatarCrop = avatarCrop
         r.cwd = cwd.isEmpty ? nil : cwd
         r.extraCwds = extraCwdsText.isEmpty ? nil : extraCwdsText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty })
-        r.defaultResponder = GroupResponder(kind: responderKind, botId: responderKind == "bot" ? (leadBotId.isEmpty ? nil : leadBotId) : nil)
+        // Server vocabulary (server/index.ts checkedGroupResponder): everyone | mentions | member+botId.
+        r.defaultResponder = GroupResponder(kind: responderKind, botId: responderKind == "member" ? (leadBotId.isEmpty ? nil : leadBotId) : nil)
         r.memberIds = Array(memberIds)
         return r
     }
@@ -90,14 +91,15 @@ struct GroupProfileView: View {
                         .lineLimit(2...6)
                 }
 
+                if room.dm != true {
                 Section("Default Responder") {
                     Picker("Responder Mode", selection: $responderKind) {
-                        Text("Everyone responds").tag("all")
-                        Text("Lead bot").tag("bot")
-                        Text("Only when mentioned").tag("none")
+                        Text("Everyone responds").tag("everyone")
+                        Text("Lead bot").tag("member")
+                        Text("Only when mentioned").tag("mentions")
                     }
 
-                    if responderKind == "bot" {
+                    if responderKind == "member" {
                         Picker("Lead Bot", selection: $leadBotId) {
                             Text("Select lead bot").tag("")
                             ForEach(availableBots.filter { memberIds.contains($0.id) }) { bot in
@@ -137,6 +139,7 @@ struct GroupProfileView: View {
                             }
                         }
                     }
+                }
                 }
 
                 Section("Working Directory") {
@@ -201,8 +204,9 @@ struct GroupProfileView: View {
             avatarCrop: avatarCrop,
             cwd: currentRoom.cwd,
             extraCwds: currentRoom.extraCwds,
-            defaultResponder: currentRoom.defaultResponder,
-            memberIds: currentRoom.memberIds
+            // Direct-message rooms cannot change members or responder (server 400s).
+            defaultResponder: room.dm == true ? nil : currentRoom.defaultResponder,
+            memberIds: room.dm == true ? nil : currentRoom.memberIds
         )
     }
 
