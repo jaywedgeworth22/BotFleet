@@ -80,6 +80,8 @@ import {
   skillRecorderEnabled,
   syncCredentialEnv,
   patchInstanceConfig,
+  usageIngestUrl,
+  usageProjectRules,
   vpsSshAlias,
   DATA_DIR,
   EVENTS_DIR,
@@ -194,6 +196,13 @@ const MIME: Record<string, string> = {
 
 ensureDirs();
 const cfg = loadConfig();
+// Telemetry reads settings live (cfg is mutated in place on save), so a new
+// ingest URL or project rule takes effect without a restart.
+telemetry.configure(() => ({
+  ingestUrl: usageIngestUrl(cfg),
+  ingestToken: cfg.usage?.ingestToken,
+  projects: usageProjectRules(cfg),
+}));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
 quotaCooldowns.recordInstanceCap("codex", "*", { error: "Codex session limit / usage cap reached" });
@@ -280,11 +289,21 @@ function connectedAppsIntegration(botId: string, threadId: string) {
   });
 }
 
-function qdrantIntegration(botId: string, threadId: string) {
+export const RECALL_NOT_CONFIGURED = "Agent RAG is not configured — set a Service URL in Settings";
+
+/** The RAG service the operator configured, if any. BotFleet ships no
+ * endpoint and no collection name: with nothing set, the proxy falls back to
+ * a local `recall` CLI and otherwise reports that the feature is off. */
+function recallSettings(): { url: string; apiKey: string; collection: string } {
   const qdrantCfg = cfg.qdrant;
-  const url = (qdrantCfg?.url || process.env.OMB_RECALL_URL || process.env.RECALL_URL || process.env.QDRANT_URL || "https://recall.jays.services").replace(/\/+$/, "");
+  const url = (qdrantCfg?.url || process.env.OMB_RECALL_URL || process.env.RECALL_URL || process.env.QDRANT_URL || "").trim().replace(/\/+$/, "");
   const apiKey = qdrantCfg?.apiKey || process.env.OMB_RECALL_API_KEY || process.env.RECALL_API_KEY || process.env.QDRANT_API_KEY || "";
-  const collection = qdrantCfg?.collection || process.env.OMB_RECALL_COLLECTION || process.env.RECALL_COLLECTION || process.env.QDRANT_COLLECTION || "fleet-agents";
+  const collection = (qdrantCfg?.collection || process.env.OMB_RECALL_COLLECTION || process.env.RECALL_COLLECTION || process.env.QDRANT_COLLECTION || "").trim();
+  return { url, apiKey, collection };
+}
+
+function qdrantIntegration(botId: string, threadId: string) {
+  const { url, apiKey, collection } = recallSettings();
   const bot = store.bot(botId);
   return {
     command: process.execPath,
@@ -2815,7 +2834,7 @@ async function runGroupMemberTurn(
     group.bulletin.trim() && `Room bulletin (shared instructions for everyone):\n${group.bulletin.trim()}`,
     group.extraCwds?.length &&
       `Associated Workspace Repositories / Folders:\n- Primary: ${group.cwd || "default"}\n${group.extraCwds.map((c) => `- Auxiliary: ${c}`).join("\n")}`,
-    "Format replies with clean Github-Flavored Markdown (headers, code fences with language tags, bullet lists, tables, bold/italic). When referencing local files on this Mac, use absolute paths or file links (e.g. `file:///path/to/file` or `/Users/jay/...`) so they are directly clickable in the UI.",
+    "Format replies with clean Github-Flavored Markdown (headers, code fences with language tags, bullet lists, tables, bold/italic). When referencing local files on this Mac, use absolute paths or file links (e.g. `file:///path/to/file`) so they are directly clickable in the UI.",
     `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.`,
     integrations.agents &&
       "If a supported API key is missing, use request_credential to show the secure in-app card. Never ask the user to paste credentials into chat.",
@@ -3419,12 +3438,20 @@ function configStatus() {
       mode: cfg.localVm?.mode ?? "shared",
       maxInstances: localVmMaxInstances(cfg),
     },
+    // No invented endpoint or collection: the operator's own values or
+    // nothing at all, so an unconfigured install reads as unconfigured.
     qdrant: {
       enabled: cfg.qdrant?.enabled !== false,
-      url: cfg.qdrant?.url || "http://127.0.0.1:6333",
+      url: cfg.qdrant?.url || "",
       configured: Boolean(cfg.qdrant?.url || cfg.qdrant?.apiKey),
       hasApiKey: Boolean(cfg.qdrant?.apiKey),
-      collection: cfg.qdrant?.collection || "botfleet-agent-rag",
+      collection: cfg.qdrant?.collection || "",
+    },
+    usage: {
+      ingestUrl: usageIngestUrl(cfg) ?? "",
+      configured: telemetry.getStatus().enabled,
+      hasToken: Boolean(cfg.usage?.ingestToken),
+      projects: usageProjectRules(cfg),
     },
     autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
     terminology: cfg.terminology ?? "channels",
@@ -6077,12 +6104,11 @@ const server = createServer(async (req, res) => {
       });
     }
     if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {
-      const qdrantCfg = cfg.qdrant;
-      const url = (qdrantCfg?.url || process.env.OMB_RECALL_URL || process.env.RECALL_URL || process.env.QDRANT_URL || "https://recall.jays.services").replace(/\/+$/, "");
-      const apiKey = qdrantCfg?.apiKey || process.env.OMB_RECALL_API_KEY || process.env.RECALL_API_KEY || process.env.QDRANT_API_KEY || "";
-      const collection = qdrantCfg?.collection || process.env.OMB_RECALL_COLLECTION || process.env.RECALL_COLLECTION || process.env.QDRANT_COLLECTION || "fleet-agents";
+      const { url, apiKey, collection } = recallSettings();
 
-      // 1. Check local recall CLI if available (fastest and most accurate on host Mac)
+      // 1. Check a local recall CLI if there is one (fastest and most
+      // accurate on the host running BotFleet)
+      let cliFound = false;
       try {
         const { execFile } = await import("node:child_process");
         const { promisify } = await import("node:util");
@@ -6090,27 +6116,29 @@ const server = createServer(async (req, res) => {
         const { join } = await import("node:path");
         const { homedir } = await import("node:os");
         const execFileAsync = promisify(execFile);
+        const explicit = process.env.RECALL_CLI_PATH;
         const candidates = [
+          ...(explicit ? [explicit] : []),
           join(homedir(), ".local", "bin", "recall"),
-          join(homedir(), "apps", "mac-collab", "recall"),
-          join(homedir(), "apps", "fleet-rag", "recall"),
           "/opt/homebrew/bin/recall",
           "/usr/local/bin/recall",
         ];
         const cli = candidates.find((c) => existsSync(c));
+        cliFound = Boolean(cli);
         if (cli) {
           const { stdout } = await execFileAsync(cli, ["stats", "--json"], {
             timeout: 6000,
             env: {
               ...process.env,
-              PATH: `${join(homedir(), ".local", "bin")}:${join(homedir(), "apps", "mac-collab")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
+              PATH: `${join(homedir(), ".local", "bin")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
             },
           });
           const stats = JSON.parse(stdout);
           return json(res, 200, {
             ready: true,
-            source: "fleet-recall",
-            url,
+            configured: true,
+            source: "recall-cli",
+            url: url || null,
             collection: stats.collection || collection,
             pointsCount: stats.points ?? 0,
             embedderHealthy: stats.embedder_healthy ?? true,
@@ -6121,34 +6149,53 @@ const server = createServer(async (req, res) => {
         // Fall through to HTTP probe
       }
 
-      // 2. HTTP Probe: check recall-api health or Qdrant collections
-      try {
-        if (url.includes("recall") || url.includes("services")) {
-          const healthRes = await fetch(`${url}/health`, { signal: AbortSignal.timeout(4000) });
-          if (healthRes.ok) {
-            const healthData = (await healthRes.json()) as {
-              collection?: string;
-              points?: number;
-              backend_ok?: boolean;
-              version?: string;
-            };
-            return json(res, 200, {
-              ready: true,
-              source: "fleet-recall-service",
-              url,
-              collection: healthData.collection || collection,
-              pointsCount: healthData.points ?? 0,
-              backendOk: healthData.backend_ok ?? true,
-              version: healthData.version,
-            });
-          }
-        }
+      // Nothing configured and no local CLI: say so rather than probing a
+      // host nobody asked for.
+      if (!url) {
+        return json(res, 200, {
+          ready: false,
+          configured: false,
+          url: null,
+          collection: collection || null,
+          error: cliFound
+            ? "The local recall CLI did not answer — set a Service URL in Settings"
+            : RECALL_NOT_CONFIGURED,
+        });
+      }
 
+      // 2. HTTP probe: a recall-style /health first (its own try, so a
+      // service without that route still gets the Qdrant probe below), then
+      // the Qdrant collections API.
+      try {
+        const healthRes = await fetch(`${url}/health`, { signal: AbortSignal.timeout(4000) });
+        if (healthRes.ok) {
+          const healthData = (await healthRes.json()) as {
+            collection?: string;
+            points?: number;
+            backend_ok?: boolean;
+            version?: string;
+          };
+          return json(res, 200, {
+            ready: true,
+            configured: true,
+            source: "recall-service",
+            url,
+            collection: healthData.collection || collection,
+            pointsCount: healthData.points ?? 0,
+            backendOk: healthData.backend_ok ?? true,
+            version: healthData.version,
+          });
+        }
+      } catch {
+        // Not a recall-style service (or it is down) — try Qdrant directly.
+      }
+
+      try {
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (apiKey) headers["api-key"] = apiKey;
         const resList = await fetch(`${url}/collections`, { headers, signal: AbortSignal.timeout(4000) });
         if (!resList.ok) {
-          return json(res, 200, { ready: false, url, collection, error: `HTTP ${resList.status}: ${resList.statusText}` });
+          return json(res, 200, { ready: false, configured: true, url, collection, error: `HTTP ${resList.status}: ${resList.statusText}` });
         }
         const data = (await resList.json()) as { result?: { collections?: Array<{ name: string }> } };
         const collections = (data.result?.collections || []).map((c) => c.name);
@@ -6162,6 +6209,7 @@ const server = createServer(async (req, res) => {
         }
         return json(res, 200, {
           ready: true,
+          configured: true,
           url,
           collection,
           collections,
@@ -6170,6 +6218,7 @@ const server = createServer(async (req, res) => {
       } catch (err) {
         return json(res, 200, {
           ready: false,
+          configured: true,
           url,
           collection,
           error: err instanceof Error ? err.message : String(err),
@@ -6415,6 +6464,7 @@ const server = createServer(async (req, res) => {
           key !== "localVm" &&
           key !== "autoUpdate" &&
           key !== "ingress" &&
+          key !== "usage" &&
           key !== "features",
       );
       if (reloadKeys.length > 0) await reloadProviders();

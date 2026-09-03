@@ -302,8 +302,17 @@ export interface ConfigStatus {
   profile?: { name: string; email: string };
   autoUpdate?: { enabled: boolean };
   terminology?: "channels" | "groups" | "projects";
-  /** Shared Qdrant Agent RAG vector database status */
+  /** Shared Qdrant Agent RAG vector database status. `url` and `collection`
+   * are empty until the operator sets them — BotFleet ships no endpoint. */
   qdrant?: { enabled: boolean; url: string; configured: boolean; hasApiKey: boolean; collection: string };
+  /** Usage-monitor telemetry. `ingestUrl` is empty when unconfigured; the
+   * token is never echoed back, only `hasToken`. */
+  usage?: {
+    ingestUrl: string;
+    configured: boolean;
+    hasToken: boolean;
+    projects: Array<{ slug: string; match: string[] }>;
+  };
   /** Opt-in flags. Absent means off. */
   features?: { skillRecorder: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
 }
@@ -328,7 +337,7 @@ export function getRoomTerminology(config?: ConfigStatus | null): {
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "qdrant" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "qdrant" | "usage" | "features"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -348,6 +357,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     autoUpdate: frame.autoUpdate,
     terminology: frame.terminology,
     qdrant: frame.qdrant,
+    usage: frame.usage,
     features: frame.features,
   };
 }

@@ -3,12 +3,12 @@
 // banked per settled turn on each task (server/store.ts addTaskUsage) and
 // summed here; nothing is fetched.
 import * as React from "react";
-import { useStore } from "@/state/store";
+import { api, useStore, type ConfigStatus } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
 import { ProviderMark } from "./ProviderIcons";
 import { deepSeekPriceRows } from "@/lib/deepseek-prices";
-import { telemetryBadge, type TelemetryStatusView } from "@/lib/telemetry-status";
+import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
 interface QuotaCooldownInfo {
@@ -32,10 +32,17 @@ function formatCountdown(resetsAt?: number | null): string {
 }
 
 export function UsageSection() {
-  const { state } = useStore();
+  const { state, dispatch } = useStore();
   const [telemetryStatus, setTelemetryStatus] = React.useState<TelemetryStatusView | null>(null);
   const [telemetryFetchError, setTelemetryFetchError] = React.useState<string | null>(null);
   const [quotas, setQuotas] = React.useState<QuotaCooldownInfo[]>([]);
+  const usageConfig = state.config?.usage;
+  const [ingestUrl, setIngestUrl] = React.useState(usageConfig?.ingestUrl ?? "");
+  const [ingestToken, setIngestToken] = React.useState("");
+
+  React.useEffect(() => {
+    if (usageConfig?.ingestUrl !== undefined) setIngestUrl(usageConfig.ingestUrl);
+  }, [usageConfig?.ingestUrl]);
 
   React.useEffect(() => {
     fetch("/api/telemetry/status")
@@ -58,6 +65,25 @@ export function UsageSection() {
       .catch(() => {});
   }, []);
   const badge = telemetryBadge(telemetryStatus, telemetryFetchError);
+  // Whatever host the operator pointed this at — never a built-in name.
+  const host = telemetryHost(telemetryStatus);
+
+  const saveUsage = async (patch: { ingestUrl?: string; ingestToken?: string }) => {
+    try {
+      const config: ConfigStatus = await api("/api/config", {
+        method: "PATCH",
+        body: JSON.stringify({ usage: patch }),
+      });
+      dispatch({ type: "configStatus", config });
+      const refreshed = await fetch("/api/telemetry/status").then((r) => r.json());
+      setTelemetryStatus(refreshed && typeof refreshed === "object" ? refreshed : null);
+    } catch {
+      // a failed save leaves the field as typed; the badge stays honest
+    }
+  };
+
+  const usageInputClass =
+    "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
 
   const rows = state.bots
     .filter((b) => !b.hidden)
@@ -214,7 +240,7 @@ export function UsageSection() {
 
       <Card
         title="Usage Monitor & Central Accounting"
-        subtitle="Automatic, lightweight telemetry stream reporting token consumption classified by model, project, and repository to usage.jays.services."
+        subtitle="An optional, lightweight telemetry stream reporting token consumption classified by model, project, and repository to a usage monitor you run.  Nothing is sent until you set an endpoint and a token."
       >
         <div className="flex flex-col gap-3 text-[13px]">
           <div className="flex items-center justify-between rounded-xl border border-hairline/30 bg-inset/40 px-3.5 py-2.5">
@@ -231,7 +257,7 @@ export function UsageSection() {
                 }`}
               />
               <span className="font-medium text-ink">Usage Monitor</span>
-              <span className="text-[11.5px] text-ink-secondary font-mono">usage.jays.services</span>
+              <span className="text-[11.5px] text-ink-secondary font-mono">{host ?? "Not configured"}</span>
             </div>
             <span
               className={`rounded px-2 py-0.5 text-[11px] font-medium ${
@@ -266,8 +292,38 @@ export function UsageSection() {
             </div>
           </div>
 
-          <div className="text-[12px] leading-relaxed text-ink-secondary">
-            Every settled turn records token metrics (input, output, cache hits), model selection, and working directory project classification into the Usage Monitor for real-time fleet accounting.
+          <div className="flex flex-col gap-3 rounded-xl border border-hairline/30 bg-inset/20 p-3">
+            <div className="flex flex-col gap-1">
+              <label className="text-[12px] font-medium text-ink-secondary" htmlFor="usage-ingest-url">
+                Usage Monitor URL
+              </label>
+              <input
+                id="usage-ingest-url"
+                type="url"
+                value={ingestUrl}
+                onChange={(e) => setIngestUrl(e.target.value)}
+                onBlur={() => void saveUsage({ ingestUrl: ingestUrl.trim() })}
+                placeholder="https://usage.example.com"
+                className={usageInputClass}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[12px] font-medium text-ink-secondary" htmlFor="usage-ingest-token">
+                Ingest Token
+              </label>
+              <input
+                id="usage-ingest-token"
+                type="password"
+                value={ingestToken}
+                onChange={(e) => setIngestToken(e.target.value)}
+                onBlur={() => void saveUsage({ ingestToken: ingestToken.trim() })}
+                placeholder={usageConfig?.hasToken ? "••••••••" : "Leave blank to keep telemetry off"}
+                className={usageInputClass}
+              />
+            </div>
+            <div className="text-[12px] leading-relaxed text-ink-secondary">
+              Every settled turn records token metrics (input, output, cache hits), model selection, and working directory project classification.  Set both fields to start streaming them to your own monitor; leave either blank and nothing leaves this machine.
+            </div>
           </div>
         </div>
       </Card>

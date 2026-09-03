@@ -518,7 +518,7 @@ function RoomWorkingFolder({ group }: { group: Group }) {
           >
             <input
               className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2.5 font-mono text-[12.5px] text-ink placeholder:text-ink-secondary focus:outline-none focus:border-hairline"
-              placeholder="e.g. /Users/jay/Code/MyProject"
+              placeholder="e.g. /path/to/your/project"
               value={draft ?? group.cwd ?? ""}
               onChange={(e) => setDraft(e.target.value)}
             />
@@ -755,7 +755,7 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
             <input
               value={folder}
               onChange={(event) => setFolder(event.target.value)}
-              placeholder="e.g. /Users/jay/Code/MyProject"
+              placeholder="e.g. /path/to/your/project"
               className="min-w-0 flex-1 rounded-xl border border-hairline/50 bg-inset px-3 py-2.5 font-mono text-[12.5px] text-ink placeholder:text-ink-secondary focus:border-accent focus:outline-none"
             />
             {window.ogb?.pickFolder && (

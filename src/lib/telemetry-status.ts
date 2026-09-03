@@ -1,10 +1,24 @@
 /** Shape of GET /api/telemetry/status (server/telemetry.ts TelemetryStatus). */
 export type TelemetryStatusView = {
   enabled?: boolean;
+  /** null when nothing is configured — there is no fallback endpoint. */
+  ingestUrl?: string | null;
   lastError?: string | null;
   lastAckAt?: string | null;
   totalSent?: number;
 };
+
+/** The host of the configured ingest endpoint, or null when unconfigured.
+ * Never a literal hostname: what shows is whatever the operator set. */
+export function telemetryHost(status: TelemetryStatusView | null): string | null {
+  const raw = status?.ingestUrl?.trim();
+  if (!raw) return null;
+  try {
+    return new URL(raw).host || null;
+  } catch {
+    return raw;
+  }
+}
 
 export type TelemetryBadge = {
   label: string;

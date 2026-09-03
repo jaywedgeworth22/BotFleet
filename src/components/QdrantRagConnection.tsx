@@ -10,7 +10,7 @@ export function QdrantRagConnection() {
   const [enabled, setEnabled] = useState(qdrant?.enabled ?? true);
   const [url, setUrl] = useState(qdrant?.url ?? "");
   const [apiKey, setApiKey] = useState("");
-  const [collection, setCollection] = useState(qdrant?.collection ?? "fleet-agents");
+  const [collection, setCollection] = useState(qdrant?.collection ?? "");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     ready: boolean;
@@ -87,9 +87,9 @@ export function QdrantRagConnection() {
         <div className="flex items-center gap-2.5">
           <Database size={17} className="text-accent" />
           <div>
-            <div className="text-[14.5px] font-medium text-ink">Fleet Recall & Shared Memory</div>
+            <div className="text-[14.5px] font-medium text-ink">Agent RAG & Shared Memory</div>
             <div className="text-[12.5px] text-ink-secondary">
-              Connect fleet bots to the shared fleet-agents memory platform for semantic retrieval, runbooks, and lessons.
+              Connect your bots to a shared vector memory service for semantic retrieval, runbooks, and lessons.  Leave the URL blank to use a local <code>recall</code> CLI, or to keep this off.
             </div>
           </div>
         </div>
@@ -118,13 +118,13 @@ export function QdrantRagConnection() {
       {enabled && (
         <div className="mt-4 flex flex-col gap-3 border-t border-hairline/30 pt-3">
           <div className="flex flex-col gap-1">
-            <label className="text-[12px] font-medium text-ink-secondary">Service URL (Optional)</label>
+            <label className="text-[12px] font-medium text-ink-secondary">Service URL</label>
             <input
               type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onBlur={() => void save({ url })}
-              placeholder="https://recall.jays.services (default)"
+              placeholder="https://recall.example.com"
               className={inputClass}
             />
           </div>
@@ -149,7 +149,7 @@ export function QdrantRagConnection() {
                 value={collection}
                 onChange={(e) => setCollection(e.target.value)}
                 onBlur={() => void save({ collection })}
-                placeholder="fleet-agents"
+                placeholder="agent-memory"
                 className={inputClass}
               />
             </div>
