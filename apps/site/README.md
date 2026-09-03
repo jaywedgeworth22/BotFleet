@@ -1,6 +1,6 @@
 # botfleet-site (apps/site)
 
-The marketing / status site for **[BotFleet.app](https://botfleet.app)**.  A static page listing the add-on features BotFleet has added on top of upstream [OpenMausBot](https://github.com/milind-soni/OpenMausBot), badged **Beta** or **Established** by how far along each one is.
+The marketing / status site for **[BotFleet.app](https://botfleet.app)**.  A static page listing the add-on features BotFleet layered on after forking [OpenMausBot](https://github.com/milind-soni/OpenMausBot) (all of them in testing), then the features OpenMausBot already shipped when we forked.
 
 ## Deploy source of truth
 
@@ -23,8 +23,8 @@ Static HTML/CSS rendered from `features.json` via `node build.mjs`, hosted on Ve
 
 Edit `features.json`, run `node build.mjs`, commit `index.html` too, push to `main` — Vercel deploys.  Rules:
 
-- Feature statuses: `Established` = merged to BotFleet `main` or deployed and verified; `Beta` = shipped in a branch or open PR.  The builder hides any section with zero features (owner rule for Established).
-- `node sync-status.mjs` after PRs merge; it updates states in `features.json` and prints promotion candidates — moving a card to Established stays a judgment call.
+- Feature statuses: every BotFleet add-on is **In Testing**.  Do not add an Established section unless the owner asks.  The builder still hides any section with zero features.
+- `node sync-status.mjs` after PRs merge; it updates PR states in `features.json` and prints merged PRs that have no card yet.  Adding a card stays a judgment call.  Do not promote cards out of testing.
 - Owner copy rules apply: two spaces between sentences (`&nbsp; ` in HTML strings so the gap survives rendering), Title Case headings, light theme.
 - No internal agent seat names on the public site.
 - The bot roster is an example fleet, not a product claim — keep it framed that way.

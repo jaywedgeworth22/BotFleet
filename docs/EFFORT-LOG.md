@@ -21,6 +21,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
+- **2026-09-03 — GROK — IN PROGRESS — Drop Polar support-payment links; rewrite README as BotFleet add-ons (all in testing) then OpenMausBot fork features (board `1af79606`, issue #160, branch `grok/readme-no-support-payments`, worktree `~/apps/botfleet-grok-readme`).**  GitHub About updated; social preview is owner-set and left alone.
 - **2026-09-03 — GROK — IN PR — Pickup AG usage cap: display-aware transcript window, Safari-style thread tabs, Live Activities unread + widgetURL, iOS terminology and collapsible sections (board `32712701`, branch `grok/bf-ag-pickup-ui`, worktree `~/apps/botfleet-grok-ag-pickup`).**  Deploy-all is on the active path; missing UI was activity crowding the raw-row window.  Rollout: `docs/rollouts/2026-09-03-ag-pickup-ui.md`.
 - **2026-09-02 — AG — IN PROGRESS — DeepSeek-style elapsed turn timer in TurnPresence and duration in ActivityRun (branch `ag/elapsed-seconds-display`).**
 - **2026-09-02 — AG — IN PROGRESS — Brand logo crop refinement, Antigravity Gemini mark, Kimi picker filtering, unhide EngineProbe bot (branch `ag/gemini-logo-kimi-filter-probe-sidebar`).**
