@@ -39,6 +39,10 @@ Search the `fleet-agents` corpus before re-deriving a lesson (`recall "query"` o
 
 **Never assume a new user message means prior questions or tasks are dropped.**  Treat the full conversation as still active unless the owner explicitly contradicts, cancels, or redirects.
 
+## No New GitHub Repositories (owner directive, 2026-09-02)
+
+**Never create a GitHub repository — no forks, no release repos, no site or docs repos, no scratch repos — unless the owner asks for that repository by name.**  One repository per app: BotFleet's releases, site, docs, and CI all live in `jaywedgeworth22/BotFleet`.  Need to send a change upstream?  Ask the owner first, and delete the fork when the PR closes.  Need a public update feed?  This repo's own Releases.  Found an extra repo no directive created?  Surface it to the owner; do not delete it yourself.  Canonical: `AGENT-SYNC.md` § Owner Directives → No new GitHub repositories.
+
 ## Always Commit And Land Finished Work (owner preference — ALL platforms)
 
 **Do not wait for the owner to ask you to commit or open a PR.**  After each coherent finished unit: commit → push → open or update the PR → arm auto-merge → merge when CI is green.  Never merge with red CI.  Never resolve a merge conflict by "keeping both sides"; resolve it to one coherent version and re-run typecheck and tests.  Never idle-watch a PR: a PR that is not merging is waiting on an action (review threads, a conflict, a failing check, auto-merge not armed, a branch behind main) — diagnose and drive it.  Canonical: `AGENT-SYNC.md` § Always commit + land finished work and § Never idle-watch a PR.

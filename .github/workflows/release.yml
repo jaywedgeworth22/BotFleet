@@ -1,7 +1,7 @@
 # One-button releases: builds macOS (arm64 + x64, signed, notarized, stapled),
 # Windows, and Ubuntu from ONE commit, assembles a complete draft on
-# jaywedgeworth22/botfleet-releases (the publish target baked into
-# app-update.yml by electron-builder.yml) with verified feeds, and publishes
+# this repository's own Releases (jaywedgeworth22/BotFleet, the publish
+# target baked into app-update.yml by electron-builder.yml) with verified feeds, and publishes
 # after a human approves the draft.
 #
 # Every gate below exists because its absence shipped (or nearly shipped) a
@@ -40,7 +40,7 @@ permissions:
 env:
   # The one and only publish target. Must match electron-builder.yml
   # `publish`, or installed apps check a feed no release ever lands on.
-  RELEASES_REPO: jaywedgeworth22/botfleet-releases
+  RELEASES_REPO: jaywedgeworth22/BotFleet
 
 jobs:
   prepare:

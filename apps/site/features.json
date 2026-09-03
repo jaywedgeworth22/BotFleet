@@ -3,8 +3,8 @@
     "testflightUrl": "https://testflight.apple.com/join/ER6sPNMh",
     "repo": "https://github.com/jaywedgeworth22/BotFleet",
     "upstream": "https://github.com/milind-soni/OpenMausBot",
-    "releases": "https://github.com/jaywedgeworth22/botfleet-releases",
-    "macDownload": "https://github.com/jaywedgeworth22/botfleet-releases/releases/latest/download/BotFleet.dmg"
+    "releases": "https://github.com/jaywedgeworth22/BotFleet/releases",
+    "macDownload": "https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-0.1.38-arm64.dmg"
   },
   "exampleFleet": ["Builder", "Reviewer", "Scout"],
   "sections": [
