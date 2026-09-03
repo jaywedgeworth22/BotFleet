@@ -303,6 +303,7 @@ function Spoiler({ children }: { children?: ReactNode }) {
 }
 
 function ChatMarkdownComponent({ text, streaming = false }: { text: string; streaming?: boolean }) {
+  const content = text.replace(/&nbsp;/g, "\u00A0");
   return (
     <div className="chat-md min-w-0 [&>*+*]:mt-2">
       <Markdown
@@ -408,7 +409,7 @@ function ChatMarkdownComponent({ text, streaming = false }: { text: string; stre
           },
         }}
       >
-        {text}
+        {content}
       </Markdown>
     </div>
   );
