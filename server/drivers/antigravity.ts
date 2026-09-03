@@ -22,6 +22,7 @@
 // ensureAntigravityComputerMcp below. Full-auto instances only; the host
 // desktop stays off (no approval channel in print mode, ever).
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
+import { stderrExcerpt } from "../stderr-excerpt.ts";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -696,7 +697,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           emit({
             ...base(threadId, turnId),
             type: "runtime.error",
-            message: `agy exited ${code} before result${stderr ? `: ${stderr.trim().slice(-300)}` : ""}`,
+            message: `agy exited ${code} before result${stderr ? `: ${stderrExcerpt(stderr)}` : ""}`,
           });
           settle(false, "exit_before_result");
         }
