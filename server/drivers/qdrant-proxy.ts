@@ -1,138 +1,222 @@
-// Qdrant Agent RAG MCP proxy — spawned as an MCP server inside bot processes
-// (via the "qdrant" integration). Exposes four tools that let bots perform
-// semantic memory retrieval, document storage, and fleet knowledge sharing
-// backed by a shared Qdrant vector database:
+// Fleet Recall & Agent RAG MCP proxy — spawned as an MCP server inside bot processes
+// (via the "qdrant" integration). Connects BotFleet bots to the shared fleet-agents
+// knowledge corpus (lessons, owner preferences, infrastructure runbooks, and decisions),
+// exposing both canonical fleet recall tools and backward-compatible Qdrant aliases:
 //
-//   qdrant_search(query, limit?, collection?, filter?) → search vector memory
-//   qdrant_store(text, title?, metadata?, collection?) → store document / memory
-//   qdrant_get_context(topic, limit?)                 → retrieve synthesized context
-//   qdrant_list_collections()                         → inspect vector collections
+//   recall_search(query, limit?, category?, app?, source?, seat?, since_days?, per_doc?)
+//   recall_contribute(text, category, app?, seat?, title?, url?, force?)
+//   recall_stats()
+//   qdrant_search(query, limit?, collection?, filter?)
+//   qdrant_store(text, title?, metadata?, collection?)
+//   qdrant_get_context(topic, limit?)
+//   qdrant_list_collections()
 //
 // Speaks raw JSON-RPC 2.0 over stdio matching BotFleet proxy conventions.
 import readline from "node:readline";
-import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "node:os";
 
-const QDRANT_URL = (
+const execFileAsync = promisify(execFile);
+
+const RECALL_URL = (
+  process.env.OMB_RECALL_URL ||
+  process.env.RECALL_URL ||
   process.env.OMB_QDRANT_URL ||
   process.env.QDRANT_URL ||
-  "http://127.0.0.1:6333"
+  "https://recall.jays.services"
 ).replace(/\/+$/, "");
 
-const QDRANT_API_KEY = process.env.OMB_QDRANT_API_KEY || process.env.QDRANT_API_KEY || "";
-const DEFAULT_COLLECTION = process.env.OMB_QDRANT_COLLECTION || process.env.QDRANT_COLLECTION || "botfleet-agent-rag";
-const BOT_ID = process.env.OMB_BOT_ID || "";
+const RECALL_API_KEY =
+  process.env.OMB_RECALL_API_KEY ||
+  process.env.RECALL_API_KEY ||
+  process.env.OMB_QDRANT_API_KEY ||
+  process.env.QDRANT_API_KEY ||
+  "";
+
+const DEFAULT_COLLECTION =
+  process.env.OMB_RECALL_COLLECTION ||
+  process.env.RECALL_COLLECTION ||
+  process.env.OMB_QDRANT_COLLECTION ||
+  process.env.QDRANT_COLLECTION ||
+  "fleet-agents";
+
 const BOT_NAME = process.env.OMB_BOT_NAME || "Bot";
-const VECTOR_SIZE = 128; // Standard fast deterministic semantic projection vector size
+const AGENT_SEAT = process.env.AGENT_SEAT || BOT_NAME.toUpperCase();
 
-function deterministicVector(text: string, size = VECTOR_SIZE): number[] {
-  const normalized = text.toLowerCase().trim();
-  const vector = new Array<number>(size).fill(0);
-  const words = normalized.split(/\s+/).filter(Boolean);
-  
-  if (words.length === 0) {
-    return vector;
+function findRecallCli(): string | null {
+  if (process.env.RECALL_CLI_PATH && existsSync(process.env.RECALL_CLI_PATH)) {
+    return process.env.RECALL_CLI_PATH;
   }
-
-  for (let i = 0; i < words.length; i++) {
-    const word = words[i];
-    const hash = createHash("sha256").update(word).digest();
-    for (let j = 0; j < size; j++) {
-      const byteVal = hash[j % hash.length];
-      const sign = (byteVal & 1) === 1 ? 1 : -1;
-      const weight = (byteVal / 255) * (1 / Math.sqrt(i + 1));
-      vector[j] += sign * weight;
-    }
+  const home = homedir();
+  const candidates = [
+    join(home, ".local", "bin", "recall"),
+    join(home, "apps", "mac-collab", "recall"),
+    join(home, "apps", "fleet-rag", "recall"),
+    "/opt/homebrew/bin/recall",
+    "/usr/local/bin/recall",
+  ];
+  for (const c of candidates) {
+    if (existsSync(c)) return c;
   }
-
-  // Normalize to unit length (L2 norm)
-  let norm = 0;
-  for (let j = 0; j < size; j++) norm += vector[j] * vector[j];
-  norm = Math.sqrt(norm);
-  if (norm > 0) {
-    for (let j = 0; j < size; j++) vector[j] = parseFloat((vector[j] / norm).toFixed(6));
-  }
-  return vector;
+  return null;
 }
 
-async function qdrantFetch(path: string, options: RequestInit = {}): Promise<Response> {
-  const url = `${QDRANT_URL}${path.startsWith("/") ? "" : "/"}${path}`;
-  const headers = new Headers(options.headers || {});
-  headers.set("Content-Type", "application/json");
-  if (QDRANT_API_KEY) {
-    headers.set("api-key", QDRANT_API_KEY);
-  }
-  return fetch(url, { ...options, headers });
+interface HitRecord {
+  score?: number;
+  text?: string;
+  source?: string;
+  app?: string;
+  category?: string;
+  seat?: string;
+  doc_id?: string;
+  title?: string;
+  heading?: string;
+  url?: string;
+  created_at?: number;
 }
 
-async function ensureCollection(collectionName: string): Promise<boolean> {
-  try {
-    const checkRes = await qdrantFetch(`/collections/${collectionName}`);
-    if (checkRes.ok) return true;
-    if (checkRes.status === 404) {
-      const createRes = await qdrantFetch(`/collections/${collectionName}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          vectors: {
-            size: VECTOR_SIZE,
-            distance: "Cosine",
-          },
-        }),
-      });
-      return createRes.ok;
-    }
-    return false;
-  } catch {
-    return false;
+function formatHits(hits: HitRecord[], mode?: string): string {
+  if (!hits || hits.length === 0) {
+    return "No matching records found in fleet memory.";
   }
+  const modeLabel = mode ? ` (${mode})` : "";
+  const formatted = hits.map((hit, idx) => {
+    const title = hit.title || hit.heading ? `### ${hit.title || hit.heading}\n` : "";
+    const tags = [hit.source, hit.app, hit.category, hit.seat ? `seat:${hit.seat}` : null].filter(Boolean).join(" · ");
+    const meta = tags ? `_${tags}_\n` : "";
+    const text = hit.text ? hit.text.trim() : "";
+    const score = hit.score !== undefined ? `\n_Score: ${(hit.score * 100).toFixed(1)}%_` : "";
+    const link = hit.url ? ` | [Link](${hit.url})` : "";
+    return `${idx + 1}. ${title}${meta}${text}${score}${link}`;
+  }).join("\n\n---\n\n");
+  return `Found ${hits.length} hit(s) in fleet memory [${DEFAULT_COLLECTION}]${modeLabel}:\n\n${formatted}`;
+}
+
+async function executeRecallCli(subcommand: string, args: string[]): Promise<string> {
+  const cli = findRecallCli();
+  if (!cli) throw new Error("recall CLI not found on host");
+
+  const fullArgs = [subcommand, ...args];
+  const { stdout, stderr } = await execFileAsync(cli, fullArgs, {
+    timeout: 30_000,
+    maxBuffer: 4 * 1024 * 1024,
+    env: {
+      ...process.env,
+      PATH: `${join(homedir(), ".local", "bin")}:${join(homedir(), "apps", "mac-collab")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
+    },
+  });
+
+  if (stderr && !stdout) {
+    throw new Error(stderr.trim());
+  }
+  return stdout.trim();
 }
 
 const TOOLS = [
   {
-    name: "qdrant_search",
+    name: "recall_search",
     description:
-      "Search the shared Qdrant vector database and fleet knowledge base for relevant documents, facts, code snippets, or memories using semantic vector search.",
+      "Search the fleet's shared knowledge corpus (lessons, owner preferences, infrastructure facts, decisions, runbooks, and notes) in the fleet-agents collection. Hybrid dense + keyword search with cross-encoder reranking.",
     inputSchema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "The natural language search query or keywords to look up" },
+        query: { type: "string", description: "Natural-language question, topic, or search keywords" },
         limit: { type: "number", description: "Maximum number of relevant results to return (default: 5, max: 20)" },
-        collection: { type: "string", description: "Target Qdrant collection (default: botfleet-agent-rag)" },
-        filter: { type: "object", description: "Optional metadata filters to narrow search results" },
+        category: {
+          type: "string",
+          enum: ["lesson", "preference", "infrastructure", "decision", "runbook", "note", "finding", "doc"],
+          description: "Restrict results to one category",
+        },
+        app: { type: "string", description: "Filter by lowercase app slug (e.g. fleet, botfleet, socratic-trade)" },
+        source: {
+          type: "string",
+          enum: ["board", "effort-log", "apple-note", "doc", "skill", "memory", "agent-contribution"],
+          description: "Filter by document source",
+        },
+        seat: { type: "string", description: "Filter by author seat tag (e.g. CLAUDE, GROK, AG)" },
+        since_days: { type: "number", description: "Only return content created in the last N days" },
+        per_doc: { type: "number", description: "Best N chunks to return per document (default: 1)" },
+      },
+      required: ["query"],
+    },
+  },
+  {
+    name: "recall_contribute",
+    description:
+      "Store a reusable piece of knowledge, lesson learned, owner preference, infrastructure fact, or runbook into the shared fleet-agents memory corpus so other bots and fleet seats can retrieve it.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "The content or lesson to contribute (40 to 4000 characters)" },
+        category: {
+          type: "string",
+          enum: ["lesson", "preference", "infrastructure", "decision", "runbook"],
+          description: "The knowledge category",
+        },
+        app: { type: "string", description: "Target app slug (default: botfleet)" },
+        seat: { type: "string", description: "Author seat or bot identifier (defaults to this bot's name)" },
+        title: { type: "string", description: "Optional title or concise summary" },
+        url: { type: "string", description: "Optional source link (PR, board item, commit, or doc URL)" },
+        force: { type: "boolean", description: "Store even if a near-duplicate contribution already exists" },
+      },
+      required: ["text", "category"],
+    },
+  },
+  {
+    name: "recall_stats",
+    description: "Check the health, status, and point counts of the shared fleet-agents memory corpus.",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  // Backward-compatible aliases for existing prompts and tests:
+  {
+    name: "qdrant_search",
+    description: "Search the shared vector database and fleet knowledge base for relevant documents or memories.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Natural language search query" },
+        limit: { type: "number", description: "Maximum results (default: 5)" },
+        collection: { type: "string", description: "Target collection (default: fleet-agents)" },
+        filter: { type: "object", description: "Optional metadata filters" },
       },
       required: ["query"],
     },
   },
   {
     name: "qdrant_store",
-    description:
-      "Store a new document, guideline, learning, decision, or note in the shared Qdrant vector database so other bots and future turns can retrieve it via semantic search.",
+    description: "Store a new document, note, or lesson in the shared fleet vector database.",
     inputSchema: {
       type: "object",
       properties: {
-        text: { type: "string", description: "The text content, note, or document to store in vector memory" },
-        title: { type: "string", description: "Optional title or concise summary of the document" },
-        metadata: { type: "object", description: "Optional metadata key-value pairs (e.g. { topic: 'deploy', tags: ['sentry', 'ci'] })" },
-        collection: { type: "string", description: "Target Qdrant collection (default: botfleet-agent-rag)" },
+        text: { type: "string", description: "Text content to store" },
+        title: { type: "string", description: "Optional title" },
+        metadata: { type: "object", description: "Optional metadata" },
+        collection: { type: "string", description: "Target collection (default: fleet-agents)" },
       },
       required: ["text"],
     },
   },
   {
     name: "qdrant_get_context",
-    description:
-      "Quickly retrieve synthesized context and prior fleet learnings on a specific topic from Qdrant vector memory.",
+    description: "Retrieve synthesized context and prior fleet learnings on a specific topic from fleet memory.",
     inputSchema: {
       type: "object",
       properties: {
-        topic: { type: "string", description: "The topic, library, or question to gather context about" },
-        limit: { type: "number", description: "Max number of relevant memories to include (default: 5)" },
+        topic: { type: "string", description: "The topic or question to gather context about" },
+        limit: { type: "number", description: "Max memories to include (default: 5)" },
       },
       required: ["topic"],
     },
   },
   {
     name: "qdrant_list_collections",
-    description: "List all existing collections and vector statuses available in the shared Qdrant server.",
+    description: "List the status of the shared fleet vector database and collections.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -140,163 +224,187 @@ const TOOLS = [
   },
 ];
 
-async function handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
-  switch (name) {
-    case "qdrant_search": {
-      const query = String(args.query || "").trim();
-      if (!query) return "Error: query parameter is required";
-      const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
-      const collection = String(args.collection || DEFAULT_COLLECTION).trim();
-      const vector = deterministicVector(query);
+async function recallSearch(args: Record<string, unknown>): Promise<string> {
+  const query = String(args.query || args.topic || "").trim();
+  if (!query) return "Error: query parameter is required";
 
-      try {
-        const searchBody: Record<string, unknown> = {
-          vector,
-          limit,
-          with_payload: true,
-        };
-        if (args.filter && typeof args.filter === "object") {
-          searchBody.filter = args.filter;
-        }
+  const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
+  const category = args.category ? String(args.category).trim() : undefined;
+  const app = args.app ? String(args.app).trim() : undefined;
+  const source = args.source ? String(args.source).trim() : undefined;
+  const seat = args.seat ? String(args.seat).trim() : undefined;
+  const sinceDays = args.since_days ? Number(args.since_days) : undefined;
+  const perDoc = args.per_doc ? Number(args.per_doc) : undefined;
 
-        const res = await qdrantFetch(`/collections/${collection}/points/search`, {
-          method: "POST",
-          body: JSON.stringify(searchBody),
-        });
+  // 1. Try local CLI first (handles near-duplicate, reciprocal rank fusion, cross-encoder rerank)
+  if (findRecallCli()) {
+    try {
+      const cliArgs = ["search", query, "--limit", String(limit), "--json"];
+      if (category) cliArgs.push("--category", category);
+      if (app) cliArgs.push("--app", app);
+      if (source) cliArgs.push("--source", source);
+      if (seat) cliArgs.push("--seat", seat);
+      if (sinceDays) cliArgs.push("--since-days", String(sinceDays));
+      if (perDoc) cliArgs.push("--per-doc", String(perDoc));
 
-        if (!res.ok) {
-          if (res.status === 404) {
-            return `Collection "${collection}" does not exist yet. Use qdrant_store to index the first document.`;
-          }
-          const errText = await res.text().catch(() => "");
-          return `Qdrant search error (${res.status}): ${errText || res.statusText}`;
-        }
+      const raw = await executeRecallCli("search", cliArgs.slice(1));
+      const data = JSON.parse(raw);
+      return formatHits(data.hits || [], data.mode);
+    } catch {
+      // Fall through to HTTP endpoint if CLI fails
+    }
+  }
 
-        const data = await res.json() as { result?: Array<{ id: string | number; score: number; payload?: Record<string, unknown> }> };
-        const results = data.result || [];
-        if (results.length === 0) {
-          return `No matching records found in collection "${collection}" for query: "${query}"`;
-        }
-
-        const formatted = results.map((item, idx) => {
-          const payload = item.payload || {};
-          const title = payload.title ? `### ${payload.title}\n` : "";
-          const text = payload.text || payload.content || JSON.stringify(payload);
-          const author = payload.author ? `Author: ${payload.author} | ` : "";
-          const date = payload.createdAt ? `Date: ${payload.createdAt} | ` : "";
-          const score = `Similarity: ${(item.score * 100).toFixed(1)}%`;
-          return `${idx + 1}. ${title}${text}\n_${author}${date}${score}_`;
-        }).join("\n\n---\n\n");
-
-        return `Found ${results.length} relevant record(s) in Qdrant [${collection}]:\n\n${formatted}`;
-      } catch (err) {
-        return `Failed to reach Qdrant server at ${QDRANT_URL}: ${err instanceof Error ? err.message : String(err)}`;
-      }
+  // 2. HTTP Fallback to recall-api (https://recall.jays.services)
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (RECALL_API_KEY) {
+      headers["Authorization"] = `Bearer ${RECALL_API_KEY}`;
     }
 
-    case "qdrant_store": {
-      const text = String(args.text || "").trim();
-      if (!text) return "Error: text parameter is required";
-      const title = args.title ? String(args.title).trim() : undefined;
-      const collection = String(args.collection || DEFAULT_COLLECTION).trim();
-      const metadata = (args.metadata && typeof args.metadata === "object") ? args.metadata as Record<string, unknown> : {};
+    const payload: Record<string, unknown> = { query, limit };
+    if (category) payload.category = category;
+    if (app) payload.app = app;
+    if (source) payload.source = source;
+    if (seat) payload.seat = seat;
+    if (sinceDays) payload.since_days = sinceDays;
 
-      try {
-        await ensureCollection(collection);
-        const vector = deterministicVector(text);
-        const pointId = randomUUID();
-        const payload = {
-          text,
-          title,
-          author: BOT_NAME,
-          botId: BOT_ID,
-          createdAt: new Date().toISOString(),
-          ...metadata,
-        };
+    const res = await fetch(`${RECALL_URL}/recall/search`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(15_000),
+    });
 
-        const res = await qdrantFetch(`/collections/${collection}/points?wait=true`, {
-          method: "PUT",
-          body: JSON.stringify({
-            points: [
-              {
-                id: pointId,
-                vector,
-                payload,
-              },
-            ],
-          }),
-        });
+    if (res.ok) {
+      const data = (await res.json()) as { hits?: HitRecord[]; mode?: string };
+      return formatHits(data.hits || [], data.mode);
+    }
+    const errText = await res.text().catch(() => "");
+    return `Fleet recall search error (${res.status}): ${errText || res.statusText}`;
+  } catch (err) {
+    return `Failed to query fleet recall at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
 
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          return `Failed to store point in Qdrant (${res.status}): ${errText || res.statusText}`;
-        }
+async function recallContribute(args: Record<string, unknown>): Promise<string> {
+  const text = String(args.text || "").trim();
+  if (!text) return "Error: text parameter is required";
 
-        return `Successfully stored document in Qdrant [collection: ${collection}, id: ${pointId}]${title ? `: "${title}"` : ""}`;
-      } catch (err) {
-        return `Failed to connect to Qdrant at ${QDRANT_URL}: ${err instanceof Error ? err.message : String(err)}`;
+  const category = String(args.category || "lesson").trim();
+  const app = String(args.app || "botfleet").trim();
+  const seat = String(args.seat || BOT_NAME || AGENT_SEAT).trim();
+  const title = args.title ? String(args.title).trim() : undefined;
+  const url = args.url ? String(args.url).trim() : undefined;
+  const force = Boolean(args.force);
+
+  // 1. Try local CLI first
+  if (findRecallCli()) {
+    try {
+      const cliArgs = [text, "--category", category, "--app", app, "--seat", seat, "--json"];
+      if (title) cliArgs.push("--title", title);
+      if (url) cliArgs.push("--url", url);
+      if (force) cliArgs.push("--force");
+
+      const raw = await executeRecallCli("contribute", cliArgs);
+      const data = JSON.parse(raw);
+      if (data.status === "duplicate") {
+        return `Contribution duplicate: ${data.message || "A similar lesson already exists"}`;
       }
+      return `Stored in fleet-agents [doc_id: ${data.doc_id || data.id}]: ${title ? `"${title}"` : text.slice(0, 80)}`;
+    } catch {
+      // Fall through to HTTP endpoint if CLI fails
+    }
+  }
+
+  // 2. HTTP Fallback to recall-api
+  try {
+    const headers: Record<string, string> = { "Content-Type": "application/json" };
+    if (RECALL_API_KEY) {
+      headers["Authorization"] = `Bearer ${RECALL_API_KEY}`;
+    }
+
+    const res = await fetch(`${RECALL_URL}/recall/contribute`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text, category, app, seat, title, url, force }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (res.ok) {
+      const data = (await res.json()) as { doc_id?: string; id?: string };
+      return `Successfully contributed to fleet-agents [id: ${data.doc_id || data.id}]`;
+    }
+    const errText = await res.text().catch(() => "");
+    return `Fleet recall contribute error (${res.status}): ${errText || res.statusText}`;
+  } catch (err) {
+    return `Failed to contribute to fleet recall at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function recallStats(): Promise<string> {
+  // 1. Try local CLI first
+  if (findRecallCli()) {
+    try {
+      const raw = await executeRecallCli("stats", ["--json"]);
+      const data = JSON.parse(raw);
+      const points = data.points ? Number(data.points).toLocaleString() : "unknown";
+      const status = data.status || "ready";
+      const embedder = data.embedder_healthy ? "healthy" : "unreachable";
+      return `Fleet Recall Status [${data.collection || DEFAULT_COLLECTION}]:\n- Status: ${status}\n- Points: ${points}\n- Embedder: ${embedder}`;
+    } catch {
+      // Fall through to HTTP
+    }
+  }
+
+  // 2. HTTP Fallback
+  try {
+    const healthRes = await fetch(`${RECALL_URL}/health`, { signal: AbortSignal.timeout(6_000) });
+    if (healthRes.ok) {
+      const data = (await healthRes.json()) as {
+        collection?: string;
+        points?: number;
+        backend_ok?: boolean;
+        version?: string;
+      };
+      const points = data.points ? data.points.toLocaleString() : "connected";
+      return `Fleet Recall Status [${data.collection || DEFAULT_COLLECTION}]:\n- Backend: ${data.backend_ok ? "healthy" : "unknown"}\n- Points: ${points}\n- Service Version: ${data.version || "1.0.0"}`;
+    }
+    return `Fleet recall endpoint returned HTTP ${healthRes.status}: ${healthRes.statusText}`;
+  } catch (err) {
+    return `Fleet recall unreachable at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
+  switch (name) {
+    case "recall_search":
+    case "qdrant_search":
+      return recallSearch(args);
+
+    case "recall_contribute":
+      return recallContribute(args);
+
+    case "qdrant_store": {
+      const metadata = args.metadata && typeof args.metadata === "object" ? (args.metadata as Record<string, unknown>) : {};
+      const category = (metadata.category as string) || "lesson";
+      const app = (metadata.app as string) || "fleet";
+      return recallContribute({
+        text: args.text,
+        title: args.title,
+        category,
+        app,
+      });
     }
 
     case "qdrant_get_context": {
       const topic = String(args.topic || "").trim();
-      if (!topic) return "Error: topic parameter is required";
-      const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 10);
-      const collection = DEFAULT_COLLECTION;
-
-      try {
-        const vector = deterministicVector(topic);
-        const res = await qdrantFetch(`/collections/${collection}/points/search`, {
-          method: "POST",
-          body: JSON.stringify({
-            vector,
-            limit,
-            with_payload: true,
-          }),
-        });
-
-        if (!res.ok) {
-          return `No prior context found for "${topic}" (collection ${collection} is empty or uninitialized).`;
-        }
-
-        const data = await res.json() as { result?: Array<{ score: number; payload?: Record<string, unknown> }> };
-        const results = (data.result || []).filter((r) => r.score > 0.1);
-        if (results.length === 0) {
-          return `No existing memories or documentation found for topic: "${topic}".`;
-        }
-
-        const contextBlocks = results.map((r) => {
-          const p = r.payload || {};
-          const header = p.title ? `[${p.title}] ` : "";
-          return `- ${header}${p.text || JSON.stringify(p)}`;
-        }).join("\n");
-
-        return `### Fleet Context on "${topic}":\n\n${contextBlocks}`;
-      } catch (err) {
-        return `Qdrant server unreachable at ${QDRANT_URL}: ${err instanceof Error ? err.message : String(err)}`;
-      }
+      return recallSearch({ query: topic, limit: args.limit || 5 });
     }
 
-    case "qdrant_list_collections": {
-      try {
-        const res = await qdrantFetch("/collections");
-        if (!res.ok) {
-          const errText = await res.text().catch(() => "");
-          return `Failed to list collections from Qdrant (${res.status}): ${errText || res.statusText}`;
-        }
-
-        const data = await res.json() as { result?: { collections?: Array<{ name: string }> } };
-        const collections = data.result?.collections || [];
-        if (collections.length === 0) {
-          return `Connected to Qdrant at ${QDRANT_URL}. No collections have been created yet. Default collection "${DEFAULT_COLLECTION}" will be created automatically on first store.`;
-        }
-
-        const names = collections.map((c) => `- \`${c.name}\``).join("\n");
-        return `Qdrant collections at ${QDRANT_URL}:\n\n${names}`;
-      } catch (err) {
-        return `Cannot connect to Qdrant server at ${QDRANT_URL}: ${err instanceof Error ? err.message : String(err)}`;
-      }
-    }
+    case "recall_stats":
+    case "qdrant_list_collections":
+      return recallStats();
 
     default:
       return `Unknown tool: ${name}`;

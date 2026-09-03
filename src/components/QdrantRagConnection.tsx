@@ -8,13 +8,14 @@ export function QdrantRagConnection() {
   const qdrant = state.config?.qdrant;
 
   const [enabled, setEnabled] = useState(qdrant?.enabled ?? true);
-  const [url, setUrl] = useState(qdrant?.url ?? "http://127.0.0.1:6333");
+  const [url, setUrl] = useState(qdrant?.url ?? "");
   const [apiKey, setApiKey] = useState("");
-  const [collection, setCollection] = useState(qdrant?.collection ?? "botfleet-agent-rag");
+  const [collection, setCollection] = useState(qdrant?.collection ?? "fleet-agents");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     ready: boolean;
     pointsCount?: number;
+    collection?: string;
     collections?: string[];
     error?: string;
   } | null>(null);
@@ -22,7 +23,7 @@ export function QdrantRagConnection() {
   useEffect(() => {
     if (qdrant) {
       setEnabled(qdrant.enabled);
-      if (qdrant.url) setUrl(qdrant.url);
+      if (qdrant.url !== undefined) setUrl(qdrant.url);
       if (qdrant.collection) setCollection(qdrant.collection);
     }
   }, [qdrant]);
@@ -65,6 +66,7 @@ export function QdrantRagConnection() {
       const data = await res.json() as {
         ready: boolean;
         pointsCount?: number;
+        collection?: string;
         collections?: string[];
         error?: string;
       };
@@ -85,9 +87,9 @@ export function QdrantRagConnection() {
         <div className="flex items-center gap-2.5">
           <Database size={17} className="text-accent" />
           <div>
-            <div className="text-[14.5px] font-medium text-ink">Agent RAG & Shared Qdrant</div>
+            <div className="text-[14.5px] font-medium text-ink">Fleet Recall & Shared Memory</div>
             <div className="text-[12.5px] text-ink-secondary">
-              Connect fleet agents to a shared Qdrant vector database for semantic memory retrieval and document search.
+              Connect fleet bots to the shared fleet-agents memory platform for semantic retrieval, runbooks, and lessons.
             </div>
           </div>
         </div>
@@ -116,26 +118,26 @@ export function QdrantRagConnection() {
       {enabled && (
         <div className="mt-4 flex flex-col gap-3 border-t border-hairline/30 pt-3">
           <div className="flex flex-col gap-1">
-            <label className="text-[12px] font-medium text-ink-secondary">Server URL</label>
+            <label className="text-[12px] font-medium text-ink-secondary">Service URL (Optional)</label>
             <input
               type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onBlur={() => void save({ url })}
-              placeholder="http://127.0.0.1:6333"
+              placeholder="https://recall.jays.services (default)"
               className={inputClass}
             />
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
-              <label className="text-[12px] font-medium text-ink-secondary">API Key (Optional)</label>
+              <label className="text-[12px] font-medium text-ink-secondary">API Key / Bearer Token (Optional)</label>
               <input
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 onBlur={() => void save({ apiKey })}
-                placeholder={qdrant?.hasApiKey ? "••••••••" : "Leave blank if no auth"}
+                placeholder={qdrant?.hasApiKey ? "••••••••" : "Leave blank for mesh / local auth"}
                 className={inputClass}
               />
             </div>
@@ -147,7 +149,7 @@ export function QdrantRagConnection() {
                 value={collection}
                 onChange={(e) => setCollection(e.target.value)}
                 onBlur={() => void save({ collection })}
-                placeholder="botfleet-agent-rag"
+                placeholder="fleet-agents"
                 className={inputClass}
               />
             </div>
@@ -174,7 +176,7 @@ export function QdrantRagConnection() {
                   <>
                     <CheckCircle size={14} />
                     <span>
-                      Connected · {testResult.pointsCount ?? 0} points in collection
+                      Connected · {(testResult.pointsCount ?? 0).toLocaleString()} points in {testResult.collection || collection}
                     </span>
                   </>
                 ) : (
