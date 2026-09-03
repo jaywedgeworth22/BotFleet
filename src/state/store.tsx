@@ -347,6 +347,7 @@ export interface InstanceInfo {
   instanceId: string;
   driverKind: string;
   displayName: string;
+  enabled?: boolean;
   snapshot: {
     state: "available" | "unavailable";
     reason?: string;

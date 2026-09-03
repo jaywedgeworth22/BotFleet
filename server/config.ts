@@ -466,13 +466,11 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   const DEFAULT_FLEET: InstanceConfigMap = {
     grok: { driver: "grokAgent" },
     dsh: { driver: "dshAgent" },
-    kimi: { driver: "kimiAgent" },
     droid: { driver: "droidAgent" },
     cursor: { driver: "cursorAgent" },
     claude: { driver: "claudeAgent" },
     codex: { driver: "codex" },
     antigravity: { driver: "antigravityAgent" },
-    gemini: { driver: "geminiAgent" },
     opencodeGo: { driver: "opencodeGo" },
     computer: { driver: "boxAgent" },
     openaiCompat: { driver: "openai-compat" },
@@ -481,6 +479,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     pi: { driver: "piAgent" },
   };
   const CUSTOM_ONLY = {
+    kimi: { driver: "kimiAgent" },
     qwen: { driver: "qwenAgent" },
     hermes: { driver: "hermesAgent" },
     pi: { driver: "piAgent" },
@@ -492,7 +491,6 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     cursor: { driver: "cursorAgent" },
     openaiCompat: { driver: "openai-compat" },
     dsh: { driver: "dshAgent" },
-    gemini: { driver: "geminiAgent" },
     ...CUSTOM_ONLY,
   } as const;
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;

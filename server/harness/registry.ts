@@ -56,6 +56,7 @@ export class ProviderRegistry {
    * from their own config; this map only reports what was configured */
   private cliByInstance = new Map<InstanceId, string>();
   private fullAutoByInstance = new Map<InstanceId, boolean>();
+  private enabledByInstance = new Map<InstanceId, boolean>();
   private driversByKind: Map<string, AnyProviderDriver>;
 
   constructor(drivers: readonly AnyProviderDriver[]) {
@@ -90,11 +91,13 @@ export class ProviderRegistry {
         // so reading `cli` there would flag every instance as overridden.
         const rawCli = cliOfRaw(entry.config);
         if (rawCli) this.cliByInstance.set(instanceId, rawCli);
+        const enabled = entry.enabled !== false;
+        this.enabledByInstance.set(instanceId, enabled);
         const live = await driver.create({
           instanceId,
           displayName: entry.displayName ?? driver.metadata.displayName,
           environment: entry.environment ?? {},
-          enabled: entry.enabled ?? true,
+          enabled,
           config,
         });
         this.byId.set(instanceId, { instanceId, live });
@@ -184,17 +187,23 @@ export class ProviderRegistry {
           };
         }
         const inst = entry.live;
+        const enabled = this.enabledByInstance.get(entry.instanceId) ?? true;
         let snapshot: ProviderSnapshot;
-        try {
-          await inst.refreshModels?.();
-          snapshot = await inst.snapshot();
-        } catch (e) {
-          snapshot = { state: "unavailable", reason: e instanceof Error ? e.message : String(e) };
+        if (!enabled || inst.enabled === false) {
+          snapshot = { state: "unavailable", reason: "Disabled in settings" };
+        } else {
+          try {
+            await inst.refreshModels?.();
+            snapshot = await inst.snapshot();
+          } catch (e) {
+            snapshot = { state: "unavailable", reason: e instanceof Error ? e.message : String(e) };
+          }
         }
         return {
           instanceId: inst.instanceId,
           driverKind: inst.driverKind,
           displayName: inst.displayName ?? inst.driverKind,
+          enabled,
           snapshot,
           models: inst.models,
           capabilities: {
@@ -227,5 +236,6 @@ export class ProviderRegistry {
     this.byId.clear();
     this.cliByInstance.clear();
     this.fullAutoByInstance.clear();
+    this.enabledByInstance.clear();
   }
 }

@@ -7,7 +7,6 @@ import { ClaudeDriver } from "./claude.ts";
 import { CodexDriver } from "./codex.ts";
 import { GrokDriver } from "./grok.ts";
 import { GrokAgentDriver } from "./acp/grok.ts";
-import { GeminiAgentDriver } from "./acp/gemini.ts";
 import { KimiAgentDriver } from "./acp/kimi.ts";
 import { DroidAgentDriver } from "./acp/droid.ts";
 import { CursorAgentDriver } from "./acp/cursor.ts";
@@ -18,15 +17,12 @@ import { OpenAICompatDriver } from "./openai-compat.ts";
 import { PiDriver } from "./pi.ts";
 import { MinimaxDriver } from "./minimax.ts";
 
-import { DeepSeekDriver } from "./deepseek.ts";
 import { DeepSeekAgentDriver } from "./acp/deepseek.ts";
 import { DshAgentDriver } from "./acp/dsh.ts";
 
 export const BUILT_IN_DRIVERS: readonly AnyProviderDriver[] = [
   GrokDriver,
   GrokAgentDriver,
-  GeminiAgentDriver,
-  DeepSeekDriver,
   DeepSeekAgentDriver,
   DshAgentDriver,
   KimiAgentDriver,

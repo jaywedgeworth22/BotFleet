@@ -122,7 +122,7 @@ struct AgentProfileView: View {
                             .foregroundStyle(.secondary)
                     } else {
                         Picker("Provider", selection: $instanceId) {
-                            ForEach(instances) { instance in
+                            ForEach(availableInstances) { instance in
                                 Text(instance.displayName ?? instance.instanceId).tag(instance.id)
                             }
                         }
@@ -171,7 +171,7 @@ struct AgentProfileView: View {
                                         }
                                     }
                                 )) {
-                                    ForEach(instances) { instance in
+                                    ForEach(fallbackAvailableInstances(for: fallbacks[index].instanceId)) { instance in
                                         Text(instance.displayName ?? instance.instanceId).tag(instance.id)
                                     }
                                 }
@@ -465,6 +465,22 @@ struct AgentProfileView: View {
            String(bytes: bytes[0..<4], encoding: .ascii) == "RIFF",
            String(bytes: bytes[8..<12], encoding: .ascii) == "WEBP" { return "image/webp" }
         return nil
+    }
+
+    private var availableInstances: [Instance] {
+        instances.filter { inst in
+            (inst.snapshot.state == "available" || inst.id == instanceId) &&
+            inst.snapshot.reason != "Disabled in settings" &&
+            (inst.id != "kimi" || (inst.snapshot.state == "available" && inst.snapshot.authenticated != false))
+        }
+    }
+
+    private func fallbackAvailableInstances(for currentFallbackInstanceId: String) -> [Instance] {
+        instances.filter { inst in
+            (inst.snapshot.state == "available" || inst.id == currentFallbackInstanceId) &&
+            inst.snapshot.reason != "Disabled in settings" &&
+            (inst.id != "kimi" || (inst.snapshot.state == "available" && inst.snapshot.authenticated != false))
+        }
     }
 
     private func synchronizeForm(with bot: Bot) {
