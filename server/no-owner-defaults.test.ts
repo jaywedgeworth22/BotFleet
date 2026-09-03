@@ -22,6 +22,7 @@ const SCANNED_EXTENSIONS = new Set([
   ".ts", ".tsx", ".mts", ".mjs", ".js", ".jsx",
   ".swift",
   ".html", ".json", ".yml", ".yaml",
+  ".md",   // prose ships too: a maintainer path in a public README is still a leak
   ".plist", ".entitlements",
   ".sh",
 ]);

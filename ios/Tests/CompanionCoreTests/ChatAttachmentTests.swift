@@ -9,13 +9,13 @@ final class ChatAttachmentTests: XCTestCase {
             attachments: [
                 ChatPromptAttachment(
                     kind: .image,
-                    path: "/Users/jay/.botfleet/attachments/abc.png"
+                    path: "/Users/example/.botfleet/attachments/abc.png"
                 ),
             ]
         )
         XCTAssertEqual(
             prompt,
-            "what is this?\n\n<attached-image path=\"/Users/jay/.botfleet/attachments/abc.png\" />"
+            "what is this?\n\n<attached-image path=\"/Users/example/.botfleet/attachments/abc.png\" />"
         )
     }
 
@@ -79,7 +79,7 @@ final class ChatAttachmentTests: XCTestCase {
 
     func testFetchPathOnlyAllowsSidecarImageNames() {
         XCTAssertEqual(
-            ChatAttachments.fetchPath(forDiskPath: "/Users/jay/.botfleet/attachments/abc-123.png"),
+            ChatAttachments.fetchPath(forDiskPath: "/Users/example/.botfleet/attachments/abc-123.png"),
             "/api/attachments/abc-123.png"
         )
         XCTAssertNil(ChatAttachments.fetchPath(forDiskPath: "/tmp/notes.txt"))
@@ -97,9 +97,9 @@ final class ChatAttachmentTests: XCTestCase {
     }
 
     func testAttachmentResponseDecoding() throws {
-        let data = Data(#"{"path":"/Users/jay/.botfleet/attachments/abc.png","mime":"image/png","bytes":12}"#.utf8)
+        let data = Data(#"{"path":"/Users/example/.botfleet/attachments/abc.png","mime":"image/png","bytes":12}"#.utf8)
         let saved = try JSONDecoder().decode(AttachmentResponse.self, from: data)
-        XCTAssertEqual(saved.path, "/Users/jay/.botfleet/attachments/abc.png")
+        XCTAssertEqual(saved.path, "/Users/example/.botfleet/attachments/abc.png")
         XCTAssertEqual(saved.mime, "image/png")
         XCTAssertEqual(saved.bytes, 12)
     }
@@ -156,7 +156,7 @@ final class ChatAttachmentClientTests: XCTestCase {
         AttachmentRequestStub.capturedRequest = nil
         AttachmentRequestStub.capturedBody = nil
         AttachmentRequestStub.responseBody = Data(
-            #"{"path":"/Users/jay/.botfleet/attachments/abc.png","mime":"image/png","bytes":4}"#.utf8
+            #"{"path":"/Users/example/.botfleet/attachments/abc.png","mime":"image/png","bytes":4}"#.utf8
         )
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [AttachmentRequestStub.self]
@@ -188,7 +188,7 @@ final class ChatAttachmentClientTests: XCTestCase {
         XCTAssertEqual(request.httpMethod, "POST")
         XCTAssertEqual(request.value(forHTTPHeaderField: "Content-Type"), "image/png")
         XCTAssertEqual(AttachmentRequestStub.capturedBody, bytes)
-        XCTAssertEqual(saved.path, "/Users/jay/.botfleet/attachments/abc.png")
+        XCTAssertEqual(saved.path, "/Users/example/.botfleet/attachments/abc.png")
         XCTAssertEqual(saved.mime, "image/png")
         XCTAssertEqual(saved.bytes, 4)
     }

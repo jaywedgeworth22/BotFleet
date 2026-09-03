@@ -1,6 +1,6 @@
 # Effort Log — botfleet-site
 
-Repo mirror of the live fleet effort board (`/Users/jay/apps/EFFORT-LOG-PROTOCOL.md`).  Newest first.  Never delete another agent's row.
+Repo mirror of the live fleet effort board (see `EFFORT-LOG-PROTOCOL.md` in the maintainer's fleet checkout).  Newest first.  Never delete another agent's row.
 
 | Date | Agent | Env | Where | Status | Work |
 |------|-------|-----|-------|--------|------|
