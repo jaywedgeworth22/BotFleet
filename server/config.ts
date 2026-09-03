@@ -9,6 +9,11 @@ import { z } from "zod";
 import { writeFileAtomic } from "./atomic.ts";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
+import {
+  ROOM_LABEL_MAX_LENGTH,
+  type CustomRoomLabels,
+  type RoomTerminology,
+} from "../shared/terminology.ts";
 
 const optionalText = z.string().optional();
 const SSH_ALIAS = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
@@ -135,7 +140,17 @@ const appConfigSchema = z.object({
       .optional(),
   }).optional(),
   features: featureConfigSchema.optional(),
-  terminology: z.enum(["channels", "groups", "projects"]).optional(),
+  terminology: z
+    .enum(["channels", "groups", "projects", "apps", "topics", "repos", "custom"])
+    .optional(),
+  // Only read when terminology is "custom".  Both forms are stored because
+  // English plurals are not reliably "add an s" — Category/Categories.
+  terminologyCustom: z
+    .object({
+      singular: z.string().max(ROOM_LABEL_MAX_LENGTH).optional(),
+      plural: z.string().max(ROOM_LABEL_MAX_LENGTH).optional(),
+    })
+    .optional(),
   instances: instanceConfigMapSchema.optional(),
 });
 const appConfigPatchSchema = appConfigSchema.omit({ instances: true });
@@ -170,8 +185,12 @@ export interface AppConfig {
   };
   /** Opt-in product experiments. Every flag defaults to disabled. */
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
-  /** Preferred UI naming for rooms: channels (default), groups, or projects. */
-  terminology?: "channels" | "groups" | "projects";
+  /** What this person calls a room: one of the presets, or "custom" with a
+   * word of their own in `terminologyCustom`.  Absent means channels. */
+  terminology?: RoomTerminology;
+  /** The custom room word, singular and plural.  Read only when
+   * `terminology` is "custom"; resolved for clients by `resolveRoomLabels`. */
+  terminologyCustom?: CustomRoomLabels;
   instances?: InstanceConfigMap;
 }
 export type ConfigPatch = z.output<typeof appConfigPatchSchema>;

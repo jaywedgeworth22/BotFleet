@@ -54,6 +54,10 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // configured-or-not booleans. The write side is refused below: reading
   // which providers are set up is not reading their keys.
   { method: "GET", path: /^\/api\/config$/ },
+  // What rooms are called is a display word, not a credential. It has its own
+  // narrow route so the phone can change it without /api/config — which
+  // carries API keys — ever accepting a write from a device.
+  { method: "PATCH", path: /^\/api\/terminology$/ },
   { method: "GET", path: /^\/api\/events$/ },
   { method: "GET", path: /^\/api\/instances$/ },
   // Sidecar-owned, authenticated endpoint metadata. The proxy terminates it

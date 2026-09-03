@@ -222,3 +222,21 @@ describe("what it may not", () => {
     }
   });
 });
+
+describe("room terminology", () => {
+  it("lets the phone rename rooms without opening the config route", () => {
+    // A display word is not a credential, so it gets its own narrow route.
+    expect(allowed("PATCH", "/api/terminology")).toBe(true);
+    // The route that carries API keys stays shut in both write methods.
+    expect(allowed("PATCH", "/api/config")).toBe(false);
+    expect(allowed("PUT", "/api/config")).toBe(false);
+    // And the narrow route is one method on one exact path, not a family.
+    expect(allowed("POST", "/api/terminology")).toBe(false);
+    expect(allowed("GET", "/api/terminology")).toBe(false);
+    expect(allowed("PATCH", "/api/terminology/custom")).toBe(false);
+  });
+
+  it("still refuses an unpaired device", () => {
+    expect(ask("PATCH", "/api/terminology", false)?.status).toBe(401);
+  });
+});

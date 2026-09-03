@@ -3312,6 +3312,48 @@ describe("GET /api/quotas", () => {
   });
 });
 
+describe("PATCH /api/terminology", () => {
+  it("stores a preset and hands clients the resolved words", async () => {
+    const res = await api("PATCH", "/api/terminology", { terminology: "repos" });
+    expect(res.status).toBe(200);
+    expect(res.body.terminology).toBe("repos");
+    expect(res.body.roomLabels).toEqual({ singular: "Repo", plural: "Repos" });
+    // The resolved pair is on GET too, so a client that reconnects agrees.
+    const status = await api("GET", "/api/config");
+    expect(status.body.roomLabels).toEqual({ singular: "Repo", plural: "Repos" });
+  });
+
+  it("keeps both forms of a custom word, including an irregular plural", async () => {
+    const res = await api("PATCH", "/api/terminology", {
+      terminology: "custom",
+      terminologyCustom: { singular: "Person", plural: "People" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.roomLabels).toEqual({ singular: "Person", plural: "People" });
+  });
+
+  it("refuses a word that is not one of the presets", async () => {
+    const res = await api("PATCH", "/api/terminology", { terminology: "wormholes" });
+    expect(res.status).toBe(400);
+  });
+
+  it("refuses an empty patch", async () => {
+    expect((await api("PATCH", "/api/terminology", {})).status).toBe(400);
+  });
+
+  it("does not accept anything else that lives in the config file", async () => {
+    // The route exists so the phone never needs write access to /api/config;
+    // it must not become a side door into the rest of it.
+    const res = await api("PATCH", "/api/terminology", {
+      terminology: "channels",
+      profile: { name: "Someone Else" },
+    });
+    expect(res.status).toBe(200);
+    const status = await api("GET", "/api/config");
+    expect(status.body.profile?.name).not.toBe("Someone Else");
+  });
+});
+
 describe("trust boundaries: phone-originated room folders, coarse always-allow, and the packaged UI folder", () => {
   const phone = { "x-botfleet-companion": "1" };
   const apiAs = async (

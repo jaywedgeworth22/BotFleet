@@ -10,6 +10,7 @@ import { extname, join } from "node:path";
 
 import { z } from "zod";
 import { BOT_AVATAR_CROPS, botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
+import { DEFAULT_ROOM_TERMINOLOGY, resolveRoomLabels } from "../shared/terminology.ts";
 import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
@@ -3460,7 +3461,10 @@ function configStatus() {
       projects: usageProjectRules(cfg),
     },
     autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
-    terminology: cfg.terminology ?? "channels",
+    terminology: cfg.terminology ?? DEFAULT_ROOM_TERMINOLOGY,
+    // Resolved here so the Mac app and the phone render the same words
+    // without each re-deriving them from the key and drifting apart.
+    roomLabels: resolveRoomLabels(cfg.terminology, cfg.terminologyCustom),
     features: {
       skillRecorder: skillRecorderEnabled(cfg),
       showToolCalls: showToolCallsEnabled(cfg),
@@ -6387,6 +6391,27 @@ const server = createServer(async (req, res) => {
     if (method === "GET" && path === "/api/config") {
       return json(res, 200, configStatus());
     }
+    // What rooms are called is a display word, not a credential, so it gets
+    // its own route the phone is allowed through.  /api/config stays closed
+    // to writes from a device that lives in a pocket.
+    if (method === "PATCH" && path === "/api/terminology") {
+      const body = await readBody(req);
+      const patch = parseConfigPatch({
+        terminology: body.terminology,
+        ...(body.terminologyCustom === undefined
+          ? {}
+          : { terminologyCustom: body.terminologyCustom }),
+      });
+      if (patch.terminology === undefined && patch.terminologyCustom === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      if (patch.terminology !== undefined) cfg.terminology = patch.terminology;
+      if (patch.terminologyCustom !== undefined) cfg.terminologyCustom = patch.terminologyCustom;
+      saveConfig(cfg);
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch = parseConfigPatch(body);
@@ -6459,7 +6484,8 @@ const server = createServer(async (req, res) => {
       }
       // Provider keys change the fleet. Profile, voice, VPS, and room timeout
       // changes do not rebuild it: no driver reads them, and they should not
-      // interrupt in-flight turns.
+      // interrupt in-flight turns.  Terminology is only a display word, so
+      // renaming rooms must never kill a turn that is running.
       const reloadKeys = Object.keys(patch).filter(
         (key) =>
           key !== "profile" &&
@@ -6471,7 +6497,9 @@ const server = createServer(async (req, res) => {
           key !== "autoUpdate" &&
           key !== "ingress" &&
           key !== "usage" &&
-          key !== "features",
+          key !== "features" &&
+          key !== "terminology" &&
+          key !== "terminologyCustom",
       );
       if (reloadKeys.length > 0) await reloadProviders();
       const status = configStatus();
