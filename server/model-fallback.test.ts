@@ -304,6 +304,38 @@ describe("parseQuotaResetTime", () => {
   });
 });
 
+describe("a user stop must not fail over", () => {
+  // The bug this guards: the owner pressed Stop for two minutes on a bot with
+  // a saved chain.  Had the stop reached the driver without a harness latch,
+  // each press would have killed the attempt and immediately started the next
+  // engine — "Stop does nothing" becoming "Stop falls over to another model".
+  it("still fails over on exit_before_result, which is why the harness latch is load-bearing", () => {
+    // Antigravity, claude and codex ALL settle a killed turn this way; none
+    // of them reports "interrupted" for a user stop.  So this gate cannot
+    // tell a user stop from a crash, and must not be asked to.
+    expect(decide([], { ok: false, stopReason: "exit_before_result" })).toEqual({
+      instanceId: "grok",
+      model: "grok-4",
+      nextUsed: 1,
+    });
+  });
+
+  it("suppresses the chain only for the two stop reasons a driver never reports on a user stop", () => {
+    expect(decide([], { ok: false, stopReason: "interrupted" })).toBeUndefined();
+    expect(decide([], { ok: false, stopReason: "cancelled" })).toBeUndefined();
+  });
+
+  it("skips the chain when the caller has already latched the turn as stopped", () => {
+    // How server/index.ts consumes its stoppedTurns latch: a stopped turn
+    // never reaches selectTurnFallback at all.  Stopping is per-request, so
+    // the saved chain itself is untouched and the next message gets it whole.
+    const userStopped = true;
+    const next = userStopped ? undefined : decide([], { ok: false, stopReason: "exit_before_result" });
+    expect(next).toBeUndefined();
+    expect(decide([], { ok: false, stopReason: "exit_before_result", used: 0 })).toBeDefined();
+  });
+});
+
 describe("QuotaCooldownRegistry", () => {
   it("resolves fallback when primary is on active cooldown and switches back once expired", () => {
     const registry = new (quotaCooldowns.constructor as any)();

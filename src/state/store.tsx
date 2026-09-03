@@ -1828,7 +1828,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }
           break;
         case "interrupt":
-          api(`/api/bots/${action.botId}/interrupt`, { method: "POST" }).catch(showError);
+          // The server answers `stopped` — whether a live turn was actually
+          // reached.  A Stop that silently matched nothing used to look
+          // identical to one that worked, which is how a wedged turn could
+          // swallow two minutes of presses without a word.
+          api(`/api/bots/${action.botId}/interrupt`, { method: "POST" })
+            .then((reply: any) => {
+              if (reply && reply.stopped === false) {
+                // Two opposite problems, so they must not share a message: a refusal
+                // means the engine was asked and would not stop, which is the case
+                // this endpoint exists to make visible.
+                rawDispatch({
+                  type: "error",
+                  message: reply.refused
+                    ? "The engine refused to stop that turn."
+                    : "Nothing was running to stop.",
+                });
+              }
+            })
+            .catch(showError);
           break;
         // tasks: the server answers with the bot AND the live transcript,
         // because switching changes which conversation is on screen
