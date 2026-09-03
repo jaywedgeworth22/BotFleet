@@ -25,7 +25,7 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { Composer } from "./Composer";
 import { ErrorRow } from "./ErrorRow";
 import { ChatFindBar } from "./ChatFindBar";
-import { GroupTaskPicker } from "./TaskPicker";
+import { GroupThreadTabs } from "./ThreadTabs";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
@@ -47,10 +47,11 @@ import { liveActivityLabel } from "@/lib/live-activity";
 import { splitAttachedImages } from "@/lib/composer-attachments";
 import {
   TRANSCRIPT_WINDOW_SIZE,
-  expandWindowStart,
+  expandDisplayWindowStart,
   focusWindowRange,
+  hiddenDisplayCount,
   resolveTranscriptWindow,
-  tailWindowStart,
+  tailDisplayWindowStart,
 } from "@/lib/transcript-window";
 
 function dayLabel(at: number): string {
@@ -1043,24 +1044,31 @@ export function GroupView({ group }: { group: Group }) {
   const presenceSpeaker = speaker ?? members.find((member) => member.id === popping?.botId) ?? members[0];
 
   // Windowed transcript, mirroring ChatView: only a tail of the room mounts;
-  // the anchored boundary re-tails on a render-phase reset when the room (or
+  // count on-screen items so hidden tool chips cannot bury the prompt.
+  // The anchored boundary re-tails on a render-phase reset when the room (or
   // its thread) changes. Working dots below stay on the FULL list's tail.
-  const transcriptKey = `${group.id}:${group.threadId}`;
+  const includeToolCalls = showToolCallsEnabled(state.config);
+  const summarizeToolCalls = summarizeToolCallsEnabled(state.config);
+  const displayWindow = { includeToolCalls, summarizeToolCalls };
+  const transcriptKey = `${group.id}:${group.threadId}:${includeToolCalls ? "tools" : "chat"}:${summarizeToolCalls ? "sum" : "all"}`;
   const [transcriptWindow, setTranscriptWindow] = useState<{
     key: string;
     start: number;
     end: number | null;
   }>(() => ({
     key: transcriptKey,
-    start: tailWindowStart(group.messages.length),
+    start: tailDisplayWindowStart(group.messages, displayWindow),
     end: null,
   }));
   if (transcriptWindow.key !== transcriptKey) {
-    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(group.messages.length), end: null });
+    setTranscriptWindow({
+      key: transcriptKey,
+      start: tailDisplayWindowStart(group.messages, displayWindow),
+      end: null,
+    });
   }
   const {
     visible: windowedMessages,
-    hiddenCount,
     laterCount,
     startIndex,
     endIndex,
@@ -1068,6 +1076,7 @@ export function GroupView({ group }: { group: Group }) {
     () => resolveTranscriptWindow(group.messages, transcriptWindow.start, TRANSCRIPT_WINDOW_SIZE, transcriptWindow.end),
     [group.messages, transcriptWindow.start, transcriptWindow.end],
   );
+  const hiddenCount = hiddenDisplayCount(group.messages, startIndex, displayWindow);
 
   const setBottomFollow = useCallback((next: boolean) => {
     followRef.current = next;
@@ -1111,7 +1120,7 @@ export function GroupView({ group }: { group: Group }) {
     // expanding means reading scrollback — never let a mid-expand stream
     // event pin the viewport back to the bottom
     setBottomFollow(false);
-    const start = expandWindowStart(startIndex);
+    const start = expandDisplayWindowStart(group.messages, startIndex, displayWindow);
     setTranscriptWindow((w) => ({ ...w, start }));
   };
   useLayoutEffect(() => {
@@ -1229,7 +1238,6 @@ export function GroupView({ group }: { group: Group }) {
           >
             <Search size={18} />
           </button>
-          {!setupPending && !group.dm && <GroupTaskPicker group={group} />}
           <GroupCallButton group={group} members={members} />
           {!setupPending && !group.dm && <RoomWorkingFolderChip group={group} onToggle={() => setFolderOpen((open) => !open)} />}
           {!setupPending && !group.dm && <DefaultResponderSelect group={group} members={members} />}
@@ -1266,6 +1274,8 @@ export function GroupView({ group }: { group: Group }) {
           </button>
         </div>
       </div>
+
+      {!setupPending && <GroupThreadTabs group={group} />}
 
       {findOpen && <ChatFindBar threadId={group.threadId} onClose={() => setFindOpen(false)} />}
 
@@ -1463,7 +1473,11 @@ export function GroupView({ group }: { group: Group }) {
         <button
           onClick={() => {
             setBottomFollow(true);
-            setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(group.messages.length), end: null });
+            setTranscriptWindow({
+              key: transcriptKey,
+              start: tailDisplayWindowStart(group.messages, displayWindow),
+              end: null,
+            });
             requestAnimationFrame(() => {
               scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
             });

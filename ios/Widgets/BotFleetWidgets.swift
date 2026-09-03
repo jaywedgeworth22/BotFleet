@@ -19,6 +19,7 @@ struct BotActivityWidget: Widget {
             LockScreenView(context: context)
                 .activityBackgroundTint(.black)
                 .activitySystemActionForegroundColor(.white)
+                .widgetURL(chatURL(context))
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
@@ -55,7 +56,19 @@ struct BotActivityWidget: Widget {
                 OrbitingFace(context: context, size: 20)
             }
             .keylineTint(MausPalette.color(context.attributes.color))
+            .widgetURL(chatURL(context))
         }
+    }
+
+    private func chatURL(_ context: ActivityViewContext<BotActivityAttributes>) -> URL? {
+        var components = URLComponents()
+        components.scheme = "botfleet"
+        components.host = "chat"
+        components.queryItems = [
+            URLQueryItem(name: "bot", value: context.attributes.botId),
+            URLQueryItem(name: "thread", value: context.attributes.threadId),
+        ]
+        return components.url
     }
 
     @ViewBuilder
@@ -69,6 +82,10 @@ struct BotActivityWidget: Widget {
             Image(systemName: "circle.dotted")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.white.opacity(0.8))
+        case "toReview":
+            Circle()
+                .fill(MausPalette.color(context.attributes.color))
+                .frame(width: 8, height: 8)
         default:
             Circle().fill(MausPalette.color(context.attributes.color)).frame(width: 8, height: 8)
         }

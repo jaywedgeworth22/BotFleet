@@ -170,8 +170,9 @@ struct ChatView: View {
                     // A thread holds 50 messages until you ask for more, so
                     // there is nothing here worth being lazy about.
                     VStack(alignment: .leading, spacing: 6) {
-                        // room for the floating face when scrolled to the top
-                        Color.clear.frame(height: 72)
+                        // room for the floating face and thread tabs when
+                        // scrolled to the top
+                        Color.clear.frame(height: 108)
 
                         if session.state.hasMore[threadId] == true {
                             Button("Load earlier messages") {
@@ -394,6 +395,11 @@ struct ChatView: View {
             .buttonStyle(.plain)
             .glassCapsule()
             .accessibilityLabel("Open \(current.name) settings")
+
+            if case let .bot(bot) = current {
+                ThreadTabBar(bot: bot)
+                    .padding(.top, 4)
+            }
         }
         .padding(.top, -4)
     }

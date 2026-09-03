@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   configStatusFromFrame,
   initialState,
+  latestChatActivity,
   mergeHydrateBots,
   mergeHydrateGroups,
   openNotificationTarget,
@@ -11,6 +12,25 @@ import {
   type Group,
   type Message,
 } from "./store";
+
+describe("latestChatActivity", () => {
+  it("prefers a background task's lastActivity over the open thread's last message", () => {
+    expect(
+      latestChatActivity(
+        [
+          { createdAt: 10, lastActivity: 10 },
+          { createdAt: 20, lastActivity: 90 },
+        ],
+        15,
+        1,
+      ),
+    ).toBe(90);
+  });
+
+  it("falls back to createdAt when no messages have landed", () => {
+    expect(latestChatActivity(undefined, undefined, 42)).toBe(42);
+  });
+});
 
 describe("notification routing", () => {
   const bots = [{ id: "bot-1", threadId: "main-thread", tasks: [{ threadId: "detached-thread" }] }] as never;

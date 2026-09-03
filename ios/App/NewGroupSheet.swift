@@ -14,12 +14,13 @@ struct NewGroupSheet: View {
     @State private var creating = false
 
     private var bots: [Bot] { session.state.bots.filter { $0.hidden != true } }
+    private var roomTerm: String { session.config?.roomTerminologyLabel ?? "Channel" }
 
     var body: some View {
         NavigationStack {
             List {
                 Section {
-                    TextField("Group name (optional)", text: $name)
+                    TextField("\(roomTerm) name (optional)", text: $name)
                         .autocorrectionDisabled()
                 }
                 Section("Bots") {
@@ -45,7 +46,7 @@ struct NewGroupSheet: View {
                     }
                 }
             }
-            .navigationTitle("New group")
+            .navigationTitle("New \(roomTerm.lowercased())")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {

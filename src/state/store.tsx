@@ -156,6 +156,8 @@ export interface GroupTask {
   threadId: string;
   title: string;
   createdAt: number;
+  /** Last message in this task's thread; falls back to createdAt. */
+  lastActivity?: number;
   pinnedCwd?: string | null;
   pinnedMessageId?: string;
 }
@@ -173,6 +175,8 @@ export interface Task {
   threadId: string;
   title: string;
   createdAt: number;
+  /** Last message in this task's thread; falls back to createdAt. */
+  lastActivity?: number;
   /** what this task has spent, banked once per settled turn */
   usage?: TaskUsage;
   /** folder this task's turns run in, pinned on its first turn; null =
@@ -263,6 +267,18 @@ export function visibleMessages(bot: Bot): Message[] {
     cur = cur.parentId ? byId.get(cur.parentId) : undefined;
   }
   return path.reverse();
+}
+
+/** Roster timestamp across every task, not just the currently selected
+ * thread. An unread update on a background task must not keep showing
+ * yesterday from the open conversation. */
+export function latestChatActivity(
+  tasks: Array<{ lastActivity?: number; createdAt: number }> | undefined,
+  loadedLastAt: number | undefined,
+  createdAt: number,
+): number {
+  const fromTasks = (tasks ?? []).map((task) => task.lastActivity ?? task.createdAt);
+  return Math.max(loadedLastAt ?? 0, createdAt, ...fromTasks);
 }
 
 /** All versions of a user message (itself + the forks that replaced it),

@@ -516,8 +516,14 @@ store.seedIfEmpty();
  * paired phone has even less business holding provider session identifiers
  * than the desktop window did. Stripped here rather than at each call site
  * so a new broadcast cannot forget. */
-const wireTask = ({ resumeCursors, lastInstanceId, ...task }: TaskRecord) => task;
-const wireGroupTask = (task: GroupTaskRecord) => task;
+const wireTask = ({ resumeCursors, lastInstanceId, ...task }: TaskRecord) => {
+  const last = store.messagesFor(task.threadId).at(-1);
+  return { ...task, lastActivity: last?.at ?? task.createdAt };
+};
+const wireGroupTask = (task: GroupTaskRecord) => {
+  const last = store.messagesFor(task.threadId).at(-1);
+  return { ...task, lastActivity: last?.at ?? task.createdAt };
+};
 
 const wireBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
   const { resumeCursors, tasks, ...rest } = bot;

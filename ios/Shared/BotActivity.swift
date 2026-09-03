@@ -1,8 +1,8 @@
 // The Live Activity's contract — compiled into both the app and the widget
 // extension, so the two agree on what a bot's island says.
 //
-// One activity per bot that is doing something: needs you, or working.
-// Quiet bots have no activity, the same rule as the Updates pill.
+// One activity per bot that is doing something: needs you, working, or
+// has an unread message. Quiet, already-read bots have no activity.
 import ActivityKit
 import AppIntents
 import Foundation

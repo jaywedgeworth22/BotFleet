@@ -1,11 +1,11 @@
 // The roster.
 //
-// Messages-shaped: a glass header, your groups across the top, every bot
-// below with the unread dot in the bot's own colour at the left edge, and a
-// glass bar floating at the bottom. The bar's pill is Updates — only the
-// bots that need you, are working, or have something you have not read —
-// beside round search and new-bot buttons. Everything scrolls under the
-// glass, which is the whole point of the glass.
+// Messages-shaped: a glass header, collapsible room and bot sections with
+// equal prominence, unread dots in each bot's own colour at the left edge,
+// and a glass bar floating at the bottom. The bar's pill is Updates — only
+// the chats that need you, are working, or have something you have not
+// read — beside round search and new-bot buttons. Everything scrolls under
+// the glass, which is the whole point of the glass.
 import SwiftUI
 import CompanionCore
 
@@ -24,6 +24,8 @@ struct ChatListView: View {
     @State private var searchOpen = false
     @State private var showingUpdates = false
     @State private var showingNewGroup = false
+    @AppStorage("companion.chats.roomsExpanded") private var roomsExpanded = true
+    @AppStorage("companion.chats.botsExpanded") private var botsExpanded = true
     @FocusState private var searchFocused: Bool
 
     /// Room for the floating bar, so the last row can scroll clear of it.
@@ -50,7 +52,7 @@ struct ChatListView: View {
                             ContentUnavailableView(
                                 "Select a chat",
                                 systemImage: "bubble.left.and.bubble.right",
-                                description: Text("Pick a bot or group from the sidebar.")
+                                description: Text("Pick a bot or \(roomTerms.singular.lowercased()) from the sidebar.")
                             )
                         }
                     }
@@ -85,6 +87,7 @@ struct ChatListView: View {
             }
         }
 #endif
+        .task { _ = await session.configStatus() }
         .sheet(isPresented: $showingUpdates) {
             UpdatesSheet { chat in
                 showingUpdates = false
@@ -130,10 +133,40 @@ struct ChatListView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if query.isEmpty {
-                            groupsStrip
-                            sectionLabel("Bots")
-                                .padding(.top, 18)
-                                .padding(.bottom, 4)
+                            sectionToggle(
+                                title: roomTerms.plural,
+                                count: roomSummaries.count,
+                                expanded: $roomsExpanded
+                            )
+                            .padding(.top, 2)
+                            if roomsExpanded {
+                                ForEach(Array(roomSummaries.enumerated()), id: \.element.id) { index, summary in
+                                    chatOpener(for: summary.chat) {
+                                        ChatRow(
+                                            chat: summary.chat,
+                                            preview: summary.preview,
+                                            at: summary.lastActivity,
+                                            state: MausState.forChat(summary.chat, in: session.state),
+                                            waiting: waitingChats.contains(summary.chat.id),
+                                            last: index == roomSummaries.count - 1 && !botsExpanded
+                                        )
+                                    }
+                                }
+                                Button {
+                                    showingNewGroup = true
+                                } label: {
+                                    NewRoomRow(label: roomTerms.newLabel)
+                                }
+                                .buttonStyle(.plain)
+                                .accessibilityLabel(roomTerms.newLabel)
+                            }
+
+                            sectionToggle(
+                                title: "Bots",
+                                count: botSummaries.count,
+                                expanded: $botsExpanded
+                            )
+                            .padding(.top, 14)
                         }
 
                         if !query.isEmpty, !searchHits.isEmpty {
@@ -161,7 +194,7 @@ struct ChatListView: View {
                                 .padding(.bottom, 4)
                         }
 
-                        let rows = chats
+                        let rows = query.isEmpty ? (botsExpanded ? botSummaries : []) : chats
                         ForEach(Array(rows.enumerated()), id: \.element.id) { index, summary in
                             chatOpener(for: summary.chat) {
                                 ChatRow(
@@ -179,13 +212,16 @@ struct ChatListView: View {
                 }
                 .refreshable { await session.refresh() }
                 .overlay {
-                    if chats.isEmpty && searchHits.isEmpty {
+                    if query.isEmpty
+                        ? botSummaries.isEmpty && roomSummaries.isEmpty && searchHits.isEmpty
+                        : chats.isEmpty && searchHits.isEmpty
+                    {
                         ContentUnavailableView(
-                            query.isEmpty ? "No bots yet" : "Nothing matches",
+                            query.isEmpty ? "No chats yet" : "Nothing matches",
                             systemImage: query.isEmpty ? "bubble.left.and.bubble.right" : "magnifyingglass",
                             description: Text(
                                 query.isEmpty
-                                    ? "Bots you create on your computer show up here."
+                                    ? "Bots and \(roomTerms.plural.lowercased()) you create on your computer show up here."
                                     : "No chat matches \u{201C}\(query)\u{201D}."
                             )
                         )
@@ -270,30 +306,39 @@ struct ChatListView: View {
         }
     }
 
-    // MARK: - Groups
+    // MARK: - Sections
 
-    private var groupsStrip: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            sectionLabel("Groups")
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 8) {
-                    ForEach(session.state.rooms) { room in
-                        chatOpener(for: Chat.room(room)) {
-                            GroupTile(room: room)
-                        }
-                    }
-                    Button {
-                        showingNewGroup = true
-                    } label: {
-                        GroupTile(room: nil)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("New group")
-                }
-                .padding(.horizontal, 16)
+    private var roomTerms: (singular: String, plural: String, newLabel: String) {
+        let singular = session.config?.roomTerminologyLabel ?? "Channel"
+        let plural = session.config?.roomTerminologyPlural ?? "Channels"
+        return (singular, plural, "New \(singular.lowercased())")
+    }
+
+    private func sectionToggle(title: String, count: Int, expanded: Binding<Bool>) -> some View {
+        Button {
+            withAnimation(.snappy(duration: 0.22)) { expanded.wrappedValue.toggle() }
+        } label: {
+            HStack(spacing: 8) {
+                Text(title.uppercased())
+                    .font(.system(size: 13, weight: .semibold))
+                    .tracking(0.4)
+                    .foregroundStyle(Color.secondary)
+                Image(systemName: expanded.wrappedValue ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(Color.secondary)
+                Spacer(minLength: 0)
+                Text("\(count)")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(Color.secondary)
             }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 8)
+            .contentShape(Rectangle())
         }
-        .padding(.top, 2)
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(title), \(count)")
+        .accessibilityHint(expanded.wrappedValue ? "Collapse" : "Expand")
+        .accessibilityAddTraits(.isHeader)
     }
 
     // MARK: - Bottom bar
@@ -362,15 +407,20 @@ struct ChatListView: View {
 
     private var chats: [ChatSummary] {
         let all = session.state.chatSummaries
-        guard !query.isEmpty else {
-            // rooms live in the strip; the list is bots
-            return all.filter { if case .bot = $0.chat { return true } else { return false } }
-        }
+        guard !query.isEmpty else { return botSummaries }
         return all.filter {
             $0.chat.name.localizedCaseInsensitiveContains(query)
                 || $0.chat.subtitle.localizedCaseInsensitiveContains(query)
                 || $0.preview.localizedCaseInsensitiveContains(query)
         }
+    }
+
+    private var botSummaries: [ChatSummary] {
+        session.state.chatSummaries.filter { if case .bot = $0.chat { return true } else { return false } }
+    }
+
+    private var roomSummaries: [ChatSummary] {
+        session.state.chatSummaries.filter { if case .room = $0.chat { return true } else { return false } }
     }
 
     private var waitingChats: Set<String> {
@@ -387,6 +437,33 @@ struct ChatListView: View {
 }
 
 // MARK: - Rows and tiles
+
+/// List-row control that creates a room using the configured terminology.
+struct NewRoomRow: View {
+    let label: String
+
+    var body: some View {
+        HStack(spacing: 14) {
+            ZStack {
+                Circle()
+                    .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [4, 4]))
+                    .foregroundStyle(Color.secondary.opacity(0.6))
+                Image(systemName: "plus")
+                    .font(.system(size: 18, weight: .medium))
+                    .foregroundStyle(Color.secondary)
+            }
+            .frame(width: 52, height: 52)
+            Text(label)
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(Color.secondary)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 28)
+        .padding(.trailing, 16)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
+    }
+}
 
 /// A room as a round tile: the first two members' mascots stacked, its name
 /// beneath. `nil` is the "make one" tile.
@@ -429,7 +506,7 @@ struct GroupTile: View {
             }
             .frame(width: 64, height: 64)
 
-            Text(room?.name ?? "New group")
+            Text(room?.name ?? "New")
                 .font(.system(size: 12, weight: .medium))
                 .foregroundStyle(room == nil ? Color.secondary : Color.primary)
                 .lineLimit(1)

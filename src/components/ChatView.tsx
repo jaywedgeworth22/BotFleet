@@ -56,7 +56,7 @@ import { SecretRequestCard } from "./SecretRequestCard";
 import { AttachedImageGallery } from "./AttachmentPreview";
 import { ModelPicker } from "./ModelPicker";
 import { RenameTitle } from "./RenameTitle";
-import { TaskPicker } from "./TaskPicker";
+import { ThreadTabs } from "./ThreadTabs";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { CopyButton } from "./CopyButton";
 import { CallButton, CallOverlay } from "./CallView";
@@ -70,10 +70,11 @@ import { splitAttachedImages } from "@/lib/composer-attachments";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
 import {
   TRANSCRIPT_WINDOW_SIZE,
-  expandWindowStart,
+  expandDisplayWindowStart,
   focusWindowRange,
+  hiddenDisplayCount,
   resolveTranscriptWindow,
-  tailWindowStart,
+  tailDisplayWindowStart,
 } from "@/lib/transcript-window";
 import { timelineEvents } from "@/lib/taskTimeline";
 
@@ -857,26 +858,35 @@ export function ChatView({ bot }: { bot: Bot }) {
     return [...visible, ...queued];
   }, [bot, pendingQueued]);
   // Windowed transcript: only a tail of the thread mounts (screenshots make
-  // full threads DOM-heavy). The boundary is anchored per bot+task; a
-  // render-phase reset re-tails it on switch so the old thread's boundary
-  // never flashes into the new one. Everything derived below (lastBotTextId,
-  // lastUserMessage, working dots) stays computed from the FULL list.
-  const transcriptKey = `${bot.id}:${bot.threadId}`;
+  // full threads DOM-heavy). Count on-screen items, not raw rows — hidden
+  // tool chips must not push the user prompt that started a long turn out
+  // of the default tail. The boundary is anchored per bot+task+display
+  // mode; a render-phase reset re-tails it on switch so the old thread's
+  // boundary never flashes into the new one. Everything derived below
+  // (lastBotTextId, lastUserMessage, working dots) stays computed from the
+  // FULL list.
+  const includeToolCalls = showToolCallsEnabled(state.config);
+  const summarizeToolCalls = summarizeToolCallsEnabled(state.config);
+  const displayWindow = { includeToolCalls, summarizeToolCalls };
+  const transcriptKey = `${bot.id}:${bot.threadId}:${includeToolCalls ? "tools" : "chat"}:${summarizeToolCalls ? "sum" : "all"}`;
   const [transcriptWindow, setTranscriptWindow] = useState<{
     key: string;
     start: number;
     end: number | null;
   }>(() => ({
     key: transcriptKey,
-    start: tailWindowStart(messages.length),
+    start: tailDisplayWindowStart(messages, displayWindow),
     end: null,
   }));
   if (transcriptWindow.key !== transcriptKey) {
-    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(messages.length), end: null });
+    setTranscriptWindow({
+      key: transcriptKey,
+      start: tailDisplayWindowStart(messages, displayWindow),
+      end: null,
+    });
   }
   const {
     visible: windowedMessages,
-    hiddenCount,
     laterCount,
     startIndex,
     endIndex,
@@ -884,6 +894,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     () => resolveTranscriptWindow(messages, transcriptWindow.start, TRANSCRIPT_WINDOW_SIZE, transcriptWindow.end),
     [messages, transcriptWindow.start, transcriptWindow.end],
   );
+  const hiddenCount = hiddenDisplayCount(messages, startIndex, displayWindow);
 
   const lastBotTextId = useMemo(
     () => [...messages].reverse().find((m) => m.role === "bot" && m.kind === "text")?.id,
@@ -995,7 +1006,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     // expanding means reading scrollback — never let a mid-expand stream
     // event pin the viewport back to the bottom
     setBottomFollow(false);
-    const start = expandWindowStart(startIndex);
+    const start = expandDisplayWindowStart(messages, startIndex, displayWindow);
     setTranscriptWindow((w) => ({ ...w, start }));
   };
   useLayoutEffect(() => {
@@ -1032,7 +1043,11 @@ export function ChatView({ bot }: { bot: Bot }) {
   };
   const jumpToLatest = () => {
     setBottomFollow(true);
-    setTranscriptWindow({ key: transcriptKey, start: tailWindowStart(messages.length), end: null });
+    setTranscriptWindow({
+      key: transcriptKey,
+      start: tailDisplayWindowStart(messages, displayWindow),
+      end: null,
+    });
     requestAnimationFrame(() => {
       scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
     });
@@ -1108,12 +1123,13 @@ export function ChatView({ bot }: { bot: Bot }) {
               <span className="@max-4xl/chathead:hidden">Stop</span>
             </button>
           )}
-          <TaskPicker bot={bot} />
           <ModelPicker bot={bot} />
           <CallButton bot={bot} />
           <ChatHeaderOverflowMenu bot={bot} />
         </div>
       </div>
+
+      <ThreadTabs bot={bot} />
 
       {findOpen && <ChatFindBar threadId={bot.threadId} onClose={() => setFindOpen(false)} />}
 
