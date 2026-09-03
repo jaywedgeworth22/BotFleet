@@ -58,7 +58,6 @@ import { ModelPicker } from "./ModelPicker";
 import { RenameTitle } from "./RenameTitle";
 import { TaskPicker } from "./TaskPicker";
 import { ReactionBar, ReactionChips } from "./Reactions";
-import { SpeakButton } from "./SpeakButton";
 import { CopyButton } from "./CopyButton";
 import { CallButton, CallOverlay } from "./CallView";
 import { cn } from "@/lib/cn";
@@ -250,7 +249,7 @@ function Bubble({
   onReply: () => void;
 }) {
   const { state, dispatch } = useStore();
-  const user = message.role === "user" && !message.from;
+  const user = message.role === "user" && !message.from?.botId;
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const text = message.text ?? "";
@@ -291,7 +290,7 @@ function Bubble({
 
   return (
     <div className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start")}>
-      <div className={cn("flex w-full items-end gap-1.5", user ? "flex-wrap justify-end" : "flex-wrap justify-start")}>
+      <div className={cn("flex w-full items-end gap-1.5", user ? "flex-nowrap justify-end" : "flex-nowrap justify-start")}>
         {/* editing rewinds the thread, so it waits for the turn to end —
             same rule as the version switcher below */}
         <div className={cn("flex items-center gap-1.5 shrink-0")}>
@@ -307,6 +306,9 @@ function Bubble({
         )}
         {user && (
           <>
+            <div className="flex items-center text-[11px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
+              {formatHoverTime(message.at)}
+            </div>
             <CopyButton
               text={copyContent}
               messageId={message.id}
@@ -317,14 +319,7 @@ function Bubble({
                 setTimeout(() => setCopied(false), 1400);
               }}
             />
-            {bot && bot.modelSelection && (
-              <div
-                className="flex items-center justify-center p-1.5 text-ink-secondary opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-                title={bot.modelSelection.model}
-              >
-                <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={14} />
-              </div>
-            )}
+            
             <button
               onClick={() =>
                 dispatch({
@@ -348,14 +343,14 @@ function Bubble({
         <div
           onClick={handleBubbleClick}
           className={cn(
-            "w-fit max-w-[min(42rem,85%)] rounded-2xl text-[15px] leading-relaxed cursor-pointer select-text relative",
+            "w-fit max-w-[min(42rem,85%)] min-w-0 rounded-2xl text-[15px] leading-relaxed cursor-pointer select-text relative",
             user && webhookView
               ? "overflow-hidden border border-accent/25 bg-card text-ink shadow-[0_10px_30px_rgba(0,0,0,0.18)]"
               : user
                 ? "bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink"
                 : "bg-card px-4 py-2.5 text-ink",
           )}
-          title={copied ? "Copied to clipboard!" : `Click to copy · ${new Date(message.at).toLocaleString()}`}
+          
         >
           {replyTarget && (
             <div className="mb-2">
@@ -418,6 +413,14 @@ function Bubble({
         <div className="flex items-center gap-1.5 shrink-0">
 {!user && (
           <>
+            <div className="flex items-center text-[11px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
+              {formatHoverTime(message.at)}
+              {bot && bot.modelSelection && (
+                <span className="ml-1.5 flex items-center" title={bot.modelSelection.model}>
+                  <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={12} />
+                </span>
+              )}
+            </div>
             <CopyButton
               text={copyContent}
               messageId={message.id}
@@ -437,14 +440,7 @@ function Bubble({
             >
               <MessageSquareReply size={14} />
             </button>
-            {bot && bot.modelSelection && (
-              <div
-                className="flex items-center justify-center p-1.5 text-ink-secondary opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
-                title={bot.modelSelection.model}
-              >
-                <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={14} />
-              </div>
-            )}
+
             <button
               onClick={() =>
                 dispatch({
@@ -463,9 +459,7 @@ function Bubble({
             >
               {bot.pinnedMessageId === message.id ? <PinOff size={14} /> : <Pin size={14} />}
             </button>
-            {message.kind === "text" && (
-              <SpeakButton text={text} botId={bot.id} messageId={message.id} voiceId={bot.voice} />
-            )}
+            
             {isLastBotText && !bot.busy && onRegenerate && (
               <button
                 onClick={onRegenerate}
@@ -481,14 +475,7 @@ function Bubble({
 </div>
 </div>
         {!user && message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
-        <span
-          className={cn(
-            "self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100",
-            user ? "order-first mr-1" : "ml-1",
-          )}
-        >
-          {formatTime(message.at)}
-        </span>
+        
       </div>
       {/* busy-gated so a flag stranded by a server restart shows nothing */}
       {user && message.queued && bot.busy && (
@@ -818,6 +805,15 @@ function PinnedBanner({
       </div>
     </div>
   );
+}
+
+function formatHoverTime(at: number) {
+  const date = new Date(at);
+  const now = new Date();
+  const isSameDay = date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+  const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (isSameDay) return timeStr;
+  return `${date.getMonth() + 1}/${date.getDate()} ${timeStr}`;
 }
 
 export function ChatView({ bot }: { bot: Bot }) {

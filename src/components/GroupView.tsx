@@ -1,3 +1,5 @@
+import { ProviderMark } from "./ProviderIcons";
+
 // A room: several bots + you in one shared thread. The sidebar and call view
 // carry the personality; avatars inside the room stay still so a busy group
 // does not become a wall of competing motion. Plain messages go to the room's
@@ -155,10 +157,13 @@ function GroupTextRow({
 
   return (
     <div className={cn("group flex w-full flex-col", user ? "items-end" : "items-start")}>
-      <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end" : "justify-start")}>
-        {user && <ReactionBar threadId={group.threadId} message={m} />}
+      <div className={cn("flex w-full items-end gap-1.5", user ? "justify-end flex-nowrap" : "justify-start flex-nowrap")}>
         {user && (
-          <>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <ReactionBar threadId={group.threadId} message={m} />
+            <div className="flex items-center text-[11px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
+              {formatHoverTime(m.at)}
+            </div>
             <CopyButton
               text={copyContent}
               messageId={m.id}
@@ -179,15 +184,15 @@ function GroupTextRow({
               <MessageSquareReply size={14} />
             </button>
             <PinToggle group={group} message={m} />
-          </>
+          </div>
         )}
         <div
           onClick={handleBubbleClick}
           className={cn(
-            "w-fit max-w-[min(42rem,78%)] rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed cursor-pointer select-text relative",
+            "w-fit max-w-[min(42rem,78%)] min-w-0 rounded-2xl px-4 py-2.5 text-[15px] leading-relaxed cursor-pointer select-text relative",
             user ? "whitespace-pre-wrap bg-bubble-user text-ink" : "bg-card text-ink",
           )}
-          title={copied ? "Copied to clipboard!" : `Click to copy · ${new Date(m.at).toLocaleString()}`}
+          
         >
           {m.replyToId && (() => {
             const target = transcript.find((candidate) => candidate.id === m.replyToId);
@@ -216,7 +221,7 @@ function GroupTextRow({
           )}
         </div>
         {!user && (
-          <>
+          <div className="flex items-center gap-1.5 shrink-0">
             <CopyButton
               text={copyContent}
               messageId={m.id}
@@ -238,11 +243,20 @@ function GroupTextRow({
             </button>
             <PinToggle group={group} message={m} />
             <ReactionBar threadId={group.threadId} message={m} />
-          </>
+            <div className="flex items-center text-[11px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
+              {formatHoverTime(m.at)}
+              {m.from?.botId && (() => {
+                const bot = members.find(b => b.id === m.from?.botId);
+                return bot?.modelSelection ? (
+                  <span className="ml-1.5 flex items-center" title={bot.modelSelection.model}>
+                    <ProviderMark driverKind={bot.modelSelection.instanceId.includes('claude') ? 'claude' : bot.modelSelection.instanceId.includes('antigravity') ? 'antigravity' : bot.modelSelection.instanceId.includes('dsh') || bot.modelSelection.instanceId.includes('deepseek') ? 'dsh' : bot.modelSelection.instanceId.includes('grok') ? 'grok' : bot.modelSelection.instanceId.includes('codex') ? 'codex' : bot.modelSelection.instanceId.includes('cursor') ? 'cursor' : 'openai'} size={12} />
+                  </span>
+                ) : null;
+              })()}
+            </div>
+          </div>
         )}
-        <span className="self-end pb-1 text-[11px] tabular-nums text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100">
-          {formatTime(m.at)}
-        </span>
+        
       </div>
       <ReactionChips threadId={group.threadId} message={m} members={members} align={user ? "right" : "left"} />
     </div>
@@ -310,7 +324,7 @@ const Transcript = memo(function Transcript({
         }
         const m = item.message;
         if (m.id === emergingId) return null;
-        const user = m.role === "user";
+        const user = m.role === "user" && !m.from?.botId;
         const attachedImages = user && m.text ? splitAttachedImages(m.text) : null;
         const newCluster = !prev || prev.role !== m.role || prev.from?.botId !== m.from?.botId || newDay;
         const row =
@@ -946,6 +960,15 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
     </section>
   );
 }
+function formatHoverTime(at: number) {
+  const date = new Date(at);
+  const now = new Date();
+  const isSameDay = date.getDate() === now.getDate() && date.getMonth() === now.getMonth() && date.getFullYear() === now.getFullYear();
+  const timeStr = date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  if (isSameDay) return timeStr;
+  return `${date.getMonth() + 1}/${date.getDate()} ${timeStr}`;
+}
+
 export function GroupView({ group }: { group: Group }) {
   const { state, dispatch } = useStore();
   const stream = useStreaming();
