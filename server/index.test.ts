@@ -3312,6 +3312,63 @@ describe("GET /api/quotas", () => {
   });
 });
 
+describe("moving a conversation between channels", () => {
+  it("carries the transcript with it and leaves neither channel empty", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const from = (await api("POST", "/api/groups", { name: "From", memberIds: [bot.id] })).body.group;
+    const to = (await api("POST", "/api/groups", { name: "To", memberIds: [bot.id] })).body.group;
+    // A channel keeps its last conversation, so give the source a second one.
+    const extra = (await api("POST", `/api/groups/${from.id}/tasks`, { title: "Moving day" })).body
+      .task;
+
+    const moved = await api("PATCH", `/api/groups/${from.id}/tasks/${extra.threadId}`, {
+      groupId: to.id,
+    });
+    expect(moved.status).toBe(200);
+
+    const rooms = (await api("GET", "/api/bots?messages=0")).body.groups as any[];
+    const source = rooms.find((room) => room.id === from.id);
+    const target = rooms.find((room) => room.id === to.id);
+    expect(source.tasks.some((t: any) => t.threadId === extra.threadId)).toBe(false);
+    expect(target.tasks.some((t: any) => t.threadId === extra.threadId)).toBe(true);
+    // The thread id is unchanged, which is what keeps the transcript intact.
+    const landed = target.tasks.find((t: any) => t.threadId === extra.threadId);
+    expect(landed.title).toBe("Moving day");
+  });
+
+  it("refuses to empty a channel of its last conversation", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const only = (await api("POST", "/api/groups", { name: "Only", memberIds: [bot.id] })).body.group;
+    const other = (await api("POST", "/api/groups", { name: "Other", memberIds: [bot.id] })).body
+      .group;
+    const res = await api("PATCH", `/api/groups/${only.id}/tasks/${only.threadId}`, {
+      groupId: other.id,
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it("404s on a channel that does not exist", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const from = (await api("POST", "/api/groups", { name: "Source", memberIds: [bot.id] })).body
+      .group;
+    const res = await api("PATCH", `/api/groups/${from.id}/tasks/${from.threadId}`, {
+      groupId: "grp_nope",
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("still renames when no destination is given", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Rename", memberIds: [bot.id] })).body
+      .group;
+    const res = await api("PATCH", `/api/groups/${room.id}/tasks/${room.threadId}`, {
+      title: "Renamed by hand",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.task.title).toBe("Renamed by hand");
+  });
+});
+
 describe("PATCH /api/terminology", () => {
   it("stores a preset and hands clients the resolved words", async () => {
     const res = await api("PATCH", "/api/terminology", { terminology: "repos" });

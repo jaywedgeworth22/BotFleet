@@ -558,6 +558,7 @@ export type Action =
   | { type: "newGroupTask"; groupId: string }
   | { type: "switchGroupTask"; groupId: string; threadId: string }
   | { type: "renameGroupTask"; groupId: string; threadId: string; title: string }
+  | { type: "moveGroupTask"; groupId: string; threadId: string; toGroupId: string }
   | { type: "deleteGroupTask"; groupId: string; threadId: string }
   | { type: "toggleReaction"; threadId: string; messageId: string; emoji: string }
   | { type: "interruptGroup"; groupId: string }
@@ -1278,6 +1279,35 @@ export function reducer(state: AppState, action: Action): AppState {
             : group,
         ),
       };
+    case "moveGroupTask": {
+      const moving = (state.groups.find((group) => group.id === action.groupId)?.tasks ?? []).find(
+        (task) => task.threadId === action.threadId,
+      );
+      // A channel keeps its last conversation, and the server enforces that
+      // too; refusing here keeps the sidebar honest if the drop is illegal.
+      const source = state.groups.find((group) => group.id === action.groupId);
+      if (!moving || !source || (source.tasks ?? []).length < 2) return state;
+      return {
+        ...state,
+        groups: state.groups.map((group) => {
+          if (group.id === action.groupId) {
+            const remaining = (group.tasks ?? []).filter(
+              (task) => task.threadId !== action.threadId,
+            );
+            return {
+              ...group,
+              tasks: remaining,
+              // The channel was showing the one that left, so show the next.
+              threadId: group.threadId === action.threadId ? remaining[0]!.threadId : group.threadId,
+            };
+          }
+          if (group.id === action.toGroupId) {
+            return { ...group, tasks: [moving, ...(group.tasks ?? [])] };
+          }
+          return group;
+        }),
+      };
+    }
     case "taskSwitched":
       return updateBot(state, action.bot.id, (bot) => ({ ...bot, ...action.bot, messages: action.bot.messages ?? [] }));
     case "newBot":
@@ -1760,6 +1790,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, {
             method: "PATCH",
             body: JSON.stringify({ title: action.title }),
+          }).catch(showError);
+          break;
+        case "moveGroupTask":
+          api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ groupId: action.toGroupId }),
           }).catch(showError);
           break;
         case "deleteGroupTask":

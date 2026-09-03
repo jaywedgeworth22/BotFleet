@@ -4863,6 +4863,29 @@ const server = createServer(async (req, res) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
+      // Reassigning a conversation to another channel. The thread keeps its
+      // id, so the transcript moves with it rather than being copied.
+      if (body.groupId !== undefined) {
+        const target = String(body.groupId);
+        const destination = store.group(target);
+        if (!destination) return json(res, 404, { error: "no such channel" });
+        if (destination.dm) {
+          return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
+        }
+        if (channelTaskBlocked(destination)) {
+          return json(res, 409, {
+            error: "that channel is working or waiting on you — finish that turn first",
+          });
+        }
+        const moved = store.moveGroupTask(m[1], m[2], target);
+        if (!moved) {
+          return json(res, 400, {
+            error: "that conversation cannot move — a channel keeps its last one",
+          });
+        }
+        for (const record of moved) broadcast({ kind: "group", group: groupWithThread(record) });
+        return json(res, 200, { groups: moved.map((record) => publicGroupState(record)) });
+      }
       const task = store.renameGroupTask(m[1], m[2], String(body.title ?? ""));
       if (!task) return json(res, 404, { error: "no such channel task" });
       return json(res, 200, { task: wireGroupTask(task) });

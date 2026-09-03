@@ -890,6 +890,37 @@ export class Store {
     this.emit({ type: "group", groupId });
   }
 
+  /** Move one conversation to another channel.
+   *
+   * The thread keeps its id, so every message, branch and active leaf comes
+   * with it untouched — only which channel lists it changes.  A channel is
+   * never left without a conversation: moving the one it is currently
+   * showing hands it the next most recent, and a channel down to its last
+   * task keeps it, because an empty channel has nothing to open. */
+  moveGroupTask(fromGroupId: string, threadId: string, toGroupId: string): GroupRecord[] | null {
+    if (fromGroupId === toGroupId) return null;
+    const from = this.group(fromGroupId);
+    const to = this.group(toGroupId);
+    if (!from || !to || from.dm || to.dm) return null;
+    if (!from.tasks || from.tasks.length < 2) return null;
+    const task = from.tasks.find((entry) => entry.threadId === threadId);
+    if (!task) return null;
+
+    from.tasks = from.tasks.filter((entry) => entry.threadId !== threadId);
+    if (from.threadId === threadId) {
+      const next = from.tasks[0]!;
+      from.threadId = next.threadId;
+      from.pinnedCwd = next.pinnedCwd;
+      from.pinnedMessageId = next.pinnedMessageId;
+    }
+    to.tasks = [task, ...(to.tasks ?? [])];
+
+    this.saveGroups();
+    this.emit({ type: "group", groupId: from.id });
+    this.emit({ type: "group", groupId: to.id });
+    return [from, to];
+  }
+
   deleteGroupTask(groupId: string, threadId: string): GroupRecord | null {
     const group = this.group(groupId);
     if (!group || group.dm || !group.tasks || group.tasks.length < 2) return null;
