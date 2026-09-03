@@ -841,8 +841,21 @@ export function ChatView({ bot }: { bot: Bot }) {
   }, []);
 
   // only the active branch is rendered; forks stay reachable via ‹ › nav
-  const messages = useMemo(() => visibleMessages(bot), [bot]);
-
+  const pendingQueued = state.pendingQueued[bot.threadId] ?? [];
+  const messages = useMemo(() => {
+    const visible = visibleMessages(bot);
+    if (!pendingQueued.length) return visible;
+    const queued: Message[] = pendingQueued.map((entry) => ({
+      id: entry.queueId,
+      at: Date.now(),
+      role: "user",
+      kind: "text",
+      text: entry.text,
+      queued: true,
+      queueId: entry.queueId,
+    }));
+    return [...visible, ...queued];
+  }, [bot, pendingQueued]);
   // Windowed transcript: only a tail of the thread mounts (screenshots make
   // full threads DOM-heavy). The boundary is anchored per bot+task; a
   // render-phase reset re-tails it on switch so the old thread's boundary
