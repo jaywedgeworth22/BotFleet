@@ -82,7 +82,7 @@
         },
         {
           "title": "Fleet Recall",
-          "desc": "Bots search and contribute to the shared fleet-agents memory (recall_search, recall_contribute, recall_stats) instead of a private hash-proxy index.",
+          "desc": "Bots search and contribute to a shared memory store instead of a private hash-proxy index.",
           "prov": { "type": "pr", "prs": [153], "state": "merged", "note": "In testing" }
         },
         {

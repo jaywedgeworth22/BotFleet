@@ -12,7 +12,7 @@ The GitHub repo still carried OpenMausBot's Polar support-payment links (README 
 - Removed the README "Support the project" section and every Polar link from product copy.
 - Rewrote README: BotFleet add-ons first (including recently landed ones; all marked in testing), then a prominent [OpenMausBot](https://github.com/milind-soni/OpenMausBot) link and the feature list the fork inherited.  Kept Quick start / install / license.  Header tagline matches the owner social image: "Pick Any Platform For Each Bot" / "Use Your Subscriptions + APIs."
 - Updated GitHub About description the same way.  Did not upload or replace the social preview image.
-- botfleet.app: one In Testing add-on list (20 cards, recent features included) plus a From OpenMausBot block.  Fixed the doubled `/releases/releases` previous-builds link.
+- botfleet.app: one In Testing add-on list (20 cards, recent features included) plus a From OpenMausBot block.  Fixed the doubled `/releases/releases` previous-builds link.  Fleet Recall copy does not name the private corpus (the no-owner-defaults scan forbids it on the public site).
 
 ## Verification
 

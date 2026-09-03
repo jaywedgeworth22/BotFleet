@@ -40,7 +40,7 @@ These are features this fork layered on after OpenMausBot.  **All of them are in
 
 ### Fleet ops, memory, and automation
 
-- **Fleet Recall** — bots search and contribute to the shared `fleet-agents` memory (`recall_search`, `recall_contribute`, `recall_stats`) instead of a private hash-proxy index.
+- **Fleet Recall** — bots search and contribute to a shared memory store instead of a private hash-proxy index.
 - **Fleet MCP tools** — list and answer approvals, `open_app`, routines, webhooks, decision-log tools, and idempotent sends for external MCP clients.
 - **Multi-repo channels and file links** — a channel can attach several repositories with automatic context injection.  Local file links open in the default Mac app, or reveal in Finder on Option-click.
 - **Resource-threshold triggers** — sample local disk, RAM/swap, and optional CPU load and enqueue the same kind of task a routine would when a threshold is crossed.
