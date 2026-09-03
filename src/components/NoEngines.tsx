@@ -85,7 +85,7 @@ export function NoEngines() {
           className="mt-6 flex items-center gap-2 rounded-lg bg-raised px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:opacity-60"
         >
           {rechecking ? <Loader2 size={14} className="animate-spin" /> : <RefreshCw size={14} />}
-          {rechecking ? "Checking…" : "Check again"}
+          {rechecking ? "Checking…" : "Check Again"}
         </button>
       </div>
     </main>

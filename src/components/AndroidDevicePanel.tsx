@@ -336,7 +336,7 @@ export function AndroidDevicePanel({ status }: { status: AndroidDeviceStatus }) 
           </li>
         </ol>
         <div className="mt-2 text-[11px] leading-relaxed text-ink-secondary">
-          Agent control uses this same authorized USB connection. No phone companion app, account, Tailscale, or
+          Bot control uses this same authorized USB connection. No phone companion app, account, Tailscale, or
           wireless pairing is needed.
         </div>
         <div className="mt-2 rounded-lg bg-inset px-3 py-2 text-[11px] leading-relaxed text-ink-secondary">

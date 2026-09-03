@@ -35,7 +35,7 @@ export function ReplyQuote({
         <div className="flex min-w-0 flex-1 items-center gap-2">{body}</div>
       )}
       {onClear && (
-        <button type="button" onClick={onClear} aria-label="Cancel reply" className="shrink-0 rounded p-0.5 text-ink-secondary hover:bg-raised hover:text-ink">
+        <button type="button" onClick={onClear} aria-label="Cancel Reply" className="shrink-0 rounded p-0.5 text-ink-secondary hover:bg-raised hover:text-ink">
           <X size={14} />
         </button>
       )}

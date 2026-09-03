@@ -85,7 +85,7 @@ function Editor({
     <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 p-4 sm:items-center">
       <div className="max-h-[90vh] w-full max-w-[520px] overflow-y-auto rounded-2xl bg-raised p-5 shadow-xl">
         <div className="flex items-center justify-between">
-          <h2 className="text-[16px] font-semibold text-ink">{trigger ? "Edit resource trigger" : "New resource trigger"}</h2>
+          <h2 className="text-[16px] font-semibold text-ink">{trigger ? "Edit Resource Trigger" : "New Resource Trigger"}</h2>
           <button onClick={onClose} className="rounded-lg p-1 text-ink-secondary hover:bg-panel hover:text-ink" aria-label="Close">
             <X size={16} />
           </button>
@@ -160,7 +160,7 @@ export function ResourceTriggersPanel({ bots }: { bots: Bot[] }) {
           While BotFleet is running it samples this computer every 30 seconds.  When a metric crosses the threshold, it starts a fresh task on the chosen bot — the same queue as webhooks and routines.
         </p>
         <button onClick={() => setEditor("new")} disabled={bots.length === 0} className="inline-flex items-center gap-2 rounded-xl bg-accent px-3.5 py-2 text-[13px] font-medium text-white disabled:opacity-40">
-          <Plus size={15} />New trigger
+          <Plus size={15} />New Trigger
         </button>
       </div>
       {state.resourceTriggers.length === 0 ? (

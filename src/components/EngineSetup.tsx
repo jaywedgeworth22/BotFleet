@@ -28,7 +28,7 @@ export function needsSignIn(instance: InstanceInfo | undefined): boolean {
   return instance?.snapshot.state === "available" && instance.snapshot.authenticated === false;
 }
 
-/** The agent CLI itself is absent. Local-model injection needs the CLI but
+/** The engine CLI itself is absent. Local-model injection needs the CLI but
  * does not need its cloud account to be signed in. */
 export function needsCli(instance: InstanceInfo | undefined): boolean {
   return instance?.snapshot.state !== "available";
@@ -67,8 +67,8 @@ function CommandRow({ command, actionLabel }: { command: string; actionLabel: st
           <button
             type="button"
             onClick={() => void copy()}
-            aria-label="Copy command"
-            title="Copy command"
+            aria-label="Copy Command"
+            title="Copy Command"
             className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-[11.5px] font-medium text-ink-secondary hover:bg-control hover:text-ink"
           >
             {status === "copied" ? <Check size={12} className="text-success" /> : <Copy size={12} />}
@@ -98,7 +98,7 @@ function CommandRow({ command, actionLabel }: { command: string; actionLabel: st
           className="mt-2 flex w-full items-center justify-center gap-2 rounded-lg bg-control px-3 py-2 text-[12.5px] font-semibold text-ink hover:bg-raised-hover"
         >
           {status === "copied" ? <Check size={14} className="text-success" /> : <Copy size={14} />}
-          {status === "copied" ? "Command copied" : "Copy command"}
+          {status === "copied" ? "Command copied" : "Copy Command"}
         </button>
       )}
     </div>
@@ -124,7 +124,7 @@ export function EngineSetup({
   const description = signInOnly
     ? "Finish the account sign-in in Terminal. Reopen this menu afterward and we’ll check again."
     : intent === "inject"
-      ? "Install the agent once, then you can run it with local models—no cloud sign-in required."
+      ? "Install the engine once, then you can run it with local models—no cloud sign-in required."
       : `Install the command-line app once. Models will appear here as soon as it’s ready${signInCommand ? "; sign-in may follow" : ""}.`;
 
   // Some engines are configured elsewhere (for example, a cloud computer

@@ -39,7 +39,7 @@ const CREDENTIALS: Record<
   }
 > = {
   composio: {
-    label: "Composio project key",
+    label: "Composio Project Key",
     placeholder: "ak_…",
     description: "Connect Gmail, GitHub, Slack, Notion, and other apps through your own Composio project.",
     href: "https://dashboard.composio.dev",
@@ -206,7 +206,7 @@ export function ApiKeyRow({
               : "bg-control text-ink hover:bg-raised-hover",
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}
-          title={clearing ? "Remove the saved key" : "Save"}
+          title={clearing ? "Remove the Saved Key" : "Save"}
         >
           {saving ? <Loader2 size={13} className="animate-spin" /> : clearing ? "Clear" : <><Check size={13} />Save</>}
         </button>
@@ -274,7 +274,7 @@ export function VpsConnection() {
           onChange={(e) => setAlias(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && save()}
           placeholder="my-vps"
-          aria-label="Self-hosted VPS SSH config alias"
+          aria-label="Self-Hosted VPS SSH Config Alias"
           autoComplete="off"
           className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
         />
@@ -286,7 +286,7 @@ export function VpsConnection() {
             !alias.trim() && configured ? "bg-control text-danger hover:bg-raised-hover" : "bg-control text-ink hover:bg-raised-hover",
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}
-          title={!alias.trim() && configured ? "Remove the saved alias" : "Save"}
+          title={!alias.trim() && configured ? "Remove the Saved Alias" : "Save"}
         >
           {saving ? <Loader2 size={13} className="animate-spin" /> : !alias.trim() && configured ? "Clear" : <><Check size={13} />Save</>}
         </button>

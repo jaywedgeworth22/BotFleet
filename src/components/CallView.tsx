@@ -12,7 +12,7 @@
 // buffer-backed recognizer does not finalize on silence by itself: the helper
 // has to end the audio stream, which then produces the final transcript.
 //
-// The other half of making a call bearable is narration. An agent turn is
+// The other half of making a call bearable is narration. A bot turn is
 // 5-60 seconds of tool calls; silence that long reads as a dropped call. So
 // every activity chip the harness narrates (`tool.spoken`) is read aloud as
 // it happens, which is why waiting feels like listening to someone work
@@ -64,7 +64,7 @@ export function CallTargetButton({
   targetId: string;
   targetName: string;
   voices: Array<string | undefined>;
-  /** Agent profile to open when voice setup is missing (rooms choose a member). */
+  /** Bot profile to open when voice setup is missing (rooms choose a member). */
   setupBotId?: string;
   /** Rooms cannot rely on one workspace fallback for multiple speakers. */
   requireExplicitVoices: boolean;
@@ -75,6 +75,12 @@ export function CallTargetButton({
   const active = useOnCall() === targetId;
   const supported = capabilities.dictation.available && Boolean(window.ogb?.speechStart);
   const configured = Boolean(state.config?.tts?.configured);
+  // Owner 2026-09-03: with no voice provider configured the call button must not appear at all,
+  // rather than render disabled with an explanation.  `configured` is provider-scoped server-side
+  // (ElevenLabs => a key is on file; system => the Mac's built-in voices are available), so this
+  // hides the button when there is no ElevenLabs key AND system voices are not the chosen provider,
+  // while leaving it working for anyone who deliberately picked the built-in voices.
+  const voiceProviderConfigured = configured;
   const everyTargetHasVoice = voices.length > 0 && voices.every((voice) => Boolean(voice));
   const voiceReady =
     configured && (requireExplicitVoices ? everyTargetHasVoice : Boolean(state.config?.tts?.ready || everyTargetHasVoice));
@@ -91,9 +97,9 @@ export function CallTargetButton({
       : !supported
         ? "Calls currently need the macOS desktop app"
         : !configured
-          ? "Set up a voice in an agent profile to make calls"
+          ? "Set up a voice in a bot profile to make calls"
           : !voiceReady
-            ? "Pick a voice in an agent profile to make calls"
+            ? "Pick a voice in a bot profile to make calls"
             : `Call ${targetName}`;
 
   const reason = !capabilitiesReady
@@ -127,6 +133,10 @@ export function CallTargetButton({
       document.removeEventListener("keydown", closeOnEscape);
     };
   }, [helpOpen]);
+
+
+  // All hooks above run unconditionally; this guard sits after them so hook order is stable.
+  if (!voiceProviderConfigured) return null;
 
   return (
     <div ref={rootRef} className="relative">
@@ -164,10 +174,10 @@ export function CallTargetButton({
         <div
           id={helpId}
           role="group"
-          aria-label="Call unavailable"
+          aria-label="Call Unavailable"
           className="animate-pop-in absolute right-0 z-30 mt-1.5 w-[280px] rounded-xl border border-hairline bg-panel p-3 text-left shadow-2xl"
         >
-          <div className="text-[13px] font-medium text-ink">Call unavailable</div>
+          <div className="text-[13px] font-medium text-ink">Call Unavailable</div>
           <div className="mt-1 text-[12px] leading-[1.45] text-ink-secondary">{reason}</div>
           {voiceSetupRequired && (
             <button
@@ -179,7 +189,7 @@ export function CallTargetButton({
               }}
               className="mt-2.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"
             >
-              Open agent settings
+              Open Bot Settings
             </button>
           )}
         </div>
@@ -538,7 +548,7 @@ function Call({ bot }: { bot: Bot }) {
     <div className="absolute inset-0 z-30 flex flex-col items-center justify-center gap-6 bg-app/95 backdrop-blur-sm">
       <button
         onClick={() => endCall(bot.id)}
-        aria-label="Hang up"
+        aria-label="Hang Up"
         className="absolute right-5 top-5 rounded-md p-2 text-ink-secondary hover:bg-raised hover:text-ink"
       >
         <X size={18} />
@@ -597,7 +607,7 @@ function Call({ bot }: { bot: Bot }) {
           onClick={() => endCall(bot.id)}
           className="flex items-center gap-2 rounded-full bg-danger px-5 py-2.5 text-[14px] font-medium text-white hover:brightness-110"
         >
-          <PhoneOff size={16} /> Hang up
+          <PhoneOff size={16} /> Hang Up
         </button>
       </div>
 

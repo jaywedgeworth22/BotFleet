@@ -74,7 +74,7 @@ export function ActivityRun({
         type="button"
         onClick={() => setOpen(true)}
         aria-expanded={false}
-        title="Show all steps"
+        title="Show All Steps"
         className={cn(
           "group flex items-center gap-2.5 rounded-xl border border-hairline/40 bg-panel px-3.5 py-2 text-[13px] transition-all hover:bg-raised hover:border-hairline/80 shadow-xs",
           failed ? "border-danger/30 text-danger bg-danger/5" : "text-ink-secondary",

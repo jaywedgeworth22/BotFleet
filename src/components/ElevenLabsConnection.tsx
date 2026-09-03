@@ -36,11 +36,11 @@ export function ElevenLabsConnection() {
     <div>
       <div className="mb-1.5 flex items-center gap-2 text-[13px] text-ink-secondary">
         <span className={cn("size-1.5 rounded-full", configured ? "bg-success" : "bg-raised-hover")} />
-        <span>ElevenLabs voice synthesis</span>
+        <span>ElevenLabs Voice Synthesis</span>
         {configured && <span className="text-[11px] text-success">Connected</span>}
       </div>
       <p className="mb-2 text-[12px] leading-relaxed text-ink-secondary">
-        Shared workspace voice engine for real-time agent calls and spoken replies. The API key is stored securely in your operating system keychain.
+        Shared workspace voice engine for real-time bot calls and spoken replies. The API key is stored securely in your operating system keychain.
       </p>
       <div className="flex gap-2">
         <input
@@ -49,7 +49,7 @@ export function ElevenLabsConnection() {
           onChange={(event) => setKey(event.target.value)}
           onKeyDown={(event) => event.key === "Enter" && key.trim() && void save()}
           placeholder={configured ? "••••••••  (paste to replace)" : "Paste your ElevenLabs API key"}
-          aria-label="ElevenLabs API key"
+          aria-label="ElevenLabs API Key"
           autoComplete="off"
           className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
         />
@@ -69,7 +69,7 @@ export function ElevenLabsConnection() {
           rel="noopener noreferrer"
           className="mt-1.5 inline-flex items-center gap-1 text-[12px] font-medium text-accent hover:underline"
         >
-          <span>Get an API key from ElevenLabs</span>
+          <span>Get an API Key from ElevenLabs</span>
           <ExternalLink size={11} />
         </a>
       )}

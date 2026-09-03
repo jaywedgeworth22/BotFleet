@@ -49,7 +49,7 @@ export function CommandLine({ command }: { command: string }) {
       </code>
       <button
         onClick={() => void copy()}
-        aria-label="Copy command"
+        aria-label="Copy Command"
         className="shrink-0 rounded p-1 text-ink-secondary hover:bg-raised hover:text-ink"
       >
         {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}

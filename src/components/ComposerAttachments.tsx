@@ -141,11 +141,11 @@ export function ComposerAttachments({
                   type="button"
                   onClick={() => onDisplayInChatBox(a)}
                   className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg border border-accent/25 bg-accent/5 px-2 py-1.5 text-[10.5px] font-medium text-accent-text transition-colors hover:border-accent/50 hover:bg-accent/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus/60"
-                  aria-label="Display pasted text in chat box"
-                  title="Display in chat box"
+                  aria-label="Display Pasted Text in Chat Box"
+                  title="Display in Chat Box"
                 >
                   <MessageSquareText size={12} aria-hidden="true" />
-                  <span>Display in chat box</span>
+                  <span>Display in Chat Box</span>
                 </button>
               </Chip>
             ) : a.kind === "image" ? (

@@ -96,7 +96,7 @@ export function AttachmentPreviewDialog({ image, onClose }: { image: PreviewImag
             <button
               onClick={onClose}
               className="flex size-9 items-center justify-center rounded-lg text-white/65 hover:bg-white/10 hover:text-white"
-              aria-label="Close image preview"
+              aria-label="Close Image Preview"
             >
               <X size={19} />
             </button>

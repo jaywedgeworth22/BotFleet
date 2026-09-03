@@ -123,7 +123,7 @@ function CodeBlock({ code, lang, streaming }: { code: string; lang: string; stre
         <button
           onClick={copy}
           className="rounded p-1 text-ink-secondary hover:bg-raised hover:text-ink"
-          title="Copy code"
+          title="Copy Code"
         >
           {copied ? <Check size={13} className="text-success" /> : <Copy size={13} />}
         </button>
@@ -278,8 +278,8 @@ function Spoiler({ children }: { children?: ReactNode }) {
         </span>
         <button
           type="button"
-          aria-label="Reveal spoiler"
-          title="Reveal spoiler"
+          aria-label="Reveal Spoiler"
+          title="Reveal Spoiler"
           onClick={() => setRevealed(true)}
           className="absolute inset-0 rounded bg-raised/90"
         />
@@ -291,8 +291,8 @@ function Spoiler({ children }: { children?: ReactNode }) {
       {children}
       <button
         type="button"
-        aria-label="Hide spoiler"
-        title="Hide spoiler"
+        aria-label="Hide Spoiler"
+        title="Hide Spoiler"
         onClick={() => setRevealed(false)}
         className="ml-1 rounded px-0.5 text-[11px] text-ink-secondary hover:text-ink"
       >

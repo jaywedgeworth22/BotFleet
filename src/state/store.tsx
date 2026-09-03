@@ -327,7 +327,7 @@ export interface ConfigStatus {
   /** The finished words, resolved by the harness so every client
    * agrees. Absent only when talking to an older harness. */
   roomLabels?: RoomLabels;
-  /** Shared Qdrant Agent RAG vector database status. `url` and `collection`
+  /** Shared Qdrant Bot RAG vector database status. `url` and `collection`
    * are empty until the operator sets them — BotFleet ships no endpoint. */
   qdrant?: { enabled: boolean; url: string; configured: boolean; hasApiKey: boolean; collection: string };
   /** Usage-monitor telemetry. `ingestUrl` is empty when unconfigured; the
@@ -429,7 +429,7 @@ export interface InstanceInfo {
      * bot's active conversation. */
     approvalReview?: boolean;
   };
-  /** `custom` agents sit below the rail divider — no subscription catalog. */
+  /** `custom` engines sit below the rail divider — no subscription catalog. */
   access?: "subscription" | "custom";
   install?: EngineInstall;
   /** Configured CLI path override — set ONLY when the user overrode it;

@@ -86,7 +86,7 @@ export function ChatFindBar({ threadId, onClose }: { threadId: string; onClose: 
             }
           }}
           placeholder="Find in this conversation"
-          aria-label="Find in this conversation"
+          aria-label="Find in This Conversation"
           className="min-w-0 flex-1 bg-transparent px-1 text-[13px] text-ink outline-none placeholder:text-ink-secondary/70"
         />
         <span className="min-w-[58px] text-right text-[11.5px] tabular-nums text-ink-secondary">
@@ -96,7 +96,7 @@ export function ChatFindBar({ threadId, onClose }: { threadId: string; onClose: 
           type="button"
           onClick={() => move(-1)}
           disabled={!hits.length}
-          aria-label="Previous result"
+          aria-label="Previous Result"
           className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-30"
         >
           <ChevronUp size={15} />
@@ -105,7 +105,7 @@ export function ChatFindBar({ threadId, onClose }: { threadId: string; onClose: 
           type="button"
           onClick={() => move(1)}
           disabled={!hits.length}
-          aria-label="Next result"
+          aria-label="Next Result"
           className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-30"
         >
           <ChevronDown size={15} />
@@ -113,7 +113,7 @@ export function ChatFindBar({ threadId, onClose }: { threadId: string; onClose: 
         <button
           type="button"
           onClick={onClose}
-          aria-label="Close find"
+          aria-label="Close Find"
           className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink"
         >
           <X size={15} />

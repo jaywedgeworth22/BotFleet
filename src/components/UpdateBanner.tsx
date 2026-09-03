@@ -187,7 +187,7 @@ export function UpdateBanner() {
                   <Loader2 size={13} className="animate-spin" /> Checking…
                 </>
               ) : (
-                "Try again"
+                "Try Again"
               )}
             </button>
           )}

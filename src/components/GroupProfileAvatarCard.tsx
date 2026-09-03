@@ -94,8 +94,8 @@ export function GroupProfileAvatarCard({
               type="button"
               onClick={removeImage}
               disabled={uploading}
-              aria-label="Remove custom avatar image"
-              title="Remove custom image"
+              aria-label="Remove Custom Avatar Image"
+              title="Remove Custom Image"
               className="flex size-10 items-center justify-center rounded-lg text-ink-secondary hover:bg-control hover:text-danger disabled:opacity-50"
             >
               <Trash2 size={14} />

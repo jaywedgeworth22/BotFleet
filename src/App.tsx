@@ -232,7 +232,7 @@ function Shell() {
           <span className="min-w-0 break-words">{state.error}</span>
           <button
             type="button"
-            aria-label="Dismiss error"
+            aria-label="Dismiss Error"
             onClick={() => dispatch({ type: "error", message: null })}
             className="shrink-0 rounded-md p-0.5 hover:bg-danger/15"
           >
@@ -244,7 +244,7 @@ function Shell() {
       <button
         type="button"
         ref={menuButtonRef}
-        aria-label="Open bot list"
+        aria-label="Open Bot List"
         aria-expanded={drawerOpen}
         onClick={() => setDrawerOpen(true)}
         className="absolute left-3 top-3 z-30 rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink md:hidden"

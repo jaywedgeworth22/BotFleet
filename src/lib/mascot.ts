@@ -27,7 +27,7 @@ export const STATE_GROUPS = {
     "playful",
     "celebrate",
   ],
-  "Agent morphs": ["orbit", "radar", "progress"],
+  "Bot morphs": ["orbit", "radar", "progress"],
   "Product cycle": [
     "spawning",
     "humming",

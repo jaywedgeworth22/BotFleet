@@ -171,8 +171,8 @@ export function BotProfileAvatarCard({
               type="button"
               onClick={removeImage}
               disabled={uploading || generating}
-              aria-label="Remove custom avatar image"
-              title="Remove custom image"
+              aria-label="Remove Custom Avatar Image"
+              title="Remove Custom Image"
               className="flex size-10 items-center justify-center rounded-lg text-ink-secondary hover:bg-control hover:text-danger disabled:opacity-50"
             >
               <Trash2 size={14} />
@@ -266,7 +266,7 @@ export function BotProfileAvatarCard({
                   onChange={(event) => setImageKey(event.target.value)}
                   onKeyDown={(event) => event.key === "Enter" && void saveImageKey()}
                   placeholder="Paste OpenAI image API key"
-                  aria-label="OpenAI image API key"
+                  aria-label="OpenAI Image API Key"
                   autoComplete="off"
                   className="min-w-0 flex-1 rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[12.5px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
                 />
@@ -288,7 +288,7 @@ export function BotProfileAvatarCard({
                 onChange={(event) => setDirection(event.target.value.slice(0, 400))}
                 maxLength={400}
                 placeholder={`Optional direction, e.g. “a calm navigator inspired by ${bot.title || bot.name}”`}
-                aria-label="Avatar generation direction"
+                aria-label="Avatar Generation Direction"
                 className="min-h-[72px] w-full resize-none rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[12.5px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
               />
               <div className="mt-2 flex items-center justify-between gap-3">
@@ -300,11 +300,11 @@ export function BotProfileAvatarCard({
                   className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:brightness-110 disabled:opacity-50"
                 >
                   {generating ? <Loader2 size={13} className="animate-spin" /> : <Sparkles size={13} />}
-                  {generating ? "Generating…" : "Generate avatar"}
+                  {generating ? "Generating…" : "Generate Avatar"}
                 </button>
               </div>
               <details className="mt-3 rounded-lg border border-hairline/40 bg-inset px-3 py-2">
-                <summary className="cursor-pointer text-[11.5px] text-ink-secondary">Replace OpenAI image key</summary>
+                <summary className="cursor-pointer text-[11.5px] text-ink-secondary">Replace OpenAI Image Key</summary>
                 <div className="mt-2 flex gap-2">
                   <input
                     type="password"
@@ -312,7 +312,7 @@ export function BotProfileAvatarCard({
                     onChange={(event) => setImageKey(event.target.value)}
                     onKeyDown={(event) => event.key === "Enter" && void saveImageKey()}
                     placeholder="Paste replacement key"
-                    aria-label="Replacement OpenAI image API key"
+                    aria-label="Replacement OpenAI Image API Key"
                     autoComplete="off"
                     className="min-w-0 flex-1 rounded-lg border border-hairline/40 bg-card px-3 py-2 text-[12px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
                   />

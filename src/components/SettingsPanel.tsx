@@ -45,7 +45,7 @@ function BotUsageCard({ bot }: { bot: Bot }) {
           onClick={() => dispatch({ type: "toggleAppSettings", open: true, section: "usage" })}
           className="text-[12px] text-ink-secondary hover:text-ink"
         >
-          All bots →
+          All Bots →
         </button>
       </div>
       <div className="mt-3 grid grid-cols-3 gap-3 text-[13px]">
@@ -109,7 +109,7 @@ function WorkingFolder({ bot }: { bot: Bot }) {
 
   return (
     <div className="rounded-xl bg-card p-4">
-      <div className="text-[15px] font-medium text-ink">Working folder</div>
+      <div className="text-[15px] font-medium text-ink">Working Folder</div>
       <div className="mt-0.5 text-[13px] text-ink-secondary">Where this bot runs its shell and file tools.</div>
       {canPick ? (
         <div className="mt-3 flex items-center gap-2">
@@ -370,17 +370,17 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
       <div className="flex items-center justify-between px-4 py-3">
         <button
           onClick={() => dispatch({ type: "toggleSettings", open: false })}
-          aria-label="Collapse agent profile"
-          title="Collapse agent profile"
+          aria-label="Collapse Bot Profile"
+          title="Collapse Bot Profile"
           className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-control hover:text-ink"
         >
           <ChevronLeft size={18} />
         </button>
-        <span className="text-[15px] font-semibold text-ink">Agent profile</span>
+        <span className="text-[15px] font-semibold text-ink">Bot Profile</span>
         <button
           onClick={() => dispatch({ type: "toggleSettings", open: false })}
-          aria-label="Close agent profile"
-          title="Close agent profile"
+          aria-label="Close Bot Profile"
+          title="Close Bot Profile"
           className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-control hover:text-ink"
         >
           <X size={18} />
@@ -408,7 +408,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <input
               className={inputCls}
               maxLength={BOT_PROFILE_LIMITS.title}
-              placeholder="Describe what your agent does"
+              placeholder="Describe what your bot does"
               value={bot.title}
               onChange={(e) => patch({ title: e.target.value })}
             />
@@ -417,7 +417,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <textarea
               className={cn(inputCls, "min-h-[96px] resize-none")}
               maxLength={BOT_PROFILE_LIMITS.description}
-              placeholder="What this agent is for"
+              placeholder="What this bot is for"
               value={bot.description}
               onChange={(e) => patch({ description: e.target.value })}
             />
@@ -642,7 +642,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               {([
                 ["cloud", "Cloud"],
                 ["vm", "Local VM"],
-                ["local", "This computer"],
+                ["local", "This Computer"],
                 ["off", "Off"],
               ] as const).map(([mode, label], i) => (
                 <button
@@ -720,7 +720,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
             <div>
-              <div className="text-[15px] font-medium text-ink">Auto mode</div>
+              <div className="text-[15px] font-medium text-ink">Auto Mode</div>
               <div className="mt-0.5 text-[13px] text-ink-secondary">
                 {(bot.computers ?? []).includes("local")
                   ? bot.autoApprove
@@ -734,7 +734,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <button
               role="switch"
               aria-checked={Boolean(bot.autoApprove)}
-              aria-label="Auto mode"
+              aria-label="Auto Mode"
               onClick={() => {
                 if (!bot.autoApprove && (bot.computers ?? []).includes("local")) setLocalAutoWarning("auto");
                 else patch({ autoApprove: !bot.autoApprove });
@@ -754,7 +754,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           </div>
 
           <div className="rounded-xl bg-card p-4">
-            <div className="text-[15px] font-medium text-ink">Review routine approvals</div>
+            <div className="text-[15px] font-medium text-ink">Review Routine Approvals</div>
             <div className="mt-0.5 text-[13px] text-ink-secondary">
               {canAutoReview
                 ? "The same engine reviews ordinary approval cards. Existing safety rules, unattended turns, local-computer access, and questions still wait for you."
@@ -796,13 +796,13 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 Notifications
               </div>
               <div className="mt-0.5 text-[13px] text-ink-secondary">
-                Get notified when this agent finishes or needs input
+                Get notified when this bot finishes or needs input
               </div>
             </div>
             <button
               role="switch"
               aria-checked={bot.notifications}
-              aria-label="Agent notifications"
+              aria-label="Bot Notifications"
               onClick={() => {
                 const enabled = !bot.notifications;
                 if (enabled) void requestNotificationPermission();

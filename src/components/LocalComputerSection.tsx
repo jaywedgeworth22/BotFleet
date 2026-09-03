@@ -257,7 +257,7 @@ export function LocalComputerSection() {
 
       <Card title="Setup" subtitle="Once a container runtime is open, BotFleet prepares Cua and the VM for you.">
         <div className="flex flex-col gap-4">
-          <Step n={1} title="Install a container runtime" done={Boolean(status?.runtime)}>
+          <Step n={1} title="Install a Container Runtime" done={Boolean(status?.runtime)}>
             <div className="text-[13px] leading-relaxed text-ink-secondary">
               Podman and Colima are free. Docker Desktop may require a paid licence for larger companies and government use.
             </div>
@@ -282,11 +282,11 @@ export function LocalComputerSection() {
             )}
           </Step>
 
-          <Step n={3} title="Prepare the Cua desktop (one-time download and build)" done={Boolean(status?.image)}>
+          <Step n={3} title="Prepare the Cua Desktop (one-time download and build)" done={Boolean(status?.image)}>
             {status?.daemonUp && (
-              <ActionButton action="pull" pending={pending} onClick={() => void act("pull")}>Prepare Cua desktop</ActionButton>
+              <ActionButton action="pull" pending={pending} onClick={() => void act("pull")}>Prepare Cua Desktop</ActionButton>
             )}
-            {c?.pull && <details className="text-[12px] text-ink-secondary"><summary className="cursor-pointer">Show base-image download</summary><div className="mt-2"><CommandLine command={c.pull} /></div></details>}
+            {c?.pull && <details className="text-[12px] text-ink-secondary"><summary className="cursor-pointer">Show Base-Image Download</summary><div className="mt-2"><CommandLine command={c.pull} /></div></details>}
           </Step>
 
           <Step
@@ -323,7 +323,7 @@ export function LocalComputerSection() {
             ) : status?.image ? (
               <ActionButton action="run" pending={pending} onClick={() => void act("run")}>Create Local VM</ActionButton>
             ) : null}
-            {c?.run && <details className="text-[12px] text-ink-secondary"><summary className="cursor-pointer">Show command</summary><div className="mt-2"><CommandLine command={c.run} /></div></details>}
+            {c?.run && <details className="text-[12px] text-ink-secondary"><summary className="cursor-pointer">Show Command</summary><div className="mt-2"><CommandLine command={c.run} /></div></details>}
           </Step>
         </div>
       </Card>
@@ -338,7 +338,7 @@ export function LocalComputerSection() {
       )}
 
       <Card
-        title="Safety and storage"
+        title="Safety and Storage"
         subtitle={perBot
           ? `Cua Driver operates only each VM's desktop. Every bot gets a private host folder mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; its files and browser profile survive VM replacement. Viewers bind only to loopback, and exact bot-derived targets prevent one bot from attaching to another bot's container. Each VM keeps the existing 8 GB, 4 CPU, 512-process and dropped-capability limits. VMs can still reach the internet.`
           : `Cua Driver operates only the VM's desktop. Exactly one private host folder is mounted at ${status?.workspace_guest_path ?? "/home/cua/workspace"}; files and browser sign-ins there survive VM replacement, while everything elsewhere in the VM remains disposable. The password-protected viewer is available only on this machine. Docker and Podman runs are limited to 8 GB memory, 4 CPUs and 512 processes; all Linux capabilities are dropped except the two the desktop supervisor needs to switch to its unprivileged user. The VM can still reach the internet, and bots share it one at a time.`}
@@ -351,7 +351,7 @@ export function LocalComputerSection() {
               </ActionButton>
             )}
             <ActionButton action="remove" pending={pending} onClick={() => void act("remove")} danger>
-              <Trash2 size={12} /> {perBot ? "Delete legacy shared VM" : "Delete VM"}
+              <Trash2 size={12} /> {perBot ? "Delete Legacy Shared VM" : "Delete VM"}
             </ActionButton>
           </div>
         )}
