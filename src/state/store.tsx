@@ -559,6 +559,7 @@ export type Action =
   | { type: "switchGroupTask"; groupId: string; threadId: string }
   | { type: "renameGroupTask"; groupId: string; threadId: string; title: string }
   | { type: "moveGroupTask"; groupId: string; threadId: string; toGroupId: string }
+  | { type: "moveGroupTaskToBot"; groupId: string; threadId: string; botId: string }
   | { type: "deleteGroupTask"; groupId: string; threadId: string }
   | { type: "toggleReaction"; threadId: string; messageId: string; emoji: string }
   | { type: "interruptGroup"; groupId: string }
@@ -1308,6 +1309,34 @@ export function reducer(state: AppState, action: Action): AppState {
         }),
       };
     }
+    case "moveGroupTaskToBot": {
+      const source = state.groups.find((group) => group.id === action.groupId);
+      const moving = (source?.tasks ?? []).find((task) => task.threadId === action.threadId);
+      if (!moving || !source || (source.tasks ?? []).length < 2) return state;
+      return {
+        ...state,
+        groups: state.groups.map((group) => {
+          if (group.id !== action.groupId) return group;
+          const remaining = (group.tasks ?? []).filter((task) => task.threadId !== action.threadId);
+          return {
+            ...group,
+            tasks: remaining,
+            threadId: group.threadId === action.threadId ? remaining[0]!.threadId : group.threadId,
+          };
+        }),
+        bots: state.bots.map((bot) =>
+          bot.id === action.botId
+            ? {
+                ...bot,
+                tasks: [
+                  { threadId: moving.threadId, title: moving.title, createdAt: moving.createdAt },
+                  ...(bot.tasks ?? []),
+                ],
+              }
+            : bot,
+        ),
+      };
+    }
     case "taskSwitched":
       return updateBot(state, action.bot.id, (bot) => ({ ...bot, ...action.bot, messages: action.bot.messages ?? [] }));
     case "newBot":
@@ -1796,6 +1825,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, {
             method: "PATCH",
             body: JSON.stringify({ groupId: action.toGroupId }),
+          }).catch(showError);
+          break;
+        case "moveGroupTaskToBot":
+          api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ botId: action.botId }),
           }).catch(showError);
           break;
         case "deleteGroupTask":

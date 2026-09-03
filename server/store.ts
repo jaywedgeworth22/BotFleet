@@ -921,6 +921,49 @@ export class Store {
     return [from, to];
   }
 
+  /** Move a channel's conversation to a bot, where it becomes one of that
+   * bot's own threads.
+   *
+   * The thread id survives, so the transcript comes across whole — what
+   * changes is who answers next.  The conversation arrives without resume
+   * cursors because those belong to the channel's turns, not this bot's:
+   * the next turn starts a fresh provider session over the same history. */
+  moveGroupTaskToBot(groupId: string, threadId: string, botId: string): {
+    group: GroupRecord;
+    bot: BotRecord;
+  } | null {
+    const group = this.group(groupId);
+    const bot = this.bot(botId);
+    if (!group || !bot || group.dm) return null;
+    if (!group.tasks || group.tasks.length < 2) return null;
+    const task = group.tasks.find((entry) => entry.threadId === threadId);
+    if (!task) return null;
+
+    group.tasks = group.tasks.filter((entry) => entry.threadId !== threadId);
+    if (group.threadId === threadId) {
+      const next = group.tasks[0]!;
+      group.threadId = next.threadId;
+      group.pinnedCwd = next.pinnedCwd;
+      group.pinnedMessageId = next.pinnedMessageId;
+    }
+    bot.tasks = [
+      {
+        threadId: task.threadId,
+        title: task.title,
+        createdAt: task.createdAt,
+        resumeCursors: {},
+        ...(task.pinnedCwd === undefined ? {} : { cwd: task.pinnedCwd }),
+      },
+      ...(bot.tasks ?? []),
+    ];
+
+    this.saveGroups();
+    this.saveBots();
+    this.emit({ type: "group", groupId: group.id });
+    this.emit({ type: "bot", botId: bot.id });
+    return { group, bot };
+  }
+
   deleteGroupTask(groupId: string, threadId: string): GroupRecord | null {
     const group = this.group(groupId);
     if (!group || group.dm || !group.tasks || group.tasks.length < 2) return null;
