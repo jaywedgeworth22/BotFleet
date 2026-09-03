@@ -20,6 +20,18 @@ export function TurnPresence({
   const [mounted, setMounted] = useState(visible);
   const [phase, setPhase] = useState<"think" | "answer" | "out">(answering ? "answer" : "think");
   const wasAnswering = useRef(answering);
+  const [elapsed, setElapsed] = useState(0);
+
+  useEffect(() => {
+    if (visible && phase === "think") {
+      setElapsed(0);
+      const start = Date.now();
+      const timer = setInterval(() => {
+        setElapsed(Math.max(1, Math.floor((Date.now() - start) / 1000)));
+      }, 1000);
+      return () => clearInterval(timer);
+    }
+  }, [visible, phase]);
 
   useEffect(() => {
     if (visible) {
@@ -57,7 +69,7 @@ export function TurnPresence({
         {avatar}
         {showWorking ? (
           <span className="thinking-shimmer animate-shimmer text-[13px] leading-none" aria-live="polite">
-            {label}
+            {label}{elapsed > 0 ? ` · ${elapsed}s` : ""}
           </span>
         ) : null}
       </div>

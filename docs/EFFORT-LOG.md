@@ -20,6 +20,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
+- **2026-09-02 — AG — IN PROGRESS — DeepSeek-style elapsed turn timer in TurnPresence and duration in ActivityRun (branch `ag/elapsed-seconds-display`).**
 - **2026-09-02 — AG — IN PROGRESS — Brand logo crop refinement, Antigravity Gemini mark, Kimi picker filtering, unhide EngineProbe bot (branch `ag/gemini-logo-kimi-filter-probe-sidebar`).**
 - [AG] 2026-09-02 — IN PROGRESS — Fix Vercel deploy errors and enable custom rate limiting (branch `ag/vercel-git-ignore`, worktree `~/apps/botfleet-ag-vercel-fix`). Removed .git from .vercelignore for git diff change detection, updated watch_args to :(top)apps/site in vercel-ignore-hourly.sh, cleaned up duplicate Vercel project, and synced VERCEL_TOKEN.
 - **2026-09-02 — BF-PLUMBER — IN PROGRESS — Live-test BotFleet engines + official quota-chip corpus (branch `grok/quota-chip-corpus`, worktree `~/apps/botfleet-plumber-quota-corpus`).**  Board `a59fcff2`.  Expand matcher to Codex/Cursor/Claude/Gemini/Kimi/DeepSeek official chips.  Near-cap alert: `@Plumber near-cap <engine>`.  <!-- wb-agent-report:a59fcff213d4440490fd53b32891f2da -->
