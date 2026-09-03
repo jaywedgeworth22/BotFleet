@@ -282,9 +282,9 @@ function connectedAppsIntegration(botId: string, threadId: string) {
 
 function qdrantIntegration(botId: string, threadId: string) {
   const qdrantCfg = cfg.qdrant;
-  const url = (qdrantCfg?.url || process.env.QDRANT_URL || "http://127.0.0.1:6333").replace(/\/+$/, "");
-  const apiKey = qdrantCfg?.apiKey || process.env.QDRANT_API_KEY || "";
-  const collection = qdrantCfg?.collection || process.env.QDRANT_COLLECTION || "botfleet-agent-rag";
+  const url = (qdrantCfg?.url || process.env.OMB_RECALL_URL || process.env.RECALL_URL || process.env.QDRANT_URL || "https://recall.jays.services").replace(/\/+$/, "");
+  const apiKey = qdrantCfg?.apiKey || process.env.OMB_RECALL_API_KEY || process.env.RECALL_API_KEY || process.env.QDRANT_API_KEY || "";
+  const collection = qdrantCfg?.collection || process.env.OMB_RECALL_COLLECTION || process.env.RECALL_COLLECTION || process.env.QDRANT_COLLECTION || "fleet-agents";
   const bot = store.bot(botId);
   return {
     command: process.execPath,
@@ -6076,12 +6076,74 @@ const server = createServer(async (req, res) => {
         cooldowns: quotaCooldowns.list(),
       });
     }
-    if (method === "GET" && path === "/api/qdrant/status") {
+    if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {
       const qdrantCfg = cfg.qdrant;
-      const url = (qdrantCfg?.url || process.env.QDRANT_URL || "http://127.0.0.1:6333").replace(/\/+$/, "");
-      const apiKey = qdrantCfg?.apiKey || process.env.QDRANT_API_KEY || "";
-      const collection = qdrantCfg?.collection || process.env.QDRANT_COLLECTION || "botfleet-agent-rag";
+      const url = (qdrantCfg?.url || process.env.OMB_RECALL_URL || process.env.RECALL_URL || process.env.QDRANT_URL || "https://recall.jays.services").replace(/\/+$/, "");
+      const apiKey = qdrantCfg?.apiKey || process.env.OMB_RECALL_API_KEY || process.env.RECALL_API_KEY || process.env.QDRANT_API_KEY || "";
+      const collection = qdrantCfg?.collection || process.env.OMB_RECALL_COLLECTION || process.env.RECALL_COLLECTION || process.env.QDRANT_COLLECTION || "fleet-agents";
+
+      // 1. Check local recall CLI if available (fastest and most accurate on host Mac)
       try {
+        const { execFile } = await import("node:child_process");
+        const { promisify } = await import("node:util");
+        const { existsSync } = await import("node:fs");
+        const { join } = await import("node:path");
+        const { homedir } = await import("node:os");
+        const execFileAsync = promisify(execFile);
+        const candidates = [
+          join(homedir(), ".local", "bin", "recall"),
+          join(homedir(), "apps", "mac-collab", "recall"),
+          join(homedir(), "apps", "fleet-rag", "recall"),
+          "/opt/homebrew/bin/recall",
+          "/usr/local/bin/recall",
+        ];
+        const cli = candidates.find((c) => existsSync(c));
+        if (cli) {
+          const { stdout } = await execFileAsync(cli, ["stats", "--json"], {
+            timeout: 6000,
+            env: {
+              ...process.env,
+              PATH: `${join(homedir(), ".local", "bin")}:${join(homedir(), "apps", "mac-collab")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
+            },
+          });
+          const stats = JSON.parse(stdout);
+          return json(res, 200, {
+            ready: true,
+            source: "fleet-recall",
+            url,
+            collection: stats.collection || collection,
+            pointsCount: stats.points ?? 0,
+            embedderHealthy: stats.embedder_healthy ?? true,
+            status: stats.status || "green",
+          });
+        }
+      } catch {
+        // Fall through to HTTP probe
+      }
+
+      // 2. HTTP Probe: check recall-api health or Qdrant collections
+      try {
+        if (url.includes("recall") || url.includes("services")) {
+          const healthRes = await fetch(`${url}/health`, { signal: AbortSignal.timeout(4000) });
+          if (healthRes.ok) {
+            const healthData = (await healthRes.json()) as {
+              collection?: string;
+              points?: number;
+              backend_ok?: boolean;
+              version?: string;
+            };
+            return json(res, 200, {
+              ready: true,
+              source: "fleet-recall-service",
+              url,
+              collection: healthData.collection || collection,
+              pointsCount: healthData.points ?? 0,
+              backendOk: healthData.backend_ok ?? true,
+              version: healthData.version,
+            });
+          }
+        }
+
         const headers: Record<string, string> = { "Content-Type": "application/json" };
         if (apiKey) headers["api-key"] = apiKey;
         const resList = await fetch(`${url}/collections`, { headers, signal: AbortSignal.timeout(4000) });

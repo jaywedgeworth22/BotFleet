@@ -66,6 +66,9 @@ describe("Qdrant Agent RAG MCP Proxy", () => {
     const toolsResp = JSON.parse(lines[1]);
     expect(toolsResp.id).toBe(2);
     const toolNames = toolsResp.result.tools.map((t: { name: string }) => t.name);
+    expect(toolNames).toContain("recall_search");
+    expect(toolNames).toContain("recall_contribute");
+    expect(toolNames).toContain("recall_stats");
     expect(toolNames).toContain("qdrant_search");
     expect(toolNames).toContain("qdrant_store");
     expect(toolNames).toContain("qdrant_get_context");
