@@ -563,9 +563,8 @@ struct ThreadRow: View {
                     .foregroundStyle(Color.primary)
                     .lineLimit(1)
                 Text(RelativeStamp.list(task.lastActivity ?? task.createdAt))
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.secondary)
-                }
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondary)
             }
             Spacer(minLength: 0)
         }
