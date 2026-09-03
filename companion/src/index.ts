@@ -45,7 +45,11 @@ import { companionOriginSocket, listenCompanionOrigin } from "./origin.ts";
  * number in range is the default — a typo'd port must not become port 0. */
 const num = (value: string | undefined, fallback: number): number => {
   const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 && parsed < 65536 ? parsed : fallback;
+  if (Number.isInteger(parsed) && parsed > 0 && parsed < 65536) return parsed;
+  if (value !== undefined && value !== "") {
+    console.warn(`companion: ignoring invalid port ${JSON.stringify(value)}; using ${fallback}`);
+  }
+  return fallback;
 };
 
 const HARNESS_PORT = num(process.env.OMB_PORT, 8799);

@@ -27,7 +27,11 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-const FILES = sourceFiles(SRC).map((path) => ({ path, text: readFileSync(path, "utf8") }));
+const FILES = sourceFiles(SRC).map((path) => ({
+  path,
+  rel: path.slice(SRC.length + 1).replaceAll("\\", "/"),
+  text: readFileSync(path, "utf8"),
+}));
 
 /** JSX text nodes plus the three attributes that reach a person: a tooltip,
  * a screen-reader name, and the grey text inside an empty field. */
@@ -52,7 +56,7 @@ describe("one nomenclature: Bot, never Agent", () => {
       for (const value of userFacingStrings(text)) {
         if (!/\bagents?\b/i.test(value)) continue;
         if (AGENT_ALLOWED.some((allowed) => value.includes(allowed))) continue;
-        offenders.push(`${path.slice(SRC.length + 1)}: ${value}`);
+        offenders.push(`${path.slice(SRC.length + 1).replaceAll("\\", "/")}: ${value}`);
       }
     }
     expect(offenders).toEqual([]);
@@ -79,7 +83,7 @@ describe("Title Case for controls and headings", () => {
 
   for (const [file, wrong, right] of LABELS) {
     it(`${file} uses "${right}"`, () => {
-      const source = FILES.find((entry) => entry.path.endsWith(file));
+      const source = FILES.find((entry) => entry.rel === file || entry.rel.endsWith(`/${file}`));
       expect(source, `${file} is missing`).toBeDefined();
       expect(source!.text).toContain(right);
       expect(source!.text).not.toContain(wrong);

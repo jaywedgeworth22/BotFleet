@@ -35,7 +35,7 @@ These are features this fork layered on after OpenMausBot.  **All of them are in
 - **Gemini and Antigravity engines** — including Gemini 3.8 Flash, full tool loading, and local computer dispatch on those harnesses after opt-in.
 - **Multi-tier model fallbacks** — first, second, and third choice models per bot.  Quota, usage-cap, and session-limit chips fail over to the saved chain automatically, including after tools already ran and in rooms.  Other streamed error paths are still in review.
 - **Elapsed turn timer** — a live timer on the in-progress turn, plus duration on completed activity runs.
-- **Usage telemetry** — live token consumption (prompt, completion, cache hits) and model costs stream to a Usage Monitor instance you configure, with project and repo classification.
+- **Usage telemetry** — live token consumption (prompt, completion, cache hits) and model costs stream to a Usage Monitor instance you configure, with project and repo classification.  Working-directory classification uses the folder **basename only**, never the full path.
 - **Provider marks and picker filtering** — official-style marks for Grok, Claude, DeepSeek, Gemini/Antigravity, and others; unconfigured models stay out of the picker.
 
 ### Fleet ops, memory, and automation
