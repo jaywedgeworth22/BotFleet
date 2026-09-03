@@ -247,6 +247,13 @@ public enum AvatarCrop: String, Codable, CaseIterable, Hashable, Sendable {
 public struct GroupResponder: Codable, Hashable, Sendable {
     public var kind: String
     public var botId: String?
+
+    // Memberwise initializers are internal to the module; the App target
+    // builds a responder from its picker state, so expose one publicly.
+    public init(kind: String, botId: String? = nil) {
+        self.kind = kind
+        self.botId = botId
+    }
 }
 
 public struct Room: Codable, Hashable, Identifiable, Sendable {
