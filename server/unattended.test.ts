@@ -197,10 +197,10 @@ posixOnly("unattended turns keep asking", () => {
   );
 
   it(
-    "still asks a human when the calendar starts the turn, even with auto mode on",
+    "lets Auto mode answer a calendar turn because the owner scheduled that bot",
     async () => {
-      // The scheduled routine is the other unattended door: nobody is at the
-      // keyboard at 3am either, so the calendar must not inherit Auto mode.
+      // Calendar ticks use the prompt the owner saved.  Auto mode applies;
+      // destructive/sensitive still card.  Webhooks stay unattended.
       const bot = (await api("POST", "/api/bots")).body.bot;
       expect(
         (
@@ -224,9 +224,15 @@ posixOnly("unattended turns keep asking", () => {
       expect(run?.threadId, "the scheduled routine never started a task").toBeTruthy();
 
       const card = await waitForCard(run!.threadId!);
-      expect(card, "a scheduled turn auto-approved instead of asking").not.toBeNull();
-      expect(card.card.requestId).toBeTruthy();
-      expect(card.card.answered).toBeUndefined();
+      expect(card, "the permission-mode engine never asked").not.toBeNull();
+      const deadline = Date.now() + 20_000;
+      let answered = card.card.answered;
+      while (answered === undefined && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 250));
+        const again = await waitForCard(run!.threadId!, 1_000);
+        answered = again?.card?.answered;
+      }
+      expect(answered, "Auto mode should have answered the calendar permission").toBeTruthy();
     },
     60_000,
   );

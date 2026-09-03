@@ -2011,13 +2011,14 @@ async function startTurn(
   if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
   const threadId = opts?.threadId ?? bot.threadId;
   // Nobody is at the keyboard for a turn an outside event started — a
-  // webhook, a resource threshold, the calendar — or for one inherited from
-  // a bot already running unattended. A manual "Run now" is a person
-  // clicking, so it stays attended.
+  // webhook or a resource threshold, whose payload is not the owner's
+  // prompt — or for one inherited from a bot already running unattended.
+  // A calendar tick uses the prompt the owner saved on that bot, so Auto
+  // mode applies (destructive/sensitive still card). A manual "Run now"
+  // is a person clicking, so it stays attended.
   if (
     opts?.automationSource === "webhook" ||
     opts?.automationSource === "resource" ||
-    opts?.automationSource === "schedule" ||
     opts?.unattended
   ) {
     markUnattended(bot.id);
