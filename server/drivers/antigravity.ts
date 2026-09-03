@@ -56,18 +56,17 @@ export interface AntigravityConfig {
 
 // model catalog from `agy models` (agy 1.1.23)
 export const STATIC_ANTIGRAVITY_MODELS: ModelCatalog = {
-  default: "gemini-3.7-flash-high",
+  default: "gemini-3.8-flash-high",
   options: [
-    { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
-    { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
-    // 3.8 ids confirmed against `agy models`
     { id: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)" },
     { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
     { id: "gemini-3.8-flash-low", label: "Gemini 3.8 Flash (Low)" },
-    // 3.7 ids confirmed against the agy 1.1.12 binary's own model table
     { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (High)" },
     { id: "gemini-3.7-flash-medium", label: "Gemini 3.7 Flash (Medium)" },
     { id: "gemini-3.7-flash-low", label: "Gemini 3.7 Flash (Low)" },
+    { id: "gemini-3.6-flash-high", label: "Gemini 3.6 Flash (High)" },
+    { id: "gemini-3.6-flash-medium", label: "Gemini 3.6 Flash (Medium)" },
+    { id: "gemini-3.6-flash-low", label: "Gemini 3.6 Flash (Low)" },
     { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
     { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
     { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
