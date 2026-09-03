@@ -261,6 +261,14 @@ beforeAll(async () => {
     if (child.exitCode !== null) throw new Error(`server exited ${child.exitCode}. stderr:\n${stderr}`);
     await new Promise((r) => setTimeout(r, 150));
   }
+  const boot = await api("GET", "/api/config");
+  if (boot.body.conversationMode !== "simple") {
+    throw new Error(`fresh home should default to simple, got ${String(boot.body.conversationMode)}`);
+  }
+  // The rest of this file exercises extra conversations.  Simple mode
+  // refuses those on purpose, so the suite runs in Projects.
+  const switched = await api("PATCH", "/api/conversation-mode", { conversationMode: "projects" });
+  if (switched.status !== 200) throw new Error("could not enable Projects for the API suite");
 }, 30_000);
 
 afterAll(async () => {
@@ -3467,15 +3475,13 @@ describe("computer control API (who is driving)", () => {
 });
 
 describe("GET /api/quotas", () => {
-  it("returns active quota cooldowns including seeded instance caps", async () => {
+  it("returns active quota cooldowns, without pretending an engine is capped at boot", async () => {
     const res = await fetch(`${BASE}/api/quotas`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as { ok: boolean; cooldowns: Array<{ instanceId: string; error: string }> };
     expect(data.ok).toBe(true);
     expect(Array.isArray(data.cooldowns)).toBe(true);
-    const codex = data.cooldowns.find((c) => c.instanceId === "codex");
-    expect(codex).toBeDefined();
-    expect(codex?.error).toContain("Codex session limit");
+    expect(data.cooldowns.find((c) => c.instanceId === "codex")).toBeUndefined();
   });
 });
 
@@ -3630,6 +3636,35 @@ describe("PATCH /api/terminology", () => {
     expect(res.status).toBe(200);
     const status = await api("GET", "/api/config");
     expect(status.body.profile?.name).not.toBe("Someone Else");
+  });
+});
+
+describe("PATCH /api/conversation-mode", () => {
+  it("stores simple and projects, and reads leftover fleet as projects", async () => {
+    const asSimple = await api("PATCH", "/api/conversation-mode", { conversationMode: "simple" });
+    expect(asSimple.status).toBe(200);
+    expect(asSimple.body.conversationMode).toBe("simple");
+    const asFleet = await api("PATCH", "/api/conversation-mode", { conversationMode: "fleet" });
+    expect(asFleet.status).toBe(200);
+    expect(asFleet.body.conversationMode).toBe("projects");
+    const asProjects = await api("PATCH", "/api/conversation-mode", { conversationMode: "projects" });
+    expect(asProjects.status).toBe(200);
+    expect(asProjects.body.conversationMode).toBe("projects");
+  });
+
+  it("refuses an empty patch and an unknown word", async () => {
+    expect((await api("PATCH", "/api/conversation-mode", {})).status).toBe(400);
+    expect((await api("PATCH", "/api/conversation-mode", { conversationMode: "threads" })).status).toBe(400);
+  });
+
+  it("does not mint a second bot conversation in simple mode", async () => {
+    await api("PATCH", "/api/conversation-mode", { conversationMode: "simple" });
+    const created = await api("POST", "/api/bots");
+    expect(created.status).toBe(201);
+    const botId = created.body.bot.id as string;
+    const extra = await api("POST", `/api/bots/${botId}/tasks`, { title: "Side work" });
+    expect(extra.status).toBe(409);
+    await api("PATCH", "/api/conversation-mode", { conversationMode: "projects" });
   });
 });
 

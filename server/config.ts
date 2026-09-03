@@ -10,6 +10,11 @@ import { writeFileAtomic } from "./atomic.ts";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import {
+  parseConversationMode,
+  STORED_CONVERSATION_MODES,
+  type ConversationMode,
+} from "../shared/conversation-mode.ts";
+import {
   ROOM_LABEL_MAX_LENGTH,
   type CustomRoomLabels,
   type RoomTerminology,
@@ -140,6 +145,7 @@ const appConfigSchema = z.object({
       .optional(),
   }).optional(),
   features: featureConfigSchema.optional(),
+  conversationMode: z.enum(STORED_CONVERSATION_MODES).optional(),
   terminology: z
     .enum(["channels", "groups", "projects", "apps", "topics", "repos", "custom"])
     .optional(),
@@ -185,6 +191,8 @@ export interface AppConfig {
   };
   /** Opt-in product experiments. Every flag defaults to disabled. */
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
+  /** How the roster and threads are laid out.  Absent means simple. */
+  conversationMode?: ConversationMode;
   /** What this person calls a room: one of the presets, or "custom" with a
    * word of their own in `terminologyCustom`.  Absent means channels. */
   terminology?: RoomTerminology;
@@ -193,12 +201,19 @@ export interface AppConfig {
   terminologyCustom?: CustomRoomLabels;
   instances?: InstanceConfigMap;
 }
-export type ConfigPatch = z.output<typeof appConfigPatchSchema>;
+export type ConfigPatch = Omit<z.output<typeof appConfigPatchSchema>, "conversationMode"> & {
+  conversationMode?: ConversationMode;
+};
 
 export function parseStoredConfig(value: JsonValue): AppConfig {
   const parsed = appConfigSchema.safeParse(value);
   if (!parsed.success) throw new Error(schemaIssue(parsed.error, "Invalid stored configuration"));
-  return parsed.data;
+  return {
+    ...parsed.data,
+    conversationMode: parsed.data.conversationMode === undefined
+      ? undefined
+      : parseConversationMode(parsed.data.conversationMode),
+  };
 }
 
 export function parseConfigPatch(value: JsonValue): ConfigPatch {
@@ -206,7 +221,12 @@ export function parseConfigPatch(value: JsonValue): ConfigPatch {
   if (!parsed.success) {
     throw Object.assign(new Error(schemaIssue(parsed.error, "Invalid configuration")), { status: 400 });
   }
-  return parsed.data;
+  return {
+    ...parsed.data,
+    conversationMode: parsed.data.conversationMode === undefined
+      ? undefined
+      : parseConversationMode(parsed.data.conversationMode),
+  };
 }
 
 export function vpsSshAlias(cfg: AppConfig): string | null {

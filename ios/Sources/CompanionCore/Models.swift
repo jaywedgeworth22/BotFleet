@@ -180,6 +180,7 @@ public struct BotTask: Codable, Hashable, Sendable {
     /// Last message in this task's thread. Absent on older harnesses.
     public var lastActivity: Double?
     public var usage: TaskUsage?
+    public var modelSelection: ModelSelection?
 }
 
 public struct Bot: Codable, Hashable, Identifiable, Sendable {
@@ -536,6 +537,20 @@ public struct ConfigStatus: Codable, Sendable {
     /// The finished words, resolved by the harness so every client agrees.
     /// Absent only when talking to a harness older than this feature.
     public var roomLabels: RoomLabels?
+    /// `simple` or `projects`.  Absent means simple.  A leftover `fleet`
+    /// value is treated as projects.
+    public var conversationMode: String?
+
+    public var isProjectsMode: Bool {
+        let raw = conversationMode?.lowercased()
+        return raw == "projects" || raw == "fleet"
+    }
+
+    public var allowsMultipleBotThreads: Bool { isProjectsMode }
+
+    public var primarySingular: String { isProjectsMode ? "Thread" : "Bot" }
+    public var primaryPlural: String { isProjectsMode ? "Threads" : "Bots" }
+    public var newPrimaryLabel: String { isProjectsMode ? "New Thread" : "New Bot" }
 
     public var roomTerminologyLabel: String {
         roomLabels?.singular ?? Self.presetLabels(terminology).singular

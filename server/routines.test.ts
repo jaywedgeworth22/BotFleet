@@ -401,6 +401,24 @@ describe("RoutineManager", () => {
     expect(h.taskActivations).toEqual([true]);
   });
 
+  it("writes every event into the bot's one conversation in simple mode", async () => {
+    const h = harness();
+    h.options.conversationMode = () => "simple";
+    h.options.defaultThread = () => "chat-thread";
+    h.manager.enqueueWebhook({
+      webhookId: "hook-1",
+      webhookName: "New ticket",
+      prompt: "Handle ticket 42",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d-simple",
+      receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
+    });
+    await h.manager.tick();
+    expect(h.started).toEqual([{ botId: "maus-webhook", threadId: "chat-thread", prompt: "Handle ticket 42" }]);
+    expect(h.taskActivations).toEqual([]);
+  });
+
   it("puts every scheduled routine for a bot on one Routines thread", async () => {
     const h = harness();
     const morning = h.manager.create({

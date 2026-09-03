@@ -14,6 +14,12 @@ import {
   type RoomLabels,
   type RoomTerminology,
 } from "../../shared/terminology";
+import {
+  CONVERSATION_MODE_COPY,
+  CONVERSATION_MODES,
+  parseConversationMode,
+  type ConversationMode,
+} from "../../shared/conversation-mode";
 import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
 import { showToolCallsEnabled, skillRecorderEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
 import { ApiKeyRow, VpsConnection } from "./ApiKeys";
@@ -36,7 +42,7 @@ const SECTIONS: Array<{
   icon: typeof User;
   keywords: string[];
 }> = [
-  { id: "general", label: "General", icon: User, keywords: ["profile", "name", "email", "skin", "theme", "appearance", "analytics", "updates", "tools", "tool calls"] },
+  { id: "general", label: "General", icon: User, keywords: ["profile", "name", "email", "skin", "theme", "appearance", "analytics", "updates", "tools", "tool calls", "simple", "projects", "threads", "workspace"] },
   { id: "connections", label: "Connections", icon: KeyRound, keywords: ["keys", "api", "composio", "box", "xai", "vps", "elevenlabs", "voice", "tts", "speech"] },
   { id: "engines", label: "Engines", icon: Terminal, keywords: ["models", "claude", "grok", "providers", "cli"] },
   { id: "companion", label: "Phone", icon: Smartphone, keywords: ["companion", "phone", "pair", "mobile"] },
@@ -270,6 +276,55 @@ function UpdateNotificationsRow() {
       >
         <span className={cnKnob(on)} />
       </button>
+    </Card>
+  );
+}
+
+function ConversationModeRow() {
+  const { state, dispatch } = useStore();
+  const current = parseConversationMode(state.config?.conversationMode);
+  const [saving, setSaving] = useState(false);
+  const choose = async (conversationMode: ConversationMode) => {
+    if (saving || conversationMode === current) return;
+    setSaving(true);
+    try {
+      const config: ConfigStatus = await api("/api/conversation-mode", {
+        method: "PATCH",
+        body: JSON.stringify({ conversationMode }),
+      });
+      dispatch({ type: "configStatus", config });
+    } catch {
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <Card
+      title="Workspace Layout"
+      subtitle="Simple is Grok-style: named bots with one conversation each, plus group threads.  Projects hide named bots and treat the room word as a category that any number of threads can sit under."
+    >
+      <div className="flex flex-col gap-2">
+        {CONVERSATION_MODES.map((mode) => {
+          const copy = CONVERSATION_MODE_COPY[mode];
+          const selected = current === mode;
+          return (
+            <button
+              key={mode}
+              type="button"
+              disabled={saving}
+              aria-pressed={selected}
+              onClick={() => void choose(mode)}
+              className={cn(
+                "rounded-lg border px-3 py-2.5 text-left",
+                selected ? "border-accent bg-accent/10" : "border-hairline/40 hover:bg-raised/60",
+              )}
+            >
+              <div className="text-[14px] font-medium text-ink">{copy.title}</div>
+              <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">{copy.subtitle}</div>
+            </button>
+          );
+        })}
+      </div>
     </Card>
   );
 }
@@ -743,6 +798,7 @@ export function SettingsModal() {
                 <Card title="Skin" subtitle="Applies instantly and is remembered on this machine.">
                   <SkinPicker />
                 </Card>
+                <ConversationModeRow />
                 <TerminologyRow />
                 <Card title="Channel Turns" subtitle="Set one maximum duration for every bot turn in a channel.">
                   <RoomTurnTimeoutSettings />

@@ -84,6 +84,22 @@ struct SettingsView: View {
                     }
 
                     Picker(selection: Binding(
+                        get: { session.config?.isProjectsMode == true ? "projects" : "simple" },
+                        set: { mode in
+                            Task { _ = await session.updateConversationMode(mode) }
+                        }
+                    )) {
+                        Text("Simple").tag("simple")
+                        Text("Projects").tag("projects")
+                    } label: {
+                        Label {
+                            Text("Workspace Layout")
+                        } icon: {
+                            SettingsIcon(symbol: "square.grid.2x2", color: .teal)
+                        }
+                    }
+
+                    Picker(selection: Binding(
                         get: { session.config?.terminology ?? "channels" },
                         set: { newTerm in
                             Task {
@@ -117,6 +133,12 @@ struct SettingsView: View {
                     if session.config?.terminology == "custom" {
                         CustomRoomTermFields(session: session)
                     }
+                } footer: {
+                    Text(
+                        session.config?.isProjectsMode == true
+                            ? "Projects hides named bots.  That word is a category that any number of threads can sit under."
+                            : "Simple is one conversation per bot.  That word is a group thread invited bots and you can all write in."
+                    )
                 }
             }
         }

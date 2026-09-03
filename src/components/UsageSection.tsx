@@ -104,7 +104,7 @@ export function UsageSection() {
 
   return (
     <div className="flex flex-col gap-4">
-      <Card title="Usage" subtitle="Tokens and cost per bot, added up from every settled turn. Only engines that report a price show one.">
+      <Card title="Usage" subtitle="Tokens and cost per bot, added up from every settled turn.  A turn that ran on a fallback is billed as that fallback reported it, not as the bot's current model.  Only engines that report a price show one.">
         {rows.length === 0 ? (
           <div className="text-[13px] text-ink-secondary">Nothing spent yet — figures appear after a bot's first turn.</div>
         ) : (

@@ -70,7 +70,7 @@ struct RoomAvatarView: View {
     @State private var image: UIImage?
     @State private var failed = false
 
-    private var crop: AvatarCrop { room.avatarCrop ?? .circle }
+    private var crop: AvatarCrop { room.avatarCrop ?? .rounded }
     
     private var mask: AnyShape {
         switch crop {
@@ -95,7 +95,7 @@ struct RoomAvatarView: View {
         .frame(width: size, height: size)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(room.name) avatar")
-        .task(id: room.avatarUrl) {
+        .task(id: "\(room.avatarUrl ?? "")|\(crop.rawValue)") {
             image = nil
             failed = false
             guard room.avatarUrl != nil else { return }
