@@ -197,10 +197,10 @@ posixOnly("unattended turns keep asking", () => {
   );
 
   it(
-    "still asks a human when the calendar starts the turn, even with auto mode on",
+    "lets Auto mode answer a calendar turn because the owner scheduled that bot",
     async () => {
-      // The scheduled routine is the other unattended door: nobody is at the
-      // keyboard at 3am either, so the calendar must not inherit Auto mode.
+      // Calendar ticks use the prompt the owner saved.  Auto mode applies;
+      // destructive/sensitive still card.  Webhooks stay unattended.
       const bot = (await api("POST", "/api/bots")).body.bot;
       expect(
         (
@@ -223,10 +223,28 @@ posixOnly("unattended turns keep asking", () => {
       const run = await waitForRoutineRun(created.body.routine.id, (r) => Boolean(r.threadId));
       expect(run?.threadId, "the scheduled routine never started a task").toBeTruthy();
 
-      const card = await waitForCard(run!.threadId!);
-      expect(card, "a scheduled turn auto-approved instead of asking").not.toBeNull();
-      expect(card.card.requestId).toBeTruthy();
-      expect(card.card.answered).toBeUndefined();
+      // Auto mode answers the provider request without minting an options
+      // card — the transcript chip is `auto-approved …`.  An unanswered
+      // card would mean the calendar tick was still treated as unattended.
+      const deadline = Date.now() + 30_000;
+      let autoChip: { tool?: { name?: string } } | undefined;
+      while (Date.now() < deadline) {
+        const { body } = await api("GET", `/api/threads/${run!.threadId}/messages`);
+        const messages = body.messages ?? [];
+        autoChip = messages.find(
+          (m: { kind: string; tool?: { name?: string } }) =>
+            m.kind === "activity" && String(m.tool?.name ?? "").startsWith("auto-approved"),
+        );
+        if (autoChip) break;
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      expect(autoChip, "Auto mode never answered the calendar permission").toBeTruthy();
+      const { body: late } = await api("GET", `/api/threads/${run!.threadId}/messages`);
+      const unanswered = (late.messages ?? []).find(
+        (m: { kind: string; card?: { requestId?: string; answered?: string } }) =>
+          m.kind === "options" && m.card?.requestId && m.card.answered === undefined,
+      );
+      expect(unanswered, "calendar Auto left an unanswered card").toBeUndefined();
     },
     60_000,
   );

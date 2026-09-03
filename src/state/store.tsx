@@ -735,6 +735,11 @@ function dismissOnboardingCard(state: AppState, botId: string): AppState {
   return quiz ? patchCard(state, botId, quiz.id, { dismissed: true }) : state;
 }
 
+/** Sticky top-bar 502 from the attached-UI shim.  Clear it once the harness answers. */
+export function isHarnessUnreachableError(message: string | null | undefined): boolean {
+  return typeof message === "string" && /harness on port \d+ is not reachable/i.test(message);
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "hydrate": {
@@ -758,6 +763,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ),
         computerControl: action.computerControl,
         selectedId,
+        error: isHarnessUnreachableError(state.error) ? null : state.error,
       };
     }
     case "showRoutines":
@@ -1073,7 +1079,14 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...next, botEpoch: bumpEpoch(next.botEpoch, action.botId) };
     }
     case "connected":
-      return { ...state, connected: action.value };
+      return {
+        ...state,
+        connected: action.value,
+        // A 502 from the UI shim sticks in `error` even after the always-on
+        // harness answers again.  SSE open (or a later hydrate) is proof
+        // the banner is stale.
+        error: action.value && isHarnessUnreachableError(state.error) ? null : state.error,
+      };
     case "error":
       return {
         ...(action.message && state.selectedId

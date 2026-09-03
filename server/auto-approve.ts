@@ -18,9 +18,13 @@ const DESTRUCTIVE = [
   /\bgit\s+push\s+[^|]*--force(-with-lease)?\b|\bgit\s+reset\s+--hard\b/i,
   /\bDROP\s+(TABLE|DATABASE)\b|\bTRUNCATE\s+TABLE\b/i,
   /\bsudo\s+rm\b|\bchmod\s+-R\s+777\s+\//i,
-  // Pipe a fetch into a shell or interpreter.  Auto / Always-allow must
-  // never cover `curl | sh`, `wget | bash`, or `curl | python -c`.
-  /\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?((ba)?sh|bash|zsh|fish|ksh|python3?|perl|ruby|node)\b/i,
+  // Pipe a fetch into a shell.  Auto / Always-allow must never cover
+  // `curl | sh` or `wget | bash`.
+  /\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?((ba)?sh|bash|zsh|fish|ksh)\b/i,
+  // Pipe a fetch into an interpreter that reads the PROGRAM from stdin
+  // (`curl | python3`, `curl | node`).  `python3 -c` / `node -e` keep the
+  // program inline, so the pipe is data — JSON parse, jq-style filters.
+  /\b(curl|wget)\b[^|\n]*\|\s*(sudo\s+)?(python3?|perl|ruby|node)(?!\s+-[ceE])\b/i,
   // The same download-and-run spelled without a pipe: `bash -c "$(curl …)"`,
   // `eval "$(wget …)"`, `sh <(curl …)`, `source <(curl …)`.  A plain
   // `echo "$(curl …)"` captures the output without running it and stays out.

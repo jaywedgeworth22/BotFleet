@@ -27,7 +27,7 @@ struct TaskManagerView: View {
                         }
                     }
                 } footer: {
-                    Text("A task is one conversation and result. Routines create fresh tasks on a schedule.")
+                    Text("A task is one conversation and result.\u{00A0} Routines continue the previous task on a schedule.")
                 }
 
                 Section("Tasks") {
