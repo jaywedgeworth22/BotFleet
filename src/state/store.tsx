@@ -1444,13 +1444,21 @@ export const initialState: AppState = {
 
 // ── API client ─────────────────────────────────────────────────────────
 export async function api(path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(path, {
-    headers: { "content-type": "application/json" },
-    ...init,
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-  return body;
+  const method = (init?.method ?? "GET").toUpperCase();
+  const retryable = method === "GET" || method === "HEAD";
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < (retryable ? 2 : 1); attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 200));
+    const res = await fetch(path, {
+      headers: { "content-type": "application/json" },
+      ...init,
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) return body;
+    lastError = new Error(body.error ?? `${res.status} ${res.statusText}`);
+    if (res.status !== 502) break;
+  }
+  throw lastError ?? new Error("request failed");
 }
 
 /** Per-frame stream state lives in its OWN context: token frames update only

@@ -125,6 +125,10 @@ export interface RoutineManagerOptions {
   emit?: (payload: Record<string, unknown>) => void;
   botState: (botId: string) => "ready" | "busy" | "missing";
   createTask: (botId: string, title: string, activate?: boolean) => { threadId: string } | null;
+  /** True when this bot still has a task for `threadId`. Used so a later
+   * scheduled run of the same routine can keep writing in the previous thread
+   * instead of minting a new one every tick. */
+  taskExists?: (botId: string, threadId: string) => boolean;
   startTurn: (
     botId: string,
     threadId: string,
@@ -665,12 +669,28 @@ export class RoutineManager {
         }
         // A webhook is an incoming message, so make its task the bot's live
         // chat immediately. Scheduled work remains detached and unobtrusive.
-        const task = this.options.createTask(run.botId, run.routineName, run.triggerSource === "webhook");
-        if (!task) {
-          this.failRun(run, "Could not create a task for this run");
-          continue;
+        // Later ticks of the same scheduled routine keep the previous thread
+        // so the transcript is one conversation, not a new task every morning.
+        let threadId: string | undefined;
+        if (run.triggerSource !== "webhook") {
+          const previous = [...this.runs].reverse().find(
+            (candidate) =>
+              candidate.routineId === run.routineId &&
+              candidate.id !== run.id &&
+              Boolean(candidate.threadId) &&
+              this.options.taskExists?.(run.botId, candidate.threadId!),
+          );
+          threadId = previous?.threadId;
         }
-        run.threadId = task.threadId;
+        if (!threadId) {
+          const task = this.options.createTask(run.botId, run.routineName, run.triggerSource === "webhook");
+          if (!task) {
+            this.failRun(run, "Could not create a task for this run");
+            continue;
+          }
+          threadId = task.threadId;
+        }
+        run.threadId = threadId;
         run.startedAt = this.now();
         run.status = "running";
         this.save();
@@ -678,20 +698,20 @@ export class RoutineManager {
         try {
           const prompt = run.prompt ?? this.routines.find((r) => r.id === run.routineId)?.prompt;
           if (!prompt) {
-            this.failThread(task.threadId, "The routine was deleted before it could start");
+            this.failThread(threadId, "The routine was deleted before it could start");
             continue;
           }
           const triggerSource = run.triggerSource ?? (run.manual ? "manual" : "schedule");
           await this.options.startTurn(
             run.botId,
-            task.threadId,
+            threadId,
             prompt,
             run.runOn ?? "maus",
             triggerSource,
-            (message) => this.failThread(task.threadId, message),
+            (message) => this.failThread(threadId, message),
           );
         } catch (error) {
-          this.failThread(task.threadId, error instanceof Error ? error.message : String(error));
+          this.failThread(threadId, error instanceof Error ? error.message : String(error));
         }
       }
     } finally {

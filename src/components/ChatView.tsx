@@ -44,6 +44,7 @@ import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-f
 import { stateForBot } from "@/lib/mascot";
 import { showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
+import { modelChip } from "@/lib/model-chip";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
@@ -961,6 +962,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     return () => clearTimeout(timer);
   }, [lastMessage?.id, lastMessage?.role, lastMessage?.kind, lastMessage?.text]);
   const presenceVisible = waiting || popping !== null;
+  const presenceModel = modelChip(bot, state.instances);
 
   // regenerate = fork the last user message with the same text — reuses the
   // existing branch machinery, so the old answer stays reachable via ‹ ›
@@ -1257,6 +1259,8 @@ export function ChatView({ bot }: { bot: Bot }) {
             visible={presenceVisible}
             label={activityLabel}
             answering={popping !== null}
+            modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} size={14} /> : undefined}
+            modelName={presenceModel?.name}
           >
             {popping ? (
               <div className={cn(BUBBLE_WIDTH, "rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink")}>
