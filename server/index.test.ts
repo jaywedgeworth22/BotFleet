@@ -265,10 +265,20 @@ beforeAll(async () => {
   if (boot.body.conversationMode !== "simple") {
     throw new Error(`fresh home should default to simple, got ${String(boot.body.conversationMode)}`);
   }
-  // The rest of this file exercises extra conversations.  Simple mode
-  // refuses those on purpose, so the suite runs in Projects.
-  const switched = await api("PATCH", "/api/conversation-mode", { conversationMode: "projects" });
-  if (switched.status !== 200) throw new Error("could not enable Projects for the API suite");
+  const solo = await api("POST", "/api/bots");
+  const blocked = await api("POST", `/api/bots/${solo.body.bot.id}/tasks`, { title: "Side work" });
+  if (blocked.status !== 409) {
+    throw new Error(`simple mode should refuse extra conversations, got ${blocked.status}`);
+  }
+  const empty = await api("PATCH", "/api/conversation-mode", {});
+  if (empty.status !== 400) throw new Error("empty conversation-mode patch should 400");
+  const unknown = await api("PATCH", "/api/conversation-mode", { conversationMode: "threads" });
+  if (unknown.status !== 400) throw new Error("unknown conversation-mode should 400");
+  const asFleet = await api("PATCH", "/api/conversation-mode", { conversationMode: "fleet" });
+  if (asFleet.status !== 200 || asFleet.body.conversationMode !== "projects") {
+    throw new Error("leftover fleet should read as projects");
+  }
+  // The rest of this file exercises extra conversations, so stay in Projects.
 }, 30_000);
 
 afterAll(async () => {
@@ -3636,35 +3646,6 @@ describe("PATCH /api/terminology", () => {
     expect(res.status).toBe(200);
     const status = await api("GET", "/api/config");
     expect(status.body.profile?.name).not.toBe("Someone Else");
-  });
-});
-
-describe("PATCH /api/conversation-mode", () => {
-  it("stores simple and projects, and reads leftover fleet as projects", async () => {
-    const asSimple = await api("PATCH", "/api/conversation-mode", { conversationMode: "simple" });
-    expect(asSimple.status).toBe(200);
-    expect(asSimple.body.conversationMode).toBe("simple");
-    const asFleet = await api("PATCH", "/api/conversation-mode", { conversationMode: "fleet" });
-    expect(asFleet.status).toBe(200);
-    expect(asFleet.body.conversationMode).toBe("projects");
-    const asProjects = await api("PATCH", "/api/conversation-mode", { conversationMode: "projects" });
-    expect(asProjects.status).toBe(200);
-    expect(asProjects.body.conversationMode).toBe("projects");
-  });
-
-  it("refuses an empty patch and an unknown word", async () => {
-    expect((await api("PATCH", "/api/conversation-mode", {})).status).toBe(400);
-    expect((await api("PATCH", "/api/conversation-mode", { conversationMode: "threads" })).status).toBe(400);
-  });
-
-  it("does not mint a second bot conversation in simple mode", async () => {
-    await api("PATCH", "/api/conversation-mode", { conversationMode: "simple" });
-    const created = await api("POST", "/api/bots");
-    expect(created.status).toBe(201);
-    const botId = created.body.bot.id as string;
-    const extra = await api("POST", `/api/bots/${botId}/tasks`, { title: "Side work" });
-    expect(extra.status).toBe(409);
-    await api("PATCH", "/api/conversation-mode", { conversationMode: "projects" });
   });
 });
 

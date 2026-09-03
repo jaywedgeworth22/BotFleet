@@ -221,12 +221,10 @@ export function parseConfigPatch(value: JsonValue): ConfigPatch {
   if (!parsed.success) {
     throw Object.assign(new Error(schemaIssue(parsed.error, "Invalid configuration")), { status: 400 });
   }
-  return {
-    ...parsed.data,
-    conversationMode: parsed.data.conversationMode === undefined
-      ? undefined
-      : parseConversationMode(parsed.data.conversationMode),
-  };
+  const { conversationMode: rawMode, ...rest } = parsed.data;
+  return rawMode === undefined
+    ? rest
+    : { ...rest, conversationMode: parseConversationMode(rawMode) };
 }
 
 export function vpsSshAlias(cfg: AppConfig): string | null {
@@ -428,6 +426,9 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     disk[key] = merged;
   }
   if (checkedPatch.vps !== undefined) disk.vps = normalizeVpsConfig(checkedPatch.vps);
+  if (checkedPatch.conversationMode !== undefined) disk.conversationMode = checkedPatch.conversationMode;
+  if (checkedPatch.terminology !== undefined) disk.terminology = checkedPatch.terminology;
+  if (checkedPatch.terminologyCustom !== undefined) disk.terminologyCustom = checkedPatch.terminologyCustom;
   if (checkedPatch.instances) {
     const currentInstances = jsonObjectSchema.safeParse(disk.instances);
     const diskInstances: JsonObject = currentInstances.success ? currentInstances.data : {};
