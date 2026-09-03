@@ -223,16 +223,28 @@ posixOnly("unattended turns keep asking", () => {
       const run = await waitForRoutineRun(created.body.routine.id, (r) => Boolean(r.threadId));
       expect(run?.threadId, "the scheduled routine never started a task").toBeTruthy();
 
-      const card = await waitForCard(run!.threadId!);
-      expect(card, "the permission-mode engine never asked").not.toBeNull();
-      const deadline = Date.now() + 20_000;
-      let answered = card.card.answered;
-      while (answered === undefined && Date.now() < deadline) {
+      // Auto mode answers the provider request without minting an options
+      // card — the transcript chip is `auto-approved …`.  An unanswered
+      // card would mean the calendar tick was still treated as unattended.
+      const deadline = Date.now() + 30_000;
+      let autoChip: { tool?: { name?: string } } | undefined;
+      while (Date.now() < deadline) {
+        const { body } = await api("GET", `/api/threads/${run!.threadId}/messages`);
+        const messages = body.messages ?? [];
+        autoChip = messages.find(
+          (m: { kind: string; tool?: { name?: string } }) =>
+            m.kind === "activity" && String(m.tool?.name ?? "").startsWith("auto-approved"),
+        );
+        if (autoChip) break;
         await new Promise((r) => setTimeout(r, 250));
-        const again = await waitForCard(run!.threadId!, 1_000);
-        answered = again?.card?.answered;
       }
-      expect(answered, "Auto mode should have answered the calendar permission").toBeTruthy();
+      expect(autoChip, "Auto mode never answered the calendar permission").toBeTruthy();
+      const { body: late } = await api("GET", `/api/threads/${run!.threadId}/messages`);
+      const unanswered = (late.messages ?? []).find(
+        (m: { kind: string; card?: { requestId?: string; answered?: string } }) =>
+          m.kind === "options" && m.card?.requestId && m.card.answered === undefined,
+      );
+      expect(unanswered, "calendar Auto left an unanswered card").toBeUndefined();
     },
     60_000,
   );
