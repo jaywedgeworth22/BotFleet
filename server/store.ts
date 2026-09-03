@@ -217,6 +217,9 @@ export interface TaskRecord {
    * a folder that moved under a live session would break resume. `null`
    * = pinned to the default (home); absent = not pinned yet. */
   cwd?: string | null;
+  /** Optional engine for this conversation.  Absent means the bot's own
+   * modelSelection.  Used in Projects mode so a thread is not a named bot. */
+  modelSelection?: ModelSelection;
 }
 
 export interface TaskUsage {
@@ -1523,9 +1526,25 @@ export class Store {
   }
 
   renameTask(botId: string, threadId: string, title: string): TaskRecord | null {
+    return this.patchTask(botId, threadId, { title });
+  }
+
+  /** Rename and/or set a per-thread model.  `modelSelection: null` clears
+   * the override so the bot's engine is used again. */
+  patchTask(
+    botId: string,
+    threadId: string,
+    patch: { title?: string; modelSelection?: ModelSelection | null },
+  ): TaskRecord | null {
     const task = this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
     if (!task) return null;
-    task.title = title.trim().slice(0, 80) || UNTITLED_TASK;
+    if (patch.title !== undefined) {
+      task.title = patch.title.trim().slice(0, 80) || UNTITLED_TASK;
+    }
+    if (patch.modelSelection !== undefined) {
+      if (patch.modelSelection === null) delete task.modelSelection;
+      else task.modelSelection = patch.modelSelection;
+    }
     this.saveBots();
     this.emit({ type: "bot", botId });
     return task;

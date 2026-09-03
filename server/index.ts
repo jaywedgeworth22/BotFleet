@@ -12,6 +12,10 @@ import { z } from "zod";
 import { BOT_AVATAR_CROPS, botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
 import { DEFAULT_ROOM_TERMINOLOGY, resolveRoomLabels } from "../shared/terminology.ts";
 import {
+  allowsMultipleBotThreads,
+  parseConversationMode,
+} from "../shared/conversation-mode.ts";
+import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
   credentialIsConfigured,
@@ -206,7 +210,6 @@ telemetry.configure(() => ({
 }));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
-quotaCooldowns.recordInstanceCap("codex", "*", { error: "Codex session limit / usage cap reached" });
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 
@@ -2031,7 +2034,8 @@ async function startTurn(
   // a task takes its name from the first thing you asked it to do
   if (text.trim() && !opts?.cardContinuation) store.titleTaskFromFirstMessage(bot.id, text, threadId);
 
-  const selection = opts?.modelSelection ?? quotaCooldowns.resolveModel(bot.id, bot.modelSelection).selection;
+  const selection = opts?.modelSelection
+    ?? quotaCooldowns.resolveModel(bot.id, task.modelSelection ?? bot.modelSelection).selection;
   // A fresh user turn re-arms both the saved chain and the stop latch; the
   // fallback dispatch (which carries modelSelection) is a continuation of the
   // turn that just settled, so it must inherit them instead.
@@ -2509,6 +2513,8 @@ routines = new RoutineManager({
     const bot = store.bot(botId);
     return !bot ? "missing" : bot.busy ? "busy" : "ready";
   },
+  conversationMode: () => parseConversationMode(cfg.conversationMode),
+  defaultThread: (botId) => store.bot(botId)?.threadId,
   createTask: (botId, title, activate = false) => {
     const task = store.createTask(botId, title, activate);
     const bot = store.bot(botId);
@@ -3547,6 +3553,7 @@ function configStatus() {
     // Resolved here so the Mac app and the phone render the same words
     // without each re-deriving them from the key and drifting apart.
     roomLabels: resolveRoomLabels(cfg.terminology, cfg.terminologyCustom),
+    conversationMode: parseConversationMode(cfg.conversationMode),
     features: {
       skillRecorder: skillRecorderEnabled(cfg),
       showToolCalls: showToolCallsEnabled(cfg),
@@ -4964,6 +4971,11 @@ const server = createServer(async (req, res) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
+      if (!allowsMultipleBotThreads(parseConversationMode(cfg.conversationMode))) {
+        return json(res, 409, {
+          error: "this workspace uses one conversation per channel — turn on Fleet or Projects in Settings to add another",
+        });
+      }
       const task = store.createGroupTask(group.id, typeof body.title === "string" ? body.title : undefined);
       if (!task) return json(res, 500, { error: "couldn't create that task" });
       const fresh = groupWithThread(store.group(group.id)!);
@@ -6145,6 +6157,11 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
+      if (!allowsMultipleBotThreads(parseConversationMode(cfg.conversationMode))) {
+        return json(res, 409, {
+          error: "this workspace uses one conversation per bot — turn on Fleet or Projects in Settings to add another",
+        });
+      }
       if (bot.busy) return json(res, 409, { error: "this bot is working — let it finish before starting a task" });
       const body = await readBody(req);
       const task = store.createTask(bot.id, typeof body.title === "string" ? body.title : undefined);
@@ -6216,6 +6233,22 @@ const server = createServer(async (req, res) => {
         broadcast({ kind: "bot", bot: botWithThread(moved.bot) });
         broadcast({ kind: "group", group: groupWithThread(moved.group) });
         return json(res, 200, { ok: true });
+      }
+      if (body.modelSelection !== undefined) {
+        if (body.modelSelection === null) {
+          const cleared = store.patchTask(m[1], m[2], { modelSelection: null });
+          if (!cleared) return json(res, 404, { error: "no such task" });
+          const fresh = botWithThread(store.bot(m[1])!);
+          broadcast({ kind: "bot", bot: fresh });
+          return json(res, 200, { task: wireTask(cleared) });
+        }
+        const checked = checkedModelSelection(body.modelSelection);
+        if (!checked.ok) return json(res, checked.status, { error: checked.error });
+        const updated = store.patchTask(m[1], m[2], { modelSelection: checked.selection });
+        if (!updated) return json(res, 404, { error: "no such task" });
+        const fresh = botWithThread(store.bot(m[1])!);
+        broadcast({ kind: "bot", bot: fresh });
+        return json(res, 200, { task: wireTask(updated) });
       }
       const task = store.renameTask(m[1], m[2], String(body.title ?? ""));
       if (!task) return json(res, 404, { error: "no such task" });
@@ -6661,6 +6694,20 @@ const server = createServer(async (req, res) => {
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
     }
+    // Same reason as terminology: a layout word is not a credential, so the
+    // phone gets its own route rather than write access to /api/config.
+    if (method === "PATCH" && path === "/api/conversation-mode") {
+      const body = await readBody(req);
+      const patch = parseConfigPatch({ conversationMode: body.conversationMode });
+      if (patch.conversationMode === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.conversationMode = parseConversationMode(patch.conversationMode);
+      saveConfig(cfg);
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch = parseConfigPatch(body);
@@ -6748,7 +6795,8 @@ const server = createServer(async (req, res) => {
           key !== "usage" &&
           key !== "features" &&
           key !== "terminology" &&
-          key !== "terminologyCustom",
+          key !== "terminologyCustom" &&
+          key !== "conversationMode",
       );
       if (reloadKeys.length > 0) await reloadProviders();
       const status = configStatus();

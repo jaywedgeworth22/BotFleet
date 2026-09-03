@@ -5,6 +5,12 @@ import { dirname, join } from "node:path";
 import { DATA_DIR } from "./config.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { RoutineRequestOperation } from "../shared/routine-request.ts";
+import {
+  allowsMultipleBotThreads,
+  automationLaneTitle,
+  parseConversationMode,
+  type ConversationMode,
+} from "../shared/conversation-mode.ts";
 
 export type RoutineSchedule =
   | { type: "once"; at: number }
@@ -136,6 +142,13 @@ export interface RoutineManagerOptions {
    * is what lets the server number and replay them. */
   emit?: (payload: Record<string, unknown>) => void;
   botState: (botId: string) => "ready" | "busy" | "missing";
+  /** Live workspace layout.  Absent keeps the historical lane behavior so
+   * existing tests (and an older harness wiring) still mint Triggers /
+   * Routines tasks. */
+  conversationMode?: () => ConversationMode;
+  /** The bot's one conversation.  Used in simple mode so automation does
+   * not mint extra tasks. */
+  defaultThread?: (botId: string) => string | undefined;
   createTask: (botId: string, title: string, activate?: boolean) => { threadId: string } | null;
   /** Switch the bot's live chat to this thread (webhook deliveries). */
   activateTask?: (botId: string, threadId: string) => void;
@@ -681,35 +694,54 @@ export class RoutineManager {
           this.failRun(run, "The assigned bot no longer exists");
           continue;
         }
-        // A bot can only run one thread at a time.  Every webhook/resource
-        // delivery shares that bot's Triggers task; every calendar tick
-        // shares Routines.  Interactive chat stays on the default task
-        // unless the person mints another.  A webhook still becomes the
-        // live chat so the incoming event is visible.
-        const lane = automationLane(run.triggerSource);
+        // A bot can only run one thread at a time.  Simple mode writes
+        // every event into that one conversation.  Fleet keeps Triggers
+        // and Routines.  Projects split Webhooks / Resources / Schedules
+        // so each type of incoming event has one thread.  A webhook still
+        // becomes the live chat so the incoming event is visible.
+        // No conversationMode hook means extra lanes (the historical
+        // behavior).  The live server always passes the workspace setting,
+        // whose default is Simple.
+        const mode = parseConversationMode(this.options.conversationMode?.() ?? "projects");
         let threadId: string | undefined;
-        const previous = [...this.runs].reverse().find(
-          (candidate) =>
-            candidate.botId === run.botId &&
-            candidate.id !== run.id &&
-            Boolean(candidate.threadId) &&
-            automationLane(candidate.triggerSource) === lane &&
-            this.options.taskExists?.(run.botId, candidate.threadId!),
-        );
-        threadId = previous?.threadId;
-        if (!threadId) {
-          const task = this.options.createTask(
-            run.botId,
-            AUTOMATION_LANE_TITLE[lane],
-            run.triggerSource === "webhook",
-          );
-          if (!task) {
-            this.failRun(run, "Could not create a task for this run");
+        if (!allowsMultipleBotThreads(mode)) {
+          threadId = this.options.defaultThread?.(run.botId);
+          if (!threadId) {
+            this.failRun(run, "Could not find this bot's conversation");
             continue;
           }
-          threadId = task.threadId;
-        } else if (run.triggerSource === "webhook") {
+        } else {
+          const title = automationLaneTitle(mode, run.triggerSource);
+          const previous = [...this.runs].reverse().find(
+            (candidate) =>
+              candidate.botId === run.botId &&
+              candidate.id !== run.id &&
+              Boolean(candidate.threadId) &&
+              automationLaneTitle(mode, candidate.triggerSource) === title &&
+              this.options.taskExists?.(run.botId, candidate.threadId!),
+          );
+          threadId = previous?.threadId;
+          if (!threadId) {
+            const task = this.options.createTask(
+              run.botId,
+              title,
+              run.triggerSource === "webhook",
+            );
+            if (!task) {
+              this.failRun(run, "Could not create a task for this run");
+              continue;
+            }
+            threadId = task.threadId;
+          } else if (run.triggerSource === "webhook") {
+            this.options.activateTask?.(run.botId, threadId);
+          }
+        }
+        if (run.triggerSource === "webhook" && !allowsMultipleBotThreads(mode)) {
           this.options.activateTask?.(run.botId, threadId);
+        }
+        if (!threadId) {
+          this.failRun(run, "Could not create a task for this run");
+          continue;
         }
         run.threadId = threadId;
         run.startedAt = this.now();

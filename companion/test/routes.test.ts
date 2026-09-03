@@ -240,3 +240,16 @@ describe("room terminology", () => {
     expect(ask("PATCH", "/api/terminology", false)?.status).toBe(401);
   });
 });
+
+describe("conversation mode", () => {
+  it("lets the phone switch Simple and Projects without opening the config route", () => {
+    expect(allowed("PATCH", "/api/conversation-mode")).toBe(true);
+    expect(allowed("POST", "/api/conversation-mode")).toBe(false);
+    expect(allowed("GET", "/api/conversation-mode")).toBe(false);
+    expect(allowed("PATCH", "/api/config")).toBe(false);
+  });
+
+  it("still refuses an unpaired device", () => {
+    expect(ask("PATCH", "/api/conversation-mode", false)?.status).toBe(401);
+  });
+});

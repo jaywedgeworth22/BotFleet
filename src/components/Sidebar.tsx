@@ -32,7 +32,8 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, getRoomTerminology, latestChatActivity, type Bot, type Group } from "@/state/store";
+import { api, useStore, formatTime, visibleMessages, getRoomTerminology, getConversationMode, latestChatActivity, type Bot, type Group } from "@/state/store";
+import { allowsMultipleBotThreads, rosterPrimaryLabel } from "../../shared/conversation-mode";
 import {
   THREAD_DRAG_TYPE,
   beginThreadDrag,
@@ -2009,6 +2010,9 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       (g.tasks ?? []).some((task) => task.title.toLowerCase().includes(q)),
   );
   const terminology = getRoomTerminology(state.config);
+  const conversationMode = getConversationMode(state.config);
+  const showExtraThreads = allowsMultipleBotThreads(conversationMode);
+  const primary = rosterPrimaryLabel(conversationMode);
   const sectionedGroups = visibleGroups.filter((g) => g.section);
   const unsectionedGroups = visibleGroups.filter((g) => !g.section);
   // sections keep first-appearance order within the current list; a section
@@ -2156,7 +2160,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
                 >
                   <BotIcon size={16} className="text-ink-secondary" />
-                  New Bot
+                  {primary.newLabel}
                 </button>
                 <button
                   onClick={() => {
@@ -2217,7 +2221,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setQuery("")}
             placeholder="Search"
-            aria-label="Search Bots and Messages"
+            aria-label={`Search ${primary.plural} and Messages`}
             className="w-full bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
         </div>
@@ -2238,7 +2242,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               <ThreadTree
                 key={unsectionedChief.id}
                 owner={{ kind: "bot", id: unsectionedChief.id, name: unsectionedChief.name, threadId: unsectionedChief.threadId }}
-                tasks={unsectionedChief.tasks ?? []}
+                tasks={showExtraThreads ? (unsectionedChief.tasks ?? []) : []}
                 density={density}
                 threadCount={threadCount}
                 collapsed={collapsedRooms.has(unsectionedChief.id)}
@@ -2259,7 +2263,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             <ThreadTree
               key={g.id}
               owner={{ kind: "group", id: g.id, name: g.name, threadId: g.threadId }}
-              tasks={g.tasks ?? []}
+              tasks={showExtraThreads ? (g.tasks ?? []) : []}
               density={density}
               threadCount={threadCount}
               collapsed={collapsedRooms.has(g.id)}
@@ -2268,12 +2272,12 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               <GroupListItem group={g} density={density} onMenu={setRoomMenu} />
             </ThreadTree>
           ))}
-          {visibleBots.length > 0 && density !== "icons" && <SectionDivider name="Bots" />}
+          {visibleBots.length > 0 && density !== "icons" && <SectionDivider name={primary.plural} />}
           {visibleBots.map((b) => (
             <ThreadTree
               key={b.id}
               owner={{ kind: "bot", id: b.id, name: b.name, threadId: b.threadId }}
-              tasks={b.tasks ?? []}
+              tasks={showExtraThreads ? (b.tasks ?? []) : []}
               density={density}
               threadCount={threadCount}
               collapsed={collapsedRooms.has(b.id)}
@@ -2298,7 +2302,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   <ThreadTree
                     key={bot.id}
                     owner={{ kind: "bot", id: bot.id, name: bot.name, threadId: bot.threadId }}
-                    tasks={bot.tasks ?? []}
+                    tasks={showExtraThreads ? (bot.tasks ?? []) : []}
                     density={density}
                     threadCount={threadCount}
                     collapsed={collapsedRooms.has(bot.id)}
@@ -2320,7 +2324,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   <ThreadTree
                     key={g.id}
                     owner={{ kind: "group", id: g.id, name: g.name, threadId: g.threadId }}
-                    tasks={g.tasks ?? []}
+                    tasks={showExtraThreads ? (g.tasks ?? []) : []}
                     density={density}
                     threadCount={threadCount}
                     collapsed={collapsedRooms.has(g.id)}
@@ -2335,7 +2339,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   <ThreadTree
                     key={b.id}
                     owner={{ kind: "bot", id: b.id, name: b.name, threadId: b.threadId }}
-                    tasks={b.tasks ?? []}
+                    tasks={showExtraThreads ? (b.tasks ?? []) : []}
                     density={density}
                     threadCount={threadCount}
                     collapsed={collapsedRooms.has(b.id)}

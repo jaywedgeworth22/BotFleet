@@ -261,6 +261,24 @@ beforeAll(async () => {
     if (child.exitCode !== null) throw new Error(`server exited ${child.exitCode}. stderr:\n${stderr}`);
     await new Promise((r) => setTimeout(r, 150));
   }
+  const boot = await api("GET", "/api/config");
+  if (boot.body.conversationMode !== "simple") {
+    throw new Error(`fresh home should default to simple, got ${String(boot.body.conversationMode)}`);
+  }
+  const solo = await api("POST", "/api/bots");
+  const blocked = await api("POST", `/api/bots/${solo.body.bot.id}/tasks`, { title: "Side work" });
+  if (blocked.status !== 409) {
+    throw new Error(`simple mode should refuse extra conversations, got ${blocked.status}`);
+  }
+  const empty = await api("PATCH", "/api/conversation-mode", {});
+  if (empty.status !== 400) throw new Error("empty conversation-mode patch should 400");
+  const unknown = await api("PATCH", "/api/conversation-mode", { conversationMode: "threads" });
+  if (unknown.status !== 400) throw new Error("unknown conversation-mode should 400");
+  const asFleet = await api("PATCH", "/api/conversation-mode", { conversationMode: "fleet" });
+  if (asFleet.status !== 200 || asFleet.body.conversationMode !== "projects") {
+    throw new Error("leftover fleet should read as projects");
+  }
+  // The rest of this file exercises extra conversations, so stay in Projects.
 }, 30_000);
 
 afterAll(async () => {
@@ -3467,15 +3485,13 @@ describe("computer control API (who is driving)", () => {
 });
 
 describe("GET /api/quotas", () => {
-  it("returns active quota cooldowns including seeded instance caps", async () => {
+  it("returns active quota cooldowns, without pretending an engine is capped at boot", async () => {
     const res = await fetch(`${BASE}/api/quotas`);
     expect(res.status).toBe(200);
     const data = (await res.json()) as { ok: boolean; cooldowns: Array<{ instanceId: string; error: string }> };
     expect(data.ok).toBe(true);
     expect(Array.isArray(data.cooldowns)).toBe(true);
-    const codex = data.cooldowns.find((c) => c.instanceId === "codex");
-    expect(codex).toBeDefined();
-    expect(codex?.error).toContain("Codex session limit");
+    expect(data.cooldowns.find((c) => c.instanceId === "codex")).toBeUndefined();
   });
 });
 

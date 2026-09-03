@@ -23,6 +23,10 @@ import {
   type RoomLabels,
   type RoomTerminology,
 } from "../../shared/terminology";
+import {
+  parseConversationMode,
+  type ConversationMode,
+} from "../../shared/conversation-mode";
 import type { Routine, RoutineInput, RoutineRun } from "@/lib/routines";
 import type { ResourceTrigger } from "@/lib/resource-triggers";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
@@ -188,6 +192,9 @@ export interface Task {
   /** folder this task's turns run in, pinned on its first turn; null =
    * legacy home-folder session; absent = not pinned yet */
   cwd?: string | null;
+  /** Optional engine for this conversation.  Absent means the bot's own
+   * modelSelection.  Used in Projects mode so a thread is not a named bot. */
+  modelSelection?: ModelSelection;
 }
 
 export interface TaskUsage {
@@ -327,6 +334,9 @@ export interface ConfigStatus {
   /** The finished words, resolved by the harness so every client
    * agrees. Absent only when talking to an older harness. */
   roomLabels?: RoomLabels;
+  /** Simple (Grok-style bots + group threads) or Projects (categories of
+   * threads).  Absent means simple. */
+  conversationMode?: ConversationMode;
   /** Shared Qdrant Bot RAG vector database status. `url` and `collection`
    * are empty until the operator sets them — BotFleet ships no endpoint. */
   qdrant?: { enabled: boolean; url: string; configured: boolean; hasApiKey: boolean; collection: string };
@@ -358,9 +368,13 @@ export function getRoomTerminology(config?: ConfigStatus | null): {
   return { key, singular: labels.singular, plural: labels.plural };
 }
 
+export function getConversationMode(config?: ConfigStatus | null): ConversationMode {
+  return parseConversationMode(config?.conversationMode);
+}
+
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "qdrant" | "usage" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -380,6 +394,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     autoUpdate: frame.autoUpdate,
     terminology: frame.terminology,
     roomLabels: frame.roomLabels,
+    conversationMode: frame.conversationMode,
     qdrant: frame.qdrant,
     usage: frame.usage,
     features: frame.features,

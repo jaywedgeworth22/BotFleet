@@ -261,6 +261,13 @@ export class QuotaCooldownRegistry {
     return active;
   }
 
+  /** Any live cooldown for this engine, including per-bot and per-model
+   * records.  The picker used to look up only `*:instance:*`, so Cursor
+   * and Antigravity stayed "Available" after a real cap on one model. */
+  forInstance(instanceId: string, now = Date.now()): BotQuotaCooldown | undefined {
+    return this.list(now).find((cd) => cd.instanceId === instanceId);
+  }
+
   clear(botId: string, instanceId?: string, model?: string): void {
     if (instanceId && model) {
       this.cooldowns.delete(`${botId}:${instanceId}:${model}`);

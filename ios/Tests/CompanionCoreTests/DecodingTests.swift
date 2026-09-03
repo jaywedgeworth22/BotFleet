@@ -366,6 +366,9 @@ final class DecodingTests: XCTestCase {
         let config = try decode(ConfigStatus.self, "config")
         XCTAssertEqual(config.profile?.name, "Ada Lovelace")
         XCTAssertEqual(config.box?.configured, false)
+        XCTAssertNil(config.conversationMode)
+        XCTAssertFalse(config.isProjectsMode)
+        XCTAssertFalse(config.allowsMultipleBotThreads)
         // Captured bytes, not our idea of them: `describeVoice` always sends
         // the engine, so a sidecar that stopped forwarding it fails here
         // instead of quietly sending every built-in-voices user back to an

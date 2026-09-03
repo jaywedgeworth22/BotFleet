@@ -393,4 +393,20 @@ describe("QuotaCooldownRegistry", () => {
     expect(active[0].instanceId).toBe("codex");
     expect(active[0].botId).toBe("*");
   });
+
+  it("treats a per-model cooldown as an instance cap for the picker", () => {
+    const registry = new (quotaCooldowns.constructor as any)();
+    registry.record({
+      botId: "monitor",
+      instanceId: "cursor",
+      model: "gpt-5",
+      resetsAt: Date.now() + 60_000,
+      error: "You've hit your usage limit",
+      recordedAt: Date.now(),
+    });
+    const cd = registry.forInstance("cursor");
+    expect(cd?.instanceId).toBe("cursor");
+    expect(cd?.error).toBe("You've hit your usage limit");
+    expect(registry.forInstance("antigravity")).toBeUndefined();
+  });
 });

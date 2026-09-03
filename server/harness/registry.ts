@@ -196,7 +196,7 @@ export class ProviderRegistry {
           try {
             await inst.refreshModels?.();
             snapshot = await inst.snapshot();
-            const cd = quotaCooldowns.get("*", inst.instanceId, "*");
+            const cd = quotaCooldowns.forInstance(inst.instanceId);
             if (cd) {
               snapshot.quota = {
                 capped: true,

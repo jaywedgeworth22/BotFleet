@@ -62,7 +62,7 @@ struct SettingsView: View {
             }
 
             if session.connection != nil {
-                Section("Workspace") {
+                Section {
                     NavigationLink {
                         TasksRoutinesView()
                     } label: {
@@ -80,6 +80,22 @@ struct SettingsView: View {
                             Text("Connected Apps")
                         } icon: {
                             SettingsIcon(symbol: "link", color: .blue)
+                        }
+                    }
+
+                    Picker(selection: Binding(
+                        get: { session.config?.isProjectsMode == true ? "projects" : "simple" },
+                        set: { mode in
+                            Task { _ = await session.updateConversationMode(mode) }
+                        }
+                    )) {
+                        Text("Simple").tag("simple")
+                        Text("Projects").tag("projects")
+                    } label: {
+                        Label {
+                            Text("Workspace Layout")
+                        } icon: {
+                            SettingsIcon(symbol: "square.grid.2x2", color: .teal)
                         }
                     }
 
@@ -117,12 +133,22 @@ struct SettingsView: View {
                     if session.config?.terminology == "custom" {
                         CustomRoomTermFields(session: session)
                     }
+                } header: {
+                    Text("Workspace")
+                } footer: {
+                    Text(workspaceFooter)
                 }
             }
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .task { await session.refreshNotificationAuthorization() }
+    }
+
+    private var workspaceFooter: String {
+        session.config?.isProjectsMode == true
+            ? "Projects hides named bots.  That word is a category that any number of threads can sit under."
+            : "Simple is one conversation per bot.  That word is a group thread invited bots and you can all write in."
     }
 
     private var notificationsAreEnabled: Bool {

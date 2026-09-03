@@ -889,7 +889,7 @@ final class Session: ObservableObject {
             } else {
                 urlVal = .clear
             }
-            let currentCrop = state.rooms.first(where: { $0.id == id })?.avatarCrop ?? .circle
+            let currentCrop = state.rooms.first(where: { $0.id == id })?.avatarCrop ?? .rounded
             let patch = RoomPatch(avatarUrl: urlVal, avatarCrop: currentCrop)
             let updated = try await client.updateRoom(id: id, patch: patch)
             if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
@@ -1002,6 +1002,19 @@ final class Session: ObservableObject {
         let status = try? await client.config()
         if let status { self.config = status }
         return status
+    }
+
+    @MainActor
+    func updateConversationMode(_ conversationMode: String) async -> ConfigStatus? {
+        guard let client else { return nil }
+        do {
+            let updated = try await client.updateConversationMode(conversationMode)
+            self.config = updated
+            return updated
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
     }
 
     @MainActor
