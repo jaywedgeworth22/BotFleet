@@ -12,7 +12,7 @@ describe("RenameTitle", () => {
       showEditButton: true,
     }));
 
-    expect(markup).not.toContain("Open Maus&#x27;s profile");
+    expect(markup).not.toContain("Open Maus&#x27;s Profile");
     expect(markup).toContain('aria-label="Rename Maus"');
   });
 
@@ -24,6 +24,6 @@ describe("RenameTitle", () => {
       showEditButton: true,
     }));
 
-    expect(markup).toContain("Open Maus&#x27;s profile");
+    expect(markup).toContain("Open Maus&#x27;s Profile");
   });
 });

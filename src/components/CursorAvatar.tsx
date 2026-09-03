@@ -223,7 +223,7 @@ export const MOTION = {
   playful: { bob: [6, 620], sway: [5, 1240], squash: 0.3 },
   celebrate: { bob: [10, 480], sway: [4, 960], squash: 0.35 },
 
-  // Agent morphs — the mascot standing in for a process.
+  // Bot morphs — the mascot standing in for a process.
   orbit: { circle: [6, 3200] },
   radar: { sway: [6, 2400], pulse: [0.012, 2400] },
   progress: { pulse: [0.022, 1600] },

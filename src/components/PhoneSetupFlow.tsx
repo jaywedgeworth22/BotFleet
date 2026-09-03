@@ -874,9 +874,9 @@ export function usePhoneSetupController(profileEmail = ""): PhoneSetupController
 
 function ValuePoints() {
   const points: Array<{ Icon: typeof Smartphone; title: string; detail: string }> = [
-    { Icon: Smartphone, title: "Your chats", detail: "Read and reply from your phone." },
-    { Icon: Check, title: "Quick approvals", detail: "Keep work moving when you step away." },
-    { Icon: ShieldCheck, title: "Private by default", detail: "Only phones you approve can connect." },
+    { Icon: Smartphone, title: "Your Chats", detail: "Read and reply from your phone." },
+    { Icon: Check, title: "Quick Approvals", detail: "Keep work moving when you step away." },
+    { Icon: ShieldCheck, title: "Private by Default", detail: "Only phones you approve can connect." },
   ];
   return (
     <div className="mt-5 grid w-full gap-2 sm:grid-cols-3">
@@ -913,7 +913,7 @@ export function PhoneSetupFlowView({
         <div className="flex size-14 items-center justify-center rounded-2xl bg-accent/12 text-accent">
           <Smartphone size={26} />
         </div>
-        <h2 className="mt-4 text-[19px] font-semibold text-ink">Use BotFleet from your phone</h2>
+        <h2 className="mt-4 text-[19px] font-semibold text-ink">Use BotFleet from Your Phone</h2>
         <p className="mt-1.5 max-w-[460px] text-[13.5px] leading-relaxed text-ink-secondary">
           Check chats, answer approvals, and send new work without staying at your computer.
         </p>
@@ -925,9 +925,9 @@ export function PhoneSetupFlowView({
         >
           {variant === "settings"
             ? c.state?.devices.length
-              ? "Pair another phone"
-              : "Pair a phone"
-            : "Set up my phone"}
+              ? "Pair Another Phone"
+              : "Pair a Phone"
+            : "Set Up My Phone"}
         </button>
         {c.error && <p role="alert" className="mt-3 max-w-[390px] text-[12.5px] text-danger">{c.error}</p>}
         {variant === "onboarding" && (
@@ -939,7 +939,7 @@ export function PhoneSetupFlowView({
               }}
               className="mt-2.5 text-[12.5px] text-ink-secondary hover:text-ink"
             >
-              Not now
+              Not Now
             </button>
             <p className="mt-2 text-[11.5px] text-ink-secondary">
               You can resume anytime from Settings → Phone.
@@ -1028,7 +1028,7 @@ export function PhoneSetupFlowView({
               onClick={c.codeSent ? c.verifyCode : c.requestCode}
               className="rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white hover:opacity-90 disabled:opacity-40"
             >
-              {c.accountBusy ? "Working…" : c.codeSent ? "Verify and continue" : "Email me a code"}
+              {c.accountBusy ? "Working…" : c.codeSent ? "Verify and Continue" : "Email Me a Code"}
             </button>
             {c.codeSent && (
               <button
@@ -1036,7 +1036,7 @@ export function PhoneSetupFlowView({
                 onClick={c.changeEmail}
                 className="text-[12px] text-ink-secondary hover:text-ink disabled:opacity-40"
               >
-                Use another email
+                Use Another Email
               </button>
             )}
             {c.codeSent && !actionError && (
@@ -1051,7 +1051,7 @@ export function PhoneSetupFlowView({
             onClick={c.retryAccount}
             className="mt-5 rounded-lg bg-accent py-2.5 text-[14px] font-medium text-white disabled:opacity-40"
           >
-            {c.accountBusy ? "Trying again…" : "Try secure access again"}
+            {c.accountBusy ? "Trying again…" : "Try Secure Access Again"}
           </button>
         )}
         {actionError && <p role="alert" className="mt-3 text-[12.5px] text-danger">{actionError}</p>}

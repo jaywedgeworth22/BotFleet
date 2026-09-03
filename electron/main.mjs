@@ -1670,24 +1670,26 @@ function setupApplicationMenu() {
                 accelerator: "CmdOrCtrl+,",
                 click: () => sendToRenderer("open-settings"),
               },
+              // "<Section Name>  (<descriptor>...)" — the leading word is the
+              // section's own name in Settings (SECTIONS in
+              // src/components/SettingsModal.tsx) so the menu and the in-app
+              // sidebar agree, and every id below must be a real
+              // AppSettingsSection. There is no "keys" section: API keys live
+              // in Connections, which is why both key entries land there.
               {
-                label: "API Keys & Models...",
-                click: () => sendToRenderer("open-settings", { section: "keys" }),
-              },
-              {
-                label: "Connections & Ingress...",
+                label: "Connections  (API Keys, Models & Ingress...)",
                 click: () => sendToRenderer("open-settings", { section: "connections" }),
               },
               {
-                label: "Phone / Companion Access...",
+                label: "Phone  (Companion Access...)",
                 click: () => sendToRenderer("open-settings", { section: "companion" }),
               },
               {
-                label: "Engine CLIs...",
+                label: "Engines  (CLIs...)",
                 click: () => sendToRenderer("open-settings", { section: "engines" }),
               },
               {
-                label: "Usage & Token Spend...",
+                label: "Usage  (Token Spend...)",
                 click: () => sendToRenderer("open-settings", { section: "usage" }),
               },
               { type: "separator" },

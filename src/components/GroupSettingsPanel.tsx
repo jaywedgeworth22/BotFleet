@@ -211,7 +211,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
                   onClick={removeAvatar}
                   disabled={uploading}
                   aria-label={`Remove ${terminology.singular.toLowerCase()} avatar image`}
-                  title="Remove image"
+                  title="Remove Image"
                   className="flex size-9 items-center justify-center rounded-lg text-ink-secondary hover:bg-control hover:text-danger disabled:opacity-50"
                 >
                   <Trash2 size={15} />
@@ -328,7 +328,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
                 <div className="flex items-center justify-between">
                   <div className="flex min-w-0 items-center gap-2">
                     <Folder size={15} className="shrink-0 text-accent" />
-                    <span className="text-[12px] font-medium text-ink">Primary working directory</span>
+                    <span className="text-[12px] font-medium text-ink">Primary Working Directory</span>
                   </div>
                   {!editingPrimaryCwd && (
                     <button
@@ -339,7 +339,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
                       }}
                       className="text-[11.5px] text-accent hover:underline"
                     >
-                      {group.cwd ? "Edit" : "Set path"}
+                      {group.cwd ? "Edit" : "Set Path"}
                     </button>
                   )}
                 </div>
@@ -401,7 +401,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
                     type="button"
                     onClick={() => handleRemoveExtraCwd(path)}
                     className="p-1 text-ink-secondary hover:text-danger"
-                    title="Remove auxiliary repository"
+                    title="Remove Auxiliary Repository"
                   >
                     <X size={14} />
                   </button>

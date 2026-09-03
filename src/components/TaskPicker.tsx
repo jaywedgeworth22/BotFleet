@@ -1,9 +1,9 @@
-// Separate task contexts for an agent or a channel.
+// Separate task contexts for a bot or a channel.
 //
 // One endless thread per bot means every job contaminates the next, and
 // the only clean slate is a second bot. A task is a real boundary — its
 // own transcript and its own provider session — so sensitive work, a
-// long job and a quick question can sit side by side under one agent.
+// long job and a quick question can sit side by side under one bot.
 import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Pencil, Plus, Trash2 } from "lucide-react";
 import { useStore, formatTime, type Bot, type Group, type Task } from "@/state/store";
@@ -182,8 +182,8 @@ function ConversationTaskPicker({
   const currentLabel = u ? formatTokens(u.input + u.output) : null;
   const switchTitle =
     u && currentLabel
-      ? `Switch task · ${currentLabel} (${u.input.toLocaleString()} in · ${u.output.toLocaleString()} out)`
-      : "Switch task";
+      ? `Switch Task · ${currentLabel} (${u.input.toLocaleString()} in · ${u.output.toLocaleString()} out)`
+      : "Switch Task";
 
   return (
     <div className="relative" ref={ref}>
@@ -221,7 +221,7 @@ function ConversationTaskPicker({
                       autoFocus
                       value={draft}
                       maxLength={80}
-                      aria-label="Rename task"
+                      aria-label="Rename Task"
                       onFocus={(e) => e.currentTarget.select()}
                       onChange={(e) => setDraft(e.target.value)}
                       onClick={(e) => e.stopPropagation()}
@@ -284,7 +284,7 @@ function ConversationTaskPicker({
                     type="button"
                     onClick={() => onDelete(task.threadId)}
                     disabled={busy && active}
-                    aria-label="Delete task"
+                    aria-label="Delete Task"
                     title="Delete this task and its conversation"
                     className="rounded p-1 text-ink-secondary opacity-0 hover:bg-raised hover:text-danger group-hover:opacity-100 disabled:opacity-20"
                   >

@@ -152,7 +152,7 @@ describe("connected-app status races", () => {
       canContinue: false,
       hasAccounts: true,
       failed: false,
-    })).toBe("Add account");
+    })).toBe("Add Account");
     expect(connectorActionLabel("error", {
       busy: false,
       included: false,

@@ -157,7 +157,7 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Command palette"
+        aria-label="Command Palette"
         className="flex max-h-[min(480px,70vh)] w-full max-w-[560px] flex-col overflow-hidden rounded-xl border border-hairline/50 bg-card shadow-2xl shadow-black/60"
       >
         <div className="flex items-center gap-3 border-b border-hairline/40 px-4 py-3">

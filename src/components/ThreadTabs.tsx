@@ -88,7 +88,7 @@ function ConversationThreadTabs({
                   autoFocus
                   value={draft}
                   maxLength={80}
-                  aria-label="Rename thread"
+                  aria-label="Rename Thread"
                   onFocus={(e) => e.currentTarget.select()}
                   onChange={(e) => setDraft(e.target.value)}
                   onBlur={() => commitRename(task.threadId, true)}
@@ -158,7 +158,7 @@ function ConversationThreadTabs({
         onClick={onNew}
         disabled={busy}
         title={busy ? "Let this turn finish first" : "New thread — a fresh conversation"}
-        aria-label="New thread"
+        aria-label="New Thread"
         className="flex shrink-0 items-center gap-1 border-l border-hairline/40 px-3 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
       >
         <Plus size={14} />

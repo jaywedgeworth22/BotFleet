@@ -98,7 +98,7 @@ export function connectorActionLabel(
   if (phase === "loading") return "Checking…";
   if (phase === "error") return "Unavailable";
   if (state.canContinue) return "Continue";
-  if (state.hasAccounts) return "Add account";
+  if (state.hasAccounts) return "Add Account";
   if (state.failed) return "Retry";
   return "Connect";
 }
@@ -494,13 +494,13 @@ export function PluginsPanel() {
               onClick={() => void loadConnectionInventory(true)}
               disabled={refreshing}
               className="rounded-lg p-2 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
-              title="Refresh connection status"
+              title="Refresh Connection Status"
             >
               <RefreshCw size={17} className={cn(refreshing && "animate-spin")} />
             </button>
             <button
               onClick={close}
-              aria-label="Close connected apps"
+              aria-label="Close Connected Apps"
               className="rounded-lg p-2 text-ink-secondary hover:bg-raised hover:text-ink"
             >
               <X size={21} />
@@ -551,7 +551,7 @@ export function PluginsPanel() {
               value={search}
               onChange={(event) => setSearch(event.target.value)}
               placeholder="Search apps"
-              aria-label="Search apps"
+              aria-label="Search Apps"
               className="min-w-0 flex-1 bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
             />
           </label>
@@ -602,7 +602,7 @@ export function PluginsPanel() {
           ) : (
             <div>
               <div className="mb-3 text-[12px] font-medium text-ink-secondary">
-                {tab === "connected" ? "Your connections" : search ? "Search results" : "Available apps"}
+                {tab === "connected" ? "Your Connections" : search ? "Search Results" : "Available Apps"}
               </div>
               <div className="grid grid-cols-1 gap-x-10 md:grid-cols-2">
               {visible.map((card) => {

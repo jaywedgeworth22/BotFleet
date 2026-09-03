@@ -62,9 +62,9 @@ export function ReactionBar({ threadId, message }: { threadId: string; message: 
         ))}
         <button
           onClick={() => setPickerOpen((o) => !o)}
-          aria-label="More reactions"
+          aria-label="More Reactions"
           aria-expanded={pickerOpen}
-          title="More reactions"
+          title="More Reactions"
           className="flex size-[22px] items-center justify-center rounded-full text-ink-secondary hover:bg-control hover:text-ink"
         >
           {pickerOpen ? <X size={12} /> : <Plus size={12} />}

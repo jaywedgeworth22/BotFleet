@@ -60,7 +60,7 @@ function PermissionModeSelector({ bot, onSetAuto }: { bot: Bot; onSetAuto: (auto
 
   const mode = bot.autoApprove ? "auto" : "ask";
   const Icon = mode === "auto" ? ShieldCheck : Hand;
-  const label = mode === "auto" ? "Approve for me" : "Ask for approval";
+  const label = mode === "auto" ? "Approve for Me" : "Ask for Approval";
 
   return (
     <div className="relative flex items-center" ref={wrapperRef}>
@@ -98,7 +98,7 @@ function PermissionModeSelector({ bot, onSetAuto }: { bot: Bot; onSetAuto: (auto
               <Hand size={16} className="mt-0.5 shrink-0 opacity-70" />
               <div className="flex w-full flex-col gap-0.5">
                 <div className="flex items-center justify-between text-[14px] text-ink">
-                  Ask for approval
+                  Ask for Approval
                   {mode === "ask" && <Check size={14} />}
                 </div>
                 <div className="text-[13px] text-ink-secondary">Ask before actions that need your permission</div>
@@ -117,7 +117,7 @@ function PermissionModeSelector({ bot, onSetAuto }: { bot: Bot; onSetAuto: (auto
               <ShieldCheck size={16} className="mt-0.5 shrink-0 opacity-70" />
               <div className="flex w-full flex-col gap-0.5">
                 <div className="flex items-center justify-between text-[14px] text-ink">
-                  Approve for me
+                  Approve for Me
                   {mode === "auto" && <Check size={14} />}
                 </div>
                 <div className="text-[13px] text-ink-secondary">
@@ -228,7 +228,7 @@ export function Composer({
   };
   const engineSupportsImages = imageTargetsSupport(text);
 
-  // ── @mention picker (tag another bot; the agent reaches it via ask_bot) ──
+  // ── @mention picker (tag another bot; the bot reaches it via ask_bot) ──
   const mention = mentionQueryAt(text, caret);
   const candidates = useMemo(() => {
     if (!mention || mention.start === dismissedAt) return [];
@@ -491,8 +491,8 @@ export function Composer({
                   dispatch({ type: "cancelQueued", botId: bot.id, queueId: entry.queueId });
                 }
               }}
-              aria-label="Cancel queued message"
-              title="Cancel queued message"
+              aria-label="Cancel Queued Message"
+              title="Cancel Queued Message"
               className="ml-auto flex size-5 shrink-0 items-center justify-center rounded text-ink-secondary hover:bg-raised hover:text-ink"
             >
               <X size={13} strokeWidth={2.5} />
@@ -502,7 +502,7 @@ export function Composer({
         {pickerOpen && (
           <div
             role="listbox"
-            aria-label="Tag a bot"
+            aria-label="Tag a Bot"
             className="absolute bottom-full left-2 z-20 mb-2 w-72 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg"
           >
             {candidates.map((peer, i) => (
@@ -529,7 +529,7 @@ export function Composer({
                   </span>
                 )}
                 <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink">{peer.name}</span>
-                <span className="shrink-0 text-xs text-ink-secondary">{peer.bot ? "Agent" : "Channel"}</span>
+                <span className="shrink-0 text-xs text-ink-secondary">{peer.bot ? "Bot" : "Channel"}</span>
               </button>
             ))}
           </div>
@@ -592,8 +592,8 @@ export function Composer({
               <button
                 type="button"
                 onClick={() => fileInput.current?.click()}
-                aria-label="Attach a file"
-                title="Attach a file"
+                aria-label="Attach a File"
+                title="Attach a File"
                 className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-control hover:text-ink"
               >
                 <Paperclip size={17} />
@@ -696,7 +696,7 @@ export function Composer({
               if (group) dispatch({ type: "interruptGroup", groupId: group.id });
               else if (bot) dispatch({ type: "interrupt", botId: bot.id });
             }}
-            aria-label="Stop this turn"
+            aria-label="Stop This Turn"
             className="flex size-8 shrink-0 items-center justify-center rounded-full text-ink-secondary hover:bg-raised hover:text-ink"
             title="Stop"
           >
@@ -706,14 +706,14 @@ export function Composer({
         {!locked && !busy && !hasContent && capabilities.dictation.available && (
           <button
             onClick={toggleMic}
-            aria-label={recording ? "Stop dictation" : "Start dictation"}
+            aria-label={recording ? "Stop Dictation" : "Start Dictation"}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-full",
               recording
                 ? "animate-pulse bg-danger/20 text-danger"
                 : "text-ink-secondary hover:bg-raised hover:text-ink",
             )}
-            title={recording ? "Stop dictation (Esc)" : "Dictate"}
+            title={recording ? "Stop Dictation (Esc)" : "Dictate"}
           >
             <Mic size={18} />
           </button>
@@ -721,7 +721,7 @@ export function Composer({
         {hasContent && !locked && (
           <button
             onClick={send}
-            aria-label={busy && canSteer ? "Send into the running turn" : busy ? "Queue message" : "Send message"}
+            aria-label={busy && canSteer ? "Send into the running turn" : busy ? "Queue Message" : "Send Message"}
             title={busy && canSteer ? "Send into the running turn" : busy ? "Sends when the current turn finishes" : "Send"}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-full text-white",

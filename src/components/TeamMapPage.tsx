@@ -228,7 +228,7 @@ function SectionContextDialog({ section, label, onClose }: { section: string; la
           <button
             onClick={requestClose}
             disabled={saving}
-            aria-label="Close shared context"
+            aria-label="Close Shared Context"
             className="flex size-9 shrink-0 items-center justify-center rounded-lg text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40"
           >
             <X size={19} />
@@ -335,7 +335,7 @@ export function TeamMapPage() {
           onClick={() => void refresh(true)}
           disabled={refreshing}
           className="rounded-lg border border-hairline/50 bg-card p-2 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
-          aria-label="Refresh team map"
+          aria-label="Refresh Team Map"
           title="Refresh"
         >
           <RefreshCw size={15} className={refreshing ? "animate-spin" : ""} />
@@ -392,7 +392,7 @@ export function TeamMapPage() {
 
         <section className="mt-6 max-w-[900px]">
           <div className="mb-2.5 flex items-center justify-between">
-            <h2 className="text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-secondary">Agent handoffs</h2>
+            <h2 className="text-[12px] font-semibold uppercase tracking-[0.08em] text-ink-secondary">Bot Handoffs</h2>
             <span className="text-[11px] text-ink-secondary">Running and queued first</span>
           </div>
           <div className="space-y-2">

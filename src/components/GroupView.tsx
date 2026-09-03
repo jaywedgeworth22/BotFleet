@@ -178,7 +178,7 @@ function GroupTextRow({
             <button
               type="button"
               onClick={() => onReply(m)}
-              aria-label="Reply to message"
+              aria-label="Reply to Message"
               title="Reply"
               className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
             >
@@ -236,7 +236,7 @@ function GroupTextRow({
             <button
               type="button"
               onClick={() => onReply(m)}
-              aria-label="Reply to message"
+              aria-label="Reply to Message"
               title="Reply"
               className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
             >
@@ -407,19 +407,19 @@ function DefaultResponderSelect({ group, members }: { group: Group; members: Bot
   return (
     <div className="relative shrink-0" title={title}>
       <select
-        aria-label="Default responder"
+        aria-label="Default Responder"
         value={value}
         onChange={(event) => change(event.target.value)}
         className="h-8 max-w-[170px] appearance-none truncate rounded-full border border-hairline/40 bg-raised/60 py-1 pl-3 pr-7 text-[12.5px] font-medium text-ink outline-none hover:bg-raised focus:border-accent @max-4xl/chathead:max-w-[100px]"
       >
-        <optgroup label="Channel lead">
+        <optgroup label="Channel Lead">
           {members.map((member) => (
             <option key={member.id} value={`member:${member.id}`}>
               Lead: {member.name}
             </option>
           ))}
         </optgroup>
-        <optgroup label="Channel behavior">
+        <optgroup label="Channel Behavior">
           <option value="everyone">Everyone responds</option>
           <option value="mentions">Only when mentioned</option>
         </optgroup>
@@ -559,7 +559,7 @@ function RoomWorkingFolder({ group }: { group: Group }) {
                   onClick={() => removeExtra(path)}
                   disabled={saving}
                   className="ml-2 text-ink-secondary hover:text-danger"
-                  title="Remove repository from channel"
+                  title="Remove Repository from Channel"
                 >
                   ✕
                 </button>
@@ -584,7 +584,7 @@ function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: ()
       <button
         onClick={onToggle}
         className="rounded-md p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"
-        title="Channel working folder"
+        title="Channel Working Folder"
       >
         <Folder size={14} />
       </button>
@@ -750,7 +750,7 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
         }}
       >
         <label className="block">
-          <span className="text-[13px] font-semibold text-ink">Working folder</span>
+          <span className="text-[13px] font-semibold text-ink">Working Folder</span>
           <span className="mt-1 block text-[12px] text-ink-secondary">Where room members run file and shell tools.</span>
           <div className="mt-2 flex gap-2">
             <input
@@ -773,9 +773,9 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
         </label>
 
         <fieldset className="block">
-          <legend className="text-[13px] font-semibold text-ink">Default responder</legend>
+          <legend className="text-[13px] font-semibold text-ink">Default Responder</legend>
           <p className="mt-1 text-[12px] text-ink-secondary">Choose who answers when nobody is mentioned.</p>
-          <div role="radiogroup" aria-label="Default responder" className="mt-2 grid gap-2 sm:grid-cols-3">
+          <div role="radiogroup" aria-label="Default Responder" className="mt-2 grid gap-2 sm:grid-cols-3">
             <div ref={leadPickerRef} className="relative min-w-0">
               <button
                 type="button"
@@ -820,11 +820,11 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
               {behavior === "lead" && leadPickerOpen && (
                 <div
                   role="listbox"
-                  aria-label="Choose a lead"
+                  aria-label="Choose a Lead"
                   className="absolute left-0 top-full z-30 mt-2 w-72 max-w-[calc(100vw-3rem)] overflow-hidden rounded-2xl border border-hairline/60 bg-panel shadow-2xl shadow-black/20"
                 >
                   <div className="border-b border-hairline/40 px-3 py-2.5">
-                    <div className="text-[12.5px] font-semibold text-ink">Choose a lead</div>
+                    <div className="text-[12.5px] font-semibold text-ink">Choose a Lead</div>
                     <div className="mt-0.5 text-[11.5px] text-ink-secondary">Plain messages go to this teammate.</div>
                   </div>
                   <div className="max-h-48 overflow-y-auto p-1.5">
@@ -927,7 +927,7 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
         </fieldset>
 
         <label className="block">
-          <span className="text-[13px] font-semibold text-ink">Room instructions</span>
+          <span className="text-[13px] font-semibold text-ink">Room Instructions</span>
           <span className="mt-1 block text-[12px] text-ink-secondary">A shared brief every member sees on each turn. You can edit it later.</span>
           <textarea
             value={instructions}
@@ -1200,7 +1200,7 @@ export function GroupView({ group }: { group: Group }) {
             type="button"
             onClick={() => dispatch({ type: "toggleSettings", open: true })}
             className="flex min-w-0 items-center gap-2 rounded-lg p-1 text-left transition-colors hover:bg-raised/50"
-            title="Open channel settings"
+            title="Open Channel Settings"
             aria-label={`Open ${group.name} settings`}
           >
             {group.avatarUrl ? (
@@ -1228,13 +1228,13 @@ export function GroupView({ group }: { group: Group }) {
           <button
             type="button"
             onClick={() => setFindOpen((open) => !open)}
-            aria-label="Find in conversation"
+            aria-label="Find in Conversation"
             aria-pressed={findOpen}
             className={cn(
               "rounded-md p-1.5 hover:bg-raised",
               findOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
             )}
-            title="Find in conversation (⌘F)"
+            title="Find in Conversation (⌘F)"
           >
             <Search size={18} />
           </button>
@@ -1250,7 +1250,7 @@ export function GroupView({ group }: { group: Group }) {
               ref={membersTriggerRef}
               type="button"
               onClick={() => setMembersOpen(true)}
-              title="Manage members"
+              title="Manage Members"
               aria-label={`Manage members — ${members.length} ${members.length === 1 ? "bot" : "bots"} in this channel`}
               className="flex items-center gap-1.5 rounded-full py-0.5 pl-1 pr-1.5 hover:bg-raised/60"
             >
@@ -1267,8 +1267,8 @@ export function GroupView({ group }: { group: Group }) {
               "flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink",
               state.settingsOpen && "bg-raised text-ink",
             )}
-            title="Channel settings"
-            aria-label="Channel settings"
+            title="Channel Settings"
+            aria-label="Channel Settings"
           >
             <SlidersHorizontal size={18} />
           </button>
@@ -1343,7 +1343,7 @@ export function GroupView({ group }: { group: Group }) {
               </button>
               <button
                 onClick={() => dispatch({ type: "patchGroup", groupId: group.id, patch: { pinnedMessageId: "" } })}
-                aria-label="Unpin message"
+                aria-label="Unpin Message"
                 title="Unpin"
                 className="shrink-0 rounded p-0.5 text-ink-secondary hover:bg-raised hover:text-ink"
               >
@@ -1482,7 +1482,7 @@ export function GroupView({ group }: { group: Group }) {
               scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" });
             });
           }}
-          aria-label="Jump to latest messages"
+          aria-label="Jump to Latest Messages"
           className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
         >
           <ArrowDown size={13} /> Jump to latest

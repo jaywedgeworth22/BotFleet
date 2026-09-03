@@ -22,7 +22,7 @@ function sentenceCase(value: string): string {
 }
 
 /**
- * The one quiet line shown while an agent is working. This follows t3code's
+ * The one quiet line shown while a bot is working. This follows t3code's
  * live-activity model: thinking before a tool starts, then the current verb.
  * The server-provided narration is authoritative; fallbacks cover older
  * messages and third-party drivers that only report a tool name.

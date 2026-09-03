@@ -80,15 +80,15 @@ export function CopyButton({
         type="button"
         onClick={copyText}
         onContextMenu={handleContextMenu}
-        aria-label={effectiveId ? "Copy message text (right-click for ID)" : "Copy message"}
+        aria-label={effectiveId ? "Copy Message Text (right-click for ID)" : "Copy Message"}
         title={
           isCopied
             ? copiedType === "id"
               ? "Copied ID to clipboard!"
               : "Copied to clipboard!"
             : effectiveId
-              ? "Copy message (Right-click for Request ID)"
-              : "Copy message"
+              ? "Copy Message (Right-click for Request ID)"
+              : "Copy Message"
         }
         className={cn(
           "rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100",

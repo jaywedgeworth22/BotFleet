@@ -89,7 +89,7 @@ export function LinuxLocalControl() {
           <div className="flex gap-2 text-[12px] leading-relaxed text-ink-secondary">
             <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warning" />
             <span>
-              Enabling lets bots you explicitly assign to <strong className="font-medium text-ink">This computer</strong>{" "}
+              Enabling lets bots you explicitly assign to <strong className="font-medium text-ink">This Computer</strong>{" "}
               inspect the active desktop and request mouse or keyboard actions. Every local action asks you first.
               {wayland && " GNOME may also ask you to allow foreground input for this desktop session."}
             </span>
@@ -164,7 +164,7 @@ export function LinuxLocalControl() {
         onClick={() => window.open(LINUX_GUIDE_URL, "_blank", "noopener,noreferrer")}
         className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-lg py-1.5 text-[11px] text-ink-secondary hover:bg-raised hover:text-ink"
       >
-        {capabilities.host.packaged ? "Local control guide" : "Driver setup and troubleshooting"}{" "}
+        {capabilities.host.packaged ? "Local Control Guide" : "Driver Setup and Troubleshooting"}{" "}
         <ExternalLink size={11} />
       </button>
     </section>

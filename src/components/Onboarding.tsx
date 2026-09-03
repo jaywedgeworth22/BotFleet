@@ -230,14 +230,14 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               }}
               className="mt-3 text-[12px] text-ink-secondary hover:text-ink"
             >
-              Maybe later
+              Maybe Later
             </button>
           </div>
         )}
 
         {step === 1 && (
           <div className="flex min-h-0 flex-col">
-            <h1 className="text-[18px] font-semibold text-ink">Your engines</h1>
+            <h1 className="text-[18px] font-semibold text-ink">Your Engines</h1>
             <p className="mt-1 text-[13.5px] text-ink-secondary">
               Bots run on AI tools installed on this computer — here&rsquo;s what we found.
             </p>
@@ -291,7 +291,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
                 <div className="flex items-start gap-3">
                   <Mic size={18} className="mt-0.5 shrink-0 text-ink-secondary" />
                   <div>
-                    <div className="text-[14px] font-medium text-ink">Microphone & speech</div>
+                    <div className="text-[14px] font-medium text-ink">Microphone &amp; Speech</div>
                     <div className="mt-0.5 text-[12.5px] text-ink-secondary">
                       Voice dictation into the composer, transcribed on-device.
                     </div>
@@ -327,7 +327,7 @@ export function Onboarding({ onDone }: { onDone: () => void }) {
               Continue
             </button>
             <button onClick={() => setStep(3)} className="mt-3 text-[12px] text-ink-secondary hover:text-ink">
-              Skip for now
+              Skip for Now
             </button>
           </div>
         )}

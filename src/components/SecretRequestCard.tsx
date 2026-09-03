@@ -129,8 +129,8 @@ export function SecretRequestCard({
           {!provided && !declined && (
             <button
               onClick={dismiss}
-              aria-label="Not now"
-              title="Not now"
+              aria-label="Not Now"
+              title="Not Now"
               className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
             >
               <X size={15} />
@@ -157,7 +157,7 @@ export function SecretRequestCard({
                 className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-2 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
               >
                 {saving ? <Loader2 size={13} className="animate-spin" /> : <LockKeyhole size={13} />}
-                {savedLocally ? "Continue task" : "Save securely"}
+                {savedLocally ? "Continue Task" : "Save Securely"}
               </button>
             </div>
             <a

@@ -151,7 +151,7 @@ export function InspectorPanel({ bot }: { bot: Bot }) {
         <span className="ml-auto text-[11px] text-ink-secondary">
           {page ? (shown < total ? `last ${shown} of ${total}` : `${shown} entries`) : "loading…"}
         </span>
-        <button onClick={() => void load()} className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink" title="Reload from disk">
+        <button onClick={() => void load()} className="rounded-md p-1 text-ink-secondary hover:bg-raised hover:text-ink" title="Reload from Disk">
           <RefreshCw size={14} />
         </button>
       </div>

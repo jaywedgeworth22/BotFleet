@@ -177,7 +177,7 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
               disabled={busy}
               className="flex items-center gap-1.5 rounded-lg bg-raised px-3 py-1.5 text-[13px] text-danger hover:bg-raised-hover disabled:opacity-50"
             >
-              {saving ? <Loader2 size={13} className="animate-spin" /> : "Save anyway"}
+              {saving ? <Loader2 size={13} className="animate-spin" /> : "Save Anyway"}
             </button>
           </>
         ) : (

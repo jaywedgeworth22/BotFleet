@@ -599,7 +599,7 @@ export function ComputerPanel({
     } catch (e) {
       fallbackTab?.close();
       // Release the bot before waiting on best-effort tunnel cleanup. A sick
-      // SSH process must never leave the agent paused indefinitely.
+      // SSH process must never leave the bot paused indefinitely.
       if (tookControl) await requestControl("release").catch(() => {});
       if (phase === "ready" && cloudBackend === "vps") {
         await api(`/api/bots/${bot.id}/computer/viewer-close`, { method: "POST", body: "{}" }).catch(() => {});
@@ -728,7 +728,7 @@ export function ComputerPanel({
         <button
           onClick={() => dispatch({ type: "toggleSettings", open: true })}
           className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
-          title="Bot settings"
+          title="Bot Settings"
         >
           <Settings size={18} />
         </button>
@@ -787,7 +787,7 @@ export function ComputerPanel({
               disabled={controlPending || pending === "join"}
               className="group relative flex h-full w-full cursor-pointer items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:cursor-wait"
               aria-label={`Open ${bot.name}'s live desktop`}
-              title="Open live desktop"
+              title="Open Live Desktop"
             >
               <img
                 src={frameSrc}
@@ -1063,7 +1063,7 @@ export function ComputerPanel({
 
         {/* Computer source */}
           <div className="mt-4 rounded-xl bg-card p-4">
-            <div className="text-[15px] font-medium text-ink">Runs on</div>
+            <div className="text-[15px] font-medium text-ink">Runs On</div>
             <div className="mt-0.5 text-[13px] text-ink-secondary">
               {!bot.computers &&
                 (isLinux || !localSelectable
@@ -1082,7 +1082,7 @@ export function ComputerPanel({
               [
                 ["cloud", "Cloud"],
                 ["vm", "Local VM"],
-                ["local", "This computer"],
+                ["local", "This Computer"],
                 ["off", "Off"],
               ] as const
             ).map(([mode, label], i) => (
@@ -1233,12 +1233,12 @@ export function ComputerPanel({
               className="flex flex-1 items-center justify-center gap-1.5 rounded-lg bg-accent py-2 text-[13px] font-medium text-white hover:brightness-110"
             >
               <Plus size={14} />
-              Create schedule
+              Create Schedule
             </button>
             <button
               onClick={() => dispatch({ type: "showRoutines" })}
               className="flex items-center justify-center gap-1.5 rounded-lg bg-control px-3 py-2 text-[13px] text-ink hover:bg-raised-hover"
-              title="Open schedules"
+              title="Open Schedules"
             >
               <CalendarDays size={14} />
               Schedules

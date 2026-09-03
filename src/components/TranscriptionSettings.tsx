@@ -40,7 +40,7 @@ export function TranscriptionSettings() {
     <div>
       <div className="mb-1.5 flex items-center gap-2 text-[13px] text-ink-secondary">
         <span className={cn("size-1.5 rounded-full", configured ? "bg-success" : "bg-raised-hover")} />
-        <span>AssemblyAI transcription</span>
+        <span>AssemblyAI Transcription</span>
         {configured && <span className="text-[11px] text-success">Connected</span>}
       </div>
       <p className="mb-2 text-[12px] leading-relaxed text-ink-secondary">
@@ -53,7 +53,7 @@ export function TranscriptionSettings() {
           onChange={(event) => setValue(event.target.value)}
           onKeyDown={(event) => event.key === "Enter" && void save()}
           placeholder={configured ? "••••••••  (paste to replace)" : "Paste your AssemblyAI API key"}
-          aria-label="AssemblyAI API key"
+          aria-label="AssemblyAI API Key"
           autoComplete="off"
           disabled={!bridge}
           className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none disabled:opacity-50"

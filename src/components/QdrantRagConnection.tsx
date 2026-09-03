@@ -87,7 +87,7 @@ export function QdrantRagConnection() {
         <div className="flex items-center gap-2.5">
           <Database size={17} className="text-accent" />
           <div>
-            <div className="text-[14.5px] font-medium text-ink">Agent RAG & Shared Memory</div>
+            <div className="text-[14.5px] font-medium text-ink">Bot RAG &amp; Shared Memory</div>
             <div className="text-[12.5px] text-ink-secondary">
               Connect your bots to a shared vector memory service for semantic retrieval, runbooks, and lessons.  Leave the URL blank to use a local <code>recall</code> CLI, or to keep this off.
             </div>

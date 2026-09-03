@@ -446,7 +446,7 @@ export function TeamLibraryPanel({
                   }}
                   disabled={importing}
                   className="rounded-lg p-1.5 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
-                  aria-label="Back to teams"
+                  aria-label="Back to Teams"
                 >
                   <ArrowLeft size={18} />
                 </button>
@@ -471,7 +471,7 @@ export function TeamLibraryPanel({
                 title="Open the community teams repository"
               >
                 <Github size={16} />
-                <span className="max-sm:hidden">Community repo</span>
+                <span className="max-sm:hidden">Community Repo</span>
                 <ExternalLink size={12} />
               </button>
             )}
@@ -479,7 +479,7 @@ export function TeamLibraryPanel({
               onClick={onClose}
               disabled={importing}
               className="rounded-lg p-2 text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
-              aria-label="Close teams"
+              aria-label="Close Teams"
             >
               <X size={21} />
             </button>
@@ -501,7 +501,7 @@ export function TeamLibraryPanel({
                   <span className="flex items-center gap-1.5 rounded-full bg-raised px-3 py-1.5"><Plug size={13} />{pending.apps.length} connections</span>
                 </div>
               )}
-              <div className="mt-6 text-[12px] font-medium text-ink-secondary">Team members</div>
+              <div className="mt-6 text-[12px] font-medium text-ink-secondary">Team Members</div>
               <div className="mt-2 grid grid-cols-1 gap-x-10 md:grid-cols-2">
                 {pending.members.map((member, index) => (
                   <div key={`${member.name}-${index}`} className="flex min-h-[72px] items-center gap-3 border-b border-hairline/35 px-1 py-3">
@@ -553,19 +553,19 @@ export function TeamLibraryPanel({
                 {importing
                   ? "Loading…"
                   : pending.kind === "package" && currentBotCount === 0
-                    ? "Activate playbook"
+                    ? "Activate Playbook"
                     : currentBotCount === 0
-                    ? "Load team"
+                    ? "Load Team"
                     : importMode === "replace"
-                      ? "Replace team"
-                      : "Add team"}
+                      ? "Replace Team"
+                      : "Add Team"}
               </button>
             </footer>
           </>
         ) : (
           <>
             <div className="flex flex-col gap-3 px-6 pb-4 pt-5 sm:flex-row sm:items-center sm:justify-between sm:px-8">
-              <div className="flex w-fit rounded-xl bg-raised/70 p-1" role="tablist" aria-label="Team source">
+              <div className="flex w-fit rounded-xl bg-raised/70 p-1" role="tablist" aria-label="Team Source">
                 <button
                   role="tab"
                   aria-selected={tab === "explore"}
@@ -616,7 +616,7 @@ export function TeamLibraryPanel({
                     value={search}
                     onChange={(event) => setSearch(event.target.value)}
                     placeholder="Search teams"
-                    aria-label="Search teams"
+                    aria-label="Search Teams"
                     className="min-w-0 flex-1 bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
                   />
                 </label>
@@ -627,7 +627,7 @@ export function TeamLibraryPanel({
               {tab === "explore" && (
                 <div>
                   <div className="mb-3 text-[12px] font-medium text-ink-secondary">
-                    {search ? "Search results" : "Community teams"}
+                    {search ? "Search Results" : "Community Teams"}
                   </div>
                   {catalogLoading && (
                     <div className="flex items-center justify-center gap-2 py-24 text-[13px] text-ink-secondary">
@@ -637,7 +637,7 @@ export function TeamLibraryPanel({
                   {!catalogLoading && catalogError && (
                     <div className="rounded-xl bg-danger/10 p-4 text-[13px] text-danger">
                       <p>{catalogError}</p>
-                      <button onClick={() => void loadCatalog()} className="mt-3 rounded-full bg-raised px-3.5 py-2 text-ink hover:bg-raised-hover">Try again</button>
+                      <button onClick={() => void loadCatalog()} className="mt-3 rounded-full bg-raised px-3.5 py-2 text-ink hover:bg-raised-hover">Try Again</button>
                     </div>
                   )}
                   {!catalogLoading && catalog && catalog.configured === false && (
@@ -700,7 +700,7 @@ export function TeamLibraryPanel({
                       void readFile(file).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)));
                     }}
                   />
-                  <div className="mb-3 text-[12px] font-medium text-ink-secondary">Bring your own team</div>
+                  <div className="mb-3 text-[12px] font-medium text-ink-secondary">Bring Your Own Team</div>
                   <div className="grid gap-5 md:grid-cols-2">
                     <button
                       onClick={() => fileInputRef.current?.click()}
@@ -722,7 +722,7 @@ export function TeamLibraryPanel({
                       )}
                     >
                       <UploadCloud size={27} className="text-accent" />
-                      <span className="mt-3 text-[14px] font-medium text-ink">Choose a team file</span>
+                      <span className="mt-3 text-[14px] font-medium text-ink">Choose a Team File</span>
                       <span className="mt-1 text-[12.5px] text-ink-secondary">or drop a BotMRR .md / legacy .mausteam.json here</span>
                     </button>
 
@@ -756,7 +756,7 @@ export function TeamLibraryPanel({
 
               {tab === "scout" && (
                 <div>
-                  <div className="mb-3 text-[12px] font-medium text-ink-secondary">Start from a project folder</div>
+                  <div className="mb-3 text-[12px] font-medium text-ink-secondary">Start from a Project Folder</div>
                   <p className="max-w-2xl text-[12.5px] leading-relaxed text-ink-secondary">
                     Point the scout at a folder. It reads what&apos;s in there — README, dependencies, layout — and
                     suggests a team for it. Nothing is created until you say so.
@@ -767,7 +767,7 @@ export function TeamLibraryPanel({
                       onChange={(event) => setScoutFolder(event.target.value)}
                       onKeyDown={(event) => event.key === "Enter" && scoutTarget && void runScout(scoutTarget)}
                       placeholder="/path/to/your/project"
-                      aria-label="Project folder to scout"
+                      aria-label="Project Folder to Scout"
                       className="min-w-0 flex-1 rounded-xl bg-raised/80 px-3 py-2.5 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
                     />
                     {Boolean(window.ogb?.pickFolder) && (
@@ -808,7 +808,7 @@ export function TeamLibraryPanel({
                         )}
                       </div>
 
-                      <div className="mt-5 text-[12px] font-medium text-ink-secondary">Suggested team</div>
+                      <div className="mt-5 text-[12px] font-medium text-ink-secondary">Suggested Team</div>
                       <div className="mt-1 grid grid-cols-1 gap-x-10 md:grid-cols-2">
                         {scouted.suggestion.manifest.team.members.map((member, index) => (
                           <div key={member.key} className="flex min-h-[64px] items-center gap-3 border-b border-hairline/35 px-1 py-3">
@@ -875,7 +875,7 @@ export function TeamLibraryPanel({
                         <input
                           value={roomName}
                           onChange={(event) => setRoomName(event.target.value)}
-                          aria-label="Project channel name"
+                          aria-label="Project Channel Name"
                           className="min-w-0 flex-1 rounded-xl bg-raised/80 px-3 py-2.5 text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
                         />
                         <button
@@ -884,7 +884,7 @@ export function TeamLibraryPanel({
                           className="flex shrink-0 items-center justify-center gap-2 rounded-full bg-accent px-5 py-2.5 text-[13.5px] font-medium text-white hover:bg-accent/90 disabled:opacity-60"
                         >
                           {creating && <Loader2 size={15} className="animate-spin" />}
-                          {creating ? "Creating…" : "Create project channel"}
+                          {creating ? "Creating…" : "Create Project Channel"}
                         </button>
                       </div>
                       <p className="mt-2 text-[12px] text-ink-secondary">

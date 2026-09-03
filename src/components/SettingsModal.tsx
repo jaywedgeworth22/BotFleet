@@ -237,8 +237,8 @@ function UpdatesRow() {
           {s?.status === "available"
             ? "Download"
             : s?.status === "downloaded"
-              ? "Restart and install"
-              : "Check for updates"}
+              ? "Restart and Install"
+              : "Check for Updates"}
         </button>
       </div>
     </Card>
@@ -252,7 +252,7 @@ function UpdateNotificationsRow() {
   useEffect(() => { setOn(loadUpdateNotificationsEnabled()); }, []);
   return (
     <Card
-      title="Update notifications"
+      title="Update Notifications"
       subtitle="Show a small popup when a new version of BotFleet is available to download."
     >
       <button
@@ -410,7 +410,7 @@ function AnalyticsRow() {
   const [on, setOn] = useState(analyticsEnabled);
   return (
     <Card
-      title="Usage analytics"
+      title="Usage Analytics"
       subtitle="Anonymous product events — app opened, which features get used. Never conversations, prompts, file contents, or bot output. Your email is only attached if you shared it during setup."
     >
       <button
@@ -456,7 +456,7 @@ function ToolCallsRow() {
 
   return (
     <Card
-      title="Tool calls & tasks"
+      title="Tool Calls & Tasks"
       subtitle="Configure how tool executions and background tasks are displayed in the transcript."
     >
       <div className="flex flex-col gap-4 divide-y divide-hairline/30">
@@ -528,7 +528,7 @@ function ExperimentalFeaturesRow() {
 
   return (
     <Card
-      title="Experimental features"
+      title="Experimental Features"
       subtitle="Early features may change while we test them. They stay off unless you enable them."
     >
       <div className="flex items-center justify-between gap-4">
@@ -695,7 +695,7 @@ export function SettingsModal() {
                 else dispatch({ type: "toggleAppSettings", open: false });
               }}
               placeholder="Search"
-              aria-label="Search settings"
+              aria-label="Search Settings"
               className="w-full bg-transparent text-[13px] text-ink placeholder:text-ink-secondary focus:outline-none"
             />
           </div>
@@ -727,7 +727,7 @@ export function SettingsModal() {
             </span>
             <button
               onClick={() => dispatch({ type: "toggleAppSettings", open: false })}
-              aria-label="Close settings"
+              aria-label="Close Settings"
               className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
             >
               <X size={18} />
@@ -744,7 +744,7 @@ export function SettingsModal() {
                   <SkinPicker />
                 </Card>
                 <TerminologyRow />
-                <Card title="Channel turns" subtitle="Set one maximum duration for every bot turn in a channel.">
+                <Card title="Channel Turns" subtitle="Set one maximum duration for every bot turn in a channel.">
                   <RoomTurnTimeoutSettings />
                 </Card>
                 <ToolCallsRow />
@@ -784,7 +784,7 @@ export function SettingsModal() {
                     </div>
                   </details>
                   <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
-                    <summary className="cursor-pointer text-[13px] text-ink-secondary">Self-host connected apps</summary>
+                    <summary className="cursor-pointer text-[13px] text-ink-secondary">Self-Host Connected Apps</summary>
                     <div className="mt-3">
                       <ApiKeyRow section="composio" />
                     </div>

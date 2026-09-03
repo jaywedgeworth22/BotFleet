@@ -120,7 +120,7 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
             {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
           </div>
           {!connected && (
-            <button onClick={dismiss} aria-label="Not now" title="Not now" className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink">
+            <button onClick={dismiss} aria-label="Not Now" title="Not Now" className="rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink">
               <X size={15} />
             </button>
           )}
@@ -137,7 +137,7 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
               className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:opacity-90 disabled:opacity-50"
             >
               {busy || authorizing ? <Loader2 size={13} className="animate-spin" /> : <PlugZap size={13} />}
-              {authorizing ? "Open again" : connector.status === "failed" ? "Try again" : "Connect securely"}
+              {authorizing ? "Open Again" : connector.status === "failed" ? "Try Again" : "Connect Securely"}
             </button>
           ) : !connector.resumed ? (
             <button

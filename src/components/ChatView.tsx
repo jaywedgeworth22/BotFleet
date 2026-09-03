@@ -298,9 +298,9 @@ function Bubble({
 {user && message.kind === "text" && !webhookView && !bot.busy && (
           <button
             onClick={onStartEdit}
-            aria-label="Edit message"
+            aria-label="Edit Message"
             className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-            title="Edit message"
+            title="Edit Message"
           >
             <Pencil size={14} />
           </button>
@@ -329,7 +329,7 @@ function Bubble({
                   patch: { pinnedMessageId: bot.pinnedMessageId === message.id ? "" : message.id },
                 })
               }
-              aria-label={bot.pinnedMessageId === message.id ? "Unpin message" : "Pin message"}
+              aria-label={bot.pinnedMessageId === message.id ? "Unpin Message" : "Pin Message"}
               className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
               title={
                 bot.pinnedMessageId === message.id
@@ -369,12 +369,12 @@ function Bubble({
             <div className="min-w-[300px] max-w-[520px]">
               <div className="flex items-center gap-2 border-b border-accent/15 bg-accent/[0.055] px-4 py-2.5 text-[11.5px] font-medium text-accent">
                 <Webhook size={13} />
-                <span>Webhook task</span>
+                <span>Webhook Task</span>
               </div>
               <div className="px-4 py-3 whitespace-pre-wrap">{webhookView.task}</div>
               {webhookView.payload && (
                 <details className="border-t border-hairline/30 bg-inset/25 px-4 py-2.5 text-[11.5px] text-ink-secondary">
-                  <summary className="cursor-pointer select-none hover:text-ink">View event payload</summary>
+                  <summary className="cursor-pointer select-none hover:text-ink">View Event Payload</summary>
                   <pre className="mt-2 max-h-48 overflow-auto rounded-lg border border-hairline/25 bg-black/25 p-3 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap text-ink-secondary">{webhookView.payload}</pre>
                 </details>
               )}
@@ -396,7 +396,7 @@ function Bubble({
               )}
               {collapsible && (
                 <button onClick={() => setExpanded(true)} className="mt-1 text-[12.5px] text-ink-secondary hover:text-ink">
-                  Show full message
+                  Show Full Message
                 </button>
               )}
               {expanded && (
@@ -435,7 +435,7 @@ function Bubble({
             <button
               type="button"
               onClick={onReply}
-              aria-label="Reply to message"
+              aria-label="Reply to Message"
               className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
               title="Reply"
             >
@@ -450,7 +450,7 @@ function Bubble({
                   patch: { pinnedMessageId: bot.pinnedMessageId === message.id ? "" : message.id },
                 })
               }
-              aria-label={bot.pinnedMessageId === message.id ? "Unpin message" : "Pin message"}
+              aria-label={bot.pinnedMessageId === message.id ? "Unpin Message" : "Pin Message"}
               className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
               title={
                 bot.pinnedMessageId === message.id
@@ -464,8 +464,8 @@ function Bubble({
             {isLastBotText && !bot.busy && onRegenerate && (
               <button
                 onClick={onRegenerate}
-                aria-label="Regenerate response"
-                title="Regenerate response"
+                aria-label="Regenerate Response"
+                title="Regenerate Response"
                 className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
               >
                 <RefreshCw size={14} />
@@ -486,8 +486,8 @@ function Bubble({
           <button
             type="button"
             onClick={() => dispatch({ type: "cancelQueued", botId: bot.id, queueId: message.queueId ?? message.id })}
-            aria-label="Cancel queued message"
-            title="Cancel queued message"
+            aria-label="Cancel Queued Message"
+            title="Cancel Queued Message"
             className="ml-0.5 flex size-4 shrink-0 items-center justify-center rounded text-ink-secondary hover:bg-raised hover:text-ink"
           >
             <X size={11} strokeWidth={2.5} />
@@ -501,7 +501,7 @@ function Bubble({
             onClick={() => switchTo(versions[versionIndex - 1])}
             disabled={versionIndex <= 0 || bot.busy}
             className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
-            title="Previous version"
+            title="Previous Version"
           >
             <ChevronLeft size={14} />
           </button>
@@ -512,7 +512,7 @@ function Bubble({
             onClick={() => switchTo(versions[versionIndex + 1])}
             disabled={versionIndex >= versions.length - 1 || bot.busy}
             className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
-            title="Next version"
+            title="Next Version"
           >
             <ChevronRight size={14} />
           </button>
@@ -797,7 +797,7 @@ function PinnedBanner({
         </button>
         <button
           onClick={onUnpin}
-          aria-label="Unpin message"
+          aria-label="Unpin Message"
           title="Unpin"
           className="shrink-0 rounded p-0.5 text-ink-secondary hover:bg-raised hover:text-ink"
         >
@@ -1070,8 +1070,8 @@ export function ChatView({ bot }: { bot: Bot }) {
           <button
             onClick={() => dispatch({ type: "toggleSettings", open: true })}
             className="flex size-9 shrink-0 items-center justify-center rounded-lg hover:bg-raised/50"
-            title="Open agent profile"
-            aria-label={`Open ${bot.name}'s profile`}
+            title="Open Bot Profile"
+            aria-label={`Open ${bot.name}'s Profile`}
           >
             <BotAvatar
               bot={bot}
@@ -1100,13 +1100,13 @@ export function ChatView({ bot }: { bot: Bot }) {
         <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
           <button
             onClick={() => setFindOpen((open) => !open)}
-            aria-label="Find in conversation"
+            aria-label="Find in Conversation"
             aria-pressed={findOpen}
             className={cn(
               "rounded-md p-1.5 hover:bg-raised",
               findOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
             )}
-            title="Find in conversation (⌘F)"
+            title="Find in Conversation (⌘F)"
           >
             <Search size={18} />
           </button>
@@ -1258,10 +1258,10 @@ export function ChatView({ bot }: { bot: Bot }) {
       {!follow && (
         <button
           onClick={jumpToLatest}
-          aria-label="Jump to latest messages"
+          aria-label="Jump to Latest Messages"
           className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
         >
-          <ArrowDown size={13} /> Jump to latest
+          <ArrowDown size={13} /> Jump to Latest
         </button>
       )}
 
@@ -1325,7 +1325,7 @@ function ChatHeaderOverflowMenu({ bot }: { bot: Bot }) {
           "flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink",
           open && "bg-raised text-ink",
         )}
-        title="More actions"
+        title="More Actions"
       >
         <MoreHorizontal size={18} />
       </button>
@@ -1343,7 +1343,7 @@ function ChatHeaderOverflowMenu({ bot }: { bot: Bot }) {
           >
             <Folder size={15} className="shrink-0 text-ink-secondary" />
             <div className="min-w-0 flex-1">
-              <div className="text-[12.5px] font-medium">Working folder</div>
+              <div className="text-[12.5px] font-medium">Working Folder</div>
               <div className="truncate font-mono text-[11px] text-ink-secondary">
                 {folderName ?? "Private bot workspace"}
               </div>
@@ -1362,7 +1362,7 @@ function ChatHeaderOverflowMenu({ bot }: { bot: Bot }) {
             >
               <Coins size={15} className="shrink-0 text-ink-secondary" />
               <div className="min-w-0 flex-1">
-                <div className="text-[12.5px] font-medium">Session usage</div>
+                <div className="text-[12.5px] font-medium">Session Usage</div>
                 <div className="text-[11px] text-ink-secondary">
                   {usageLabel} · {usage.turns} turn{usage.turns === 1 ? "" : "s"}
                 </div>
@@ -1382,7 +1382,7 @@ function ChatHeaderOverflowMenu({ bot }: { bot: Bot }) {
             className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-raised/60"
           >
             <span className="flex items-center gap-2.5">
-              <Monitor size={15} className="text-ink-secondary" /> Bot's computer
+              <Monitor size={15} className="text-ink-secondary" /> Bot's Computer
             </span>
             {state.computerOpen && <span className="size-1.5 rounded-full bg-accent" />}
           </button>
@@ -1404,7 +1404,7 @@ function ChatHeaderOverflowMenu({ bot }: { bot: Bot }) {
 
           <div className="my-1 border-t border-hairline/30" />
 
-          {/* Agent Profile Settings */}
+          {/* Bot Profile Settings */}
           <button
             type="button"
             onClick={() => {
@@ -1414,7 +1414,7 @@ function ChatHeaderOverflowMenu({ bot }: { bot: Bot }) {
             className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-raised/60"
           >
             <SlidersHorizontal size={15} className="shrink-0 text-ink-secondary" />
-            <span>Agent profile & settings</span>
+            <span>Bot Profile &amp; Settings</span>
           </button>
         </div>
       )}

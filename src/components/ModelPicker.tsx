@@ -85,7 +85,7 @@ function ModelSearch({
             onEscape();
           }}
           placeholder="Search models"
-          aria-label={local ? "Search local models" : "Search models"}
+          aria-label={local ? "Search Local Models" : "Search Models"}
           className="w-full bg-transparent text-[12.5px] text-ink placeholder:text-ink-secondary focus:outline-none"
         />
       </div>
@@ -104,7 +104,7 @@ export function ModelPicker({
   bot: Bot;
   className?: string;
   /** Expand the menu in-flow under the trigger so it cannot overflow a
-   * narrow parent (the Agent profile sidebar). */
+   * narrow parent (the Bot profile sidebar). */
   contained?: boolean;
   label?: ReactNode;
   selection?: ModelSelection;
@@ -269,7 +269,7 @@ export function ModelPicker({
         <div
           data-model-picker-content
           role="dialog"
-          aria-label="Choose model"
+          aria-label="Choose Model"
           className={cn(
             "flex overflow-hidden rounded-2xl border border-hairline/50 bg-card",
             contained
@@ -350,7 +350,7 @@ export function ModelPicker({
                   </div>
                   <div className="mt-0.5 text-[11.5px] text-ink-secondary">
                     {pane === "custom"
-                      ? "Run this agent with a model already on your machine."
+                      ? "Run this bot with a model already on your machine."
                       : "Choose a model for this bot."}
                   </div>
                   {railInstance.snapshot.quota?.capped && (
@@ -385,7 +385,7 @@ export function ModelPicker({
                     <p className="mt-2 text-center text-[11.5px] text-ink-secondary/70">
                       {pane === "main" && official.length > 0
                         ? `${official.length} ${official.length === 1 ? "model" : "models"} will appear after setup.`
-                        : "Local models will appear as soon as the agent is installed."}
+                        : "Local models will appear as soon as the engine is installed."}
                     </p>
                   </div>
                 ) : (
@@ -470,7 +470,7 @@ export function ModelPicker({
                   <button
                     type="button"
                     aria-label={
-                      custom.length > 0 ? `Use a local model (${custom.length} available)` : "Use a local model"
+                      custom.length > 0 ? `Use a Local Model (${custom.length} available)` : "Use a Local Model"
                     }
                     disabled={!canOpenCustom}
                     onClick={() => {
@@ -479,7 +479,7 @@ export function ModelPicker({
                     }}
                     className="flex w-full shrink-0 items-center justify-between gap-2 border-t border-hairline/40 px-4 py-3 text-left text-[12.5px] font-medium text-ink hover:bg-control/60 disabled:cursor-not-allowed disabled:text-ink-secondary/40 disabled:hover:bg-transparent"
                   >
-                    <span>Use a local model</span>
+                    <span>Use a Local Model</span>
                     <span className="flex items-center gap-2">
                       {custom.length > 0 && (
                         <span className="rounded-full bg-inset px-2 py-0.5 text-[10.5px] text-ink-secondary">
