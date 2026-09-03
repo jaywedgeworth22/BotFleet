@@ -102,7 +102,6 @@ targets:
       properties:
         com.apple.developer.associated-domains:
         - applinks:botfleet.app
-        - applinks:agents.jays.services
         - webcredentials:botfleet.app
         com.apple.security.application-groups:
         - group.app.botfleet

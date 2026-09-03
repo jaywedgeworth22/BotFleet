@@ -22,8 +22,8 @@
         },
         {
           "title": "Usage Telemetry &amp; Central Accounting",
-          "desc": "Live token consumption (prompt, completion, cache hits) and model costs stream to Usage Monitor (usage.jays.services) with automatic project and repo classification.",
-          "prov": { "type": "host", "note": "Live on usage.jays.services" }
+          "desc": "Live token consumption (prompt, completion, cache hits) and model costs stream to a Usage Monitor instance you configure, with automatic project and repo classification.",
+          "prov": { "type": "host", "note": "Verified in daily use" }
         },
         {
           "title": "Multi-Repo Channels &amp; Interactive File Links",
