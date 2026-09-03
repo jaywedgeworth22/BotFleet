@@ -3312,6 +3312,32 @@ describe("GET /api/quotas", () => {
   });
 });
 
+describe("GET /api/transcripts/export", () => {
+  it("returns every conversation, with its owner and whether each message is live", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Kept", memberIds: [bot.id] })).body.group;
+
+    const res = await api("GET", "/api/transcripts/export");
+    expect(res.status).toBe(200);
+    expect(typeof res.body.exportedAt).toBe("string");
+    expect(res.body.conversationCount).toBe(res.body.conversations.length);
+
+    const forRoom = res.body.conversations.find((c: any) => c.owner.id === room.id);
+    expect(forRoom).toBeDefined();
+    expect(forRoom.owner.kind).toBe("channel");
+    expect(forRoom.owner.name).toBe("Kept");
+    expect(Array.isArray(forRoom.messages)).toBe(true);
+
+    const forBot = res.body.conversations.find((c: any) => c.owner.id === bot.id);
+    expect(forBot).toBeDefined();
+    expect(forBot.owner.kind).toBe("bot");
+    // Abandoned branches are kept, so each message says whether it is live.
+    for (const message of forBot.messages) {
+      expect(typeof message.onActivePath).toBe("boolean");
+    }
+  });
+});
+
 describe("moving a conversation between channels", () => {
   it("carries the transcript with it and leaves neither channel empty", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;

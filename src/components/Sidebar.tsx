@@ -1682,6 +1682,13 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     });
   }, []);
 
+  // File ▸ Import Bots opens the same panel the Teams button does.
+  useEffect(() => {
+    const open = () => setTeamLibraryOpen(true);
+    window.addEventListener("open-team-library", open);
+    return () => window.removeEventListener("open-team-library", open);
+  }, []);
+
   useEffect(() => {
     if (!teamFeedback) return;
     const timer = window.setTimeout(() => setTeamFeedback(null), 5000);
