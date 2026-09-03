@@ -4464,6 +4464,60 @@ const server = createServer(async (req, res) => {
       const group = store.createGroup(name, memberIds, false, section, setup);
       return json(res, 201, { group: { ...publicGroupState(group), messages: [] } });
     }
+    // Every conversation on this computer, as one JSON document.
+    //
+    // Export only, deliberately: a transcript is tied to thread ids, message
+    // parents and provider sessions that belong to the machine that made it,
+    // so importing one somewhere else would produce a conversation no bot
+    // could actually continue.  This is for keeping and reading, and it is
+    // the whole history rather than the active branch, so nothing a bot
+    // explored is quietly dropped.
+    if (method === "GET" && path === "/api/transcripts/export") {
+      const conversations: Array<Record<string, unknown>> = [];
+      const collect = (
+        owner: { kind: "bot" | "channel"; id: string; name: string },
+        threadId: string,
+        title: string,
+        createdAt: number,
+      ) => {
+        const messages = store.messagesFor(threadId);
+        const activePath = new Set(store.activePath(threadId).map((message) => message.id));
+        conversations.push({
+          owner,
+          threadId,
+          title,
+          createdAt,
+          messageCount: messages.length,
+          messages: messages.map((message) => ({
+            ...message,
+            // Branches are kept, so say which messages are the live thread.
+            onActivePath: activePath.has(message.id),
+          })),
+        });
+      };
+
+      for (const bot of store.bots) {
+        const owner = { kind: "bot" as const, id: bot.id, name: bot.name };
+        const tasks = store.tasks(bot.id);
+        if (tasks.length === 0) collect(owner, bot.threadId, bot.name, bot.createdAt);
+        for (const task of tasks) collect(owner, task.threadId, task.title, task.createdAt);
+      }
+      for (const group of store.groups) {
+        const owner = { kind: "channel" as const, id: group.id, name: group.name };
+        const tasks = store.groupTasks(group.id);
+        if (tasks.length === 0) collect(owner, group.threadId, group.name, group.createdAt);
+        for (const task of tasks) collect(owner, task.threadId, task.title, task.createdAt);
+      }
+
+      return json(res, 200, {
+        exportedAt: new Date().toISOString(),
+        botCount: store.bots.length,
+        channelCount: store.groups.length,
+        conversationCount: conversations.length,
+        conversations,
+      });
+    }
+
     if (method === "POST" && path === "/api/teams/export") {
       const body = await readBody(req);
       const profileName = cfg.profile?.name?.trim();

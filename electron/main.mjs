@@ -1724,6 +1724,22 @@ function setupApplicationMenu() {
         },
         { type: "separator" },
         {
+          label: "Export Bots\u2026",
+          click: () => sendToRenderer("export-bots"),
+        },
+        {
+          label: "Import Bots\u2026",
+          click: () => sendToRenderer("import-bots"),
+        },
+        {
+          // Export only: a transcript is tied to thread ids and provider
+          // sessions from the machine that made it, so an imported one
+          // would be a conversation no bot could continue.
+          label: "Export All Conversations\u2026",
+          click: () => sendToRenderer("export-conversations"),
+        },
+        { type: "separator" },
+        {
           label: "Open Data Folder",
           click: () => shell.openPath(DATA_DIR),
         },

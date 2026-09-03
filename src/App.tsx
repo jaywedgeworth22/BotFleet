@@ -1,3 +1,4 @@
+import { downloadAllBots, downloadAllConversations } from "@/lib/team-files";
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Menu, X } from "lucide-react";
 import { StoreProvider, useStore, type AppSettingsSection } from "@/state/store";
@@ -132,6 +133,12 @@ function Shell() {
           }
         }
         window.dispatchEvent(new CustomEvent("focus-composer"));
+      } else if (action === "export-bots") {
+        void downloadAllBots().catch(() => {});
+      } else if (action === "import-bots") {
+        window.dispatchEvent(new CustomEvent("open-team-library"));
+      } else if (action === "export-conversations") {
+        void downloadAllConversations().catch(() => {});
       } else if (action === "view-chat") {
         dispatch({ type: "toggleAppSettings", open: false });
         dispatch({ type: "toggleComputer", open: false });
