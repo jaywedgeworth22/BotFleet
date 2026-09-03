@@ -2,8 +2,8 @@
 // Semi-automated feature-status sync.  Refreshes each feature's PR state
 // (open/merged/closed) in features.json from the GitHub API, and reports
 // merged PRs in jaywedgeworth22/BotFleet that no feature card cites yet —
-// candidates for a new card or an Established promotion.  It never moves a
-// feature between sections; that stays a human/agent judgment call.
+// candidates for a new card.  Every BotFleet add-on stays in testing.
+// It never moves a feature between sections; that stays a human/agent judgment call.
 //
 // Usage: node sync-status.mjs          (uses `gh api`, needs gh auth)
 //        node sync-status.mjs --check  (report only, do not rewrite json)
@@ -37,10 +37,10 @@ for (const s of data.sections) {
 const unlisted = prs.filter((p) => p.merged_at && !cited.has(p.number));
 for (const p of unlisted) console.log(`unlisted merged PR: #${p.number} ${p.title}`);
 
-const promotable = data.sections
-  .find((s) => s.id === "beta")?.features
-  .filter((f) => f.prov.type === "pr" && f.prov.state === "merged" && !f.prov.note) ?? [];
-for (const f of promotable) console.log(`promotion candidate (merged, still listed Beta): ${f.title.replace(/&amp;/g, "&")}`);
+const unnoted = data.sections
+  .flatMap((s) => s.features)
+  .filter((f) => f.prov.type === "pr" && f.prov.state === "merged" && !f.prov.note);
+for (const f of unnoted) console.log(`merged card with no note: ${f.title.replace(/&amp;/g, "&")}`);
 
 if (changed && !checkOnly) {
   writeFileSync(path, JSON.stringify(data, null, 2) + "\n");

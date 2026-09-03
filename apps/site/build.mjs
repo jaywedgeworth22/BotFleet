@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Renders index.html from template.html + features.json.
 // Rules encoded here: a section with zero features is hidden entirely
-// (owner rule: hide Established if nothing qualifies); descriptions are
+// (owner rule: hide a section if it has zero features); descriptions are
 // trusted HTML (sentence gaps use &nbsp; per fleet copy rules).
 import { readFileSync, writeFileSync } from "node:fs";
 
