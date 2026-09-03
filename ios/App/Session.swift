@@ -1005,10 +1005,10 @@ final class Session: ObservableObject {
     }
 
     @MainActor
-    func updateTerminology(_ terminology: String) async -> ConfigStatus? {
+    func updateTerminology(_ terminology: String, custom: RoomLabels? = nil) async -> ConfigStatus? {
         guard let client else { return nil }
         do {
-            let updated = try await client.updateTerminology(terminology)
+            let updated = try await client.updateTerminology(terminology, custom: custom)
             self.config = updated
             return updated
         } catch {

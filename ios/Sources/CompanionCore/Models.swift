@@ -514,6 +514,18 @@ public struct Profile: Codable, Hashable, Sendable {
     public var email: String
 }
 
+/// What this person calls a room, in both forms.  The harness resolves the
+/// pair — including a custom word — so the phone never has to guess a plural.
+public struct RoomLabels: Codable, Hashable, Sendable {
+    public var singular: String
+    public var plural: String
+
+    public init(singular: String, plural: String) {
+        self.singular = singular
+        self.plural = plural
+    }
+}
+
 public struct ConfigStatus: Codable, Sendable {
     public var composio: ConfigFlag?
     public var box: ConfigFlag?
@@ -521,20 +533,28 @@ public struct ConfigStatus: Codable, Sendable {
     public var imageGen: ConfigFlag?
     public var profile: Profile?
     public var terminology: String?
+    /// The finished words, resolved by the harness so every client agrees.
+    /// Absent only when talking to a harness older than this feature.
+    public var roomLabels: RoomLabels?
 
     public var roomTerminologyLabel: String {
-        switch terminology?.lowercased() {
-        case "groups": return "Group"
-        case "projects": return "Project"
-        default: return "Channel"
-        }
+        roomLabels?.singular ?? Self.presetLabels(terminology).singular
     }
 
     public var roomTerminologyPlural: String {
+        roomLabels?.plural ?? Self.presetLabels(terminology).plural
+    }
+
+    /// The fallback for an older harness that sends only the key.  A word it
+    /// has never heard of still renders as Channels rather than as nothing.
+    static func presetLabels(_ terminology: String?) -> RoomLabels {
         switch terminology?.lowercased() {
-        case "groups": return "Groups"
-        case "projects": return "Projects"
-        default: return "Channels"
+        case "groups": return RoomLabels(singular: "Group", plural: "Groups")
+        case "projects": return RoomLabels(singular: "Project", plural: "Projects")
+        case "apps": return RoomLabels(singular: "App", plural: "Apps")
+        case "topics": return RoomLabels(singular: "Topic", plural: "Topics")
+        case "repos": return RoomLabels(singular: "Repo", plural: "Repos")
+        default: return RoomLabels(singular: "Channel", plural: "Channels")
         }
     }
 

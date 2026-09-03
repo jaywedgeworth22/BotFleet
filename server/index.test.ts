@@ -3336,6 +3336,35 @@ describe("moving a conversation between channels", () => {
     expect(landed.title).toBe("Moving day");
   });
 
+  it("moves a conversation to a bot, where it becomes one of that bot's threads", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Handover", memberIds: [bot.id] })).body
+      .group;
+    const extra = (await api("POST", `/api/groups/${room.id}/tasks`, { title: "Over to you" })).body
+      .task;
+
+    const res = await api("PATCH", `/api/groups/${room.id}/tasks/${extra.threadId}`, {
+      botId: bot.id,
+    });
+    expect(res.status).toBe(200);
+
+    const roster = (await api("GET", "/api/bots?messages=0")).body;
+    const landed = roster.bots.find((b: any) => b.id === bot.id);
+    const source = roster.groups.find((g: any) => g.id === room.id);
+    expect(landed.tasks.some((t: any) => t.threadId === extra.threadId)).toBe(true);
+    expect(source.tasks.some((t: any) => t.threadId === extra.threadId)).toBe(false);
+  });
+
+  it("404s on a bot that does not exist", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Nowhere", memberIds: [bot.id] })).body
+      .group;
+    const res = await api("PATCH", `/api/groups/${room.id}/tasks/${room.threadId}`, {
+      botId: "bot_nope",
+    });
+    expect(res.status).toBe(404);
+  });
+
   it("refuses to empty a channel of its last conversation", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     const only = (await api("POST", "/api/groups", { name: "Only", memberIds: [bot.id] })).body.group;

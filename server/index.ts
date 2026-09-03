@@ -4863,6 +4863,21 @@ const server = createServer(async (req, res) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
+      // Reassigning a conversation to a bot, where it becomes one of that
+      // bot's own threads rather than a channel's.
+      if (body.botId !== undefined) {
+        const target = String(body.botId);
+        if (!store.bot(target)) return json(res, 404, { error: "no such bot" });
+        const moved = store.moveGroupTaskToBot(m[1], m[2], target);
+        if (!moved) {
+          return json(res, 400, {
+            error: "that conversation cannot move — a channel keeps its last one",
+          });
+        }
+        broadcast({ kind: "group", group: groupWithThread(moved.group) });
+        broadcast({ kind: "bot", bot: publicBot(moved.bot) });
+        return json(res, 200, { ok: true });
+      }
       // Reassigning a conversation to another channel. The thread keeps its
       // id, so the transcript moves with it rather than being copied.
       if (body.groupId !== undefined) {

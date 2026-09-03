@@ -655,10 +655,23 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("GET", "/api/config"), as: ConfigStatus.self)
     }
 
-    public func updateTerminology(_ terminology: String) async throws -> ConfigStatus {
-        struct TerminologyPatch: Encodable { let terminology: String }
+    /// Rooms are renamed through their own route.  /api/config carries API
+    /// keys and the sidecar refuses every write to it, which is why the old
+    /// call could never succeed from a phone.
+    public func updateTerminology(
+        _ terminology: String,
+        custom: RoomLabels? = nil
+    ) async throws -> ConfigStatus {
+        struct TerminologyPatch: Encodable {
+            let terminology: String
+            let terminologyCustom: RoomLabels?
+        }
         return try await send(
-            try makeRequest("PATCH", "/api/config", encodedBody: TerminologyPatch(terminology: terminology)),
+            try makeRequest(
+                "PATCH",
+                "/api/terminology",
+                encodedBody: TerminologyPatch(terminology: terminology, terminologyCustom: custom)
+            ),
             as: ConfigStatus.self
         )
     }
