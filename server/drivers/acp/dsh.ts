@@ -65,6 +65,8 @@ const support: AcpSupport = {
 
   transformEnv: (_env) => {},
 
+  credentialEnv: ["DEEPSEEK_API_KEY", "DSH_HOME", "DSH_RUNTIME_ROOT", "DSH_PERMISSION_MODE"],
+
   pickAuthMethod: () => null,
   authFailure: "continue",
   isAuthenticated: (env) =>

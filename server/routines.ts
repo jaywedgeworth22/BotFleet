@@ -665,11 +665,7 @@ export class RoutineManager {
         }
         // A webhook is an incoming message, so make its task the bot's live
         // chat immediately. Scheduled work remains detached and unobtrusive.
-        const task = this.options.createTask(
-          run.botId,
-          run.routineName,
-          run.triggerSource === "webhook" || run.triggerSource === "resource",
-        );
+        const task = this.options.createTask(run.botId, run.routineName, run.triggerSource === "webhook");
         if (!task) {
           this.failRun(run, "Could not create a task for this run");
           continue;

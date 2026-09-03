@@ -279,6 +279,11 @@ export interface ProviderSnapshot {
   /** How this instance is paid for, when the driver can tell: a reported
    * cost on a subscription is notional and the UI labels it as such. */
   billing?: "metered" | "subscription";
+  quota?: {
+    capped: boolean;
+    resetsAt?: number | null;
+    error?: string;
+  };
 }
 
 // ── engine install descriptor ───────────────────────────────────────────

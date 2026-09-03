@@ -13,6 +13,9 @@ import {
   ListTree,
   Loader2,
   Monitor,
+  MoreHorizontal,
+  Coins,
+  SlidersHorizontal,
   MessageSquareReply,
   Pencil,
   Pin,
@@ -23,7 +26,7 @@ import {
   Webhook,
   X,
 } from "lucide-react";
-import { cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, usageChip, usageDetail } from "@/lib/usage";
+import { formatTokens, formatUsd } from "@/lib/usage";
 import {
   useStore,
   useStreaming,
@@ -59,7 +62,7 @@ import { SpeakButton } from "./SpeakButton";
 import { CopyButton } from "./CopyButton";
 import { CallButton, CallOverlay } from "./CallView";
 import { cn } from "@/lib/cn";
-import { COMPACT_BUBBLE, COMPACT_SQUARE } from "@/lib/compact-chip";
+import { COMPACT_BUBBLE } from "@/lib/compact-chip";
 import { useFocusMessage } from "@/lib/focus-message";
 import { groupActivityRuns } from "@/lib/activity-runs";
 import { ActivityRun } from "./ActivityRun";
@@ -1033,17 +1036,16 @@ export function ChatView({ bot }: { bot: Bot }) {
       {/* Header */}
       <div
         className={cn(
-          // @container so the chips on the right can fold to icon bubbles
-          // when the column is narrow (side panel open, small window)
-          "@container/chathead flex items-center justify-between px-5 py-3",
+          // @container so the chips on the right can fold gracefully
+          "@container/chathead flex items-center justify-between gap-3 px-5 py-3",
           // Room for the drawer button, which overlays this corner below md.
           "pl-11 md:pl-5",
         )}
       >
-        <div className="flex min-w-0 items-center gap-2.5 rounded-lg px-1.5 py-1">
+        <div className="flex shrink-0 min-w-0 max-w-[45%] items-center gap-2 rounded-lg px-1.5 py-1">
           <button
             onClick={() => dispatch({ type: "toggleSettings", open: true })}
-            className="flex size-10 shrink-0 items-center justify-center rounded-lg hover:bg-raised/50"
+            className="flex size-9 shrink-0 items-center justify-center rounded-lg hover:bg-raised/50"
             title="Open agent profile"
             aria-label={`Open ${bot.name}'s profile`}
           >
@@ -1060,17 +1062,18 @@ export function ChatView({ bot }: { bot: Bot }) {
             onCommit={(name) => dispatch({ type: "updateBot", botId: bot.id, patch: { name } })}
             onActivate={() => dispatch({ type: "toggleSettings", open: true })}
             showEditButton
-            className="truncate text-[15px] font-semibold text-ink"
+            className="truncate min-w-[80px] text-[15px] font-semibold text-ink"
             inputClassName="max-w-[220px] rounded bg-inset px-1.5 py-0.5 text-[15px] font-semibold"
           />
           {bot.chiefOfStaff && (
-            <span className="flex items-center gap-1 rounded-full bg-accent/12 px-2 py-0.5 text-[11px] font-medium text-accent">
-              <Crown size={11} /> Chief of Staff
+            <span className="flex shrink-0 items-center gap-1 rounded-full bg-accent/12 px-2 py-0.5 text-[11px] font-medium text-accent">
+              <Crown size={11} />
+              <span className="@max-2xl/chathead:hidden">Chief of Staff</span>
             </span>
           )}
-          {bot.busy && <Loader2 size={14} className="animate-spin text-ink-secondary" />}
+          {bot.busy && <Loader2 size={14} className="shrink-0 animate-spin text-ink-secondary" />}
         </div>
-        <div className="flex shrink-0 items-center gap-2">
+        <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
           <button
             onClick={() => setFindOpen((open) => !open)}
             aria-label="Find in conversation"
@@ -1097,32 +1100,9 @@ export function ChatView({ bot }: { bot: Bot }) {
             </button>
           )}
           <TaskPicker bot={bot} />
-          <UsageChip bot={bot} />
-          <WorkingFolderChip bot={bot} />
           <ModelPicker bot={bot} />
           <CallButton bot={bot} />
-          <button
-            onClick={() => dispatch({ type: "toggleComputer" })}
-            className={cn(
-              "rounded-md p-1.5 hover:bg-raised",
-              state.computerOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
-            )}
-            title="Bot's computer"
-          >
-            <Monitor size={18} />
-          </button>
-          <button
-            onClick={() => dispatch({ type: "toggleInspector" })}
-            aria-label="Inspector"
-            aria-pressed={state.inspectorOpen}
-            className={cn(
-              "rounded-md p-1.5 hover:bg-raised",
-              state.inspectorOpen ? "text-accent" : "text-ink-secondary hover:text-ink",
-            )}
-            title="Inspector — runtime events and raw protocol for this thread"
-          >
-            <Bug size={18} />
-          </button>
+          <ChatHeaderOverflowMenu bot={bot} />
         </div>
       </div>
 
@@ -1280,59 +1260,140 @@ export function ChatView({ bot }: { bot: Bot }) {
   );
 }
 
-/** What the open task has spent — quiet until the first turn settles.
- * Click opens the bot's settings, where the Usage card has the breakdown. */
-function UsageChip({ bot }: { bot: Bot }) {
+function ChatHeaderOverflowMenu({ bot }: { bot: Bot }) {
   const { state, dispatch } = useStore();
-  const usage = bot.tasks?.find((t) => t.threadId === bot.threadId)?.usage;
-  const text = usage ? usageChip(usage) : "";
-  if (!usage || !text) return null;
-  const billing = state.instances.find((i) => i.instanceId === bot.modelSelection.instanceId)?.snapshot.billing;
-  const detail = [
-    `${usage.turns} turn${usage.turns === 1 ? "" : "s"}`,
-    usageDetail(usage),
-    // the whole thread rides along on every turn, so most of "in" is the
-    // model re-reading what it already saw — say so, or the figure reads as
-    // a bug (issue #527)
-    cachedInput(usage) > 0 ? "cached = context re-read each turn, not new text" : null,
-    hasFiniteCost(usage.costUsd) ? `${formatUsd(usage.costUsd)} ${costCaption(billing)}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n");
-  // folded: one figure — cost when the engine reports one, else tokens
-  const short = usage.costUsd !== null ? formatUsd(usage.costUsd) : formatTokens(usage.input + usage.output);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  const task = bot.tasks?.find((t) => t.threadId === bot.threadId);
+  const folder = task?.cwd === undefined ? bot.cwd : (task.cwd ?? undefined);
+  const folderName = folder ? (folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder) : null;
+  const usage = task?.usage;
+  const usageLabel = usage
+    ? usage.costUsd !== null
+      ? formatUsd(usage.costUsd)
+      : formatTokens(usage.input + usage.output)
+    : null;
+
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("mousedown", onDown);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   return (
-    <button
-      onClick={() => dispatch({ type: "toggleSettings", open: true })}
-      className="whitespace-nowrap rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[12px] tabular-nums text-ink-secondary hover:bg-raised hover:text-ink @max-4xl/chathead:px-2"
-      title={detail}
-    >
-      <span className="@max-4xl/chathead:hidden">{text}</span>
-      <span className="hidden @max-4xl/chathead:inline">{short}</span>
-    </button>
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className={cn(
+          "flex size-8 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink",
+          open && "bg-raised text-ink",
+        )}
+        title="More actions"
+      >
+        <MoreHorizontal size={18} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 top-full z-40 mt-1 w-64 rounded-xl border border-hairline/50 bg-card p-1.5 shadow-2xl shadow-black/50">
+          {/* Working Folder */}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              dispatch({ type: "toggleSettings", open: true });
+            }}
+            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-raised/60"
+          >
+            <Folder size={15} className="shrink-0 text-ink-secondary" />
+            <div className="min-w-0 flex-1">
+              <div className="text-[12.5px] font-medium">Working folder</div>
+              <div className="truncate font-mono text-[11px] text-ink-secondary">
+                {folderName ?? "Private bot workspace"}
+              </div>
+            </div>
+          </button>
+
+          {/* Usage Metrics */}
+          {usage && (
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                dispatch({ type: "toggleSettings", open: true });
+              }}
+              className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-raised/60"
+            >
+              <Coins size={15} className="shrink-0 text-ink-secondary" />
+              <div className="min-w-0 flex-1">
+                <div className="text-[12.5px] font-medium">Session usage</div>
+                <div className="text-[11px] text-ink-secondary">
+                  {usageLabel} · {usage.turns} turn{usage.turns === 1 ? "" : "s"}
+                </div>
+              </div>
+            </button>
+          )}
+
+          <div className="my-1 border-t border-hairline/30" />
+
+          {/* Computer Panel Toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              dispatch({ type: "toggleComputer" });
+            }}
+            className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-raised/60"
+          >
+            <span className="flex items-center gap-2.5">
+              <Monitor size={15} className="text-ink-secondary" /> Bot's computer
+            </span>
+            {state.computerOpen && <span className="size-1.5 rounded-full bg-accent" />}
+          </button>
+
+          {/* Inspector Toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              dispatch({ type: "toggleInspector" });
+            }}
+            className="flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-raised/60"
+          >
+            <span className="flex items-center gap-2.5">
+              <Bug size={15} className="text-ink-secondary" /> Inspector
+            </span>
+            {state.inspectorOpen && <span className="size-1.5 rounded-full bg-accent" />}
+          </button>
+
+          <div className="my-1 border-t border-hairline/30" />
+
+          {/* Agent Profile Settings */}
+          <button
+            type="button"
+            onClick={() => {
+              setOpen(false);
+              dispatch({ type: "toggleSettings", open: true });
+            }}
+            className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-raised/60"
+          >
+            <SlidersHorizontal size={15} className="shrink-0 text-ink-secondary" />
+            <span>Agent profile & settings</span>
+          </button>
+        </div>
+      )}
+    </div>
   );
 }
 
-/** The folder this task's tools run in — quiet unless it's somewhere other
- * than home. Shows the pinned task folder when there is one, else the bot's
- * folder a first turn would pin. Click opens bot settings to change it. */
-function WorkingFolderChip({ bot }: { bot: Bot }) {
-  const { dispatch } = useStore();
-  const task = bot.tasks?.find((t) => t.threadId === bot.threadId);
-  const folder = task?.cwd === undefined ? bot.cwd : (task.cwd ?? undefined);
-  if (!folder) return null;
-  const name = folder.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || folder;
-  return (
-    <button
-      onClick={() => dispatch({ type: "toggleSettings", open: true })}
-      className={cn(
-        "flex max-w-[180px] items-center gap-1.5 rounded-full border border-hairline/40 bg-raised/60 px-2.5 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink",
-        COMPACT_SQUARE,
-      )}
-      title={`Working folder: ${folder}`}
-    >
-      <Folder size={12} className="@max-4xl/chathead:size-[14px]" />
-      <span className="truncate font-mono @max-4xl/chathead:hidden">{name}</span>
-    </button>
-  );
-}

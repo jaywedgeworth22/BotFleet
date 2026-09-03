@@ -126,6 +126,7 @@ const appConfigSchema = z.object({
     collection: z.string().optional(),
   }).optional(),
   features: featureConfigSchema.optional(),
+  terminology: z.enum(["channels", "groups", "projects"]).optional(),
   instances: instanceConfigMapSchema.optional(),
 });
 const appConfigPatchSchema = appConfigSchema.omit({ instances: true });
@@ -152,6 +153,8 @@ export interface AppConfig {
   qdrant?: { enabled?: boolean; url?: string; apiKey?: string; collection?: string };
   /** Opt-in product experiments. Every flag defaults to disabled. */
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
+  /** Preferred UI naming for rooms: channels (default), groups, or projects. */
+  terminology?: "channels" | "groups" | "projects";
   instances?: InstanceConfigMap;
 }
 export type ConfigPatch = z.output<typeof appConfigPatchSchema>;
@@ -457,12 +460,9 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
   // a credential Milind doesn't want to manage; an `instances` entry brings
   // it back anytime.
   //
-  // Google rides `antigravityAgent` (the `agy` CLI), not `geminiAgent`:
-  // Google retired Gemini CLI for the free/Pro/Ultra tiers on 2026-06-18
-  // (developers.googleblog.com, "transitioning Gemini CLI to Antigravity
-  // CLI"), so a default `gemini` instance could only ever show unavailable.
-  // The driver stays registered for enterprise licences, which keep Gemini
-  // CLI — `{"instances": {"gemini": {"driver": "geminiAgent"}}}` restores it.
+  // Google models exclusively ride `antigravityAgent` (the `agy` CLI).
+  // Gemini direct CLI and API drivers have been retired in favor of the
+  // mature, fully integrated Antigravity driver.
   const DEFAULT_FLEET: InstanceConfigMap = {
     grok: { driver: "grokAgent" },
     dsh: { driver: "dshAgent" },

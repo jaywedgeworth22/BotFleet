@@ -200,7 +200,7 @@ function validateCapsule(value: JsonValue): BotFleetCapsule | null {
   if (capsule.ready_count !== readyCount) return null;
   const twoUp = Boolean(
     capsule.refresh_status === "success" &&
-      capsule.mode === "shared" &&
+      (capsule.mode === "shared" || capsule.mode === "per-bot") &&
       capsule.max_instances !== null &&
       capsule.max_instances >= 2 &&
       capsule.source_sha256 !== null &&
@@ -224,7 +224,7 @@ function validateCapsule(value: JsonValue): BotFleetCapsule | null {
     if (
       capsule.failure_reason !== undefined ||
       capsule.runtime_state !== expectedRuntime ||
-      (capsule.mode !== "shared") ||
+      (capsule.mode !== "shared" && capsule.mode !== "per-bot") ||
       capsule.max_instances === null ||
       readyCount > capsule.max_instances ||
       capsule.source_sha256 === null ||

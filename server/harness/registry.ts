@@ -5,6 +5,7 @@
 // compatible — do not remove it); dispose tears an instance down without
 // touching its siblings.
 import { findCliCandidates } from "../env-path.ts";
+import { quotaCooldowns } from "../model-fallback.ts";
 import type {
   AnyProviderDriver,
   InstanceConfigMap,
@@ -195,6 +196,14 @@ export class ProviderRegistry {
           try {
             await inst.refreshModels?.();
             snapshot = await inst.snapshot();
+            const cd = quotaCooldowns.get("*", inst.instanceId, "*");
+            if (cd) {
+              snapshot.quota = {
+                capped: true,
+                resetsAt: cd.resetsAt,
+                error: cd.error,
+              };
+            }
           } catch (e) {
             snapshot = { state: "unavailable", reason: e instanceof Error ? e.message : String(e) };
           }

@@ -17,6 +17,7 @@ import type { ProviderInstance } from "../../contracts.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import { createAcpDriver, skipSubscriptionAuthForLocalInject, type AcpSupport } from "./core.ts";
 import { GrokAgentDriver } from "./grok.ts";
+import { DshAgentDriver } from "./dsh.ts";
 import { KimiAgentDriver } from "./kimi.ts";
 import { DroidAgentDriver } from "./droid.ts";
 import { CursorAgentDriver } from "./cursor.ts";
@@ -115,6 +116,9 @@ describe("ACP decodeConfig", () => {
   });
   it("grok defaults to the grok binary", () => {
     expect(GrokAgentDriver.decodeConfig({})).toEqual({ cli: "grok", fullAuto: false, workspace: undefined });
+  });
+  it("dsh defaults to the dsh binary", () => {
+    expect(DshAgentDriver.decodeConfig(undefined)).toEqual({ cli: "dsh", fullAuto: false, workspace: undefined });
   });
   it("kimi defaults to the kimi binary and declares cross-platform setup", () => {
     expect(KimiAgentDriver.decodeConfig(undefined)).toEqual({ cli: "kimi", fullAuto: false, workspace: undefined });
@@ -553,12 +557,12 @@ describe("ACP turns (fake CLI)", () => {
     expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
   });
 
-  it("proceeds through a missing auth method (lenient login)", async () => {
-    await create(KimiAgentDriver, "no-auth");
+  it("dsh proceeds through a missing auth method (lenient login)", async () => {
+    await create(DshAgentDriver, "no-auth");
     await instance.adapter.sendTurn({ threadId: "t-lenient", text: "go" });
     const done = await recorder.until((e) => e.type === "turn.completed");
     expect(done).toMatchObject({ ok: true });
-    expect(recorder.events.some((e) => e.provider === "kimiAgent")).toBe(true);
+    expect(recorder.events.some((e) => e.provider === "dshAgent")).toBe(true);
   });
 
   it("rejects a second turn while one is in flight", async () => {
@@ -710,10 +714,12 @@ describe("ACP turns (fake CLI)", () => {
     expect(JSON.parse(readFileSync(dump, "utf8")).env.TEST_POLICY).toBe("auto");
   });
 
-  it("declares effort levels for Grok only", async () => {
+  it("declares effort levels for Grok and DSH, none for Kimi", async () => {
     await create(GrokAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toEqual(["low", "medium", "high"]);
 
+    await create(DshAgentDriver);
+    expect(instance.adapter.capabilities.effortLevels).toEqual(["low", "medium", "high", "max"]);
     await create(KimiAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
   });

@@ -15,6 +15,18 @@ export const BOT_PROFILE_PATCH_FIELDS = [
   "voice",
   "speakReplies",
   "modelSelection",
+  "chiefOfStaff",
+  "approvePeerComms",
+  "autoApprove",
+  "autoReview",
+  "composio",
+  "cloudBackend",
+  "autoStartVps",
+  "cwd",
+  "extraCwds",
+  "userNotes",
+  "effort",
+  "computers",
 ] as const;
 
 const profilePatchSchema = z.object({
@@ -44,6 +56,18 @@ const profilePatchSchema = z.object({
     .optional(),
   speakReplies: z.boolean({ error: "speakReplies must be true or false" }).optional(),
   modelSelection: z.any().optional(),
+  chiefOfStaff: z.boolean({ error: "chiefOfStaff must be true or false" }).optional(),
+  approvePeerComms: z.boolean({ error: "approvePeerComms must be true or false" }).optional(),
+  autoApprove: z.boolean({ error: "autoApprove must be true or false" }).optional(),
+  autoReview: z.enum(["off", "shadow", "enforce"], { error: "autoReview must be off, shadow, or enforce" }).optional(),
+  composio: z.boolean({ error: "composio must be true or false" }).optional(),
+  cloudBackend: z.enum(["box", "vps"], { error: "cloudBackend must be box or vps" }).optional(),
+  autoStartVps: z.boolean({ error: "autoStartVps must be true or false" }).optional(),
+  cwd: z.union([z.string(), z.literal(""), z.null()]).optional(),
+  extraCwds: z.array(z.string()).optional(),
+  userNotes: z.string().max(20000).optional(),
+  effort: z.string().max(50).optional(),
+  computers: z.array(z.enum(["cloud", "vm", "local"])).optional(),
 });
 
 export type BotProfilePatchInput = z.input<typeof profilePatchSchema>;
@@ -51,9 +75,28 @@ export type BotProfilePatchInput = z.input<typeof profilePatchSchema>;
 export type BotProfilePatch = Partial<
   Pick<
     BotRecord,
-    "name" | "title" | "description" | "notifications" | "avatarUrl" | "avatarCrop" | "voice" | "speakReplies" | "modelSelection"
+    | "name"
+    | "title"
+    | "description"
+    | "notifications"
+    | "avatarUrl"
+    | "avatarCrop"
+    | "voice"
+    | "speakReplies"
+    | "modelSelection"
+    | "chiefOfStaff"
+    | "approvePeerComms"
+    | "autoApprove"
+    | "autoReview"
+    | "composio"
+    | "cloudBackend"
+    | "autoStartVps"
+    | "cwd"
+    | "extraCwds"
+    | "userNotes"
+    | "computers"
   >
->;
+> & { effort?: string };
 
 export type BotProfilePatchResult =
   | { ok: true; patch: BotProfilePatch }
@@ -82,8 +125,9 @@ export function parseBotProfilePatch(input: BotProfilePatchInput, strict = false
     return { ok: false, error: issue?.message ?? "invalid profile patch" };
   }
 
-  const { avatarUrl, ...fields } = parsed.data;
+  const { avatarUrl, cwd, ...fields } = parsed.data;
   const patch: BotProfilePatch = fields;
   if (avatarUrl !== undefined) patch.avatarUrl = avatarUrl || undefined;
+  if (cwd !== undefined) patch.cwd = cwd || undefined;
   return { ok: true, patch };
 }
