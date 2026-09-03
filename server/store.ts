@@ -956,6 +956,35 @@ export class Store {
     return [from, to];
   }
 
+  /** Fold one of a bot's conversations into another.  The destination
+   * thread keeps its id and resume cursors; the source task is deleted.
+   * A divider plus the source messages are appended so the transcript
+   * stays one conversation the model can keep reading. */
+  mergeBotTasks(botId: string, fromThreadId: string, intoThreadId: string): BotRecord | null {
+    if (fromThreadId === intoThreadId) return null;
+    const bot = this.bot(botId);
+    if (!bot || !bot.tasks || bot.tasks.length < 2) return null;
+    const from = bot.tasks.find((entry) => entry.threadId === fromThreadId);
+    const into = bot.tasks.find((entry) => entry.threadId === intoThreadId);
+    if (!from || !into) return null;
+
+    const incoming = this.messagesFor(fromThreadId);
+    if (incoming.length > 0) {
+      const label = from.title?.trim() || "Merged thread";
+      this.appendMessage(intoThreadId, {
+        role: "user",
+        kind: "text",
+        text: `Merged “${label}” into this thread.`,
+      });
+      for (const message of incoming) {
+        const { id: _id, parentId: _parent, ...rest } = message;
+        this.appendMessage(intoThreadId, rest);
+      }
+    }
+
+    return this.deleteTask(botId, fromThreadId);
+  }
+
   /** Move one of a bot's conversations into a channel, where the channel's
    * members answer it from then on. */
   moveTaskToGroup(fromBotId: string, threadId: string, groupId: string): {

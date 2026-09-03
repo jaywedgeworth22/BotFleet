@@ -562,6 +562,7 @@ export type Action =
   | { type: "moveGroupTaskToBot"; groupId: string; threadId: string; botId: string }
   | { type: "moveTaskToBot"; botId: string; threadId: string; toBotId: string }
   | { type: "moveTaskToGroup"; botId: string; threadId: string; toGroupId: string }
+  | { type: "mergeTasks"; botId: string; threadId: string; intoThreadId: string }
   | { type: "deleteGroupTask"; groupId: string; threadId: string }
   | { type: "toggleReaction"; threadId: string; messageId: string; emoji: string }
   | { type: "interruptGroup"; groupId: string }
@@ -1352,6 +1353,25 @@ export function reducer(state: AppState, action: Action): AppState {
         ),
       };
     }
+    case "mergeTasks": {
+      const source = state.bots.find((bot) => bot.id === action.botId);
+      if (!source || action.threadId === action.intoThreadId || (source.tasks ?? []).length < 2) return state;
+      const remaining = (source.tasks ?? []).filter((task) => task.threadId !== action.threadId);
+      if (remaining.length === (source.tasks ?? []).length) return state;
+      if (!remaining.some((task) => task.threadId === action.intoThreadId)) return state;
+      return {
+        ...state,
+        bots: state.bots.map((bot) =>
+          bot.id === action.botId
+            ? {
+                ...bot,
+                tasks: remaining,
+                threadId: bot.threadId === action.threadId ? action.intoThreadId : bot.threadId,
+              }
+            : bot,
+        ),
+      };
+    }
     case "moveTaskToBot": {
       const source = state.bots.find((bot) => bot.id === action.botId);
       const moving = (source?.tasks ?? []).find((task) => task.threadId === action.threadId);
@@ -1920,6 +1940,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, {
             method: "PATCH",
             body: JSON.stringify({ botId: action.botId }),
+          }).catch(showError);
+          break;
+        case "mergeTasks":
+          api(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ mergeInto: action.intoThreadId }),
           }).catch(showError);
           break;
         case "moveTaskToBot":
