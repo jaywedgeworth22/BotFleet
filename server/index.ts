@@ -876,9 +876,72 @@ const DECISION_FILTER_WINDOW = 50_000;
 const lastReply = new Map<string, string>();
 /** Per-thread fallback steps already used this user request.  Reset on a
  * successful turn and on a user-initiated startTurn so a later message
- * gets the full saved chain.  A successful failover also patches the bot's
- * modelSelection so the rest of the thread stays on the fallback engine. */
+ * gets the full saved chain.  Keyed `botId:threadId` — deliberately without
+ * the instance id, so the count survives a cross-instance failover.
+ *
+ * A failover does NOT persist the new engine: the fallback dispatch passes
+ * `modelSelection` to startTurn as a per-turn override only, so a bot whose
+ * turn failed over still records the ORIGINAL instance while the live turn
+ * runs on the fallback's.  Never resolve a running turn's adapter through
+ * `bot.modelSelection` — sweep `registry.instances()` by `hasSession` (see
+ * interruptThreadEverywhere). */
 const fallbackAttemptByTurn = new Map<string, number>();
+/** Turns the user explicitly stopped, keyed exactly like
+ * `fallbackAttemptByTurn` so the entry survives a failover.
+ *
+ * Load-bearing: every driver settles a killed turn as `exit_before_result`,
+ * not `interrupted`, so selectTurnFallback's stop-reason gate cannot tell a
+ * user stop from a crash.  Without this latch, making Stop actually reach
+ * the driver would turn "Stop does nothing" into "Stop falls over to the
+ * next engine".  Written before the driver is awaited, consumed in the
+ * `turn.completed` fold. */
+const stoppedTurns = new Set<string>();
+
+/** Stop the live turn on `threadId` wherever it is really running, and say
+ * whether anything was actually stopped.
+ *
+ * Resolving one adapter from `bot.modelSelection.instanceId` is wrong twice
+ * over: after a cross-instance failover the bot record still names the
+ * ORIGINAL instance (the fallback engine is a per-turn override that is
+ * never persisted), so the stop lands on an adapter that does not own the
+ * process — a silent, total no-op.  Every adapter implements
+ * `hasSession(threadId)`, so ask each live instance whether it owns this
+ * thread instead of guessing from bookkeeping.
+ *
+ * Failures are logged rather than swallowed: an interrupt that throws is
+ * exactly the case the old blanket `.catch(() => {})` made invisible. */
+/** Outcome of a stop request.  `stopped` and `refused` are distinct on purpose:
+ * "nothing was running" and "a driver refused to stop" are opposite problems, and
+ * the second is exactly the case this endpoint exists to make visible. */
+type InterruptOutcome = { stopped: boolean; refused: boolean };
+
+async function interruptThreadEverywhere(threadId: string): Promise<InterruptOutcome> {
+  const owners = registry.instances().filter((instance) => {
+    try {
+      return instance.adapter.hasSession(threadId);
+    } catch (error) {
+      console.error(`interrupt: hasSession failed on instance ${instance.instanceId}:`, error);
+      return false;
+    }
+  });
+  const results = await Promise.all(
+    owners.map(async (instance) => {
+      try {
+        await instance.adapter.interruptTurn(threadId);
+        return true;
+      } catch (error) {
+        // A driver that refused to stop has NOT stopped: report the failure
+        // rather than letting the caller answer a hopeful stopped:true.
+        console.error(`interrupt failed on instance ${instance.instanceId} for thread ${threadId}:`, error);
+        return false;
+      }
+    }),
+  );
+  // A refusal is only interesting when it was the reason nothing stopped: if some
+  // other owner did stop the turn, the user got what they asked for.
+  const stopped = results.some(Boolean);
+  return { stopped, refused: !stopped && results.some((ok) => ok === false) };
+}
 /** Room turns re-enter the member engine after turn.completed so failover
  * does not race the sequential roster walk. */
 const pendingMemberFallback = new Map<string, { groupId: string; botId: string }>();
@@ -1511,7 +1574,12 @@ bus.subscribe((event: RuntimeEvent) => {
           : quotaOrCap
             ? autoFallbackChain(fallbackBot.modelSelection.instanceId)
             : undefined;
-        const next = selectTurnFallback({
+        // A user stop ends the request; it does not license wandering to the
+        // next engine.  Consume the latch BEFORE selectTurnFallback, because
+        // the driver reports this settle as `exit_before_result` and that
+        // gate would otherwise wave the failover straight through.
+        const userStopped = stoppedTurns.delete(fallbackKey);
+        const next = userStopped ? undefined : selectTurnFallback({
           ok: isOk,
           stopReason: event.stopReason,
           produced: turnProducedAssistantOutput(afterUser, { textIsError: isTextError }),
@@ -1963,7 +2031,13 @@ async function startTurn(
   if (text.trim() && !opts?.cardContinuation) store.titleTaskFromFirstMessage(bot.id, text, threadId);
 
   const selection = opts?.modelSelection ?? quotaCooldowns.resolveModel(bot.id, bot.modelSelection).selection;
-  if (!opts?.modelSelection) fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
+  // A fresh user turn re-arms both the saved chain and the stop latch; the
+  // fallback dispatch (which carries modelSelection) is a continuation of the
+  // turn that just settled, so it must inherit them instead.
+  if (!opts?.modelSelection) {
+    fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
+    stoppedTurns.delete(`${bot.id}:${threadId}`);
+  }
   const instance = opts?.runOn === "cloud"
     ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
     : registry.get(selection.instanceId);
@@ -5195,11 +5269,18 @@ const server = createServer(async (req, res) => {
       // This covers setup-before-busy and responder handoffs, and makes every
       // queued responder observe cancellation before it can start.
       cancelGroupTurnOperations(group.id, group.threadId);
+      // The room fold keys fallback bookkeeping by the SPEAKING member, so the
+      // latch has to name that member — and it must be set before the driver
+      // is awaited, since the turn can settle before this handler resumes.
       const busy = group.busyBotId ? store.bot(group.busyBotId) : undefined;
-      const instance = busy ? registry.get(busy.modelSelection.instanceId) : undefined;
-      await instance?.adapter.interruptTurn(group.threadId).catch(() => {});
+      if (busy) {
+        stoppedTurns.add(`${busy.id}:${group.threadId}`);
+        fallbackAttemptByTurn.delete(`${busy.id}:${group.threadId}`);
+      }
+      pendingMemberFallback.delete(group.threadId);
+      const outcome = await interruptThreadEverywhere(group.threadId);
       closeOpenApprovals(group.threadId);
-      return json(res, 200, { ok: true });
+      return json(res, 200, { ok: true, stopped: outcome.stopped, refused: outcome.refused });
     }
 
     // emoji reactions — works on any thread (1:1 or room)
@@ -5996,9 +6077,21 @@ const server = createServer(async (req, res) => {
           return json(res, 409, { error: "this bot is running a routine in another conversation" });
         }
         await routines!.cancelRun(routineRun.id);
-        return json(res, 200, { ok: true });
+        return json(res, 200, { ok: true, stopped: true });
       }
-      const instance = registry.get(bot.modelSelection.instanceId);
+      // Latch the stop before anything is awaited.  The driver may settle the
+      // turn the instant it is killed, so the turn.completed fold can run
+      // before this handler resumes — if the latch were set after the await,
+      // the fold would already have failed over to the next engine.
+      const latchStop = (threadId: string) => {
+        stoppedTurns.add(`${bot.id}:${threadId}`);
+        // the user ended this request, so the next message starts the saved
+        // chain from the top rather than resuming mid-chain
+        fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
+        pendingMemberFallback.delete(threadId);
+      };
+      let stopped = false;
+      let refused = false;
       // a bot busy in a ROOM is running on the room's thread — stopping it
       // from its own chat must reach that turn, not just the 1:1 thread
       const busyGroup = store.groups.find((g) => g.busyBotId === bot.id);
@@ -6006,15 +6099,27 @@ const server = createServer(async (req, res) => {
         if (expectedThreadId !== undefined && busyGroup.threadId !== expectedThreadId) {
           return json(res, 409, { error: `this bot is working in channel ${busyGroup.id}` });
         }
-        await instance?.adapter.interruptTurn(busyGroup.threadId).catch(() => {});
+        latchStop(busyGroup.threadId);
+        const groupOutcome = await interruptThreadEverywhere(busyGroup.threadId);
+        if (groupOutcome.stopped) stopped = true;
+        if (groupOutcome.refused) refused = true;
         closeOpenApprovals(busyGroup.threadId);
       }
       if (expectedThreadId !== undefined && !busyGroup && bot.threadId !== expectedThreadId) {
         return json(res, 409, { error: "the bot switched tasks before it could be interrupted" });
       }
-      await instance?.adapter.interruptTurn(bot.threadId).catch(() => {});
-      closeOpenApprovals(bot.threadId);
-      return json(res, 200, { ok: true });
+      // A turn started on one task keeps running while the user reads another,
+      // so the live thread — not the visible one — is what has to be stopped.
+      const liveThreadId = bot.inflightThreadId ?? bot.threadId;
+      latchStop(liveThreadId);
+      const liveOutcome = await interruptThreadEverywhere(liveThreadId);
+      if (liveOutcome.stopped) stopped = true;
+      if (liveOutcome.refused) refused = true;
+      closeOpenApprovals(liveThreadId);
+      if (liveThreadId !== bot.threadId) closeOpenApprovals(bot.threadId);
+      // refused only matters when nothing stopped: a driver that threw while another
+      // owner succeeded is not something to put in front of the user.
+      return json(res, 200, { ok: true, stopped, refused: refused && !stopped });
     }
 
     // ── tasks: a bot's separate contexts ────────────────────────────────

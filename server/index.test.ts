@@ -31,6 +31,8 @@ let boxStubPort = 0;
 let home: string;
 let staticDir: string;
 let fakeClaudeDump: string;
+/** wrapper CLI that always crashes before a result — drives a real failover */
+let fakeCrashCli: string;
 let stderr = "";
 
 const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
@@ -69,6 +71,17 @@ beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), "omb-api-test-"));
   staticDir = join(home, "static");
   fakeClaudeDump = join(home, "fake-claude-dump.json");
+  // A third engine whose CLI always crashes before producing a result. The
+  // suite pins FAKE_CLAUDE_MODE=hang process-wide, so the only way to get one
+  // instance to FAIL — and thus make a bot genuinely fail over onto another
+  // instance — is to override the mode per CLI. FAKE_CLAUDE_DUMP is dropped
+  // so this engine never clobbers the argv dump other tests assert on.
+  fakeCrashCli = join(home, "fake-claude-crash");
+  writeFileSync(
+    fakeCrashCli,
+    `#!/bin/sh\nunset FAKE_CLAUDE_DUMP\nFAKE_CLAUDE_MODE=exit-early exec ${JSON.stringify(FAKE_CLAUDE_CLI)} "$@"\n`,
+    { mode: 0o755 },
+  );
   // a fleet of exactly one unknown driver: no CLI probes, no network
   mkdirSync(join(home, ".botfleet"), { recursive: true });
   mkdirSync(join(staticDir, "assets"), { recursive: true });
@@ -80,6 +93,12 @@ beforeAll(async () => {
       instances: {
         ghost: { driver: "not-a-real-driver", displayName: "Ghost" },
         claude: { driver: "claudeAgent", displayName: "Fixture Claude", config: { cli: FAKE_CLAUDE_CLI } },
+        // A SECOND live instance, so a fallback chain has a real cross-instance
+        // target.  That is the case the stop bug hid in: after a failover the
+        // bot record still names the original instance, so resolving one
+        // adapter from bot.modelSelection stops the wrong engine.
+        claude2: { driver: "claudeAgent", displayName: "Fixture Claude Two", config: { cli: FAKE_CLAUDE_CLI } },
+        crasher: { driver: "claudeAgent", displayName: "Fixture Crasher", config: { cli: fakeCrashCli } },
       },
     }),
   );
@@ -1732,6 +1751,154 @@ describe("harness HTTP API", () => {
       expect(current.threadId).toBe(runningTask);
     } finally {
       await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("stops a turn instead of failing it over to the next engine", async () => {
+    // The reported bug, end to end.  The owner pressed Stop for ~2 minutes on
+    // a bot with a saved fallback chain and the child was never killed; it
+    // wrote its own timeout result and the chain advanced to the next engine.
+    // Both halves have to hold at once: the stop must REACH the live turn,
+    // and reaching it must not be read as "this attempt failed, try the next
+    // engine" — the driver settles a killed turn as exit_before_result, which
+    // is indistinguishable from a crash.
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
+    expect(claude.snapshot.state).toBe("available");
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "claude",
+          model: claude.models.default,
+          fallbacks: [{ instanceId: "claude2", model: claude.models.default }],
+        },
+      })).status).toBe(200);
+
+      // the fixture CLI hangs, so this turn stays live until something stops it
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hang forever" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(true);
+
+      // the stop reached a real live session — not a hopeful unconditional ok
+      const stop = await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      expect(stop.status).toBe(200);
+      expect(stop.body).toMatchObject({ ok: true, stopped: true });
+
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(false);
+
+      // A failover would start a second turn on claude2 and announce itself in
+      // the transcript. Give it room to happen before asserting it did not.
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      const after = (await api("GET", "/api/bots")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(after.busy).toBe(false);
+      const chips = after.messages
+        .map((message: any) => message?.tool?.name)
+        .filter((name: unknown): name is string => typeof name === "string");
+      expect(chips.some((name: string) => name.startsWith("Fell over to"))).toBe(false);
+      // and the stop did not quietly re-point the bot at the fallback engine
+      expect(after.modelSelection.instanceId).toBe("claude");
+
+      // The latch is per-request, not sticky: the next user message starts a
+      // fresh turn with the saved chain intact and is stoppable in its own right.
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hang again" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(true);
+      const second = await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      expect(second.body).toMatchObject({ ok: true, stopped: true });
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("stops the instance actually running the turn, not the one the bot record names", async () => {
+    // The cross-instance case, driven through a REAL failover: crasher fails,
+    // the chain moves the live turn onto claude, and the bot record is left
+    // still naming crasher — a failover is a per-turn override that is never
+    // persisted. The old endpoint resolved one adapter from
+    // bot.modelSelection.instanceId, so in exactly this state it reached an
+    // engine that owned nothing and Stop was a guaranteed total no-op.
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "crasher",
+          model: claude.models.default,
+          fallbacks: [{ instanceId: "claude", model: claude.models.default }],
+        },
+      })).status).toBe(200);
+
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "fail then hang" })).status).toBe(202);
+
+      // wait for the failover chip, so the live turn is known to be on claude
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.messages?.some((message: any) =>
+          typeof message?.tool?.name === "string" && message.tool.name.startsWith("Fell over to"),
+        );
+      }, { timeout: 20_000 }).toBe(true);
+
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(true);
+
+      // the record still names the engine that is NOT running the turn
+      const midFlight = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(midFlight.modelSelection.instanceId).toBe("crasher");
+
+      const stop = await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      expect(stop.status).toBe(200);
+      // hasSession found claude, the real owner; a modelSelection lookup would
+      // have asked crasher, which owns nothing, and reported success anyway
+      expect(stop.body).toMatchObject({ ok: true, stopped: true });
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(false);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("reports stopped:false when the stop matched no live turn", async () => {
+    // An idle bot has no session on any instance. The old endpoint answered a
+    // flat {ok:true} here and when it really had stopped something, so the UI
+    // could not tell the owner that their press did nothing.
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const stop = await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      expect(stop.status).toBe(200);
+      expect(stop.body).toMatchObject({ ok: true, stopped: false });
+    } finally {
       await api("DELETE", `/api/bots/${bot.id}`);
     }
   });

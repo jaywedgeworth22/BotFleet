@@ -50,6 +50,10 @@ export function makeFakeDriver(opts: FakeDriverOptions = {}): FakeDriverHandle {
       async create(input: DriverCreateInput<Record<string, unknown>>): Promise<ProviderInstance> {
         if (opts.failCreate) throw new Error(opts.failCreate);
         const listeners = new Set<RuntimeEventListener>();
+        // The interrupt sweep asks every instance `hasSession`.  A constant false
+        // matches nothing, so a test driving the sweep through this fake would pass
+        // vacuously; track the threads this fake actually started instead.
+        const started = new Set<string>();
         const emit = (event: RuntimeEvent) => {
           for (const l of [...listeners]) l(event);
         };
@@ -66,10 +70,15 @@ export function makeFakeDriver(opts: FakeDriverOptions = {}): FakeDriverHandle {
           adapter: {
             provider: kind,
             capabilities: { sessionModelSwitch: "unsupported", effortLevels: opts.effortLevels },
-            sendTurn: async () => ({ turnId: "fake-turn" }),
-            interruptTurn: async () => {},
+            sendTurn: async (turn: { threadId?: string }) => {
+              if (turn?.threadId) started.add(turn.threadId);
+              return { turnId: "fake-turn" };
+            },
+            interruptTurn: async (threadId: string) => {
+              started.delete(threadId);
+            },
             respondToRequest: async () => "unavailable" as const, // this engine has no asks to answer
-            hasSession: () => false,
+            hasSession: (threadId: string) => started.has(threadId),
             stopAll: async () => {},
             onEvent: (listener) => {
               listeners.add(listener);
