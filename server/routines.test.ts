@@ -17,6 +17,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   let now = start;
   let bot: "ready" | "busy" | "missing" = "ready";
   let task = 0;
+  const threads = new Set<string>();
   const started: Array<{ botId: string; threadId: string; prompt: string }> = [];
   const runOns: string[] = [];
   const triggerSources: string[] = [];
@@ -32,8 +33,11 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     turnLive: () => live,
     createTask: (_botId, _title, activate = false) => {
       taskActivations.push(activate);
-      return { threadId: `thread-${++task}` };
+      const threadId = `thread-${++task}`;
+      threads.add(threadId);
+      return { threadId };
     },
+    taskExists: (_botId, threadId) => threads.has(threadId),
     startTurn: async (botId, threadId, prompt, runOn, triggerSource) => {
       started.push({ botId, threadId, prompt });
       runOns.push(runOn);
@@ -239,6 +243,36 @@ describe("RoutineManager", () => {
     expect(h.manager.activeRunForBot("maus-2")?.threadId).toBe("thread-1");
     expect(h.manager.isActiveThread("thread-1")).toBe(true);
     expect(h.taskActivations).toEqual([false]);
+  });
+
+  it("reuses the previous thread for a later scheduled run of the same routine", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Morning brief",
+      prompt: "Summarize overnight",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "thread-1",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    expect(h.started).toEqual([{ botId: "maus-1", threadId: "thread-1", prompt: "Summarize overnight" }]);
+
+    const again = h.manager.listRoutines()[0]!;
+    h.setNow(again.nextRunAt!);
+    await h.manager.tick();
+    expect(h.started).toEqual([
+      { botId: "maus-1", threadId: "thread-1", prompt: "Summarize overnight" },
+      { botId: "maus-1", threadId: "thread-1", prompt: "Summarize overnight" },
+    ]);
+    expect(h.taskActivations).toEqual([false]);
+    expect(h.manager.listRuns().map((run) => run.threadId)).toEqual(["thread-1", "thread-1"]);
   });
 
   it("cancels queued work when a routine is paused", async () => {

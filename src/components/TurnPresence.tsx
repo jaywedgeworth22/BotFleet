@@ -9,12 +9,16 @@ export function TurnPresence({
   visible,
   label = "Thinking",
   answering = false,
+  modelMark,
+  modelName,
   children,
 }: {
   avatar: ReactNode;
   visible: boolean;
   label?: string;
   answering?: boolean;
+  modelMark?: ReactNode;
+  modelName?: string;
   children?: ReactNode;
 }) {
   const [mounted, setMounted] = useState(visible);
@@ -68,8 +72,16 @@ export function TurnPresence({
       >
         {avatar}
         {showWorking ? (
-          <span className="thinking-shimmer animate-shimmer text-[13px] leading-none" aria-live="polite">
-            {label}{elapsed > 0 ? ` · ${elapsed}s` : ""}
+          <span className="flex items-center gap-2" aria-live="polite">
+            <span className="thinking-shimmer animate-shimmer text-[13px] leading-none">
+              {label}{elapsed > 0 ? ` · ${elapsed}s` : ""}
+            </span>
+            {modelName ? (
+              <span className="flex items-center gap-1.5 text-[12px] leading-none text-ink-secondary">
+                {modelMark}
+                <span className="italic">{modelName}</span>
+              </span>
+            ) : null}
           </span>
         ) : null}
       </div>

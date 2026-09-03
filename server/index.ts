@@ -2514,6 +2514,7 @@ routines = new RoutineManager({
     if (task && bot) broadcast({ kind: "bot", bot: publicBot(bot) });
     return task;
   },
+  taskExists: (botId, threadId) => Boolean(store.taskByThread(botId, threadId)),
   startTurn: (botId, threadId, prompt, runOn, triggerSource, onDispatchError) =>
     startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError }),
   interruptTurn: async (botId, threadId, runOn) => {
@@ -4295,7 +4296,7 @@ const server = createServer(async (req, res) => {
       const limit = pageSize(url.searchParams.get("messages"));
       if (limit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
       return json(res, 200, {
-        bots: store.bots.map((bot) => { console.log("BOT MESSAGES:", store.messagesFor(bot.threadId).length); return { ...publicBot(bot), ...messagePage(bot.threadId, limit) }; }),
+        bots: store.bots.map((bot) => ({ ...publicBot(bot), ...messagePage(bot.threadId, limit) })),
         groups: store.groups.map((g) => ({ ...publicGroupState(g), ...messagePage(g.threadId, limit) })),
         computerControl: Object.fromEntries(
           store.bots.map((bot) => {
