@@ -720,7 +720,6 @@ describe("ACP turns (fake CLI)", () => {
 
     await create(DshAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toEqual(["low", "medium", "high", "max"]);
-
     await create(KimiAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
   });

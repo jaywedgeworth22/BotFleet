@@ -279,7 +279,12 @@ export function ModelPicker({
         >
           <div className="flex w-14 shrink-0 flex-col gap-1 overflow-y-auto border-r border-hairline/40 bg-panel p-2">
             {(() => {
-              const availableInstances = state.instances.filter((i) => i.snapshot.state !== "unavailable");
+              const availableInstances = state.instances.filter((i) => {
+                if (i.enabled === false) return false;
+                if (i.snapshot.state === "unavailable" && i.instanceId !== selection.instanceId) return false;
+                if (i.instanceId === "kimi" && (!i.snapshot.authenticated || i.snapshot.state !== "available") && i.instanceId !== selection.instanceId) return false;
+                return true;
+              });
               const { subscription, custom: local } = splitEngineRail(availableInstances);
               const railButton = (instance: InstanceInfo) => {
                 const selected = instance.instanceId === railInstance?.instanceId;
