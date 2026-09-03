@@ -1,7 +1,9 @@
-// Fleet Recall & Agent RAG MCP proxy — spawned as an MCP server inside bot processes
-// (via the "qdrant" integration). Connects BotFleet bots to the shared fleet-agents
-// knowledge corpus (lessons, owner preferences, infrastructure runbooks, and decisions),
-// exposing both canonical fleet recall tools and backward-compatible Qdrant aliases:
+// Agent RAG & recall MCP proxy — spawned as an MCP server inside bot processes
+// (via the "qdrant" integration). Connects BotFleet bots to whatever shared
+// vector memory service the operator configures (lessons, preferences,
+// infrastructure runbooks, and decisions). There is no built-in endpoint and
+// no built-in collection: unconfigured means the tools report that and do
+// nothing. Exposes canonical recall tools and backward-compatible aliases:
 //
 //   recall_search(query, limit?, category?, app?, source?, seat?, since_days?, per_doc?)
 //   recall_contribute(text, category, app?, seat?, title?, url?, force?)
@@ -21,13 +23,15 @@ import { homedir } from "node:os";
 
 const execFileAsync = promisify(execFile);
 
+// No default endpoint ships with BotFleet: the operator points this at their
+// own service in Settings (or via env), and an empty value means "off".
 const RECALL_URL = (
   process.env.OMB_RECALL_URL ||
   process.env.RECALL_URL ||
   process.env.OMB_QDRANT_URL ||
   process.env.QDRANT_URL ||
-  "https://recall.jays.services"
-).replace(/\/+$/, "");
+  ""
+).trim().replace(/\/+$/, "");
 
 const RECALL_API_KEY =
   process.env.OMB_RECALL_API_KEY ||
@@ -36,16 +40,26 @@ const RECALL_API_KEY =
   process.env.QDRANT_API_KEY ||
   "";
 
-const DEFAULT_COLLECTION =
+const DEFAULT_COLLECTION = (
   process.env.OMB_RECALL_COLLECTION ||
   process.env.RECALL_COLLECTION ||
   process.env.OMB_QDRANT_COLLECTION ||
   process.env.QDRANT_COLLECTION ||
-  "fleet-agents";
+  ""
+).trim();
+
+/** Shown wherever a collection name would go and none is configured. */
+const COLLECTION_LABEL = DEFAULT_COLLECTION || "agent memory";
+
+export const NOT_CONFIGURED_MESSAGE =
+  "Agent RAG is not configured — set a Service URL in Settings";
 
 const BOT_NAME = process.env.OMB_BOT_NAME || "Bot";
 const AGENT_SEAT = process.env.AGENT_SEAT || BOT_NAME.toUpperCase();
 
+/** A `recall` CLI on this host, if there is one: an explicit RECALL_CLI_PATH
+ * first, then the generic install locations. Nothing here is specific to any
+ * one operator's layout. */
 function findRecallCli(): string | null {
   if (process.env.RECALL_CLI_PATH && existsSync(process.env.RECALL_CLI_PATH)) {
     return process.env.RECALL_CLI_PATH;
@@ -53,8 +67,6 @@ function findRecallCli(): string | null {
   const home = homedir();
   const candidates = [
     join(home, ".local", "bin", "recall"),
-    join(home, "apps", "mac-collab", "recall"),
-    join(home, "apps", "fleet-rag", "recall"),
     "/opt/homebrew/bin/recall",
     "/usr/local/bin/recall",
   ];
@@ -62,6 +74,12 @@ function findRecallCli(): string | null {
     if (existsSync(c)) return c;
   }
   return null;
+}
+
+/** With no local CLI and no configured service there is nothing to call, so
+ * every tool says so instead of firing a request at a placeholder host. */
+function unconfigured(): boolean {
+  return !RECALL_URL && !findRecallCli();
 }
 
 interface HitRecord {
@@ -80,7 +98,7 @@ interface HitRecord {
 
 function formatHits(hits: HitRecord[], mode?: string): string {
   if (!hits || hits.length === 0) {
-    return "No matching records found in fleet memory.";
+    return "No matching records found in agent memory.";
   }
   const modeLabel = mode ? ` (${mode})` : "";
   const formatted = hits.map((hit, idx) => {
@@ -92,7 +110,7 @@ function formatHits(hits: HitRecord[], mode?: string): string {
     const link = hit.url ? ` | [Link](${hit.url})` : "";
     return `${idx + 1}. ${title}${meta}${text}${score}${link}`;
   }).join("\n\n---\n\n");
-  return `Found ${hits.length} hit(s) in fleet memory [${DEFAULT_COLLECTION}]${modeLabel}:\n\n${formatted}`;
+  return `Found ${hits.length} hit(s) in agent memory [${COLLECTION_LABEL}]${modeLabel}:\n\n${formatted}`;
 }
 
 async function executeRecallCli(subcommand: string, args: string[]): Promise<string> {
@@ -105,7 +123,7 @@ async function executeRecallCli(subcommand: string, args: string[]): Promise<str
     maxBuffer: 4 * 1024 * 1024,
     env: {
       ...process.env,
-      PATH: `${join(homedir(), ".local", "bin")}:${join(homedir(), "apps", "mac-collab")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
+      PATH: `${join(homedir(), ".local", "bin")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
     },
   });
 
@@ -119,7 +137,7 @@ const TOOLS = [
   {
     name: "recall_search",
     description:
-      "Search the fleet's shared knowledge corpus (lessons, owner preferences, infrastructure facts, decisions, runbooks, and notes) in the fleet-agents collection. Hybrid dense + keyword search with cross-encoder reranking.",
+      "Search the configured shared knowledge corpus (lessons, preferences, infrastructure facts, decisions, runbooks, and notes). Hybrid dense + keyword search with cross-encoder reranking.",
     inputSchema: {
       type: "object",
       properties: {
@@ -130,13 +148,13 @@ const TOOLS = [
           enum: ["lesson", "preference", "infrastructure", "decision", "runbook", "note", "finding", "doc"],
           description: "Restrict results to one category",
         },
-        app: { type: "string", description: "Filter by lowercase app slug (e.g. fleet, botfleet, socratic-trade)" },
+        app: { type: "string", description: "Filter by lowercase app slug (e.g. botfleet, docs, research)" },
         source: {
           type: "string",
           enum: ["board", "effort-log", "apple-note", "doc", "skill", "memory", "agent-contribution"],
           description: "Filter by document source",
         },
-        seat: { type: "string", description: "Filter by author seat tag (e.g. CLAUDE, GROK, AG)" },
+        seat: { type: "string", description: "Filter by author seat tag (the bot or agent that wrote it)" },
         since_days: { type: "number", description: "Only return content created in the last N days" },
         per_doc: { type: "number", description: "Best N chunks to return per document (default: 1)" },
       },
@@ -146,7 +164,7 @@ const TOOLS = [
   {
     name: "recall_contribute",
     description:
-      "Store a reusable piece of knowledge, lesson learned, owner preference, infrastructure fact, or runbook into the shared fleet-agents memory corpus so other bots and fleet seats can retrieve it.",
+      "Store a reusable piece of knowledge, lesson learned, preference, infrastructure fact, or runbook into the configured shared memory corpus so other bots and seats can retrieve it.",
     inputSchema: {
       type: "object",
       properties: {
@@ -167,7 +185,7 @@ const TOOLS = [
   },
   {
     name: "recall_stats",
-    description: "Check the health, status, and point counts of the shared fleet-agents memory corpus.",
+    description: "Check the health, status, and point counts of the configured shared memory corpus.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -176,13 +194,13 @@ const TOOLS = [
   // Backward-compatible aliases for existing prompts and tests:
   {
     name: "qdrant_search",
-    description: "Search the shared vector database and fleet knowledge base for relevant documents or memories.",
+    description: "Search the configured shared vector database and knowledge base for relevant documents or memories.",
     inputSchema: {
       type: "object",
       properties: {
         query: { type: "string", description: "Natural language search query" },
         limit: { type: "number", description: "Maximum results (default: 5)" },
-        collection: { type: "string", description: "Target collection (default: fleet-agents)" },
+        collection: { type: "string", description: "Target collection (defaults to the configured collection)" },
         filter: { type: "object", description: "Optional metadata filters" },
       },
       required: ["query"],
@@ -190,21 +208,21 @@ const TOOLS = [
   },
   {
     name: "qdrant_store",
-    description: "Store a new document, note, or lesson in the shared fleet vector database.",
+    description: "Store a new document, note, or lesson in the configured shared vector database.",
     inputSchema: {
       type: "object",
       properties: {
         text: { type: "string", description: "Text content to store" },
         title: { type: "string", description: "Optional title" },
         metadata: { type: "object", description: "Optional metadata" },
-        collection: { type: "string", description: "Target collection (default: fleet-agents)" },
+        collection: { type: "string", description: "Target collection (defaults to the configured collection)" },
       },
       required: ["text"],
     },
   },
   {
     name: "qdrant_get_context",
-    description: "Retrieve synthesized context and prior fleet learnings on a specific topic from fleet memory.",
+    description: "Retrieve synthesized context and prior learnings on a specific topic from shared memory.",
     inputSchema: {
       type: "object",
       properties: {
@@ -216,7 +234,7 @@ const TOOLS = [
   },
   {
     name: "qdrant_list_collections",
-    description: "List the status of the shared fleet vector database and collections.",
+    description: "List the status of the configured shared vector database and collections.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -225,6 +243,8 @@ const TOOLS = [
 ];
 
 async function recallSearch(args: Record<string, unknown>): Promise<string> {
+  if (unconfigured()) return NOT_CONFIGURED_MESSAGE;
+
   const query = String(args.query || args.topic || "").trim();
   if (!query) return "Error: query parameter is required";
 
@@ -255,7 +275,8 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
     }
   }
 
-  // 2. HTTP Fallback to recall-api (https://recall.jays.services)
+  // 2. HTTP fallback to the configured recall service
+  if (!RECALL_URL) return NOT_CONFIGURED_MESSAGE;
   try {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (RECALL_API_KEY) {
@@ -281,13 +302,15 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
       return formatHits(data.hits || [], data.mode);
     }
     const errText = await res.text().catch(() => "");
-    return `Fleet recall search error (${res.status}): ${errText || res.statusText}`;
+    return `Agent RAG search error (${res.status}): ${errText || res.statusText}`;
   } catch (err) {
-    return `Failed to query fleet recall at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
+    return `Failed to query agent RAG at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 
 async function recallContribute(args: Record<string, unknown>): Promise<string> {
+  if (unconfigured()) return NOT_CONFIGURED_MESSAGE;
+
   const text = String(args.text || "").trim();
   if (!text) return "Error: text parameter is required";
 
@@ -311,13 +334,14 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
       if (data.status === "duplicate") {
         return `Contribution duplicate: ${data.message || "A similar lesson already exists"}`;
       }
-      return `Stored in fleet-agents [doc_id: ${data.doc_id || data.id}]: ${title ? `"${title}"` : text.slice(0, 80)}`;
+      return `Stored in ${COLLECTION_LABEL} [doc_id: ${data.doc_id || data.id}]: ${title ? `"${title}"` : text.slice(0, 80)}`;
     } catch {
       // Fall through to HTTP endpoint if CLI fails
     }
   }
 
-  // 2. HTTP Fallback to recall-api
+  // 2. HTTP fallback to the configured recall service
+  if (!RECALL_URL) return NOT_CONFIGURED_MESSAGE;
   try {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (RECALL_API_KEY) {
@@ -333,16 +357,18 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
 
     if (res.ok) {
       const data = (await res.json()) as { doc_id?: string; id?: string };
-      return `Successfully contributed to fleet-agents [id: ${data.doc_id || data.id}]`;
+      return `Successfully contributed to ${COLLECTION_LABEL} [id: ${data.doc_id || data.id}]`;
     }
     const errText = await res.text().catch(() => "");
-    return `Fleet recall contribute error (${res.status}): ${errText || res.statusText}`;
+    return `Agent RAG contribute error (${res.status}): ${errText || res.statusText}`;
   } catch (err) {
-    return `Failed to contribute to fleet recall at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
+    return `Failed to contribute to agent RAG at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 
 async function recallStats(): Promise<string> {
+  if (unconfigured()) return NOT_CONFIGURED_MESSAGE;
+
   // 1. Try local CLI first
   if (findRecallCli()) {
     try {
@@ -351,13 +377,14 @@ async function recallStats(): Promise<string> {
       const points = data.points ? Number(data.points).toLocaleString() : "unknown";
       const status = data.status || "ready";
       const embedder = data.embedder_healthy ? "healthy" : "unreachable";
-      return `Fleet Recall Status [${data.collection || DEFAULT_COLLECTION}]:\n- Status: ${status}\n- Points: ${points}\n- Embedder: ${embedder}`;
+      return `Agent RAG status [${data.collection || COLLECTION_LABEL}]:\n- Status: ${status}\n- Points: ${points}\n- Embedder: ${embedder}`;
     } catch {
       // Fall through to HTTP
     }
   }
 
-  // 2. HTTP Fallback
+  // 2. HTTP fallback
+  if (!RECALL_URL) return NOT_CONFIGURED_MESSAGE;
   try {
     const healthRes = await fetch(`${RECALL_URL}/health`, { signal: AbortSignal.timeout(6_000) });
     if (healthRes.ok) {
@@ -368,11 +395,11 @@ async function recallStats(): Promise<string> {
         version?: string;
       };
       const points = data.points ? data.points.toLocaleString() : "connected";
-      return `Fleet Recall Status [${data.collection || DEFAULT_COLLECTION}]:\n- Backend: ${data.backend_ok ? "healthy" : "unknown"}\n- Points: ${points}\n- Service Version: ${data.version || "1.0.0"}`;
+      return `Agent RAG status [${data.collection || COLLECTION_LABEL}]:\n- Backend: ${data.backend_ok ? "healthy" : "unknown"}\n- Points: ${points}\n- Service Version: ${data.version || "1.0.0"}`;
     }
-    return `Fleet recall endpoint returned HTTP ${healthRes.status}: ${healthRes.statusText}`;
+    return `Agent RAG endpoint returned HTTP ${healthRes.status}: ${healthRes.statusText}`;
   } catch (err) {
-    return `Fleet recall unreachable at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
+    return `Agent RAG unreachable at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 
@@ -388,7 +415,7 @@ async function handleToolCall(name: string, args: Record<string, unknown>): Prom
     case "qdrant_store": {
       const metadata = args.metadata && typeof args.metadata === "object" ? (args.metadata as Record<string, unknown>) : {};
       const category = (metadata.category as string) || "lesson";
-      const app = (metadata.app as string) || "fleet";
+      const app = (metadata.app as string) || "botfleet";
       return recallContribute({
         text: args.text,
         title: args.title,

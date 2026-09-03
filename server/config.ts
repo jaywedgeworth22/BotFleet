@@ -125,6 +125,15 @@ const appConfigSchema = z.object({
     apiKey: z.string().optional(),
     collection: z.string().optional(),
   }).optional(),
+  // Usage telemetry has no built-in endpoint: whoever runs BotFleet points
+  // it at their own usage monitor. Unconfigured means the stream is off.
+  usage: z.object({
+    ingestUrl: optionalText,
+    ingestToken: optionalText,
+    projects: z
+      .array(z.object({ slug: z.string(), match: z.array(z.string()).optional() }))
+      .optional(),
+  }).optional(),
   features: featureConfigSchema.optional(),
   terminology: z.enum(["channels", "groups", "projects"]).optional(),
   instances: instanceConfigMapSchema.optional(),
@@ -151,6 +160,14 @@ export interface AppConfig {
   localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
   /** Shared Qdrant Agent RAG vector database settings. */
   qdrant?: { enabled?: boolean; url?: string; apiKey?: string; collection?: string };
+  /** Usage-monitor telemetry. `ingestUrl` is the operator's own endpoint —
+   * BotFleet ships none — and `projects` classifies a turn's working
+   * directory, bot name, or task title into a project slug. */
+  usage?: {
+    ingestUrl?: string;
+    ingestToken?: string;
+    projects?: Array<{ slug: string; match?: string[] }>;
+  };
   /** Opt-in product experiments. Every flag defaults to disabled. */
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
   /** Preferred UI naming for rooms: channels (default), groups, or projects. */
@@ -186,6 +203,26 @@ export function publicIngressUrl(cfg: AppConfig): string | null {
   return raw && isAbsoluteHttpUrl(raw) ? raw.replace(/\/+$/, "") : null;
 }
 
+
+/** The operator's usage-monitor origin, or null when they have not set one.
+ * There is deliberately no fallback endpoint — an unconfigured install sends
+ * telemetry nowhere. */
+export function usageIngestUrl(cfg: AppConfig): string | null {
+  const raw = cfg.usage?.ingestUrl?.trim();
+  return raw && isAbsoluteHttpUrl(raw) ? raw.replace(/\/+$/, "") : null;
+}
+
+/** Project classification rules, in the order they should be consulted.
+ * Rules with no usable slug or no match terms are dropped. */
+export function usageProjectRules(cfg: AppConfig): Array<{ slug: string; match: string[] }> {
+  const rules = cfg.usage?.projects ?? [];
+  return rules
+    .map((rule) => ({
+      slug: (rule.slug || "").trim(),
+      match: (rule.match ?? []).map((term) => term.trim()).filter(Boolean),
+    }))
+    .filter((rule) => rule.slug.length > 0 && rule.match.length > 0);
+}
 
 export function localVmMaxInstances(cfg: AppConfig): number {
   return cfg.localVm?.maxInstances ?? DEFAULT_LOCAL_VM_MAX_INSTANCES;

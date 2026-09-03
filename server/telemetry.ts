@@ -20,47 +20,49 @@ export interface TelemetryTurnParams {
 
 export interface TelemetryStatus {
   enabled: boolean;
-  ingestUrl: string;
+  /** The configured ingest endpoint, or null when nothing is configured.
+   * Never a placeholder: an unconfigured install has no endpoint to name. */
+  ingestUrl: string | null;
   totalSent: number;
   totalFailed: number;
   lastAckAt: string | null;
   lastError: string | null;
 }
 
-const DEFAULT_INGEST_URL = "https://usage.jays.services";
+/** One project-classification rule: any `match` substring found in the
+ * working directory, bot name, or task title resolves to `slug`. */
+export interface UsageProjectRule {
+  slug: string;
+  match: string[];
+}
+
+/** Everything telemetry reads out of app config. Every field is optional —
+ * BotFleet ships no endpoint, no token, and no project names. */
+export interface UsageSettings {
+  ingestUrl?: string | null;
+  ingestToken?: string | null;
+  projects?: UsageProjectRule[];
+}
+
 const INGEST_PATH = "/api/ingest/usage";
 
-export function inferProject(cwd?: string | null, botName?: string, taskTitle?: string): string {
-  const normCwd = (cwd || "").toLowerCase();
-  const normBot = (botName || "").toLowerCase();
-  const normTask = (taskTitle || "").toLowerCase();
+/** Classify a turn into a project slug using the operator's own rules, in
+ * order. With no rule matched (or no rules at all) the slug is derived from
+ * the working directory's basename, so the stream stays useful without any
+ * configuration and without shipping anybody's repo names. */
+export function inferProject(
+  cwd?: string | null,
+  botName?: string,
+  taskTitle?: string,
+  projects?: UsageProjectRule[],
+): string {
+  const haystack = [cwd || "", botName || "", taskTitle || ""].join("\n").toLowerCase();
 
-  if (normCwd.includes("congress-antigravity") || normCwd.includes("congress-trade") || normBot.includes("congress") || normTask.includes("congress")) {
-    return "congress-trade";
-  }
-  if (normCwd.includes("socratic-trade") || normCwd.includes("socratic") || normBot.includes("socratic") || normTask.includes("socratic")) {
-    return "socratic-trade";
-  }
-  if (normCwd.includes("botfleet") || normCwd.includes("openmausbot") || normBot.includes("botfleet")) {
-    return "botfleet";
-  }
-  if (normCwd.includes("ai-fleet-coordinator") || normBot.includes("fleet-coordinator") || normTask.includes("fleet coordinator")) {
-    return "ai-fleet-coordinator";
-  }
-  if (normCwd.includes("fleet-ops") || normCwd.includes("fleetops") || normBot.includes("fleet-ops") || normTask.includes("fleet ops")) {
-    return "fleet-ops";
-  }
-  if (normCwd.includes("dealdex") || normBot.includes("dealdex") || normTask.includes("dealdex")) {
-    return "dealdex";
-  }
-  if (normCwd.includes("contactlogo") || normCwd.includes("contact-logo") || normBot.includes("contactlogo") || normTask.includes("contactlogo")) {
-    return "contactlogo";
-  }
-  if (normCwd.includes("autorotate") || normCwd.includes("auto-rotate") || normBot.includes("autorotate") || normTask.includes("autorotate")) {
-    return "autorotate";
-  }
-  if (normCwd.includes("usage-monitor") || normBot.includes("usage-monitor") || normTask.includes("usage-monitor")) {
-    return "usage-monitor";
+  for (const rule of projects ?? []) {
+    const slug = (rule?.slug || "").trim();
+    if (!slug) continue;
+    const terms = (rule?.match ?? []).map((term) => String(term || "").trim().toLowerCase()).filter(Boolean);
+    if (terms.some((term) => haystack.includes(term))) return slug;
   }
 
   if (cwd && cwd !== homedir() && cwd !== "/") {
@@ -106,14 +108,33 @@ class UsageTelemetryManager {
   private lastAckAt: string | null = null;
   private lastError: string | null = null;
 
+  /** Live view of app config, installed by the server at boot. A getter (not
+   * a snapshot) so a settings change takes effect without a restart. */
+  private settingsProvider: (() => UsageSettings | undefined) | null = null;
+
+  configure(provider: (() => UsageSettings | undefined) | null): void {
+    this.settingsProvider = provider;
+  }
+
+  private settings(): UsageSettings {
+    try {
+      return this.settingsProvider?.() ?? {};
+    } catch {
+      return {};
+    }
+  }
+
   private getIngestConfig(): { baseUrl: string; token: string } | null {
-    const rawUrl = process.env.USAGE_MONITOR_INGEST_URL || DEFAULT_INGEST_URL;
-    let baseUrl = rawUrl.trim().replace(/\/+$/, "");
+    const settings = this.settings();
+    // Config first, env as the fallback that keeps existing installs working.
+    const rawUrl = (settings.ingestUrl || process.env.USAGE_MONITOR_INGEST_URL || "").trim();
+    let baseUrl = rawUrl.replace(/\/+$/, "");
     if (baseUrl.endsWith(INGEST_PATH)) {
       baseUrl = baseUrl.slice(0, -INGEST_PATH.length).replace(/\/+$/, "");
     }
 
     const token =
+      settings.ingestToken?.trim() ||
       process.env.USAGE_MONITOR_INGEST_TOKEN?.trim() ||
       process.env.USAGE_INGEST_TOKEN?.trim();
 
@@ -125,7 +146,7 @@ class UsageTelemetryManager {
     const config = this.getIngestConfig();
     return {
       enabled: config !== null,
-      ingestUrl: config ? `${config.baseUrl}${INGEST_PATH}` : `${DEFAULT_INGEST_URL}${INGEST_PATH}`,
+      ingestUrl: config ? `${config.baseUrl}${INGEST_PATH}` : null,
       totalSent: this.totalSent,
       totalFailed: this.totalFailed,
       lastAckAt: this.lastAckAt,
@@ -138,7 +159,7 @@ class UsageTelemetryManager {
     if (!config) return;
 
     const { provider, service } = inferProviderAndService(params.instanceId, params.modelId);
-    const project = inferProject(params.cwd, params.botName, params.taskTitle);
+    const project = inferProject(params.cwd, params.botName, params.taskTitle, this.settings().projects);
     const inTokens = Math.max(0, Math.round(params.inputTokens || 0));
     const outTokens = Math.max(0, Math.round(params.outputTokens || 0));
     const cachedTokens = Math.max(0, Math.round(params.cachedInputTokens || 0));

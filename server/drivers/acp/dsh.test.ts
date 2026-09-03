@@ -21,7 +21,7 @@ describe("DshAgentDriver config", () => {
 
 describe("dshSpawnArgs MCP quoting", () => {
   it("keeps command and args intact when paths contain spaces", () => {
-    const command = "/Users/jay/Application Support/node";
+    const command = "/Users/example/Application Support/node";
     const script = "/tmp/My Tools/proxy.ts";
     const socket = "/tmp/a b.sock";
     const args = dshSpawnArgs(
