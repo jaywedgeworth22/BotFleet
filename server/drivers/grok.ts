@@ -68,20 +68,14 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
     });
 
     const complete = async (
-      messages: Array<{ role: string; content: string }>,
+      messages: any[],
       model: string,
-      opts: {
-        stream: boolean;
-        signal?: AbortSignal;
-        onDelta?: (d: string, streamKind?: string) => void;
-        onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void;
-        tools?: unknown[];
-      },
-    ): Promise<{ text: string; tool_calls?: unknown[]; usage: { input: number; output: number } | null }> => {
+      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
+    ): Promise<{ text: string; tool_calls?: any[]; usage: { input: number; output: number } | null }> => {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, stream: opts.stream, ...(opts.tools ? { tools: opts.tools } : {}) }),
+        body: JSON.stringify({ model, messages, stream: opts.stream, ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools } : {}) }),
         signal: opts.signal
           ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
           : AbortSignal.timeout(120_000),
@@ -153,10 +147,18 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           takeSseLine(line);
         }
       }
-      return { text, tool_calls: streamToolCalls.length ? streamToolCalls : undefined, usage };
+      return { text, usage, tool_calls: streamToolCalls.length > 0 ? streamToolCalls : undefined };
     };
 
     const sendTurn = async (turn: SendTurnInput) => {
+      const openAiTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
+        type: "function",
+        function: {
+          name: t.name,
+          description: t.description,
+          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+        },
+      })) : undefined;
       const { threadId } = turn;
       if (!apiKey) throw new Error(`no xAI key — set ${config.apiKeyEnv} or config.json xai.key`);
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
@@ -168,17 +170,33 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       const retryScale = Number(process.env.FAKE_GROK_RETRY_SCALE ?? "1");
       active.set(threadId, { abort, turnId });
 
-      const grokTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
-        type: "function",
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
-        },
-      })) : undefined;
       
       const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
+        ...(turn.transcript ?? []).flatMap((m: any) => {
+          const res = [];
+          if (m.role === "assistant") {
+            const assistantMsg: any = { role: "assistant", content: m.text || "" };
+            if (m.toolCalls && m.toolCalls.length > 0) {
+              assistantMsg.tool_calls = m.toolCalls.map((tc: any) => ({
+                id: tc.id,
+                type: "function",
+                function: { name: tc.name, arguments: tc.arguments },
+              }));
+            }
+            res.push(assistantMsg);
+          } else {
+            if (m.toolResults && m.toolResults.length > 0) {
+              for (const tr of m.toolResults) {
+                res.push({ role: "tool", tool_call_id: tr.id, content: tr.result });
+              }
+            } else {
+              res.push({ role: "user", content: m.text });
+            }
+          }
+          return res;
+        }),
+        { role: "user", content: turn.text },
       ];
       
       for (const m of (turn.transcript ?? [])) {
@@ -198,18 +216,26 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         let attempt = 0;
         for (;;) {
           try {
-            const { text, tool_calls, usage } = await complete(messages, turn.model || MODELS.default, {
+            const { text, usage, tool_calls } = await complete(messages, turn.model || MODELS.default, {
               stream: true,
+              tools: openAiTools,
               signal: abort.signal,
-              tools: grokTools,
               onDelta: (delta) => {
                 streamedText = true;
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
+              },
+              onToolCallDelta: (index, id, name, args) => {
+                emit({ ...base(threadId, turnId), type: "tool_call.delta", index, toolCallId: id, name, args } as any);
               },
             });
             appendNative(threadId, { dir: "in", source: "xai.chat.completions", msg: { text, usage } });
             if (text.trim()) {
               emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
+            }
+            if (tool_calls && tool_calls.length > 0) {
+              for (const tc of tool_calls) {
+                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool_call", toolCallId: tc.id, name: tc.function.name, args: tc.function.arguments } as any);
+              }
             }
             if (usage) {
               emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });

@@ -1,4 +1,4 @@
-import { ChevronDown, ChevronLeft, Crown, FolderOpen, X } from "lucide-react";
+import { Bug, ChevronDown, ChevronLeft, Crown, FolderOpen, X } from "lucide-react";
 import { useState } from "react";
 import { api, useStore, type Bot } from "@/state/store";
 import { stateForBot } from "@/lib/mascot";
@@ -819,6 +819,29 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                   bot.notifications ? "left-[21px]" : "left-[3px]",
                 )}
               />
+            </button>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
+            <div>
+              <div className="flex items-center gap-2 text-[15px] font-medium text-ink">
+                <Bug size={16} className="text-ink-secondary" /> Developer Inspector
+              </div>
+              <div className="mt-0.5 text-[13px] text-ink-secondary">
+                View live runtime events, tool execution payloads, and wire protocol diagnostics for this thread.
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => dispatch({ type: "toggleInspector" })}
+              className={cn(
+                "shrink-0 rounded-lg border border-hairline/60 px-3 py-1.5 text-[13px] font-medium transition-colors",
+                state.inspectorOpen
+                  ? "border-accent bg-accent/10 text-accent"
+                  : "bg-control text-ink hover:bg-raised-hover",
+              )}
+            >
+              {state.inspectorOpen ? "Hide Inspector" : "Show Inspector"}
             </button>
           </div>
         </div>

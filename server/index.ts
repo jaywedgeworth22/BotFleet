@@ -16,7 +16,7 @@ import {
   credentialIsConfigured,
   isReusableCredentialRequest,
   isCredentialTargetId,
-type CredentialTargetId,
+  type CredentialTargetId,
 } from "../shared/credential-request.ts";
 
 import { approvalKey, autoVerdict, isCoarseApprovalKey } from "./auto-approve.ts";
@@ -41,6 +41,8 @@ import { telemetry } from "./telemetry.ts";
 import {
   isQuotaOrCapText,
   lastUserTextIndex,
+  parseQuotaResetTime,
+  quotaCooldowns,
   selectTurnFallback,
   sliceIsShortProviderError,
   turnHitQuotaOrCap,
@@ -60,16 +62,16 @@ import {
   
   
   SHARED_LOCAL_VM_TARGET,
+  perBotLocalVmTarget,
   setupCommands,
-type LocalVmTarget,
-
+  type LocalVmTarget,
 } from "./container-computer.ts";
 import {
   ensureDirs,
   instanceConfigs,
   loadConfig,
   localVmMaxInstances,
-    parseConfigPatch,
+  parseConfigPatch,
   publicIngressUrl,
   roomTurnTimeoutMinutes,
   saveConfig,
@@ -89,10 +91,10 @@ import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import {
   isEffortLevel,
-type ModelSelection,
-type ProviderInstance,
-type RequestOutcome,
-type RuntimeEvent,
+  type ModelSelection,
+  type ProviderInstance,
+  type RequestOutcome,
+  type RuntimeEvent,
 } from "./contracts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
@@ -112,11 +114,11 @@ import {
   roomResponders,
   sectionKey,
   Store,
-type GroupDefaultResponder,
-type GroupRecord,
-type GroupTaskRecord,
-type Message,
-type TaskRecord,
+  type GroupDefaultResponder,
+  type GroupRecord,
+  type GroupTaskRecord,
+  type Message,
+  type TaskRecord,
 } from "./store.ts";
 import * as tts from "./tts/index.ts";
 import { narrateTool, toUtterances } from "./tts/speech-text.ts";
@@ -194,6 +196,7 @@ ensureDirs();
 const cfg = loadConfig();
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
+quotaCooldowns.recordInstanceCap("codex", "*", { error: "Codex session limit / usage cap reached" });
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 
@@ -1072,7 +1075,10 @@ const checkpointRestoreLeases = new Set<string>();
 const LOCAL_VM_IDLE_MS = 8 * 60 * 60_000;
 const localVmIdles = new Map<string, LocalVmIdleTimer>();
 
-function localVmTargetForBot(_botId?: string): LocalVmTarget {
+function localVmTargetForBot(botId?: string): LocalVmTarget {
+  if (cfg.localVm?.mode === "per-bot" && botId) {
+    return perBotLocalVmTarget(botId);
+  }
   return SHARED_LOCAL_VM_TARGET;
 }
 
@@ -1447,12 +1453,25 @@ bus.subscribe((event: RuntimeEvent) => {
         const lastUserIdx = lastUserTextIndex(activeMsgs);
         const afterUser = lastUserIdx >= 0 ? activeMsgs.slice(lastUserIdx + 1) : [];
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
-        const quotaOrCap = turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply);
+        const lastMsgText = afterUser.length > 0 ? (afterUser[afterUser.length - 1].text ?? "") : "";
+        const quotaInfo = parseQuotaResetTime(reply) || parseQuotaResetTime(lastMsgText);
+        const quotaOrCap = quotaInfo.isQuotaOrCap || turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply);
         const isTextError = sliceIsShortProviderError(afterUser) || quotaOrCap;
         const isOk = Boolean(event.ok) && !isTextError;
         if (isOk) {
           fallbackAttemptByTurn.delete(fallbackKey);
           pendingMemberFallback.delete(event.threadId);
+          quotaCooldowns.clear(fallbackBot.id, fallbackBot.modelSelection.instanceId, fallbackBot.modelSelection.model);
+        }
+        if (quotaOrCap) {
+          quotaCooldowns.record({
+            botId: fallbackBot.id,
+            instanceId: fallbackBot.modelSelection.instanceId,
+            model: fallbackBot.modelSelection.model,
+            resetsAt: quotaInfo.resetsAt,
+            error: reply || lastMsgText || "quota exceeded",
+            recordedAt: Date.now(),
+          });
         }
         const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
         // No configured chain: on a quota or session-cap hit, fail over once
@@ -1482,18 +1501,15 @@ bus.subscribe((event: RuntimeEvent) => {
           const { nextUsed, instanceId, model, effort } = next;
           fallbackAttemptByTurn.set(fallbackKey, nextUsed);
           fallbackSelection = { instanceId, model, effort };
-          store.patchBot(fallbackBot.id, {
-            modelSelection: {
-              ...fallbackBot.modelSelection,
-              instanceId,
-              model,
-              effort,
-            },
-          });
+          const resetNote = quotaInfo.resetsAt
+            ? ` · resets at ${new Date(quotaInfo.resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+            : quotaInfo.rawTimeText
+              ? ` · ${quotaInfo.rawTimeText}`
+              : "";
           pushMessage({
             role: "bot",
             kind: "activity",
-            tool: { name: `Fell over to ${next.model}` },
+            tool: { name: `Fell over to ${next.model}${resetNote}` },
           });
           if (group && speaker?.botId === fallbackBot.id) {
             pendingMemberFallback.set(event.threadId, { groupId: group.id, botId: fallbackBot.id });
@@ -1920,7 +1936,7 @@ async function startTurn(
   // a task takes its name from the first thing you asked it to do
   if (text.trim() && !opts?.cardContinuation) store.titleTaskFromFirstMessage(bot.id, text, threadId);
 
-  const selection = opts?.modelSelection ?? bot.modelSelection;
+  const selection = opts?.modelSelection ?? quotaCooldowns.resolveModel(bot.id, bot.modelSelection).selection;
   if (!opts?.modelSelection) fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
   const instance = opts?.runOn === "cloud"
     ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
@@ -1993,7 +2009,7 @@ async function startTurn(
     transcript,
     rewound,
     fresh,
-    replaysNatively: instance.driverKind === "grok" || instance.driverKind === "deepseek",
+    replaysNatively: instance.driverKind === "grok",
   });
 
   const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
@@ -3411,6 +3427,7 @@ function configStatus() {
       collection: cfg.qdrant?.collection || "botfleet-agent-rag",
     },
     autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
+    terminology: cfg.terminology ?? "channels",
     features: {
       skillRecorder: skillRecorderEnabled(cfg),
       showToolCalls: showToolCallsEnabled(cfg),
@@ -5005,6 +5022,22 @@ const server = createServer(async (req, res) => {
       if (body.threadId !== undefined && body.threadId !== group.threadId) {
         return json(res, 409, { error: "the channel switched tasks before it could receive the message" });
       }
+
+      // Audit log the incoming channel message source
+      const userAgent = Array.isArray(req.headers["user-agent"]) ? req.headers["user-agent"][0] : req.headers["user-agent"] ?? "unknown";
+      const origin = req.headers.origin ?? "direct";
+      console.log(`[inbound-message] channel=${group.name} (${group.id}) thread=${group.threadId} origin=${origin} ua=${userAgent} len=${text.length}`);
+
+      // Server-side loop breaker for channels
+      const recentGroupMessages = store.messagesFor(group.threadId).slice(-5).filter((msg) => msg.role === "bot" && msg.text);
+      const isSelfEcho = recentGroupMessages.some(
+        (msg) => msg.text?.trim() === text || (text.length > 50 && msg.text?.trim().includes(text)),
+      );
+      if (isSelfEcho) {
+        console.warn(`[inbound-message] DROPPING duplicate channel self-echo for channel ${group.name} (${group.id})`);
+        return json(res, 200, { ok: true, ignored: "self_echo" });
+      }
+
       const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
       if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const replyTo = resolveReplyTarget(group.threadId, body.replyToId);
@@ -5333,10 +5366,15 @@ const server = createServer(async (req, res) => {
       // create the combination — a bot curling the loopback API from a tool
       // call, a script, a stale client — is refused. The renderer dialog
       // alone is not a boundary; this check is.
-      const wantsComputers = body.computers !== undefined ? body.computers : existingBot?.computers;
+      const existingComputers = existingBot?.computers ?? ((existingBot as any)?.computer && (existingBot as any).computer !== "off" ? [(existingBot as any).computer] : []);
+      const wantsComputers = body.computers !== undefined
+        ? body.computers
+        : body.computer !== undefined
+          ? (body.computer === "off" ? [] : [body.computer])
+          : existingComputers;
       const wantsAuto = body.autoApprove !== undefined ? body.autoApprove : existingBot?.autoApprove === true;
-      const alreadyGranted = existingBot?.computers?.includes("local") && existingBot?.autoApprove === true;
-      if (wantsComputers?.includes("local") && wantsAuto === true && !alreadyGranted && body.acknowledgeLocalAuto !== true) {
+      const alreadyGranted = existingComputers.includes("local") && existingBot?.autoApprove === true;
+      if (wantsComputers.includes("local") && wantsAuto === true && !alreadyGranted && body.acknowledgeLocalAuto !== true) {
         return json(res, 400, {
           error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)",
         });
@@ -5625,6 +5663,22 @@ const server = createServer(async (req, res) => {
       if (body.threadId !== undefined && body.threadId !== bot.threadId) {
         return json(res, 409, { error: "the bot switched tasks before it could receive the message" });
       }
+
+      // Audit log the incoming message source
+      const userAgent = Array.isArray(req.headers["user-agent"]) ? req.headers["user-agent"][0] : req.headers["user-agent"] ?? "unknown";
+      const origin = req.headers.origin ?? "direct";
+      console.log(`[inbound-message] bot=${bot.name} (${bot.id}) thread=${bot.threadId} origin=${origin} ua=${userAgent} len=${text.length}`);
+
+      // Server-side loop breaker: drop duplicate echoes of the bot's own recent output
+      const recentBotMessages = store.messagesFor(bot.threadId).slice(-5).filter((msg) => msg.role === "bot" && msg.text);
+      const isSelfEcho = recentBotMessages.some(
+        (msg) => msg.text?.trim() === text || (text.length > 50 && msg.text?.trim().includes(text)),
+      );
+      if (isSelfEcho) {
+        console.warn(`[inbound-message] DROPPING duplicate self-echo for bot ${bot.name} (${bot.id})`);
+        return json(res, 200, { ok: true, ignored: "self_echo" });
+      }
+
       const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
       if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const replyTo = resolveReplyTarget(bot.threadId, body.replyToId);
@@ -6015,6 +6069,12 @@ const server = createServer(async (req, res) => {
     }
     if (method === "GET" && path === "/api/telemetry/status") {
       return json(res, 200, telemetry.getStatus());
+    }
+    if (method === "GET" && path === "/api/quotas") {
+      return json(res, 200, {
+        ok: true,
+        cooldowns: quotaCooldowns.list(),
+      });
     }
     if (method === "GET" && path === "/api/qdrant/status") {
       const qdrantCfg = cfg.qdrant;

@@ -82,6 +82,25 @@ struct SettingsView: View {
                             SettingsIcon(symbol: "link", color: .blue)
                         }
                     }
+
+                    Picker(selection: Binding(
+                        get: { session.config?.terminology ?? "channels" },
+                        set: { newTerm in
+                            Task {
+                                _ = await session.updateTerminology(newTerm)
+                            }
+                        }
+                    )) {
+                        Text("Channels").tag("channels")
+                        Text("Groups").tag("groups")
+                        Text("Projects").tag("projects")
+                    } label: {
+                        Label {
+                            Text("Room Terminology")
+                        } icon: {
+                            SettingsIcon(symbol: "text.bubble", color: .indigo)
+                        }
+                    }
                 }
             }
         }

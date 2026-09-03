@@ -37,6 +37,7 @@ function knownDirs(): string[] {
     join(home, ".grok", "bin"), // x.ai installer
     join(home, ".opencode", "bin"), // opencode installer
     join(home, ".claude", "local"), // claude "local install"
+    join(home, "apps", "dsh-runtime"), // deepseek harness runtime
     "/opt/homebrew/bin", // brew, Apple silicon
     "/usr/local/bin", // brew Intel / classic installs
     join(home, ".volta", "bin"),

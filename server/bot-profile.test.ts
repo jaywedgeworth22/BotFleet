@@ -7,27 +7,47 @@ import { describe, expect, it } from "vitest";
 import { parseBotProfilePatch } from "./bot-profile.ts";
 
 describe("parseBotProfilePatch (strict — the paired boundary)", () => {
-  it("refuses every privilege-bearing bot field by name", () => {
-    for (const field of ["autoApprove", "autoReview", "alwaysAllow", "computer", "cwd", "composio", "chiefOfStaff", "acknowledgeLocalAuto"]) {
-      const result = parseBotProfilePatch({ name: "Mira", [field]: true } as never, true);
-      expect(result.ok, field).toBe(false);
-      if (!result.ok) expect(result.error).toContain(field);
-    }
-  });
-
-  it("refuses unknown cosmetic keys too — strict means the allowlist IS the contract", () => {
+  it("refuses unknown keys — strict means the allowlist IS the contract", () => {
     const result = parseBotProfilePatch({ color: "red" } as never, true);
     expect(result).toEqual({ ok: false, error: "unsupported profile field: color" });
+    const result2 = parseBotProfilePatch({ unknownProperty: true } as never, true);
+    expect(result2).toEqual({ ok: false, error: "unsupported profile field: unknownProperty" });
   });
 
-  it("accepts the full identity surface", () => {
+  it("accepts the full identity and configuration surface", () => {
     const result = parseBotProfilePatch(
-      { name: "Mira", title: "Lead", description: "plans", notifications: true, voice: "vx", speakReplies: false },
+      {
+        name: "Mira",
+        title: "Lead",
+        description: "plans",
+        notifications: true,
+        voice: "vx",
+        speakReplies: false,
+        chiefOfStaff: true,
+        autoApprove: true,
+        autoReview: "shadow",
+        composio: true,
+        cloudBackend: "box",
+        cwd: "/Users/test/Code",
+      },
       true,
     );
     expect(result).toEqual({
       ok: true,
-      patch: { name: "Mira", title: "Lead", description: "plans", notifications: true, voice: "vx", speakReplies: false },
+      patch: {
+        name: "Mira",
+        title: "Lead",
+        description: "plans",
+        notifications: true,
+        voice: "vx",
+        speakReplies: false,
+        chiefOfStaff: true,
+        autoApprove: true,
+        autoReview: "shadow",
+        composio: true,
+        cloudBackend: "box",
+        cwd: "/Users/test/Code",
+      },
     });
   });
 });

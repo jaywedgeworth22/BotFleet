@@ -205,6 +205,7 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
     if (!bridge) return;
     const offTranscript = bridge.onSpeechTranscript((line) => {
       if (!alive.current || currentCall() !== group.id || phaseRef.current !== "listening") return;
+      if (speaker.state.status === "speaking" || speaker.state.status === "preparing") return;
       if (line.error) {
         setNote("Dictation stopped unexpectedly. Check Microphone and Speech Recognition access.");
         return;
@@ -214,6 +215,23 @@ function GroupCall({ group, members }: { group: Group; members: Bot[] }) {
       if (line.partial !== false) return;
       const said = line.text.trim();
       if (!said) return listen();
+
+      // Acoustic echo suppression: drop text heard from speaker output
+      const recentBotTexts = messages
+        .filter((m) => m.role === "bot" && m.text)
+        .slice(-5)
+        .map((m) => m.text!.toLowerCase().replace(/[^a-z0-9]/g, " ").trim());
+      const normalized = said.toLowerCase().replace(/[^a-z0-9]/g, " ").trim();
+      if (
+        normalized.length > 8 &&
+        recentBotTexts.some(
+          (botText) =>
+            botText.includes(normalized) ||
+            (normalized.length > 20 && botText.split(" ").filter((w) => w.length > 3 && normalized.includes(w)).length >= 3),
+        )
+      ) {
+        return listen();
+      }
 
       const openApproval = askedApproval.current;
       if (openApproval) {

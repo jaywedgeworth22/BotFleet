@@ -5,6 +5,8 @@ import {
   isQuotaOrCapText,
   isShortProviderErrorText,
   lastUserTextIndex,
+  parseQuotaResetTime,
+  quotaCooldowns,
   selectTurnFallback,
   sliceIsShortProviderError,
   turnHitQuotaOrCap,
@@ -117,9 +119,16 @@ describe("quota and session-limit failover", () => {
     expect(isShortProviderErrorText(text)).toBe(true);
   });
 
-  it("matches usage-cap and quota chips", () => {
+  it("matches usage-cap and quota chips across various providers", () => {
     expect(isQuotaOrCapText("usage cap reached for this model")).toBe(true);
     expect(isQuotaOrCapText("quota exceeded for this plan")).toBe(true);
+    expect(isQuotaOrCapText("You have exhausted your daily quota")).toBe(true);
+    expect(isQuotaOrCapText("You've reached your usage limit")).toBe(true);
+    expect(isQuotaOrCapText("Insufficient Balance")).toBe(true);
+    expect(isQuotaOrCapText("out of credits")).toBe(true);
+    expect(isQuotaOrCapText("Your credit balance is too low")).toBe(true);
+    expect(isQuotaOrCapText("HTTP 429: Too Many Requests")).toBe(true);
+    expect(isQuotaOrCapText("RESOURCE_EXHAUSTED")).toBe(true);
     expect(isQuotaOrCapText("Here is a long successful answer about quotas that is well over five hundred characters. ".repeat(8))).toBe(false);
     expect(isQuotaOrCapText("Done.")).toBe(false);
   });
@@ -260,10 +269,96 @@ describe("lastUserTextIndex", () => {
   });
 });
 
-describe("isShortProviderErrorText", () => {
-  it("matches the short error-chip patterns", () => {
-    expect(isShortProviderErrorText("account_inactive")).toBe(true);
-    expect(isShortProviderErrorText("Here is a long successful answer about rate limits that is well over three hundred characters. ".repeat(4))).toBe(false);
-    expect(isShortProviderErrorText("Done.")).toBe(false);
+describe("parseQuotaResetTime", () => {
+  it("parses relative reset durations in minutes and seconds", () => {
+    const base = 1700000000000;
+    const res1 = parseQuotaResetTime("Rate limit reached. Try again in 15 minutes.", base);
+    expect(res1.isQuotaOrCap).toBe(true);
+    expect(res1.resetsAt).toBe(base + 15 * 60 * 1000);
+
+    const res2 = parseQuotaResetTime("HTTP 429: Too Many Requests · retry after 45s", base);
+    expect(res2.isQuotaOrCap).toBe(true);
+    expect(res2.resetsAt).toBe(base + 45 * 1000);
+  });
+
+  it("parses Grok style reset time with timezone", () => {
+    const text = "You've hit your session limit · resets 12:10am (America/Chicago)";
+    const res = parseQuotaResetTime(text);
+    expect(res.isQuotaOrCap).toBe(true);
+    expect(typeof res.resetsAt).toBe("number");
+    expect(res.resetsAt).toBeGreaterThan(Date.now() - 1000);
+  });
+
+  it("parses midnight reset", () => {
+    const text = "Daily quota exceeded · resets at midnight UTC";
+    const res = parseQuotaResetTime(text);
+    expect(res.isQuotaOrCap).toBe(true);
+    expect(typeof res.resetsAt).toBe("number");
+  });
+
+  it("recognizes quota without reset time", () => {
+    const text = "Insufficient Balance";
+    const res = parseQuotaResetTime(text);
+    expect(res.isQuotaOrCap).toBe(true);
+    expect(res.resetsAt).toBeNull();
+  });
+});
+
+describe("QuotaCooldownRegistry", () => {
+  it("resolves fallback when primary is on active cooldown and switches back once expired", () => {
+    const registry = new (quotaCooldowns.constructor as any)();
+    const primary: ModelSelection = {
+      instanceId: "grok",
+      model: "grok-4",
+      fallbacks: [{ instanceId: "claude", model: "claude-sonnet-5" }],
+    };
+
+    const now = 1700000000000;
+    const resetsAt = now + 60000;
+
+    registry.record({
+      botId: "bot1",
+      instanceId: "grok",
+      model: "grok-4",
+      resetsAt,
+      error: "session limit",
+      recordedAt: now,
+    });
+
+    // While in cooldown (now + 10s): uses fallback
+    const resolution1 = registry.resolveModel("bot1", primary, now + 10000);
+    expect(resolution1.isFallback).toBe(true);
+    expect(resolution1.selection.instanceId).toBe("claude");
+    expect(resolution1.selection.model).toBe("claude-sonnet-5");
+
+    // After resetsAt (now + 70s): switches back to primary
+    const resolution2 = registry.resolveModel("bot1", primary, now + 70000);
+    expect(resolution2.isFallback).toBe(false);
+    expect(resolution2.selection.instanceId).toBe("grok");
+    expect(resolution2.selection.model).toBe("grok-4");
+  });
+
+  it("applies instance-level wildcard cap to all bots and lists active cooldowns", () => {
+    const registry = new (quotaCooldowns.constructor as any)();
+    const primary: ModelSelection = {
+      instanceId: "codex",
+      model: "gpt-5.4",
+      fallbacks: [{ instanceId: "antigravity", model: "gemini-3.8-flash-high" }],
+    };
+
+    registry.recordInstanceCap("codex", "*", { error: "Codex session limit reached" });
+
+    // Any bot targeting codex should automatically use fallback
+    const resolved = registry.resolveModel("any-bot-id", primary);
+    expect(resolved.isFallback).toBe(true);
+    expect(resolved.selection.instanceId).toBe("antigravity");
+    expect(resolved.selection.model).toBe("gemini-3.8-flash-high");
+    expect(resolved.cooldown?.error).toBe("Codex session limit reached");
+
+    // Cooldown list includes the instance cap
+    const active = registry.list();
+    expect(active.length).toBe(1);
+    expect(active[0].instanceId).toBe("codex");
+    expect(active[0].botId).toBe("*");
   });
 });

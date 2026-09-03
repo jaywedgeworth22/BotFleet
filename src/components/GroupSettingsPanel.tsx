@@ -12,7 +12,8 @@ import {
   X,
 } from "lucide-react";
 
-import { useStore, type Group } from "@/state/store";
+import { useStore, getRoomTerminology, type Group, type GroupDefaultResponder } from "@/state/store";
+import { effectiveDefaultResponder } from "@/lib/group-routing";
 import { imageAttachmentFromFile } from "@/lib/composer-attachments";
 import { botAvatarUrlFromStoredPath } from "../../shared/bot-avatar";
 import { MausAvatar } from "./Avatar";
@@ -41,15 +42,28 @@ const inputCls =
 
 export function GroupSettingsPanel({ group }: { group: Group }) {
   const { state, dispatch } = useStore();
+  const terminology = getRoomTerminology(state.config);
   const fileRef = useRef<HTMLInputElement>(null);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newExtraCwd, setNewExtraCwd] = useState("");
   const [addingFolder, setAddingFolder] = useState(false);
+  const [editingPrimaryCwd, setEditingPrimaryCwd] = useState(false);
+  const [primaryCwdDraft, setPrimaryCwdDraft] = useState(group.cwd || "");
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   const members = state.bots.filter((b) => group.memberIds.includes(b.id));
   const crop = group.avatarCrop ?? "rounded";
+  const responder = effectiveDefaultResponder(group, members);
+  const responderValue = responder.kind === "member" ? `member:${responder.botId}` : responder.kind;
+
+  const changeResponder = (nextValue: string) => {
+    let next: GroupDefaultResponder;
+    if (nextValue === "everyone") next = { kind: "everyone" };
+    else if (nextValue === "mentions") next = { kind: "mentions" };
+    else next = { kind: "member", botId: nextValue.slice("member:".length) };
+    patch({ defaultResponder: next });
+  };
 
   const patch = (patchData: Partial<Group>) => {
     dispatch({
@@ -124,17 +138,17 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
       <div className="flex items-center justify-between border-b border-hairline/30 px-4 py-3">
         <button
           onClick={() => dispatch({ type: "toggleSettings", open: false })}
-          aria-label="Collapse channel settings"
-          title="Collapse channel settings"
+          aria-label={`Collapse ${terminology.singular.toLowerCase()} settings`}
+          title={`Collapse ${terminology.singular.toLowerCase()} settings`}
           className="flex size-9 items-center justify-center rounded-md text-ink-secondary hover:bg-control hover:text-ink"
         >
           <ChevronLeft size={18} />
         </button>
-        <span className="text-[15px] font-semibold text-ink">Channel Settings</span>
+        <span className="text-[15px] font-semibold text-ink">{terminology.singular} Settings</span>
         <button
           onClick={() => dispatch({ type: "toggleSettings", open: false })}
-          aria-label="Close channel settings"
-          title="Close channel settings"
+          aria-label={`Close ${terminology.singular.toLowerCase()} settings`}
+          title={`Close ${terminology.singular.toLowerCase()} settings`}
           className="flex size-9 items-center justify-center rounded-md text-ink-secondary hover:bg-control hover:text-ink"
         >
           <X size={18} />
@@ -145,7 +159,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
         <div className="flex flex-col gap-5">
           {/* Avatar Card */}
           <div className="overflow-hidden rounded-xl border border-hairline/40 bg-card p-4">
-            <div className="text-[12.5px] font-medium text-ink">Channel Avatar</div>
+            <div className="text-[12.5px] font-medium text-ink">{terminology.singular} Avatar</div>
             <div className="my-4 flex justify-center">
               {group.avatarUrl ? (
                 <img
@@ -196,7 +210,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
                   type="button"
                   onClick={removeAvatar}
                   disabled={uploading}
-                  aria-label="Remove channel avatar image"
+                  aria-label={`Remove ${terminology.singular.toLowerCase()} avatar image`}
                   title="Remove image"
                   className="flex size-9 items-center justify-center rounded-lg text-ink-secondary hover:bg-control hover:text-danger disabled:opacity-50"
                 >
@@ -232,8 +246,8 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
             {error && <p className="mt-2 text-[12px] text-danger">{error}</p>}
           </div>
 
-          {/* Channel Name */}
-          <Field label="Channel Name">
+          {/* Group / Channel Name */}
+          <Field label={`${terminology.singular} Name`}>
             <input
               type="text"
               value={group.name}
@@ -243,8 +257,32 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
             />
           </Field>
 
+          {/* Default Responder Mode */}
+          <Field
+            label="Default Responder"
+            description={`Controls which bot responds when a message in this ${terminology.singular.toLowerCase()} has no explicit @mention.`}
+          >
+            <select
+              value={responderValue}
+              onChange={(e) => changeResponder(e.target.value)}
+              className={inputCls}
+            >
+              <optgroup label={`${terminology.singular} lead`}>
+                {members.map((member) => (
+                  <option key={member.id} value={`member:${member.id}`}>
+                    Lead: {member.name}
+                  </option>
+                ))}
+              </optgroup>
+              <optgroup label="Behavior">
+                <option value="everyone">Everyone responds</option>
+                <option value="mentions">Only when mentioned</option>
+              </optgroup>
+            </select>
+          </Field>
+
           {/* Section Heading */}
-          <Field label="Sidebar Section" description="Optional section heading to group this channel in the sidebar.">
+          <Field label="Sidebar Section" description={`Optional section heading to group this ${terminology.singular.toLowerCase()} in the sidebar.`}>
             <input
               type="text"
               value={group.section || ""}
@@ -256,8 +294,8 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
 
           {/* System Instructions / Bulletin */}
           <Field
-            label="Channel Instructions"
-            description="System instructions injected into every member bot's turn in this channel."
+            label={`${terminology.singular} Instructions`}
+            description={`System instructions injected into every member bot's turn in this ${terminology.singular.toLowerCase()}.`}
           >
             <textarea
               rows={4}
@@ -281,21 +319,72 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
               </button>
             </div>
             <p className="text-[11.5px] text-ink-secondary">
-              Attached codebases provide full context and tool access to all bots in this channel.
+              Attached codebases provide full context and tool access to all bots in this {terminology.singular.toLowerCase()}.
             </p>
 
             <div className="mt-1 flex flex-col gap-2">
               {/* Primary CWD */}
-              <div className="flex items-center justify-between rounded-lg border border-hairline/40 bg-inset px-3 py-2">
-                <div className="flex min-w-0 items-center gap-2">
-                  <Folder size={15} className="shrink-0 text-accent" />
-                  <div className="min-w-0">
-                    <div className="truncate text-[12.5px] font-mono text-ink">
-                      {group.cwd || "Default workspace (no primary path)"}
-                    </div>
-                    <div className="text-[10.5px] text-ink-secondary">Primary working directory</div>
+              <div className="flex flex-col gap-1.5 rounded-lg border border-hairline/40 bg-inset p-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <Folder size={15} className="shrink-0 text-accent" />
+                    <span className="text-[12px] font-medium text-ink">Primary working directory</span>
                   </div>
+                  {!editingPrimaryCwd && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPrimaryCwdDraft(group.cwd || "");
+                        setEditingPrimaryCwd(true);
+                      }}
+                      className="text-[11.5px] text-accent hover:underline"
+                    >
+                      {group.cwd ? "Edit" : "Set path"}
+                    </button>
+                  )}
                 </div>
+                {editingPrimaryCwd ? (
+                  <div className="mt-1 flex flex-col gap-2">
+                    <input
+                      type="text"
+                      value={primaryCwdDraft}
+                      onChange={(e) => setPrimaryCwdDraft(e.target.value)}
+                      placeholder="/Users/username/Code/project-root"
+                      className={cn(inputCls, "text-[12px] font-mono")}
+                      autoFocus
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") {
+                          patch({ cwd: primaryCwdDraft.trim() || undefined });
+                          setEditingPrimaryCwd(false);
+                        }
+                        if (e.key === "Escape") setEditingPrimaryCwd(false);
+                      }}
+                    />
+                    <div className="flex justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setEditingPrimaryCwd(false)}
+                        className="rounded px-2 py-1 text-[11.5px] text-ink-secondary hover:bg-control"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          patch({ cwd: primaryCwdDraft.trim() || undefined });
+                          setEditingPrimaryCwd(false);
+                        }}
+                        className="rounded bg-accent px-2.5 py-1 text-[11.5px] font-medium text-white hover:opacity-90"
+                      >
+                        Save
+                      </button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="truncate text-[12px] font-mono text-ink-secondary">
+                    {group.cwd || "Default workspace (no path set)"}
+                  </div>
+                )}
               </div>
 
               {/* Extra CWDs */}
@@ -360,7 +449,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
               <span className="text-[13px] font-medium text-ink">Member Bots</span>
               <span className="text-[11.5px] text-ink-secondary">{members.length} active</span>
             </div>
-            <p className="text-[11.5px] text-ink-secondary">Select which bots participate in this channel.</p>
+            <p className="text-[11.5px] text-ink-secondary">Select which bots participate in this {terminology.singular.toLowerCase()}.</p>
 
             <div className="mt-1.5 flex max-h-56 flex-col gap-1.5 overflow-y-auto">
               {state.bots.map((bot) => {
