@@ -15,7 +15,9 @@ Static HTML/CSS rendered from `features.json` via `node build.mjs`, hosted on Ve
 - `features.json` — the feature list (the only file to edit for content changes).
 - `template.html` + `build.mjs` — render `index.html` from the data.
 - `sync-status.mjs` — refreshes each card's PR state from GitHub and reports merged-but-unlisted PRs and promotion candidates; it never moves a card between sections on its own.
-- `logo-256.png` / `icon-1024.png` / `apple-touch-icon.png` / `favicon-64.png` — BotFleet brand assets (from the BotFleet repo's `build/` icons).
+- `logo-256.png` / `icon-1024.png` / `apple-touch-icon.png` — the iOS/macOS app icon (white-background 1024 square).
+- `favicon-64.png` / `icon-transparent-1024.png` — transparent just-bots mark (favicon).
+- `hero-bots.png` / `wide-banner.png` / `wide-banner-transparent.png` — extra site art, white or transparent, as supplied.
 - `.well-known/apple-app-site-association` — associated-domains file for the iOS app's Universal Links (`applinks:botfleet.app`) and shared web credentials (`webcredentials:botfleet.app`); appIDs use Team `CC8UTF7ATG` / bundle `app.botfleet`.  Must stay in sync with `ios/App/BotFleet.entitlements`.
 - `vercel.json` — clean URLs plus a header rule that serves the AASA file as `application/json`.
 
