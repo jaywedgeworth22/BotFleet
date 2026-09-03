@@ -560,6 +560,8 @@ export type Action =
   | { type: "renameGroupTask"; groupId: string; threadId: string; title: string }
   | { type: "moveGroupTask"; groupId: string; threadId: string; toGroupId: string }
   | { type: "moveGroupTaskToBot"; groupId: string; threadId: string; botId: string }
+  | { type: "moveTaskToBot"; botId: string; threadId: string; toBotId: string }
+  | { type: "moveTaskToGroup"; botId: string; threadId: string; toGroupId: string }
   | { type: "deleteGroupTask"; groupId: string; threadId: string }
   | { type: "toggleReaction"; threadId: string; messageId: string; emoji: string }
   | { type: "interruptGroup"; groupId: string }
@@ -1337,6 +1339,54 @@ export function reducer(state: AppState, action: Action): AppState {
         ),
       };
     }
+    case "moveTaskToBot": {
+      const source = state.bots.find((bot) => bot.id === action.botId);
+      const moving = (source?.tasks ?? []).find((task) => task.threadId === action.threadId);
+      if (!moving || !source || (source.tasks ?? []).length < 2) return state;
+      return {
+        ...state,
+        bots: state.bots.map((bot) => {
+          if (bot.id === action.botId) {
+            const remaining = (bot.tasks ?? []).filter((task) => task.threadId !== action.threadId);
+            return {
+              ...bot,
+              tasks: remaining,
+              threadId: bot.threadId === action.threadId ? remaining[0]!.threadId : bot.threadId,
+            };
+          }
+          if (bot.id === action.toBotId) return { ...bot, tasks: [moving, ...(bot.tasks ?? [])] };
+          return bot;
+        }),
+      };
+    }
+    case "moveTaskToGroup": {
+      const source = state.bots.find((bot) => bot.id === action.botId);
+      const moving = (source?.tasks ?? []).find((task) => task.threadId === action.threadId);
+      if (!moving || !source || (source.tasks ?? []).length < 2) return state;
+      return {
+        ...state,
+        bots: state.bots.map((bot) => {
+          if (bot.id !== action.botId) return bot;
+          const remaining = (bot.tasks ?? []).filter((task) => task.threadId !== action.threadId);
+          return {
+            ...bot,
+            tasks: remaining,
+            threadId: bot.threadId === action.threadId ? remaining[0]!.threadId : bot.threadId,
+          };
+        }),
+        groups: state.groups.map((group) =>
+          group.id === action.toGroupId
+            ? {
+                ...group,
+                tasks: [
+                  { threadId: moving.threadId, title: moving.title, createdAt: moving.createdAt },
+                  ...(group.tasks ?? []),
+                ],
+              }
+            : group,
+        ),
+      };
+    }
     case "taskSwitched":
       return updateBot(state, action.bot.id, (bot) => ({ ...bot, ...action.bot, messages: action.bot.messages ?? [] }));
     case "newBot":
@@ -1831,6 +1881,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, {
             method: "PATCH",
             body: JSON.stringify({ botId: action.botId }),
+          }).catch(showError);
+          break;
+        case "moveTaskToBot":
+          api(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ botId: action.toBotId }),
+          }).catch(showError);
+          break;
+        case "moveTaskToGroup":
+          api(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ groupId: action.toGroupId }),
           }).catch(showError);
           break;
         case "deleteGroupTask":

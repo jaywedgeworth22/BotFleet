@@ -928,6 +928,69 @@ export class Store {
    * changes is who answers next.  The conversation arrives without resume
    * cursors because those belong to the channel's turns, not this bot's:
    * the next turn starts a fresh provider session over the same history. */
+  /** Move one of a bot's conversations to another bot.
+   *
+   * The thread id survives, so the transcript comes with it; the resume
+   * cursors do not, because they name a provider session belonging to the
+   * bot it came from.  A bot keeps its last conversation, for the same
+   * reason a channel does: there would be nothing left to open. */
+  moveTaskToBot(fromBotId: string, threadId: string, toBotId: string): BotRecord[] | null {
+    if (fromBotId === toBotId) return null;
+    const from = this.bot(fromBotId);
+    const to = this.bot(toBotId);
+    if (!from || !to || !from.tasks || from.tasks.length < 2) return null;
+    const task = from.tasks.find((entry) => entry.threadId === threadId);
+    if (!task) return null;
+
+    from.tasks = from.tasks.filter((entry) => entry.threadId !== threadId);
+    if (from.threadId === threadId) {
+      const next = from.tasks[0]!;
+      from.threadId = next.threadId;
+      from.resumeCursors = {};
+    }
+    to.tasks = [{ ...task, resumeCursors: {}, lastInstanceId: undefined }, ...(to.tasks ?? [])];
+
+    this.saveBots();
+    this.emit({ type: "bot", botId: from.id });
+    this.emit({ type: "bot", botId: to.id });
+    return [from, to];
+  }
+
+  /** Move one of a bot's conversations into a channel, where the channel's
+   * members answer it from then on. */
+  moveTaskToGroup(fromBotId: string, threadId: string, groupId: string): {
+    bot: BotRecord;
+    group: GroupRecord;
+  } | null {
+    const bot = this.bot(fromBotId);
+    const group = this.group(groupId);
+    if (!bot || !group || group.dm || !bot.tasks || bot.tasks.length < 2) return null;
+    const task = bot.tasks.find((entry) => entry.threadId === threadId);
+    if (!task) return null;
+
+    bot.tasks = bot.tasks.filter((entry) => entry.threadId !== threadId);
+    if (bot.threadId === threadId) {
+      const next = bot.tasks[0]!;
+      bot.threadId = next.threadId;
+      bot.resumeCursors = {};
+    }
+    group.tasks = [
+      {
+        threadId: task.threadId,
+        title: task.title,
+        createdAt: task.createdAt,
+        ...(task.cwd === undefined ? {} : { pinnedCwd: task.cwd }),
+      },
+      ...(group.tasks ?? []),
+    ];
+
+    this.saveBots();
+    this.saveGroups();
+    this.emit({ type: "bot", botId: bot.id });
+    this.emit({ type: "group", groupId: group.id });
+    return { bot, group };
+  }
+
   moveGroupTaskToBot(groupId: string, threadId: string, botId: string): {
     group: GroupRecord;
     bot: BotRecord;
