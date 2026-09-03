@@ -226,7 +226,10 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
     })
       // The reset already succeeded once PATCH returns 200. A follow-up list
       // refresh failure should not tell the user the reset itself failed.
-      .then(() => Promise.resolve(refreshInstances()).catch(() => {}))
+      // fresh: true — the describe() memo has no way to know this override
+      // just changed, and serving it stale would show the old cli for up
+      // to 15s right after the user cleared it.
+      .then(() => Promise.resolve(refreshInstances({ fresh: true })).catch(() => {}))
       .catch((e) => setError(e.message))
       .finally(() => setSwitching(false));
   };
@@ -270,7 +273,9 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
                 method: "PATCH",
                 body: JSON.stringify({ fullAuto: checked }),
               })
-                .then(() => Promise.resolve(refreshInstances()).catch(() => {}))
+                // fresh: true — same reason as reset() above: the checkbox
+                // must reflect the value just saved, not a memoed one.
+                .then(() => Promise.resolve(refreshInstances({ fresh: true })).catch(() => {}))
                 .catch((e) => setError(e.message))
                 .finally(() => setSwitching(false));
             }}
@@ -288,6 +293,13 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
           Set CLI…
         </button>
       </div>
+      {instance.driverKind === "antigravityAgent" && (
+        <div className="mt-2 rounded bg-raised/40 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-hairline/40">
+          Antigravity's print mode has no approval cards.&nbsp; With the bypass off, file edits go through and shell
+          commands are refused.&nbsp; With it on, every tool runs on this computer without asking, and BotFleet's
+          permission guards do not apply.
+        </div>
+      )}
       {["minimax"].includes(instance.driverKind) && (
         <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
           <strong>Limited functionality:</strong> This native HTTP driver does not support BotFleet tools. 
@@ -300,7 +312,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
           instance={instance}
           cliDefault={instance.cliDefault}
           onClose={() => setOpen(false)}
-          onSaved={refreshInstances}
+          onSaved={() => refreshInstances({ fresh: true })}
         />
       )}
     </div>

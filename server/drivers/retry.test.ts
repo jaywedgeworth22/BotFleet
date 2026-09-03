@@ -51,6 +51,15 @@ describe("classifyError", () => {
       reason: "quota",
     });
     expect(classifyError(new Error("usage cap reached"))).toEqual({ transient: false, reason: "quota" });
+    expect(classifyError(new Error("You've hit your usage limit. Upgrade to Plus to continue using Codex"))).toEqual({
+      transient: false,
+      reason: "quota",
+    });
+    expect(classifyError(new Error("You've reached your 5-hour usage limit"))).toEqual({
+      transient: false,
+      reason: "quota",
+    });
+    expect(classifyError(new Error("429 RESOURCE_EXHAUSTED"))).toEqual({ transient: false, reason: "quota" });
     expect(classifyError(new Error("model not found: grok-99"))).toEqual({
       transient: false,
       reason: "unknown_model",

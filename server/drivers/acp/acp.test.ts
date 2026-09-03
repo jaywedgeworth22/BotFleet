@@ -156,7 +156,7 @@ describe("ACP decodeConfig", () => {
     expect(GrokAgentDriver.decodeConfig({ fullAuto: true }).fullAuto).toBe(true);
   });
 
-  it("does not advertise or accept local CUA in full-auto mode", async () => {
+  it("advertises local CUA and qdrant in full-auto mode, because a host turn runs brokered", async () => {
     const fullAuto = await GrokAgentDriver.create({
       instanceId: "grok-full-auto",
       displayName: "Grok Full Auto",
@@ -164,22 +164,8 @@ describe("ACP decodeConfig", () => {
       enabled: true,
       config: { cli: FAKE_CLI, fullAuto: true },
     });
-    expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(false);
-    await expect(
-      fullAuto.adapter.sendTurn({
-        threadId: "t-full-auto-local",
-        text: "click",
-        integrations: {
-          localComputer: {
-            command: "/cua-driver",
-            args: ["mcp"],
-            env: {},
-            platform: "linux",
-            scope: "local-computer",
-          },
-        },
-      }),
-    ).rejects.toThrow(/interactive provider approvals/);
+    expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(true);
+    expect(fullAuto.adapter.capabilities.qdrantMcp).toBe(true);
     await fullAuto.dispose();
   });
 });
@@ -484,6 +470,63 @@ describe("ACP turns (fake CLI)", () => {
     expect(done).toMatchObject({ ok: true });
   });
 
+  it("brokers host control on a full-auto instance instead of auto-allowing it", async () => {
+    process.env.FAKE_ACP_MODE = "permission";
+    instance = await GrokAgentDriver.create({
+      instanceId: "acp-full-auto",
+      displayName: "ACP Full Auto",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: true },
+    });
+    recorder = recordEvents(instance.adapter);
+    const dump = join(scratch, "full-auto-host.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    await instance.adapter.sendTurn({
+      threadId: "t-full-auto-host",
+      text: "click the button",
+      integrations: {
+        localComputer: {
+          command: "/cua-driver",
+          args: ["mcp"],
+          env: {},
+          platform: "linux",
+          scope: "local-computer",
+        },
+      },
+    });
+    // the ask reaches the harness (where the bot's Auto policy decides)
+    // rather than being answered inside the driver
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ requestType: "permission", tool: "shell", approvalScope: "local-computer" });
+    // and the CLI was spawned in its asking mode for this turn, not bypass
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv.slice(0, 2)).toEqual(["--permission-mode", "default"]);
+    await instance.adapter.respondToRequest("t-full-auto-host", (opened as any).requestId, { behavior: "allow" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+  });
+
+  it("keeps a full-auto instance's auto-allow for a turn that does not touch this computer", async () => {
+    process.env.FAKE_ACP_MODE = "permission";
+    instance = await GrokAgentDriver.create({
+      instanceId: "acp-full-auto-shell",
+      displayName: "ACP Full Auto",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: true },
+    });
+    recorder = recordEvents(instance.adapter);
+    const dump = join(scratch, "full-auto-shell.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    await instance.adapter.sendTurn({ threadId: "t-full-auto-shell", text: "list the files" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+    expect(recorder.events.some((e) => e.type === "request.opened")).toBe(false);
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.argv.slice(0, 2)).toEqual(["--permission-mode", "bypassPermissions"]);
+  });
+
   it("grok fails closed when the CLI advertises no cached_token (needs login)", async () => {
     await create(GrokAgentDriver, "no-auth");
     await instance.adapter.sendTurn({ threadId: "t-auth", text: "go" });
@@ -671,12 +714,12 @@ describe("ACP turns (fake CLI)", () => {
     expect(JSON.parse(readFileSync(dump, "utf8")).env.TEST_POLICY).toBe("auto");
   });
 
-  it("declares effort levels for Grok only", async () => {
+  it("declares effort levels for Grok and DSH, none for Kimi", async () => {
     await create(GrokAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toEqual(["low", "medium", "high"]);
 
     await create(DshAgentDriver);
-    expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
+    expect(instance.adapter.capabilities.effortLevels).toEqual(["low", "medium", "high", "max"]);
 
     await create(KimiAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toBeUndefined();

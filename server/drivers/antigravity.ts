@@ -11,6 +11,11 @@
 // approves everything. Real per-action approval cards are a future path via
 // native ACP (agy issue #31), which would reuse acp/core.ts like grok/gemini.
 //
+// fullAuto is OFF unless the person turns it on in Settings › Engines.  The
+// bypass skips BotFleet's permission broker entirely — no card, no
+// destructive/sensitive guard, no decision-log row — so it is an opt-in the
+// Engines row spells out, never a default a fresh bot inherits.
+//
 // Computer use: agy has no per-turn MCP flag, so the bot's computer (cloud
 // box / Local VM / VPS) is mounted by upserting one key into the global
 // `~/.gemini/config/mcp_config.json` before each spawn — see
@@ -49,9 +54,9 @@ export interface AntigravityConfig {
   fullAuto: boolean;
 }
 
-// model catalog from `agy models` (agy 1.1.12)
+// model catalog from `agy models` (agy 1.1.23)
 export const STATIC_ANTIGRAVITY_MODELS: ModelCatalog = {
-  default: "gemini-3.1-pro-high",
+  default: "gemini-3.7-flash-high",
   options: [
     { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
     { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
@@ -63,9 +68,10 @@ export const STATIC_ANTIGRAVITY_MODELS: ModelCatalog = {
     { id: "gemini-3.7-flash-high", label: "Gemini 3.7 Flash (High)" },
     { id: "gemini-3.7-flash-medium", label: "Gemini 3.7 Flash (Medium)" },
     { id: "gemini-3.7-flash-low", label: "Gemini 3.7 Flash (Low)" },
-    { id: "gemini-3.6-flash-high", label: "Gemini 3.6 Flash (High)" },
-    { id: "gemini-3.6-flash-medium", label: "Gemini 3.6 Flash (Medium)" },
-    { id: "gemini-3.6-flash-low", label: "Gemini 3.6 Flash (Low)" },
+    { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
+    { id: "gemini-3.1-pro-low", label: "Gemini 3.1 Pro (Low)" },
+    { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+    { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash" },
     { id: "claude-sonnet-4-6", label: "Claude Sonnet 4.6 (Thinking)" },
     { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
     { id: "gpt-oss-120b-medium", label: "GPT-OSS 120B (Medium)" },
@@ -310,12 +316,15 @@ function decodeConfig(raw: unknown): AntigravityConfig {
   }
   return {
     cli: typeof o.cli === "string" ? o.cli : "agy",
-    // Default fullAuto to TRUE: agy's headless print harness invokes tools even
-    // for trivial prompts and, with no interactive approval channel, auto-denies
-    // them — producing no output, so a non-fullAuto bot's turns frequently fail.
-    // Default to fullAuto for a usable bot; per-action consent returns with the
-    // ACP v2 path. Still throws above on a non-boolean fullAuto.
-    fullAuto: o.fullAuto === undefined ? true : o.fullAuto === true,
+    // Default fullAuto to FALSE.  `--dangerously-skip-permissions` runs every
+    // tool on this computer with nothing standing in for the permission
+    // broker, which is the consent layer SECURITY.md promises.  Without it,
+    // print mode runs `--mode accept-edits`: file edits go through and shell
+    // commands come back as tool errors — a less capable bot, but one whose
+    // reach the person chose.  Turning the bypass on is an explicit opt-in
+    // on the Engines settings row, and the toggle there reflects this value.
+    // Still throws above on a non-boolean fullAuto.
+    fullAuto: o.fullAuto === true,
   };
 }
 
@@ -741,22 +750,15 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         capabilities: {
           sessionModelSwitch: "in-session",
           images: true,
-          // Cloud box, Local VM, and VPS computers all mount through the
-          // global mcp_config.json above. Only full-auto instances advertise
-          // it: print mode has no interactive approval channel, and outside
-          // --dangerously-skip-permissions agy auto-denies tools that would
-          // prompt (the accept-edits shell behavior in the header comment),
-          // so a non-fullAuto mount could never fire. localComputerMcp stays
-          // unset on purpose — the host desktop requires per-action human
-          // approval (see contracts.ts), which print mode cannot deliver in
-          // any mode; that returns with the native ACP path (agy issue #31).
-          computerMcp: config.fullAuto,
-          localComputerMcp: !config.fullAuto,
-          // The same approval limitation applies to bot-to-bot calls. The
-          // harness only injects the short-lived agents proxy when this flag
-          // is true, so safe-mode turns never expose a token they cannot use.
-          agentsMcp: config.fullAuto,
-          composioMcp: config.fullAuto,
+          computerMcp: true,
+          // Print mode has no approval channel (see the header), so there is
+          // no way to broker a click on the user's real desktop. The harness
+          // runs a "This computer" turn without the mount and says so.
+          localComputerMcp: false,
+          agentsMcp: true,
+          composioMcp: true,
+          phoneMcp: true,
+          qdrantMcp: true,
         },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.stop(),

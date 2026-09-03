@@ -205,10 +205,13 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     public var autoReview: String?
     public var alwaysAllow: [String]?
     public var composio: Bool?
+    /// Which computers this bot may run on: "local", "cloud", and/or "vm".
+    /// Absent means the harness predates multi-computer bots.
     public var computers: [String]?
-    /// Which cloud computer backs `computer == "cloud"`. Absent (older
-    /// harnesses included) means the hosted Box; "vps" means the user's own
-    /// server, which has no interactive desktop to offer a phone.
+    /// Which cloud computer backs a bot whose `computers` include "cloud".
+    /// Absent (older harnesses included) means the hosted Box; "vps" means
+    /// the user's own server, which has no interactive desktop to offer a
+    /// phone.
     public var cloudBackend: String?
     public var autoStartVps: Bool?
     public var cwd: String?

@@ -64,6 +64,7 @@ export class ProviderRegistry {
   }
 
   async load(configs: InstanceConfigMap) {
+    this.lastDescribe = null;
     for (const [instanceId, entry] of Object.entries(configs)) {
       const isFullAuto = fullAutoOfRaw(entry.config);
       if (isFullAuto) this.fullAutoByInstance.set(instanceId, true);
@@ -127,7 +128,28 @@ export class ProviderRegistry {
   }
 
   /** instance snapshots for the model picker: id, driver, models, health */
-  async describe() {
+  /** The last full describe(), shared with callers that accept a slightly
+   * stale view. Probing every engine CLI (`--version`, auth status, model
+   * discovery) costs seconds on a machine with many CLIs installed, and a
+   * bot being created does not need a fresher answer than the rail did a
+   * moment ago. In-flight describes are shared too, so a burst of callers
+   * spawns one probe per engine, not one per caller. */
+  private lastDescribe: { at: number; result: Promise<Awaited<ReturnType<ProviderRegistry["describeFresh"]>>> } | null = null;
+
+  async describe(opts?: { maxAgeMs?: number }) {
+    const maxAge = opts?.maxAgeMs ?? 0;
+    const now = Date.now();
+    if (maxAge > 0 && this.lastDescribe && now - this.lastDescribe.at <= maxAge) return this.lastDescribe.result;
+    const result = this.describeFresh();
+    this.lastDescribe = { at: now, result };
+    // a failed probe must not be served from the memo
+    result.catch(() => {
+      if (this.lastDescribe?.result === result) this.lastDescribe = null;
+    });
+    return result;
+  }
+
+  async describeFresh() {
     // Multiple instances may share a driver. Scan each default binary once
     // per response instead of repeating filesystem work for every row.
     const candidatesByName = new Map<string, string[]>();

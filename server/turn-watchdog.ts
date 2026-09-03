@@ -79,6 +79,17 @@ export class TurnWatchdog {
     this.turns.delete(threadId);
   }
 
+  /** Every watched turn is being killed at once (a provider reload disposes
+   * the whole fleet). Forget them all and report which were in flight, so the
+   * caller can settle each one's bookkeeping — a routine receipt, a delegation
+   * watch — instead of letting the entries age into a misleading "no activity"
+   * stall twenty minutes later. */
+  settleAll(): WatchedTurn[] {
+    const turns = [...this.turns.values()];
+    this.turns.clear();
+    return turns;
+  }
+
   watching(threadId: string): boolean {
     return this.turns.has(threadId);
   }

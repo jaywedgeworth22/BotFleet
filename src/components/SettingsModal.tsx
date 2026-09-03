@@ -17,6 +17,8 @@ import { UsageSection } from "./UsageSection";
 import { SkinPicker } from "./SkinPicker";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
 import { TranscriptionSettings } from "./TranscriptionSettings";
+import { QdrantRagConnection } from "./QdrantRagConnection";
+import { ElevenLabsConnection } from "./ElevenLabsConnection";
 import { cn } from "@/lib/cn";
 
 const SECTIONS: Array<{
@@ -26,7 +28,7 @@ const SECTIONS: Array<{
   keywords: string[];
 }> = [
   { id: "general", label: "General", icon: User, keywords: ["profile", "name", "email", "skin", "theme", "appearance", "analytics", "updates", "tools", "tool calls"] },
-  { id: "connections", label: "Connections", icon: KeyRound, keywords: ["keys", "api", "composio", "box", "xai", "vps"] },
+  { id: "connections", label: "Connections", icon: KeyRound, keywords: ["keys", "api", "composio", "box", "xai", "vps", "elevenlabs", "voice", "tts", "speech"] },
   { id: "engines", label: "Engines", icon: Terminal, keywords: ["models", "claude", "grok", "providers", "cli"] },
   { id: "companion", label: "Phone", icon: Smartphone, keywords: ["companion", "phone", "pair", "mobile"] },
   { id: "computers", label: "Local VM", icon: Monitor, keywords: ["vm", "virtual", "desktop"] },
@@ -672,18 +674,24 @@ export function SettingsModal() {
             {section === "connections" && (
               <Card
                 title="Connections"
-                subtitle="Connected apps work automatically in the installed app. Other optional service keys stay on this computer."
+                subtitle={"Connected apps use a connected-apps service when one is configured, or your own Composio project key.\u00a0 Other optional service keys stay on this computer."}
               >
                 <div className="flex flex-col gap-4">
                   {state.config?.composio.mode === "managed" ? (
                     <div className="rounded-lg border border-success/25 bg-success/10 px-3 py-2 text-[13px] text-success">
                       Connected apps service is ready
                     </div>
+                  ) : state.config?.composio.managedSetup?.status === "failed" ? (
+                    <div role="status" className="rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-[13px] text-warning">
+                      {state.config.composio.managedSetup.message ?? "Connected apps could not be set up."}
+                    </div>
                   ) : null}
+                  <ElevenLabsConnection />
                   <TranscriptionSettings />
                   <ApiKeyRow section="box" />
                   <VpsConnection />
                   <ApiKeyRow section="opencodeGo" />
+                  <QdrantRagConnection />
                   <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
                     <summary className="cursor-pointer text-[13px] text-ink-secondary">Custom Webhook Domain / Ingress</summary>
                     <div className="mt-3">

@@ -273,6 +273,9 @@ export interface UpdaterState {
 
 export interface CompanionAccountState {
   available: boolean;
+  /** False only when this build has no hosted control plane at all; the
+   * sign-in card is then hidden rather than shown as "needs attention". */
+  configured?: boolean;
   status: "signed-out" | "connecting" | "ready" | "error";
   email?: string;
   endpoint?: string;

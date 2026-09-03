@@ -18,6 +18,8 @@ import {
   type DockerHardeningConfig,
   BASE_IMAGE_DIGEST,
   BASE_IMAGE_LABEL,
+  CONTAINER_CPUS_ARG,
+  CONTAINER_MEMORY_ARG,
   DRIVER_LABEL,
   IMAGE_LAYER_LABEL,
   IMAGE_LAYER_VERSION,
@@ -110,9 +112,11 @@ export function vpsContainerName(botId: string): string {
 
 /** Current name first, then predecessors from the OpenMausBot / OpenGrokBot rename. */
 export function vpsContainerNameCandidates(botId: string): string[] {
+  // Check the single shared container first, fallback to legacy per-bot names for cleanup
   const part = containerNamePart(botId);
   const hash = createHash("sha256").update(botId).digest("hex").slice(0, 12);
-  return [VPS_CONTAINER_PREFIX, ...LEGACY_VPS_CONTAINER_PREFIXES].map((prefix) => `${prefix}-${part}-${hash}`);
+  const legacy = [VPS_CONTAINER_PREFIX, ...LEGACY_VPS_CONTAINER_PREFIXES].map((prefix) => `${prefix}-${part}-${hash}`);
+  return [vpsContainerName(botId), ...legacy];
 }
 
 export function vpsDockerArgs(alias: string, args: string[]): string[] {
@@ -628,11 +632,11 @@ export function vpsContainerRunArgs(
     "--label",
     `${IMAGE_LAYER_LABEL}=${IMAGE_LAYER_VERSION}`,
     "--memory",
-    "4g",
+    CONTAINER_MEMORY_ARG,
     "--memory-swap",
-    "4g",
+    CONTAINER_MEMORY_ARG,
     "--cpus",
-    "2",
+    CONTAINER_CPUS_ARG,
     "--pids-limit",
     String(PIDS_LIMIT),
     "--network",

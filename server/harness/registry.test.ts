@@ -1,7 +1,7 @@
 // The registry's contract is forward/backward compatibility: a config
 // written by a newer or differently-built app must load as an
 // unavailable shadow, never crash the fleet. These tests pin that.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { makeFakeDriver } from "../testing/fake-driver.ts";
 import { ProviderRegistry } from "./registry.ts";
@@ -131,6 +131,41 @@ describe("ProviderRegistry", () => {
     expect((await registry.describe())[0].capabilities.approvalReview).toBe(false);
     Object.assign(registry.get("a")!, { reviewPermission: async () => "ok" });
     expect((await registry.describe())[0].capabilities.approvalReview).toBe(true);
+  });
+
+  // GET /api/instances used to re-probe every CLI (--version, auth status,
+  // model discovery) on every call, costing real seconds on a machine with
+  // many engines installed — the engine rail's passive refreshes now pass
+  // maxAgeMs so a burst of callers within that window shares one probe.
+  it("describe({ maxAgeMs }) serves the memo until it lapses, then re-probes", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({ a: { driver: "fake" } });
+    const spy = vi.spyOn(registry, "describeFresh");
+
+    await registry.describe({ maxAgeMs: 10_000 });
+    await registry.describe({ maxAgeMs: 10_000 });
+    await registry.describe({ maxAgeMs: 10_000 });
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    // no maxAgeMs (or 0) — the explicit "Check again"/CLI-save path — always
+    // re-probes regardless of how fresh the memo is.
+    await registry.describe();
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it("shares one in-flight describe() among concurrent callers instead of probing per caller", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({ a: { driver: "fake" } });
+    const spy = vi.spyOn(registry, "describeFresh");
+
+    await Promise.all([
+      registry.describe({ maxAgeMs: 10_000 }),
+      registry.describe({ maxAgeMs: 10_000 }),
+      registry.describe({ maxAgeMs: 10_000 }),
+    ]);
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 
   it("disposeAll disposes every live instance and empties the registry", async () => {

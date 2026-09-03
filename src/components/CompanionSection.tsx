@@ -218,6 +218,7 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
             </button>
           </div>
 
+          {c.account?.configured !== false && (
           <div className="border-t border-hairline/30 pt-4">
             <div className="flex items-start justify-between gap-3">
               <div className="flex min-w-0 items-start gap-2.5">
@@ -256,6 +257,7 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
             )}
             {accountActionError && <div className="mt-2 text-[12px] text-danger">{accountActionError}</div>}
           </div>
+          )}
 
           <div className="border-t border-hairline/30 pt-4">
             <div className="text-[13px] text-ink">Connection details</div>

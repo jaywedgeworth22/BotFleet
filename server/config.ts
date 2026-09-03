@@ -93,7 +93,9 @@ const appConfigSchema = z.object({
   openaiCompat: z.object({ key: optionalText, url: optionalText }).optional(),
   /** Project key used for Sessions, catalog and agent tools. userId/sessionId
    * are non-secret local identifiers used to reuse one Composio Session. */
-  composio: z.object({ apiKey: optionalText, userId: optionalText, sessionId: optionalText }).optional(),
+  // brokerUrl is read by the desktop shell only: the HTTPS origin of a
+  // connected-apps broker the operator runs. There is no built-in default.
+  composio: z.object({ apiKey: optionalText, userId: optionalText, sessionId: optionalText, brokerUrl: optionalText }).optional(),
   box: z.object({ token: optionalText }).optional(),
   vps: vpsConfigSchema.optional(),
   /** Optional OpenCode key; persisted write-only and passed only to its child. */
@@ -117,6 +119,12 @@ const appConfigSchema = z.object({
       }),
   }).optional(),
   localVm: localVmConfigSchema.optional(),
+  qdrant: z.object({
+    enabled: z.boolean().optional(),
+    url: z.string().optional(),
+    apiKey: z.string().optional(),
+    collection: z.string().optional(),
+  }).optional(),
   features: featureConfigSchema.optional(),
   terminology: z.enum(["channels", "groups", "projects"]).optional(),
   instances: instanceConfigMapSchema.optional(),
@@ -127,7 +135,7 @@ const jsonObjectSchema = z.record(z.string(), z.json());
 export interface AppConfig {
   xai?: { key?: string; url?: string };
   openaiCompat?: { key?: string; url?: string };
-  composio?: { apiKey?: string; userId?: string; sessionId?: string };
+  composio?: { apiKey?: string; userId?: string; sessionId?: string; brokerUrl?: string };
   box?: { token?: string };
   /** A named host from the user's SSH config. Authentication stays with SSH. */
   vps?: { sshAlias?: string };
@@ -140,8 +148,10 @@ export interface AppConfig {
   ingress?: { publicUrl?: string };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */
-  /** Opt-in product experiments. Every flag defaults to disabled. */
   localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
+  /** Shared Qdrant Agent RAG vector database settings. */
+  qdrant?: { enabled?: boolean; url?: string; apiKey?: string; collection?: string };
+  /** Opt-in product experiments. Every flag defaults to disabled. */
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
   /** Preferred UI naming for rooms: channels (default), groups, or projects. */
   terminology?: "channels" | "groups" | "projects";
@@ -462,6 +472,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     claude: { driver: "claudeAgent" },
     codex: { driver: "codex" },
     antigravity: { driver: "antigravityAgent" },
+    gemini: { driver: "geminiAgent" },
     opencodeGo: { driver: "opencodeGo" },
     computer: { driver: "boxAgent" },
     openaiCompat: { driver: "openai-compat" },
@@ -481,6 +492,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     cursor: { driver: "cursorAgent" },
     openaiCompat: { driver: "openai-compat" },
     dsh: { driver: "dshAgent" },
+    gemini: { driver: "geminiAgent" },
     ...CUSTOM_ONLY,
   } as const;
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;

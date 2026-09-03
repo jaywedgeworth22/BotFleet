@@ -30,14 +30,15 @@ CUA supply-chain work is tracked in [issue #113](https://github.com/milind-soni/
 
 ## Download packages
 
-Choose one Ubuntu 24.04 x86_64 package from the latest release:
+No Ubuntu package has been published yet: the current release on the
+[releases page](https://github.com/jaywedgeworth22/botfleet-releases/releases) carries macOS builds only.  Once the release
+workflow ships an Ubuntu build, each release will carry:
 
-- [Debian package (`BotFleet-amd64.deb`)](https://github.com/milind-soni/botfleet-releases/releases/latest/download/BotFleet-amd64.deb) — recommended; APT installs its desktop dependencies.
-- [Portable AppImage (`BotFleet.AppImage`)](https://github.com/milind-soni/botfleet-releases/releases/latest/download/BotFleet.AppImage) — does not install system files.
-- [SHA-256 checksums](https://github.com/milind-soni/botfleet-releases/releases/latest/download/SHA256SUMS-ubuntu-x64.txt)
+- a Debian package (`BotFleet-amd64.deb`) — recommended; APT installs its desktop dependencies;
+- a portable AppImage (`BotFleet.AppImage`) — does not install system files;
+- `SHA256SUMS-ubuntu-x64.txt` covering both.
 
-Versioned packages and previous releases remain available on the
-[releases page](https://github.com/milind-soni/botfleet-releases/releases).
+Until then, build the packages from source as described below.
 
 ## Build packages
 
@@ -48,7 +49,7 @@ Requirements for building from source:
 - pnpm 10.33.0 (Corepack can install the version declared by the project)
 
 ```sh
-git clone https://github.com/milind-soni/BotFleet.git
+git clone https://github.com/jaywedgeworth22/BotFleet.git
 cd BotFleet
 corepack enable
 pnpm install --frozen-lockfile

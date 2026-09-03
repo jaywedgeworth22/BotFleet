@@ -553,14 +553,19 @@ export class Store {
   private threads = new Map<string, ThreadState>();
   private defaultSelection: () => ModelSelection;
   private listeners = new Set<(change: StoreChange) => void>();
+  /** true when no bots.json existed at load — the one time the roster is seeded */
+  private firstRun = false;
 
   constructor(defaultSelection: () => ModelSelection) {
     this.defaultSelection = defaultSelection;
     mkdirSync(DATA_DIR, { recursive: true });
     try {
       this.bots = JSON.parse(readFileSync(BOTS_FILE, "utf8"));
-    } catch {
+    } catch (error) {
       this.bots = [];
+      // Only a missing bots.json is a first run. A file that exists but will
+      // not parse must not be silently replaced with a fresh default roster.
+      this.firstRun = (error as NodeJS.ErrnoException)?.code === "ENOENT";
     }
     try {
       this.groups = JSON.parse(readFileSync(GROUPS_FILE, "utf8"));
@@ -1388,7 +1393,17 @@ export class Store {
   /** First-run seed: one bot so the app never opens empty — it gets a
    * random friendly name like every other bot. */
   seedIfEmpty() {
-    if (this.bots.length) return;
-    this.createBot();
+    if (this.bots.length || !this.firstRun) return;
+    const bot = this.createBot({
+      name: "Director",
+      title: "Chief of Staff",
+      description: "Chief of staff for the BotFleet roster. Route work, manage other bots, and coordinate fleet-wide tasks.",
+      color: "blue",
+      mascotExpression: "focused"
+    });
+    bot.autoApprove = false;
+    const inbox = bot.tasks?.[0];
+    if (inbox) inbox.title = "Inbox";
+    this.saveBots();
   }
 }

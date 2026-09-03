@@ -23,11 +23,13 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   const taskActivations: boolean[] = [];
   const emitted: any[] = [];
   const failed: any[] = [];
+  let live = true;
   const options: RoutineManagerOptions = {
     file: tempFile(),
     now: () => now,
     emit: (payload) => emitted.push(payload),
     botState: () => bot,
+    turnLive: () => live,
     createTask: (_botId, _title, activate = false) => {
       taskActivations.push(activate);
       return { threadId: `thread-${++task}` };
@@ -51,6 +53,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     failed,
     setNow: (value: number) => (now = value),
     setBot: (value: typeof bot) => (bot = value),
+    setLive: (value: boolean) => (live = value),
   };
 }
 
@@ -394,6 +397,107 @@ describe("RoutineManager", () => {
 
     h.manager.markSeen(h.failed[0].id);
     expect(h.failed).toHaveLength(1);
+  });
+
+  it("settles a run the stall watchdog stopped, and a late turn.completed cannot reopen it", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Nightly sweep",
+      prompt: "Sweep the workspace",
+      botId: "maus-stall",
+      schedule: { type: "once", at: new Date(2026, 7, 17, 8, 1).getTime() },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    expect(h.manager.listRuns()[0]!.status).toBe("running");
+
+    // the harness stopped a wedged turn: the same settle path the dispatch
+    // failure uses, called from the watchdog instead of a provider event
+    h.manager.failThread("thread-1", "no activity for 20 minutes — the turn was stopped");
+    expect(h.manager.listRuns()[0]).toMatchObject({
+      status: "failed",
+      error: "no activity for 20 minutes — the turn was stopped",
+    });
+    // an interrupted provider usually answers with its own terminal event
+    // afterwards; that must neither reopen the receipt nor report it twice
+    h.manager.handleRuntimeEvent({
+      eventId: "late",
+      provider: "fake",
+      threadId: "thread-1",
+      createdAt: new Date().toISOString(),
+      type: "turn.completed",
+      ok: false,
+      stopReason: "cancelled",
+    });
+    expect(h.manager.listRuns()[0]).toMatchObject({
+      status: "failed",
+      error: "no activity for 20 minutes — the turn was stopped",
+    });
+    expect(h.failed).toHaveLength(1);
+  });
+
+  it("fails a run whose turn is gone and frees the webhook's pending slot", async () => {
+    const start = new Date(2026, 7, 17, 8, 0, 0).getTime();
+    const h = harness(start);
+    h.manager.enqueueWebhook({
+      webhookId: "hook-1",
+      webhookName: "Deploy",
+      prompt: "Deploy the build",
+      botId: "maus-hook",
+      runOn: "maus",
+      deliveryId: "delivery-1",
+      receivedAt: start,
+    });
+    await h.manager.tick();
+    expect(h.manager.listRuns()[0]).toMatchObject({ status: "running", threadId: "thread-1" });
+    expect(h.manager.activeWebhookRunCount("hook-1")).toBe(1);
+
+    // the bot settled without a turn.completed (a crash, a reload, a stall
+    // the watchdog missed) — inside the grace the sweep leaves it alone
+    h.setLive(false);
+    h.setNow(start + 5_000);
+    await h.manager.tick();
+    expect(h.manager.listRuns()[0]!.status).toBe("running");
+
+    h.setNow(start + 31_000);
+    await h.manager.tick();
+    expect(h.manager.listRuns()[0]).toMatchObject({
+      status: "failed",
+      error: "The bot stopped before this run finished",
+      finishedAt: start + 31_000,
+    });
+    expect(h.manager.activeWebhookRunCount("hook-1")).toBe(0);
+    expect(h.failed).toHaveLength(1);
+  });
+
+  it("leaves a run waiting on a person alone while its turn is live", async () => {
+    const start = new Date(2026, 7, 17, 8, 0, 0).getTime();
+    const h = harness(start);
+    const routine = h.manager.create({
+      name: "Ask first",
+      prompt: "Check with the user",
+      botId: "maus-wait",
+      schedule: { type: "once", at: start },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      eventId: "ask",
+      provider: "fake",
+      threadId: "thread-1",
+      createdAt: new Date(start).toISOString(),
+      type: "request.opened",
+      requestType: "permission",
+      tool: "shell",
+      summary: "rm -rf build",
+    });
+    expect(h.manager.listRuns()[0]!.status).toBe("waiting");
+
+    // a person may take an hour to answer; a live turn is never an orphan
+    h.setNow(start + 60 * 60_000);
+    await h.manager.tick();
+    expect(h.manager.listRuns()[0]!.status).toBe("waiting");
+    expect(h.failed).toHaveLength(0);
   });
 
   it("keeps recurring history while advancing the definition", async () => {

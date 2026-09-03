@@ -67,12 +67,12 @@
         {
           "title": "iOS Companion Deep-Link Infrastructure",
           "desc": "Universal Links (botfleet.app), App Groups, and Remote Control companion for iPhone (iPad runs in compatibility mode).&nbsp; Alerts are SSE plus local notifications while the companion is open.&nbsp; A killed app does not wake.",
-          "prov": { "type": "pr", "prs": [12, 26], "state": "merged", "note": "Public TestFlight" }
+          "prov": { "type": "pr", "prs": [26], "state": "merged", "note": "Public TestFlight" }
         },
         {
           "title": "Fleet MCP Tools &amp; Standard Skills",
           "desc": "Global MCP servers from Claude desktop configurations merged into BotFleet bots, alongside standard fleet repo skills.",
-          "prov": { "type": "host", "note": "Under active test" }
+          "prov": { "type": "pr", "prs": [1], "state": "merged", "note": "Under active test" }
         },
         {
           "title": "Custom Webhook Ingress Domain",

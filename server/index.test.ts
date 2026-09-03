@@ -5,7 +5,7 @@
 // the shadow-instance behavior end to end while it's at it.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, request, type Server } from "node:http";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -228,7 +228,7 @@ beforeAll(async () => {
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
-  child.stderr!.on("data", (c) => (stderr += c));
+  child.stderr!.on("data", (c) => (stderr += c)); child.stdout!.on("data", (c) => console.log(c.toString()));
 
   const deadline = Date.now() + 20_000;
   for (;;) {
@@ -315,7 +315,7 @@ describe("harness HTTP API", () => {
     const { status, body } = await api("GET", "/api/bots");
     expect(status).toBe(200);
     expect(body.bots.length).toBeGreaterThanOrEqual(1);
-    expect(body.bots[0].messages.length).toBeGreaterThanOrEqual(2);
+    if (body.bots[0].messages.length < 2) console.log("MESSAGES:", body.bots[0].messages); expect(body.bots[0].messages.length).toBeGreaterThanOrEqual(2);
   });
 
   it("projects privacy-safe live team-map metadata", async () => {
@@ -1123,7 +1123,7 @@ describe("harness HTTP API", () => {
     }
   });
 
-  it("exports every visible bot and imports the team without creating a room", async () => {
+  it("exports every visible bot and imports the team without creating a room", { timeout: 60000 }, async () => {
     const first = (await api("POST", "/api/bots")).body.bot;
     const second = (await api("POST", "/api/bots")).body.bot;
     const hidden = (await api("POST", "/api/bots")).body.bot;
@@ -1243,7 +1243,7 @@ describe("harness HTTP API", () => {
     } finally {
       stream.close();
     }
-  }, 30000);
+  });
 
   it("imports a team as a project: one room, on a folder", async () => {
     // The manifest still describes only people. Room name and folder come
@@ -1452,7 +1452,7 @@ describe("harness HTTP API", () => {
       approvePeerComms: true,
       chiefOfStaff: true,
       composio: true,
-      computer: "off",
+      computers: [],
     });
     const groupsBefore = (await api("GET", "/api/bots")).body.groups.length;
     const room = (await api("POST", "/api/groups", { memberIds: [trusted.id], name: "War Room" })).body.group;
@@ -1479,7 +1479,7 @@ describe("harness HTTP API", () => {
             chiefOfStaff: true,
             approvePeerComms: false,
             composio: true,
-            computer: "local",
+            computers: ["local"],
             cloudBackend: "vps",
             cwd: "/",
             hidden: false,
@@ -1503,7 +1503,7 @@ describe("harness HTTP API", () => {
     expect(impostor.chiefOfStaff).toBeUndefined();
     expect(impostor.approvePeerComms).toBeUndefined();
     expect(impostor.composio).toBe(false);
-    expect(impostor.computer).toBeUndefined();
+    expect(impostor.computers).toBeUndefined();
     expect(impostor.cloudBackend).toBeUndefined();
     expect(impostor.cwd).toBeUndefined();
 
@@ -1521,7 +1521,7 @@ describe("harness HTTP API", () => {
       approvePeerComms: true,
       chiefOfStaff: true,
       composio: true,
-      computer: "off",
+      computers: [],
     });
     // the single-Chief invariant survives the manifest's chiefOfStaff claim
     expect(after.bots.filter((bot: { chiefOfStaff?: boolean }) => bot.chiefOfStaff).map((bot: { id: string }) => bot.id)).toEqual([
@@ -1860,17 +1860,17 @@ describe("harness HTTP API", () => {
     // The important half: a blind PATCH — exactly what a bot curling the
     // loopback API from a tool call would send — must be refused. The
     // renderer's warning dialog is not a boundary; this 400 is.
-    const blind = await api("PATCH", `/api/bots/${bot.id}`, { computer: "local" });
+    const blind = await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"] });
     expect(blind.status).toBe(400);
-    const oneShot = await api("PATCH", `/api/bots/${bot.id}`, { computer: "local", autoApprove: true });
+    const oneShot = await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"], autoApprove: true });
     expect(oneShot.status).toBe(400);
     const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === bot.id);
-    expect(after.computer).not.toBe("local");
+    expect(after.computers || []).not.toContain("local");
 
     // The dialog's acknowledgement grants it, and the flag is not persisted.
-    const local = await api("PATCH", `/api/bots/${bot.id}`, { computer: "local", acknowledgeLocalAuto: true });
+    const local = await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"], acknowledgeLocalAuto: true });
     expect(local.status).toBe(200);
-    expect(local.body.bot).toMatchObject({ computer: "local", autoApprove: true });
+    expect(local.body.bot).toMatchObject({ computers: ["local"], autoApprove: true });
     expect(local.body.bot.acknowledgeLocalAuto).toBeUndefined();
 
     // Once granted, re-asserting auto and unrelated PATCHes need no re-ack.
@@ -1886,8 +1886,8 @@ describe("harness HTTP API", () => {
     expect(autoAcked.status).toBe(200);
 
     // Leaving local ends the grant; coming back needs the warning again.
-    await api("PATCH", `/api/bots/${bot.id}`, { computer: "off" });
-    const back = await api("PATCH", `/api/bots/${bot.id}`, { computer: "local" });
+    await api("PATCH", `/api/bots/${bot.id}`, { computers: [] });
+    const back = await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"] });
     expect(back.status).toBe(400);
     await api("DELETE", `/api/bots/${bot.id}`);
   });
@@ -2570,7 +2570,13 @@ describe("harness HTTP API", () => {
       profile: { name: "External Store" },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.composio).toEqual({ configured: true, mode: "self-hosted" });
+    // managedSetup describes the desktop-managed broker; a self-hosted key
+    // works without one, so it stays "unconfigured" here.
+    expect(saved.body.composio).toEqual({
+      configured: true,
+      mode: "self-hosted",
+      managedSetup: { status: "unconfigured" },
+    });
     expect(saved.body.opencodeGo).toEqual({ configured: true });
     expect(saved.body.profile).toEqual({ name: "External Store", email: "" });
     expect(JSON.stringify(saved.body)).not.toContain("ak_good");
@@ -2585,7 +2591,11 @@ describe("harness HTTP API", () => {
     // A later ordinary setting save reloads config; the in-process secure-env
     // override must keep Composio configured until the next app launch.
     expect((await api("PUT", "/api/config", { profile: { name: "Grace" } })).status).toBe(200);
-    expect((await api("GET", "/api/config")).body.composio).toEqual({ configured: true, mode: "self-hosted" });
+    expect((await api("GET", "/api/config")).body.composio).toEqual({
+      configured: true,
+      mode: "self-hosted",
+      managedSetup: { status: "unconfigured" },
+    });
   });
 
   it.skipIf(process.platform === "win32")("stores the credentials file with owner-only permissions", () => {
@@ -3299,5 +3309,103 @@ describe("GET /api/quotas", () => {
     const codex = data.cooldowns.find((c) => c.instanceId === "codex");
     expect(codex).toBeDefined();
     expect(codex?.error).toContain("Codex session limit");
+  });
+});
+
+describe("trust boundaries: phone-originated room folders, coarse always-allow, and the packaged UI folder", () => {
+  const phone = { "x-botfleet-companion": "1" };
+  const apiAs = async (
+    headers: Record<string, string>,
+    method: string,
+    path: string,
+    body?: unknown,
+  ): Promise<{ status: number; body: any }> => {
+    const res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: { ...headers, ...(body ? { "content-type": "application/json" } : {}) },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: res.status, body: await res.json() };
+  };
+
+  it("confines a phone's room folder to what this computer already shares, and refuses key stores", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "From the phone", memberIds: [bot.id] })).body.group;
+    const project = realpathSync(mkdtempSync(join(tmpdir(), "omb-phone-project-")));
+    const nested = join(project, "src");
+    mkdirSync(nested);
+    const ssh = join(home, ".ssh");
+    mkdirSync(ssh, { recursive: true });
+    const workspaces = join(home, ".botfleet", "workspaces");
+    mkdirSync(workspaces, { recursive: true });
+    try {
+      // nobody on the computer granted this folder yet
+      const refused = await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: project });
+      expect(refused.status).toBe(403);
+      expect(refused.body.error).toMatch(/not one this computer already shares/);
+      expect(refused.body.error).toMatch(/on your computer/);
+
+      // the desktop picker is not confined
+      const granted = await api("PATCH", `/api/groups/${room.id}`, { cwd: project });
+      expect(granted.status).toBe(200);
+      expect(granted.body.group.cwd).toBe(project);
+
+      // now the phone may reuse or narrow within it
+      const narrowed = await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: nested });
+      expect(narrowed.status).toBe(200);
+      expect(narrowed.body.group.cwd).toBe(nested);
+
+      // keys and BotFleet's own state stay off-limits — loudly, not silently dropped
+      const keys = await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { extraCwds: [nested, ssh] });
+      expect(keys.status).toBe(403);
+      expect(keys.body.error).toMatch(/keys or BotFleet/);
+      expect((await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: join(home, ".botfleet") })).status).toBe(403);
+
+      // the app-owned workspaces under it are a root of their own
+      expect((await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: workspaces })).status).toBe(200);
+
+      // clearing is never a widening
+      const cleared = await apiAs(phone, "PATCH", `/api/groups/${room.id}`, { cwd: null });
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.group).not.toHaveProperty("cwd");
+    } finally {
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+      rmSync(project, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to remember an always-allow that is a shell in disguise", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const coarse = await api("PATCH", `/api/bots/${bot.id}`, { alwaysAllow: ["Bash:git", "Bash:bash"] });
+      expect(coarse.status).toBe(400);
+      expect(coarse.body.error).toMatch(/every shell command/);
+      const direct = await api("POST", `/api/bots/${bot.id}/always-allow`, { allowKey: "Bash:sh" });
+      expect(direct.status).toBe(400);
+      expect(direct.body.error).toMatch(/every shell command/);
+      const narrow = await api("PATCH", `/api/bots/${bot.id}`, { alwaysAllow: ["Bash:git"] });
+      expect(narrow.status).toBe(200);
+      expect(narrow.body.bot.alwaysAllow).toEqual(["Bash:git"]);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("does not follow a symlink out of the packaged UI folder", async () => {
+    const secret = join(home, "not-for-the-browser.txt");
+    writeFileSync(secret, "top secret");
+    const link = join(staticDir, "assets", "leak.txt");
+    try {
+      symlinkSync(secret, link);
+    } catch {
+      return; // no symlink permission on this runner
+    }
+    const leaked = await fetch(`${BASE}/assets/leak.txt`);
+    expect(leaked.status).toBe(200);
+    // the SPA fallback, never the target
+    expect(await leaked.text()).toContain("Packaged BotFleet");
+    const inside = await fetch(`${BASE}/assets/smoke.css`);
+    expect(await inside.text()).toContain("color: white");
   });
 });

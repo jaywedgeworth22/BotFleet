@@ -535,7 +535,7 @@ function Bubble({
 }
 
 /** A tool run: spinner while live, check/cross once settled. */
-function ActivityChip({ message }: { message: Message }) {
+function ActivityChip({ bot, message }: { bot: Bot, message: Message }) {
   const { dispatch } = useStore();
   const [expanded, setExpanded] = useState(false);
   const tool = message.tool;
@@ -583,9 +583,14 @@ function ActivityChip({ message }: { message: Message }) {
     );
   }
   const failed = tool.ok === false;
+  const time = new Date(message.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
+  const actor = message.from?.name ?? bot.name;
+  const tooltip = `${actor} ran this tool at ${time}${failed ? " (Failed)" : tool.ok ? " (Success)" : " (Running)"}`;
+  
   return (
     <div className="flex justify-start">
       <div
+        title={tooltip}
         className={cn(
           "flex items-start gap-2.5 rounded-xl border border-hairline/40 bg-panel px-3 py-2 text-[13px] shadow-sm",
           failed ? "border-danger/30 text-danger bg-danger/5" : "text-ink-secondary",
@@ -697,7 +702,7 @@ const MessagesList = memo(function MessagesList({
               <ActivityRun messages={item.messages} forceOpen={item.messages.some((step) => step.id === focusedId)}>
                 {item.messages.map((step) => (
                   <div key={step.id} className="contents" data-mid={step.id}>
-                    <ActivityChip message={step} />
+                    <ActivityChip bot={bot} message={step} />
                   </div>
                 ))}
               </ActivityRun>
@@ -735,7 +740,7 @@ const MessagesList = memo(function MessagesList({
                 );
               }
               if (!showToolCalls && !m.comm) return null;
-              return <ActivityChip message={m} />;
+              return <ActivityChip bot={bot} message={m} />;
             }
             case "screen":
               return m.png ? <ScreenFrame png={m.png} mime={m.mime} /> : null;

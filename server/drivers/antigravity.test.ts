@@ -60,12 +60,15 @@ describe("Antigravity decodeConfig", () => {
     });
   });
 
-  it("defaults to the agy binary and fullAuto on", () => {
-    expect(AntigravityDriver.decodeConfig({})).toEqual({ cli: "agy", fullAuto: true });
-    expect(AntigravityDriver.decodeConfig(undefined)).toEqual({ cli: "agy", fullAuto: true });
+  it("defaults to the agy binary with the permission bypass off", () => {
+    // --dangerously-skip-permissions skips the broker entirely; a fresh bot
+    // must not inherit that, and defaultConfig() goes through the same path
+    expect(AntigravityDriver.decodeConfig({})).toEqual({ cli: "agy", fullAuto: false });
+    expect(AntigravityDriver.decodeConfig(undefined)).toEqual({ cli: "agy", fullAuto: false });
+    expect(AntigravityDriver.defaultConfig?.()).toEqual({ cli: "agy", fullAuto: false });
   });
-  it("fullAuto defaults to true, only false when explicitly set", () => {
-    expect(AntigravityDriver.decodeConfig({}).fullAuto).toBe(true);
+  it("fullAuto is an explicit opt-in: true only when stored as true", () => {
+    expect(AntigravityDriver.decodeConfig({}).fullAuto).toBe(false);
     expect(AntigravityDriver.decodeConfig({ fullAuto: false }).fullAuto).toBe(false);
     expect(AntigravityDriver.decodeConfig({ fullAuto: true }).fullAuto).toBe(true);
   });
@@ -140,6 +143,42 @@ describe("Antigravity turns (fake CLI)", () => {
   it("respondToRequest resolves `unavailable` — no interactive permission channel, so the caller denies", async () => {
     await create();
     await expect(instance.adapter.respondToRequest("t-happy", "req-1", { behavior: "allow" })).resolves.toBe("unavailable");
+  });
+
+  it("spawns agy with --mode accept-edits by default, and the bypass only when opted in", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "omb-agy-args-"));
+    const argvFor = async (config: { cli: string; fullAuto?: boolean }, name: string) => {
+      const dump = join(dir, `${name}.json`);
+      const inst = await AntigravityDriver.create({
+        instanceId: `agy-args-${name}`,
+        displayName: undefined,
+        environment: { FAKE_AGY_DUMP: dump },
+        enabled: true,
+        // through decodeConfig on purpose: the default is the thing under test
+        config: AntigravityDriver.decodeConfig(config),
+      });
+      const rec = recordEvents(inst.adapter);
+      try {
+        await inst.adapter.sendTurn({ threadId: `t-args-${name}`, text: "hi" });
+        await rec.until((e) => e.type === "turn.completed");
+        return JSON.parse(readFileSync(dump, "utf8")).argv as string[];
+      } finally {
+        rec.stop();
+        await inst.dispose();
+      }
+    };
+    try {
+      const defaults = await argvFor({ cli: FAKE_CLI }, "default");
+      expect(defaults).not.toContain("--dangerously-skip-permissions");
+      const mode = defaults.indexOf("--mode");
+      expect(defaults.slice(mode, mode + 2)).toEqual(["--mode", "accept-edits"]);
+
+      const opted = await argvFor({ cli: FAKE_CLI, fullAuto: true }, "bypass");
+      expect(opted).toContain("--dangerously-skip-permissions");
+      expect(opted).not.toContain("--mode");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -365,7 +404,8 @@ describe("Antigravity computer MCP config", () => {
     }
   });
 
-  it("advertises computerMcp only on full-auto instances, and never localComputerMcp", async () => {
+  it("advertises computerMcp and the tool integrations, but never host control (print mode has no approval channel)", async () => {
+    ensureDirs();
     const fullAuto = await AntigravityDriver.create({
       instanceId: "agy-caps-full",
       displayName: undefined,
@@ -382,15 +422,14 @@ describe("Antigravity computer MCP config", () => {
     });
     try {
       expect(fullAuto.adapter.capabilities.computerMcp).toBe(true);
-      // accept-edits print mode auto-denies tools that would prompt, so a
-      // mount there could never fire — the capability must not be offered.
-      expect(acceptEdits.adapter.capabilities.computerMcp).toBe(false);
-      // The host desktop needs per-action human approval; Gemini throws
-      // an error without this capability, so we expose it as !fullAuto.
       expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(false);
-      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBe(true);
       expect(fullAuto.adapter.capabilities.agentsMcp).toBe(true);
-      expect(acceptEdits.adapter.capabilities.agentsMcp).toBe(false);
+      expect(fullAuto.adapter.capabilities.composioMcp).toBe(true);
+      expect(fullAuto.adapter.capabilities.phoneMcp).toBe(true);
+      expect(fullAuto.adapter.capabilities.qdrantMcp).toBe(true);
+      expect(acceptEdits.adapter.capabilities.computerMcp).toBe(true);
+      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBe(false);
+      expect(acceptEdits.adapter.capabilities.agentsMcp).toBe(true);
     } finally {
       await fullAuto.dispose();
       await acceptEdits.dispose();

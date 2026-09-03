@@ -150,6 +150,8 @@ export interface AcpSupport {
 
 const INIT_TIMEOUT = 20_000;
 const SESSION_CONFIG_TIMEOUT = 20_000; // configureSession's per-request default
+/** Upper bound on per-driver model discovery during registry load. */
+const BOOT_MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
 const NEW_SESSION_TIMEOUT = 30_000;
 const LOAD_SESSION_TIMEOUT = 120_000; // history replay on a long thread is slow
 
@@ -189,7 +191,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
     async create(input: DriverCreateInput<AcpConfig>): Promise<ProviderInstance> {
       const { instanceId, config } = input;
-      const childEnv = () => {
+      const childEnv = (effective: AcpConfig = config) => {
         const env: Record<string, string | undefined> = {
           ...process.env,
           ...input.environment,
@@ -204,7 +206,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         for (const key of [...PROVIDER_CREDENTIAL_ENV, ...WORKSPACE_CREDENTIAL_ENV]) {
           if (!allowedCredentials.has(key)) delete env[key];
         }
-        support.transformEnv?.(env, config);
+        support.transformEnv?.(env, effective);
         return env;
       };
       let models = support.models;
@@ -217,7 +219,13 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           // Keep the last usable catalog when an optional discovery source is down.
         }
       };
-      await refreshModels();
+      // Model discovery is best-effort at boot: a CLI that stalls must not
+      // keep the whole harness from listening. Past the deadline the static
+      // catalog stands and the refresh finishes in the background.
+      await Promise.race([
+        refreshModels(),
+        new Promise<void>((resolve) => setTimeout(resolve, BOOT_MODEL_DISCOVERY_TIMEOUT_MS).unref?.()),
+      ]);
       const listeners = new Set<RuntimeEventListener>();
       interface Turn {
         stop: () => void;
@@ -279,23 +287,47 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             env: acpEnv(local.env ?? {}),
           });
         }
+        const phone = turn.integrations?.phone;
+        if (phone) {
+          servers.push({
+            name: "phone",
+            command: phone.command,
+            args: phone.args,
+            env: acpEnv(phone.env ?? {}),
+          });
+        }
+        const qdrant = turn.integrations?.qdrant;
+        if (qdrant) {
+          servers.push({
+            name: "qdrant",
+            command: qdrant.command,
+            args: qdrant.args,
+            env: acpEnv(qdrant.env ?? {}),
+          });
+        }
         return servers;
       };
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
-        if (active.has(threadId)) throw new Error("a turn is already running on this thread");
+        // Host control means the user's real desktop (the Local VM and a VPS
+        // also arrive as `localComputer`, but they are isolated and carry no
+        // scope). A full-auto instance keeps its yolo switch for everything
+        // else, but a turn that can click on this computer runs brokered:
+        // the CLI is spawned in its asking mode and every ask reaches the
+        // harness, where the bot's Auto policy, the destructive and sensitive
+        // guards, and the unattended block decide. That is what lets a
+        // full-auto bot mount the local computer at all.
         const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
-        if (controlsHost && config.fullAuto) {
-          throw new Error("local computer control requires interactive provider approvals");
-        }
+        const turnConfig: AcpConfig = controlsHost && config.fullAuto ? { ...config, fullAuto: false } : config;
+        if (active.has(threadId)) throw new Error("a turn is already running on this thread");
         const turnId = newId();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
-        const env = childEnv();
+        const env = childEnv(turnConfig);
         if (
           support.requireAuthenticationBeforeSpawn
           && !skipSubscriptionAuthForLocalInject(turn.model)
-          && !(await support.isAuthenticated(env, config))
+          && !(await support.isAuthenticated(env, turnConfig))
         ) {
           emit({ ...base(threadId, turnId), type: "turn.started" });
           emit({ ...base(threadId, turnId), type: "runtime.error", message: support.loginNote, setup: true });
@@ -310,7 +342,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             : turn;
         const mcpServers = acpMcpServers(turn);
 
-        const child = spawnCli(config.cli, support.spawnArgs(config, cliTurn), {
+        const child = spawnCli(config.cli, support.spawnArgs(turnConfig, cliTurn), {
           cwd,
           env,
           stdio: ["pipe", "pipe", "pipe"],
@@ -393,7 +425,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             });
 
           const toolCall = params.toolCall ?? {};
-          if (config.fullAuto) {
+          if (turnConfig.fullAuto) {
             const allow = optionFor("allow");
             if (!allow) missing("allow");
             return send({
@@ -645,7 +677,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   request: (method, params, timeoutMs) =>
                     request(method, params, timeoutMs ?? SESSION_CONFIG_TIMEOUT),
                   sessionId,
-                  config,
+                  config: turnConfig,
                   turn: cliTurn,
                   sessionModels: Array.isArray(sessionResult?.models?.availableModels)
                     ? sessionResult.models.availableModels
@@ -739,9 +771,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             agentsMcp: true,
             computerMcp: true,
             composioMcp: true,
+            phoneMcp: true,
+            qdrantMcp: true,
             images: support.images !== false,
             effortLevels: support.effortLevels,
-            localComputerMcp: !config.fullAuto,
+            localComputerMcp: true,
           },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.interrupt(),

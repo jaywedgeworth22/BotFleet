@@ -169,12 +169,10 @@ struct AgentProfileView: View {
                         }
                         
                         ForEach(fallbacks.indices, id: \.self) { index in
-                            let fallback = fallbacks[index]
-                            VStack(alignment: .leading, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
                                 HStack {
                                     Text("Fallback \(index + 1)")
-                                        .font(.caption)
-                                        .fontWeight(.semibold)
+                                        .font(.subheadline)
                                         .foregroundStyle(.secondary)
                                     Spacer()
                                     Button(role: .destructive) {
@@ -184,15 +182,18 @@ struct AgentProfileView: View {
                                             .font(.caption)
                                             .foregroundStyle(.red)
                                     }
-                                    .buttonStyle(.plain)
+                                    .buttonStyle(.borderless)
                                 }
+                                .padding(.top, 4)
 
                                 Picker("Provider", selection: Binding(
-                                    get: { fallback.instanceId },
+                                    get: { fallbacks[index].instanceId },
                                     set: { newInstanceId in
                                         fallbacks[index].instanceId = newInstanceId
                                         if let inst = instances.first(where: { $0.id == newInstanceId }) {
-                                            fallbacks[index].model = inst.models.default
+                                            if !inst.models.options.contains(where: { $0.id == fallbacks[index].model }) {
+                                                fallbacks[index].model = inst.models.default
+                                            }
                                         }
                                     }
                                 )) {
@@ -201,9 +202,9 @@ struct AgentProfileView: View {
                                     }
                                 }
 
-                                if let fallbackInstance = instances.first(where: { $0.id == fallback.instanceId }) {
+                                if let fallbackInstance = instances.first(where: { $0.id == fallbacks[index].instanceId }) {
                                     Picker("Model", selection: Binding(
-                                        get: { fallback.model },
+                                        get: { fallbacks[index].model },
                                         set: { newModel in
                                             fallbacks[index].model = newModel
                                         }

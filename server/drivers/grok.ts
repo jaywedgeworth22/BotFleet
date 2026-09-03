@@ -70,7 +70,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
     const complete = async (
       messages: any[],
       model: string,
-      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
+      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
     ): Promise<{ text: string; tool_calls?: any[]; usage: { input: number; output: number } | null }> => {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
@@ -110,10 +110,23 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         } catch {
           return;
         }
-        const delta = chunk.choices?.[0]?.delta?.content;
+        const deltaObj = chunk.choices?.[0]?.delta;
+        const delta = deltaObj?.content;
+        const toolCallsDelta = Array.isArray(deltaObj?.tool_calls) ? deltaObj.tool_calls : undefined;
+        
         if (delta) {
           text += delta;
-          opts.onDelta?.(delta);
+          opts.onDelta?.(delta, "assistant_text");
+        }
+        if (toolCallsDelta) {
+          for (const tc of toolCallsDelta) {
+            const tcIndex = tc.index ?? 0;
+            if (!streamToolCalls[tcIndex]) streamToolCalls[tcIndex] = { id: "", function: { name: "", arguments: "" } };
+            if (tc.id) streamToolCalls[tcIndex].id += tc.id;
+            if (tc.function?.name) streamToolCalls[tcIndex].function.name += tc.function.name;
+            if (tc.function?.arguments) streamToolCalls[tcIndex].function.arguments += tc.function.arguments;
+            opts.onToolCallDelta?.(tcIndex, tc.id, tc.function?.name, tc.function?.arguments);
+          }
         }
         if (chunk.usage) {
           usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
@@ -157,7 +170,8 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       const retryScale = Number(process.env.FAKE_GROK_RETRY_SCALE ?? "1");
       active.set(threadId, { abort, turnId });
 
-      const messages = [
+      
+      const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
         ...(turn.transcript ?? []).flatMap((m: any) => {
           const res = [];
@@ -184,6 +198,15 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         }),
         { role: "user", content: turn.text },
       ];
+      
+      for (const m of (turn.transcript ?? [])) {
+        if (m.role === "assistant") {
+          messages.push({ role: "assistant", content: m.text });
+        } else {
+          messages.push({ role: "user", content: m.text });
+        }
+      }
+      messages.push({ role: "user", content: turn.text });
       appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: { model: turn.model, messages } });
 
       emit({ ...base(threadId, turnId), type: "turn.started" });
@@ -218,7 +241,17 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
               emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
             }
             active.delete(threadId);
-            emit({ ...base(threadId, turnId), type: "turn.completed", ok: true, stopReason: null, cost: null });
+            const toolNames = ((tool_calls as any[] | undefined) ?? [])
+              .map((tc: any) => tc?.function?.name)
+              .filter(Boolean)
+              .join(", ");
+            emit({
+              ...base(threadId, turnId),
+              type: "turn.completed",
+              ok: true,
+              stopReason: toolNames ? `tool_calls: ${toolNames}` : null,
+              cost: null,
+            });
             return;
           } catch (e) {
             const aborted = (e as Error).name === "AbortError";

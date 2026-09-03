@@ -450,13 +450,12 @@ export const PiDriver: ProviderDriver<PiConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
-      // Host control always routes through the permission card; full-auto must
-      // never get unapproved hands on the user's machine (same guard as the
-      // Claude and ACP drivers).
+      // Host control always routes through the permission card: the
+      // pi-mcp-extension gates every `local-computer` scoped call behind
+      // ctx.ui.confirm, which reaches the harness as request.opened whatever
+      // the instance's fullAuto says — so a full-auto bot can mount the
+      // desktop and the bot's Auto policy still decides each action.
       const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
-      if (controlsHost && config.fullAuto) {
-        throw new Error("local computer control requires the interactive approval broker");
-      }
       const turnId = newId();
       const pending = new Map<string, (decision: { behavior: "allow" | "deny" | "answer"; message?: string }) => void>();
       let settled = false;
@@ -663,6 +662,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
                 requestType: isQuestion ? "question" : "permission",
                 tool: String(evt.title ?? "pi"),
                 summary: String(evt.title ?? "pi wants confirmation"),
+                approvalScope: controlsHost ? "local-computer" : undefined,
               });
             }
             return;
@@ -833,9 +833,9 @@ export const PiDriver: ProviderDriver<PiConfig> = {
           phoneMcp: true,
           // Host control (the user's real Mac) rides the pi-native permission
           // card (`ctx.ui.confirm` → extension_ui_request) gated in the
-          // extension, so it is offered exactly when the other engines offer
-          // it: enabled unless the bot is in full-auto.
-          localComputerMcp: !config.fullAuto,
+          // extension regardless of fullAuto, so it is offered in every mode
+          // like the other brokered engines.
+          localComputerMcp: true,
           // Images ride the ordinary prompt as <attached-image path> refs the
           // agent opens with its read tool — no native image blocks needed,
           // same as every other CLI engine.

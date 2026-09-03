@@ -8,6 +8,7 @@ import {
   connectedServices,
   connectionMode,
   connectionStatus,
+  managedSetup,
   mcpIntegration,
   normalizeAccountAlias,
   prepareProjectSession,
@@ -204,6 +205,34 @@ describe.sequential("Composio Sessions", () => {
 
     expect(applyManagedBrokerMessage({ type: messageType, access: null })).toBe(true);
     expect(connectionMode({})).toBe("unavailable");
+  });
+  it("carries the desktop's setup outcome so the UI can say why connected apps are off", () => {
+    const messageType = "botfleet:managed-composio";
+    expect(managedSetup()).toEqual({ status: "unconfigured" });
+
+    expect(applyManagedBrokerMessage({
+      type: messageType,
+      access: null,
+      setup: { status: "failed", message: "Connected apps could not be set up: the connected-apps service answered HTTP 404." },
+    })).toBe(true);
+    expect(connectionMode({})).toBe("unavailable");
+    expect(managedSetup()).toEqual({
+      status: "failed",
+      message: "Connected apps could not be set up: the connected-apps service answered HTTP 404.",
+    });
+
+    // Working access wins over a stale failure, and never leaks the token.
+    expect(applyManagedBrokerMessage({
+      type: messageType,
+      access: { url: "http://127.0.0.1:3210/", token: "a".repeat(64) },
+      setup: { status: "ready" },
+    })).toBe(true);
+    expect(managedSetup()).toEqual({ status: "ready" });
+
+    // Garbage in the setup field degrades to "unconfigured", not a crash.
+    expect(applyManagedBrokerMessage({ type: messageType, access: null, setup: { status: "exploded", token: "x" } })).toBe(true);
+    expect(managedSetup()).toEqual({ status: "unconfigured" });
+    setManagedBrokerAccess(null);
   });
   it("accepts only project API keys", async () => {
     await expect(prepareProjectSession("old_key")).rejects.toThrow(/start with ak_/i);

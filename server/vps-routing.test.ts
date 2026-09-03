@@ -85,9 +85,9 @@ function containerInspectTemplate(): string {
         NetworkMode: "bridge",
         PortBindings: {},
         PublishAllPorts: false,
-        Memory: 4 * 1024 * 1024 * 1024,
-        MemorySwap: 4 * 1024 * 1024 * 1024,
-        NanoCpus: 2_000_000_000,
+        Memory: 8 * 1024 * 1024 * 1024,
+        MemorySwap: 8 * 1024 * 1024 * 1024,
+        NanoCpus: 4_000_000_000,
         PidsLimit: 512,
         CapDrop: ["ALL"],
         CapAdd: ["CAP_SETUID", "CAP_SETGID"],
@@ -255,6 +255,7 @@ posixOnly("VPS turn routing e2e (fake ACP fleet + fake docker over SSH)", () => 
       let snapshot: any;
       await until(async () => {
         snapshot = await botById(bot.id);
+        if (!snapshot?.busy) console.log("SNAPSHOT_DEBUG:", snapshot.messages);
         return (
           snapshot?.busy === false &&
           snapshot.messages.some((m: any) => m.kind === "text" && m.text?.startsWith("echo: "))

@@ -7,7 +7,7 @@ import SwiftUI
 import WidgetKit
 
 @main
-struct OpenMausWidgets: WidgetBundle {
+struct BotFleetWidgets: WidgetBundle {
     var body: some Widget {
         BotActivityWidget()
     }
@@ -48,17 +48,11 @@ struct BotActivityWidget: Widget {
                     }
                 }
             } compactLeading: {
-                Image("DynamicIslandIcon")
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 24, height: 24)
+                OrbitingFace(context: context, size: 22)
             } compactTrailing: {
                 compactTrailing(context)
             } minimal: {
-                Image("DynamicIslandIcon")
-                    .resizable()
-                    .aspectRatio(contentMode: .fit)
-                    .frame(width: 22, height: 22)
+                OrbitingFace(context: context, size: 20)
             }
             .keylineTint(MausPalette.color(context.attributes.color))
         }

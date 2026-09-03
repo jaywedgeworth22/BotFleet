@@ -58,8 +58,18 @@ export type LifecycleAction = "pull" | "run" | "start" | "stop" | "remove";
 
 const INTERNAL_VIEWER_PORT = 6901;
 const HOST_VIEWER_PORT = 6080;
-const MEMORY_BYTES = 4 * 1024 * 1024 * 1024;
-const NANO_CPUS = 2_000_000_000;
+/** Resource limits every managed container gets: the Local VM here and the
+ * BYO-VPS container in vps-computer.ts.  PR #122 raised them from 4 GiB and
+ * 2 CPUs to 8 GiB and 4 CPUs.  The run arguments and the inspect matchers
+ * below are all derived from these two numbers so they cannot drift apart:
+ * a container created with `--cpus 4` and then checked against 2 CPUs is
+ * rejected as "unsafe" by the very runtime that created it. */
+export const CONTAINER_MEMORY_GIB = 8;
+export const CONTAINER_CPUS = 4;
+export const CONTAINER_MEMORY_ARG = `${CONTAINER_MEMORY_GIB}g`;
+export const CONTAINER_CPUS_ARG = String(CONTAINER_CPUS);
+const MEMORY_BYTES = CONTAINER_MEMORY_GIB * 1024 * 1024 * 1024;
+const NANO_CPUS = CONTAINER_CPUS * 1_000_000_000;
 const PIDS_LIMIT = 512;
 const SHM_BYTES = 512 * 1024 * 1024;
 
@@ -513,7 +523,7 @@ export async function containerComputerStatus(
         : "unsafe";
       const resources = detail?.configuration?.resources;
       status.security =
-        (resources?.memoryInBytes ?? 0) >= MEMORY_BYTES && resources?.cpus === 2 ? "hardened" : "unsafe";
+        (resources?.memoryInBytes ?? 0) >= MEMORY_BYTES && resources?.cpus === CONTAINER_CPUS ? "hardened" : "unsafe";
       status.viewer_url = viewerUrl(viewerPassword(detail?.configuration?.environment), status.viewer_port);
     } else {
       const inspected = JSON.parse(stdout) as Array<{
@@ -855,9 +865,9 @@ export function containerRunArgs(
     // Apple container already places each Linux container in a lightweight VM.
     common.push(
       "--memory",
-      "4g",
+      CONTAINER_MEMORY_ARG,
       "--cpus",
-      "2",
+      CONTAINER_CPUS_ARG,
       "--cap-drop",
       "ALL",
       "--cap-add",
@@ -872,11 +882,11 @@ export function containerRunArgs(
       "--hostname",
       target.containerName,
       "--memory",
-      "4g",
+      CONTAINER_MEMORY_ARG,
       "--memory-swap",
-      "4g",
+      CONTAINER_MEMORY_ARG,
       "--cpus",
-      "2",
+      CONTAINER_CPUS_ARG,
       "--pids-limit",
       String(PIDS_LIMIT),
       // Pinned explicitly rather than trusting daemon defaults: the shared

@@ -3,6 +3,7 @@
 // folds one SSE event stream; every provider process runs here.
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {  readFileSync, unlinkSync, appendFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
 import { extname, join } from "node:path";
@@ -18,13 +19,15 @@ import {
   type CredentialTargetId,
 } from "../shared/credential-request.ts";
 
-import { approvalKey, autoVerdict } from "./auto-approve.ts";
+import { approvalKey, autoVerdict, isCoarseApprovalKey } from "./auto-approve.ts";
 import { requestReview, resolveAutoReviewMode, shouldReview } from "./auto-review.ts";
 import * as checkpoints from "./checkpoints.ts";
 import { appendDecision, readDecisions } from "./decision-log.ts";
-import { validateBotCwd } from "./bot-cwd.ts";
+import { cwdConfinementError, protectedCwdDirs, validateBotCwd, type CwdConfinement } from "./bot-cwd.ts";
+import { resolveStaticFile } from "./static-files.ts";
 import { attachmentExists, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, isImageMime, readAttachment, saveAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
 import { openBotFleetDesktop } from "./desktop-open.ts";
+import { IdempotencyCache } from "./idempotency.ts";
 import {
   avatarGenerationRequestSchema,
   avatarGenerationStateMatches,
@@ -123,6 +126,7 @@ import { buildTurnContext, engineIsFresh } from "./turn-context.ts";
 import { TurnWatchdog } from "./turn-watchdog.ts";
 import {
   ensureWorkspace,
+  WORKSPACES_DIR,
   listMemoryTopics,
   isMemoryTopicName,
   memorySystemPrompt,
@@ -276,6 +280,27 @@ function connectedAppsIntegration(botId: string, threadId: string) {
   });
 }
 
+function qdrantIntegration(botId: string, threadId: string) {
+  const qdrantCfg = cfg.qdrant;
+  const url = (qdrantCfg?.url || process.env.QDRANT_URL || "http://127.0.0.1:6333").replace(/\/+$/, "");
+  const apiKey = qdrantCfg?.apiKey || process.env.QDRANT_API_KEY || "";
+  const collection = qdrantCfg?.collection || process.env.QDRANT_COLLECTION || "botfleet-agent-rag";
+  const bot = store.bot(botId);
+  return {
+    command: process.execPath,
+    args: [SPAWNED_PROXIES.qdrant],
+    env: {
+      ...AGENTS_NODE_FLAG,
+      OMB_QDRANT_URL: url,
+      OMB_QDRANT_API_KEY: apiKey,
+      OMB_QDRANT_COLLECTION: collection,
+      OMB_BOT_ID: botId,
+      OMB_BOT_NAME: bot?.name || "Bot",
+      OMB_THREAD_ID: threadId,
+    },
+  };
+}
+
 // ── computer control (who is driving) ──────────────────────────────────
 // The person can take the wheel of a bot's computer from the panel; while
 // they hold it, the bot's computer proxies refuse every action. The record
@@ -345,8 +370,12 @@ function askBotAndWait(targetBotId: string, message: string, depth: number, from
 }
 
 // default selection for new bots: first available instance, claude preferred
+const DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS = 15_000;
+
 async function defaultSelection() {
-  const described = await registry.describe();
+  // A bot being created can ride a probe taken moments ago; the engine rail
+  // still refreshes on demand.
+  const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
   const available = described.filter((d) => d.snapshot.state === "available");
   // Deliberately NO fallback to described[0]. Handing a bot an engine whose
   // CLI isn't installed makes it look ready and then fail on send with a raw
@@ -794,6 +823,28 @@ function closeOpenApprovals(threadId: string): void {
 function requestBehavior(value: unknown): "allow" | "deny" | "answer" | null {
   return value === "allow" || value === "deny" || value === "answer" ? value : null;
 }
+
+/** One HTTP reply, held so an idempotent retry can answer with the first. */
+type RouteReply = { status: number; body: Record<string, unknown> };
+/** Bot and channel sends remember their outcome per client key for ten
+ * minutes: an MCP client or phone that times out and retries must not hand
+ * the same instruction to a bot twice. */
+const messageIdempotency = new IdempotencyCache<RouteReply>();
+const IDEMPOTENCY_KEY_ERROR =
+  "idempotencyKey must be 1-200 characters of letters, digits, dot, colon, underscore, or dash";
+function idempotencyKeyFrom(value: unknown): string | undefined | null {
+  if (value === undefined) return undefined;
+  return typeof value === "string" && /^[\w.:-]{1,200}$/.test(value) ? value : null;
+}
+async function replyOnce(key: string | undefined, deliver: () => Promise<RouteReply>): Promise<RouteReply> {
+  if (!key) return deliver();
+  const { replayed, result } = messageIdempotency.run(key, deliver);
+  const reply = await result;
+  return replayed ? { status: reply.status, body: { ...reply.body, replayed: true } } : reply;
+}
+/** How far back a filtered decision-log read looks.  Both log files are
+ * rotation-capped at 4 MB, so this comfortably covers everything on disk. */
+const DECISION_FILTER_WINDOW = 50_000;
 // the last settled assistant text per thread, so a "finished" notification
 // can carry what the bot actually said
 const lastReply = new Map<string, string>();
@@ -851,6 +902,10 @@ const watchdog = new TurnWatchdog({
       tool: { name: `error: no activity for ${minutes} minutes — the turn was stopped`, ok: false },
     });
     finalizeDelegationWatch(turn.threadId, false, "", "Delegated turn stalled and was stopped");
+    // The run receipt settles here too: a wedged provider may never send
+    // turn.completed, and a run left `running` holds a slot against the
+    // webhook and resource-trigger pending caps until the app restarts.
+    routines?.failThread(turn.threadId, `no activity for ${minutes} minutes — the turn was stopped`);
     turnUsage.delete(turn.threadId);
     roomStallCompletions.stall(turn.threadId);
     // The 6s grace is about bot busy, not the VM fence. Release the lease
@@ -1419,12 +1474,23 @@ bus.subscribe((event: RuntimeEvent) => {
           });
         }
         const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
+        // No configured chain: on a quota or session-cap hit, fail over once
+        // to the healthiest other engine (#90's auto failover), through the
+        // same produced / stop-reason gate a configured chain gets. Plain
+        // errors without a chain settle as before — a bot that was not given
+        // a fallback must not wander to another engine on any failure.
+        const configuredChain = fallbackBot.modelSelection.fallbacks;
+        const chain = configuredChain && configuredChain.length > 0
+          ? configuredChain
+          : quotaOrCap
+            ? autoFallbackChain(fallbackBot.modelSelection.instanceId)
+            : undefined;
         const next = selectTurnFallback({
           ok: isOk,
           stopReason: event.stopReason,
           produced: turnProducedAssistantOutput(afterUser, { textIsError: isTextError }),
           quotaOrCap,
-          fallbacks: fallbackBot.modelSelection.fallbacks,
+          fallbacks: chain,
           used,
           current: {
             instanceId: fallbackBot.modelSelection.instanceId,
@@ -1539,6 +1605,24 @@ bus.subscribe((event: RuntimeEvent) => {
     }
   }
 });
+
+/** #90 auto-failover: with no configured chain, the next healthiest engine
+ * instance (by fleet priority) is offered as a one-step chain. The caller
+ * still runs it through selectTurnFallback, so the produced / quota /
+ * stop-reason rules apply exactly as they do for a configured chain. */
+function autoFallbackChain(currentInstanceId: string): ModelSelection[] {
+  const priority = ["claude", "antigravity", "gemini", "codex", "openaiCompat", "grok"];
+  const candidates = registry
+    .instances()
+    .filter((inst) => inst.instanceId !== currentInstanceId && inst.enabled !== false && Boolean(inst.models?.default))
+    .sort((a, b) => {
+      const aIdx = priority.indexOf(a.instanceId);
+      const bIdx = priority.indexOf(b.instanceId);
+      return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+    });
+  const pick = candidates[0];
+  return pick ? [{ instanceId: pick.instanceId, model: pick.models.default }] : [];
+}
 
 // Delegated turns are fire-and-forget, so the drain cannot hand the
 // peer's reply back to the caller the way ask_bot does. This watch map
@@ -1832,8 +1916,18 @@ async function startTurn(
   }
   if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
   const threadId = opts?.threadId ?? bot.threadId;
-  // a webhook turn, or one inherited from a bot already running unattended
-  if (opts?.automationSource === "webhook" || opts?.automationSource === "resource" || opts?.unattended) markUnattended(bot.id);
+  // Nobody is at the keyboard for a turn an outside event started — a
+  // webhook, a resource threshold, the calendar — or for one inherited from
+  // a bot already running unattended. A manual "Run now" is a person
+  // clicking, so it stays attended.
+  if (
+    opts?.automationSource === "webhook" ||
+    opts?.automationSource === "resource" ||
+    opts?.automationSource === "schedule" ||
+    opts?.unattended
+  ) {
+    markUnattended(bot.id);
+  }
   // a person typing into this bot ends the unattended window immediately
   else if (opts?.automationSource === undefined && !opts?.commsDepth && !opts?.cardContinuation) clearUnattended(bot.id);
   const task = store.taskByThread(bot.id, threadId);
@@ -1955,6 +2049,9 @@ async function startTurn(
         const connection = await connectedAppsIntegration(bot.id, threadId);
         if (connection) integrations.composio = connection;
       }
+      if (cfg.qdrant?.enabled !== false && instance.adapter.capabilities.qdrantMcp === true) {
+        integrations.qdrant = qdrantIntegration(bot.id, threadId);
+      }
       // CLI engines work inside the bot's own workspace directory rather
       // than the user's home: a bot with file tools and acceptEdits gets a
       // desk, not the whole house — and the workspace is where its
@@ -2028,17 +2125,36 @@ async function startTurn(
         );
         computerKind = "vm";
       } else if (wants === "local") {
-        if (!shouldMountLocalComputer({
+        // This computer is the one destination that degrades instead of
+        // refusing: the safe direction is "no computer", never a different
+        // one, and a routine or webhook that only needs the shell must not
+        // die because the desktop is unavailable. The chip says why the
+        // tools are missing so a person can fix the cause. Engines that
+        // broker host asks (ACP, Claude, pi, codex) mount it in every mode;
+        // an engine with no approval channel never does.
+        const hostSupportsLocal = shouldMountLocalComputer({
           requested: "local",
           hostPlatform: process.platform,
-          providerSupportsLocal: mountsLocalComputer,
-        })) {
-          throw new Error("this model engine cannot control this computer — choose Claude or an ACP engine, or select another destination");
+          providerSupportsLocal: true,
+        });
+        const cua = hostSupportsLocal && mountsLocalComputer ? readCuaConnection() : null;
+        const unavailable = !hostSupportsLocal
+          ? "local computer control is not available on this platform"
+          : !mountsLocalComputer
+            ? "this model engine has no approval channel for actions on this computer, so BotFleet did not mount it"
+            : !cua
+              ? "CUA Driver is not ready for this computer — check permissions and restart BotFleet"
+              : null;
+        if (unavailable) {
+          store.appendMessage(threadId, {
+            role: "bot",
+            kind: "activity",
+            tool: { name: `local computer not mounted: ${unavailable}`, ok: false },
+          });
+        } else if (cua) {
+          integrations.localComputer = cua;
+          computerKind = "local";
         }
-        const cua = readCuaConnection();
-        if (!cua) throw new Error("CUA Driver is not ready for this computer — check permissions and restart BotFleet");
-        integrations.localComputer = cua;
-        computerKind = "local";
       }
 
       // A VPS is a local-agent computer mount, never a remote agent runner.
@@ -2308,6 +2424,12 @@ routines = new RoutineManager({
         ? registry.get(bot.modelSelection.instanceId)
         : null;
     await instance?.adapter.interruptTurn(threadId);
+  },
+  // The harness's view of "still running": the bot is busy on this run's
+  // thread. Anything else means a settle path skipped turn.completed.
+  turnLive: (run) => {
+    const bot = store.bot(run.botId);
+    return Boolean(bot?.busy && bot.inflightThreadId === run.threadId);
   },
   onRunFailed: (run) => {
     const bot = store.bot(run.botId);
@@ -2639,6 +2761,9 @@ async function runGroupMemberTurn(
     if (bot.composio !== false && composio.configured(cfg) && instance.adapter.capabilities.composioMcp === true) {
       const connection = await connectedAppsIntegration(bot.id, threadId);
       if (connection) integrations.composio = connection;
+    }
+    if (cfg.qdrant?.enabled !== false && instance.adapter.capabilities.qdrantMcp === true) {
+      integrations.qdrant = qdrantIntegration(bot.id, threadId);
     }
   } catch (error) {
     const message = `connected apps are unavailable — ${error instanceof Error ? error.message : String(error)}`;
@@ -3277,6 +3402,7 @@ function configStatus() {
     composio: {
       configured: composio.configured(cfg),
       mode: composio.connectionMode(cfg),
+      managedSetup: composio.managedSetup(),
     },
     box: { configured: Boolean(cfg.box?.token) },
     vps: { configured: Boolean(vpsSshAlias(cfg)), sshAlias: vpsSshAlias(cfg) ?? "" },
@@ -3293,6 +3419,13 @@ function configStatus() {
       mode: cfg.localVm?.mode ?? "shared",
       maxInstances: localVmMaxInstances(cfg),
     },
+    qdrant: {
+      enabled: cfg.qdrant?.enabled !== false,
+      url: cfg.qdrant?.url || "http://127.0.0.1:6333",
+      configured: Boolean(cfg.qdrant?.url || cfg.qdrant?.apiKey),
+      hasApiKey: Boolean(cfg.qdrant?.apiKey),
+      collection: cfg.qdrant?.collection || "botfleet-agent-rag",
+    },
     autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
     terminology: cfg.terminology ?? "channels",
     features: {
@@ -3306,14 +3439,22 @@ function configStatus() {
 /** Rebuild the provider fleet after a config change so new keys take
  * effect without a server restart (kills any in-flight turns). */
 async function reloadProviders() {
+  const RELOAD_REASON = "The turn was interrupted — provider settings changed";
   bus.detachAll();
   await registry.disposeAll();
+  // Every watched turn died with the old fleet. Forget them now, or the
+  // watchdog reports a "no activity" stall on a dead thread twenty minutes
+  // later, and settle each one's routine receipt the way the stall path does.
+  const killedTurns = watchdog.settleAll();
   await registry.load(instanceConfigs(cfg));
   bus.attach(registry.instances());
+  for (const turn of killedTurns) routines?.failThread(turn.threadId, RELOAD_REASON);
   // A killed turn's terminal events can die with the old fleet (dispose is
   // async under the hood), stranding the bot busy — and its screen poller —
-  // forever. Settle anything still marked busy.
+  // forever. Settle anything still marked busy, on the thread that was
+  // actually in flight: a routine runs in a detached task, not the open chat.
   for (const b of store.bots.filter((b) => b.busy)) {
+    const inflight = b.inflightThreadId ?? b.threadId;
     const vmThread = [...localVmThreadTargets.entries()].find(([, target]) =>
       localVmLeaseFor(target).current(localVmOwnerBusy)?.botId === b.id
     )?.[0];
@@ -3321,16 +3462,17 @@ async function reloadProviders() {
     stopScreenPoller(b.id);
     activeVpsThreads.delete(b.id);
     finalizeDelegationWatch(
-      b.threadId,
+      inflight,
       false,
       "",
       "Delegated turn did not finish — provider settings changed",
     );
-    store.appendMessage(b.threadId, {
+    store.appendMessage(inflight, {
       role: "bot",
       kind: "activity",
       tool: { name: "error: turn interrupted — provider settings changed", ok: false },
     });
+    routines?.failThread(inflight, RELOAD_REASON);
     store.setActivity(b.id, "idle");
     store.patchBot(b.id, { inflightThreadId: undefined });
   }
@@ -3347,6 +3489,22 @@ async function reloadProviders() {
 let providerConfigBusy = false;
 
 // ── HTTP plumbing ─────────────────────────────────────────────────────
+/** Folders a paired phone may point a room at.  Only what this computer
+ * already handed to a bot or room, plus the app-owned workspaces: the phone
+ * can reuse or narrow workspace access, never introduce a folder — that
+ * decision stays with the person at the keyboard.  Rebuilt per request so it
+ * always reflects the desktop's latest grants. */
+function phoneCwdConfinement(): CwdConfinement {
+  const roots = new Set<string>([WORKSPACES_DIR]);
+  for (const bot of store.bots) if (bot.cwd) roots.add(bot.cwd);
+  for (const group of store.groups) {
+    if (group.cwd) roots.add(group.cwd);
+    if (group.pinnedCwd) roots.add(group.pinnedCwd);
+    for (const extra of group.extraCwds ?? []) roots.add(extra);
+  }
+  return { roots: [...roots], protectedDirs: protectedCwdDirs(homedir(), DATA_DIR) };
+}
+
 function json(res: ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body);
   res.writeHead(status, { "content-type": "application/json" });
@@ -3426,6 +3584,13 @@ function isAllowedOrigin(origin: string | undefined | null): boolean {
   } catch {
     return false;
   }
+}
+
+/** The peer address of a socket, judged by the same loopback rule as Host. */
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false;
+  const bare = address.startsWith("::ffff:") ? address.slice("::ffff:".length) : address;
+  return isLoopbackHost(bare.includes(":") ? `[${bare}]` : bare);
 }
 
 const server = createServer(async (req, res) => {
@@ -4019,7 +4184,7 @@ const server = createServer(async (req, res) => {
       const limit = pageSize(url.searchParams.get("messages"));
       if (limit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
       return json(res, 200, {
-        bots: store.bots.map((bot) => ({ ...publicBot(bot), ...messagePage(bot.threadId, limit) })),
+        bots: store.bots.map((bot) => { console.log("BOT MESSAGES:", store.messagesFor(bot.threadId).length); return { ...publicBot(bot), ...messagePage(bot.threadId, limit) }; }),
         groups: store.groups.map((g) => ({ ...publicGroupState(g), ...messagePage(g.threadId, limit) })),
         computerControl: Object.fromEntries(
           store.bots.map((bot) => {
@@ -4747,6 +4912,16 @@ const server = createServer(async (req, res) => {
         if (!responder) return json(res, 400, { error: "invalid default responder" });
         patch.defaultResponder = responder;
       }
+      // A paired phone reaches this route through the sidecar, which stamps
+      // every forwarded request (companion/src/proxy.ts forwardHeaders); the
+      // phone cannot drop the header, and a loopback desktop caller gains
+      // nothing by adding it.  From a phone, a folder may only reuse or
+      // narrow what this computer already granted; the desktop picker stays
+      // unconfined because the person choosing is at the keyboard.
+      const fromPhone = req.headers["x-botfleet-companion"] === "1";
+      const confinement = fromPhone ? phoneCwdConfinement() : null;
+      const refuseFolder = (reason: string) =>
+        json(res, 403, { error: `${reason} — pick it in BotFleet on your computer` });
       if (body.cwd !== undefined) {
         if (existing.dm) return json(res, 400, { error: "direct-message channels cannot have a working folder" });
         if (existing.pinnedCwd !== undefined) {
@@ -4754,6 +4929,10 @@ const server = createServer(async (req, res) => {
         }
         const checked = validateBotCwd(body.cwd);
         if (!checked.ok) return json(res, 400, { error: checked.error });
+        if (confinement && checked.cwd) {
+          const refused = cwdConfinementError(checked.cwd, confinement);
+          if (refused) return refuseFolder(refused);
+        }
         patch.cwd = checked.cwd ?? undefined;
       }
       if (body.extraCwds !== undefined) {
@@ -4764,7 +4943,14 @@ const server = createServer(async (req, res) => {
         for (const item of body.extraCwds) {
           if (typeof item === "string" && item.trim()) {
             const checked = validateBotCwd(item.trim());
-            if (checked.ok && checked.cwd) cleaned.push(checked.cwd);
+            if (!checked.ok || !checked.cwd) continue;
+            if (confinement) {
+              // refused loudly rather than dropped: a folder that silently
+              // never appears reads as a bug on the phone, not a decision
+              const refused = cwdConfinementError(checked.cwd, confinement);
+              if (refused) return refuseFolder(refused);
+            }
+            cleaned.push(checked.cwd);
           }
         }
         patch.extraCwds = cleaned;
@@ -4852,9 +5038,14 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: true, ignored: "self_echo" });
       }
 
+      const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
+      if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const replyTo = resolveReplyTarget(group.threadId, body.replyToId);
-      startGroupTurn(group.id, text, replyTo);
-      return json(res, 202, { ok: true });
+      const reply = await replyOnce(idempotencyKey && `channel:${group.id}:${group.threadId}:${idempotencyKey}`, async () => {
+        startGroupTurn(group.id, text, replyTo);
+        return { status: 202, body: { ok: true } };
+      });
+      return json(res, reply.status, reply.body);
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/interrupt$/);
     if (m && method === "POST") {
@@ -4893,6 +5084,11 @@ const server = createServer(async (req, res) => {
       return json(res, 200, { message: patched });
     }
     if (method === "POST" && path === "/api/desktop/open") {
+      // Raising the desktop is a physical action on this computer, so only a
+      // connection from this computer may ask for it, whatever Host it sends.
+      if (!isLoopbackAddress(req.socket.remoteAddress)) {
+        return json(res, 403, { error: "forbidden: the desktop can only be opened from this computer" });
+      }
       const result = await openBotFleetDesktop();
       if (!result.ok) return json(res, 503, { error: result.error ?? "could not open BotFleet" });
       return json(res, 200, { ok: true });
@@ -5023,6 +5219,9 @@ const server = createServer(async (req, res) => {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       if (!allowKey) return json(res, 400, { error: "allowKey required" });
+      if (isCoarseApprovalKey(allowKey)) {
+        return json(res, 400, { error: `${allowKey} would cover every shell command — approve this one instead` });
+      }
       const pending = store.messagesFor(bot.threadId).some((message) =>
         message.card?.requestId &&
         !message.card.answered &&
@@ -5095,7 +5294,7 @@ const server = createServer(async (req, res) => {
           else section = trimmed;
         }
       }
-      for (const key of ["unread", "computer", "cloudBackend", "color", "mascotExpression", "pinned", "hidden"] as const) {
+      for (const key of ["unread", "cloudBackend", "color", "mascotExpression", "pinned", "hidden"] as const) {
         if (body[key] !== undefined) patch[key] = body[key];
       }
       if (normalizedSelection) patch.modelSelection = normalizedSelection;
@@ -5115,11 +5314,16 @@ const server = createServer(async (req, res) => {
         if (typeof body.composio !== "boolean") return json(res, 400, { error: "composio must be true or false" });
         patch.composio = body.composio;
       }
-      if (
-        body.computer !== undefined &&
-        !["cloud", "vm", "local", "off"].includes(String(body.computer))
-      ) {
-        return json(res, 400, { error: "computer must be cloud, vm, local, or off" });
+      if (body.computers !== undefined) {
+        if (!Array.isArray(body.computers) || body.computers.some((c: unknown) => !["cloud", "vm", "local"].includes(String(c)))) {
+          return json(res, 400, { error: "computers must be an array containing cloud, vm, or local" });
+        }
+        patch.computers = [...new Set(body.computers as ("cloud" | "vm" | "local")[])];
+      } else if (body.computer !== undefined) {
+        // legacy singular field from older clients and scripts: fold it into
+        // the stored array rather than persisting a stray key the runtime
+        // never reads ("off" clears)
+        patch.computers = body.computer === "off" ? [] : [body.computer as "cloud" | "vm" | "local"];
       }
       if (body.cloudBackend !== undefined && !["box", "vps"].includes(String(body.cloudBackend))) {
         return json(res, 400, { error: "cloudBackend must be box or vps" });
@@ -5185,7 +5389,17 @@ const server = createServer(async (req, res) => {
         if (!Array.isArray(body.alwaysAllow) || body.alwaysAllow.some((t: unknown) => typeof t !== "string")) {
           return json(res, 400, { error: "alwaysAllow must be a list of tool keys" });
         }
-        patch.alwaysAllow = [...new Set(body.alwaysAllow as string[])].slice(0, 200);
+        const requested = [...new Set(body.alwaysAllow as string[])];
+        // A shell in disguise (Bash:bash, Bash:env, a bare Bash) is refused
+        // when it is new; one stored before this rule existed is dropped
+        // rather than failing every later save that carries it along.
+        const introduced = requested.find(
+          (key) => isCoarseApprovalKey(key) && !existingBot?.alwaysAllow?.includes(key),
+        );
+        if (introduced) {
+          return json(res, 400, { error: `${introduced} would cover every shell command — approve it once instead` });
+        }
+        patch.alwaysAllow = requested.filter((key) => !isCoarseApprovalKey(key)).slice(0, 200);
       }
       if (existingBot?.computers?.includes("local") && body.computers !== undefined && !body.computers.includes("local")) {
         await registry
@@ -5465,36 +5679,44 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: true, ignored: "self_echo" });
       }
 
+      const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
+      if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const replyTo = resolveReplyTarget(bot.threadId, body.replyToId);
-      // Claude can accept the message inside its live turn. If the write
-      // loses a race with turn settlement, or the engine cannot steer, the
-      // existing server-side queue records it atomically for the next turn.
-      if (bot.busy) {
-        const instance = registry.get(bot.modelSelection.instanceId);
-        if (instance?.adapter.capabilities.queueing && instance.adapter.steer) {
-          const steered = await instance.adapter
-            .steer(bot.threadId, promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"))
-            .catch(() => false);
-          if (steered) {
-            clearUnattended(bot.id);
-            store.appendMessage(bot.threadId, {
-              role: "user",
-              kind: "text",
-              text,
-              replyToId: replyTo?.id,
-              steered: true,
-            });
-            return json(res, 202, { ok: true, steered: true });
+      const deliver = async (): Promise<RouteReply> => {
+        // Claude can accept the message inside its live turn. If the write
+        // loses a race with turn settlement, or the engine cannot steer, the
+        // existing server-side queue records it atomically for the next turn.
+        if (bot.busy) {
+          const instance = registry.get(bot.modelSelection.instanceId);
+          if (instance?.adapter.capabilities.queueing && instance.adapter.steer) {
+            const steered = await instance.adapter
+              .steer(bot.threadId, promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"))
+              .catch(() => false);
+            if (steered) {
+              clearUnattended(bot.id);
+              store.appendMessage(bot.threadId, {
+                role: "user",
+                kind: "text",
+                text,
+                replyToId: replyTo?.id,
+                steered: true,
+              });
+              return { status: 202, body: { ok: true, steered: true } };
+            }
           }
+          const queued = queueSteeredMessage(bot, text, {
+            replyToId: replyTo?.id,
+            prompt: promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"),
+          });
+          return { status: 202, body: { ok: true, queued: true, queueId: queued.id, threadId: bot.threadId } };
         }
-        const queued = queueSteeredMessage(bot, text, {
-          replyToId: replyTo?.id,
-          prompt: promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"),
-        });
-        return json(res, 202, { ok: true, queued: true, queueId: queued.id, threadId: bot.threadId });
-      }
-      await startTurn(bot.id, text, { replyTo });
-      return json(res, 202, { ok: true });
+        await startTurn(bot.id, text, { replyTo });
+        return { status: 202, body: { ok: true } };
+      };
+      // A retried send must not run the instruction twice: the key is scoped
+      // to this bot and task, and a replay answers with the first outcome.
+      const reply = await replyOnce(idempotencyKey && `bot:${bot.id}:${bot.threadId}:${idempotencyKey}`, deliver);
+      return json(res, reply.status, reply.body);
     }
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/queue\/([\w-]+)$/);
@@ -5762,7 +5984,7 @@ const server = createServer(async (req, res) => {
           ...status,
           commands: setupCommands(status.runtime, process.platform, SHARED_LOCAL_VM_TARGET),
           idle_timeout_ms: LOCAL_VM_IDLE_MS,
-          mode: "shared",
+          mode: cfg.localVm?.mode ?? "shared",
           max_instances: localVmMaxInstances(cfg),
         });
       } finally {
@@ -5820,7 +6042,7 @@ const server = createServer(async (req, res) => {
           ...status,
           commands: setupCommands(status.runtime, process.platform, target),
           idle_timeout_ms: LOCAL_VM_IDLE_MS,
-          mode: "shared",
+          mode: cfg.localVm?.mode ?? "shared",
           max_instances: localVmMaxInstances(cfg),
         });
       } finally {
@@ -5853,6 +6075,44 @@ const server = createServer(async (req, res) => {
         ok: true,
         cooldowns: quotaCooldowns.list(),
       });
+    }
+    if (method === "GET" && path === "/api/qdrant/status") {
+      const qdrantCfg = cfg.qdrant;
+      const url = (qdrantCfg?.url || process.env.QDRANT_URL || "http://127.0.0.1:6333").replace(/\/+$/, "");
+      const apiKey = qdrantCfg?.apiKey || process.env.QDRANT_API_KEY || "";
+      const collection = qdrantCfg?.collection || process.env.QDRANT_COLLECTION || "botfleet-agent-rag";
+      try {
+        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        if (apiKey) headers["api-key"] = apiKey;
+        const resList = await fetch(`${url}/collections`, { headers, signal: AbortSignal.timeout(4000) });
+        if (!resList.ok) {
+          return json(res, 200, { ready: false, url, collection, error: `HTTP ${resList.status}: ${resList.statusText}` });
+        }
+        const data = (await resList.json()) as { result?: { collections?: Array<{ name: string }> } };
+        const collections = (data.result?.collections || []).map((c) => c.name);
+        let pointsCount = 0;
+        if (collections.includes(collection)) {
+          const resColl = await fetch(`${url}/collections/${collection}`, { headers, signal: AbortSignal.timeout(4000) });
+          if (resColl.ok) {
+            const collData = (await resColl.json()) as { result?: { points_count?: number } };
+            pointsCount = collData.result?.points_count || 0;
+          }
+        }
+        return json(res, 200, {
+          ready: true,
+          url,
+          collection,
+          collections,
+          pointsCount,
+        });
+      } catch (err) {
+        return json(res, 200, {
+          ready: false,
+          url,
+          collection,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
     }
     if (method === "GET" && path === "/.well-known/apple-app-site-association") {
       return json(res, 200, {
@@ -5896,7 +6156,19 @@ const server = createServer(async (req, res) => {
       if (parsedLimit !== undefined && (!Number.isInteger(parsedLimit) || parsedLimit <= 0)) {
         return json(res, 400, { error: "limit must be a positive whole number" });
       }
-      return json(res, 200, { decisions: readDecisions(DATA_DIR, parsedLimit ?? 200) });
+      const botId = url.searchParams.get("botId");
+      const threadId = url.searchParams.get("threadId");
+      if ((botId !== null && !/^[\w-]+$/.test(botId)) || (threadId !== null && !/^[\w-]+$/.test(threadId))) {
+        return json(res, 400, { error: "botId and threadId must be ids" });
+      }
+      const limit = parsedLimit ?? 200;
+      if (botId === null && threadId === null) return json(res, 200, { decisions: readDecisions(DATA_DIR, limit) });
+      // Filters read the whole (rotation-capped) log and keep the newest
+      // matches, so a busy fleet cannot push one bot's rows out of the window.
+      const matching = readDecisions(DATA_DIR, DECISION_FILTER_WINDOW).filter(
+        (row) => (botId === null || row.botId === botId) && (threadId === null || row.threadId === threadId),
+      );
+      return json(res, 200, { decisions: matching.slice(-limit) });
     }
 
     // ── provider instances (model picker) ──
@@ -5906,7 +6178,15 @@ const server = createServer(async (req, res) => {
       // Windows never pushes PATH changes into a live process, so without
       // this the answer is frozen at boot and "check again" is a no-op.
       resetPathCache();
-      return json(res, 200, { instances: await registry.describe() });
+      // describe() probes every CLI (--version, auth status, model
+      // discovery), which costs real seconds on a machine with many engines
+      // installed. The engine rail's passive refreshes (initial hydrate, the
+      // `config` SSE push, the throttled focus probe) ride a short memo;
+      // ?fresh=1 — sent by the client's explicit "Check again"/"Refresh"
+      // actions and right after a CLI/fullAuto override is saved — bypasses
+      // it so the user's own action is never served a stale answer.
+      const fresh = url.searchParams.get("fresh") === "1";
+      return json(res, 200, { instances: await registry.describe(fresh ? undefined : { maxAgeMs: 15_000 }) });
     }
 
     // ── CLI binary discovery for the Engines "detected" dropdown ──
@@ -6131,7 +6411,13 @@ const server = createServer(async (req, res) => {
     // ── connectors (Composio) ──
     if (method === "GET" && path === "/api/connectors/catalog") {
       const { cards, source } = await composio.listToolkits(cfg);
-      return json(res, 200, { configured: composio.configured(cfg), mode: composio.connectionMode(cfg), source, cards });
+      return json(res, 200, {
+        configured: composio.configured(cfg),
+        mode: composio.connectionMode(cfg),
+        managedSetup: composio.managedSetup(),
+        source,
+        cards,
+      });
     }
     if (method === "GET" && path === "/api/connectors/connected") {
       const availability = composio.connectorAvailability(cfg);
@@ -6370,21 +6656,25 @@ const server = createServer(async (req, res) => {
     // packaged app: the server serves the built UI too (window → :8799 for
     // everything, no dev proxy to die). OMB_STATIC_DIR is set by Electron.
     if (method === "GET" && !path.startsWith("/api/") && STATIC_DIR) {
-      const safe = path === "/" ? "/index.html" : path.replace(/\.\./g, "");
-      const file = join(STATIC_DIR, safe);
-      try {
-        const data = readFileSync(file);
-        res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
-        return res.end(data);
-      } catch {
-        // SPA fallback
+      // resolveStaticFile decides on real paths: nothing outside the UI
+      // folder is served, however the request spelled it, symlinks included.
+      const file = resolveStaticFile(STATIC_DIR, path);
+      if (file) {
         try {
-          const data = readFileSync(join(STATIC_DIR, "index.html"));
-          res.writeHead(200, { "content-type": "text/html" });
+          const data = readFileSync(file);
+          res.writeHead(200, { "content-type": MIME[extname(file)] ?? "application/octet-stream" });
           return res.end(data);
         } catch {
-          /* fall through to 404 */
+          /* a folder, or a file that vanished: SPA fallback below */
         }
+      }
+      // SPA fallback
+      try {
+        const data = readFileSync(join(STATIC_DIR, "index.html"));
+        res.writeHead(200, { "content-type": "text/html" });
+        return res.end(data);
+      } catch {
+        /* fall through to 404 */
       }
     }
 

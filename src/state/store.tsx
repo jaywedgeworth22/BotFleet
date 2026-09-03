@@ -280,7 +280,12 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 export interface ConfigStatus {
   xai?: { configured: boolean };
   deepseek?: { configured: boolean };
-  composio: { configured: boolean; mode?: "managed" | "self-hosted" | "unavailable" };
+  composio: {
+    configured: boolean;
+    mode?: "managed" | "self-hosted" | "unavailable";
+    /** Why the managed connected-apps service is or is not in use. */
+    managedSetup?: { status: "unconfigured" | "ready" | "failed"; message?: string };
+  };
   box: { configured: boolean };
   vps: { configured: boolean; sshAlias: string };
   rooms: { turnTimeoutMinutes: number };
@@ -297,6 +302,8 @@ export interface ConfigStatus {
   profile?: { name: string; email: string };
   autoUpdate?: { enabled: boolean };
   terminology?: "channels" | "groups" | "projects";
+  /** Shared Qdrant Agent RAG vector database status */
+  qdrant?: { enabled: boolean; url: string; configured: boolean; hasApiKey: boolean; collection: string };
   /** Opt-in flags. Absent means off. */
   features?: { skillRecorder: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
 }
@@ -321,7 +328,7 @@ export function getRoomTerminology(config?: ConfigStatus | null): {
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "qdrant" | "features"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -340,6 +347,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     profile: frame.profile,
     autoUpdate: frame.autoUpdate,
     terminology: frame.terminology,
+    qdrant: frame.qdrant,
     features: frame.features,
   };
 }
@@ -1323,8 +1331,9 @@ const StoreContext = createContext<{
   dispatch: React.Dispatch<Action>;
   /** Commit any debounced profile edits before an operation reads the bot. */
   flushBotPatches: (botId: string) => Promise<void>;
-  /** Re-fetch engine availability — after an install, without a restart. */
-  refreshInstances: () => Promise<void>;
+  /** Re-fetch engine availability — after an install, without a restart.
+   * `fresh: true` bypasses the server's describe() memo (see the impl). */
+  refreshInstances: (opts?: { fresh?: boolean }) => Promise<void>;
 } | null>(null);
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -2012,9 +2021,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // Re-probe the engines on demand. A CLI installed while the app is running
   // is invisible until something asks again — the setup screens expose this
   // as "Check again" so the user isn't told to restart when a refresh will do.
-  const refreshInstances = useCallback(async () => {
+  //
+  // Every describe() spawns `--version`/auth/model-discovery per CLI, which
+  // costs real seconds on a machine with many engines installed — so this
+  // rides the registry's maxAgeMs memo by default (server/index.ts caps it at
+  // 15s) the same as the passive callers below (initial hydrate, the `config`
+  // SSE push, the throttled focus probe). `fresh: true` is for a caller that
+  // just changed something the memo wouldn't know about yet — an explicit
+  // "Check again"/"Refresh" click, or a just-saved CLI/fullAuto override.
+  const refreshInstances = useCallback(async (opts?: { fresh?: boolean }) => {
     try {
-      const { instances } = await api("/api/instances");
+      const { instances } = await api(opts?.fresh ? "/api/instances?fresh=1" : "/api/instances");
       rawDispatch({ type: "instances", instances });
     } catch {
       /* offline or server down — the existing list stays */

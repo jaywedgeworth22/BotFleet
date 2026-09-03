@@ -142,7 +142,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     const complete = async (
       messages: any[],
       model: string,
-      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
+      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
     ): Promise<{ text: string; tool_calls?: any[]; usage: { input: number; output: number } | null }> => {
       const timeout = AbortSignal.timeout(180_000);
       const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
@@ -244,8 +244,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       const turnId = newId();
       const abort = new AbortController();
       active.set(threadId, { abort, turnId });
-
-      const messages = [
+      const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
         ...(turn.transcript ?? []).flatMap((m: any) => {
           const res = [];
@@ -272,6 +271,15 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         }),
         { role: "user", content: turn.text },
       ];
+      
+      for (const m of (turn.transcript ?? [])) {
+        if (m.role === "assistant") {
+          messages.push({ role: "assistant", content: m.text });
+        } else {
+          messages.push({ role: "user", content: m.text });
+        }
+      }
+      messages.push({ role: "user", content: turn.text });
 
       appendNative(threadId, {
         dir: "out",
@@ -313,11 +321,15 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
             emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
           }
           active.delete(threadId);
+          const toolNames = ((tool_calls as any[] | undefined) ?? [])
+            .map((tc: any) => tc?.function?.name)
+            .filter(Boolean)
+            .join(", ");
           const completed: RuntimeEvent = {
             ...base(threadId, turnId),
             type: "turn.completed",
             ok: true,
-            stopReason: null,
+            stopReason: toolNames ? `tool_calls: ${toolNames}` : null,
             cost: null,
           };
           emit(usage ? { ...completed, usage } : completed);

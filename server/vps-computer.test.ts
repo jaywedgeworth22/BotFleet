@@ -64,7 +64,7 @@ function fixture({
   screenshotCaptureFails = false,
   desktopProbeFails = false,
   securityOpt = [],
-  memory = 4 * 1024 * 1024 * 1024,
+  memory = 8 * 1024 * 1024 * 1024,
   restartPolicyName = "unless-stopped",
   cgroupnsMode,
   imageLabelsMatch = true,
@@ -150,8 +150,8 @@ function fixture({
             PortBindings: publicPorts ? { "6901/tcp": [{ HostIp: "0.0.0.0" }] } : {},
             PublishAllPorts: publishAllPorts,
             Memory: memory,
-            MemorySwap: 4 * 1024 * 1024 * 1024,
-            NanoCpus: 2_000_000_000,
+            MemorySwap: 8 * 1024 * 1024 * 1024,
+            NanoCpus: 4_000_000_000,
             PidsLimit: 512,
             CapDrop: ["ALL"],
             CapAdd: capAdd,
@@ -347,7 +347,7 @@ describe("VPS computer", () => {
     const unsafeProfile = await vpsComputerStatus(
       CONFIG,
       BOT_ID,
-      fixture({ securityOpt: ["seccomp=unconfined"], memory: 1024, restartPolicyName: "always", cgroupnsMode: "host" }).runner,
+      fixture({ securityOpt: ["seccomp=unconfined"], memory: 8 * 1024 * 1024 * 1024, restartPolicyName: "always", cgroupnsMode: "host" }).runner,
     );
     expect(unsafeProfile.ready).toBe(false);
     expect(unsafeProfile.security).toBe("unsafe");

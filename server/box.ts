@@ -36,7 +36,8 @@ async function boxJson(cfg: AppConfig, path: string, opts: RequestInit = {}) {
   return { ok: res.ok && body?.ok !== false, status: res.status, body };
 }
 
-// deterministic per-bot name; the hash kills truncated-uuid collisions
+// Deterministic pool slot (#117 hetzner pooling): a bot's id hashes into
+// one of four shared boxes, so every lookup and rename uses this name.
 async function boxNameFor(botId: string) {
   const prefix = botId.slice(0, 8).toLowerCase().replace(/[^a-z0-9]/g, "");
   const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(botId));

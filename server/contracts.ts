@@ -196,6 +196,8 @@ export interface SendTurnInput {
     /** dweb network daemon: an MCP proxy exposing dweb status, repo, and
      * opencode model access as tools. url is the dweb HTTP base. */
     dweb?: { url: string };
+    /** Shared Qdrant Agent RAG vector memory integration. */
+    qdrant?: { command: string; args: string[]; env: Record<string, string> };
   };
   cwd?: string;
 }
@@ -223,6 +225,8 @@ export interface ProviderAdapter {
     composioMcp?: boolean;
     /** True when the driver can mount the first-party physical-phone MCP. */
     phoneMcp?: boolean;
+    /** True when the driver mounts turn.integrations.qdrant (Agent RAG). */
+    qdrantMcp?: boolean;
     /** True when this engine accepts images in the prompt — gates image
      * paste in the composer. Same rule as computerMcp: never offer an
      * attachment an engine cannot open (a bot told it has an image it
@@ -238,8 +242,11 @@ export interface ProviderAdapter {
      * others keep the queue-one-and-wait behaviour. Same rule as the other
      * flags: never show a control the driver cannot honour. */
     queueing?: boolean;
-    /** True only when local MCP calls can reach the human approval channel.
-     * Full-auto/bypass provider instances must leave this false. */
+    /** True only when host-control asks can reach the harness permission
+     * broker. A full-auto/bypass instance may advertise it only because it
+     * runs a host-control turn in its asking mode (see the ACP core, Claude,
+     * and pi drivers); an engine with no approval channel at all must leave
+     * this false. */
     localComputerMcp?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;

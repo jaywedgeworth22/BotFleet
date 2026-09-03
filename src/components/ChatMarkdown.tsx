@@ -11,6 +11,7 @@ import { memo, useEffect, useState, type ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy } from "lucide-react";
+import { isDarkSkin, useResolvedSkin } from "@/lib/skins";
 
 // tiny highlight cache so revisiting a thread doesn't re-tokenize settled
 // blocks; keys are content-hashed and capped. Streamed partials may land here
@@ -60,9 +61,14 @@ const localFilePath = (href?: string): string | null => {
 function CodeBlock({ code, lang, streaming }: { code: string; lang: string; streaming: boolean }) {
   const [html, setHtml] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  // The fence sits on `bg-inset`, which is light on 9 of 11 skins — a single
+  // dark Shiki theme reads as near-invisible on those (a11y-theme-copy:
+  // code-fence-dark-shiki-on-light-default). Pick per resolved skin, and
+  // re-render live if the user switches skins with this block on screen.
+  const dark = isDarkSkin(useResolvedSkin());
 
   useEffect(() => {
-    const key = `${lang}:${hash(code)}`;
+    const key = `${lang}:${dark ? "dark" : "light"}:${hash(code)}`;
     const cached = highlightCache.get(key);
     if (cached) return setHtml(cached);
     let alive = true;
@@ -72,7 +78,7 @@ function CodeBlock({ code, lang, streaming }: { code: string; lang: string; stre
         .then((shiki) =>
           shiki.codeToHtml(code, {
             lang: lang || "text",
-            theme: "github-dark-default",
+            theme: dark ? "github-dark-default" : "github-light-default",
           }),
         )
         .then((out) => {
@@ -102,7 +108,7 @@ function CodeBlock({ code, lang, streaming }: { code: string; lang: string; stre
       alive = false;
       if (timer !== undefined) clearTimeout(timer);
     };
-  }, [code, lang, streaming]);
+  }, [code, lang, streaming, dark]);
 
   const copy = () => {
     void navigator.clipboard?.writeText(code);
