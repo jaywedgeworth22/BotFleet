@@ -52,11 +52,15 @@ import { TeamLibraryPanel, type TeamImportResult } from "./TeamLibraryPanel";
 import { RenameTitle } from "./RenameTitle";
 import { BotPickerList } from "./BotPickerList";
 import {
+  MAX_SIDEBAR_THREAD_COUNT,
+  MIN_SIDEBAR_THREAD_COUNT,
   loadCollapsedRooms,
   loadSidebarDensity,
   loadSidebarThreadCount,
+  parseSidebarThreadCount,
   saveCollapsedRooms,
   saveSidebarDensity,
+  saveSidebarThreadCount,
   type SidebarDensity,
 } from "@/lib/sidebar-preferences";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
@@ -1420,7 +1424,12 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const [roomSectionPicker, setRoomSectionPicker] = useState<{ groupId: string; x: number; y: number } | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
   const [newRoom, setNewRoom] = useState(false);
-  const [threadCount] = useState(() => loadSidebarThreadCount());
+  const [threadCount, setThreadCountState] = useState(() => loadSidebarThreadCount());
+  const setThreadCount = (next: number) => {
+    const clamped = parseSidebarThreadCount(String(next));
+    setThreadCountState(clamped);
+    saveSidebarThreadCount(clamped);
+  };
   const [collapsedRooms, setCollapsedRooms] = useState<Set<string>>(() => loadCollapsedRooms());
   const toggleRoom = (groupId: string) => {
     setCollapsedRooms((current) => {
@@ -1648,7 +1657,12 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const visibleBots = matchingBots
     .filter((bot) => !bot.chiefOfStaff && !bot.section)
     .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
-  const visibleGroups = state.groups.filter((g) => !q || g.name.toLowerCase().includes(q));
+  const visibleGroups = state.groups.filter(
+    (g) =>
+      !q ||
+      g.name.toLowerCase().includes(q) ||
+      (g.tasks ?? []).some((task) => task.title.toLowerCase().includes(q)),
+  );
   const terminology = getRoomTerminology(state.config);
   const sectionedGroups = visibleGroups.filter((g) => g.section);
   const unsectionedGroups = visibleGroups.filter((g) => !g.section);
@@ -1750,6 +1764,24 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                       {density === option && <Check size={14} />}
                     </button>
                   ))}
+                  <div className="my-1 h-px bg-hairline/40" />
+                  <div className="px-3 py-2">
+                    <label
+                      htmlFor="sidebar-thread-count"
+                      className="block text-[12px] text-ink-secondary"
+                    >
+                      Threads per {terminology.singular.toLowerCase()}
+                    </label>
+                    <input
+                      id="sidebar-thread-count"
+                      type="number"
+                      min={MIN_SIDEBAR_THREAD_COUNT}
+                      max={MAX_SIDEBAR_THREAD_COUNT}
+                      value={threadCount}
+                      onChange={(event) => setThreadCount(Number(event.target.value))}
+                      className="mt-1 w-full rounded-md border border-hairline/40 bg-inset px-2 py-1 text-[13px] text-ink focus:outline-none"
+                    />
+                  </div>
                 </div>
               </>
             )}
@@ -1849,6 +1881,10 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       {/* Bot list */}
       <div className="flex-1 overflow-y-auto px-2">
         <div className="flex flex-col gap-0.5">
+          {/* Transcript hits go above the roster.  They were last before,
+              which put them under every bot and channel — the reason the
+              search looked like it only matched names. */}
+          <SearchResults query={query} onLanded={() => setQuery("")} />
           {!unsectionedChief && sectionChiefs.length === 0 && visibleBots.length === 0 && sectionedBots.length === 0 && visibleGroups.length === 0 && q && q.length < MIN_QUERY && (
             <div className="px-3 py-6 text-center text-[13px] text-ink-secondary">Nothing matches “{query}”</div>
           )}
@@ -1928,7 +1964,6 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                 ))}
             </Fragment>
           ))}
-          <SearchResults query={query} onLanded={() => setQuery("")} />
         </div>
       </div>
 
