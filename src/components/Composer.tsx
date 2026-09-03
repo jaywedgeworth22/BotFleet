@@ -282,9 +282,7 @@ export function Composer({
   const [queued, setQueued] = useState<{ text: string; replyToId?: string } | null>(null);
   const pendingChip = group
     ? queued?.text
-    : bot
-      ? state.pendingQueued?.[bot.threadId]?.map((entry) => entry.text).join("\n")
-      : undefined;
+    : undefined;
   // a chip on its own is a message: the send control has to appear for it
   const fileInput = useRef<HTMLInputElement>(null);
   const [autoWarn, setAutoWarn] = useState(false);
