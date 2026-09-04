@@ -3620,7 +3620,14 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
     };
   };
 
-  it("waits for a slow local recall CLI instead of calling it dead at six seconds", async () => {
+  // The recall fixture is a POSIX shell script.  Windows cannot execute it, so
+  // the two tests about the CLI's own behaviour self-skip there, the same deal
+  // the other process-shaped tests in this file get.  The HTTP tests below
+  // still run everywhere: a CLI that will not start falls through to exactly
+  // the probe they exercise.
+  const posixOnly = it.skipIf(process.platform === "win32");
+
+  posixOnly("waits for a slow local recall CLI instead of calling it dead at six seconds", async () => {
     setRecallMode("slow");
     try {
       const started = Date.now();
@@ -3640,7 +3647,7 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
     }
   });
 
-  it("reports why the local recall CLI failed instead of one fixed sentence", async () => {
+  posixOnly("reports why the local recall CLI failed instead of one fixed sentence", async () => {
     setRecallMode("fail");
     try {
       const status = await api("GET", "/api/qdrant/status");
