@@ -2379,7 +2379,9 @@ describe("harness HTTP API", () => {
       });
       expect(saved.status).toBe(200);
       expect(saved.body.autoUpdate).toEqual({ enabled: true });
-      expect(saved.body.ingress).toEqual({ publicUrl: "https://hooks.example.com" });
+      // configStatus now also reports the `enabled` flag (defaulting to
+      // true); the equality check would break every time that field grows.
+      expect(saved.body.ingress).toMatchObject({ publicUrl: "https://hooks.example.com" });
 
       const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
       expect(disk.autoUpdate).toEqual({ enabled: true });
@@ -2387,11 +2389,106 @@ describe("harness HTTP API", () => {
 
       const invalid = await api("PATCH", "/api/config", { ingress: { publicUrl: "hooks.example.com" } });
       expect(invalid.status).toBe(400);
+
+      // disabling the public URL keeps the value on disk but stops the
+      // webhook receiver from advertising it
+      const disabled = await api("PATCH", "/api/config", {
+        ingress: { publicUrl: "https://hooks.example.com", enabled: false },
+      });
+      expect(disabled.status).toBe(200);
+      expect(disabled.body.ingress).toMatchObject({
+        publicUrl: "https://hooks.example.com",
+        enabled: false,
+      });
+      const diskAfter = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(diskAfter.ingress).toEqual({
+        publicUrl: "https://hooks.example.com",
+        enabled: false,
+      });
+      const status = await api("GET", "/api/webhooks");
+      expect(status.body.ingress.baseUrl).toMatch(/127\.0\.0\.1/);
     } finally {
       await api("PATCH", "/api/config", {
         autoUpdate: { enabled: false },
         ingress: { publicUrl: "" },
       });
+    }
+  });
+
+  it("POST /api/ingress/test reports a clear failure for malformed URLs", async () => {
+    const missing = await api("POST", "/api/ingress/test", { publicUrl: "" });
+    expect(missing.status).toBe(200);
+    expect(missing.body.ok).toBe(false);
+    expect(String(missing.body.reason)).toMatch(/enter a public url/i);
+
+    const wrongScheme = await api("POST", "/api/ingress/test", { publicUrl: "ftp://hooks.example.com" });
+    expect(wrongScheme.status).toBe(200);
+    expect(wrongScheme.body.ok).toBe(false);
+    expect(String(wrongScheme.body.reason)).toMatch(/http|https/);
+
+    const credentials = await api("POST", "/api/ingress/test", {
+      publicUrl: "https://user:pass@hooks.example.com",
+    });
+    expect(credentials.status).toBe(200);
+    expect(credentials.body.ok).toBe(false);
+    expect(String(credentials.body.reason)).toMatch(/credentials/);
+  });
+
+  it("POST /api/ingress/test refuses non-JSON content types", async () => {
+    const response = await fetch(`${BASE}/api/ingress/test`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "https://hooks.example.com",
+    });
+    expect(response.status).toBe(415);
+  });
+
+  it("POST /api/ingress/test reports the tunnel when Cloudflare is in front", async () => {
+    const originalFetch = globalThis.fetch;
+    const tunnelHeaders = {
+      server: "cloudflare",
+      "cf-ray": "8a1b2c3d4e5f6789-SJC",
+    };
+    globalThis.fetch = async () =>
+      new Response("ok", { status: 200, headers: tunnelHeaders });
+    try {
+      const result = await api("POST", "/api/ingress/test", { publicUrl: "https://hooks.example.com" });
+      expect(result.status).toBe(200);
+      expect(result.body.ok).toBe(true);
+      expect(result.body.tunnel).toBe("cloudflare");
+      expect(String(result.body.reason)).toMatch(/cloudflare/i);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("POST /api/ingress/test reports 5xx as a failure that still names the tunnel", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () =>
+      new Response("upstream", { status: 502, headers: { server: "caddy" } });
+    try {
+      const result = await api("POST", "/api/ingress/test", { publicUrl: "https://hooks.example.com" });
+      expect(result.status).toBe(200);
+      expect(result.body.ok).toBe(false);
+      expect(result.body.tunnel).toBe("caddy");
+      expect(String(result.body.reason)).toMatch(/502/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it("POST /api/ingress/test reports a fetch error when the origin is unreachable", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      throw new Error("ECONNREFUSED 127.0.0.1:1");
+    };
+    try {
+      const result = await api("POST", "/api/ingress/test", { publicUrl: "https://hooks.example.com" });
+      expect(result.status).toBe(200);
+      expect(result.body.ok).toBe(false);
+      expect(String(result.body.reason)).toMatch(/ECONNREFUSED|did not answer/i);
+    } finally {
+      globalThis.fetch = originalFetch;
     }
   });
 

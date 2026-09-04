@@ -356,7 +356,7 @@ export interface ConfigStatus {
     /** null = every destination is allowed (the shipped default). */
     allowedComputers: Array<"cloud" | "vm" | "local"> | null;
   };
-  ingress?: { publicUrl?: string };
+  ingress?: { publicUrl?: string; enabled?: boolean };
   localVm: { mode: "shared" | "per-bot"; maxInstances: number };
   opencodeGo?: { configured: boolean };
   /** Voice (ElevenLabs). `configured` = a key is saved; `ready` = a key AND
@@ -367,7 +367,14 @@ export interface ConfigStatus {
   imageGen?: { configured: boolean };
   /** who's using the app — collected in onboarding, shown in the sidebar */
   profile?: { name: string; email: string };
-  autoUpdate?: { enabled: boolean };
+  autoUpdate?: {
+    enabled: boolean;
+    lastCheckMs?: number | null;
+    /** Resolved by the harness: a tick inside the 6h window reports
+     * `due: false` so the Settings panel does not have to redo the math. */
+    due?: boolean;
+    lastAppFingerprint?: string | null;
+  };
   terminology?: RoomTerminology;
   /** The finished words, resolved by the harness so every client
    * agrees. Absent only when talking to an older harness. */

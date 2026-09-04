@@ -94,7 +94,7 @@ import {
   localVmMaxInstances,
   allowedBotComputers,
   parseConfigPatch,
-  publicIngressUrl,
+  publicIngressUrlEffective,
   roomTurnTimeoutMinutes,
   saveConfig,
   showToolCallsEnabled,
@@ -107,6 +107,7 @@ import {
   vpsCpus,
   vpsMemoryGib,
   vpsSshAlias,
+  autoUpdateDue,
   DATA_DIR,
   EVENTS_DIR,
   NATIVE_DIR,
@@ -2898,9 +2899,134 @@ try {
 
 const webhookIngressStatus = () => ({
   available: Boolean(webhookIngress),
-  baseUrl: publicIngressUrl(cfg) || webhookIngress?.baseUrl || `http://127.0.0.1:${WEBHOOK_PORT}`,
+  baseUrl: publicIngressUrlEffective(cfg) || webhookIngress?.baseUrl || `http://127.0.0.1:${WEBHOOK_PORT}`,
   ...(webhookIngressError ? { error: webhookIngressError } : {}),
 });
+
+/** Result of a single ingress probe: did the URL resolve, did it answer,
+ * and what does the answer say about the tunnel/reverse-proxy in front of
+ * it?  A failed probe carries `reason` for the Settings panel to show. */
+interface IngressProbeResult {
+  ok: boolean;
+  url: string;
+  resolved: boolean;
+  /** One short sentence the UI shows on success or failure. */
+  reason: string;
+  /** Best-guess name of the tunnel/reverse-proxy, when one left a marker. */
+  tunnel?: string;
+}
+
+const INGRESS_PROBE_TIMEOUT_MS = 5_000;
+const INGRESS_PROBE_USER_AGENT = "BotFleet-Ingress-Probe/1.0";
+
+/** Categorize a host or a Server header to name the tunnel/reverse-proxy.
+ * Cloudflare's edge always identifies itself; Caddy, nginx, and Traefik are
+ * named on a best-effort basis via `Server`.  Anything not in the list
+ * reports `tunnel: undefined` and the reason carries the raw banner. */
+function describeTunnel(headers: Record<string, string | string[] | undefined>): string | undefined {
+  const rawServer = headers["server"];
+  const server = Array.isArray(rawServer) ? rawServer[0] : (typeof rawServer === "string" ? rawServer : undefined);
+  const cfRay = headers["cf-ray"];
+  const rawPoweredBy = headers["x-powered-by"];
+  const poweredBy = Array.isArray(rawPoweredBy) ? rawPoweredBy[0] : (typeof rawPoweredBy === "string" ? rawPoweredBy : undefined);
+  if (cfRay || server?.toLowerCase().includes("cloudflare")) return "cloudflare";
+  if (server?.toLowerCase().includes("caddy")) return "caddy";
+  if (server?.toLowerCase().includes("nginx")) return "nginx";
+  if (server?.toLowerCase().includes("traefik")) return "traefik";
+  if (poweredBy?.toLowerCase().includes("cloudflare-tunnel")) return "cloudflare-tunnel";
+  return undefined;
+}
+
+/** Probe one URL.  Used by POST /api/ingress/test and the dry-run on the
+ * Settings panel; the result is the same either way.  Never throws —
+ * callers rely on the typed `reason` to render the outcome.
+ *
+ * What "ok" means here: the URL parsed as absolute http(s), DNS resolved
+ * to at least one address, and the origin returned a non-5xx response to a
+ * GET.  4xx still counts as a live origin (it answered).  Anything that
+ * looks like a Cloudflare Tunnel or Caddy is named; otherwise the
+ * `reason` reports the raw `Server` banner so the operator can confirm. */
+async function probeIngressUrl(raw: string): Promise<IngressProbeResult> {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return {
+      ok: false,
+      url: raw,
+      resolved: false,
+      reason: "The URL is not a valid http(s) address.",
+    };
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return {
+      ok: false,
+      url: raw,
+      resolved: false,
+      reason: "Only http and https URLs are supported.",
+    };
+  }
+  if (parsed.username || parsed.password) {
+    return {
+      ok: false,
+      url: raw,
+      resolved: false,
+      reason: "URLs with embedded credentials are not allowed.",
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), INGRESS_PROBE_TIMEOUT_MS);
+  let response: Response | undefined;
+  let fetchError: unknown = undefined;
+  try {
+    response = await fetch(parsed.toString(), {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: { "user-agent": INGRESS_PROBE_USER_AGENT },
+    });
+  } catch (error) {
+    fetchError = error;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (fetchError || !response) {
+    const message =
+      fetchError instanceof Error
+        ? fetchError.name === "AbortError"
+          ? "The request timed out before the server answered."
+          : fetchError.message
+        : "The server did not answer.";
+    return {
+      ok: false,
+      url: raw,
+      resolved: false,
+      reason: message,
+    };
+  }
+  const status = response.status;
+  const tunnel = describeTunnel(response.headers as unknown as Record<string, string | string[] | undefined>);
+  if (status >= 500) {
+    return {
+      ok: false,
+      url: raw,
+      resolved: true,
+      reason: `The server answered with HTTP ${status}.`,
+      ...(tunnel ? { tunnel } : {}),
+    };
+  }
+  const head = tunnel
+    ? `${tunnel === "cloudflare" ? "Cloudflare" : tunnel.charAt(0).toUpperCase() + tunnel.slice(1)} answered with HTTP ${status}.`
+    : `The server answered with HTTP ${status}.`;
+  return {
+    ok: true,
+    url: raw,
+    resolved: true,
+    reason: head,
+    ...(tunnel ? { tunnel } : {}),
+  };
+}
 
 const resourceTriggers = new ResourceTriggerManager({
   emit: broadcast,
@@ -3762,7 +3888,12 @@ function configStatus() {
       // persisted "no destination at all".
       allowedComputers: allowedBotComputers(cfg),
     },
-    ingress: { publicUrl: cfg.ingress?.publicUrl || "" },
+    ingress: {
+      publicUrl: cfg.ingress?.publicUrl || "",
+      // Absent flag means on; the toggle is opt-out so a config written by
+      // an older build keeps applying its URL.
+      enabled: cfg.ingress?.enabled !== false,
+    },
     localVm: {
       mode: cfg.localVm?.mode ?? "shared",
       maxInstances: localVmMaxInstances(cfg),
@@ -3789,7 +3920,15 @@ function configStatus() {
       hasReadToken: Boolean(cfg.usage?.readToken || process.env.USAGE_READ_TOKEN),
       projects: usageProjectRules(cfg),
     },
-    autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
+    autoUpdate: {
+      enabled: cfg.autoUpdate?.enabled ?? false,
+      lastCheckMs: cfg.autoUpdate?.lastCheckMs ?? null,
+      // Throttle derived state so the Settings copy never has to compute
+      // it from a wall clock: a tick that fires inside the 6h window
+      // reports `due: false` and the UI can stay quiet.
+      due: autoUpdateDue(cfg),
+      lastAppFingerprint: cfg.autoUpdate?.lastAppFingerprint ?? null,
+    },
     terminology: cfg.terminology ?? DEFAULT_ROOM_TERMINOLOGY,
     // Resolved here so the Mac app and the phone render the same words
     // without each re-deriving them from the key and drifting apart.
@@ -6682,6 +6821,28 @@ const server = createServer(async (req, res) => {
     if (method === "POST" && path === "/api/telemetry/test") {
       const result = await telemetry.probe();
       return json(res, 200, result);
+    }
+    // ── ingress test: confirm the configured webhook URL answers and
+    // describes the tunnel/reverse-proxy that fronts it.  Body shape matches
+    // the field the Settings panel saves, so the form's "Test Setup" button
+    // can dry-run a value the user has not yet persisted.
+    if (method === "POST" && path === "/api/ingress/test") {
+      // Local-only probe — same gate as the lifecycle routes so a hostile
+      // page cannot trigger outbound TCP from a simple text/plain request.
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      const body = await readBody(req);
+      const raw = typeof body?.publicUrl === "string" ? body.publicUrl.trim() : "";
+      if (!raw) {
+        return json(res, 200, {
+          ok: false,
+          url: "",
+          resolved: false,
+          reason: "Enter a public URL to test.",
+        });
+      }
+      return json(res, 200, await probeIngressUrl(raw));
     }
     if (method === "GET" && path === "/api/quotas") {
       // Best-effort balance fetch: the UI hides the chip if the key is
