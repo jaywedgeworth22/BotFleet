@@ -6,7 +6,7 @@
 // a user as "my tokens are already going there". Second, project
 // classification is the operator's list, not a list of somebody's repos
 // baked into the binary.
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseStoredConfig, usageIngestUrl, usageProjectRules, type AppConfig } from "./config.ts";
 import { inferProject, telemetry, type UsageSettings } from "./telemetry.ts";
@@ -139,6 +139,57 @@ describe("project classification", () => {
       { slug: "real", match: ["work"] },
     ];
     expect(inferProject("/work/thing", "Bot", undefined, sloppy)).toBe("real");
+  });
+});
+
+describe("telemetry probe", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    telemetry.configure(null);
+  });
+
+  it("refuses when the URL or token is missing", async () => {
+    withSettings({ ingestUrl: "https://usage.example.com" });
+    const result = await telemetry.probe();
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/token/i);
+    expect(result.ingestUrl).toBeNull();
+  });
+
+  it("posts a probe and reports success", async () => {
+    withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      expect(url).toBe("https://usage.example.com/api/ingest/usage");
+      const headers = init?.headers as Record<string, string>;
+      expect(headers.Authorization).toBe("Bearer tok_abc");
+      const body = JSON.parse(String(init?.body)) as {
+        producerId: string;
+        events: Array<{ label: string; metadata?: { probe?: boolean } }>;
+      };
+      expect(body.producerId).toBe("botfleet");
+      expect(body.events[0]?.label).toMatch(/connection test/i);
+      expect(body.events[0]?.metadata?.probe).toBe(true);
+      return new Response("{}", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await telemetry.probe();
+    expect(result.ok).toBe(true);
+    expect(result.error).toBeNull();
+    expect(result.ingestUrl).toBe("https://usage.example.com/api/ingest/usage");
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(telemetry.getStatus().lastAckAt).toBeTruthy();
+    expect(telemetry.getStatus().lastError).toBeNull();
+  });
+
+  it("surfaces an HTTP 401 from Usage Monitor", async () => {
+    withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("nope", { status: 401 })));
+
+    const result = await telemetry.probe();
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/401/);
+    expect(telemetry.getStatus().lastError).toMatch(/401/);
   });
 });
 

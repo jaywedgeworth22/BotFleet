@@ -154,6 +154,47 @@ class UsageTelemetryManager {
     };
   }
 
+  /** POST one probe event and wait for the Usage Monitor ACK.  Used by
+   * Settings → Test Connection so the operator can see the token works
+   * without waiting for a bot turn. */
+  async probe(): Promise<{ ok: boolean; error: string | null; ingestUrl: string | null }> {
+    const config = this.getIngestConfig();
+    if (!config) {
+      return {
+        ok: false,
+        error: "Set a Usage Monitor URL and ingest token first.",
+        ingestUrl: null,
+      };
+    }
+    const endpoint = `${config.baseUrl}${INGEST_PATH}`;
+    const eventId = `bf:probe:${Date.now()}:${randomUUID().slice(0, 8)}`;
+    const batch = {
+      schemaVersion: 2,
+      producerId: "botfleet",
+      producerInstanceId: hostname(),
+      events: [
+        {
+          eventId,
+          environment: process.env.NODE_ENV === "production" ? "production" : "operator",
+          provider: "botfleet",
+          service: "connection-test",
+          project: "general",
+          label: "BotFleet connection test",
+          billingMode: "estimated",
+          metricType: "usage",
+          quantity: 1,
+          unit: "token",
+          requests: 1,
+          confidence: "estimated",
+          occurredAt: new Date().toISOString(),
+          metadata: { probe: true, success: true },
+        },
+      ],
+    };
+    const posted = await this.postBatch(endpoint, config.token, batch);
+    return { ok: posted.ok, error: posted.error, ingestUrl: endpoint };
+  }
+
   trackTurn(params: TelemetryTurnParams): void {
     const config = this.getIngestConfig();
     if (!config) return;
@@ -203,34 +244,43 @@ class UsageTelemetryManager {
       events: [event],
     };
 
-    const endpoint = `${config.baseUrl}${INGEST_PATH}`;
+    void this.postBatch(`${config.baseUrl}${INGEST_PATH}`, config.token, batch);
+  }
 
-    void fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.token}`,
-      },
-      body: JSON.stringify(batch),
-      signal: AbortSignal.timeout(5000),
-    })
-      .then(async (res) => {
-        if (res.ok) {
-          this.totalSent += 1;
-          this.lastAckAt = new Date().toISOString();
-          this.lastError = null;
-        } else {
-          this.totalFailed += 1;
-          const text = await res.text().catch(() => "");
-          this.lastError = `HTTP ${res.status}: ${text.slice(0, 200)}`;
-          console.warn(`[telemetry] Usage Monitor returned status ${res.status} (${this.lastError})`);
-        }
-      })
-      .catch((err) => {
-        this.totalFailed += 1;
-        this.lastError = err instanceof Error ? err.message : String(err);
-        console.warn(`[telemetry] Usage Monitor dispatch failed: ${this.lastError}`);
+  private async postBatch(
+    endpoint: string,
+    token: string,
+    batch: unknown,
+  ): Promise<{ ok: boolean; error: string | null }> {
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(batch),
+        signal: AbortSignal.timeout(5000),
       });
+      if (res.ok) {
+        this.totalSent += 1;
+        this.lastAckAt = new Date().toISOString();
+        this.lastError = null;
+        return { ok: true, error: null };
+      }
+      const text = await res.text().catch(() => "");
+      const error = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+      this.totalFailed += 1;
+      this.lastError = error;
+      console.warn(`[telemetry] Usage Monitor returned status ${res.status} (${error})`);
+      return { ok: false, error };
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.totalFailed += 1;
+      this.lastError = error;
+      console.warn(`[telemetry] Usage Monitor dispatch failed: ${error}`);
+      return { ok: false, error };
+    }
   }
 }
 

@@ -3,12 +3,15 @@
 // banked per settled turn on each task (server/store.ts addTaskUsage) and
 // summed here; nothing is fetched.
 import * as React from "react";
+import { Check, CheckCircle, Loader2, RefreshCw, XCircle } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
+import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
 import { ProviderMark } from "./ProviderIcons";
 import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
+import { buildUsageConfigPatch } from "@/lib/usage-config";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
 interface QuotaCooldownInfo {
@@ -64,6 +67,11 @@ export function UsageSection() {
   const [ingestUrl, setIngestUrl] = React.useState(usageConfig?.ingestUrl ?? "");
   const [ingestToken, setIngestToken] = React.useState("");
   const [readToken, setReadToken] = React.useState("");
+  const [saving, setSaving] = React.useState(false);
+  const [testing, setTesting] = React.useState(false);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
+  const [saveOk, setSaveOk] = React.useState(false);
+  const [testResult, setTestResult] = React.useState<{ ok: boolean; error: string | null } | null>(null);
 
   React.useEffect(() => {
     if (usageConfig?.ingestUrl !== undefined) setIngestUrl(usageConfig.ingestUrl);
@@ -99,19 +107,69 @@ export function UsageSection() {
   // Whatever host the operator pointed this at — never a built-in name.
   const host = telemetryHost(telemetryStatus);
 
-  const saveUsage = async (patch: { ingestUrl?: string; ingestToken?: string; readToken?: string }) => {
+  const refreshTelemetry = async () => {
+    try {
+      const refreshed = await fetch("/api/telemetry/status").then((r) => r.json());
+      setTelemetryStatus(refreshed && typeof refreshed === "object" ? refreshed : null);
+      setTelemetryFetchError(null);
+    } catch {
+      setTelemetryFetchError("Failed to fetch telemetry status");
+    }
+  };
+
+  const saveUsage = async (): Promise<boolean> => {
+    const built = buildUsageConfigPatch({ ingestUrl, ingestToken, readToken });
+    if (!built.ok) {
+      setSaveError(built.error);
+      setSaveOk(false);
+      return false;
+    }
+    setSaving(true);
+    setSaveError(null);
+    setSaveOk(false);
     try {
       const config: ConfigStatus = await api("/api/config", {
         method: "PATCH",
-        body: JSON.stringify({ usage: patch }),
+        body: JSON.stringify({ usage: built.patch }),
       });
       dispatch({ type: "configStatus", config });
-      const refreshed = await fetch("/api/telemetry/status").then((r) => r.json());
-      setTelemetryStatus(refreshed && typeof refreshed === "object" ? refreshed : null);
-    } catch {
-      // a failed save leaves the field as typed; the badge stays honest
+      if (built.patch.ingestToken) setIngestToken("");
+      if (built.patch.readToken) setReadToken("");
+      await refreshTelemetry();
+      setSaveOk(true);
+      return true;
+    } catch (caught) {
+      setSaveError(caught instanceof Error ? caught.message : String(caught));
+      return false;
+    } finally {
+      setSaving(false);
     }
   };
+
+  const testConnection = async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const saved = await saveUsage();
+      if (!saved) {
+        setTestResult({ ok: false, error: "Save the URL and ingest token before testing." });
+        return;
+      }
+      const res = await fetch("/api/telemetry/test", { method: "POST" });
+      const data = (await res.json().catch(() => ({}))) as { ok?: boolean; error?: string | null };
+      setTestResult({
+        ok: Boolean(data.ok),
+        error: data.ok ? null : (data.error || "Usage Monitor did not accept the probe."),
+      });
+      await refreshTelemetry();
+    } catch (caught) {
+      setTestResult({ ok: false, error: caught instanceof Error ? caught.message : String(caught) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const canTest = Boolean(ingestUrl.trim() || usageConfig?.ingestUrl) && Boolean(ingestToken.trim() || usageConfig?.hasToken);
 
   const usageInputClass =
     "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
@@ -369,9 +427,13 @@ export function UsageSection() {
                 id="usage-ingest-url"
                 type="url"
                 value={ingestUrl}
-                onChange={(e) => setIngestUrl(e.target.value)}
-                onBlur={() => void saveUsage({ ingestUrl: ingestUrl.trim() })}
+                onChange={(e) => {
+                  setIngestUrl(e.target.value);
+                  setSaveOk(false);
+                }}
+                onKeyDown={(e) => e.key === "Enter" && void saveUsage()}
                 placeholder="https://usage.example.com"
+                autoComplete="off"
                 className={usageInputClass}
               />
             </div>
@@ -383,9 +445,13 @@ export function UsageSection() {
                 id="usage-ingest-token"
                 type="password"
                 value={ingestToken}
-                onChange={(e) => setIngestToken(e.target.value)}
-                onBlur={() => void saveUsage({ ingestToken: ingestToken.trim() })}
-                placeholder={usageConfig?.hasToken ? "••••••••" : "Leave blank to keep telemetry off"}
+                onChange={(e) => {
+                  setIngestToken(e.target.value);
+                  setSaveOk(false);
+                }}
+                onKeyDown={(e) => e.key === "Enter" && void saveUsage()}
+                placeholder={usageConfig?.hasToken ? "••••••••  (paste to replace)" : "Leave blank to keep telemetry off"}
+                autoComplete="off"
                 className={usageInputClass}
               />
             </div>
@@ -397,14 +463,57 @@ export function UsageSection() {
                 id="usage-read-token"
                 type="password"
                 value={readToken}
-                onChange={(e) => setReadToken(e.target.value)}
-                onBlur={() => void saveUsage({ readToken: readToken.trim() })}
-                placeholder={usageConfig?.hasReadToken ? "••••••••" : "USAGE_READ_TOKEN from Usage Monitor"}
+                onChange={(e) => {
+                  setReadToken(e.target.value);
+                  setSaveOk(false);
+                }}
+                onKeyDown={(e) => e.key === "Enter" && void saveUsage()}
+                placeholder={usageConfig?.hasReadToken ? "••••••••  (paste to replace)" : "USAGE_READ_TOKEN from Usage Monitor"}
+                autoComplete="off"
                 className={usageInputClass}
               />
             </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void saveUsage()}
+                disabled={saving}
+                className="flex items-center justify-center gap-1.5 rounded-lg bg-control px-3 py-2 text-[13px] text-ink hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {saving ? <Loader2 size={13} className="animate-spin" /> : <Check size={13} />}
+                Save
+              </button>
+              <button
+                type="button"
+                onClick={() => void testConnection()}
+                disabled={saving || testing || !canTest}
+                className="flex items-center gap-1.5 rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] font-medium text-ink hover:bg-control disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                <RefreshCw size={13} className={cn(testing && "animate-spin")} />
+                {testing ? "Testing..." : "Test Connection"}
+              </button>
+              {saveOk && !saveError && (
+                <span className="flex items-center gap-1 text-[12.5px] text-success">
+                  <CheckCircle size={14} />
+                  Saved
+                </span>
+              )}
+              {testResult && (
+                <span className={cn("flex items-center gap-1.5 text-[12.5px]", testResult.ok ? "text-success" : "text-danger")}>
+                  {testResult.ok ? <CheckCircle size={14} /> : <XCircle size={14} />}
+                  <span className="max-w-[320px] truncate">
+                    {testResult.ok ? "Usage Monitor accepted the probe" : testResult.error || "Not reachable"}
+                  </span>
+                </span>
+              )}
+            </div>
+            {saveError && (
+              <div role="alert" className="text-[12px] text-danger">
+                {saveError}
+              </div>
+            )}
             <div className="text-[12px] leading-relaxed text-ink-secondary">
-              Ingest token sends settled-turn usage.  Read token pulls remaining-percent windows so this page can skip exhausted models.  Antigravity does not need the read token because it uses the local antigravity-usage CLI.
+              Save stores the URL and tokens on this computer.{'\u00A0'} Test Connection posts a one-token probe to the ingest endpoint so you can see whether Usage Monitor accepted it.{'\u00A0'} Leave a token field blank to keep the stored value.{'\u00A0'} Ingest token sends settled-turn usage.{'\u00A0'} Read token pulls remaining-percent windows so this page can skip exhausted models.{'\u00A0'} Antigravity does not need the read token because it uses the local antigravity-usage CLI.
             </div>
           </div>
         </div>

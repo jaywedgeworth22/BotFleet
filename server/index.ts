@@ -6413,6 +6413,10 @@ const server = createServer(async (req, res) => {
     if (method === "GET" && path === "/api/telemetry/status") {
       return json(res, 200, telemetry.getStatus());
     }
+    if (method === "POST" && path === "/api/telemetry/test") {
+      const result = await telemetry.probe();
+      return json(res, 200, result);
+    }
     if (method === "GET" && path === "/api/quotas") {
       return json(res, 200, {
         ok: true,
