@@ -87,6 +87,7 @@ function WebhookEditor({ webhook, bots, onClose, onCredential }: { webhook?: Web
   const [prompt, setPrompt] = useState(webhook?.prompt ?? "");
   const [runOn, setRunOn] = useState<RoutineRunOn>(webhook?.runOn ?? "maus");
   const [eventTypes, setEventTypes] = useState((webhook?.eventTypes ?? []).join(", "));
+  const [minGap, setMinGap] = useState(String(webhook?.minGapMinutes ?? 0));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const cloudInstance = state.instances.find((instance) => instance.driverKind === "boxAgent");
@@ -94,7 +95,7 @@ function WebhookEditor({ webhook, bots, onClose, onCredential }: { webhook?: Web
 
   const save = async () => {
     const bot = bots.find((candidate) => candidate.id === botId);
-    const input: WebhookTriggerInput = { name: name.trim() || suggestedName(prompt, bot), prompt: prompt.trim(), botId, runOn, ...webhookActivationDefaults(webhook), eventTypes: eventTypes.split(",").map((value) => value.trim()).filter(Boolean) };
+    const input: WebhookTriggerInput = { name: name.trim() || suggestedName(prompt, bot), prompt: prompt.trim(), botId, runOn, ...webhookActivationDefaults(webhook), eventTypes: eventTypes.split(",").map((value) => value.trim()).filter(Boolean), minGapMinutes: Math.max(0, Math.min(1440, Math.round(Number(minGap) || 0))) };
     setSaving(true);
     setError("");
     try {
@@ -123,6 +124,7 @@ function WebhookEditor({ webhook, bots, onClose, onCredential }: { webhook?: Web
               <label className="block"><span className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary">Default Instructions <span className="font-normal">· optional</span></span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={3} placeholder="For every event, summarize what happened and suggest the next step…" className="w-full resize-y rounded-xl border border-hairline/60 bg-panel px-3.5 py-3 text-[13px] leading-relaxed text-ink outline-none placeholder:text-ink-secondary/60 focus:border-accent/70" /><span className="mt-1.5 block text-[10.5px] leading-relaxed text-ink-secondary">Use this only when every event needs the same handling rule. Otherwise the request’s task is used.</span></label>
               <div><div className="mb-2 text-[11.5px] font-medium text-ink-secondary">Run On</div><div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => setRunOn("maus")} className={cn("rounded-xl border p-3 text-left", runOn === "maus" ? "border-accent/70 bg-accent/10" : "border-hairline/50 bg-panel hover:bg-raised/60")}><div className="flex items-center gap-2 text-[12.5px] font-medium text-ink"><Laptop size={14} />This Computer</div></button><button type="button" disabled={!cloudReady && runOn !== "cloud"} onClick={() => setRunOn("cloud")} className={cn("rounded-xl border p-3 text-left disabled:cursor-not-allowed disabled:opacity-45", runOn === "cloud" ? "border-accent/70 bg-accent/10" : "border-hairline/50 bg-panel hover:bg-raised/60")}><div className="flex items-center gap-2 text-[12.5px] font-medium text-ink"><Cloud size={14} />ASCII.dev Box</div></button></div></div>
               <label className="block"><span className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary">Only accept event types <span className="font-normal">· optional</span></span><input value={eventTypes} onChange={(event) => setEventTypes(event.target.value)} placeholder="push, workflow_run" className="w-full rounded-xl border border-hairline/60 bg-panel px-3.5 py-2.5 text-[13px] text-ink outline-none placeholder:text-ink-secondary/60 focus:border-accent/70" /><span className="mt-1.5 block text-[10.5px] text-ink-secondary">Comma-separated values from the sender’s event-type header.</span></label>
+              <label className="block"><span className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary">Wait between activations <span className="font-normal">· optional</span></span><div className="flex items-center gap-2"><input type="number" min={0} max={1440} value={minGap} onChange={(event) => setMinGap(event.target.value)} className="w-24 rounded-xl border border-hairline/60 bg-panel px-3.5 py-2.5 text-[13px] text-ink outline-none focus:border-accent/70" /><span className="text-[12px] text-ink-secondary">minutes</span></div><span className="mt-1.5 block text-[10.5px] leading-relaxed text-ink-secondary">After this webhook runs, it stays quiet this long.  Requests that arrive meanwhile are not dropped — they wait and go into one turn when the time is up.  0 runs every request as it lands.</span></label>
             </div>
           </details>
           {error && <div className="rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-3 text-[12px] text-danger">{error}</div>}

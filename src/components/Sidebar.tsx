@@ -8,6 +8,7 @@ import {
   Bot as BotIcon,
   CalendarDays,
   Check,
+  ChevronDown,
   ChevronRight,
   ClipboardCopy,
   Copy,
@@ -32,7 +33,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, getRoomTerminology, getConversationMode, latestChatActivity, type Bot, type Group } from "@/state/store";
+import { api, useStore, formatTime, visibleMessages, getRoomTerminology, getConversationMode, latestChatActivity, type Bot, type Group, type Message } from "@/state/store";
 import { allowsMultipleBotThreads, rosterPrimaryLabel } from "../../shared/conversation-mode";
 import {
   THREAD_DRAG_TYPE,
@@ -46,6 +47,8 @@ import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
+import { plainPreview } from "@/lib/plain-preview";
+import { classifyTool, toolVerb } from "../../shared/tool-activity";
 import { skillRecorderEnabled } from "@/lib/feature-flags";
 import { nextRename } from "@/lib/rename";
 import { imageAttachmentFromFile, intakeFiles } from "@/lib/composer-attachments";
@@ -63,6 +66,8 @@ import {
   MAX_SIDEBAR_THREAD_COUNT,
   MIN_SIDEBAR_THREAD_COUNT,
   loadCollapsedRooms,
+  loadCollapsedSections,
+  saveCollapsedSections,
   loadSidebarDensity,
   loadSidebarThreadCount,
   parseSidebarThreadCount,
@@ -170,10 +175,24 @@ function preview(bot: Bot): string {
   // entry can belong to a version the user switched away from
   const last = visibleMessages(bot).at(-1);
   if (!last) return "";
-  if (last.kind === "options" && last.card) return last.card.title;
-  if (last.kind === "activity" && last.tool) return last.tool.name;
+  if (last.kind === "options" && last.card) return plainPreview(last.card.title);
+  if (last.kind === "activity" && last.tool) return activityPreview(last.tool);
   if (last.kind === "screen") return "Screen frame";
-  return last.text ?? "";
+  // the roster shows what a bot SAID, not the source it said it in: a reply
+  // formatted for the transcript would otherwise arrive here as asterisks
+  // and `&nbsp;`, which is the one thing the copy rule says a person must
+  // never be shown
+  return plainPreview(last.text);
+}
+
+/** A step, in the roster's one line: the same verb and target the transcript
+ * shows, so the two never describe the same work differently. */
+function activityPreview(tool: NonNullable<Message["tool"]>): string {
+  if (tool.name.startsWith("error:")) return plainPreview(tool.name.slice(6));
+  const kind = tool.kind ?? classifyTool(tool.name);
+  const verb = toolVerb(kind, tool.name);
+  const target = tool.target ?? (verb === tool.name ? undefined : tool.name);
+  return target ? `${verb} · ${target}` : verb;
 }
 
 interface MenuState {
@@ -188,7 +207,7 @@ function groupPreview(group: Group, bots: Bot[]): string {
   }
   const last = group.messages.at(-1);
   if (!last) return "No messages yet";
-  const text = last.kind === "activity" && last.tool ? last.tool.name : (last.text ?? "");
+  const text = last.kind === "activity" && last.tool ? activityPreview(last.tool) : plainPreview(last.text);
   if (last.role === "user") return `You: ${text}`;
   return last.from ? `${last.from.name}: ${text}` : text;
 }
@@ -1128,16 +1147,64 @@ function NewRoomPanel({ onClose }: { onClose: () => void }) {
   );
 }
 
-/** Labeled divider between sidebar sections. Same typographic register as
- * EngineGroupLabel so the sidebar reads as one system. */
-function SectionDivider({ name }: { name: string }) {
+/** A roster section's header.
+ *
+ * It used to be a 10px uppercase whisper — the same register as a form-field
+ * caption — for the labels that divide the whole roster: the channels, the
+ * bots, every section a person made.  A heading that names a region of the
+ * app should be legible at a glance, and a region worth naming is worth
+ * being able to fold away, so this is a real heading and a real control.
+ *
+ * `onToggle` is optional: a divider with no section to remember (icon-rail
+ * density, say) still renders as a label. */
+function SectionDivider({
+  name,
+  count,
+  collapsed,
+  onToggle,
+}: {
+  name: string;
+  /** rows inside, shown when the section is folded so the count is not lost */
+  count?: number;
+  collapsed?: boolean;
+  onToggle?: () => void;
+}) {
+  const label = (
+    <>
+      <span className="text-[12.5px] font-semibold tracking-[0.01em] text-ink">{name}</span>
+      {collapsed && count !== undefined && count > 0 && (
+        <span className="rounded-full bg-raised px-1.5 py-px text-[10.5px] font-medium text-ink-secondary tabular-nums">
+          {count}
+        </span>
+      )}
+    </>
+  );
+  if (!onToggle) {
+    return (
+      <div className="flex items-center gap-2 px-3 pb-1 pt-4 first:pt-1" data-section={name}>
+        {label}
+        <span className="h-px flex-1 bg-hairline/40" />
+      </div>
+    );
+  }
   return (
-    <div className="flex items-center gap-2 px-3 pb-1 pt-3 first:pt-0" data-section={name}>
-      <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
-        {name}
-      </span>
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      className="group/section flex w-full items-center gap-1.5 rounded-lg px-3 pb-1 pt-4 text-left first:pt-1 hover:bg-raised/40"
+      data-section={name}
+    >
+      <ChevronDown
+        size={13}
+        className={cn(
+          "shrink-0 text-ink-secondary/70 transition-transform",
+          collapsed && "-rotate-90",
+        )}
+      />
+      {label}
       <span className="h-px flex-1 bg-hairline/40" />
-    </div>
+    </button>
   );
 }
 
@@ -1770,6 +1837,17 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     saveSidebarThreadCount(clamped);
   };
   const [collapsedRooms, setCollapsedRooms] = useState<Set<string>>(() => loadCollapsedRooms());
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => loadCollapsedSections());
+  const toggleSection = (name: string) => {
+    setCollapsedSections((current) => {
+      const next = new Set(current);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      saveCollapsedSections(next);
+      return next;
+    });
+  };
+  const sectionOpen = (name: string) => !collapsedSections.has(name);
   const toggleRoom = (groupId: string) => {
     setCollapsedRooms((current) => {
       const next = new Set(current);
@@ -2258,8 +2336,15 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               </ThreadTree>
             </div>
           )}
-          {unsectionedGroups.length > 0 && density !== "icons" && <SectionDivider name={terminology.plural} />}
-          {unsectionedGroups.map((g) => (
+          {unsectionedGroups.length > 0 && density !== "icons" && (
+            <SectionDivider
+              name={terminology.plural}
+              count={unsectionedGroups.length}
+              collapsed={!sectionOpen(terminology.plural)}
+              onToggle={() => toggleSection(terminology.plural)}
+            />
+          )}
+          {(density === "icons" || sectionOpen(terminology.plural)) && unsectionedGroups.map((g) => (
             <ThreadTree
               key={g.id}
               owner={{ kind: "group", id: g.id, name: g.name, threadId: g.threadId }}
@@ -2272,8 +2357,15 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               <GroupListItem group={g} density={density} onMenu={setRoomMenu} />
             </ThreadTree>
           ))}
-          {visibleBots.length > 0 && density !== "icons" && <SectionDivider name={primary.plural} />}
-          {visibleBots.map((b) => (
+          {visibleBots.length > 0 && density !== "icons" && (
+            <SectionDivider
+              name={primary.plural}
+              count={visibleBots.length}
+              collapsed={!sectionOpen(primary.plural)}
+              onToggle={() => toggleSection(primary.plural)}
+            />
+          )}
+          {(density === "icons" || sectionOpen(primary.plural)) && visibleBots.map((b) => (
             <ThreadTree
               key={b.id}
               owner={{ kind: "bot", id: b.id, name: b.name, threadId: b.threadId }}
@@ -2293,10 +2385,23 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               />
             </ThreadTree>
           ))}
-          {sectionNames.map((name) => (
+          {sectionNames.map((name) => {
+            const rows =
+              sectionChiefs.filter((bot) => bot.section === name).length +
+              sectionedGroups.filter((g) => g.section === name).length +
+              sectionedBots.filter((b) => b.section === name).length;
+            const open = density === "icons" || sectionOpen(name);
+            return (
             <Fragment key={name}>
-              {density !== "icons" && <SectionDivider name={name} />}
-              {sectionChiefs
+              {density !== "icons" && (
+                <SectionDivider
+                  name={name}
+                  count={rows}
+                  collapsed={!open}
+                  onToggle={() => toggleSection(name)}
+                />
+              )}
+              {open && sectionChiefs
                 .filter((bot) => bot.section === name)
                 .map((bot) => (
                   <ThreadTree
@@ -2318,7 +2423,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                     />
                   </ThreadTree>
                 ))}
-              {sectionedGroups
+              {open && sectionedGroups
                 .filter((g) => g.section === name)
                 .map((g) => (
                   <ThreadTree
@@ -2333,7 +2438,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                     <GroupListItem group={g} density={density} onMenu={setRoomMenu} />
                   </ThreadTree>
                 ))}
-              {sectionedBots
+              {open && sectionedBots
                 .filter((b) => b.section === name)
                 .map((b) => (
                   <ThreadTree
@@ -2356,7 +2461,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   </ThreadTree>
                 ))}
             </Fragment>
-          ))}
+            );
+          })}
         </div>
       </div>
 

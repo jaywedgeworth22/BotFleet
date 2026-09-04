@@ -9,7 +9,7 @@ import { cn } from "@/lib/cn";
 import { requestNotificationPermission } from "@/lib/notify";
 import { botUsage, costCaption, formatTokens, formatUsd, hasFiniteCost } from "@/lib/usage";
 import { shortPath } from "@/lib/short-path";
-import { instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
+import { computerDestinationDisabledReason, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
 import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { VoiceSettings } from "./VoiceSettings";
@@ -321,6 +321,13 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const localSelectable = localComputerSelectable({ capabilities, providerSupportsLocal });
   const [localAutoWarning, setLocalAutoWarning] = useState<"auto" | "local" | null>(null);
   const localDisabledReason = localComputerDisabledReason({ capabilities, providerSupportsLocal });
+  // The server refuses an unsupported destination at turn time; the picker
+  // should not have offered it.  See computerDestinationDisabledReason.
+  const destinationDisabled = (mode: "cloud" | "vm" | "local" | "off"): string | null => {
+    if (mode === "local") return localSelectable ? null : localDisabledReason;
+    if (mode === "cloud" || mode === "vm") return computerDestinationDisabledReason(mode, state.instances, bot);
+    return null;
+  };
   const patch = (
     p: Partial<
       Pick<
@@ -652,11 +659,13 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 ["vm", "Local VM"],
                 ["local", "This Computer"],
                 ["off", "Off"],
-              ] as const).map(([mode, label], i) => (
+              ] as const).map(([mode, label], i) => {
+                const blocked = destinationDisabled(mode);
+                return (
                 <button
                   key={mode}
-                  disabled={mode === "local" && !localSelectable}
-                  title={mode === "local" && !localSelectable ? localDisabledReason ?? undefined : undefined}
+                  disabled={Boolean(blocked)}
+                  title={blocked ?? undefined}
                   onClick={() => {
                     if (mode === "off") {
                       patch({ computers: [] });
@@ -672,7 +681,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                   className={cn(
                     "flex-1 py-1.5 text-[13px] capitalize",
                     i > 0 && "border-l border-hairline/40",
-                    mode === "local" && !localSelectable && "cursor-not-allowed opacity-40",
+                    blocked && "cursor-not-allowed opacity-40",
                     (mode === "off"
                       ? bot.computers !== undefined && bot.computers.length === 0
                       : (bot.computers ?? []).includes(mode as any))
@@ -682,8 +691,18 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 >
                   {label}
                 </button>
-              ))}
+                );
+              })}
             </div>
+            {(["cloud", "vm"] as const)
+              .map((mode) => destinationDisabled(mode))
+              .filter((reason): reason is string => Boolean(reason))
+              .slice(0, 1)
+              .map((reason) => (
+                <div key={reason} className="mt-2 text-[11.5px] leading-relaxed text-ink-secondary">
+                  {reason}
+                </div>
+              ))}
             {(bot.computers ?? []).length > 1 && (
               <div className="mt-3 rounded-lg bg-inset px-3 py-2.5 text-[11.5px] text-ink-secondary">
                 This bot has {(bot.computers ?? []).length} computers and its own tools for each. It picks per task,

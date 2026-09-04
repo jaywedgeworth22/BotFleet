@@ -17,6 +17,9 @@ export interface WebhookTrigger {
   verifiedAt?: number;
   verificationSample?: WebhookVerificationSample;
   eventTypes?: string[];
+  /** Minutes this webhook stays quiet after it runs.  Requests that arrive
+   * inside the gap wait and go into one turn when it closes. */
+  minGapMinutes?: number;
 }
 
 export interface WebhookTriggerInput {
@@ -27,6 +30,7 @@ export interface WebhookTriggerInput {
   enabled?: boolean;
   verificationPending?: boolean;
   eventTypes?: string[];
+  minGapMinutes?: number;
 }
 
 export interface WebhookVerificationSample {

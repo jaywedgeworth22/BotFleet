@@ -148,10 +148,20 @@ export function toolVerb(kind: ToolKind, name?: string): string {
   return VERBS[kind];
 }
 
-/** `/home/ada/apps/x` → `~/apps/x`.  Long absolute paths are the single
- * biggest source of truncation in a transcript row, and the home prefix is
- * the part that carries no information. */
-export function shortenPath(value: string, home?: string): string {
+/** `/home/ada/apps/x` → `~/apps/x`, and a path inside the bot's working
+ * folder → the part that is actually about this turn.
+ *
+ * The working folder comes first, and it is the bigger win: a bot working in
+ * `~/apps/thing` that reads `~/apps/thing/server/index.ts` should say
+ * `server/index.ts`.  Repeating the folder on every row of a hundred-step
+ * turn spends the width that would have shown which file it was.  Home is
+ * the fallback for anything outside the folder. */
+export function shortenPath(value: string, home?: string, cwd?: string): string {
+  const folder = (cwd ?? "").replace(/[/\\]+$/, "");
+  if (folder && value !== folder) {
+    if (value.startsWith(folder + "/")) return value.slice(folder.length + 1);
+    if (value.startsWith(folder + "\\")) return value.slice(folder.length + 1);
+  }
   const root = (home ?? "").replace(/[/\\]+$/, "");
   if (!root) return value;
   if (value === root) return "~";
@@ -207,7 +217,7 @@ function firstString(value: unknown): string | undefined {
  * so no caller has to remember to do it. */
 export function describeTarget(
   rawInput: unknown,
-  options: { locations?: unknown; home?: string; limit?: number } = {},
+  options: { locations?: unknown; home?: string; cwd?: string; limit?: number } = {},
 ): string | undefined {
   const limit = options.limit ?? TARGET_LIMIT;
 
@@ -217,7 +227,7 @@ export function describeTarget(
     const path = typeof first?.path === "string" ? first.path : undefined;
     if (path) {
       const extra = locations.length > 1 ? ` +${locations.length - 1}` : "";
-      return clip(shortenPath(path, options.home) + extra, limit);
+      return clip(shortenPath(path, options.home, options.cwd) + extra, limit);
     }
   }
 
@@ -230,13 +240,13 @@ export function describeTarget(
   const record = rawInput as Record<string, unknown>;
   for (const field of TARGET_FIELDS) {
     const found = firstString(record[field]);
-    if (found && found.trim()) return clip(shortenPath(found, options.home), limit);
+    if (found && found.trim()) return clip(shortenPath(found, options.home, options.cwd), limit);
   }
 
   // nothing named — a single scalar argument is still better than silence
   for (const value of Object.values(record)) {
     const found = firstString(value);
-    if (found && found.trim()) return clip(shortenPath(found, options.home), limit);
+    if (found && found.trim()) return clip(shortenPath(found, options.home, options.cwd), limit);
   }
   return undefined;
 }
@@ -283,12 +293,16 @@ export interface ToolActivity {
  * of it. */
 export function toolActivity(
   name: string | undefined,
-  options: { hint?: string; rawInput?: unknown; locations?: unknown; home?: string } = {},
+  options: { hint?: string; rawInput?: unknown; locations?: unknown; home?: string; cwd?: string } = {},
 ): ToolActivity {
   const kind = classifyTool(name, options.hint);
   return {
     kind,
     verb: toolVerb(kind, name),
-    target: describeTarget(options.rawInput, { locations: options.locations, home: options.home }),
+    target: describeTarget(options.rawInput, {
+      locations: options.locations,
+      home: options.home,
+      cwd: options.cwd,
+    }),
   };
 }

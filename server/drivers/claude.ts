@@ -891,7 +891,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
                   itemType: "tool",
                   itemId: b.id,
                   title: b.name,
-                  ...toolFields(b.name, b.input),
+                  ...toolFields(b.name, b.input, { cwd: turn.cwd }),
                 });
               }
             }
