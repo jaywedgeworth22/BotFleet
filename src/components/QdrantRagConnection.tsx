@@ -238,12 +238,15 @@ export function QdrantRagConnection() {
           {/* A failure gets a full-width, wrapping row rather than one
               truncated line: the useful messages name a cause ("behind
               Cloudflare Access", "timed out after 30s"), and truncation hid
-              exactly the part worth reading.  The title still carries the
-              full text, per the readable-on-hover rule. */}
+              exactly the part worth reading.  Nothing here is clipped
+              anymore, so unlike the readable-on-hover rule elsewhere there
+              is no hidden text for a title to reveal — see PR #206, which
+              dropped this same repeat-what-is-already-visible tooltip
+              elsewhere in the app. */}
           {testResult && !testResult.ready && (
             <div className="flex items-start gap-1.5 text-[12.5px] text-danger">
               <XCircle size={14} className="mt-0.5 shrink-0" />
-              <span title={testResult.error || "Not reachable"}>{testResult.error || "Not reachable"}</span>
+              <span>{testResult.error || "Not reachable"}</span>
             </div>
           )}
         </div>

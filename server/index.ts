@@ -185,6 +185,7 @@ import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { accessHeaders, accessLoginHint, hasAccessServiceToken, type AccessTokenHeaders } from "./recall-access.ts";
+import { RECALL_CLI_TIMEOUT_MS, describeCliFailure } from "./cli-failure.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { RoutineRequestService } from "./routine-requests.ts";
@@ -330,48 +331,6 @@ function connectedAppsIntegration(botId: string, threadId: string) {
 
 export const RECALL_NOT_CONFIGURED = "Agent RAG is not configured — set a Service URL in Settings";
 
-/** How long the settings probe gives a local `recall` CLI to answer.  The
- * bot-facing proxy (qdrant-proxy's executeRecallCli) already allows 30s, and
- * this probe runs the same binary against the same corpus: a `recall stats`
- * that has to wake an embedder and round-trip a collection genuinely takes
- * several seconds.  The old 6s ceiling was under the measured cost, so a
- * perfectly healthy corpus timed out on every probe and the panel reported
- * "did not answer" while the bots using it were fine. */
-const RECALL_CLI_TIMEOUT_MS = 30_000;
-
-// What a failed child process looks like, parsed rather than poked at: a
-// timeout kills the child (so it shows up as a signal), a non-zero exit
-// carries a numeric code, and a failure to start carries a string one.
-const cliFailureSchema = z.object({
-  killed: z.boolean().optional(),
-  signal: z.string().nullish(),
-  stderr: z.string().optional(),
-  message: z.string().optional(),
-});
-const cliExitCodeSchema = z.object({ code: z.number() });
-const cliSpawnFailureSchema = z.object({ code: z.literal("ENOENT") });
-
-/** Why a `recall` CLI call failed, in words a person can act on, and safe to
- * return over the API: no environment values, and anything the child printed
- * goes through the same redaction the chat cards use, because a CLI can echo
- * a URL — or a credential — into its own stderr. */
-function describeCliFailure(err: unknown, timeoutMs: number): string {
-  if (err instanceof SyntaxError) return "it printed output that was not JSON";
-  const parsed = cliFailureSchema.safeParse(err);
-  const failure = parsed.success ? parsed.data : {};
-  // execFile kills the child on timeout, so a signal is how a timeout looks
-  // from here — there is no distinct error code for it.
-  if (failure.killed || failure.signal === "SIGTERM" || failure.signal === "SIGKILL") {
-    return `it timed out after ${Math.round(timeoutMs / 1000)}s`;
-  }
-  if (cliSpawnFailureSchema.safeParse(err).success) return "the executable could not be run";
-  const raw = (failure.stderr?.trim() || failure.message || String(err)).trim();
-  const safe = redactSecretsInText(raw).replace(/\s+/g, " ").trim().slice(0, 300);
-  const exit = cliExitCodeSchema.safeParse(err);
-  const exited = exit.success ? `it exited ${exit.data.code}` : "it failed";
-  return safe ? `${exited}: ${safe}` : exited;
-}
-
 /** Whether a real recall route lets this caller through.  A public /health
  * says nothing about the routes a bot actually calls — on a service behind
  * Cloudflare Access, /health is commonly the one bypass while /recall/* is
@@ -384,7 +343,12 @@ async function recallRouteGate(
   try {
     const probe = await fetch(`${url}/recall/stats`, {
       headers,
-      redirect: "manual",
+      // Followed, so a benign same-host redirect (an http:// -> https://
+      // upgrade, a trailing-slash normalisation) just works instead of being
+      // misread as a login gate.  accessLoginHint still catches a real Access
+      // login page here — it checks the followed response's final URL and
+      // content type, and that check runs before status is inspected below.
+      redirect: "follow",
       signal: AbortSignal.timeout(4000),
     });
     const gate = accessLoginHint(probe);
@@ -6748,9 +6712,11 @@ const server = createServer(async (req, res) => {
       try {
         const healthRes = await fetch(`${url}/health`, {
           headers: recallHeaders,
-          // Manual, so a login redirect is visible as a redirect instead of
-          // being followed into an HTML page that fails to parse as JSON.
-          redirect: "manual",
+          // Followed, so a benign same-host redirect just works instead of
+          // being misread as a login gate.  accessLoginHint still catches a
+          // real Access login page — the check below runs before any JSON
+          // parsing, on the followed response's final URL and content type.
+          redirect: "follow",
           signal: AbortSignal.timeout(4000),
         });
         gateProblem = accessLoginHint(healthRes);
@@ -6796,7 +6762,8 @@ const server = createServer(async (req, res) => {
       try {
         const headers: Record<string, string> = { "Content-Type": "application/json", ...access };
         if (apiKey) headers["api-key"] = apiKey;
-        const resList = await fetch(`${url}/collections`, { headers, redirect: "manual", signal: AbortSignal.timeout(4000) });
+        // Followed, for the same reason as the /health probe above.
+        const resList = await fetch(`${url}/collections`, { headers, redirect: "follow", signal: AbortSignal.timeout(4000) });
         const listGate = accessLoginHint(resList);
         if (listGate) {
           return json(res, 200, { ready: false, configured: true, url, collection, accessGated: true, error: `The service is reachable but ${listGate}.` });

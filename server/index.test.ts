@@ -3582,7 +3582,12 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
 
   /** A stub recall service that only answers callers carrying a Cloudflare
    * Access service token, and otherwise redirects to a login page — exactly
-   * what a host published behind Access does. */
+   * what a host published behind Access does.  The redirect target carries
+   * Access's own path marker (/cdn-cgi/access/login/...) on the SAME origin
+   * as the stub rather than a real cloudflareaccess.com host: that marker is
+   * what a genuine Access gateway always sends regardless of which host
+   * answers it, so the probe's real "follow, then recognise" path gets
+   * exercised without this test depending on live DNS/network access. */
   const startGatedRecall = async (token: { id: string; secret: string } | null) => {
     // Node models a header as string | string[]; every one read here is
     // single-valued, so the first value is the value.
@@ -3598,11 +3603,14 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
         hasAccessSecret: (accessSecret ?? "").length > 0,
         authorization: headerValue(req.headers.authorization),
       });
+      if ((req.url ?? "").startsWith("/cdn-cgi/access/login/")) {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end("<html><body>Sign in with your identity provider to continue.</body></html>");
+        return;
+      }
       const admitted = token !== null && accessId === token.id && accessSecret === token.secret;
       if (!admitted) {
-        res.writeHead(302, {
-          location: "https://fixture-team.cloudflareaccess.com/cdn-cgi/access/login/recall.example.com?kid=fixture",
-        });
+        res.writeHead(302, { location: "/cdn-cgi/access/login/recall.example.com?kid=fixture" });
         res.end();
         return;
       }
@@ -3716,6 +3724,38 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
     } finally {
       await clear();
       await stub.close();
+      setRecallMode("ok");
+    }
+  });
+
+  it("follows a same-host redirect (e.g. an http:// -> https:// upgrade) instead of reporting an Access gate", async () => {
+    // The bug this guards against: a fetch made with `redirect: "manual"`
+    // treated ANY 3xx as an identity gateway, so a plain scheme upgrade or a
+    // trailing-slash normalisation on the operator's own host produced the
+    // same "behind Cloudflare Access — add a service token" message this
+    // block's earlier tests pin for a real gateway.
+    setRecallMode("fail");
+    const server = createServer((req, res) => {
+      if (req.url === "/health") {
+        res.writeHead(301, { location: "/health-canonical" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ collection: "fake-corpus", points: 500, backend_ok: true, version: "1.2.3" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // SAFETY: listen() has resolved on a TCP socket, so address() is an
+    // AddressInfo with a bound port, never null or a pipe name.
+    const port = (server.address() as { port: number }).port;
+    const clear = await configureRecall({ url: `http://127.0.0.1:${port}`, collection: "fake-corpus" });
+    try {
+      const status = await api("GET", "/api/qdrant/status");
+      expect(status.body).toMatchObject({ ready: true, configured: true, source: "recall-service", collection: "fake-corpus" });
+      expect(status.body.accessGated).toBeUndefined();
+    } finally {
+      await clear();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       setRecallMode("ok");
     }
   });
