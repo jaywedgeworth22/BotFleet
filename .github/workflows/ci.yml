@@ -41,6 +41,8 @@ jobs:
         run: pnpm broker:test
       - name: Electron node tests
         run: pnpm test:updater && pnpm test:desktop-viewer && pnpm test:package-link && pnpm test:save-file && pnpm test:server-boot-probe
+      - name: iOS ship workflow contract
+        run: pnpm test:ios-ship
       - name: packaged server smoke
         run: pnpm test:packaged-server
       - run: pnpm check:electron

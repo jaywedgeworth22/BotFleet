@@ -67,7 +67,7 @@ Two spaces between sentences in every paragraph a human reads: product UI, App S
 
 ## iOS Build Loop (owner ruling)
 
-`xcodebuild` and `xcrun simctl` via bash are pre-approved; run them, do not ask.  Do not hand-edit `.pbxproj`, entitlements, or xibs — change `ios/project.yml` and run `xcodegen generate`.  Screenshot the simulator before claiming a user-visible iOS change.  Ship to TestFlight with `scripts/ios-ship-testflight.sh` (wraps `/Users/jay/apps/ios-fleet/ship-testflight.sh`).  Version policy: `MARKETING_VERSION` 1.0.x series, `CURRENT_PROJECT_VERSION` as `yyyymmddHHMM`.  Canonical: `AGENT-SYNC.md` § iOS agent build loop and § App Versioning & TestFlight Build Policy.
+`xcodebuild` and `xcrun simctl` via bash are pre-approved; run them, do not ask.  Do not hand-edit `.pbxproj`, entitlements, or xibs — change `ios/project.yml` and run `xcodegen generate`.  Screenshot the simulator before claiming a user-visible iOS change.  Primary TestFlight path is hosted `.github/workflows/ios-ship.yml` on `macos-latest` (push path filter on `ios/**`, plus schedule/dispatch).  The in-repo wrapper `scripts/ios-ship-testflight.sh` prefers `scripts/ios-fleet/`, then `/Users/jay/apps/ios-fleet`.  Hosted ships use the script default interval (no extra flags).  Version policy: `MARKETING_VERSION` 1.0.x series, `CURRENT_PROJECT_VERSION` as `yyyymmddHHMM`.  Canonical: `AGENT-SYNC.md` § iOS agent build loop and § App Versioning & TestFlight Build Policy.
 
 ## Secret Handoff (owner -> agent)
 
