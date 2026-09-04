@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -95,9 +96,13 @@ describe("classifyDshError", () => {
 
 describe("dshCredentialCandidates", () => {
   it("honors DSH_HOME over the default ~/.dsh path", () => {
-    expect(dshCredentialCandidates({ HOME: "/home/jay" })[0]).toBe("/home/jay/.dsh/.credentials.yaml");
+    // Built with join(), so the separator is the host's.  Asserting a literal
+    // "/" here passes on macOS and Linux and fails on Windows for a path the
+    // implementation got right — compare against the path it should build,
+    // not against one platform's spelling of it.
+    expect(dshCredentialCandidates({ HOME: "/home/jay" })[0]).toBe(join("/home/jay", ".dsh", ".credentials.yaml"));
     expect(dshCredentialCandidates({ HOME: "/home/jay", DSH_HOME: "/opt/dsh" })[0]).toBe(
-      "/opt/dsh/.credentials.yaml",
+      join("/opt/dsh", ".credentials.yaml"),
     );
   });
 
