@@ -210,23 +210,60 @@ export function hostToolPrefix(mounts: ComputerMount[]): string | null {
  *   [...]      these destinations, all of them.
  *
  * Collapsing the first two answers "give this bot no computer" with the
- * person's own desktop, which is the one wrong answer available. */
+ * person's own desktop, which is the one wrong answer available.
+ *
+ * The result is filtered through `allowed` — the operator-level allowlist —
+ * so disabling "This Computer" once at the top of settings keeps any bot from
+ * running on the host.  An empty intersection falls back to `auto: true` so
+ * a bot that was never configured still gets the chance to discover no
+ * desktop is available, rather than a silently-empty grant that no driver
+ * would treat as a permission.  A bot that was explicitly configured gets
+ * exactly the intersection, even if that is empty — turning Off should still
+ * be Off, and a misconfigured allowlist is the operator's to repair, not the
+ * bot's to silently route around. */
 export function resolveGrants(
   botComputers: ComputerDestination[] | undefined,
   runOn?: string,
   workspaceDefault?: ComputerDestination[],
+  allowed: ComputerDestination[] | null = null,
 ): { granted: ComputerDestination[]; auto: boolean } {
   // A cloud routine runs on the box whatever the bot is set to, and is never
-  // auto — it named its destination.
+  // auto — it named its destination.  The cloud destination is always
+  // available, because the routine chose to run on the cloud in the first
+  // place; the allowlist cannot retroactively un-allow a destination the
+  // caller already named.
   if (runOn === "cloud") return { granted: ["cloud"], auto: false };
   // The workspace default answers "nobody has said" — it fills in for a bot
   // that was never configured, and only then. An explicitly emptied bot stays
   // off, because turning a bot's computer off should not be undone by a
   // setting made somewhere else.
-  if (botComputers === undefined && workspaceDefault?.length) {
-    return { granted: [...workspaceDefault], auto: false };
+  const originallyAuto = botComputers === undefined;
+  let granted: ComputerDestination[];
+  let auto: boolean;
+  if (originallyAuto && workspaceDefault?.length) {
+    granted = [...workspaceDefault];
+    auto = false;
+  } else {
+    granted = botComputers ?? [];
+    auto = originallyAuto;
   }
-  return { granted: botComputers ?? [], auto: botComputers === undefined };
+  if (allowed === null) return { granted, auto };
+  const allowedSet = new Set(allowed);
+  const filtered = granted.filter((entry) => allowedSet.has(entry));
+  // The bot never chose a destination of its own.  The allowlist is a
+  // workspace-level concern, not a per-bot one, so an intersection that
+  // narrows to empty should fall back to "auto" — let the runtime
+  // rediscover what's actually available.  The original granted set is
+  // returned alongside the auto flag so the runtime can still see what
+  // the workspace default was trying to offer.  A bot that picked its own
+  // destinations gets the truth, even if that truth is empty: turning Off
+  // should still be Off, and a misconfigured allowlist is the operator's to
+  // repair, not the bot's to silently route around.
+  if (originallyAuto) {
+    if (filtered.length === 0) return { granted, auto: true };
+    return { granted: filtered, auto: false };
+  }
+  return { granted: filtered, auto: false };
 }
 
 

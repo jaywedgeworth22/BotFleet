@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   DATA_DIR,
+  allowedBotComputers,
+  filterAllowedComputers,
   instanceConfigs,
   isValidSshAlias,
   loadConfig,
@@ -510,5 +512,52 @@ describe("workspace credential env strip", () => {
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_OPENAI_IMAGE_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("DEEPSEEK_API_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("DEEPSEEK_URL");
+  });
+});
+
+describe("operator-level computer allowlist", () => {
+  it("returns null when the allowlist is absent, so legacy installs pass through", () => {
+    // The shipped default: every destination is allowed, and the runtime
+    // never sees the allowlist at all.  This is what an upgraded install
+    // looks like until the operator narrows the toggle.
+    expect(allowedBotComputers({})).toBeNull();
+    expect(allowedBotComputers({ botDefaults: { computers: ["cloud", "local"] } })).toBeNull();
+  });
+
+  it("de-duplicates the allowlist while preserving the operator's order", () => {
+    expect(
+      allowedBotComputers({ botDefaults: { allowedComputers: ["local", "vm", "local", "cloud"] } }),
+    ).toEqual(["local", "vm", "cloud"]);
+  });
+
+  it("treats an empty allowlist as a real, persisted nothing-is-allowed", () => {
+    expect(allowedBotComputers({ botDefaults: { allowedComputers: [] } })).toEqual([]);
+  });
+
+  it("filters a granted set through the allowlist and keeps the input order", () => {
+    // A bot granted [local, vm, cloud] with the operator's allowlist set to
+    // [cloud, vm] should land on [vm, cloud] — the allowlist does not
+    // re-order, it only drops.
+    expect(filterAllowedComputers(["local", "vm", "cloud"], ["cloud", "vm"])).toEqual([
+      "vm",
+      "cloud",
+    ]);
+  });
+
+  it("passes everything through when the allowlist is null", () => {
+    expect(filterAllowedComputers(["local", "vm", "cloud"], null)).toEqual(["local", "vm", "cloud"]);
+  });
+
+  it("returns an empty list when nothing in the grant is allowed", () => {
+    expect(filterAllowedComputers(["local", "vm"], ["cloud"])).toEqual([]);
+  });
+
+  it("persists allowedComputers through the schema and the round-trip", () => {
+    expect(parseConfigPatch({ botDefaults: { allowedComputers: ["local"] } })).toEqual({
+      botDefaults: { allowedComputers: ["local"] },
+    });
+    expect(() => parseConfigPatch({ botDefaults: { allowedComputers: ["box"] } })).toThrow(
+      "botDefaults.allowedComputers",
+    );
   });
 });

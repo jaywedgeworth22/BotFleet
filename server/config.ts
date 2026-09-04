@@ -108,10 +108,17 @@ const vpsConfigSchema = z.object({
  *
  * Unset ships as unset, so a fresh install still behaves exactly as before:
  * reuse whatever already exists, provision nothing, and on macOS fall back to
- * host control.  Nobody gets a server they did not ask for. */
+ * host control.  Nobody gets a server they did not ask for.
+ *
+ * `allowedComputers` is the operator-level allowlist: every granted set is
+ * filtered through it before it is mounted, so disabling "This Computer" at the
+ * top of the settings page is enough to keep any bot from running on the
+ * host.  Absent means "every destination is allowed", preserving the shipped
+ * behavior for every existing install. */
 const botDefaultsSchema = z.object({
   computers: z.array(z.enum(["cloud", "vm", "local"])).max(3).optional(),
   cloudBackend: z.enum(["box", "vps"]).optional(),
+  allowedComputers: z.array(z.enum(["cloud", "vm", "local"])).max(3).optional(),
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -237,7 +244,12 @@ export interface AppConfig {
   autoUpdate?: { enabled?: boolean };
   profile?: { name?: string; email?: string };
   rooms?: { turnTimeoutMinutes: number };
-  botDefaults?: { computers?: Array<"cloud" | "vm" | "local">; cloudBackend?: "box" | "vps" };
+  botDefaults?: {
+    computers?: Array<"cloud" | "vm" | "local">;
+    cloudBackend?: "box" | "vps";
+    /** Operator-level allowlist; an absent entry means the destination is allowed. */
+    allowedComputers?: Array<"cloud" | "vm" | "local">;
+  };
   ingress?: { publicUrl?: string };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */
@@ -352,6 +364,29 @@ export function usageProjectRules(cfg: AppConfig): Array<{ slug: string; match: 
 
 export function localVmMaxInstances(cfg: AppConfig): number {
   return cfg.localVm?.maxInstances ?? DEFAULT_LOCAL_VM_MAX_INSTANCES;
+}
+
+/** The destinations any bot is allowed to run on.  An absent allowlist means
+ * "every destination is allowed", which is the shipped default and the
+ * behavior an upgraded install sees until the operator narrows it.  An empty
+ * allowlist is a deliberate, persisted "no bot may run on any desktop here". */
+export function allowedBotComputers(cfg: AppConfig): Array<"cloud" | "vm" | "local"> | null {
+  const list = cfg.botDefaults?.allowedComputers;
+  if (list === undefined) return null;
+  // De-duplicate while keeping the order the operator chose.
+  return [...new Set(list)];
+}
+
+/** Filter a granted set against the operator allowlist.  An absent allowlist
+ * passes everything through.  An entry blocked by the allowlist is dropped;
+ * the result keeps the order of the input. */
+export function filterAllowedComputers<T extends "cloud" | "vm" | "local">(
+  granted: readonly T[],
+  allowed: Array<"cloud" | "vm" | "local"> | null,
+): T[] {
+  if (allowed === null) return [...granted];
+  const set = new Set(allowed);
+  return granted.filter((entry) => set.has(entry));
 }
 
 export function skillRecorderEnabled(cfg: AppConfig): boolean {
@@ -522,7 +557,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   // not wipe a stored token.  Omitting them from this list meant PATCH
   // /api/config { usage } never wrote ~/.botfleet/config.json, so Settings
   // reloaded empty fields.
-  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant"] as const) {
+  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "botDefaults"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

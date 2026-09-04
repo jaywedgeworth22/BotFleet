@@ -3942,6 +3942,112 @@ describe("PATCH /api/terminology", () => {
   });
 });
 
+describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
+  it("applies the workspace default to every bot, filtered through the allowlist", async () => {
+    const ada = (await api("POST", "/api/bots", { name: "Ada Apply" })).body.bot;
+    const lin = (await api("POST", "/api/bots", { name: "Lin Apply" })).body.bot;
+
+    // Narrow the operator allowlist so the apply cannot smuggle a blocked
+    // destination into a bot's computers list.
+    const allow = await api("PUT", "/api/config", { botDefaults: { allowedComputers: ["cloud", "vm"] } });
+    expect(allow.status).toBe(200);
+    expect(allow.body.botDefaults.allowedComputers).toEqual(["cloud", "vm"]);
+
+    const apply = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["cloud", "vm", "local"] },
+    });
+    expect(apply.status).toBe(200);
+    expect(apply.body.applied).toBeGreaterThanOrEqual(2);
+    // The applied set is the workspace default intersected with the
+    // allowlist — the client should see exactly what every bot received.
+    expect(apply.body.computers).toEqual(["cloud", "vm"]);
+
+    const bots = (await api("GET", "/api/bots")).body.bots;
+    const adaAfter = bots.find((b: { id: string }) => b.id === ada.id);
+    const linAfter = bots.find((b: { id: string }) => b.id === lin.id);
+    expect(adaAfter.computers).toEqual(["cloud", "vm"]);
+    expect(linAfter.computers).toEqual(["cloud", "vm"]);
+
+    await api("DELETE", `/api/bots/${ada.id}`);
+    await api("DELETE", `/api/bots/${lin.id}`);
+  });
+
+  it("rejects a non-array destination list and an unknown destination", async () => {
+    const notArray = await api("POST", "/api/bots/apply-defaults", { botDefaults: { computers: "cloud" } });
+    expect(notArray.status).toBe(400);
+    const unknown = await api("POST", "/api/bots/apply-defaults", { botDefaults: { computers: ["box"] } });
+    expect(unknown.status).toBe(400);
+  });
+
+  it("leaves a bot's own choice alone when the allowlist empties the apply set", async () => {
+    const noAllow = await api("PUT", "/api/config", { botDefaults: { allowedComputers: ["cloud"] } });
+    expect(noAllow.status).toBe(200);
+
+    const eira = (await api("POST", "/api/bots", { name: "Eira Keep" })).body.bot;
+    // The smoke environment is darwin; the host-mac acknowledgement is
+    // only required when granting local for the first time.
+    const set = await api("PATCH", `/api/bots/${eira.id}`, {
+      computers: ["local"],
+      autoApprove: true,
+      acknowledgeLocalAuto: true,
+    });
+    expect(set.status).toBe(200);
+    expect(set.body.bot.computers).toEqual(["local"]);
+
+    // A workspace default the allowlist blocks entirely must NOT clear
+    // the bot's local choice.  The apply's "computers" is the empty
+    // intersection, and the runtime treats the bot's own [] as "Off" —
+    // not as a permission to overwrite the bot's last named choice.
+    const apply = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["local"] },
+    });
+    expect(apply.status).toBe(200);
+    expect(apply.body.computers).toEqual([]);
+
+    const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === eira.id);
+    // The bot's own previous choice stays put; the apply neither
+    // overwrites it (filtered set is empty) nor strips it.
+    expect(after.computers).toEqual(["local"]);
+
+    await api("DELETE", `/api/bots/${eira.id}`);
+    // restore the open allowlist for the next describe block
+    await api("PUT", "/api/config", { botDefaults: { allowedComputers: null } });
+  });
+});
+
+describe("POST /api/bots/apply-model-defaults (set all bots to default models)", () => {
+  it("applies only the supplied slots, leaving the rest of the bot alone", async () => {
+    const ada = (await api("POST", "/api/bots", { name: "Ada Models" })).body.bot;
+    // Pin a known primary so the test can detect an over-write later.
+    const set = await api("PATCH", `/api/bots/${ada.id}`, {
+      modelSelection: { instanceId: "fake", model: "before" },
+    });
+    expect(set.status).toBe(200);
+
+    // Only primary is supplied; fallbacks must remain absent on the bot.
+    const apply = await api("POST", "/api/bots/apply-model-defaults", {
+      slots: { primary: { instanceId: "fake", model: "after" } },
+    });
+    expect(apply.status).toBe(200);
+    expect(apply.body.applied).toBeGreaterThanOrEqual(1);
+
+    const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === ada.id);
+    expect(after.modelSelection.model).toBe("after");
+    expect(after.modelSelection.fallbacks ?? []).toEqual([]);
+
+    await api("DELETE", `/api/bots/${ada.id}`);
+  });
+
+  it("rejects a slot that is not an object, and one missing instanceId", async () => {
+    const bad = await api("POST", "/api/bots/apply-model-defaults", { slots: { primary: "fake" } });
+    expect(bad.status).toBe(400);
+    const missing = await api("POST", "/api/bots/apply-model-defaults", {
+      slots: { primary: { instanceId: "fake" } },
+    });
+    expect(missing.status).toBe(400);
+  });
+});
+
 describe("trust boundaries: phone-originated room folders, coarse always-allow, and the packaged UI folder", () => {
   const phone = { "x-botfleet-companion": "1" };
   const apiAs = async (

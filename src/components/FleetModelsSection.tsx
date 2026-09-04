@@ -6,16 +6,217 @@
 // is a comparison — you want two on the expensive engine and the rest
 // somewhere cheaper, or you want to move a whole tier off a provider that
 // is rate-limiting you.  This is that comparison, and it edits in place.
+//
+// Above the per-bot table sits a "Default" block with the same four Model
+// pickers.  The "Set all bots to default" button applies those defaults to
+// every bot in one call.  An empty picker is a deliberate "leave this slot
+// alone" — important because users frequently want to standardize the
+// primary engine without flattening their hand-curated fallback chain.
 import { useState } from "react";
 import { Plus, X } from "lucide-react";
 
-import { useStore, type Bot, type ModelSelection } from "@/state/store";
+import { api, useStore, type Bot, type ConfigStatus, type ModelSelection } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { BotAvatar } from "./Avatar";
 import { ModelPicker } from "./ModelPicker";
 
 /** The most fallbacks a bot may carry, matching the per-bot profile. */
 const MAX_FALLBACKS = 2;
+
+/** A default-model slot is either a real selection (so the server can
+ * PATCH the bot's own value to match) or empty (so the server should leave
+ * the bot's existing value at that slot alone). */
+type DefaultSlot = ModelSelection | null;
+
+function pickEmptyBot(bots: Bot[]): Bot | null {
+  return bots.find((bot) => !bot.hidden) ?? null;
+}
+
+/** One default-slot: either an open picker or a "Set default" pill.  The
+ * picker keeps its own internal state, so when the user has not picked a
+ * model yet we show a button that opens a fresh picker.  Clearing the
+ * slot returns it to the empty pill.  This is how the apply endpoint can
+ * see a null and skip the slot for every bot. */
+function DefaultSlot({
+  bot,
+  value,
+  onChange,
+  onClear,
+}: {
+  bot: Bot;
+  value: DefaultSlot;
+  onChange: (next: ModelSelection) => void;
+  onClear: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  if (!value) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-hairline/60 px-2.5 py-1.5 text-[13px] text-ink-secondary hover:border-hairline hover:text-ink"
+      >
+        <Plus size={13} />
+        Set default
+      </button>
+    );
+  }
+  if (!open) {
+    return (
+      <div className="flex items-start gap-1">
+        <div className="min-w-0 flex-1">
+          <ModelPicker
+            bot={bot}
+            contained
+            selection={value}
+            onChange={onChange}
+          />
+        </div>
+        <button
+          type="button"
+          onClick={onClear}
+          aria-label="Clear this default"
+          title="Clear this default"
+          className="mt-1 shrink-0 rounded-md p-1 text-ink-secondary hover:bg-raised/70 hover:text-ink"
+        >
+          <X size={13} />
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-start gap-1">
+      <div className="min-w-0 flex-1">
+        <ModelPicker
+          bot={bot}
+          contained
+          selection={value}
+          onChange={onChange}
+        />
+      </div>
+      <button
+        type="button"
+        onClick={onClear}
+        aria-label="Clear this default"
+        title="Clear this default"
+        className="mt-1 shrink-0 rounded-md p-1 text-ink-secondary hover:bg-raised/70 hover:text-ink"
+      >
+        <X size={13} />
+      </button>
+    </div>
+  );
+}
+
+function DefaultModelBlock() {
+  const { state, dispatch } = useStore();
+  const [primary, setPrimary] = useState<DefaultSlot>(null);
+  const [secondary, setSecondary] = useState<DefaultSlot>(null);
+  const [fallback1, setFallback1] = useState<DefaultSlot>(null);
+  const [fallback2, setFallback2] = useState<DefaultSlot>(null);
+  const [applying, setApplying] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // The ModelPicker needs a `bot` to drive its instance list and quota
+  // display.  The default is independent of any one bot, so we use the
+  // first non-hidden bot as a stand-in for the engine catalog.  The
+  // picker's callbacks are still the only state we keep.
+  const standIn = pickEmptyBot(state.bots);
+  const noneFilled = !primary && !secondary && !fallback1 && !fallback2;
+
+  const apply = () => {
+    if (!standIn) {
+      setError("Add a bot first so BotFleet has an engine to pick from.");
+      return;
+    }
+    setApplying(true);
+    setError(null);
+    api("/api/bots/apply-model-defaults", {
+      method: "POST",
+      body: JSON.stringify({
+        slots: {
+          primary,
+          secondary,
+          fallback1,
+          fallback2,
+        },
+      }),
+    })
+      .then((response: { applied: number; config?: ConfigStatus }) => {
+        if (response.config) dispatch({ type: "configStatus", config: response.config });
+        // Clear the form on success: the next operator action should
+        // start from a clean "no default set" state.
+        setPrimary(null);
+        setSecondary(null);
+        setFallback1(null);
+        setFallback2(null);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setApplying(false));
+  };
+
+  if (!standIn) {
+    return (
+      <div className="rounded-xl border border-hairline/40 bg-card px-3 py-3 text-[13px] text-ink-secondary">
+        Add a bot to set a default engine.
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-xl border border-hairline/40 bg-card px-3 py-3">
+      <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-3 border-b border-hairline/40 pb-2 text-[12px] font-medium uppercase tracking-[0.06em] text-ink-secondary">
+        <div>Default</div>
+        <div>Primary</div>
+        <div>Secondary</div>
+        <div>Fallback</div>
+      </div>
+      <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-3 py-3">
+        <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium text-ink-secondary">
+          Workspace default
+        </div>
+        <DefaultSlot
+          bot={standIn}
+          value={primary}
+          onChange={(selection) => setPrimary({ instanceId: selection.instanceId, model: selection.model })}
+          onClear={() => setPrimary(null)}
+        />
+        <DefaultSlot
+          bot={standIn}
+          value={secondary}
+          onChange={(selection) => setSecondary({ instanceId: selection.instanceId, model: selection.model })}
+          onClear={() => setSecondary(null)}
+        />
+        <DefaultSlot
+          bot={standIn}
+          value={fallback1}
+          onChange={(selection) => setFallback1({ instanceId: selection.instanceId, model: selection.model })}
+          onClear={() => setFallback1(null)}
+        />
+      </div>
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <button
+          type="button"
+          disabled={applying || noneFilled}
+          onClick={() => void apply()}
+          title={
+            noneFilled
+              ? "Pick at least one slot to apply."
+              : "Apply the current default to every bot, leaving any empty slot alone."
+          }
+          className={cn(
+            "rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:brightness-110",
+            (applying || noneFilled) && "opacity-50",
+          )}
+        >
+          {applying ? "Applying…" : "Set All Bots To Default"}
+        </button>
+        <span className="text-[11.5px] text-ink-secondary">
+          Empty fields leave the bot's existing value at that slot alone.
+        </span>
+      </div>
+      {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}
+    </div>
+  );
+}
 
 function BotModelRow({ bot }: { bot: Bot }) {
   const { dispatch } = useStore();
@@ -161,6 +362,8 @@ export function FleetModelsSection() {
           })}
         </div>
       )}
+
+      <DefaultModelBlock />
 
       <input
         value={query}
