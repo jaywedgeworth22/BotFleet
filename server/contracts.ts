@@ -5,6 +5,8 @@
 // Stream. The shapes and names are kept so the two codebases stay mutually
 // readable.
 
+import type { ComputerMount } from "./computer-grants.ts";
+
 export type DriverKind = string;
 export type InstanceId = string;
 export type ThreadId = string;
@@ -198,6 +200,13 @@ export interface SendTurnInput {
     dweb?: { url: string };
     /** Shared Qdrant Agent RAG vector memory integration. */
     qdrant?: { command: string; args: string[]; env: Record<string, string> };
+    /** Every computer this bot was granted for this turn, in the order the
+     * person granted them. A grant is a capability, not a preference: each
+     * entry is mounted as its own MCP server so the agent chooses per task.
+     * `computer` and `localComputer` above stay populated with the first
+     * mount of each shape, so a consumer that still expects exactly one
+     * computer keeps working. */
+    computers?: ComputerMount[];
   };
   cwd?: string;
 }

@@ -29,6 +29,7 @@ import type {
   SendTurnInput,
 } from "../contracts.ts";
 import { computerProxyEnv } from "../container-computer.ts";
+import { hostToolPrefix, turnComputerMounts } from "../computer-grants.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import {
@@ -550,7 +551,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
-      const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
+      const computerMounts = turnComputerMounts(turn.integrations);
+      // Scope approval to the host computer's own tools. A remote desktop's
+      // tools also begin with "mcp__computer", but clicking in a disposable
+      // container is not clicking on the person's machine.
+      const hostPrefix = hostToolPrefix(computerMounts);
+      const controlsHost = hostPrefix !== null;
       // A bypassPermissions instance keeps its bypass for everything else,
       // but a turn that can click on the user's real desktop runs brokered:
       // the CLI gets acceptEdits plus the permission-prompt tool, so every
@@ -612,23 +618,27 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.composio = { ...turn.integrations.composio };
         allowed.push("mcp__composio");
       }
-      if (turn.integrations?.computer) {
-        mcpServers.computer = {
-          command: process.execPath,
-          args: [PROXY_PATH],
-          env: { ...NODE_ENV_FLAG, ...computerProxyEnv(turn.integrations.computer) },
-        };
-        allowed.push("mcp__computer");
-      } else if (turn.integrations?.localComputer) {
-        const local = turn.integrations.localComputer;
-        mcpServers.computer = {
-          command: local.command,
-          args: local.args,
-          env: local.env,
-        };
-        // The isolated Local VM preserves the established pre-allow behavior.
-        // Host tools always route through BotFleet's permission broker.
-        if (!controlsHost) allowed.push("mcp__computer");
+      // Every granted computer gets its own server, so the agent can choose
+      // per task instead of the harness choosing once for it.
+      for (const mount of computerMounts) {
+        if (mount.box) {
+          mcpServers[mount.name] = {
+            command: process.execPath,
+            args: [PROXY_PATH],
+            env: { ...NODE_ENV_FLAG, ...computerProxyEnv(mount.box) },
+          };
+          allowed.push(`mcp__${mount.name}`);
+        } else if (mount.stdio) {
+          const local = mount.stdio;
+          mcpServers[mount.name] = {
+            command: local.command,
+            args: local.args,
+            env: local.env,
+          };
+          // Isolated computers preserve the established pre-allow behavior.
+          // Host tools always route through BotFleet's permission broker.
+          if (local.scope !== "local-computer") allowed.push(`mcp__${mount.name}`);
+        }
       }
       // peer-agent comms (list_bots/ask_bot) — the harness builds the whole
       // spawn contract (command/args/env incl. the boot token) in
@@ -748,7 +758,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               tool: ask.tool,
               summary: askSummary(ask),
               approvalScope:
-                typeof ask.tool === "string" && controlsHost && ask.tool.startsWith("mcp__computer")
+                typeof ask.tool === "string" && hostPrefix !== null && ask.tool.startsWith(hostPrefix)
                   ? "local-computer"
                   : undefined,
               choices: Array.isArray(ask.input?.choices) ? (ask.input.choices as string[]).slice(0, 5) : undefined,
@@ -763,7 +773,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
               behavior: resolved.behavior,
               source: resolved.source,
               approvalScope:
-                controlsHost && typeof askTools.get(resolved.id) === "string" && askTools.get(resolved.id)!.startsWith("mcp__computer") ? "local-computer" : undefined,
+                hostPrefix !== null && typeof askTools.get(resolved.id) === "string" && askTools.get(resolved.id)!.startsWith(hostPrefix) ? "local-computer" : undefined,
             });
             askTools.delete(resolved.id);
           },

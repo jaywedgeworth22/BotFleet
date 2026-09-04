@@ -13,6 +13,7 @@ import { homedir } from "node:os";
 
 import { stripWorkspaceCredentialEnv } from "../config.ts";
 import { computerProxyEnv } from "../container-computer.ts";
+import { hostToolPrefix, turnComputerMounts } from "../computer-grants.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 
@@ -157,25 +158,29 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         if (turn.integrations?.agents) {
           mountMcpServer(appServerArgs, env, "agents", turn.integrations.agents);
         }
-        if (turn.integrations?.computer) {
-          const proxyEnv = computerProxyEnv(turn.integrations.computer);
-          mountMcpServer(appServerArgs, env, "computer", {
-            command: process.execPath,
-            args: [SPAWNED_PROXIES.computer],
-            env: {
-              ELECTRON_RUN_AS_NODE: "1",
-              OGB_BOX_ID: proxyEnv.OGB_BOX_ID ?? "",
-              OGB_BOX_TOKEN: proxyEnv.OGB_BOX_TOKEN ?? "",
-              // who-is-driving endpoint, so a person taking the wheel in the
-              // panel pauses this bot's hands mid-turn
-              OMB_CONTROL_URL: proxyEnv.OMB_CONTROL_URL ?? "",
-              OMB_CONTROL_TOKEN: proxyEnv.OMB_CONTROL_TOKEN ?? "",
-            },
-          });
-        } else if (turn.integrations?.localComputer) {
-          // The host daemon and isolated Local VM both arrive as a direct Cua
-          // Driver stdio MCP server. Codex sees the same computer tool surface.
-          mountMcpServer(appServerArgs, env, "computer", turn.integrations.localComputer);
+        // One server per granted computer. This was an if/else if, which
+        // handed a bot holding two desktops exactly one of them.
+        for (const mount of turnComputerMounts(turn.integrations)) {
+          if (mount.box) {
+            const proxyEnv = computerProxyEnv(mount.box);
+            mountMcpServer(appServerArgs, env, mount.name, {
+              command: process.execPath,
+              args: [SPAWNED_PROXIES.computer],
+              env: {
+                ELECTRON_RUN_AS_NODE: "1",
+                OGB_BOX_ID: proxyEnv.OGB_BOX_ID ?? "",
+                OGB_BOX_TOKEN: proxyEnv.OGB_BOX_TOKEN ?? "",
+                // who-is-driving endpoint, so a person taking the wheel in the
+                // panel pauses this bot's hands mid-turn
+                OMB_CONTROL_URL: proxyEnv.OMB_CONTROL_URL ?? "",
+                OMB_CONTROL_TOKEN: proxyEnv.OMB_CONTROL_TOKEN ?? "",
+              },
+            });
+          } else if (mount.stdio) {
+            // The host daemon, the isolated Local VM, and a VPS desktop all
+            // arrive as a direct Cua Driver stdio MCP server.
+            mountMcpServer(appServerArgs, env, mount.name, mount.stdio);
+          }
         }
         if (turn.integrations?.phone) {
           const bridge = turn.integrations.phone;
@@ -260,7 +265,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // Host-scope tagging mirrors claude.ts: when this turn mounts the real
       // Mac (not a VM), every card carries approvalScope so the harness's
       // local-computer-block backstop applies to remembered always-allows.
-      const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
+      const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
       const handleServerRequest = (msg: any) => {
         const method = msg.method as string;
         const params = msg.params ?? {};

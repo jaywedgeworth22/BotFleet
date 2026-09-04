@@ -26,6 +26,7 @@ import { join } from "node:path";
 
 import { PROVIDER_CREDENTIAL_ENV, stripWorkspaceCredentialEnv } from "../config.ts";
 import { computerProxyEnv } from "../container-computer.ts";
+import { hostToolPrefix, turnComputerMounts } from "../computer-grants.ts";
 import { augmentedPath } from "../env-path.ts";
 import { describeSpawnFailure, killCliTree, spawnCli } from "../procs.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
@@ -68,22 +69,27 @@ export function piThinkingLevel(effort: EffortLevel): (typeof EFFORT_LEVELS)[num
 export function buildMcpServers(turn: SendTurnInput): Record<string, unknown> | null {
   const servers: Record<string, unknown> = {};
   if (turn.integrations?.composio) servers.composio = { ...turn.integrations.composio };
-  if (turn.integrations?.computer) {
-    servers.computer = {
-      command: process.execPath,
-      args: [SPAWNED_PROXIES.computer],
-      env: { ...NODE_ENV_FLAG, ...computerProxyEnv(turn.integrations.computer) },
-    };
-  } else if (turn.integrations?.localComputer) {
-    const local = turn.integrations.localComputer;
-    servers.computer = {
-      command: local.command,
-      args: local.args,
-      env: local.env,
-      // Host control carries scope so the extension gates every call behind
-      // a permission card; isolated computers deliberately omit it.
-      ...(local.scope ? { scope: local.scope } : {}),
-    };
+  // Every computer the bot was granted, each under its own server name. This
+  // was an if/else if, so a bot holding both a remote desktop and this machine
+  // only ever received one of them — whichever the harness happened to set.
+  for (const mount of turnComputerMounts(turn.integrations)) {
+    if (mount.box) {
+      servers[mount.name] = {
+        command: process.execPath,
+        args: [SPAWNED_PROXIES.computer],
+        env: { ...NODE_ENV_FLAG, ...computerProxyEnv(mount.box) },
+      };
+    } else if (mount.stdio) {
+      const local = mount.stdio;
+      servers[mount.name] = {
+        command: local.command,
+        args: local.args,
+        env: local.env,
+        // Host control carries scope so the extension gates every call behind
+        // a permission card; isolated computers deliberately omit it.
+        ...(local.scope ? { scope: local.scope } : {}),
+      };
+    }
   }
   if (turn.integrations?.agents) servers.agents = { ...turn.integrations.agents };
   if (turn.integrations?.phone) servers.phone = { ...turn.integrations.phone };
@@ -455,7 +461,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
       // ctx.ui.confirm, which reaches the harness as request.opened whatever
       // the instance's fullAuto says — so a full-auto bot can mount the
       // desktop and the bot's Auto policy still decides each action.
-      const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
+      const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
       const turnId = newId();
       const pending = new Map<string, (decision: { behavior: "allow" | "deny" | "answer"; message?: string }) => void>();
       let settled = false;

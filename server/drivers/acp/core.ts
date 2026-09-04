@@ -42,6 +42,7 @@ import type {
 } from "../../contracts.ts";
 import { newEventId, newId } from "../../contracts.ts";
 import { computerProxyEnv } from "../../container-computer.ts";
+import { hostToolPrefix, turnComputerMounts } from "../../computer-grants.ts";
 import { augmentedPath } from "../../env-path.ts";
 
 // Resolved from the server root, never relative to this file: bundling inlines
@@ -289,25 +290,27 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             env: acpEnv(composio.env),
           });
         }
-        // The bot's computer, mounted exactly like the Claude driver does.
-        // Cloud boxes use the REST adapter; host and sandbox Cua connections
-        // expose Cua Driver's official MCP server directly.
-        const computer = turn.integrations?.computer;
-        if (computer) {
-          servers.push({
-            name: "computer",
-            command: process.execPath,
-            args: [COMPUTER_PROXY_PATH],
-            env: acpEnv({ ELECTRON_RUN_AS_NODE: "1", ...computerProxyEnv(computer) }),
-          });
-        } else if (turn.integrations?.localComputer) {
-          const local = turn.integrations.localComputer;
-          servers.push({
-            name: "computer",
-            command: local.command,
-            args: local.args,
-            env: acpEnv(local.env ?? {}),
-          });
+        // The bot's computers, mounted exactly like the Claude driver does.
+        // Cloud boxes use the REST adapter; host, sandbox, and VPS Cua
+        // connections expose Cua Driver's official MCP server directly. Every
+        // grant gets its own server — this was an if/else if that dropped the
+        // second computer a bot had been given.
+        for (const mount of turnComputerMounts(turn.integrations)) {
+          if (mount.box) {
+            servers.push({
+              name: mount.name,
+              command: process.execPath,
+              args: [COMPUTER_PROXY_PATH],
+              env: acpEnv({ ELECTRON_RUN_AS_NODE: "1", ...computerProxyEnv(mount.box) }),
+            });
+          } else if (mount.stdio) {
+            servers.push({
+              name: mount.name,
+              command: mount.stdio.command,
+              args: mount.stdio.args,
+              env: acpEnv(mount.stdio.env ?? {}),
+            });
+          }
         }
         const phone = turn.integrations?.phone;
         if (phone) {
@@ -340,7 +343,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         // harness, where the bot's Auto policy, the destructive and sensitive
         // guards, and the unattended block decide. That is what lets a
         // full-auto bot mount the local computer at all.
-        const controlsHost = turn.integrations?.localComputer?.scope === "local-computer";
+        const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
         const turnConfig: AcpConfig = controlsHost && config.fullAuto ? { ...config, fullAuto: false } : config;
         if (active.has(threadId)) throw new Error("a turn is already running on this thread");
         const turnId = newId();
