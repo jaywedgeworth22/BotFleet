@@ -30,3 +30,18 @@ export function toolFields(
   });
   return { target: activity.target, toolKind: activity.kind };
 }
+
+/** OpenAI-shaped tool arguments arrive as a JSON *string*.  A partial or
+ * malformed one is normal — arguments stream in fragments — so a parse
+ * failure is not an error, it just means the row shows the tool's name and
+ * nothing more. */
+export function parseToolArguments(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw;
+  const text = raw.trim();
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
+}

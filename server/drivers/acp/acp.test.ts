@@ -714,12 +714,16 @@ describe("ACP turns (fake CLI)", () => {
     expect(JSON.parse(readFileSync(dump, "utf8")).env.TEST_POLICY).toBe("auto");
   });
 
-  it("declares effort levels for Grok and DSH, none for Kimi", async () => {
+  it("declares effort levels only where a driver can actually apply them", async () => {
     await create(GrokAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toEqual(["low", "medium", "high"]);
 
+    // DSH declared four and read `turn.effort` nowhere — its spawn args
+    // carry only --mcp pairs — so the picker offered a control that changed
+    // nothing.  contracts.ts: never show a knob the driver cannot turn.
     await create(DshAgentDriver);
-    expect(instance.adapter.capabilities.effortLevels).toEqual(["low", "medium", "high", "max"]);
+    expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
+
     await create(KimiAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
   });

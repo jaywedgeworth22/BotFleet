@@ -88,6 +88,16 @@ export interface AcpSupport {
   /** Whether models behind this ACP harness can consume a referenced image.
    * Most coding agents can open local files; opt out for text-only agents. */
   images?: boolean;
+  /** Whether this harness's ACP server actually mounts what we hand it in
+   * `session/new.mcpServers`.
+   *
+   * The core builds those servers for every harness, so the flags below were
+   * hardcoded true — but a harness that ignores `mcpServers` gets the app
+   * offering connected apps, the computer and phone tools it can never use.
+   * contracts.ts is explicit: never show a knob the driver cannot turn.
+   * Default true, because every sibling honours it; opt out when a harness
+   * demonstrably does not. */
+  mcpServers?: boolean;
   /** Message shown when the CLI is present but not signed in. */
   loginNote: string;
   /** How a user installs this harness's CLI; surfaced by the setup UI. */
@@ -416,6 +426,16 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
         };
 
+        /** THIS turn's token total, if the prompt result reported one.
+         *
+         * ACP runs one `session/prompt` per turn, so the figure the result
+         * carries IS the turn's figure — which is exactly what
+         * `turn.completed.usage` is defined to be.  Emitting it only as
+         * `thread.token-usage.updated` left every ACP engine — nine of the
+         * seventeen — invisible to cost bookkeeping and usage caps, because
+         * the contract says that live indicator must never be summed. */
+        let turnUsage: { input: number; output: number } | undefined;
+
         const settle = (ok: boolean, stopReason: string | null) => {
           if (state.settled) return;
           state.settled = true;
@@ -428,7 +448,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           rpcPending.clear();
           active.delete(threadId);
           flushAssistantText();
-          emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
+          emit({
+            ...base(threadId, turnId),
+            type: "turn.completed",
+            ok,
+            stopReason,
+            cost: null,
+            ...(turnUsage ? { usage: turnUsage } : {}),
+          });
           stop(); // the agent process does not exit on its own
         };
 
@@ -745,11 +772,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             // gemini put it under _meta. Read both rather than lose the count.
             const usage = result?.usage ?? result?._meta ?? {};
             if (typeof usage.inputTokens === "number" || typeof usage.outputTokens === "number") {
+              turnUsage = { input: usage.inputTokens ?? 0, output: usage.outputTokens ?? 0 };
               emit({
                 ...base(threadId, turnId),
                 type: "thread.token-usage.updated",
-                input: usage.inputTokens ?? 0,
-                output: usage.outputTokens ?? 0,
+                ...turnUsage,
               });
             }
             const reason = normalizeStopReason(result?.stopReason);
@@ -790,6 +817,8 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         return { state: "available", version, authenticated: await support.isAuthenticated(env, config) };
       };
 
+      const mountsMcpServers = support.mcpServers !== false;
+
       return {
         instanceId,
         driverKind: DRIVER_KIND,
@@ -804,14 +833,16 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           provider: DRIVER_KIND,
           capabilities: {
             sessionModelSwitch: "unsupported",
-            agentsMcp: true,
-            computerMcp: true,
-            composioMcp: true,
-            phoneMcp: true,
-            qdrantMcp: true,
+            // every MCP flag rides on one question — does this harness mount
+            // what session/new hands it? — so they answer together
+            agentsMcp: mountsMcpServers,
+            computerMcp: mountsMcpServers,
+            composioMcp: mountsMcpServers,
+            phoneMcp: mountsMcpServers,
+            qdrantMcp: mountsMcpServers,
             images: support.images !== false,
             effortLevels: support.effortLevels,
-            localComputerMcp: true,
+            localComputerMcp: mountsMcpServers,
           },
           sendTurn,
           interruptTurn: async (threadId) => active.get(threadId)?.interrupt(),
