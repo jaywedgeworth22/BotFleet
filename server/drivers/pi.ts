@@ -192,6 +192,15 @@ function piAgentDir(env: Record<string, string | undefined>): string {
   return join(env.HOME || env.USERPROFILE || homedir(), ".pi", "agent");
 }
 
+/** Has pi been signed in, or does it have a key to work with?
+ *
+ * Env-aware on purpose: an instance can carry its own HOME, and probing the
+ * server process's home instead would report another account's login. */
+function piAuthenticated(env: Record<string, string | undefined>): boolean {
+  if (env.PI_API_KEY?.trim()) return true;
+  return existsSync(join(piAgentDir(env), "auth.json"));
+}
+
 /** Upsert a live local host into ~/.pi/agent/models.json so `set_model`
  *  can reach it. Existing providers and models are kept. Returns the
  *  `{provider, modelId}` pair pi's RPC expects, or null when the picker
@@ -762,15 +771,27 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         // accepts a prompt without an explicit session.
       }
 
-      // pin the chosen model (composite id or host::model inject → provider + modelId)
+      // Pin the chosen model (composite id or host::model inject → provider +
+      // modelId), and FAIL the turn if the pin does not take.
+      //
+      // This used to swallow the rejection and keep going on whatever model
+      // pi had, while session.started had already told the UI and the usage
+      // ledger which model was running.  A turn billed to one model and
+      // reported as another is worse than a turn that refuses: the person
+      // reads an answer believing a model they did not get produced it.
+      // Same rule the ACP core states for session/set_model.
       const chosen = typeof turn.model === "string" ? splitPiModel(turn.model) : null;
       if (chosen) {
+        const modelPromise = awaitResponse("set_model");
+        send({ type: "set_model", provider: chosen.provider, modelId: chosen.modelId });
         try {
-          const modelPromise = awaitResponse("set_model");
-          send({ type: "set_model", provider: chosen.provider, modelId: chosen.modelId });
           await modelPromise;
-        } catch {
-          /* keep going on the default model */
+        } catch (error) {
+          throw new Error(
+            `pi refused the model ${chosen.provider}/${chosen.modelId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
         }
       }
 
@@ -824,9 +845,16 @@ export const PiDriver: ProviderDriver<PiConfig> = {
         });
       });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
-      // pi manages its own credentials (~/.pi/agent/auth.json); there is no
-      // separate sign-in step the harness can probe, so treat it as authed.
-      return { state: "available", version, authenticated: true };
+      // pi keeps its credentials in its own data root; there is no sign-in
+      // subcommand to probe, so read the file it writes.  Reporting a
+      // hardcoded `true` meant an installed-but-unauthenticated pi looked
+      // ready and the setup affordance never appeared — the user found out
+      // when a turn failed instead.
+      return {
+        state: "available",
+        version,
+        authenticated: piAuthenticated({ ...process.env, ...input.environment }),
+      };
     };
 
     return {

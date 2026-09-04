@@ -26,12 +26,14 @@ export function dshSpawnArgs(_config: AcpConfig, turn: Pick<SendTurnInput, "inte
   return args;
 }
 
+/** The harness's own current models.  The vision variant is deliberately
+ * absent: `images: false` disables image attachment for the whole engine, so
+ * shipping a vision model here offered a capability the composer refused. */
 export const STATIC_DSH_MODELS: ModelCatalog = {
   default: "deepseek-v4-flash",
   options: [
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
-    { id: "deepseek-v4-flash-vision-exp", label: "DeepSeek-V4-Flash-Vision-Exp" },
   ],
 };
 
@@ -76,10 +78,22 @@ export function classifyDshError(error: unknown): ProviderErrorCode | undefined 
 const support: AcpSupport = {
   driverKind: "dshAgent",
   displayName: "DeepSeek Harness",
+  // the vision model below is the one option that CAN take an image, and the
+  // flag gates the composer for the whole engine — so it stays off until the
+  // catalog can answer per model rather than per engine
   images: false,
   models: STATIC_DSH_MODELS,
   resolveModels: () => STATIC_DSH_MODELS,
-  effortLevels: ["low", "medium", "high", "max"] as const,
+  // No effortLevels.  Four were advertised and nothing read `turn.effort`:
+  // dshSpawnArgs emits only `--mcp` pairs and configureSession sets the
+  // model, so the picker offered a control that changed nothing.
+  //
+  // No MCP either.  The core builds agents/composio/computer/local-computer
+  // servers and hands them to session/new; the ACP server DSH actually
+  // reaches ignores mcpServers, so every one of those flags promised a tool
+  // that could never fire.  Flip this back the moment the backend mounts
+  // them — the plumbing above it already works.
+  mcpServers: false,
   defaultCli: "dsh",
   nativeSource: "dsh.acp",
   loginNote: "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",

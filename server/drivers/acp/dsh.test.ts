@@ -22,8 +22,50 @@ describe("DshAgentDriver config", () => {
     expect(STATIC_DSH_MODELS.options.map((option) => option.id)).toEqual([
       "deepseek-v4-flash",
       "deepseek-v4-pro",
-      "deepseek-v4-flash-vision-exp",
     ]);
+  });
+
+  it("ships no vision model while the engine says it cannot take an image", () => {
+    // `images: false` gates the composer for the whole engine, so a vision
+    // option in the picker offers something the composer then refuses
+    expect(STATIC_DSH_MODELS.options.some((option) => /vision/i.test(option.id))).toBe(false);
+  });
+});
+
+describe("dsh capability honesty", () => {
+  it("claims no MCP, because the ACP server it reaches ignores session/new.mcpServers", async () => {
+    // the core builds those servers for every harness, so these used to be
+    // hardcoded true and the app offered connected apps, the computer and
+    // the phone to an engine that could never mount any of them
+    const instance = await DshAgentDriver.create({
+      instanceId: "dsh-caps",
+      displayName: "DeepSeek Harness",
+      environment: {},
+      enabled: true,
+      config: DshAgentDriver.defaultConfig(),
+    });
+    const capabilities = instance.adapter.capabilities;
+    expect(capabilities.agentsMcp).toBe(false);
+    expect(capabilities.computerMcp).toBe(false);
+    expect(capabilities.composioMcp).toBe(false);
+    expect(capabilities.phoneMcp).toBe(false);
+    expect(capabilities.qdrantMcp).toBe(false);
+    expect(capabilities.localComputerMcp).toBe(false);
+    await instance.dispose();
+  });
+
+  it("offers no reasoning-effort control, because nothing reads turn.effort", async () => {
+    // dshSpawnArgs emits only --mcp pairs; an effort pick would change nothing
+    expect(dshSpawnArgs({ cli: "dsh", fullAuto: false }, { integrations: undefined })).toEqual([]);
+    const instance = await DshAgentDriver.create({
+      instanceId: "dsh-effort",
+      displayName: "DeepSeek Harness",
+      environment: {},
+      enabled: true,
+      config: DshAgentDriver.defaultConfig(),
+    });
+    expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
+    await instance.dispose();
   });
 });
 

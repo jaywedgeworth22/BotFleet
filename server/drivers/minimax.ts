@@ -22,6 +22,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
+import { parseToolArguments, toolFields } from "../tool-fields.ts";
 
 const DRIVER_KIND = "minimax";
 const API_KEY_ENV = "MINIMAX_API_KEY";
@@ -290,6 +291,12 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       emit({ ...base(threadId, turnId), type: "turn.started" });
       emit({ ...base(threadId, turnId), type: "session.started", sessionId: null, model: turn.model ?? models.default });
 
+      // Tool ids this turn has already opened a step for.  The stream
+      // announces a call once and then keeps sending argument fragments for
+      // it, and the settled reply repeats every call — without this a single
+      // tool would open a dozen rows.
+      const started = new Set<string>();
+
       (async () => {
         try {
           const { text, usage, tool_calls } = await complete(messages, turn.model || models.default, {
@@ -298,8 +305,17 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
             signal: abort.signal,
             onDelta: (delta) =>
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
-            onToolCallDelta: (index, id, name, args) => {
-              emit({ ...base(threadId, turnId), type: "tool_call.delta", index, toolCallId: id, name, args } as any);
+            onToolCallDelta: (_index, id, name) => {
+              if (!id || started.has(id)) return;
+              started.add(id);
+              emit({
+                ...base(threadId, turnId),
+                type: "item.started",
+                itemType: "tool",
+                itemId: id,
+                title: name || "tool",
+                ...toolFields(name, undefined),
+              });
             },
           });
 
@@ -314,7 +330,24 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
             }
             if (tool_calls && tool_calls.length > 0) {
               for (const tc of tool_calls) {
-                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool_call", toolCallId: tc.id, name: tc.function.name, args: tc.function.arguments } as any);
+                if (tc.id && !started.has(tc.id)) {
+                  started.add(tc.id);
+                  emit({
+                    ...base(threadId, turnId),
+                    type: "item.started",
+                    itemType: "tool",
+                    itemId: tc.id,
+                    title: tc.function.name,
+                    ...toolFields(tc.function.name, parseToolArguments(tc.function.arguments)),
+                  });
+                }
+                emit({
+                  ...base(threadId, turnId),
+                  type: "item.completed",
+                  itemType: "tool",
+                  itemId: tc.id,
+                  ok: true,
+                });
               }
             }
           if (usage) {
@@ -372,7 +405,9 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session", localComputerMcp: true },
+        // no MCP server is mounted in this file and respondToRequest answers
+        // "unavailable": localComputerMcp would be a knob nothing can turn
+        capabilities: { sessionModelSwitch: "in-session" },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async (): Promise<"unavailable"> => "unavailable",

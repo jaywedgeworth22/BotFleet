@@ -19,6 +19,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
+import { parseToolArguments, toolFields } from "../tool-fields.ts";
 import { recordExecutedTools, withChatSpan } from "../sentry-ai.ts";
 
 const DRIVER_KIND = "openai-compat";
@@ -194,8 +195,14 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           for (const tc of toolCallsDelta) {
             const tcIndex = tc.index ?? 0;
             if (!streamToolCalls[tcIndex]) streamToolCalls[tcIndex] = { id: "", function: { name: "", arguments: "" } };
-            if (tc.id) streamToolCalls[tcIndex].id += tc.id;
-            if (tc.function?.name) streamToolCalls[tcIndex].function.name += tc.function.name;
+            // Only the arguments stream in fragments.  A provider that
+            // repeats the id and the name on every chunk — several do — used
+            // to accumulate `call_acall_acall_a` and `bashbashbash`, so the
+            // settled call could never be matched to the step it opened.
+            if (tc.id && !streamToolCalls[tcIndex].id) streamToolCalls[tcIndex].id = tc.id;
+            if (tc.function?.name && !streamToolCalls[tcIndex].function.name) {
+              streamToolCalls[tcIndex].function.name = tc.function.name;
+            }
             if (tc.function?.arguments) streamToolCalls[tcIndex].function.arguments += tc.function.arguments;
             opts.onToolCallDelta?.(tcIndex, tc.id, tc.function?.name, tc.function?.arguments);
           }
@@ -330,6 +337,12 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         model: turn.model ?? catalog.default,
       });
 
+      // Tool ids this turn has already opened a step for.  The stream
+      // announces a call once and then keeps sending argument fragments for
+      // it, and the settled reply repeats every call — without this a single
+      // tool would open a dozen rows.
+      const started = new Set<string>();
+
       (async () => {
         try {
           const model = turn.model || catalog.default;
@@ -347,15 +360,24 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
                     streamKind,
                     delta,
                   }),
-                onToolCallDelta: (index, id, name, args) => {
+                // Contract-shaped tool steps.  This used to emit
+                // `tool_call.delta`, which is not in the RuntimeEvent union
+                // and was cast past the type checker with `as any`; the
+                // harness has no arm for it, so a turn that called five
+                // tools rendered no steps at all.  A streamed delta is only
+                // the argument text arriving, so the step starts here and
+                // settles below where the arguments are whole.
+                onToolCallDelta: (_index, id, name) => {
+                  if (!id || started.has(id)) return;
+                  started.add(id);
                   emit({
                     ...base(threadId, turnId),
-                    type: "tool_call.delta",
-                    index,
-                    toolCallId: id,
-                    name,
-                    args,
-                  } as any);
+                    type: "item.started",
+                    itemType: "tool",
+                    itemId: id,
+                    title: name || "tool",
+                    ...toolFields(name, undefined),
+                  });
                 },
               }),
           );
@@ -368,15 +390,36 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
             source: "openai-compat.chat.completions",
             msg: { textLength: text.length, reasoningLength: reasoning.length, toolCallsLength: tool_calls?.length ?? 0, usage },
           });
+          for (const call of tool_calls ?? []) {
+            // a step whose arguments never streamed still needs a start, or
+            // the completion settles a row nothing opened
+            if (call.id && !started.has(call.id)) {
+              started.add(call.id);
+              emit({
+                ...base(threadId, turnId),
+                type: "item.started",
+                itemType: "tool",
+                itemId: call.id,
+                title: call.function?.name ?? "tool",
+                ...toolFields(call.function?.name, parseToolArguments(call.function?.arguments)),
+              });
+            }
+            emit({
+              ...base(threadId, turnId),
+              type: "item.completed",
+              itemType: "tool",
+              itemId: call.id,
+              ok: true,
+            });
+          }
           const replyText = text.trim() ? text : reasoning;
-          if (replyText.trim() || (tool_calls && tool_calls.length > 0)) {
+          if (replyText.trim()) {
             emit({
               ...base(threadId, turnId),
               type: "item.completed",
               itemType: "assistant_text",
               text: replyText,
-              toolCalls: tool_calls,
-            } as any);
+            });
           }
           if (usage) {
             emit({
@@ -439,7 +482,9 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session", localComputerMcp: true },
+        // no MCP server is mounted in this file and respondToRequest answers
+        // "unavailable": localComputerMcp would be a knob nothing can turn
+        capabilities: { sessionModelSwitch: "in-session" },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const,
