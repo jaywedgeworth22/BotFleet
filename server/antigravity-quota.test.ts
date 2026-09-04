@@ -79,7 +79,7 @@ describe("parseAntigravityUsageJson", () => {
     expect(isAntigravityModelCapped(sonnet!)).toBe(false);
     const gemini = snapshot.models.find((model) => model.modelId === "gemini-3.1-pro-high");
     expect(gemini?.remainingPercentage).toBeUndefined();
-    expect(isAntigravityModelCapped(gemini!)).toBe(false);
+    expect(isAntigravityModelCapped(gemini!)).toBe(true);
     const flash = snapshot.models.find((model) => model.modelId === "gemini-3.6-flash-high");
     expect(isAntigravityModelCapped(flash!)).toBe(true);
     const ac = snapshot.models.find((model) => model.modelId === "gemini-2.5-pro");
@@ -92,22 +92,27 @@ describe("parseAntigravityUsageJson", () => {
 });
 
 describe("applyAntigravityUsageToRegistry", () => {
-  it("caps exhausted models per id and leaves Gemini-unknown and remaining>0 available", () => {
+  it("caps N/A remaining (Gemini) and remaining 0, and leaves remaining>0 available", () => {
     const registry = new QuotaCooldownRegistry();
     const snapshot = parseAntigravityUsageJson(FIXTURE);
     const applied = applyAntigravityUsageToRegistry(snapshot, registry, Date.parse("2026-09-04T04:20:02.182Z"));
-    expect(applied.capped.sort()).toEqual(["claude-opus-4-6-thinking", "gemini-3.6-flash-high"]);
+    expect(applied.capped.sort()).toEqual([
+      "claude-opus-4-6-thinking",
+      "gemini-3.1-pro-high",
+      "gemini-3.6-flash-high",
+    ]);
     expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "claude-opus-4-6-thinking")).toMatchObject({
       source: ANTIGRAVITY_USAGE_SOURCE,
       model: "claude-opus-4-6-thinking",
     });
     expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "claude-sonnet-4-6")).toBeUndefined();
-    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "gemini-3.1-pro-high")).toBeUndefined();
+    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "gemini-3.1-pro-high")).toBeDefined();
     expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "gemini-2.5-pro")).toBeUndefined();
     const overlay = quotaModelsFromSnapshot(snapshot);
     expect(overlay["claude-sonnet-4-6"]?.capped).toBe(false);
     expect(overlay["claude-sonnet-4-6"]?.remainingPercent).toBe(29.75);
-    expect(overlay["gemini-3.1-pro-high"]?.remainingPercent).toBeNull();
+    expect(overlay["gemini-3.1-pro-high"]?.capped).toBe(true);
+    expect(overlay["gemini-3.1-pro-high"]?.remainingPercent).toBe(0);
   });
 
   it("clears a previously capped model once remaining recovers", () => {

@@ -1,4 +1,5 @@
 # BotFleet Effort Log — cross-agent board
+- **2026-09-04 — GROK — IN PROGRESS — antigravity-usage N/A remaining means exhausted (board `d8306719`, branch `grok/quota-na-exhausted`, worktree `~/apps/botfleet-grok-quota-routing`).**  Owner: Gemini is fully exhausted.  Skip omitted remaining until reset.
 - **2026-09-03 — GROK — IN PROGRESS — Poll `antigravity-usage quota --json`; skip exhausted Antigravity models until reset. Board `087cd1b0`, issue #186, branch `grok/quota-routing`, worktree `~/apps/botfleet-grok-quota-routing`. Direct CLI remaining, not UM group buckets.**
 - **2026-09-01 — GROK — IN PROGRESS — Sentry DSN hygiene: no hardcoded iOS fallback (branch `grok/sentry-dsn-hygiene`, worktree `~/apps/botfleet-grok-sentry-dsn`).**  Board `aecc129faf6842b480b229ca92b143dc`.  Cocoa init is plist-only / build-injected; empty DSN = no-op.
 Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this file
@@ -22,7 +23,8 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
-- **2026-09-04 — GROK — IN PROGRESS — Usage Monitor URL and ingest token do not persist in Settings (board `5c0ee072`, issue #191, branch `grok/usage-monitor-save`, worktree `~/apps/botfleet-grok-usage-save`).**  `saveConfig()` omitted `usage`; adding Save + Test Connection.  Claimed Fri, Sep 4, 2026.
+- **2026-09-04 — GROK — IN PROGRESS — Usage Monitor URL and ingest token do not persist in Settings (board `5c0ee072`, issue #191, branch `grok/usage-monitor-save`, worktree `~/apps/botfleet-grok-usage-save`).**  `saveConfig()` omitted `usage`; adding Save + Test Connection.  Claimed Fri, Sep 4, 2026.  PR #192.
+- **2026-09-03 — AG — IN_PROGRESS — DSH driver hardening: fallback error classification, DSH_HOME-aware auth, honest model-set (branch `ag/dsh-first-class`, board `9effb254`, issue #188).**
 - **2026-09-03 — GROK — IN PROGRESS — APNs killed-app wake, desktop 1.0.30 aligned with iOS, full Mac update feed (board `f7d09c8b`, issue #183, branch `grok/apns-version-release`, worktree `~/apps/botfleet-grok-apns-release`).**  Claimed Thu, Sep 3, 2026. <!-- wb-agent-report:f7d09c8ba41c4be8b2e413c8bd31799b -->
 - **2026-09-03 — GROK — COMPLETED — MiniMax review hygiene: delete congress compose.yml, gitignore patch junk, Windows path tests, require latest-mac.yml.**  PR #182 merged `f16255d0`.  Board `41169a1e`.  Owner: defer Windows/Linux first-class; make APNs; keep all in testing; file splits only if no behavior change; patch scripts stay on disk gitignored; align 1.0.x; full Mac release with latest-mac.yml + zips.
 - **2026-09-03 — GROK — COMPLETED — iOS opaque chat chrome, compose menus, Simple/Projects workspace modes, room crop, quota Available fix.**  PR #181 merged `18e66cdd`.  Board `4498c349`.  Issue #180.  GitHub TestFlight job lacks Apple API secrets; Mac wrapper is the ship path.

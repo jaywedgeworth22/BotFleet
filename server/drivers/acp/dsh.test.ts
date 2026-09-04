@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import { DshAgentDriver, STATIC_DSH_MODELS, dshSpawnArgs, quoteDshMcpToken } from "./dsh.ts";
+import {
+  classifyDshError,
+  dshCredentialCandidates,
+  DshAgentDriver,
+  STATIC_DSH_MODELS,
+  dshSpawnArgs,
+  quoteDshMcpToken,
+} from "./dsh.ts";
 
 describe("DshAgentDriver config", () => {
   it("looks up dsh on PATH instead of a developer worktree", () => {
@@ -50,5 +57,53 @@ describe("dshSpawnArgs MCP quoting", () => {
         { integrations: { dweb: { url: "http://127.0.0.1:8080" } } },
       ),
     ).toEqual([]);
+  });
+});
+
+describe("classifyDshError", () => {
+  it("maps auth failures to invalid_credentials", () => {
+    expect(classifyDshError(new Error("authentication required"))).toBe("invalid_credentials");
+    expect(classifyDshError(new Error("invalid api key"))).toBe("invalid_credentials");
+    const coded = new Error("unauthorized");
+    Object.assign(coded, { code: 401 });
+    expect(classifyDshError(coded)).toBe("invalid_credentials");
+  });
+
+  it("maps subscription failures to inactive_subscription", () => {
+    expect(classifyDshError(new Error("inactive subscription"))).toBe("inactive_subscription");
+  });
+
+  it("maps quota/rate failures to quota_or_region_restriction", () => {
+    expect(classifyDshError(new Error("rate limit exceeded"))).toBe("quota_or_region_restriction");
+    expect(classifyDshError(new Error("insufficient balance"))).toBe("quota_or_region_restriction");
+  });
+
+  it("maps upstream outages", () => {
+    expect(classifyDshError(new Error("service unavailable"))).toBe("upstream_outage");
+    expect(classifyDshError(new Error("overloaded"))).toBe("upstream_outage");
+  });
+
+  it("maps unknown-model failures to model_catalog_outage", () => {
+    expect(classifyDshError(new Error("model not found"))).toBe("model_catalog_outage");
+  });
+
+  it("returns undefined for unrecognized errors", () => {
+    expect(classifyDshError(new Error("empty prompt"))).toBeUndefined();
+    expect(classifyDshError("something else")).toBeUndefined();
+  });
+});
+
+describe("dshCredentialCandidates", () => {
+  it("honors DSH_HOME over the default ~/.dsh path", () => {
+    expect(dshCredentialCandidates({ HOME: "/home/jay" })[0]).toBe("/home/jay/.dsh/.credentials.yaml");
+    expect(dshCredentialCandidates({ HOME: "/home/jay", DSH_HOME: "/opt/dsh" })[0]).toBe(
+      "/opt/dsh/.credentials.yaml",
+    );
+  });
+
+  it("falls back to the platform home when HOME is unset", () => {
+    const candidates = dshCredentialCandidates({});
+    expect(candidates[0]).toContain(".dsh");
+    expect(candidates[0]).toContain(".credentials.yaml");
   });
 });
