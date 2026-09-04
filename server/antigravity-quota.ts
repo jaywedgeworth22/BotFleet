@@ -112,16 +112,18 @@ export function parseAntigravityUsageJson(raw: unknown): AntigravityUsageSnapsho
   };
 }
 
-/** Skip autocomplete-only rows.  Treat remaining 0 or isExhausted as a hit.
- *  Missing remaining (Gemini N/A) is not a hit unless isExhausted. */
+/** Skip autocomplete-only rows.  Remaining 0, isExhausted, or N/A
+ *  (missing remainingPercentage — owner 2026-09-04: N/A means none remains)
+ *  is a hit. */
 export function isAntigravityModelCapped(model: AntigravityUsageModel): boolean {
   if (model.isAutocompleteOnly) return false;
   if (model.isExhausted) return true;
-  return typeof model.remainingPercentage === "number" && model.remainingPercentage <= 0;
+  if (typeof model.remainingPercentage !== "number") return true;
+  return model.remainingPercentage <= 0;
 }
 
 export function remainingPercentDisplay(model: AntigravityUsageModel): number | null {
-  if (typeof model.remainingPercentage !== "number") return null;
+  if (typeof model.remainingPercentage !== "number") return 0;
   return Math.round(model.remainingPercentage * 10_000) / 100;
 }
 
@@ -163,7 +165,7 @@ export function applyAntigravityUsageToRegistry(
   for (const model of turnModels) {
     if (!isAntigravityModelCapped(model)) continue;
     const remaining = remainingPercentDisplay(model);
-    const remainingText = remaining == null ? "exhausted" : `${remaining}% remaining`;
+    const remainingText = remaining === 0 ? "exhausted" : `${remaining}% remaining`;
     registry.recordInstanceCap(ANTIGRAVITY_INSTANCE_ID, model.modelId, {
       resetsAt: resetAtMs(model, now),
       error: `${model.label} quota ${remainingText} (antigravity-usage)`,

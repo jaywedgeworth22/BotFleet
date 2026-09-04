@@ -1,4 +1,5 @@
 # BotFleet Effort Log — cross-agent board
+- **2026-09-04 — GROK — IN PROGRESS — antigravity-usage N/A remaining means exhausted (board `d8306719`, branch `grok/quota-na-exhausted`, worktree `~/apps/botfleet-grok-quota-routing`).**  Owner: Gemini is fully exhausted.  Skip omitted remaining until reset.
 - **2026-09-03 — GROK — IN PROGRESS — Poll `antigravity-usage quota --json`; skip exhausted Antigravity models until reset. Board `087cd1b0`, issue #186, branch `grok/quota-routing`, worktree `~/apps/botfleet-grok-quota-routing`. Direct CLI remaining, not UM group buckets.**
 - **2026-09-01 — GROK — IN PROGRESS — Sentry DSN hygiene: no hardcoded iOS fallback (branch `grok/sentry-dsn-hygiene`, worktree `~/apps/botfleet-grok-sentry-dsn`).**  Board `aecc129faf6842b480b229ca92b143dc`.  Cocoa init is plist-only / build-injected; empty DSN = no-op.
 Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this file
