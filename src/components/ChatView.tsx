@@ -252,17 +252,23 @@ function Bubble({
   onReply: () => void;
 }) {
   const { state, dispatch } = useStore();
-  const user = message.role === "user" && !message.from?.botId;
+  // Two independent questions, deliberately kept apart: which side of the
+  // row a bubble sits on, versus whether it gets the human's purple
+  // treatment. Any `role: "user"` message aligns right — including a peer
+  // bot's `ask_bot` reply mirrored into this thread (`from.botId` set) —
+  // but purple is reserved for what the human actually typed.
+  const alignRight = message.role === "user";
+  const humanTyped = alignRight && !message.from?.botId;
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const text = message.text ?? "";
-  const webhookView = user ? webhookMessageView(text) : null;
-  const attachedImages = user && !webhookView ? splitAttachedImages(text) : null;
+  const webhookView = humanTyped ? webhookMessageView(text) : null;
+  const attachedImages = humanTyped && !webhookView ? splitAttachedImages(text) : null;
   const visibleText = webhookView?.task ?? attachedImages?.display ?? text;
-  const copyContent = user ? visibleText : text;
+  const copyContent = humanTyped ? visibleText : text;
   const requestId = message.card?.requestId;
   const collapsible =
-    user && !webhookView && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
+    humanTyped && !webhookView && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
 
   const handleBubbleClick = (e: React.MouseEvent) => {
     const selection = window.getSelection()?.toString();
@@ -278,9 +284,9 @@ function Bubble({
 
   // one source of horizontal truth for every path below — the settled
   // bubble, the inline editor, the hover chrome
-  const row = bubbleRow(user ? "user" : "bot");
+  const row = bubbleRow(alignRight ? "user" : "bot");
 
-  if (user && editing && !webhookView) {
+  if (humanTyped && editing && !webhookView) {
     return (
       // the editor stands exactly where the bubble stood: same row, same
       // reserved gutter, same cap, so opening one never moves the message
@@ -292,20 +298,98 @@ function Bubble({
   }
 
   // "‹ 2/3 ›" under an edited message — every fork it belongs to
-  const versions = user ? messageVersions(bot, message) : [message];
+  const versions = humanTyped ? messageVersions(bot, message) : [message];
   const versionIndex = versions.findIndex((v) => v.id === message.id);
   const switchTo = (v: Message | undefined) => {
     if (v && !bot.busy) dispatch({ type: "switchBranch", botId: bot.id, messageId: v.id });
   };
 
+  // The thread's own bot chrome (reply, pin, copy, reactions) — unchanged
+  // content whether it belongs to the bot's own message (trailing gutter)
+  // or a peer bot's reply mirrored in as `role: "user"` (leading gutter,
+  // since it aligns right like anything else with that role).
+  const botChrome = (
+    <div className={row.gutter}>
+      <div className={row.chrome}>
+        <div className="flex items-center text-[11px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
+          {formatHoverTime(message.at)}
+          {bot && bot.modelSelection && (
+            <span className="ml-1.5 flex items-center" title={bot.modelSelection.model}>
+              <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={12} />
+            </span>
+          )}
+        </div>
+        <CopyButton
+          text={copyContent}
+          messageId={message.id}
+          requestId={requestId}
+          copied={copied}
+          onCopy={() => {
+            setCopied(true);
+            setTimeout(() => setCopied(false), 1400);
+          }}
+        />
+        <button
+          type="button"
+          onClick={onReply}
+          aria-label="Reply to Message"
+          className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+          title="Reply"
+        >
+          <MessageSquareReply size={14} />
+        </button>
+
+        <button
+          onClick={() =>
+            dispatch({
+              type: "updateBot",
+              botId: bot.id,
+              patch: { pinnedMessageId: bot.pinnedMessageId === message.id ? "" : message.id },
+            })
+          }
+          aria-label={bot.pinnedMessageId === message.id ? "Unpin Message" : "Pin Message"}
+          className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+          title={
+            bot.pinnedMessageId === message.id
+              ? "Unpin this message"
+              : "Pin this message to the top of the thread"
+          }
+        >
+          {bot.pinnedMessageId === message.id ? <PinOff size={14} /> : <Pin size={14} />}
+        </button>
+
+        {isLastBotText && !bot.busy && onRegenerate && (
+          <button
+            onClick={onRegenerate}
+            aria-label="Regenerate Response"
+            title="Regenerate Response"
+            className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+          >
+            <RefreshCw size={14} />
+          </button>
+        )}
+        {message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
+      </div>
+    </div>
+  );
+
   return (
-    <div className={cn("group flex w-full flex-col", user ? "animate-msg-in items-end" : "items-start")}>
+    <div className={cn("group flex w-full flex-col", alignRight ? "animate-msg-in items-end" : "items-start")}>
+      {/* A peer bot's reply still needs to say WHICH bot — position on the
+          right no longer makes that obvious the way "it's on the left" used
+          to. */}
+      {alignRight && !humanTyped && message.from?.name && (
+        <div className="mb-1 flex items-center gap-1.5 pr-1">
+          <MausAvatar color={message.from.color} state="happy" size={16} animated={false} />
+          <span className="text-[11px] font-medium text-ink-secondary">{message.from.name}</span>
+        </div>
+      )}
       <div className={row.row}>
-        {/* The user's hover chrome, parked in its reserved gutter and out of
+        {/* The human's hover chrome, parked in its reserved gutter and out of
             the flow: what is mounted here changes with `bot.busy` and with
             how long ago the message was sent, and none of that may reach the
             bubble's box. */}
-        {user && (
+        {humanTyped && (
           <div className={row.gutter}>
             <div className={row.chrome}>
               {/* editing rewinds the thread, so it waits for the turn to end —
@@ -355,18 +439,21 @@ function Bubble({
             </div>
           </div>
         )}
+        {/* leading placement: a peer bot's reply, aligning right like any
+            other role="user" message */}
+        {alignRight && !humanTyped && botChrome}
         <div
           onClick={handleBubbleClick}
           className={cn(
             BUBBLE_WIDTH,
             "rounded-2xl text-[15px] leading-relaxed cursor-pointer select-text relative",
-            user && webhookView
+            humanTyped && webhookView
               ? "overflow-hidden border border-accent/25 bg-card text-ink shadow-[0_10px_30px_rgba(0,0,0,0.18)]"
-              : user
+              : humanTyped
                 ? "bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink"
                 : "bg-card px-4 py-2.5 text-ink",
           )}
-          
+
         >
           {replyTarget && (
             <div className="mb-2">
@@ -380,7 +467,7 @@ function Bubble({
               />
             </div>
           )}
-          {user && webhookView ? (
+          {humanTyped && webhookView ? (
             <div className="min-w-[300px] max-w-[520px]">
               <div className="flex items-center gap-2 border-b border-accent/15 bg-accent/[0.055] px-4 py-2.5 text-[11.5px] font-medium text-accent">
                 <Webhook size={13} />
@@ -394,7 +481,7 @@ function Bubble({
                 </details>
               )}
             </div>
-          ) : user ? (
+          ) : humanTyped ? (
             <>
               {attachedImages && attachedImages.images.length > 0 && (
                 <AttachedImageGallery paths={attachedImages.images} />
@@ -426,76 +513,13 @@ function Bubble({
             </MessageBoundary>
           )}
         </div>
-        {/* the bot's chrome, same deal: Regenerate is only on the newest
-            message, and the reaction bar only on text — neither may resize
-            the bubble it hangs off */}
-        {!user && (
-          <div className={row.gutter}>
-            <div className={row.chrome}>
-              <div className="flex items-center text-[11px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
-                {formatHoverTime(message.at)}
-                {bot && bot.modelSelection && (
-                  <span className="ml-1.5 flex items-center" title={bot.modelSelection.model}>
-                    <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={12} />
-                  </span>
-                )}
-              </div>
-              <CopyButton
-                text={copyContent}
-                messageId={message.id}
-                requestId={requestId}
-                copied={copied}
-                onCopy={() => {
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1400);
-                }}
-              />
-              <button
-                type="button"
-                onClick={onReply}
-                aria-label="Reply to Message"
-                className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                title="Reply"
-              >
-                <MessageSquareReply size={14} />
-              </button>
-
-              <button
-                onClick={() =>
-                  dispatch({
-                    type: "updateBot",
-                    botId: bot.id,
-                    patch: { pinnedMessageId: bot.pinnedMessageId === message.id ? "" : message.id },
-                  })
-                }
-                aria-label={bot.pinnedMessageId === message.id ? "Unpin Message" : "Pin Message"}
-                className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                title={
-                  bot.pinnedMessageId === message.id
-                    ? "Unpin this message"
-                    : "Pin this message to the top of the thread"
-                }
-              >
-                {bot.pinnedMessageId === message.id ? <PinOff size={14} /> : <Pin size={14} />}
-              </button>
-
-              {isLastBotText && !bot.busy && onRegenerate && (
-                <button
-                  onClick={onRegenerate}
-                  aria-label="Regenerate Response"
-                  title="Regenerate Response"
-                  className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                >
-                  <RefreshCw size={14} />
-                </button>
-              )}
-              {message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
-            </div>
-          </div>
-        )}
+        {/* trailing placement: the thread's own bot, left-aligned as always.
+            Regenerate is only on the newest message, and the reaction bar
+            only on text — neither may resize the bubble it hangs off. */}
+        {!alignRight && botChrome}
       </div>
       {/* busy-gated so a flag stranded by a server restart shows nothing */}
-      {user && message.queued && bot.busy && (
+      {humanTyped && message.queued && bot.busy && (
         <div className="mt-1 flex items-center gap-1 pr-1 text-[11px] text-ink-secondary/70">
           <Clock size={11} aria-hidden="true" />
           <span>Queued — sends when this turn finishes</span>
@@ -510,7 +534,7 @@ function Bubble({
           </button>
         </div>
       )}
-      <ReactionChips threadId={bot.threadId} message={message} align={user ? "right" : "left"} />
+      <ReactionChips threadId={bot.threadId} message={message} align={alignRight ? "right" : "left"} />
       {versions.length > 1 && (
         <div className="mt-1 flex items-center gap-0.5 pr-1 text-[12px] text-ink-secondary">
           <button
@@ -795,8 +819,10 @@ function PinnedBanner({
 }) {
   const pinned = messages.find((m) => m.id === pinnedId);
   if (!pinned || pinned.kind !== "text") return null;
+  // a peer bot's reply is `role: "user"` too — "You" belongs only to what
+  // the human actually typed
   const sender =
-    pinned.role === "user" ? "You" : (pinned.from?.name ?? bot.name);
+    pinned.role === "user" && !pinned.from?.botId ? "You" : (pinned.from?.name ?? bot.name);
   const text = (pinned.text ?? "").replace(/\s+/g, " ").trim();
   if (!text) return null;
   return (

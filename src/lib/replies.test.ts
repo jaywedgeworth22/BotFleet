@@ -12,6 +12,15 @@ describe("reply display", () => {
     expect(replyAuthor(base, "Mochi")).toBe("Mochi");
   });
 
+  it("doesn't call a peer bot's ask_bot reply 'You' just because it's role: user", () => {
+    // ask_bot replies are mirrored in with role: "user" so they align right
+    // like anything else the human sees on that side — but they still carry
+    // `from.botId`, and that's what should decide the label, not the role.
+    expect(
+      replyAuthor({ ...base, role: "user", from: { botId: "b", name: "Scout", color: "green" } }),
+    ).toBe("Scout");
+  });
+
   it("turns saved images into a readable bounded snippet", () => {
     expect(replySnippet('<attached-image path="/tmp/a.png" /> hi\nthere')).toBe("[image] hi there");
     expect(replySnippet("123456", 5)).toBe("1234…");
