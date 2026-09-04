@@ -135,7 +135,7 @@ export function SkinPicker() {
                 <div className="flex items-start gap-1.5 px-0.5 pb-0.5">
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] font-medium text-ink">{skin.name}</div>
-                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-ink-secondary">
+                    <div className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-ink-secondary" title={skin.tagline}>
                       {skin.tagline}
                     </div>
                   </div>

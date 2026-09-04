@@ -381,7 +381,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
                     </div>
                   </div>
                 ) : (
-                  <div className="truncate text-[12px] font-mono text-ink-secondary">
+                  <div className="truncate text-[12px] font-mono text-ink-secondary" title={group.cwd || "Default workspace (no path set)"}>
                     {group.cwd || "Default workspace (no path set)"}
                   </div>
                 )}
@@ -395,7 +395,7 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
                 >
                   <div className="flex min-w-0 items-center gap-2">
                     <FolderPlus size={15} className="shrink-0 text-ink-secondary" />
-                    <span className="truncate text-[12.5px] font-mono text-ink">{path}</span>
+                    <span className="truncate text-[12.5px] font-mono text-ink" title={path}>{path}</span>
                   </div>
                   <button
                     type="button"
@@ -469,8 +469,8 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
                     <div className="flex min-w-0 items-center gap-2.5">
                       <MausAvatar color={bot.color} state="happy" size={24} animated={false} />
                       <div className="min-w-0">
-                        <div className="truncate text-[13px] font-medium text-ink">{bot.name}</div>
-                        {bot.title && <div className="truncate text-[11px] text-ink-secondary">{bot.title}</div>}
+                        <div className="truncate text-[13px] font-medium text-ink" title={bot.name}>{bot.name}</div>
+                        {bot.title && <div className="truncate text-[11px] text-ink-secondary" title={bot.title}>{bot.title}</div>}
                       </div>
                     </div>
                     <div

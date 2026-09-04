@@ -625,8 +625,11 @@ export function PluginsPanel() {
                   <div className="flex items-center gap-3">
                     <ServiceIcon card={card} />
                     <div className="min-w-0 flex-1">
-                      <div className="truncate text-[14px] font-medium text-ink">{card.label}</div>
-                      <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary">
+                      <div className="truncate text-[14px] font-medium text-ink" title={card.label}>{card.label}</div>
+                      <div
+                        className="mt-0.5 truncate text-[12.5px] text-ink-secondary"
+                        title={pending ? "Finish setup in your browser" : failed && !accounts.length ? "Authorization expired — try again" : card.blurb}
+                      >
                         {pending ? "Finish setup in your browser" : failed && !accounts.length ? "Authorization expired — try again" : card.blurb}
                       </div>
                     </div>
@@ -666,9 +669,12 @@ export function PluginsPanel() {
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center gap-1.5 text-[12.5px] font-medium text-ink">
                                 {active && <Check size={13} className="shrink-0 text-success" />}
-                                <span className="truncate">{account.alias || account.id}</span>
+                                <span className="truncate" title={account.alias || account.id}>{account.alias || account.id}</span>
                               </div>
-                              <div className="mt-0.5 truncate text-[10.5px] text-ink-secondary">
+                              <div
+                                className="mt-0.5 truncate text-[10.5px] text-ink-secondary"
+                                title={`${account.alias ? `${account.id} · ` : ""}${account.status.toLowerCase()}`}
+                              >
                                 {account.alias ? `${account.id} · ` : ""}{account.status.toLowerCase()}
                               </div>
                             </div>

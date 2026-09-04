@@ -182,7 +182,7 @@ export function QdrantRagConnection() {
                 ) : (
                   <>
                     <XCircle size={14} />
-                    <span className="truncate max-w-[280px]">
+                    <span className="truncate max-w-[280px]" title={testResult.error || "Not reachable"}>
                       {testResult.error || "Not reachable"}
                     </span>
                   </>

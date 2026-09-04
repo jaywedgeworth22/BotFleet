@@ -178,7 +178,7 @@ export function ResourceTriggersPanel({ bots }: { bots: Bot[] }) {
                 {bot ? <BotAvatar bot={bot} state={stateForBot(bot)} size={36} /> : <div className="h-9 w-9 rounded-full bg-panel" />}
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setEditor(trigger)} className="truncate text-[14px] font-medium text-ink hover:text-accent">{trigger.name}</button>
+                    <button onClick={() => setEditor(trigger)} className="truncate text-[14px] font-medium text-ink hover:text-accent" title={trigger.name}>{trigger.name}</button>
                     <span className={cn("h-1.5 w-1.5 rounded-full", trigger.enabled ? "bg-success" : "bg-ink-secondary/50")} />
                   </div>
                   <p className="mt-0.5 text-[12px] text-ink-secondary">

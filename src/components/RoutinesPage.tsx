@@ -213,7 +213,7 @@ function RoutineCard({ item, bot, compact, onOpen }: { item: CalendarItem; bot: 
           label={`${bot.name} — ${title}`}
         />
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[12px] font-semibold text-white">{title}</div>
+          <div className="truncate text-[12px] font-semibold text-white" title={title}>{title}</div>
           <div className="mt-0.5 flex items-center gap-1.5 truncate text-[10.5px] text-white/70">
             {animated && <Loader2 size={10} className="animate-spin" />}
             <span>{niceTime(item.at)}</span>
@@ -422,7 +422,7 @@ export function RoutineEditor({
               {bots.map((bot) => (
                 <button key={bot.id} type="button" disabled={Boolean(lockedBotId)} onClick={() => setBotId(bot.id)} className={cn("flex min-w-0 items-center gap-2 rounded-xl border px-3 py-2 text-left", botId === bot.id ? "border-accent/70 bg-accent/10" : "border-hairline/50 bg-inset hover:bg-raised/60")}>
                   <BotAvatar bot={bot} state={botId === bot.id ? "happy" : stateForBot(bot)} size={38} animated={false} />
-                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink">{bot.name}</span>
+                  <span className="min-w-0 flex-1 truncate text-[13px] font-medium text-ink" title={bot.name}>{bot.name}</span>
                   {lockedBotId && <span className="text-[11px] text-ink-secondary">Assigned from Computer</span>}
                 </button>
               ))}
@@ -503,7 +503,7 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
           <div className="flex items-center gap-4 pr-10">
             <BotAvatar bot={bot} state={run ? statusState(run.status) : stateForBot(bot)} size={72} animated={run?.status === "running" || run?.status === "waiting"} label={bot.name} />
             <div className="min-w-0">
-              <div className="truncate text-[20px] font-semibold text-white">{title}</div>
+              <div className="truncate text-[20px] font-semibold text-white" title={title}>{title}</div>
               <div className="mt-1 flex items-center gap-2 text-[13px] text-white/65"><span>{bot.name}</span><span>·</span><span>{niceDate(item.at)}, {niceTime(item.at)}</span></div>
               <div className={cn("mt-2 inline-flex items-center gap-1.5 rounded-full bg-black/25 px-2.5 py-1 text-[11px] font-medium capitalize", run ? statusTone(run.status) : "text-white/70")}>
                 {run?.status === "running" && <Loader2 size={11} className="animate-spin" />}
@@ -525,7 +525,7 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Triggered by</div><div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink"><Webhook size={13} />Webhook</div></div>
               <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Runs on</div><div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink">{run.runOn === "cloud" ? <Cloud size={13} /> : <Laptop size={13} />}{run.runOn === "cloud" ? "ASCII.dev Box" : "Local setup"}</div></div>
-              {run.deliveryId && <div className="col-span-2 rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Delivery ID</div><div className="mt-1 truncate font-mono text-[11.5px] text-ink">{run.deliveryId}</div></div>}
+              {run.deliveryId && <div className="col-span-2 rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Delivery ID</div><div className="mt-1 truncate font-mono text-[11.5px] text-ink" title={run.deliveryId}>{run.deliveryId}</div></div>}
             </div>
           )}
           {visibleInstructions && <div><div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-ink-secondary">Instructions</div><div className="whitespace-pre-wrap rounded-xl border border-hairline/40 bg-inset px-3.5 py-3 text-[13px] leading-relaxed text-ink">{visibleInstructions}</div></div>}
@@ -564,7 +564,7 @@ function PausedRoutines({ routines, bots, onClose, onEdit }: { routines: Routine
             return (
               <div key={routine.id} className="flex items-center gap-3 rounded-xl border border-hairline/40 bg-inset p-3">
                 {bot ? <BotAvatar bot={bot} state="sleeping" size={44} animated={false} label={bot.name} /> : <div className="flex size-11 items-center justify-center rounded-xl bg-raised text-ink-secondary"><CalendarClock size={20} /></div>}
-                <div className="min-w-0 flex-1"><div className="truncate text-[14px] font-semibold text-ink">{routine.name}</div><div className="mt-0.5 truncate text-[11.5px] text-ink-secondary">{bot?.name ?? "Deleted bot"} · {scheduleLabel(routine)}</div></div>
+                <div className="min-w-0 flex-1"><div className="truncate text-[14px] font-semibold text-ink" title={routine.name}>{routine.name}</div><div className="mt-0.5 truncate text-[11.5px] text-ink-secondary" title={`${bot?.name ?? "Deleted bot"} · ${scheduleLabel(routine)}`}>{bot?.name ?? "Deleted bot"} · {scheduleLabel(routine)}</div></div>
                 {bot && <button onClick={() => dispatch({ type: "updateRoutine", routineId: routine.id, patch: { enabled: true } })} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"><Play size={12} />Resume</button>}
                 <button onClick={() => onEdit(routine)} className="rounded-lg px-2 py-1.5 text-[12px] text-ink-secondary hover:bg-raised hover:text-ink">Edit</button>
                 <button onClick={() => { if (!window.confirm(`Delete “${routine.name}”?`)) return; dispatch({ type: "deleteRoutine", routineId: routine.id }); }} className="rounded-lg p-2 text-ink-secondary hover:bg-danger/10 hover:text-danger" title="Delete Routine"><Trash2 size={15} /></button>

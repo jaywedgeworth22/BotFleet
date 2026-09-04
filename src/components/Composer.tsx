@@ -476,7 +476,7 @@ export function Composer({
         {pendingChip && (
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-[12.5px] text-ink-secondary">
             <Clock size={13} className="shrink-0" />
-            <span className="min-w-0 flex-1 truncate">
+            <span className="min-w-0 flex-1 truncate" title={`Queued — sends when ${busyName} finishes: “${pendingChip}”`}>
               Queued — sends when {busyName} finishes: “{pendingChip}”
             </span>
             <button
@@ -528,7 +528,7 @@ export function Composer({
                     <Users size={14} aria-hidden="true" />
                   </span>
                 )}
-                <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink">{peer.name}</span>
+                <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink" title={peer.name}>{peer.name}</span>
                 <span className="shrink-0 text-xs text-ink-secondary">{peer.bot ? "Bot" : "Channel"}</span>
               </button>
             ))}

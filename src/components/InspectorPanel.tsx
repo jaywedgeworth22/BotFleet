@@ -192,7 +192,12 @@ function Row({ row, open, onToggle }: { row: InspectorRow; open: boolean; onTogg
           {row.tag}
           {row.count > 1 ? ` ×${row.count}` : ""}
         </span>
-        <span className={cn("min-w-0 flex-1 truncate", row.tone === "error" ? "text-danger" : "text-ink")}>{row.summary}</span>
+        <span
+          className={cn("min-w-0 flex-1 truncate", row.tone === "error" ? "text-danger" : "text-ink")}
+          title={row.summary}
+        >
+          {row.summary}
+        </span>
       </button>
       {open && (
         <pre className="max-h-[50vh] overflow-auto whitespace-pre-wrap break-all border-t border-hairline/20 bg-app px-3 py-2 text-[11px] leading-relaxed text-ink">

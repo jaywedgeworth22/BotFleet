@@ -131,7 +131,7 @@ function ConversationThreadTabs({
                     busy && !active && "opacity-40",
                   )}
                 >
-                  <span className="block truncate">{task.title || "Untitled"}</span>
+                  <span className="block truncate" title={task.title || "Untitled"}>{task.title || "Untitled"}</span>
                   <span className="block truncate text-[10.5px] font-normal text-ink-secondary">
                     {formatTime(task.lastActivity ?? task.createdAt)}
                   </span>

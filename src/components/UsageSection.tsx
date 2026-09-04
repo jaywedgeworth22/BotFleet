@@ -208,7 +208,7 @@ export function UsageSection() {
               <div key={bot.id} className="grid grid-cols-[1fr_auto_auto_auto] items-center gap-x-5 border-b border-hairline/20 py-2 text-[13px]">
                 <span className="flex min-w-0 items-center gap-2 text-ink">
                   <MausAvatar color={bot.color} state="idle" size={22} animated={false} />
-                  <span className="truncate">{bot.name}</span>
+                  <span className="truncate" title={bot.name}>{bot.name}</span>
                 </span>
                 <span className="text-right tabular-nums text-ink-secondary">{usage.turns}</span>
                 <span className="text-right tabular-nums text-ink" title={usageDetail(usage)}>
@@ -268,6 +268,20 @@ export function UsageSection() {
                   return `${model.label}: ${Math.round(model.remainingPercentage * 100)}%`;
                 }).join(" · ")
               : null;
+            // one line, clipped to the row width — a cap reason or an
+            // unavailable reason is exactly the text that gets cut off, so
+            // the same string rides the hover
+            const statusLine = agSummary
+              ? agSummary
+              : isCapped
+              ? `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
+              : isPartial
+              ? `${quotaCooldown?.error ?? "Some models are at a usage cap"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
+              : isDisabled
+              ? "Disabled in settings · subscription inactive"
+              : isAvailable
+              ? instance.snapshot.version ? `v${instance.snapshot.version} · Ready` : "Active and ready for turns"
+              : instance.snapshot.reason ?? "Unavailable";
 
             return (
               <div key={instance.instanceId} className="flex items-center justify-between py-2.5 text-[13px]">
@@ -276,19 +290,9 @@ export function UsageSection() {
                     <ProviderMark driverKind={instance.driverKind} size={16} />
                   </div>
                   <div className="flex flex-col min-w-0">
-                    <span className="truncate font-medium text-ink">{instance.displayName}</span>
-                    <span className="truncate text-[11.5px] text-ink-secondary">
-                      {agSummary
-                        ? agSummary
-                        : isCapped
-                        ? `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
-                        : isPartial
-                        ? `${quotaCooldown?.error ?? "Some models are at a usage cap"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
-                        : isDisabled
-                        ? "Disabled in settings · subscription inactive"
-                        : isAvailable
-                        ? instance.snapshot.version ? `v${instance.snapshot.version} · Ready` : "Active and ready for turns"
-                        : instance.snapshot.reason ?? "Unavailable"}
+                    <span className="truncate font-medium text-ink" title={instance.displayName}>{instance.displayName}</span>
+                    <span className="truncate text-[11.5px] text-ink-secondary" title={statusLine}>
+                      {statusLine}
                     </span>
                   </div>
                 </div>
@@ -318,7 +322,7 @@ export function UsageSection() {
             <div className="text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">Remaining from Usage Monitor</div>
             {quotaWindows.slice(0, 12).map((window) => (
               <div key={window.id} className="flex items-center justify-between gap-3 text-[12.5px]">
-                <span className="min-w-0 truncate text-ink">{window.label}</span>
+                <span className="min-w-0 truncate text-ink" title={window.label}>{window.label}</span>
                 <span className={`shrink-0 tabular-nums ${window.skip ? "text-amber-700 dark:text-amber-300" : "text-ink-secondary"}`}>
                   {window.remainingPercent == null ? "not reported" : `${window.remainingPercent}%`}
                 </span>
@@ -351,7 +355,7 @@ export function UsageSection() {
           ].map((row) => (
             <div key={row.model} className="grid grid-cols-[1.5fr_1fr_1fr_1fr] items-center gap-x-3 border-b border-hairline/20 py-2.5 text-[13px]">
               <div className="flex min-w-0 flex-col">
-                <span className="truncate font-medium text-ink">{row.model}</span>
+                <span className="truncate font-medium text-ink" title={row.model}>{row.model}</span>
                 <span className="text-[11px] text-ink-secondary">{row.provider} · {row.badge}</span>
               </div>
               <span className="text-right tabular-nums text-ink">{row.input}</span>
@@ -502,7 +506,10 @@ export function UsageSection() {
               {testResult && (
                 <span className={cn("flex items-center gap-1.5 text-[12.5px]", testResult.ok ? "text-success" : "text-danger")}>
                   {testResult.ok ? <CheckCircle size={14} /> : <XCircle size={14} />}
-                  <span className="max-w-[320px] truncate">
+                  <span
+                    className="max-w-[320px] truncate"
+                    title={testResult.ok ? "Usage Monitor accepted the probe" : testResult.error || "Not reachable"}
+                  >
                     {testResult.ok ? "Usage Monitor accepted the probe" : testResult.error || "Not reachable"}
                   </span>
                 </span>

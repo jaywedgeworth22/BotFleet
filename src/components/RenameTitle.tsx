@@ -89,12 +89,14 @@ export function RenameTitle({
             onClick={onActivate}
             aria-label={`Open ${value}'s Profile`}
             className={cn("min-w-0 truncate text-left", className)}
-            title="Open Bot Profile"
+            // callers pass a truncating className, so the hover has to carry
+            // the whole name as well as the action
+            title={`${value} · Open Bot Profile`}
           >
             {value}
           </button>
         ) : (
-          <span className={cn("min-w-0 truncate", className)}>{value}</span>
+          <span className={cn("min-w-0 truncate", className)} title={value}>{value}</span>
         )}
         <button
           type="button"
@@ -112,7 +114,7 @@ export function RenameTitle({
   return (
     <span
       className={cn("cursor-text", className)}
-      title="Double-click to rename"
+      title={`${value} · Double-click to rename`}
       tabIndex={0}
       role="button"
       aria-label={`Rename ${value}`}

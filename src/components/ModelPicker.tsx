@@ -55,7 +55,7 @@ function ModelRow({
       )}
     >
       <span className="flex min-w-0 items-center gap-2">
-        <span className="truncate">{option.label}</span>
+        <span className="truncate" title={option.label}>{option.label}</span>
         {option.id === defaultId && (
           <span className="shrink-0 rounded bg-inset px-1.5 py-px text-[10px] text-ink-secondary">Default</span>
         )}
@@ -348,7 +348,7 @@ export function ModelPicker({
               <>
                 <div className="shrink-0 px-4 pb-2 pt-3.5">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="truncate text-[14px] font-semibold text-ink">{railInstance.displayName}</div>
+                    <div className="truncate text-[14px] font-semibold text-ink" title={railInstance.displayName}>{railInstance.displayName}</div>
                     <span
                       className={cn(
                         "shrink-0 rounded-full px-2 py-0.5 text-[10.5px] font-medium",

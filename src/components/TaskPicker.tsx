@@ -180,10 +180,13 @@ function ConversationTaskPicker({
   // and count would crowd it; the open task's tally rides the hover title
   const u = current?.usage;
   const currentLabel = u ? formatTokens(u.input + u.output) : null;
+  // the button clips the title (and hides it entirely when folded), so the
+  // hover leads with the whole task name before the tally
+  const currentTitle = current?.title ?? "Task";
   const switchTitle =
     u && currentLabel
-      ? `Switch Task · ${currentLabel} (${u.input.toLocaleString()} in · ${u.output.toLocaleString()} out)`
-      : "Switch Task";
+      ? `${currentTitle} · Switch Task · ${currentLabel} (${u.input.toLocaleString()} in · ${u.output.toLocaleString()} out)`
+      : `${currentTitle} · Switch Task`;
 
   return (
     <div className="relative" ref={ref}>
@@ -262,7 +265,7 @@ function ConversationTaskPicker({
                       className="min-w-0 flex-1 text-left"
                       title={TASK_RENAME_HINT}
                     >
-                      <div className="truncate text-[13px] text-ink">{task.title}</div>
+                      <div className="truncate text-[13px] text-ink" title={task.title}>{task.title}</div>
                       <div className="text-[11px] text-ink-secondary">
                         {formatTime(task.createdAt)}
                         <TaskUsage usage={task.usage} />

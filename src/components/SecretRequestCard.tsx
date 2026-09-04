@@ -109,7 +109,7 @@ export function SecretRequestCard({
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="truncate text-[14px] font-semibold text-ink">{secret.label}</span>
+              <span className="truncate text-[14px] font-semibold text-ink" title={secret.label}>{secret.label}</span>
               {provided && (
                 <span className="flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
                   <Check size={11} /> Saved

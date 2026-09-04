@@ -122,7 +122,7 @@ export function CopyButton({
               <Hash size={13} className="text-ink-secondary" />
               <div className="flex min-w-0 flex-col">
                 <span>{requestId ? "Copy Request ID" : "Copy Message ID"}</span>
-                <span className="truncate font-mono text-[10px] text-ink-secondary">{effectiveId}</span>
+                <span className="truncate font-mono text-[10px] text-ink-secondary" title={effectiveId}>{effectiveId}</span>
               </div>
             </button>
           )}

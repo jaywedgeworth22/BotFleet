@@ -51,9 +51,9 @@ function BotModelRow({ bot }: { bot: Bot }) {
       <div className="flex min-w-0 items-center gap-2">
         <BotAvatar bot={bot} size={28} />
         <div className="min-w-0">
-          <div className="truncate text-[14px] font-medium text-ink">{bot.name}</div>
+          <div className="truncate text-[14px] font-medium text-ink" title={bot.name}>{bot.name}</div>
           {bot.title && (
-            <div className="truncate text-[12px] text-ink-secondary">{bot.title}</div>
+            <div className="truncate text-[12px] text-ink-secondary" title={bot.title}>{bot.title}</div>
           )}
         </div>
       </div>

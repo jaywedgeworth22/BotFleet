@@ -1206,7 +1206,10 @@ export function ComputerPanel({
               className="mt-3 flex w-full items-center gap-2 rounded-lg border border-accent/25 bg-accent/10 px-3 py-2 text-left text-[12px] text-accent hover:bg-accent/15"
             >
               <Loader2 size={13} className={activeRoutineRun.status === "queued" ? "" : "animate-spin"} />
-              <span className="min-w-0 flex-1 truncate">
+              <span
+                className="min-w-0 flex-1 truncate"
+                title={`${activeRoutineRun.routineName} · ${activeRoutineRun.status === "waiting" ? "needs you" : activeRoutineRun.status}`}
+              >
                 {activeRoutineRun.routineName} · {activeRoutineRun.status === "waiting" ? "needs you" : activeRoutineRun.status}
               </span>
             </button>
@@ -1221,8 +1224,11 @@ export function ComputerPanel({
                 >
                   <span className={cn("size-1.5 shrink-0 rounded-full", routine.enabled ? "bg-success" : "bg-ink-secondary/40")} />
                   <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12.5px] font-medium text-ink">{routine.name}</span>
-                    <span className="block truncate text-[10.5px] text-ink-secondary">
+                    <span className="block truncate text-[12.5px] font-medium text-ink" title={routine.name}>{routine.name}</span>
+                    <span
+                      className="block truncate text-[10.5px] text-ink-secondary"
+                      title={`${routineScheduleLabel(routine)}${routine.runOn === "cloud" ? " · runs on ASCII.dev Box" : ""}`}
+                    >
                       {routineScheduleLabel(routine)}{routine.runOn === "cloud" ? " · runs on ASCII.dev Box" : ""}
                     </span>
                   </span>

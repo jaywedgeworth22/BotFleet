@@ -118,6 +118,10 @@ export function ToolLine({ message, actor }: { message: Message; actor?: string 
                   failed ? "text-danger" : "select-text text-ink-secondary",
                   !failed && (kind === "read" || kind === "edit") && "font-mono text-[12px]",
                 )}
+                // the row clips to one line, and a failed step with no target
+                // has no disclosure triangle either — without this the reason
+                // it failed is unreadable
+                title={line}
               >
                 {line}
               </span>
@@ -136,7 +140,7 @@ export function ToolLine({ message, actor }: { message: Message; actor?: string 
       {open && (
         <div className="mb-1 ml-7 max-h-56 overflow-auto rounded-lg border border-hairline/40 bg-panel/70 px-3 py-2">
           {failed && tool.target && (
-            <div className="mb-1 truncate font-mono text-[11px] text-ink-secondary">{tool.target}</div>
+            <div className="mb-1 truncate font-mono text-[11px] text-ink-secondary" title={tool.target}>{tool.target}</div>
           )}
           <pre className="whitespace-pre-wrap break-words font-mono text-[11.5px] leading-relaxed text-ink-secondary select-text">
             {tool.detail}
