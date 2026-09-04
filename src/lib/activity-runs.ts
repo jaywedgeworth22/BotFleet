@@ -6,6 +6,7 @@
 // text between two stretches breaks the run, so the bot's words always
 // separate one run from the next.
 import type { Message } from "@/state/store";
+import { classifyTool, toolVerb } from "../../shared/tool-activity";
 
 export type TranscriptItem =
   | { kind: "message"; message: Message }
@@ -23,12 +24,21 @@ function foldable(message: Message): boolean {
   return !tool.name.startsWith("error:");
 }
 
+/** Runs shorter than this stay unfolded.
+ *
+ * A step is one line now, so five of them cost less vertical space than the
+ * fold that would hide them — and a reader who can see "Read · config.ts,
+ * Read · store.ts" does not have to click to learn the turn was working
+ * through the codebase.  Folding earns its place only when a run is long
+ * enough to bury the bot's words. */
+export const RUN_FOLD_MIN = 6;
+
 export function groupActivityRuns(messages: Message[]): TranscriptItem[] {
   const items: TranscriptItem[] = [];
   let run: Message[] = [];
   const flush = () => {
-    // one step on its own is cheaper to read than a fold that hides it
-    if (run.length > 1) items.push({ kind: "run", id: `run:${run[0].id}`, messages: run });
+    // a short run is cheaper to read than a fold that hides it
+    if (run.length >= RUN_FOLD_MIN) items.push({ kind: "run", id: `run:${run[0].id}`, messages: run });
     else for (const message of run) items.push({ kind: "message", message });
     run = [];
   };
@@ -54,6 +64,7 @@ export function groupActivityRuns(messages: Message[]): TranscriptItem[] {
 }
 
 const MAX_NAMES = 3;
+const MAX_TARGETS = 2;
 
 /** The one line a folded run has to earn its place with: how much work it
  * was, which tools did it, and whether anything failed — the last being the
@@ -61,12 +72,34 @@ const MAX_NAMES = 3;
 export function describeRun(messages: Message[]): string {
   const counts = new Map<string, number>();
   for (const message of messages) {
-    const name = message.tool?.name ?? "";
-    counts.set(name, (counts.get(name) ?? 0) + 1);
+    const tool = message.tool;
+    // classify here too, so a fold header names the work the same way the
+    // rows inside it do — including for steps recorded before the harness
+    // started reporting a kind
+    const label = tool ? toolVerb(tool.kind ?? classifyTool(tool.name), tool.name) : "";
+    counts.set(label, (counts.get(label) ?? 0) + 1);
   }
   const names = [...counts].map(([name, count]) => (count > 1 ? `${name} ×${count}` : name));
   const shown = names.slice(0, MAX_NAMES).join(", ");
   const rest = names.length > MAX_NAMES ? ` +${names.length - MAX_NAMES} more` : "";
   const failed = messages.filter((message) => message.tool?.ok === false).length;
-  return `${messages.length} steps · ${shown}${rest}${failed ? ` · ${failed} failed` : ""}`;
+  // naming what it touched is the difference between "7 steps" and "7 steps
+  // through the driver files" — the second one a reader can skip on purpose
+  const targets = [
+    ...new Set(messages.flatMap((message) => (message.tool?.target ? [message.tool.target] : []))),
+  ];
+  const where = targets.length
+    ? ` — ${targets.slice(0, MAX_TARGETS).map(basename).join(", ")}${
+        targets.length > MAX_TARGETS ? ` +${targets.length - MAX_TARGETS}` : ""
+      }`
+    : "";
+  return `${messages.length} steps · ${shown}${rest}${where}${failed ? ` · ${failed} failed` : ""}`;
+}
+
+/** Last path segment, for a fold header that has room for two of them. */
+function basename(value: string): string {
+  const path = value.split(/[?#]/)[0] ?? value;
+  const parts = path.split(/[/\\]/).filter(Boolean);
+  const last = parts.at(-1) ?? value;
+  return last.length > 28 ? last.slice(0, 27) + "…" : last;
 }

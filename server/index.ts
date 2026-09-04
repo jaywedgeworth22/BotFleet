@@ -789,6 +789,11 @@ function broadcast(payload: Record<string, unknown>) {
 // item/request ids are only unique within a thread, so two bots acting at
 // once can collide on a bare id and patch each other's messages.
 const toolMessageByItem = new Map<string, string>(); // threadId:itemId -> messageId
+// when each in-flight step started, so the completed row can say how long it
+// took.  Wall time from the harness's own clock: no driver reports duration,
+// and a step's cost in seconds is the thing a reader scanning a long turn is
+// actually looking for.  Cleared with the message mapping above it.
+const toolStartedAt = new Map<string, number>(); // threadId:itemId -> epoch ms
 const askMessageByRequest = new Map<string, string>(); // threadId:requestId -> messageId
 
 /** Deliver a person's answer to the engine that asked, and tell the truth
@@ -1291,14 +1296,27 @@ bus.subscribe((event: RuntimeEvent) => {
         const messageId = toolMessageByItem.get(itemKey);
         let toolName = "tool";
         if (messageId) {
-          // the whole tool object is replaced, so carry `spoken` across —
-          // dropping it here would silently un-narrate every completed tool
+          // the whole tool object is replaced, so carry the fields set at
+          // item.started across — dropping them here would silently
+          // un-narrate every completed tool and blank the row's target
           const existing = store.messagesFor(event.threadId).find((m) => m.id === messageId)?.tool;
           toolName = existing?.name ?? "tool";
+          const startedAt = toolStartedAt.get(itemKey);
           store.patchMessage(event.threadId, messageId, {
-            tool: { name: toolName, ok: event.ok, spoken: existing?.spoken },
+            tool: {
+              name: toolName,
+              ok: event.ok,
+              spoken: existing?.spoken,
+              target: existing?.target,
+              kind: existing?.kind,
+              // a step's own words about what came back; only worth the row
+              // when it failed, or when nothing named the target
+              detail: event.detail ?? existing?.detail,
+              durationMs: startedAt === undefined ? undefined : Math.max(0, Date.now() - startedAt),
+            },
           });
           toolMessageByItem.delete(itemKey);
+          toolStartedAt.delete(itemKey);
         }
         // the bot just acted ON ITS SCREEN — refresh the preview now. Only
         // computer tools can change the screen, and each capture competes
@@ -1321,9 +1339,18 @@ bus.subscribe((event: RuntimeEvent) => {
         const message = pushMessage({
           role: "bot",
           kind: "activity",
-          tool: { name, spoken: narrateTool(name) ?? undefined },
+          tool: {
+            name,
+            spoken: narrateTool(name) ?? undefined,
+            target: event.target,
+            kind: event.toolKind,
+          },
         });
-        if (event.itemId) toolMessageByItem.set(`${event.threadId}:${event.itemId}`, message.id);
+        if (event.itemId) {
+          const key = `${event.threadId}:${event.itemId}`;
+          toolMessageByItem.set(key, message.id);
+          toolStartedAt.set(key, Date.now());
+        }
       }
       break;
     case "request.opened": {
@@ -1638,7 +1665,9 @@ bus.subscribe((event: RuntimeEvent) => {
           pushMessage({
             role: "bot",
             kind: "activity",
-            tool: { name: `Fell over to ${next.model}${resetNote}` },
+            // a notice, not a step: `ok` settles it so the transcript row
+            // does not spin forever waiting for a completion that never comes
+            tool: { name: `Fell over to ${next.model}${resetNote}`, ok: true, kind: "notice" },
           });
           if (group && speaker?.botId === fallbackBot.id) {
             pendingMemberFallback.set(event.threadId, { groupId: group.id, botId: fallbackBot.id });

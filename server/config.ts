@@ -320,8 +320,19 @@ export function skillRecorderEnabled(cfg: AppConfig): boolean {
   return cfg.features?.skillRecorder === true;
 }
 
+/** Tool steps in the transcript.  On by default.
+ *
+ * They used to be off, and the reason was sound at the time: a chip carried
+ * a bare tool name, so a hundred of them said only "work happened".  A step
+ * now says what it read, what it ran and how long it took (see
+ * `shared/tool-activity.ts`), which is the difference between noise and the
+ * record of a turn.  Settings still turns them off.
+ *
+ * Kept in step with `src/lib/feature-flags.ts`: this is the value the
+ * clients are handed, so a default that disagreed with theirs would decide
+ * the question here and make the other one dead code. */
 export function showToolCallsEnabled(cfg: AppConfig): boolean {
-  return cfg.features?.showToolCalls === true;
+  return cfg.features?.showToolCalls !== false;
 }
 
 export function summarizeToolCallsEnabled(cfg: AppConfig): boolean {

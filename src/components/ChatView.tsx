@@ -2,7 +2,6 @@ import { Component, memo, useCallback, useEffect, useLayoutEffect, useMemo, useR
 import {
   
   ArrowDown,
-  Check,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
@@ -67,6 +66,7 @@ import { BUBBLE_EDITOR_WIDTH, BUBBLE_WIDTH, bubbleRow } from "@/lib/bubble-metri
 import { useFocusMessage } from "@/lib/focus-message";
 import { groupActivityRuns } from "@/lib/activity-runs";
 import { ActivityRun } from "./ActivityRun";
+import { ToolLine } from "./ToolLine";
 import { webhookMessageView } from "@/lib/webhook-message";
 import { splitAttachedImages } from "@/lib/composer-attachments";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
@@ -563,6 +563,10 @@ function Bubble({
 }
 
 /** A tool run: spinner while live, check/cross once settled. */
+/** One shared empty queue.  See the note at its use site: identity, not
+ * contents, is what this is for. */
+const NO_QUEUE: ReadonlyArray<{ queueId: string; text: string }> = [];
+
 function ActivityChip({ bot, message }: { bot: Bot, message: Message }) {
   const { dispatch } = useStore();
   const [expanded, setExpanded] = useState(false);
@@ -610,45 +614,38 @@ function ActivityChip({ bot, message }: { bot: Bot, message: Message }) {
       </div>
     );
   }
-  const failed = tool.ok === false;
-  const time = new Date(message.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' });
-  const actor = message.from?.name ?? bot.name;
-  const tooltip = `${actor} ran this tool at ${time}${failed ? " (Failed)" : tool.ok ? " (Success)" : " (Running)"}`;
-  
-  return (
-    <div className="flex justify-start">
-      <div
-        title={tooltip}
-        className={cn(
-          "flex items-start gap-2.5 rounded-xl border border-hairline/40 bg-panel px-3 py-2 text-[13px] shadow-sm",
-          failed ? "border-danger/30 text-danger bg-danger/5" : "text-ink-secondary",
-        )}
-      >
-        <div className="mt-0.5 shrink-0">
-          {tool.ok === undefined ? (
-            <Loader2 size={13} className="animate-spin text-accent" />
-          ) : failed ? (
-            <X size={13} className="text-danger" />
-          ) : (
-            <Check size={13} className="text-success" />
-          )}
-        </div>
-        <span className="max-w-[540px] break-words font-mono text-[12px] leading-relaxed select-text">{tool.name}</span>
-      </div>
-    </div>
-  );
+  // everything that is not a bot⇄bot chip is a step in the work, and a step
+  // is a log line — see ToolLine for why it stopped being a card
+  return <ToolLine message={message} actor={message.from?.name ?? bot.name} />;
 }
 
-function ScreenFrame({ png, mime }: { png: string; mime?: string }) {
+/** A frame of the bot's computer.
+ *
+ * Live frames arrive over SSE with their pixels inline; a frame that came
+ * from a paginated page arrives as a flag and is fetched from its own route
+ * when this renders it.  That route is immutable-cached, so the browser
+ * holds the bytes instead of the reducer — the difference between a long
+ * computer-use thread costing megabytes of JS heap and costing none. */
+function ScreenFrame({ src }: { src: string }) {
   return (
     <div className="flex justify-start">
       <img
-        src={`data:${mime ?? "image/png"};base64,${png}`}
+        src={src}
         alt="Bot's screen"
+        loading="lazy"
+        decoding="async"
         className="w-fit max-w-[min(42rem,85%)] rounded-2xl border border-hairline/40"
       />
     </div>
   );
+}
+
+/** Where this message's pixels live: inline for a live frame, the
+ * per-message route for one that was paginated in. */
+export function screenFrameSrc(message: Message, threadId: string): string | null {
+  if (message.png) return `data:${message.mime ?? "image/png"};base64,${message.png}`;
+  if (message.hasImage) return `/api/threads/${threadId}/messages/${message.id}/image`;
+  return null;
 }
 
 /** The settled transcript, memoized as one unit: during streaming every
@@ -770,8 +767,10 @@ const MessagesList = memo(function MessagesList({
               if (!showToolCalls && !m.comm) return null;
               return <ActivityChip bot={bot} message={m} />;
             }
-            case "screen":
-              return m.png ? <ScreenFrame png={m.png} mime={m.mime} /> : null;
+            case "screen": {
+              const src = screenFrameSrc(m, bot.threadId);
+              return src ? <ScreenFrame src={src} /> : null;
+            }
             default:
               return (
                 <Bubble
@@ -884,7 +883,14 @@ export function ChatView({ bot }: { bot: Bot }) {
   }, []);
 
   // only the active branch is rendered; forks stay reachable via ‹ › nav
-  const pendingQueued = state.pendingQueued[bot.threadId] ?? [];
+  //
+  // NO_QUEUE, not `?? []`: a fresh literal is a new identity every render, so
+  // it invalidated the `messages` memo below, which invalidated the window,
+  // which made `MessagesList` — memoized precisely so a streaming frame does
+  // not re-render a hundred settled rows — re-render all of them anyway.  A
+  // thread with nothing queued is the normal case, so this was the normal
+  // cost.
+  const pendingQueued = state.pendingQueued[bot.threadId] ?? NO_QUEUE;
   const messages = useMemo(() => {
     const visible = visibleMessages(bot);
     if (!pendingQueued.length) return visible;
@@ -936,7 +942,15 @@ export function ChatView({ bot }: { bot: Bot }) {
     () => resolveTranscriptWindow(messages, transcriptWindow.start, TRANSCRIPT_WINDOW_SIZE, transcriptWindow.end),
     [messages, transcriptWindow.start, transcriptWindow.end],
   );
-  const hiddenCount = hiddenDisplayCount(messages, startIndex, displayWindow);
+  // scrollback beyond what this client loaded — the desktop hydrates a tail
+  // and pulls earlier pages on demand, like the iOS companion
+  const moreOnServer = state.hasMore[bot.threadId] === true;
+  const loadingEarlier = state.loadingEarlier[bot.threadId] === true;
+  // a full-thread scan; unmemoized it ran on every render of every frame
+  const hiddenCount = useMemo(
+    () => hiddenDisplayCount(messages, startIndex, { includeToolCalls, summarizeToolCalls }),
+    [messages, startIndex, includeToolCalls, summarizeToolCalls],
+  );
 
   const lastBotTextId = useMemo(
     () => [...messages].reverse().find((m) => m.role === "bot" && m.kind === "text")?.id,
@@ -1023,12 +1037,29 @@ export function ChatView({ bot }: { bot: Bot }) {
     const focus = state.focusMessage;
     if (!focus || focus.consumed || focus.threadId !== bot.threadId || appliedFocus.current === focus.nonce) return;
     const targetIndex = messages.findIndex((message) => message.id === focus.messageId);
-    if (targetIndex < 0) return;
+    // A hit older than the hydrated tail is not loaded yet.  Walk back a
+    // page at a time — `appliedFocus` stays unset, so this effect runs again
+    // when the page lands and either finds the row or asks for the next one.
+    if (targetIndex < 0) {
+      if (state.hasMore[bot.threadId] === true && state.loadingEarlier[bot.threadId] !== true) {
+        dispatch({ type: "loadEarlier", threadId: bot.threadId });
+      }
+      return;
+    }
     appliedFocus.current = focus.nonce;
     const range = focusWindowRange(messages.length, targetIndex);
     setBottomFollow(false);
     setTranscriptWindow({ key: transcriptKey, start: range.start, end: range.end });
-  }, [bot.threadId, messages, setBottomFollow, state.focusMessage, transcriptKey]);
+  }, [
+    bot.threadId,
+    dispatch,
+    messages,
+    setBottomFollow,
+    state.focusMessage,
+    state.hasMore,
+    state.loadingEarlier,
+    transcriptKey,
+  ]);
   useFocusMessage(bot.threadId, messages.length > 0);
 
   // deps track the FULL messages.length, so expanding the window (which only
@@ -1049,6 +1080,14 @@ export function ChatView({ bot }: { bot: Bot }) {
     // expanding means reading scrollback — never let a mid-expand stream
     // event pin the viewport back to the bottom
     setBottomFollow(false);
+    // Already mounting the oldest message this client holds: the next page
+    // has to come off the server.  The window boundary stays where it is —
+    // the arriving page prepends, so the same click keeps walking back
+    // whether the messages were already here or not.
+    if (startIndex === 0) {
+      if (moreOnServer && !loadingEarlier) dispatch({ type: "loadEarlier", threadId: bot.threadId });
+      return;
+    }
     const start = expandDisplayWindowStart(messages, startIndex, displayWindow);
     setTranscriptWindow((w) => ({ ...w, start }));
   };
@@ -1228,13 +1267,18 @@ export function ChatView({ bot }: { bot: Bot }) {
           aria-live="polite"
           aria-label={`Conversation with ${bot.name}`}
         >
-          {hiddenCount > 0 && (
+          {(hiddenCount > 0 || moreOnServer) && (
             <div className="flex justify-center pt-2">
               <button
                 onClick={showEarlier}
-                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
+                disabled={loadingEarlier}
+                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-60"
               >
-                Show earlier messages ({hiddenCount} more)
+                {loadingEarlier
+                  ? "Loading earlier messages…"
+                  : hiddenCount > 0
+                    ? `Show earlier messages (${hiddenCount} more)`
+                    : "Load earlier messages"}
               </button>
             </div>
           )}

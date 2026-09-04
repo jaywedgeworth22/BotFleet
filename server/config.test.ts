@@ -98,11 +98,14 @@ describe("configuration boundaries", () => {
     );
   });
 
-  it("keeps tool-call chips off by default and accepts an explicit opt-in", () => {
-    expect(showToolCallsEnabled({})).toBe(false);
-    expect(parseConfigPatch({ features: { showToolCalls: true } })).toEqual({
-      features: { showToolCalls: true },
+  it("shows tool steps by default and accepts an explicit opt-out", () => {
+    // they carry the file, the command and the duration now — see
+    // shared/tool-activity.ts for why that flipped the default
+    expect(showToolCallsEnabled({})).toBe(true);
+    expect(parseConfigPatch({ features: { showToolCalls: false } })).toEqual({
+      features: { showToolCalls: false },
     });
+    expect(showToolCallsEnabled({ features: { showToolCalls: false } })).toBe(false);
     expect(showToolCallsEnabled({ features: { showToolCalls: true } })).toBe(true);
   });
 

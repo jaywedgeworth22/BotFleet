@@ -2293,13 +2293,13 @@ describe("harness HTTP API", () => {
   it("keeps Teach a skill off by default and persists an explicit opt-in", async () => {
     const before = await api("GET", "/api/config");
     expect(before.status).toBe(200);
-    expect(before.body.features).toEqual({ skillRecorder: false, showToolCalls: false, summarizeToolCalls: true });
+    expect(before.body.features).toEqual({ skillRecorder: false, showToolCalls: true, summarizeToolCalls: true });
 
     const saved = await api("PATCH", "/api/config", {
       features: { skillRecorder: true },
     });
     expect(saved.status).toBe(200);
-    expect(saved.body.features).toEqual({ skillRecorder: true, showToolCalls: false, summarizeToolCalls: true });
+    expect(saved.body.features).toEqual({ skillRecorder: true, showToolCalls: true, summarizeToolCalls: true });
 
     const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
     expect(disk.features).toEqual({ skillRecorder: true });

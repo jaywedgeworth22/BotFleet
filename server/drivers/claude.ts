@@ -17,6 +17,8 @@ import { join, dirname } from "node:path";
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
 import { stderrExcerpt } from "../stderr-excerpt.ts";
 import { augmentedPath } from "../env-path.ts";
+import { toolFields } from "../tool-fields.ts";
+import { describeResult } from "../../shared/tool-activity.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 
 import type {
@@ -879,7 +881,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
             }
             for (const b of Array.isArray(msg.content) ? msg.content : []) {
               if (b.type === "tool_use") {
-                emit({ ...base(threadId, currentTurnId()), type: "item.started", itemType: "tool", itemId: b.id, title: b.name });
+                // `b.input` names the file, the command, the pattern — the
+                // only part of a step a reader can act on.  It used to be
+                // dropped here, which is why a Claude bot's transcript was a
+                // column of bare tool names.
+                emit({
+                  ...base(threadId, currentTurnId()),
+                  type: "item.started",
+                  itemType: "tool",
+                  itemId: b.id,
+                  title: b.name,
+                  ...toolFields(b.name, b.input),
+                });
               }
             }
             if (msg.usage) {
@@ -898,7 +911,14 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           case "user":
             for (const b of Array.isArray(o.message?.content) ? o.message.content : []) {
               if (b.type === "tool_result") {
-                emit({ ...base(threadId, currentTurnId()), type: "item.completed", itemType: "tool", itemId: b.tool_use_id, ok: !b.is_error });
+                emit({
+                  ...base(threadId, currentTurnId()),
+                  type: "item.completed",
+                  itemType: "tool",
+                  itemId: b.tool_use_id,
+                  ok: !b.is_error,
+                  detail: describeResult(b.content),
+                });
               }
             }
             break;

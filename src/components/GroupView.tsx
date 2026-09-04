@@ -37,6 +37,7 @@ import { ApprovalCard } from "./ApprovalCard";
 import { ManageMembersPanel } from "./ManageMembersPanel";
 import { groupActivityRuns } from "@/lib/activity-runs";
 import { ActivityRun } from "./ActivityRun";
+import { ToolLine } from "./ToolLine";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { cn } from "@/lib/cn";
 import { useFocusMessage } from "@/lib/focus-message";
@@ -67,21 +68,11 @@ function dayLabel(at: number): string {
 
 /** One finished tool step in a room. Same pill the 1:1 chat uses, minus the
  * status glyph — a room reads as a conversation, not a build log. */
+/** A room's step reads exactly like a chat's: same row, same vocabulary.
+ * The sender is already named by the cluster label above it. */
 function RoomToolChip({ message }: { message: Message }) {
-  const tool = message.tool;
-  if (!tool) return null;
-  return (
-    <div className="flex justify-start">
-      <div
-        className={cn(
-          "flex items-center gap-2 rounded-full border border-hairline/40 bg-panel px-3 py-1.5 text-[13px]",
-          tool.ok === false ? "text-danger" : "text-ink-secondary",
-        )}
-      >
-        <span className="max-w-[480px] truncate font-mono">{tool.name}</span>
-      </div>
-    </div>
-  );
+  if (!message.tool) return null;
+  return <ToolLine message={message} actor={message.from?.name} />;
 }
 
 /** 16px maus + name, shown once per sender cluster. */
@@ -1078,7 +1069,15 @@ export function GroupView({ group }: { group: Group }) {
     () => resolveTranscriptWindow(group.messages, transcriptWindow.start, TRANSCRIPT_WINDOW_SIZE, transcriptWindow.end),
     [group.messages, transcriptWindow.start, transcriptWindow.end],
   );
-  const hiddenCount = hiddenDisplayCount(group.messages, startIndex, displayWindow);
+  // scrollback beyond what this client loaded — the desktop hydrates a tail
+  // and pulls earlier pages on demand, like the iOS companion
+  const moreOnServer = state.hasMore[group.threadId] === true;
+  const loadingEarlier = state.loadingEarlier[group.threadId] === true;
+  // a full-thread scan; unmemoized it ran on every render of every frame
+  const hiddenCount = useMemo(
+    () => hiddenDisplayCount(group.messages, startIndex, { includeToolCalls, summarizeToolCalls }),
+    [group.messages, startIndex, includeToolCalls, summarizeToolCalls],
+  );
 
   const setBottomFollow = useCallback((next: boolean) => {
     followRef.current = next;
@@ -1092,12 +1091,29 @@ export function GroupView({ group }: { group: Group }) {
     const focus = state.focusMessage;
     if (!focus || focus.consumed || focus.threadId !== group.threadId || appliedFocus.current === focus.nonce) return;
     const targetIndex = group.messages.findIndex((message) => message.id === focus.messageId);
-    if (targetIndex < 0) return;
+    // A hit older than the hydrated tail is not loaded yet.  Walk back a
+    // page at a time — `appliedFocus` stays unset, so this effect runs again
+    // when the page lands and either finds the row or asks for the next one.
+    if (targetIndex < 0) {
+      if (state.hasMore[group.threadId] === true && state.loadingEarlier[group.threadId] !== true) {
+        dispatch({ type: "loadEarlier", threadId: group.threadId });
+      }
+      return;
+    }
     appliedFocus.current = focus.nonce;
     const range = focusWindowRange(group.messages.length, targetIndex);
     setBottomFollow(false);
     setTranscriptWindow({ key: transcriptKey, start: range.start, end: range.end });
-  }, [group.messages, group.threadId, setBottomFollow, state.focusMessage, transcriptKey]);
+  }, [
+    dispatch,
+    group.messages,
+    group.threadId,
+    setBottomFollow,
+    state.focusMessage,
+    state.hasMore,
+    state.loadingEarlier,
+    transcriptKey,
+  ]);
   useFocusMessage(group.threadId, group.messages.length > 0);
 
   useEffect(() => setBulletinDraft(group.bulletin), [group.id, group.bulletin]);
@@ -1122,6 +1138,12 @@ export function GroupView({ group }: { group: Group }) {
     // expanding means reading scrollback — never let a mid-expand stream
     // event pin the viewport back to the bottom
     setBottomFollow(false);
+    // at the oldest message this client holds, the next page comes off the
+    // server; the arriving page prepends, so the boundary stays put
+    if (startIndex === 0) {
+      if (moreOnServer && !loadingEarlier) dispatch({ type: "loadEarlier", threadId: group.threadId });
+      return;
+    }
     const start = expandDisplayWindowStart(group.messages, startIndex, displayWindow);
     setTranscriptWindow((w) => ({ ...w, start }));
   };
@@ -1416,13 +1438,18 @@ export function GroupView({ group }: { group: Group }) {
               </div>
             </div>
           )}
-          {hiddenCount > 0 && (
+          {(hiddenCount > 0 || moreOnServer) && (
             <div className="flex justify-center pt-2">
               <button
                 onClick={showEarlier}
-                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink"
+                disabled={loadingEarlier}
+                className="rounded-full border border-hairline/40 bg-panel px-3 py-1 text-[12.5px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-60"
               >
-                Show earlier messages ({hiddenCount} more)
+                {loadingEarlier
+                  ? "Loading earlier messages…"
+                  : hiddenCount > 0
+                    ? `Show earlier messages (${hiddenCount} more)`
+                    : "Load earlier messages"}
               </button>
             </div>
           )}
