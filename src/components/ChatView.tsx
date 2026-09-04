@@ -1027,7 +1027,32 @@ export function ChatView({ bot }: { bot: Bot }) {
     setFollow(next);
   }, []);
 
-  useEffect(() => setBottomFollow(true), [bot.id, setBottomFollow]);
+  // Opening a conversation lands at the newest message.
+  //
+  // The follow-the-bottom effect below only fires while `follow` is armed and
+  // the row count changes, so switching TASKS — same bot, different thread —
+  // could open a conversation mid-scrollback: `bot.id` had not changed, so
+  // follow was never re-armed, and a new thread with the same row count as
+  // the old one never triggered a scroll at all.  Opening is an explicit
+  // jump, in a layout effect so it happens before the first paint, with one
+  // more pass on the next frame for content that lays out late (markdown,
+  // images, a code block measuring itself).
+  useLayoutEffect(() => {
+    setBottomFollow(true);
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    previousScrollTop.current = el.scrollTop;
+    const frame = requestAnimationFrame(() => {
+      const settled = scrollRef.current;
+      if (!settled || !followRef.current) return;
+      settled.scrollTop = settled.scrollHeight;
+      previousScrollTop.current = settled.scrollTop;
+    });
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- identity only:
+    // re-running on every message would fight the reader's own scrolling
+  }, [bot.id, bot.threadId, setBottomFollow]);
 
   // A search result may be hundreds of rows before the mounted tail. Open a
   // bounded window around it first; useFocusMessage then scrolls and flashes
@@ -1069,7 +1094,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     if (!el || !followRef.current) return;
     el.scrollTo({ top: el.scrollHeight });
     previousScrollTop.current = el.scrollTop;
-  }, [bot.id, messages.length, streaming, reasoning, bot.busy, follow]);
+  }, [bot.id, bot.threadId, messages.length, streaming, reasoning, bot.busy, follow]);
 
   // Expanding prepends rows: capture the height first, then after the commit
   // shift scrollTop by the growth so the message under the cursor stays put

@@ -127,6 +127,7 @@ import { searchMessages } from "./message-db.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
 import { _loadPending, discardDelegations, drainDelegations, pendingDelegationSnapshot, pendingThreads, queueDelegation, type QueueResult } from "./delegations.ts";
 import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage } from "./steer-queue.ts";
+import { cancelRoomRounds, drainRoomRounds, queueRoomRound } from "./room-queue.ts";
 import { EventBus } from "./harness/bus.ts";
 import { initSentry } from "./sentry.ts";
 import { observeRuntimeEvent } from "./sentry-ai.ts";
@@ -1908,7 +1909,34 @@ bus.subscribe((event: RuntimeEvent) => {
 bus.subscribe((event: RuntimeEvent) => {
   if (event.type !== "turn.completed") return;
   drainQueuedSends();
+  drainRoomQueue();
 });
+
+/** Room rounds that waited on a busy bot.  Registered after the main fold
+ * like the steer drain above, so `busy` is already false when it looks. */
+function drainRoomQueue() {
+  drainRoomRounds(store, Date.now(), (round) => {
+    void runGroupMemberTurn(
+      round.groupId,
+      round.threadId,
+      round.botId,
+      round.hop,
+      new Set(),
+      round.cardContinuation,
+    ).catch((error) => {
+      store.appendMessage(round.threadId, {
+        role: "bot",
+        kind: "activity",
+        tool: {
+          name: `error: queued round could not start — ${
+            (error instanceof Error ? error.message : String(error)).slice(0, 120)
+          }`,
+          ok: false,
+        },
+      });
+    });
+  });
+}
 
 function drainQueuedSends() {
   drainSteeredMessages(store, (botId, threadId, prompt, userMessage, excludeIds) =>
@@ -2936,14 +2964,20 @@ async function runGroupMemberTurn(
   // processes, interleaved token spend, and an interrupt that only ever
   // reached one of them.
   if (bot.busy) {
-    const message = `${bot.name} is busy in another conversation — skipped this round`;
+    // One turn per bot at a time, across BOTH engines — but the round waits
+    // rather than being dropped.  It used to say "skipped this round" and
+    // lose the work, which reads as the bot refusing and leaves saying it
+    // again as the only recovery.
+    const queued = queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation }, Date.now());
+    const message = queued
+      ? `${bot.name} is busy in another conversation — queued for when it frees up`
+      : `${bot.name} is busy in another conversation — already queued`;
     store.appendMessage(threadId, {
       role: "bot",
       kind: "activity",
       from: { botId: bot.id, name: bot.name, color: bot.color },
-      tool: { name: message, ok: false },
+      tool: { name: message, ok: true, kind: "notice" },
     });
-    onDispatchError?.(message);
     return true;
   }
   const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
@@ -2987,14 +3021,18 @@ async function runGroupMemberTurn(
   const readyBot = store.bot(bot.id);
   if (!readyBot) return false;
   if (readyBot.busy) {
-    const message = `${bot.name} became busy in another conversation — skipped this round`;
+    // Same race, later: another turn claimed this bot while connected-app
+    // setup was in flight.  Queue it for the same reason.
+    const queued = queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation }, Date.now());
+    const message = queued
+      ? `${bot.name} became busy in another conversation — queued for when it frees up`
+      : `${bot.name} became busy in another conversation — already queued`;
     store.appendMessage(threadId, {
       role: "bot",
       kind: "activity",
       from: { botId: bot.id, name: bot.name, color: bot.color },
-      tool: { name: message, ok: false },
+      tool: { name: message, ok: true, kind: "notice" },
     });
-    onDispatchError?.(message);
     return true;
   }
   store.setActivity(bot.id, "working");
@@ -3125,6 +3163,7 @@ async function runGroupMemberTurn(
     // No turn.completed follows a rejected room dispatch. Anything that was
     // queued while this bot briefly owned the room must be retried now.
     drainQueuedSends();
+    drainRoomQueue();
     drainConnectorResumes();
     drainSecretResumes();
   }
@@ -5157,6 +5196,7 @@ const server = createServer(async (req, res) => {
       }
       if (!store.groupTaskByThread(group.id, m[2])) return json(res, 404, { error: "no such channel task" });
       lastReply.delete(m[2]);
+      cancelRoomRounds((round) => round.threadId === m![2]);
       const updated = store.deleteGroupTask(group.id, m[2]);
       if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
       const fresh = groupWithThread(updated);
@@ -5384,6 +5424,9 @@ const server = createServer(async (req, res) => {
       // This covers setup-before-busy and responder handoffs, and makes every
       // queued responder observe cancellation before it can start.
       cancelGroupTurnOperations(group.id, group.threadId);
+      // Stop means stop: a round waiting on a busy member must not speak
+      // minutes later into a conversation the person just halted.
+      cancelRoomRounds((round) => round.groupId === group.id);
       // The room fold keys fallback bookkeeping by the SPEAKING member, so the
       // latch has to name that member — and it must be set before the driver
       // is awaited, since the turn can settle before this handler resumes.

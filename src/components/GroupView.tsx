@@ -1084,7 +1084,32 @@ export function GroupView({ group }: { group: Group }) {
     setFollow(next);
   }, []);
 
-  useEffect(() => setBottomFollow(true), [group.id, setBottomFollow]);
+  // Opening a conversation lands at the newest message.
+  //
+  // The follow-the-bottom effect below only fires while `follow` is armed and
+  // the row count changes, so switching TASKS — same bot, different thread —
+  // could open a conversation mid-scrollback: `bot.id` had not changed, so
+  // follow was never re-armed, and a new thread with the same row count as
+  // the old one never triggered a scroll at all.  Opening is an explicit
+  // jump, in a layout effect so it happens before the first paint, with one
+  // more pass on the next frame for content that lays out late (markdown,
+  // images, a code block measuring itself).
+  useLayoutEffect(() => {
+    setBottomFollow(true);
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    previousScrollTop.current = el.scrollTop;
+    const frame = requestAnimationFrame(() => {
+      const settled = scrollRef.current;
+      if (!settled || !followRef.current) return;
+      settled.scrollTop = settled.scrollHeight;
+      previousScrollTop.current = settled.scrollTop;
+    });
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- identity only:
+    // re-running on every message would fight the reader's own scrolling
+  }, [group.id, group.threadId, setBottomFollow]);
 
   const appliedFocus = useRef<number | null>(null);
   useEffect(() => {
@@ -1127,7 +1152,7 @@ export function GroupView({ group }: { group: Group }) {
     if (!el || !followRef.current) return;
     el.scrollTo({ top: el.scrollHeight });
     previousScrollTop.current = el.scrollTop;
-  }, [group.id, group.messages.length, streaming, group.busyBotId, follow]);
+  }, [group.id, group.threadId, group.messages.length, streaming, group.busyBotId, follow]);
 
   // Expanding prepends rows: capture the height first, then after the commit
   // shift scrollTop by the growth so the message under the cursor stays put
