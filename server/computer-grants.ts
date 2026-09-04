@@ -45,6 +45,13 @@ export interface ComputerMount {
 
 export type ComputerKind = "box" | "vps" | "vm" | "local";
 
+/** What a person can PICK, which is not the same vocabulary as what gets
+ * mounted: "cloud" resolves to a hosted box or a container on their own
+ * server depending on the bot's cloudBackend, so it has no mount kind of its
+ * own. Keeping the two apart is what stops a destination being compared
+ * against a mount kind that can never equal it. */
+export type ComputerDestination = "cloud" | "vm" | "local";
+
 /** The MCP server name each kind takes once names have to be distinct. */
 const MULTI_NAMES = {
   box: "computer_box",
@@ -188,4 +195,28 @@ export function turnComputerMounts(integrations: {
 export function hostToolPrefix(mounts: ComputerMount[]): string | null {
   const host = mounts.find(isHostMount);
   return host ? `mcp__${host.name}` : null;
+}
+
+
+/** What a bot's stored `computers` setting actually asks for.
+ *
+ * The setting has three states, and two of them look identical if you reach
+ * for `?? []`:
+ *
+ *   undefined  never configured — "auto": reuse whatever already exists and,
+ *              on macOS, fall back to host control.
+ *   []         explicitly emptied — the Off button, or deselecting the last
+ *              destination. This bot asked for NO computer.
+ *   [...]      these destinations, all of them.
+ *
+ * Collapsing the first two answers "give this bot no computer" with the
+ * person's own desktop, which is the one wrong answer available. */
+export function resolveGrants(
+  botComputers: ComputerDestination[] | undefined,
+  runOn?: string,
+): { granted: ComputerDestination[]; auto: boolean } {
+  // A cloud routine runs on the box whatever the bot is set to, and is never
+  // auto — it named its destination.
+  if (runOn === "cloud") return { granted: ["cloud"], auto: false };
+  return { granted: botComputers ?? [], auto: botComputers === undefined };
 }

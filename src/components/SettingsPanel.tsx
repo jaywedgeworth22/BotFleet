@@ -638,7 +638,9 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             <div className="mt-0.5 text-[13px] text-ink-secondary">
               {bot.computers?.length
                 ? "Which computers this bot can use — pick more than one and it chooses per task"
-                : "Where this bot's computer runs (currently: auto)"}
+                : bot.computers
+                  ? "This bot has no computer"
+                  : "Where this bot's computer runs (currently: auto)"}
             </div>
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
               {([
@@ -671,7 +673,9 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                     "flex-1 py-1.5 text-[13px] capitalize",
                     i > 0 && "border-l border-hairline/40",
                     mode === "local" && !localSelectable && "cursor-not-allowed opacity-40",
-                    (mode === "off" ? (bot.computers ?? []).length === 0 : (bot.computers ?? []).includes(mode as any))
+                    (mode === "off"
+                      ? bot.computers !== undefined && bot.computers.length === 0
+                      : (bot.computers ?? []).includes(mode as any))
                       ? "bg-control text-ink"
                       : "text-ink-secondary hover:bg-control/60 hover:text-ink",
                   )}

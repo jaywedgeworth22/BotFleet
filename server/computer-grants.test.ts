@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computerLabel,
+  resolveGrants,
   computerSystemPrompt,
   hostToolPrefix,
   nameMounts,
@@ -165,5 +166,36 @@ describe("driver mounting (pi)", () => {
 
   it("mounts nothing when no computer was granted", () => {
     expect(buildMcpServers(turn({}))).toBeNull();
+  });
+});
+
+describe("resolveGrants", () => {
+  it("treats a never-configured bot as auto", () => {
+    expect(resolveGrants(undefined)).toEqual({ granted: [], auto: true });
+  });
+
+  it("treats an explicitly emptied setting as NO computer, not as auto", () => {
+    // The Off button, and deselecting the last destination, both store [].
+    // Reading that as "unconfigured" answers "give this bot no computer"
+    // with the person's own desktop — the one wrong answer available.
+    expect(resolveGrants([])).toEqual({ granted: [], auto: false });
+  });
+
+  it("passes every granted destination through", () => {
+    expect(resolveGrants(["cloud", "local"])).toEqual({ granted: ["cloud", "local"], auto: false });
+  });
+
+  it("sends a cloud routine to the box whatever the bot is set to", () => {
+    expect(resolveGrants(["local"], "cloud")).toEqual({ granted: ["cloud"], auto: false });
+    // Named its destination, so it is not auto even from an unconfigured bot.
+    expect(resolveGrants(undefined, "cloud")).toEqual({ granted: ["cloud"], auto: false });
+    // An Off bot still runs a cloud routine on the box: the routine says
+    // where it runs, and Off is about the bot's own turns.
+    expect(resolveGrants([], "cloud")).toEqual({ granted: ["cloud"], auto: false });
+  });
+
+  it("leaves an ordinary turn alone when runOn is anything else", () => {
+    expect(resolveGrants(["vm"], "maus")).toEqual({ granted: ["vm"], auto: false });
+    expect(resolveGrants(undefined, undefined)).toEqual({ granted: [], auto: true });
   });
 });
