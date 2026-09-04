@@ -79,6 +79,12 @@ import {
   type LocalVmTarget,
 } from "./container-computer.ts";
 import {
+  computerLabel,
+  computerSystemPrompt,
+  nameMounts,
+  type ComputerMount,
+} from "./computer-grants.ts";
+import {
   ensureDirs,
   instanceConfigs,
   loadConfig,
@@ -2212,7 +2218,22 @@ async function startTurn(
       // tools that would fail on every call or spawn an unnecessary proxy.
       const dwebUrl = process.env.DWEB_URL?.trim();
       if (dwebUrl) integrations.dweb = { url: dwebUrl };
-      const wants = opts?.runOn === "cloud" ? "cloud" : bot.computers?.[0]; // cloud routine overrides the MAUS default
+      // Every destination the person granted, not just the first. The picker
+      // has always stored an array, but reading computers[0] quietly reduced
+      // "the shared VM and this computer" to "the shared VM" — and then the
+      // drivers collapsed whatever survived into a single MCP server. A grant
+      // is a capability, not a preference: each one is resolved on its own
+      // terms below and mounted with its own tools, so the agent chooses per
+      // task. Granting only the VM therefore means only the VM.
+      const granted = (opts?.runOn === "cloud" ? ["cloud"] : (bot.computers ?? [])) as Array<
+        "cloud" | "vm" | "local"
+      >; // cloud routine overrides the MAUS default
+      // No grant at all is "auto": reuse what already exists, provision
+      // nothing, and fall back to host control at the end.
+      const auto = granted.length === 0;
+      const wantsCloud = granted.includes("cloud");
+      const wantsVm = granted.includes("vm");
+      const wantsLocal = granted.includes("local");
       // Cloud routines always use Box/BoxAgent. The per-bot backend applies
       // only to ordinary turns that mount a computer into the local agent.
       const cloudBackend = opts?.runOn === "cloud" || bot.cloudBackend !== "vps" ? "box" : "vps";
@@ -2220,12 +2241,12 @@ async function startTurn(
       const mountsCloudComputer = mountsComputerMcp || instance.driverKind === "boxAgent";
       const mountsLocalComputer = instance.adapter.capabilities.localComputerMcp === true;
       let previewCapture: (() => Promise<{ png: string; format: string }>) | null = null;
-      let computerKind: "box" | "vps" | "vm" | "local" | null = null;
+      const mounts: ComputerMount[] = [];
       let autoVpsProblem: string | null = null;
 
       // Explicit destinations are strict. In particular, Local VM must never
       // fall through to host CUA and accidentally click on the user's Mac.
-      if (wants === "vm") {
+      if (wantsVm) {
         if (!mountsComputerMcp || instance.driverKind === "boxAgent") {
           throw new Error("this model engine cannot use the Local VM — choose Claude or an ACP engine, or select another computer destination");
         }
@@ -2246,13 +2267,16 @@ async function startTurn(
         if (!localVm.ready || !localVm.runtime) {
           throw new Error(`${localVm.problem ?? "the Local VM is not ready"} (App Settings → Local VM)`);
         }
-        integrations.localComputer = containerComputerMcp(
-          localVm.runtime,
-          controlIntegration(bot.id),
-          localVmTarget,
-        );
-        computerKind = "vm";
-      } else if (wants === "local") {
+        mounts.push({
+          name: "",
+          label: computerLabel("vm", process.platform),
+          kind: "vm",
+          stdio: containerComputerMcp(localVm.runtime, controlIntegration(bot.id), localVmTarget),
+        });
+      }
+      // Deliberately not an "else": "the Local VM and this computer" is a
+      // legitimate grant, and each destination resolves independently.
+      if (wantsLocal) {
         // This computer is the one destination that degrades instead of
         // refusing: the safe direction is "no computer", never a different
         // one, and a routine or webhook that only needs the shell must not
@@ -2280,36 +2304,44 @@ async function startTurn(
             tool: { name: `local computer not mounted: ${unavailable}`, ok: false },
           });
         } else if (cua) {
-          integrations.localComputer = cua;
-          computerKind = "local";
+          mounts.push({
+            name: "",
+            label: computerLabel("local", process.platform),
+            kind: "local",
+            stdio: cua,
+          });
         }
       }
 
       // A VPS is a local-agent computer mount, never a remote agent runner.
       // Explicit Cloud may prepare/start it. Auto remains read-only unless
       // the person explicitly opted this bot into remote lifecycle actions.
-      if ((wants === "cloud" || wants === undefined) && cloudBackend === "vps") {
+      if ((wantsCloud || auto) && cloudBackend === "vps") {
         const unsupported = vps.vpsDriverError(instance.driverKind, mountsComputerMcp);
-        if (unsupported && wants === "cloud") throw new Error(unsupported);
-        if (unsupported && wants === undefined) autoVpsProblem = unsupported;
+        if (unsupported && wantsCloud) throw new Error(unsupported);
+        if (unsupported && auto) autoVpsProblem = unsupported;
         if (!unsupported) {
           activeVpsThreads.set(bot.id, threadId);
-          const remote = wants === "cloud" || bot.autoStartVps
+          const remote = wantsCloud || bot.autoStartVps
             ? await vps.vpsComputerAction("provision", cfg, bot.id)
             : await vps.inspectVpsForAuto(cfg, bot.id);
           if (remote?.ready && remote.sshAlias) {
             const targetCfg = { ...cfg, vps: { sshAlias: remote.sshAlias } };
             const vpsMcp = vps.vpsComputerMcp(targetCfg, bot.id, remote.container_id ?? undefined);
             const vpsControl = controlIntegration(bot.id);
-            integrations.localComputer = {
-              ...vpsMcp,
-              env: { ...vpsMcp.env, OMB_CONTROL_URL: vpsControl.url, OMB_CONTROL_TOKEN: vpsControl.token },
-            };
-            computerKind = "vps";
+            mounts.push({
+              name: "",
+              label: computerLabel("vps", process.platform),
+              kind: "vps",
+              stdio: {
+                ...vpsMcp,
+                env: { ...vpsMcp.env, OMB_CONTROL_URL: vpsControl.url, OMB_CONTROL_TOKEN: vpsControl.token },
+              },
+            });
             previewCapture = () => vps.vpsComputerScreenshot(targetCfg, bot.id);
           } else {
             activeVpsThreads.delete(bot.id);
-            if (wants === "cloud") {
+            if (wantsCloud) {
               throw new Error(remote?.problem ?? "the VPS computer could not be created or reached");
             }
             autoVpsProblem = remote?.problem ?? "the VPS computer could not be reached";
@@ -2319,14 +2351,14 @@ async function startTurn(
 
       // Cloud is also strict when explicitly selected. Auto (unset) reuses an
       // existing cloud box, then falls back to host CUA without provisioning.
-      if ((wants === "cloud" || wants === undefined) && cloudBackend === "box" && box.boxConfigured(cfg)) {
-        if (!mountsCloudComputer && wants === "cloud") {
+      if ((wantsCloud || auto) && cloudBackend === "box" && box.boxConfigured(cfg)) {
+        if (!mountsCloudComputer && wantsCloud) {
           throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
         }
         let b = await box.findBox(cfg, bot.id).catch(() => null);
         // Explicit Cloud and the box-native Computer engine provision on first
         // use. Auto remains non-surprising and only reuses an existing box.
-        if (!b && mountsCloudComputer && (wants === "cloud" || instance.driverKind === "boxAgent")) {
+        if (!b && mountsCloudComputer && (wantsCloud || instance.driverKind === "boxAgent")) {
           broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
           await box.provisionBox(cfg, bot.id, bot.name);
           b = await box.findBox(cfg, bot.id).catch(() => null);
@@ -2342,29 +2374,32 @@ async function startTurn(
         if (b) {
           previewCapture = () => box.screenshotBox(cfg, bot.id, b!.id);
           if (mountsCloudComputer) {
-            integrations.computer = {
+            mounts.push({
+              name: "",
+              label: computerLabel("box", process.platform),
               kind: "box",
-              boxId: b.id,
-              token: cfg.box!.token!,
-              control: controlIntegration(bot.id),
-            };
-            computerKind = "box";
+              box: {
+                kind: "box",
+                boxId: b.id,
+                token: cfg.box!.token!,
+                control: controlIntegration(bot.id),
+              },
+            });
           }
         }
       }
-      if (wants === "cloud" && cloudBackend === "box" && !box.boxConfigured(cfg)) {
+      if (wantsCloud && cloudBackend === "box" && !box.boxConfigured(cfg)) {
         throw new Error("Cloud box is not configured — add a Box API key or choose Local VM");
       }
-      if (wants === "cloud" && cloudBackend === "box" && !integrations.computer) {
+      if (wantsCloud && cloudBackend === "box" && !mounts.some((m) => m.kind === "box")) {
         throw new Error("the cloud computer could not be created or reached");
       }
 
       // Auto-only host fallback. Electron owns cua-driver/TCC attribution;
       // the harness only reads its already-running connection descriptor.
       if (
-        !integrations.computer &&
-        !integrations.localComputer &&
-        wants === undefined &&
+        mounts.length === 0 &&
+        auto &&
         shouldMountLocalComputer({
           requested: undefined,
           hostPlatform: process.platform,
@@ -2373,21 +2408,33 @@ async function startTurn(
       ) {
         const cua = readCuaConnection();
         if (cua) {
-          integrations.localComputer = cua;
-          computerKind = "local";
+          mounts.push({
+            name: "",
+            label: computerLabel("local", process.platform),
+            kind: "local",
+            stdio: cua,
+          });
         }
       }
-      if (
-        wants === undefined &&
-        cloudBackend === "vps" &&
-        !integrations.computer &&
-        !integrations.localComputer &&
-        autoVpsProblem
-      ) {
+      if (auto && cloudBackend === "vps" && mounts.length === 0 && autoVpsProblem) {
         const hint = bot.autoStartVps
           ? "Check the VPS connection in App Settings → Connections."
           : "Open Computer and enable Start VPS automatically, or choose Cloud to start it manually.";
         throw new Error(`${autoVpsProblem}. ${hint}`);
+      }
+
+      // Name the servers and hand every grant to the driver. With one
+      // computer the server keeps its historical name, so a single-computer
+      // bot's tool surface, prompt, and allow-list do not move at all.
+      // `computer` / `localComputer` stay populated with the first mount of
+      // each shape for consumers that still expect exactly one computer.
+      const granted_mounts = nameMounts(mounts);
+      if (granted_mounts.length) {
+        integrations.computers = granted_mounts;
+        const firstBox = granted_mounts.find((m) => m.box);
+        const firstStdio = granted_mounts.find((m) => m.stdio);
+        if (firstBox?.box) integrations.computer = firstBox.box;
+        if (firstStdio?.stdio) integrations.localComputer = firstStdio.stdio;
       }
       // Agent control tools include peer comms and the secure credential
       // request card. A comms-invoked turn (depth ≥ cap) gets none — hard recursion
@@ -2454,20 +2501,10 @@ async function startTurn(
         transcript,
         system:
           persona +
-          (computerKind === "vm"
-            ? false
-              ? " You have your own isolated Cua sandbox: a Linux desktop in a container reserved for this bot. Only /home/cua/workspace is durable; save downloads, repositories, working files, and browser profiles there because everything else inside the VM is disposable. No other host folder is mounted. Use the computer tools for desktop, accessibility, window, and shell work. Inspect the desktop state before acting, prefer accessibility targets over raw coordinates, and work carefully."
-              : " You have a shared, isolated Cua sandbox: a Linux desktop in a container on this machine. Only /home/cua/workspace is durable; save downloads, repositories, working files, and browser profiles there because everything else inside the VM is disposable. No other host folder is mounted. Use the computer tools for desktop, accessibility, window, and shell work. Inspect the desktop state before acting, prefer accessibility targets over raw coordinates, and work carefully."
-            : computerKind === "box" && instance.driverKind !== "boxAgent"
-            ? " You have your own cloud computer. In Chrome, prefer browser_snapshot with browser_click/browser_fill for semantic, trusted actions; use screenshot/click/type_text for visual or non-browser UI, open_url for navigation, and computer_exec for Linux tasks. Every action already returns the resulting screen, so don't follow it with screenshot; batch predictable pixel actions with computer_batch."
-            : computerKind === "vps"
-              ? " You have your own self-hosted remote Linux computer through the official Cua tools. Its filesystem is disposable: everything on it is wiped whenever its container is recreated, so keep long-lived work somewhere durable — push it to a remote, or hand the results back in chat — instead of leaving it only on that computer. Inspect the desktop state before acting, prefer accessibility targets over raw coordinates, and act carefully."
-              : computerKind === "local"
-              ? " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully."
-              : "") +
-          (computerKind
-            ? " At a sign-in, password, MFA, CAPTCHA, or other protected-input step, stop and ask the user to complete it on the visible computer. Never type their password or ask them to paste a password or one-time code into chat."
-            : "") +
+          computerSystemPrompt(granted_mounts, {
+            boxAgent: instance.driverKind === "boxAgent",
+            hostPlatform: process.platform,
+          }) +
           // gated on the integration, not the key: the hint only goes to a
           // bot whose driver actually mounted the tools
           (integrations.composio

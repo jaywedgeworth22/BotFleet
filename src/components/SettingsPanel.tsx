@@ -636,7 +636,9 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
           <div className="rounded-xl bg-card p-4">
             <div className="text-[15px] font-medium text-ink">Computer</div>
             <div className="mt-0.5 text-[13px] text-ink-secondary">
-              Where this bot's computer runs{bot.computers?.length ? "" : " (currently: auto)"}
+              {bot.computers?.length
+                ? "Which computers this bot can use — pick more than one and it chooses per task"
+                : "Where this bot's computer runs (currently: auto)"}
             </div>
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
               {([
@@ -674,6 +676,12 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                 </button>
               ))}
             </div>
+            {(bot.computers ?? []).length > 1 && (
+              <div className="mt-3 rounded-lg bg-inset px-3 py-2.5 text-[11.5px] text-ink-secondary">
+                This bot has {(bot.computers ?? []).length} computers and its own tools for each. It picks per task,
+                preferring a remote desktop and using this computer only when the work genuinely needs it.
+              </div>
+            )}
             {(!(bot.computers?.length) || bot.computers?.includes("cloud")) && (
               <>
                 <CloudBackendPicker
