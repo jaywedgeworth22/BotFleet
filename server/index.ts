@@ -43,7 +43,14 @@ import { parseBotProfilePatch } from "./bot-profile.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { telemetry } from "./telemetry.ts";
+import { usageQuotaPoller } from "./usage-quota.ts";
 import {
+  lastAntigravityQuotaSnapshot,
+  startAntigravityQuotaPoller,
+  stopAntigravityQuotaPoller,
+} from "./antigravity-quota.ts";
+import {
+  enableQuotaCooldownPersist,
   isQuotaOrCapText,
   lastUserTextIndex,
   parseQuotaResetTime,
@@ -210,6 +217,22 @@ telemetry.configure(() => ({
 }));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
+usageQuotaPoller.configure({
+  settings: () => ({
+    ingestUrl: usageIngestUrl(cfg),
+    ingestToken: cfg.usage?.ingestToken,
+    readToken: cfg.usage?.readToken,
+  }),
+  instances: () =>
+    registry.instances().map((inst) => ({
+      instanceId: inst.instanceId,
+      driverKind: inst.driverKind,
+      models: inst.models,
+    })),
+});
+if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
+  usageQuotaPoller.start();
+}
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 
@@ -3546,6 +3569,7 @@ function configStatus() {
       ingestUrl: usageIngestUrl(cfg) ?? "",
       configured: telemetry.getStatus().enabled,
       hasToken: Boolean(cfg.usage?.ingestToken),
+      hasReadToken: Boolean(cfg.usage?.readToken || process.env.USAGE_READ_TOKEN),
       projects: usageProjectRules(cfg),
     },
     autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
@@ -6393,6 +6417,8 @@ const server = createServer(async (req, res) => {
       return json(res, 200, {
         ok: true,
         cooldowns: quotaCooldowns.list(),
+        antigravity: lastAntigravityQuotaSnapshot(),
+        windows: usageQuotaPoller.getWindows(),
       });
     }
     if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {
@@ -7130,6 +7156,10 @@ const server = createServer(async (req, res) => {
 
 routines?.start();
 resourceTriggers.start();
+if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
+  enableQuotaCooldownPersist(join(DATA_DIR, "quota-cooldowns.json"));
+  startAntigravityQuotaPoller();
+}
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
@@ -7141,6 +7171,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     vps.closeAllVpsDesktopTunnels();
     watchdog.stop();
     routines?.stop();
+    stopAntigravityQuotaPoller();
+    usageQuotaPoller.stop();
     webhookIngress?.server.close();
     void registry.disposeAll().finally(() => process.exit(0));
   });

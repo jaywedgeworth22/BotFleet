@@ -283,6 +283,14 @@ export interface ProviderSnapshot {
     capped: boolean;
     resetsAt?: number | null;
     error?: string;
+    /** Per-model remaining from antigravity-usage.  Instance `capped` is a
+     *  wildcard cap, not "any one model is exhausted". */
+    models?: Record<string, {
+      capped: boolean;
+      remainingPercent?: number | null;
+      resetsAt?: number | null;
+      error?: string;
+    }>;
   };
 }
 

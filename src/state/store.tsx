@@ -346,6 +346,7 @@ export interface ConfigStatus {
     ingestUrl: string;
     configured: boolean;
     hasToken: boolean;
+    hasReadToken?: boolean;
     projects: Array<{ slug: string; match: string[] }>;
   };
   /** Opt-in flags. Absent means off. */
@@ -428,6 +429,12 @@ export interface InstanceInfo {
       capped: boolean;
       resetsAt?: number | null;
       error?: string;
+      models?: Record<string, {
+        capped: boolean;
+        remainingPercent?: number | null;
+        resetsAt?: number | null;
+        error?: string;
+      }>;
     };
   };
   models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean }> };

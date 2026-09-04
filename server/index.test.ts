@@ -244,6 +244,7 @@ beforeAll(async () => {
       OMB_STATIC_DIR: staticDir,
       FAKE_CLAUDE_MODE: "hang",
       FAKE_CLAUDE_DUMP: fakeClaudeDump,
+      OMB_DISABLE_ANTIGRAVITY_QUOTA: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

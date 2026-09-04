@@ -4,6 +4,7 @@
 // startup failure (that behavior is what makes settings forward/backward
 // compatible — do not remove it); dispose tears an instance down without
 // touching its siblings.
+import { lastAntigravityQuotaSnapshot, quotaModelsFromSnapshot } from "../antigravity-quota.ts";
 import { findCliCandidates } from "../env-path.ts";
 import { quotaCooldowns } from "../model-fallback.ts";
 import type {
@@ -196,12 +197,29 @@ export class ProviderRegistry {
           try {
             await inst.refreshModels?.();
             snapshot = await inst.snapshot();
-            const cd = quotaCooldowns.forInstance(inst.instanceId);
-            if (cd) {
-              snapshot.quota = {
+            const wildcard = quotaCooldowns.get("*", inst.instanceId, "*")
+              ?? quotaCooldowns.list().find((cd) => cd.instanceId === inst.instanceId && cd.model === "*");
+            const perModel = quotaCooldowns.list().filter(
+              (cd) => cd.instanceId === inst.instanceId && cd.model !== "*",
+            );
+            const models: NonNullable<ProviderSnapshot["quota"]>["models"] = {};
+            for (const cd of perModel) {
+              models[cd.model] = {
                 capped: true,
+                remainingPercent: null,
                 resetsAt: cd.resetsAt,
                 error: cd.error,
+              };
+            }
+            if (inst.instanceId === "antigravity") {
+              Object.assign(models, quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot()));
+            }
+            if (wildcard || Object.keys(models).length > 0) {
+              snapshot.quota = {
+                capped: Boolean(wildcard),
+                resetsAt: wildcard?.resetsAt,
+                error: wildcard?.error,
+                ...(Object.keys(models).length > 0 ? { models } : {}),
               };
             }
           } catch (e) {
