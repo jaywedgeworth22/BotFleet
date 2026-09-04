@@ -15,6 +15,7 @@ import { homedir, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
+import { stderrExcerpt } from "../stderr-excerpt.ts";
 import { augmentedPath } from "../env-path.ts";
 import { brokerSocketPath, describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 
@@ -944,7 +945,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // process that exited between turns (idle close, contract change)
         // is just a session ending
         if (session.turn && !session.turn.settled) {
-          const message = `claude exited ${code} before result${session.stderr ? `: ${session.stderr.trim().slice(-300)}` : ""}`;
+          const message = `claude exited ${code} before result${session.stderr ? `: ${stderrExcerpt(session.stderr)}` : ""}`;
           const verdict = classifyError({ exitCode: code, stderr: message });
           if (
             !retry.cancelled &&

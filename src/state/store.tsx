@@ -469,6 +469,7 @@ export type AppSettingsSection =
   | "general"
   | "connections"
   | "engines"
+  | "models"
   | "companion"
   | "computers"
   | "usage";
