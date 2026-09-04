@@ -21,6 +21,8 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
 
+import { accessHeaders, accessLoginHint, type AccessTokenHeaders } from "../recall-access.ts";
+
 const execFileAsync = promisify(execFile);
 
 // No default endpoint ships with BotFleet: the operator points this at their
@@ -39,6 +41,38 @@ const RECALL_API_KEY =
   process.env.OMB_QDRANT_API_KEY ||
   process.env.QDRANT_API_KEY ||
   "";
+
+// A Cloudflare Access service token, when the operator's recall service is
+// published behind Access.  Access ignores a bearer credential outright, so
+// without this pair every request to such a host comes back as a redirect to
+// a login page — which reads like an outage.  Sent ALONGSIDE the bearer, not
+// instead of it: a deployment may gate at the edge, the origin, or both.
+const ACCESS_CLIENT_ID =
+  process.env.OMB_RECALL_ACCESS_CLIENT_ID ||
+  process.env.OMB_QDRANT_ACCESS_CLIENT_ID ||
+  process.env.CF_ACCESS_CLIENT_ID ||
+  "";
+
+const ACCESS_CLIENT_SECRET =
+  process.env.OMB_RECALL_ACCESS_CLIENT_SECRET ||
+  process.env.OMB_QDRANT_ACCESS_CLIENT_SECRET ||
+  process.env.CF_ACCESS_CLIENT_SECRET ||
+  "";
+
+type RecallHttpHeaders = AccessTokenHeaders & {
+  "Content-Type": string;
+  Authorization?: string;
+};
+
+/** The headers every HTTP call to the recall service carries. */
+function recallHttpHeaders(): RecallHttpHeaders {
+  const headers: RecallHttpHeaders = {
+    "Content-Type": "application/json",
+    ...accessHeaders(ACCESS_CLIENT_ID, ACCESS_CLIENT_SECRET),
+  };
+  if (RECALL_API_KEY) headers.Authorization = `Bearer ${RECALL_API_KEY}`;
+  return headers;
+}
 
 const DEFAULT_COLLECTION = (
   process.env.OMB_RECALL_COLLECTION ||
@@ -278,10 +312,7 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
   // 2. HTTP fallback to the configured recall service
   if (!RECALL_URL) return NOT_CONFIGURED_MESSAGE;
   try {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (RECALL_API_KEY) {
-      headers["Authorization"] = `Bearer ${RECALL_API_KEY}`;
-    }
+    const headers = recallHttpHeaders();
 
     const payload: Record<string, unknown> = { query, limit };
     if (category) payload.category = category;
@@ -293,10 +324,15 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
     const res = await fetch(`${RECALL_URL}/recall/search`, {
       method: "POST",
       headers,
+      // Manual, so a login redirect is reported as one instead of being
+      // followed into an HTML page that fails to parse as search results.
+      redirect: "manual",
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15_000),
     });
 
+    const gate = accessLoginHint(res);
+    if (gate) return `Agent RAG search failed: ${gate}.`;
     if (res.ok) {
       const data = (await res.json()) as { hits?: HitRecord[]; mode?: string };
       return formatHits(data.hits || [], data.mode);
@@ -343,18 +379,18 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
   // 2. HTTP fallback to the configured recall service
   if (!RECALL_URL) return NOT_CONFIGURED_MESSAGE;
   try {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    if (RECALL_API_KEY) {
-      headers["Authorization"] = `Bearer ${RECALL_API_KEY}`;
-    }
+    const headers = recallHttpHeaders();
 
     const res = await fetch(`${RECALL_URL}/recall/contribute`, {
       method: "POST",
       headers,
+      redirect: "manual",
       body: JSON.stringify({ text, category, app, seat, title, url, force }),
       signal: AbortSignal.timeout(15_000),
     });
 
+    const gate = accessLoginHint(res);
+    if (gate) return `Agent RAG contribute failed: ${gate}.`;
     if (res.ok) {
       const data = (await res.json()) as { doc_id?: string; id?: string };
       return `Successfully contributed to ${COLLECTION_LABEL} [id: ${data.doc_id || data.id}]`;
@@ -386,7 +422,13 @@ async function recallStats(): Promise<string> {
   // 2. HTTP fallback
   if (!RECALL_URL) return NOT_CONFIGURED_MESSAGE;
   try {
-    const healthRes = await fetch(`${RECALL_URL}/health`, { signal: AbortSignal.timeout(6_000) });
+    const healthRes = await fetch(`${RECALL_URL}/health`, {
+      headers: recallHttpHeaders(),
+      redirect: "manual",
+      signal: AbortSignal.timeout(6_000),
+    });
+    const gate = accessLoginHint(healthRes);
+    if (gate) return `Agent RAG status check failed: ${gate}.`;
     if (healthRes.ok) {
       const data = (await healthRes.json()) as {
         collection?: string;

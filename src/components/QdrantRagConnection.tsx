@@ -11,6 +11,8 @@ export function QdrantRagConnection() {
   const [url, setUrl] = useState(qdrant?.url ?? "");
   const [apiKey, setApiKey] = useState("");
   const [collection, setCollection] = useState(qdrant?.collection ?? "");
+  const [accessClientId, setAccessClientId] = useState(qdrant?.accessClientId ?? "");
+  const [accessClientSecret, setAccessClientSecret] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{
     ready: boolean;
@@ -25,26 +27,48 @@ export function QdrantRagConnection() {
       setEnabled(qdrant.enabled);
       if (qdrant.url !== undefined) setUrl(qdrant.url);
       if (qdrant.collection) setCollection(qdrant.collection);
+      if (qdrant.accessClientId !== undefined) setAccessClientId(qdrant.accessClientId);
     }
   }, [qdrant]);
 
-  const save = async (overrides: { enabled?: boolean; url?: string; apiKey?: string; collection?: string } = {}) => {
+  const save = async (
+    overrides: {
+      enabled?: boolean;
+      url?: string;
+      apiKey?: string;
+      collection?: string;
+      accessClientId?: string;
+      accessClientSecret?: string;
+    } = {},
+  ) => {
     const patchBody: {
       qdrant: {
         enabled?: boolean;
         url?: string;
         apiKey?: string;
         collection?: string;
+        accessClientId?: string;
+        accessClientSecret?: string;
       };
     } = {
       qdrant: {
         enabled: overrides.enabled !== undefined ? overrides.enabled : enabled,
         url: (overrides.url !== undefined ? overrides.url : url).trim() || undefined,
         collection: (overrides.collection !== undefined ? overrides.collection : collection).trim() || undefined,
+        accessClientId:
+          (overrides.accessClientId !== undefined ? overrides.accessClientId : accessClientId).trim() || undefined,
       },
     };
     if (overrides.apiKey !== undefined || apiKey.trim()) {
       patchBody.qdrant.apiKey = (overrides.apiKey !== undefined ? overrides.apiKey : apiKey).trim() || undefined;
+    }
+    // The stored Access secret is never sent back to the client, so an
+    // untouched field must not be echoed as an empty string — that would
+    // clear a working service token on the next unrelated save.
+    if (overrides.accessClientSecret !== undefined || accessClientSecret.trim()) {
+      patchBody.qdrant.accessClientSecret =
+        (overrides.accessClientSecret !== undefined ? overrides.accessClientSecret : accessClientSecret).trim() ||
+        undefined;
     }
 
     try {
@@ -155,6 +179,42 @@ export function QdrantRagConnection() {
             </div>
           </div>
 
+          <div className="flex flex-col gap-2 rounded-lg border border-hairline/30 bg-inset/40 p-3">
+            <div>
+              <div className="text-[12.5px] font-medium text-ink">Cloudflare Access Service Token (Optional)</div>
+              <div className="text-[12px] text-ink-secondary">
+                Only for a service published behind Cloudflare Access.  If a test returns a 302 or a login page, that is
+                Access asking who you are — it ignores the API key above and wants this header pair instead.  Create one
+                under Zero Trust → Access → Service Auth.
+              </div>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div className="flex flex-col gap-1">
+                <label className="text-[12px] font-medium text-ink-secondary">Access Client Id</label>
+                <input
+                  type="text"
+                  value={accessClientId}
+                  onChange={(e) => setAccessClientId(e.target.value)}
+                  onBlur={() => void save({ accessClientId })}
+                  placeholder="xxxxxxxx.access"
+                  className={inputClass}
+                />
+              </div>
+
+              <div className="flex flex-col gap-1">
+                <label className="text-[12px] font-medium text-ink-secondary">Access Client Secret</label>
+                <input
+                  type="password"
+                  value={accessClientSecret}
+                  onChange={(e) => setAccessClientSecret(e.target.value)}
+                  onBlur={() => void save({ accessClientSecret })}
+                  placeholder={qdrant?.hasAccessClientSecret ? "••••••••" : "Paste the service token secret"}
+                  className={inputClass}
+                />
+              </div>
+            </div>
+          </div>
+
           <div className="mt-1 flex items-center justify-between">
             <button
               onClick={() => void runTest()}
@@ -165,31 +225,25 @@ export function QdrantRagConnection() {
               {testing ? "Testing..." : "Test Connection"}
             </button>
 
-            {testResult && (
-              <div
-                className={cn(
-                  "flex items-center gap-1.5 text-[12.5px]",
-                  testResult.ready ? "text-success" : "text-danger"
-                )}
-              >
-                {testResult.ready ? (
-                  <>
-                    <CheckCircle size={14} />
-                    <span>
-                      Connected · {(testResult.pointsCount ?? 0).toLocaleString()} points in {testResult.collection || collection}
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <XCircle size={14} />
-                    <span className="truncate max-w-[280px]">
-                      {testResult.error || "Not reachable"}
-                    </span>
-                  </>
-                )}
+            {testResult?.ready && (
+              <div className="flex items-center gap-1.5 text-[12.5px] text-success">
+                <CheckCircle size={14} />
+                <span>
+                  Connected · {(testResult.pointsCount ?? 0).toLocaleString()} points in {testResult.collection || collection}
+                </span>
               </div>
             )}
           </div>
+
+          {/* A failure gets a full-width, wrapping row: the useful ones name
+              a cause ("behind Cloudflare Access", "timed out after 30s") and
+              a truncated single line hid exactly the part worth reading. */}
+          {testResult && !testResult.ready && (
+            <div className="flex items-start gap-1.5 text-[12.5px] text-danger">
+              <XCircle size={14} className="mt-0.5 shrink-0" />
+              <span>{testResult.error || "Not reachable"}</span>
+            </div>
+          )}
         </div>
       )}
     </div>

@@ -183,6 +183,7 @@ import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
+import { accessHeaders, accessLoginHint, hasAccessServiceToken, type AccessTokenHeaders } from "./recall-access.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { RoutineRequestService } from "./routine-requests.ts";
@@ -328,19 +329,100 @@ function connectedAppsIntegration(botId: string, threadId: string) {
 
 export const RECALL_NOT_CONFIGURED = "Agent RAG is not configured — set a Service URL in Settings";
 
+/** How long the settings probe gives a local `recall` CLI to answer.  The
+ * bot-facing proxy (qdrant-proxy's executeRecallCli) already allows 30s, and
+ * this probe runs the same binary against the same corpus: a `recall stats`
+ * that has to wake an embedder and round-trip a collection genuinely takes
+ * several seconds.  The old 6s ceiling was under the measured cost, so a
+ * perfectly healthy corpus timed out on every probe and the panel reported
+ * "did not answer" while the bots using it were fine. */
+const RECALL_CLI_TIMEOUT_MS = 30_000;
+
+/** Why a `recall` CLI call failed, in words a person can act on, and safe to
+ * return over the API: no environment values, and anything the child printed
+ * goes through the same redaction the chat cards use, because a CLI can echo
+ * a URL — or a credential — into its own stderr. */
+const cliFailureSchema = z.object({
+  killed: z.boolean().optional(),
+  signal: z.string().nullish(),
+  stderr: z.string().optional(),
+  message: z.string().optional(),
+});
+const cliExitCodeSchema = z.object({ code: z.number() });
+const cliSpawnFailureSchema = z.object({ code: z.literal("ENOENT") });
+
+function describeCliFailure(err: unknown, timeoutMs: number): string {
+  if (err instanceof SyntaxError) return "it printed output that was not JSON";
+  const parsed = cliFailureSchema.safeParse(err);
+  const failure = parsed.success ? parsed.data : {};
+  // execFile kills the child on timeout, so a signal is how a timeout looks
+  // from here — there is no distinct error code for it.
+  if (failure.killed || failure.signal === "SIGTERM" || failure.signal === "SIGKILL") {
+    return `it timed out after ${Math.round(timeoutMs / 1000)}s`;
+  }
+  if (cliSpawnFailureSchema.safeParse(err).success) return "the executable could not be run";
+  const raw = (failure.stderr?.trim() || failure.message || String(err)).trim();
+  const safe = redactSecretsInText(raw).replace(/\s+/g, " ").trim().slice(0, 300);
+  const exit = cliExitCodeSchema.safeParse(err);
+  const exited = exit.success ? `it exited ${exit.data.code}` : "it failed";
+  return safe ? `${exited}: ${safe}` : exited;
+}
+
+/** Whether a real recall route lets this caller through.  A public /health
+ * says nothing about the routes a bot actually calls — on a service behind
+ * Cloudflare Access, /health is commonly the one bypass while /recall/* is
+ * gated — so the probe asks a gated route before reporting success.  Returns
+ * a reason, or null when the route answered (or does not exist). */
+async function recallRouteGate(
+  url: string,
+  headers: AccessTokenHeaders & { Authorization?: string },
+): Promise<string | null> {
+  try {
+    const probe = await fetch(`${url}/recall/stats`, {
+      headers,
+      redirect: "manual",
+      signal: AbortSignal.timeout(4000),
+    });
+    const gate = accessLoginHint(probe);
+    if (gate) return gate;
+    if (probe.status === 401 || probe.status === 403) {
+      return `the recall route answered HTTP ${probe.status} — check the API key, or add a Cloudflare Access service token if this host is published behind Access`;
+    }
+    return null;
+  } catch {
+    // A service without that route, or a transient failure, is not evidence
+    // of a login gate: /health already answered for this host.
+    return null;
+  }
+}
+
 /** The RAG service the operator configured, if any. BotFleet ships no
  * endpoint and no collection name: with nothing set, the proxy falls back to
  * a local `recall` CLI and otherwise reports that the feature is off. */
-function recallSettings(): { url: string; apiKey: string; collection: string } {
+function recallSettings(): {
+  url: string;
+  apiKey: string;
+  collection: string;
+  accessClientId: string;
+  accessClientSecret: string;
+} {
   const qdrantCfg = cfg.qdrant;
   const url = (qdrantCfg?.url || process.env.OMB_RECALL_URL || process.env.RECALL_URL || process.env.QDRANT_URL || "").trim().replace(/\/+$/, "");
   const apiKey = qdrantCfg?.apiKey || process.env.OMB_RECALL_API_KEY || process.env.RECALL_API_KEY || process.env.QDRANT_API_KEY || "";
   const collection = (qdrantCfg?.collection || process.env.OMB_RECALL_COLLECTION || process.env.RECALL_COLLECTION || process.env.QDRANT_COLLECTION || "").trim();
-  return { url, apiKey, collection };
+  // A Cloudflare Access service token, when the recall service is published
+  // behind Access.  Sent as headers next to the bearer, never in place of it.
+  const accessClientId = (
+    qdrantCfg?.accessClientId || process.env.OMB_RECALL_ACCESS_CLIENT_ID || process.env.CF_ACCESS_CLIENT_ID || ""
+  ).trim();
+  const accessClientSecret = (
+    qdrantCfg?.accessClientSecret || process.env.OMB_RECALL_ACCESS_CLIENT_SECRET || process.env.CF_ACCESS_CLIENT_SECRET || ""
+  ).trim();
+  return { url, apiKey, collection, accessClientId, accessClientSecret };
 }
 
 function qdrantIntegration(botId: string, threadId: string) {
-  const { url, apiKey, collection } = recallSettings();
+  const { url, apiKey, collection, accessClientId, accessClientSecret } = recallSettings();
   const bot = store.bot(botId);
   return {
     command: process.execPath,
@@ -350,6 +432,8 @@ function qdrantIntegration(botId: string, threadId: string) {
       OMB_QDRANT_URL: url,
       OMB_QDRANT_API_KEY: apiKey,
       OMB_QDRANT_COLLECTION: collection,
+      OMB_QDRANT_ACCESS_CLIENT_ID: accessClientId,
+      OMB_QDRANT_ACCESS_CLIENT_SECRET: accessClientSecret,
       OMB_BOT_ID: botId,
       OMB_BOT_NAME: bot?.name || "Bot",
       OMB_THREAD_ID: threadId,
@@ -3646,6 +3730,12 @@ function configStatus() {
       configured: Boolean(cfg.qdrant?.url || cfg.qdrant?.apiKey),
       hasApiKey: Boolean(cfg.qdrant?.apiKey),
       collection: cfg.qdrant?.collection || "",
+      // The Access client id is an identifier the person needs to see to
+      // know which service token is in place; its secret half is reported
+      // the same configured-or-not way as every other credential here.
+      accessClientId: cfg.qdrant?.accessClientId || "",
+      hasAccessClientSecret: Boolean(cfg.qdrant?.accessClientSecret),
+      hasAccessServiceToken: hasAccessServiceToken(cfg.qdrant?.accessClientId, cfg.qdrant?.accessClientSecret),
     },
     usage: {
       ingestUrl: usageIngestUrl(cfg) ?? "",
@@ -6508,11 +6598,19 @@ const server = createServer(async (req, res) => {
       });
     }
     if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {
-      const { url, apiKey, collection } = recallSettings();
+      const { url, apiKey, collection, accessClientId, accessClientSecret } = recallSettings();
+      // Every outbound probe carries the bearer AND the Cloudflare Access
+      // service token when both are configured — some deployments gate at
+      // the edge, some at the origin, some at both, and sending only one of
+      // the two is exactly how a healthy service reads as unreachable.
+      const access = accessHeaders(accessClientId, accessClientSecret);
+      const recallHeaders: AccessTokenHeaders & { Authorization?: string } = { ...access };
+      if (apiKey) recallHeaders.Authorization = `Bearer ${apiKey}`;
 
       // 1. Check a local recall CLI if there is one (fastest and most
       // accurate on the host running BotFleet)
       let cliFound = false;
+      let cliProblem = "";
       try {
         const { execFile } = await import("node:child_process");
         const { promisify } = await import("node:util");
@@ -6531,7 +6629,7 @@ const server = createServer(async (req, res) => {
         cliFound = Boolean(cli);
         if (cli) {
           const { stdout } = await execFileAsync(cli, ["stats", "--json"], {
-            timeout: 6000,
+            timeout: RECALL_CLI_TIMEOUT_MS,
             env: {
               ...process.env,
               PATH: `${join(homedir(), ".local", "bin")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
@@ -6549,12 +6647,15 @@ const server = createServer(async (req, res) => {
             status: stats.status || "green",
           });
         }
-      } catch {
-        // Fall through to HTTP probe
+      } catch (err) {
+        // Keep WHY.  A timeout, a missing credential, a non-zero exit and
+        // unparseable output used to collapse into one fixed sentence, which
+        // told the person nothing they could act on.
+        cliProblem = describeCliFailure(err, RECALL_CLI_TIMEOUT_MS);
       }
 
-      // Nothing configured and no local CLI: say so rather than probing a
-      // host nobody asked for.
+      // Nothing configured and no working local CLI: say so rather than
+      // probing a host nobody asked for.
       if (!url) {
         return json(res, 200, {
           ready: false,
@@ -6562,7 +6663,7 @@ const server = createServer(async (req, res) => {
           url: null,
           collection: collection || null,
           error: cliFound
-            ? "The local recall CLI did not answer — set a Service URL in Settings"
+            ? `Ran the local recall CLI (recall stats --json) and ${cliProblem || "it returned nothing"}.  Fix the CLI, or set a Service URL in Settings.`
             : RECALL_NOT_CONFIGURED,
         });
       }
@@ -6570,34 +6671,63 @@ const server = createServer(async (req, res) => {
       // 2. HTTP probe: a recall-style /health first (its own try, so a
       // service without that route still gets the Qdrant probe below), then
       // the Qdrant collections API.
+      let gateProblem: string | null = null;
       try {
-        const healthRes = await fetch(`${url}/health`, { signal: AbortSignal.timeout(4000) });
-        if (healthRes.ok) {
+        const healthRes = await fetch(`${url}/health`, {
+          headers: recallHeaders,
+          // Manual, so a login redirect is visible as a redirect instead of
+          // being followed into an HTML page that fails to parse as JSON.
+          redirect: "manual",
+          signal: AbortSignal.timeout(4000),
+        });
+        gateProblem = accessLoginHint(healthRes);
+        if (!gateProblem && healthRes.ok) {
           const healthData = (await healthRes.json()) as {
             collection?: string;
             points?: number;
             backend_ok?: boolean;
             version?: string;
           };
-          return json(res, 200, {
-            ready: true,
-            configured: true,
-            source: "recall-service",
-            url,
-            collection: healthData.collection || collection,
-            pointsCount: healthData.points ?? 0,
-            backendOk: healthData.backend_ok ?? true,
-            version: healthData.version,
-          });
+          // /health is usually the one route left open to the public, so a
+          // healthy answer there does not prove a bot can actually search.
+          // Ask a real recall route before calling this connection ready.
+          gateProblem = await recallRouteGate(url, recallHeaders);
+          if (!gateProblem) {
+            return json(res, 200, {
+              ready: true,
+              configured: true,
+              source: "recall-service",
+              url,
+              collection: healthData.collection || collection,
+              pointsCount: healthData.points ?? 0,
+              backendOk: healthData.backend_ok ?? true,
+              version: healthData.version,
+            });
+          }
         }
       } catch {
         // Not a recall-style service (or it is down) — try Qdrant directly.
       }
 
+      if (gateProblem) {
+        return json(res, 200, {
+          ready: false,
+          configured: true,
+          url,
+          collection,
+          accessGated: true,
+          error: `The service is reachable but ${gateProblem}.`,
+        });
+      }
+
       try {
-        const headers: Record<string, string> = { "Content-Type": "application/json" };
+        const headers: Record<string, string> = { "Content-Type": "application/json", ...access };
         if (apiKey) headers["api-key"] = apiKey;
-        const resList = await fetch(`${url}/collections`, { headers, signal: AbortSignal.timeout(4000) });
+        const resList = await fetch(`${url}/collections`, { headers, redirect: "manual", signal: AbortSignal.timeout(4000) });
+        const listGate = accessLoginHint(resList);
+        if (listGate) {
+          return json(res, 200, { ready: false, configured: true, url, collection, accessGated: true, error: `The service is reachable but ${listGate}.` });
+        }
         if (!resList.ok) {
           return json(res, 200, { ready: false, configured: true, url, collection, error: `HTTP ${resList.status}: ${resList.statusText}` });
         }
@@ -6620,12 +6750,18 @@ const server = createServer(async (req, res) => {
           pointsCount,
         });
       } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
         return json(res, 200, {
           ready: false,
           configured: true,
           url,
           collection,
-          error: err instanceof Error ? err.message : String(err),
+          // A fetch failure can quote the request it tried, and the local
+          // CLI failure below can quote whatever the child printed, so both
+          // go through the same redaction the chat cards use.
+          error: redactSecretsInText(
+            cliFound && cliProblem ? `${detail} (the local recall CLI also failed: ${cliProblem})` : detail,
+          ),
         });
       }
     }

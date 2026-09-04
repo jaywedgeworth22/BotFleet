@@ -34,6 +34,9 @@ let staticDir: string;
 let fakeClaudeDump: string;
 /** wrapper CLI that always crashes before a result — drives a real failover */
 let fakeCrashCli: string;
+/** stands in for a host's `recall` CLI; its behaviour is switched per test
+ * by writing a mode into ~/.botfleet/fake-recall-mode */
+let fakeRecallCli: string;
 let stderr = "";
 
 const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
@@ -81,6 +84,25 @@ beforeAll(async () => {
   writeFileSync(
     fakeCrashCli,
     `#!/bin/sh\nunset FAKE_CLAUDE_DUMP\nFAKE_CLAUDE_MODE=exit-early exec ${JSON.stringify(FAKE_CLAUDE_CLI)} "$@"\n`,
+    { mode: 0o755 },
+  );
+  // A stand-in for the operator's `recall` CLI.  "slow" sleeps past the old
+  // 6s probe ceiling on purpose — that ceiling was under the real command's
+  // measured cost, so a healthy corpus timed out on every single probe.
+  fakeRecallCli = join(home, "fake-recall");
+  writeFileSync(
+    fakeRecallCli,
+    [
+      "#!/bin/sh",
+      'mode=$(cat "$HOME/.botfleet/fake-recall-mode" 2>/dev/null || echo ok)',
+      'stats=\'{"collection":"fake-corpus","points":42,"embedder_healthy":true,"status":"green"}\'',
+      'case "$mode" in',
+      "  slow) sleep 7; echo \"$stats\" ;;",
+      '  fail) echo "recall: could not reach the embedder" >&2; exit 3 ;;',
+      '  *) echo "$stats" ;;',
+      "esac",
+      "",
+    ].join("\n"),
     { mode: 0o755 },
   );
   // a fleet of exactly one unknown driver: no CLI probes, no network
@@ -245,6 +267,7 @@ beforeAll(async () => {
       OMB_STATIC_DIR: staticDir,
       FAKE_CLAUDE_MODE: "hang",
       FAKE_CLAUDE_DUMP: fakeClaudeDump,
+      RECALL_CLI_PATH: fakeRecallCli,
       OMB_DISABLE_ANTIGRAVITY_QUOTA: "1",
     },
     stdio: ["ignore", "pipe", "pipe"],
@@ -3539,6 +3562,182 @@ describe("GET /api/quotas", () => {
     expect(data.ok).toBe(true);
     expect(Array.isArray(data.cooldowns)).toBe(true);
     expect(data.cooldowns.find((c) => c.instanceId === "codex")).toBeUndefined();
+  });
+});
+
+describe("GET /api/qdrant/status (Agent RAG connection)", () => {
+  const setRecallMode = (mode: "ok" | "slow" | "fail") =>
+    writeFileSync(join(home, ".botfleet", "fake-recall-mode"), mode);
+
+  /** Point the probe at a stub and hand back a cleanup that clears it. */
+  const configureRecall = async (patch: Record<string, string>) => {
+    const saved = await api("PATCH", "/api/config", { qdrant: patch });
+    expect(saved.status).toBe(200);
+    return async () => {
+      await api("PATCH", "/api/config", {
+        qdrant: { url: "", apiKey: "", collection: "", accessClientId: "", accessClientSecret: "" },
+      });
+    };
+  };
+
+  /** A stub recall service that only answers callers carrying a Cloudflare
+   * Access service token, and otherwise redirects to a login page — exactly
+   * what a host published behind Access does. */
+  const startGatedRecall = async (token: { id: string; secret: string } | null) => {
+    // Node models a header as string | string[]; every one read here is
+    // single-valued, so the first value is the value.
+    const headerValue = (raw: string | string[] | undefined): string | undefined =>
+      Array.isArray(raw) ? raw[0] : raw;
+    const seen: Array<{ path: string; accessId?: string; hasAccessSecret: boolean; authorization?: string }> = [];
+    const server = createServer((req, res) => {
+      const accessId = headerValue(req.headers["cf-access-client-id"]);
+      const accessSecret = headerValue(req.headers["cf-access-client-secret"]);
+      seen.push({
+        path: req.url ?? "",
+        accessId,
+        hasAccessSecret: (accessSecret ?? "").length > 0,
+        authorization: headerValue(req.headers.authorization),
+      });
+      const admitted = token !== null && accessId === token.id && accessSecret === token.secret;
+      if (!admitted) {
+        res.writeHead(302, {
+          location: "https://fixture-team.cloudflareaccess.com/cdn-cgi/access/login/recall.example.com?kid=fixture",
+        });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ ok: true, collection: "fake-corpus", points: 36939, backend_ok: true, version: "1.2.3" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // SAFETY: listen() has resolved on a TCP socket, so address() is an
+    // AddressInfo with a bound port, never null or a pipe name.
+    const port = (server.address() as { port: number }).port;
+    return {
+      url: `http://127.0.0.1:${port}`,
+      seen,
+      close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    };
+  };
+
+  it("waits for a slow local recall CLI instead of calling it dead at six seconds", async () => {
+    setRecallMode("slow");
+    try {
+      const started = Date.now();
+      const status = await api("GET", "/api/qdrant/status");
+      expect(status.status).toBe(200);
+      expect(status.body).toMatchObject({
+        ready: true,
+        source: "recall-cli",
+        collection: "fake-corpus",
+        pointsCount: 42,
+      });
+      // The fixture sleeps past the old ceiling deliberately: the whole bug
+      // was a 6s timeout on a command that takes longer than that.
+      expect(Date.now() - started).toBeGreaterThan(6_000);
+    } finally {
+      setRecallMode("ok");
+    }
+  });
+
+  it("reports why the local recall CLI failed instead of one fixed sentence", async () => {
+    setRecallMode("fail");
+    try {
+      const status = await api("GET", "/api/qdrant/status");
+      expect(status.status).toBe(200);
+      expect(status.body.ready).toBe(false);
+      const error = String(status.body.error);
+      expect(error).toContain("recall stats --json");
+      expect(error).toContain("it exited 3");
+      expect(error).toContain("could not reach the embedder");
+    } finally {
+      setRecallMode("ok");
+    }
+  });
+
+  it("names Cloudflare Access when the service answers with a login redirect", async () => {
+    setRecallMode("fail");
+    const stub = await startGatedRecall(null);
+    const clear = await configureRecall({ url: stub.url, collection: "fake-corpus" });
+    try {
+      const status = await api("GET", "/api/qdrant/status");
+      expect(status.body).toMatchObject({ ready: false, configured: true, accessGated: true });
+      const error = String(status.body.error);
+      expect(error).toContain("login page");
+      expect(error).toContain("Cloudflare Access");
+      expect(error).toContain("service token");
+      // No Access token configured means neither header goes out.
+      expect(stub.seen.every((hit) => hit.accessId === undefined && !hit.hasAccessSecret)).toBe(true);
+    } finally {
+      await clear();
+      await stub.close();
+      setRecallMode("ok");
+    }
+  });
+
+  it("sends the Access service token headers alongside the bearer when one is configured", async () => {
+    setRecallMode("fail");
+    const token = { id: "fixture-client.access", secret: "fixture-access-secret" };
+    const stub = await startGatedRecall(token);
+    const clear = await configureRecall({
+      url: stub.url,
+      apiKey: "fixture-bearer",
+      collection: "fake-corpus",
+      accessClientId: token.id,
+      accessClientSecret: token.secret,
+    });
+    try {
+      const status = await api("GET", "/api/qdrant/status");
+      expect(status.body).toMatchObject({
+        ready: true,
+        configured: true,
+        source: "recall-service",
+        collection: "fake-corpus",
+        pointsCount: 36939,
+      });
+      expect(stub.seen.length).toBeGreaterThan(0);
+      for (const hit of stub.seen) {
+        expect(hit.accessId).toBe(token.id);
+        expect(hit.hasAccessSecret).toBe(true);
+        // Alongside, never instead of: a deployment may gate at the edge,
+        // at the origin, or at both.
+        expect(hit.authorization).toBe("Bearer fixture-bearer");
+      }
+      // /health alone proves nothing on an Access host — that route is the
+      // usual public bypass — so a real recall route is probed too.
+      expect(stub.seen.map((hit) => hit.path)).toContain("/recall/stats");
+    } finally {
+      await clear();
+      await stub.close();
+      setRecallMode("ok");
+    }
+  });
+
+  it("never returns the Access client secret from /api/config", async () => {
+    const secret = "fixture-write-only-secret";
+    const saved = await api("PATCH", "/api/config", {
+      qdrant: { accessClientId: "fixture-client.access", accessClientSecret: secret },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.qdrant).toMatchObject({
+      accessClientId: "fixture-client.access",
+      hasAccessClientSecret: true,
+      hasAccessServiceToken: true,
+    });
+    expect(JSON.stringify(saved.body)).not.toContain(secret);
+
+    const after = await api("GET", "/api/config");
+    expect(after.status).toBe(200);
+    expect(JSON.stringify(after.body)).not.toContain(secret);
+
+    // It is stored, just never echoed — the same deal every other credential
+    // in this config gets.
+    const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+    expect(disk.qdrant.accessClientSecret).toBe(secret);
+
+    await api("PATCH", "/api/config", { qdrant: { accessClientId: "", accessClientSecret: "" } });
+    const cleared = await api("GET", "/api/config");
+    expect(cleared.body.qdrant).toMatchObject({ hasAccessClientSecret: false, hasAccessServiceToken: false });
   });
 });
 
