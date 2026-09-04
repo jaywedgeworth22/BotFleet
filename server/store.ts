@@ -15,6 +15,7 @@ import { pickBotName } from "./names.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { botAvatarProfile, type BotAvatarCrop } from "../shared/bot-avatar.ts";
 import type { RoutineRequestCardData } from "../shared/routine-request.ts";
+import type { ToolKind } from "../shared/tool-activity.ts";
 
 export type MausColor =
   | "green"
@@ -98,7 +99,24 @@ export interface Message {
    * for chips not worth interrupting the ear for. */
   /** `setup` marks an error the user fixes by installing or configuring
    * something — the UI offers setup instead of a retry that cannot work. */
-  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean };
+  tool?: {
+    name: string;
+    ok?: boolean;
+    spoken?: string;
+    setup?: boolean;
+    /** what the step acted on — the path, command, pattern or URL the
+     * engine already reported.  Clipped and home-shortened at the driver
+     * boundary (`shared/tool-activity.ts`), never the whole payload: the
+     * renderer holds every message of every thread, so a transcript row
+     * carries a headline, not the evidence. */
+    target?: string;
+    /** coarse class of work, for the row's icon and verb */
+    kind?: ToolKind;
+    /** one line of what came back, or why it failed */
+    detail?: string;
+    /** wall time from start to completion, milliseconds */
+    durationMs?: number;
+  };
   /** user messages sent INTO a running turn (capabilities.queueing): the
    * model saw it mid-turn, so the transcript marks it — a reader should
    * know the reply above it may already account for this line */

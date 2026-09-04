@@ -17,6 +17,7 @@ import type { CloudBackend, EffortLevel } from "../../server/contracts.ts";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import type { RoutineRequestCardData } from "../../shared/routine-request";
+import type { ToolKind } from "../../shared/tool-activity";
 import {
   DEFAULT_ROOM_TERMINOLOGY,
   resolveRoomLabels,
@@ -92,12 +93,34 @@ export interface Message {
   /** activity messages: tool name + outcome. `spoken` is the server's
    * narration of the same chip ("reading a file"), used by call mode. */
   /** `setup` marks an error fixed by installing something, not by retrying. */
-  tool?: { name: string; ok?: boolean; spoken?: string; setup?: boolean };
+  tool?: {
+    name: string;
+    ok?: boolean;
+    spoken?: string;
+    setup?: boolean;
+    /** what the step acted on — the path, command, pattern or URL the
+     * engine already reported.  Clipped and home-shortened at the driver
+     * boundary (`shared/tool-activity.ts`), never the whole payload: the
+     * renderer holds every message of every thread, so a transcript row
+     * carries a headline, not the evidence. */
+    target?: string;
+    /** coarse class of work, for the row's icon and verb */
+    kind?: ToolKind;
+    /** one line of what came back, or why it failed */
+    detail?: string;
+    /** wall time from start to completion, milliseconds */
+    durationMs?: number;
+  };
   /** user messages sent into a running turn — the model saw it mid-turn */
   steered?: boolean;
   /** screen messages: a frame of the bot's computer (base64) */
   png?: string;
   mime?: string;
+  /** A paginated page answers `hasImage` instead of the pixels: a thousand
+   * base64 desktop captures is the one thing that must never arrive with a
+   * transcript.  The frame is fetched from the per-message image route when
+   * something actually shows it. */
+  hasImage?: boolean;
   at: number;
   /** the message this one follows; null = thread root. Edited messages
    * share a parentId with the version they replace — that's a fork. */
@@ -158,6 +181,10 @@ export interface Group {
    * thread and omit this collection. */
   tasks?: GroupTask[];
   messages: Message[];
+  /** The hydrate said the server holds messages older than the first one it
+   * sent.  Read once into `hasMore` and not kept on the room, so there is
+   * one place a pill can ask. */
+  hasMore?: boolean;
 }
 
 /** One of a channel's independent conversations. The channel's threadId
@@ -262,6 +289,10 @@ export interface Bot {
    * allowed for existing bots; imported bots start with this disabled. */
   composio?: boolean;
   messages: Message[];
+  /** The hydrate said the server holds messages older than the first one it
+   * sent.  Read once into `hasMore` and not kept on the conversation, so
+   * there is one place a pill can ask. */
+  hasMore?: boolean;
   /** leaf of the visible conversation branch (see visibleMessages) */
   activeLeafId?: string | null;
 }
@@ -523,7 +554,25 @@ export interface AppState {
   /** Bumps on optimistic bot edits so a stale REST hydrate cannot clobber them. */
   botEpoch: Record<string, number>;
   groupEpoch: Record<string, number>;
+  /** Whether the server still holds messages older than the oldest one this
+   * client loaded, keyed by threadId.  The desktop used to hydrate every
+   * message of every bot's active thread at once; it now takes a tail and
+   * pulls earlier pages when the reader asks, which is what the iOS
+   * companion has always done. */
+  hasMore: Record<string, boolean>;
+  /** Threads with a scrollback page in flight — the pill says "Loading…"
+   * instead of firing a second request per click. */
+  loadingEarlier: Record<string, boolean>;
 }
+
+/** Messages hydrated per thread on a cold start.
+ *
+ * Enough that most conversations arrive whole and nobody sees a pill, small
+ * enough that a fleet of bots with thousand-message computer-use threads
+ * does not put all of it on the heap at once.  Earlier pages arrive on
+ * demand at PAGE_SIZE each. */
+export const INITIAL_PAGE = 200;
+export const PAGE_SIZE = 200;
 
 const MAX_CONSUMED_QUEUE_IDS = 64;
 
@@ -548,6 +597,9 @@ export type Action =
       botEpochAtFetch?: Record<string, number>;
       groupEpochAtFetch?: Record<string, number>;
     }
+  | { type: "loadEarlier"; threadId: string }
+  | { type: "earlierLoading"; threadId: string }
+  | { type: "earlierLoaded"; threadId: string; messages: Message[]; hasMore: boolean }
   | { type: "showRoutines"; routineId?: string }
   | { type: "showTeamMap" }
   | { type: "showSkillRecorder" }
@@ -764,6 +816,30 @@ export function isHarnessUnreachableError(message: string | null | undefined): b
   return typeof message === "string" && /harness on port \d+ is not reachable/i.test(message);
 }
 
+/** Scrollback flags straight off a hydrate payload.  The server answers
+ * `hasMore` per conversation whenever the request asked for a page; a full
+ * response omits it, which reads as "nothing older to fetch". */
+function hydratedHasMore(
+  bots: Array<{ threadId: string; hasMore?: boolean }>,
+  groups: Array<{ threadId: string; hasMore?: boolean }>,
+): AppState["hasMore"] {
+  const flags: AppState["hasMore"] = {};
+  for (const conversation of [...bots, ...groups]) {
+    if (conversation?.threadId) flags[conversation.threadId] = conversation.hasMore === true;
+  }
+  return flags;
+}
+
+/** Put an older page in front of what is already loaded, dropping anything
+ * the client already holds.  A page can overlap the tail after an edit
+ * rewrote ids, and a duplicated message would render twice and break the
+ * parentId walk. */
+export function prependEarlier(current: Message[], earlier: Message[]): Message[] {
+  const known = new Set(current.map((message) => message.id));
+  const fresh = earlier.filter((message) => !known.has(message.id));
+  return fresh.length ? [...fresh, ...current] : current;
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "hydrate": {
@@ -788,6 +864,38 @@ export function reducer(state: AppState, action: Action): AppState {
         computerControl: action.computerControl,
         selectedId,
         error: isHarnessUnreachableError(state.error) ? null : state.error,
+        // a fresh hydrate replaces the whole picture, scrollback included:
+        // carrying the old flags over would leave a pill promising a page
+        // for a thread the server just sent in full
+        hasMore: hydratedHasMore(action.bots, action.groups),
+        loadingEarlier: {},
+      };
+    }
+    // an effect-only action: the wrapper fetches, and `earlierLoaded` lands
+    // the page.  Listed so the reducer stays exhaustive.
+    case "loadEarlier":
+      return state;
+    case "earlierLoading":
+      return { ...state, loadingEarlier: { ...state.loadingEarlier, [action.threadId]: true } };
+    case "earlierLoaded": {
+      const loadingEarlier = { ...state.loadingEarlier };
+      delete loadingEarlier[action.threadId];
+      const hasMore = { ...state.hasMore, [action.threadId]: action.hasMore };
+      if (!action.messages.length) return { ...state, loadingEarlier, hasMore };
+      return {
+        ...state,
+        loadingEarlier,
+        hasMore,
+        bots: state.bots.map((bot) =>
+          bot.threadId === action.threadId
+            ? { ...bot, messages: prependEarlier(bot.messages, action.messages) }
+            : bot,
+        ),
+        groups: state.groups.map((group) =>
+          group.threadId === action.threadId
+            ? { ...group, messages: prependEarlier(group.messages, action.messages) }
+            : group,
+        ),
       };
     }
     case "showRoutines":
@@ -1496,6 +1604,8 @@ export const initialState: AppState = {
   consumedQueueIds: {},
   botEpoch: {},
   groupEpoch: {},
+  hasMore: {},
+  loadingEarlier: {},
 };
 
 // ── API client ─────────────────────────────────────────────────────────
@@ -1997,6 +2107,32 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }
           break;
         }
+        case "loadEarlier": {
+          const current = stateRef.current;
+          const conversation =
+            current.bots.find((bot) => bot.threadId === action.threadId) ??
+            current.groups.find((group) => group.threadId === action.threadId);
+          const oldest = conversation?.messages[0]?.id;
+          // nothing loaded yet means the hydrate is still in flight; it will
+          // bring the tail and the flag, and the pill will be there after
+          if (!oldest || current.loadingEarlier[action.threadId]) break;
+          rawDispatch({ type: "earlierLoading", threadId: action.threadId });
+          api(`/api/threads/${action.threadId}/messages?limit=${PAGE_SIZE}&before=${encodeURIComponent(oldest)}`)
+            .then((page: { messages?: Message[]; hasMore?: boolean }) =>
+              rawDispatch({
+                type: "earlierLoaded",
+                threadId: action.threadId,
+                messages: page?.messages ?? [],
+                hasMore: page?.hasMore === true,
+              }),
+            )
+            // a failed page must not leave the pill spinning forever; the
+            // reader can click again
+            .catch(() =>
+              rawDispatch({ type: "earlierLoaded", threadId: action.threadId, messages: [], hasMore: true }),
+            );
+          break;
+        }
         default:
           break;
       }
@@ -2009,7 +2145,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let alive = true;
     const loadAll = (botEpochAtFetch: Record<string, number>, groupEpochAtFetch: Record<string, number>) =>
       Promise.all([
-        api("/api/bots")
+        api(`/api/bots?messages=${INITIAL_PAGE}`)
           .then(({ bots, groups, computerControl }) => {
             if (!alive) return;
             const overlays: Record<string, BotUpdatePatch> = {};

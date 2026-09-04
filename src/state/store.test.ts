@@ -683,3 +683,114 @@ describe("room terminology", () => {
     });
   });
 });
+
+describe("paginated scrollback", () => {
+  const bot = (overrides: Partial<Bot> = {}): Bot => ({
+    id: "echo",
+    threadId: "t1",
+    name: "Echo",
+    title: "",
+    description: "",
+    notifications: true,
+    color: "green",
+    unread: false,
+    modelSelection: { instanceId: "x", model: "y" },
+    messages: [],
+    ...overrides,
+  });
+
+  const group = (overrides: Partial<Group> = {}): Group => ({
+    id: "room",
+    threadId: "room-t",
+    name: "Launch",
+    memberIds: ["echo"],
+    defaultResponder: { kind: "everyone" },
+    bulletin: "",
+    unread: false,
+    createdAt: 1,
+    messages: [],
+    ...overrides,
+  });
+
+  const say = (id: string, at: number): Message => ({ id, at, role: "bot", kind: "text", text: id });
+
+  const hydrated = (bots: Bot[], groups: Group[] = []) =>
+    reducer(initialState, {
+      type: "hydrate",
+      bots,
+      groups,
+      computerControl: {},
+    });
+
+  it("records what the server says is still older, per thread", () => {
+    const state = hydrated(
+      [bot({ hasMore: true })],
+      [group({ hasMore: false })],
+    );
+    expect(state.hasMore).toEqual({ t1: true, "room-t": false });
+  });
+
+  it("treats a full, unpaginated response as nothing older to fetch", () => {
+    expect(hydrated([bot()]).hasMore).toEqual({ t1: false });
+  });
+
+  it("prepends an earlier page in front of the tail and clears the spinner", () => {
+    const start = hydrated([bot({ messages: [say("m3", 3)], hasMore: true })]);
+    const loading = reducer(start, { type: "earlierLoading", threadId: "t1" });
+    expect(loading.loadingEarlier.t1).toBe(true);
+
+    const loaded = reducer(loading, {
+      type: "earlierLoaded",
+      threadId: "t1",
+      messages: [say("m1", 1), say("m2", 2)],
+      hasMore: false,
+    });
+    expect(loaded.bots[0].messages.map((m) => m.id)).toEqual(["m1", "m2", "m3"]);
+    expect(loaded.hasMore.t1).toBe(false);
+    expect(loaded.loadingEarlier.t1).toBeUndefined();
+  });
+
+  it("never duplicates a message the client already holds", () => {
+    const start = hydrated([bot({ messages: [say("m2", 2), say("m3", 3)], hasMore: true })]);
+    const loaded = reducer(start, {
+      type: "earlierLoaded",
+      threadId: "t1",
+      // an edit can rewrite the tail, so a page CAN overlap what is loaded
+      messages: [say("m1", 1), say("m2", 2)],
+      hasMore: true,
+    });
+    expect(loaded.bots[0].messages.map((m) => m.id)).toEqual(["m1", "m2", "m3"]);
+  });
+
+  it("lands a room's page on the room, not on a bot that shares nothing but the request", () => {
+    const start = hydrated([bot()], [group({ messages: [say("g2", 2)], hasMore: true })]);
+    const loaded = reducer(start, {
+      type: "earlierLoaded",
+      threadId: "room-t",
+      messages: [say("g1", 1)],
+      hasMore: false,
+    });
+    expect(loaded.groups[0].messages.map((m) => m.id)).toEqual(["g1", "g2"]);
+    expect(loaded.bots[0].messages).toEqual([]);
+  });
+
+  it("an empty page still settles the pill rather than leaving it spinning", () => {
+    const start = reducer(hydrated([bot({ hasMore: true })]), {
+      type: "earlierLoading",
+      threadId: "t1",
+    });
+    const settled = reducer(start, { type: "earlierLoaded", threadId: "t1", messages: [], hasMore: false });
+    expect(settled.loadingEarlier.t1).toBeUndefined();
+    expect(settled.hasMore.t1).toBe(false);
+  });
+
+  it("a re-hydrate replaces the flags rather than leaving a stale promise", () => {
+    const stale = reducer(hydrated([bot({ hasMore: true })]), {
+      type: "earlierLoading",
+      threadId: "t1",
+    });
+    const fresh = reducer(stale, { type: "hydrate", bots: [bot()], groups: [], computerControl: {} });
+    expect(fresh.hasMore.t1).toBe(false);
+    expect(fresh.loadingEarlier).toEqual({});
+  });
+});

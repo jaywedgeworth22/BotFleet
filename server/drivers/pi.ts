@@ -28,6 +28,8 @@ import { PROVIDER_CREDENTIAL_ENV, stripWorkspaceCredentialEnv } from "../config.
 import { computerProxyEnv } from "../container-computer.ts";
 import { hostToolPrefix, turnComputerMounts } from "../computer-grants.ts";
 import { augmentedPath } from "../env-path.ts";
+import { toolFields } from "../tool-fields.ts";
+import { describeResult } from "../../shared/tool-activity.ts";
 import { describeSpawnFailure, killCliTree, spawnCli } from "../procs.ts";
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 
@@ -373,6 +375,15 @@ interface PiEvent {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
+  /** the step's payload and its result — pi names these inconsistently
+   * across versions, so the transcript row reads whichever arrived */
+  args?: unknown;
+  input?: unknown;
+  arguments?: unknown;
+  result?: unknown;
+  output?: unknown;
+  content?: unknown;
+  error?: unknown;
   // turn_end / message_end
   message?: { stopReason?: string; errorMessage?: string; usage?: { input?: number; output?: number } };
   usage?: { input?: number; output?: number };
@@ -632,6 +643,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
               itemType: "tool",
               itemId: evt.toolCallId,
               title: String(evt.toolName ?? "tool").slice(0, 80),
+              ...toolFields(evt.toolName, evt.args ?? evt.input ?? evt.arguments),
             });
             return;
           }
@@ -642,6 +654,7 @@ export const PiDriver: ProviderDriver<PiConfig> = {
               itemType: "tool",
               itemId: evt.toolCallId,
               ok: !evt.isError,
+              detail: describeResult(evt.result ?? evt.output ?? evt.content ?? evt.error),
             });
             return;
           }

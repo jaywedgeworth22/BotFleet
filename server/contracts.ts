@@ -6,6 +6,7 @@
 // readable.
 
 import type { ComputerMount } from "./computer-grants.ts";
+import type { ToolKind } from "../shared/tool-activity.ts";
 
 export type DriverKind = string;
 export type InstanceId = string;
@@ -110,9 +111,29 @@ export type RuntimeEvent = RuntimeEventBase &
          * delta, a thread total, a per-step figure) and must never be summed. */
         usage?: { input: number; output: number; cachedInput?: number };
       }
-    | { type: "item.started"; itemType: "tool" | "reasoning"; title?: string }
+    | {
+        type: "item.started";
+        itemType: "tool" | "reasoning";
+        title?: string;
+        /** What the step acted on — a path, a command, a pattern, a URL.
+         * Drivers get this for free (every harness sends the tool payload)
+         * and dropping it is what made a transcript of seven `read_file`
+         * chips unreadable.  Already clipped and home-shortened by
+         * `shared/tool-activity.ts`; never the whole payload. */
+        target?: string;
+        /** Coarse class of work, when the engine knows it better than the
+         * tool name does (ACP reports one). */
+        toolKind?: ToolKind;
+      }
     | { type: "item.updated"; itemType: "tool" | "reasoning"; tokens?: number | null }
-    | { type: "item.completed"; itemType: "tool"; ok: boolean }
+    | {
+        type: "item.completed";
+        itemType: "tool";
+        ok: boolean;
+        /** One line of what came back — rows read, the failure's message.
+         * A failure's detail is the whole reason the row is worth reading. */
+        detail?: string;
+      }
     | { type: "item.completed"; itemType: "assistant_text"; text: string }
     | { type: "content.delta"; streamKind: "assistant_text" | "reasoning_text"; delta: string }
     | {

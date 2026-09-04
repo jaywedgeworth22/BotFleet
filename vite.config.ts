@@ -9,6 +9,7 @@ export default defineConfig({
     environment: "node",
     include: [
       "server/**/*.test.ts",
+      "shared/**/*.test.ts",
       "electron/**/*.test.mjs",
       "src/**/*.test.ts",
       "companion/**/*.test.ts",

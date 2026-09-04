@@ -17,6 +17,8 @@ import { homedir } from "node:os";
 
 import { PROVIDER_CREDENTIAL_ENV, WORKSPACE_CREDENTIAL_ENV } from "../../config.ts";
 import { decodeInjectId } from "../local-inject.ts";
+import { toolFields } from "../../tool-fields.ts";
+import { describeResult } from "../../../shared/tool-activity.ts";
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../../procs.ts";
 
 /**
@@ -525,12 +527,20 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             }
             case "tool_call": {
               flushAssistantText();
+              // ACP hands us `kind`, `locations` and `rawInput` alongside the
+              // title.  Folding all of it into one 80-char title was what left
+              // the transcript showing `read_file` seven times with no paths;
+              // the name and the thing it acted on are separate columns now.
               emit({
                 ...base(threadId, turnId),
                 type: "item.started",
                 itemType: "tool",
                 itemId: u.toolCallId,
-                title: String(u.rawInput?.command ?? u.title ?? "tool").slice(0, 80),
+                title: String(u.title ?? u.rawInput?.command ?? "tool").slice(0, 80),
+                ...toolFields(u.title ?? u.rawInput?.command, u.rawInput, {
+                  hint: u.kind,
+                  locations: u.locations,
+                }),
               });
               break;
             }
@@ -542,6 +552,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   itemType: "tool",
                   itemId: u.toolCallId,
                   ok: u.status !== "failed",
+                  detail: describeResult(u.content ?? u.rawOutput),
                 });
               }
               break;
