@@ -12,6 +12,7 @@ enum SentryTelemetry {
             options.dsn = dsn
             options.environment = "production"
             options.tracesSampleRate = 0.2
+            options.profilesSampleRate = 0.1
             options.enableAppHangTracking = true
             options.appHangTimeoutInterval = 2.0
             options.enableCaptureFailedRequests = true
@@ -19,6 +20,10 @@ enum SentryTelemetry {
             options.attachScreenshot = false
             options.attachViewHierarchy = false
             options.sendDefaultPii = false
+            options.sessionReplay.sessionSampleRate = 0.1
+            options.sessionReplay.onErrorSampleRate = 1.0
+            options.sessionReplay.maskAllText = true
+            options.sessionReplay.maskAllImages = true
             options.beforeSend = { event in
                 if let request = event.request, let url = request.url {
                     var sanitized = url
