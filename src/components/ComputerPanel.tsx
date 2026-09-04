@@ -203,7 +203,7 @@ export function ComputerPanel({
   );
   const computerDestination =
     (bot.computers ?? []).includes("cloud")
-      ? cloudBackend === "vps" ? "this self-hosted VPS" : "this cloud box"
+      ? cloudBackend === "vps" ? "this self-hosted VPS" : "this ASCII.dev Box"
       : (bot.computers ?? []).includes("vm")
         ? "the Local VM"
       : (bot.computers ?? []).includes("local")
@@ -211,7 +211,7 @@ export function ComputerPanel({
         : (bot.computers ?? []).length === 0
           ? null
           : phase === "ready"
-            ? cloudBackend === "vps" ? "the self-hosted VPS selected by Auto" : "the cloud box selected by Auto"
+            ? cloudBackend === "vps" ? "the self-hosted VPS selected by Auto" : "the ASCII.dev Box selected by Auto"
             : "this computer selected by Auto";
 
   // resolve the mode on open; box endpoints are only ever hit on the
@@ -354,7 +354,7 @@ export function ComputerPanel({
           setError(
             bot.autoStartVps
               ? `${status.problem ?? "No ready VPS container"}. Auto will prepare or wake it when this bot next works.`
-              : `${status.problem ?? "No ready VPS container"}. Enable Start VPS automatically below, or choose Cloud to provision it.`,
+              : `${status.problem ?? "No ready VPS container"}. Enable Start VPS automatically below, or choose ASCII.dev Box to provision it.`,
           );
           setPhase(status.container === "stopped" ? "vps-stopped" : "vps-unconfigured");
         })
@@ -710,7 +710,7 @@ export function ComputerPanel({
   const emptyState = {
     checking: "Checking…",
     starting: "Starting your bot's computer…",
-    unconfigured: "No cloud computer configured",
+    unconfigured: "No ASCII.dev Box configured",
     "vps-unconfigured": "No managed VPS computer is configured for this bot",
     "vps-incompatible": "This VPS computer belongs to an earlier BotFleet version",
     "vps-stopped": "The managed VPS computer is stopped",
@@ -899,7 +899,7 @@ export function ComputerPanel({
         {phase === "unconfigured" && (
           <div className="mt-3 rounded-xl bg-card p-4">
             <div className="mb-3 text-[13px] text-ink-secondary">
-              Add a Box API key to give this bot a cloud computer — it spins up right here.
+              Add a Box API key to give this bot an ASCII.dev Box — it spins up right here.
             </div>
             <ApiKeyRow
               section="box"
@@ -1072,7 +1072,7 @@ export function ComputerPanel({
                     : `${linuxAutoDescription()} `
                   : cloudBackend === "vps"
                     ? "Auto reuses a ready VPS when one exists, otherwise this computer. "
-                    : "Auto uses a cloud box when one exists, otherwise this computer. ")}
+                    : "Auto uses an ASCII.dev Box when one exists, otherwise this computer. ")}
               Pick where this bot's computer lives. <b className="text-ink">Local VM</b> is a Cua-controlled Linux desktop
               in a container on this machine — free and separate from your own desktop. Set it up in App
               Settings → Local VM.
@@ -1080,7 +1080,7 @@ export function ComputerPanel({
           <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
             {(
               [
-                ["cloud", "Cloud"],
+                ["cloud", "ASCII.dev Box"],
                 ["vm", "Local VM"],
                 ["local", "This Computer"],
                 ["off", "Off"],
@@ -1188,12 +1188,12 @@ export function ComputerPanel({
             )}
           </div>
           <div className="mt-0.5 text-[13px] text-ink-secondary">
-            Schedule work for {bot.name}. Use its current setup, or run the whole job inside its cloud VM.
+            Schedule work for {bot.name}. Use its current setup, or run the whole job inside its ASCII.dev Box.
           </div>
           {!computerDestination && (
             <div className="mt-3 flex items-start gap-2 rounded-lg border border-warning/25 bg-warning/10 px-3 py-2 text-[11.5px] leading-relaxed text-warning">
               <Power size={13} className="mt-0.5 shrink-0" />
-              Scheduled tasks on this computer will not have desktop access while this is Off. Choose Cloud VM in the schedule editor to run the whole job there.
+              Scheduled tasks on this computer will not have desktop access while this is Off. Choose ASCII.dev Box in the schedule editor to run the whole job there.
             </div>
           )}
           {activeRoutineRun && (
@@ -1219,7 +1219,7 @@ export function ComputerPanel({
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-[12.5px] font-medium text-ink">{routine.name}</span>
                     <span className="block truncate text-[10.5px] text-ink-secondary">
-                      {routineScheduleLabel(routine)}{routine.runOn === "cloud" ? " · runs on VM" : ""}
+                      {routineScheduleLabel(routine)}{routine.runOn === "cloud" ? " · runs on ASCII.dev Box" : ""}
                     </span>
                   </span>
                   <span className="shrink-0 text-[10px] text-ink-secondary">{nextRunLabel(routine.nextRunAt)}</span>

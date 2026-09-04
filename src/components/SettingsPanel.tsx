@@ -642,7 +642,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
               {([
-                ["cloud", "Cloud"],
+                ["cloud", "ASCII.dev Box"],
                 ["vm", "Local VM"],
                 ["local", "This Computer"],
                 ["off", "Off"],
