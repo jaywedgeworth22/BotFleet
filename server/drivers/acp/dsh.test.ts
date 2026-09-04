@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -95,9 +96,10 @@ describe("classifyDshError", () => {
 
 describe("dshCredentialCandidates", () => {
   it("honors DSH_HOME over the default ~/.dsh path", () => {
-    expect(dshCredentialCandidates({ HOME: "/home/jay" })[0]).toBe("/home/jay/.dsh/.credentials.yaml");
-    expect(dshCredentialCandidates({ HOME: "/home/jay", DSH_HOME: "/opt/dsh" })[0]).toBe(
-      "/opt/dsh/.credentials.yaml",
+    const home = join("/home", "jay");
+    expect(dshCredentialCandidates({ HOME: home })[0]).toBe(join(home, ".dsh", ".credentials.yaml"));
+    expect(dshCredentialCandidates({ HOME: home, DSH_HOME: join("/opt", "dsh") })[0]).toBe(
+      join("/opt", "dsh", ".credentials.yaml"),
     );
   });
 
