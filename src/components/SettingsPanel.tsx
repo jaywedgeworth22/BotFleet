@@ -642,7 +642,11 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
               {([
-                ["cloud", "ASCII.dev Box"],
+                // The cloud destination is whichever backend this bot is set
+                // to.  Labelling it "ASCII.dev Box" while cloudBackend is
+                // "vps" tells the person the wrong thing about where their
+                // bot is about to click.
+                ["cloud", (bot.cloudBackend ?? "box") === "vps" ? "Self-hosted VPS" : "ASCII.dev Box"],
                 ["vm", "Local VM"],
                 ["local", "This Computer"],
                 ["off", "Off"],

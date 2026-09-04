@@ -1080,7 +1080,11 @@ export function ComputerPanel({
           <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
             {(
               [
-                ["cloud", "ASCII.dev Box"],
+                // Named for the backend this bot actually uses: the same
+                // button provisions an ASCII.dev Box or a container on the
+                // person's own server depending on cloudBackend, and one
+                // label for both hides which one is about to happen.
+                ["cloud", cloudBackend === "vps" ? "Self-hosted VPS" : "ASCII.dev Box"],
                 ["vm", "Local VM"],
                 ["local", "This Computer"],
                 ["off", "Off"],
