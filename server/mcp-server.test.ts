@@ -556,6 +556,37 @@ describe("MCP tool execution", () => {
     expect(result.instances[0]).not.toHaveProperty("install");
     expect(result.instances[0].snapshot).toEqual({ state: "available" });
   });
+
+  it("omits exhausted Antigravity models from the available catalog", async () => {
+    const fetcher = vi.fn(async () => ({
+      instances: [{
+        instanceId: "antigravity",
+        displayName: "Antigravity",
+        snapshot: {
+          state: "available",
+          quota: {
+            capped: false,
+            models: {
+              "claude-opus-4-6-thinking": { capped: true, remainingPercent: 0 },
+              "gemini-3.1-pro-high": { capped: false, remainingPercent: null },
+            },
+          },
+        },
+        models: {
+          default: "claude-opus-4-6-thinking",
+          options: [
+            { id: "claude-opus-4-6-thinking", label: "Claude Opus 4.6 (Thinking)" },
+            { id: "gemini-3.1-pro-high", label: "Gemini 3.1 Pro (High)" },
+          ],
+        },
+        capabilities: {},
+      }],
+    }));
+    const result: any = await handleToolCall("list_available_models", {}, fetcher);
+    expect(result.instances[0].models.default).toBe("gemini-3.1-pro-high");
+    expect(result.instances[0].models.options.map((row: { id: string }) => row.id)).toEqual(["gemini-3.1-pro-high"]);
+    expect(result.instances[0].snapshot.quota.models["claude-opus-4-6-thinking"].capped).toBe(true);
+  });
 });
 
 describe("MCP fleet tools", () => {

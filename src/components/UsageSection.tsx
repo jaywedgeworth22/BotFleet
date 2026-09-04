@@ -20,6 +20,21 @@ interface QuotaCooldownInfo {
   recordedAt: number;
 }
 
+interface AntigravityUsageModel {
+  label: string;
+  modelId: string;
+  remainingPercentage?: number;
+  isExhausted: boolean;
+  resetTime?: string;
+  isAutocompleteOnly?: boolean;
+}
+
+interface AntigravityUsageSnapshot {
+  timestamp: string;
+  method?: string;
+  models: AntigravityUsageModel[];
+}
+
 function formatCountdown(resetsAt?: number | null): string {
   if (!resetsAt) return "Rolling refresh window";
   const diffMs = resetsAt - Date.now();
@@ -36,9 +51,19 @@ export function UsageSection() {
   const [telemetryStatus, setTelemetryStatus] = React.useState<TelemetryStatusView | null>(null);
   const [telemetryFetchError, setTelemetryFetchError] = React.useState<string | null>(null);
   const [quotas, setQuotas] = React.useState<QuotaCooldownInfo[]>([]);
+  const [antigravityQuota, setAntigravityQuota] = React.useState<AntigravityUsageSnapshot | null>(null);
+  const [quotaWindows, setQuotaWindows] = React.useState<Array<{
+    id: string;
+    label: string;
+    remainingPercent: number | null;
+    resetAt: string | null;
+    skip: boolean;
+    status: string;
+  }>>([]);
   const usageConfig = state.config?.usage;
   const [ingestUrl, setIngestUrl] = React.useState(usageConfig?.ingestUrl ?? "");
   const [ingestToken, setIngestToken] = React.useState("");
+  const [readToken, setReadToken] = React.useState("");
 
   React.useEffect(() => {
     if (usageConfig?.ingestUrl !== undefined) setIngestUrl(usageConfig.ingestUrl);
@@ -61,6 +86,12 @@ export function UsageSection() {
         if (data?.ok && Array.isArray(data.cooldowns)) {
           setQuotas(data.cooldowns);
         }
+        if (data?.antigravity && Array.isArray(data.antigravity.models)) {
+          setAntigravityQuota(data.antigravity);
+        }
+        if (Array.isArray(data?.windows)) {
+          setQuotaWindows(data.windows);
+        }
       })
       .catch(() => {});
   }, []);
@@ -68,7 +99,7 @@ export function UsageSection() {
   // Whatever host the operator pointed this at — never a built-in name.
   const host = telemetryHost(telemetryStatus);
 
-  const saveUsage = async (patch: { ingestUrl?: string; ingestToken?: string }) => {
+  const saveUsage = async (patch: { ingestUrl?: string; ingestToken?: string; readToken?: string }) => {
     try {
       const config: ConfigStatus = await api("/api/config", {
         method: "PATCH",
@@ -156,10 +187,28 @@ export function UsageSection() {
       >
         <div className="flex flex-col divide-y divide-hairline/20">
           {state.instances.map((instance) => {
-            const isCapped = Boolean(instance.snapshot.quota?.capped) || quotas.some((q) => q.instanceId === instance.instanceId);
-            const quotaCooldown = quotas.find((q) => q.instanceId === instance.instanceId);
+            const wildcardCap = Boolean(instance.snapshot.quota?.capped);
+            const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
+            const quotaCooldown = instanceCooldowns.find((q) => q.model === "*") ?? instanceCooldowns[0];
+            const agModels = instance.instanceId === "antigravity"
+              ? (antigravityQuota?.models ?? []).filter((model) => !model.isAutocompleteOnly)
+              : [];
+            const agExhausted = agModels.filter((model) => model.isExhausted || model.remainingPercentage === 0);
+            const isCapped = wildcardCap || (agModels.length > 0
+              ? agExhausted.length === agModels.length
+              : instanceCooldowns.some((q) => q.model === "*"));
+            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
+            const agSummary = agModels.length > 0
+              ? agModels.slice(0, 4).map((model) => {
+                  if (model.isExhausted || model.remainingPercentage === 0) return `${model.label}: exhausted`;
+                  if (typeof model.remainingPercentage === "number") {
+                    return `${model.label}: ${Math.round(model.remainingPercentage * 100)}%`;
+                  }
+                  return `${model.label}: not reported`;
+                }).join(" · ")
+              : null;
 
             return (
               <div key={instance.instanceId} className="flex items-center justify-between py-2.5 text-[13px]">
@@ -170,8 +219,12 @@ export function UsageSection() {
                   <div className="flex flex-col min-w-0">
                     <span className="truncate font-medium text-ink">{instance.displayName}</span>
                     <span className="truncate text-[11.5px] text-ink-secondary">
-                      {isCapped
+                      {agSummary
+                        ? agSummary
+                        : isCapped
                         ? `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
+                        : isPartial
+                        ? `${quotaCooldown?.error ?? "Some models are at a usage cap"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
                         : isDisabled
                         ? "Disabled in settings · subscription inactive"
                         : isAvailable
@@ -185,6 +238,8 @@ export function UsageSection() {
                     className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
                       isCapped
                         ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                        : isPartial
+                        ? "bg-amber-500/10 text-amber-800 dark:text-amber-200"
                         : isDisabled
                         ? "bg-inset text-ink-secondary"
                         : isAvailable
@@ -192,15 +247,28 @@ export function UsageSection() {
                         : "bg-inset text-ink-secondary"
                     }`}
                   >
-                    {isCapped ? "At Usage Cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
+                    {isCapped ? "At Usage Cap" : isPartial ? "Partial cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
                   </span>
                 </div>
               </div>
             );
           })}
         </div>
+        {quotaWindows.length > 0 ? (
+          <div className="mt-3 flex flex-col gap-1.5 rounded-lg border border-hairline/20 bg-inset/20 p-3">
+            <div className="text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">Remaining from Usage Monitor</div>
+            {quotaWindows.slice(0, 12).map((window) => (
+              <div key={window.id} className="flex items-center justify-between gap-3 text-[12.5px]">
+                <span className="min-w-0 truncate text-ink">{window.label}</span>
+                <span className={`shrink-0 tabular-nums ${window.skip ? "text-amber-700 dark:text-amber-300" : "text-ink-secondary"}`}>
+                  {window.remainingPercent == null ? "not reported" : `${window.remainingPercent}%`}
+                </span>
+              </div>
+            ))}
+          </div>
+        ) : null}
         <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-          BotFleet automatically routes turns to configured fallback models when any engine hits a session limit or rate quota, ensuring seamless continuity.
+          Antigravity remaining percent is read locally from the antigravity-usage CLI every minute.  Other engines use Usage Monitor remaining windows when a read token is set.  Exhausted models fail over to the saved chain before the next turn.
         </div>
       </Card>
 
@@ -321,8 +389,22 @@ export function UsageSection() {
                 className={usageInputClass}
               />
             </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[12px] font-medium text-ink-secondary" htmlFor="usage-read-token">
+                Read Token
+              </label>
+              <input
+                id="usage-read-token"
+                type="password"
+                value={readToken}
+                onChange={(e) => setReadToken(e.target.value)}
+                onBlur={() => void saveUsage({ readToken: readToken.trim() })}
+                placeholder={usageConfig?.hasReadToken ? "••••••••" : "USAGE_READ_TOKEN from Usage Monitor"}
+                className={usageInputClass}
+              />
+            </div>
             <div className="text-[12px] leading-relaxed text-ink-secondary">
-              Every settled turn records token metrics (input, output, cache hits), model selection, and working directory project classification.  Set both fields to start streaming them to your own monitor; leave either blank and nothing leaves this machine.
+              Ingest token sends settled-turn usage.  Read token pulls remaining-percent windows so this page can skip exhausted models.  Antigravity does not need the read token because it uses the local antigravity-usage CLI.
             </div>
           </div>
         </div>

@@ -140,6 +140,7 @@ const appConfigSchema = z.object({
   usage: z.object({
     ingestUrl: optionalText,
     ingestToken: optionalText,
+    readToken: optionalText,
     projects: z
       .array(z.object({ slug: z.string(), match: z.array(z.string()).optional() }))
       .optional(),
@@ -187,6 +188,7 @@ export interface AppConfig {
   usage?: {
     ingestUrl?: string;
     ingestToken?: string;
+    readToken?: string;
     projects?: Array<{ slug: string; match?: string[] }>;
   };
   /** Opt-in product experiments. Every flag defaults to disabled. */

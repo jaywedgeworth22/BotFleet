@@ -21,6 +21,8 @@ function modelLabel(instance: InstanceInfo | undefined, model: string): string {
 
 function engineStatus(instance: InstanceInfo): string {
   if (instance.snapshot.quota?.capped) return "Quota Cap";
+  const modelCaps = Object.values(instance.snapshot.quota?.models ?? {});
+  if (modelCaps.some((row) => row.capped)) return "Partial quota";
   if (instance.snapshot.reason === "Disabled in settings") return "Disabled";
   if (needsCli(instance)) return "Not installed";
   if (needsSignIn(instance)) return "Sign-in required";
@@ -32,12 +34,16 @@ function ModelRow({
   current,
   defaultId,
   onPick,
+  quota,
 }: {
   option: ModelOption;
   current: boolean;
   defaultId: string;
   onPick: () => void;
+  quota?: { capped: boolean; remainingPercent?: number | null };
 }) {
+  const remaining =
+    quota?.remainingPercent == null ? null : `${Math.round(quota.remainingPercent)}%`;
   return (
     <button
       type="button"
@@ -45,6 +51,7 @@ function ModelRow({
       className={cn(
         "flex w-full items-center justify-between gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] text-ink hover:bg-control/60",
         current && "bg-control",
+        quota?.capped && "opacity-60",
       )}
     >
       <span className="flex min-w-0 items-center gap-2">
@@ -54,6 +61,12 @@ function ModelRow({
         )}
         {option.loaded && (
           <span className="shrink-0 rounded bg-accent/10 px-1.5 py-px text-[10px] text-accent">Loaded</span>
+        )}
+        {quota?.capped && (
+          <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-px text-[10px] text-amber-700 dark:text-amber-300">Exhausted</span>
+        )}
+        {!quota?.capped && remaining && (
+          <span className="shrink-0 rounded bg-inset px-1.5 py-px text-[10px] text-ink-secondary">{remaining} left</span>
         )}
       </span>
       {current && <Check size={14} className="shrink-0 text-accent" />}
@@ -214,6 +227,7 @@ export function ModelPicker({
       current={selection.instanceId === railInstance?.instanceId && selection.model === option.id}
       defaultId={railInstance?.models.default ?? ""}
       onPick={() => railInstance && pick(railInstance, option.id)}
+      quota={railInstance?.snapshot.quota?.models?.[option.id]}
     />
   );
 

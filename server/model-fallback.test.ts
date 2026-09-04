@@ -1,3 +1,5 @@
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 
 import type { ModelSelection } from "./contracts.ts";
@@ -6,6 +8,7 @@ import {
   isShortProviderErrorText,
   lastUserTextIndex,
   parseQuotaResetTime,
+  QuotaCooldownRegistry,
   quotaCooldowns,
   selectTurnFallback,
   sliceIsShortProviderError,
@@ -407,6 +410,28 @@ describe("QuotaCooldownRegistry", () => {
     const cd = registry.forInstance("cursor");
     expect(cd?.instanceId).toBe("cursor");
     expect(cd?.error).toBe("You've hit your usage limit");
-    expect(registry.forInstance("antigravity")).toBeUndefined();
+  });
+
+  it("persists and reloads cooldowns, skipping expired rows", () => {
+    const file = `${tmpdir()}/quota-cooldowns-${Date.now()}.json`;
+    const first = new QuotaCooldownRegistry();
+    const writes: string[] = [];
+    first.enablePersist(file, (_path, json) => {
+      writes.push(json);
+      writeFileSync(file, json);
+    });
+    const now = Date.now();
+    first.recordInstanceCap("antigravity", "claude-opus-4-6-thinking", {
+      resetsAt: now + 60_000,
+      error: "exhausted",
+      source: "antigravity-usage",
+    });
+    first.recordInstanceCap("grok", "*", { resetsAt: now - 1, error: "expired", source: "chip" });
+    expect(writes.length).toBeGreaterThan(0);
+
+    const second = new QuotaCooldownRegistry();
+    second.enablePersist(file, (_path, json) => writeFileSync(file, json));
+    expect(second.get("bot", "antigravity", "claude-opus-4-6-thinking")?.error).toBe("exhausted");
+    expect(second.get("bot", "grok", "grok-4.6")).toBeUndefined();
   });
 });
