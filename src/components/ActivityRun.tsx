@@ -89,7 +89,7 @@ export function ActivityRun({
             <Check size={13} className="text-success" />
           )}
         </div>
-        <span className="max-w-[480px] font-medium text-ink truncate">{describeRun(messages)}</span>
+        <span className="max-w-[480px] font-medium text-ink truncate" title={describeRun(messages)}>{describeRun(messages)}</span>
         {durationSec > 0 && (
           <span className="text-[11px] text-ink-secondary/70 font-mono font-normal shrink-0">
             {durationSec}s

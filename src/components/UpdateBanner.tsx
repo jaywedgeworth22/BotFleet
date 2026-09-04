@@ -26,6 +26,15 @@ function friendlyError(message?: string): string {
   return message.split("\n")[0].slice(0, 140);
 }
 
+// The card clips the subtitle to one line, so the hover has to carry the
+// whole thing.  For a failure that means the raw updater message, not the
+// friendly one-liner the card shows — clipping is what hid the cause.
+function subtitleTooltip(subtitle: string, status?: string, message?: string): string {
+  if (status !== "error" || !message) return subtitle;
+  const raw = message.trim();
+  return raw && raw !== subtitle ? `${subtitle}\n\n${raw}` : subtitle;
+}
+
 import { loadUpdateNotificationsEnabled } from "@/lib/update-preferences";
 
 export function UpdateBanner() {
@@ -91,7 +100,10 @@ export function UpdateBanner() {
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-[13.5px] font-semibold text-ink">{title}</div>
-          <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary" title={subtitle}>
+          <div
+            className="mt-0.5 truncate text-[12.5px] text-ink-secondary"
+            title={subtitleTooltip(subtitle, s.status, s.message)}
+          >
             {subtitle}
           </div>
         </div>

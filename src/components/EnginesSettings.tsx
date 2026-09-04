@@ -246,7 +246,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
           </span>
         ) : (
           instance.cliDefault && (
-            <span className="truncate text-[11px] text-ink-secondary">{instance.cliDefault} · default</span>
+            <span className="truncate text-[11px] text-ink-secondary" title={`${instance.cliDefault} · default`}>{instance.cliDefault} · default</span>
           )
         )}
         <span className="flex-1" />

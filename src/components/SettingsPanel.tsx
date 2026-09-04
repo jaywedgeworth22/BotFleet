@@ -247,7 +247,7 @@ function MemoryCard({ bot }: { bot: Bot }) {
       {open && !loading && topic && (
         <div className="mt-3">
           <div className="flex items-center justify-between gap-2">
-            <span className="truncate font-mono text-[12.5px] text-ink">memory/{topic.name}</span>
+            <span className="truncate font-mono text-[12.5px] text-ink" title={`memory/${topic.name}`}>memory/{topic.name}</span>
             <button
               onClick={() => setTopic(null)}
               className="shrink-0 rounded-md px-2 py-1 text-[13px] text-ink-secondary hover:bg-control hover:text-ink"
@@ -299,7 +299,7 @@ function MemoryCard({ bot }: { bot: Bot }) {
                     onClick={() => void openTopic(entry.name)}
                     className="flex w-full items-center justify-between gap-2 border-b border-hairline/40 px-3 py-2 text-left last:border-b-0 hover:bg-control/60"
                   >
-                    <span className="truncate font-mono text-[12.5px] text-ink">{entry.name}</span>
+                    <span className="truncate font-mono text-[12.5px] text-ink" title={entry.name}>{entry.name}</span>
                     <span className="shrink-0 text-[11.5px] text-ink-secondary">{formatBytes(entry.bytes)}</span>
                   </button>
                 ))}

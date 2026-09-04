@@ -137,7 +137,7 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
                     <Smartphone size={15} />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <div className="truncate text-[13.5px] font-medium text-ink">{device.name}</div>
+                    <div className="truncate text-[13.5px] font-medium text-ink" title={device.name}>{device.name}</div>
                     <div className="text-[11.5px] text-ink-secondary">Last seen {relative(device.lastSeenAt)}</div>
                   </div>
                   <button

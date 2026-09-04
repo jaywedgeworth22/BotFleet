@@ -98,7 +98,7 @@ export function ConnectorCard({ botId, threadId, message }: { botId: string; thr
           </div>
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
-              <span className="truncate text-[14px] font-semibold text-ink">{connector.label}</span>
+              <span className="truncate text-[14px] font-semibold text-ink" title={connector.label}>{connector.label}</span>
               {connected && (
                 <span className="flex items-center gap-1 rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">
                   <Check size={11} /> Connected
