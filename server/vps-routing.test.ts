@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { VPS_DEFAULT_CPUS, VPS_DEFAULT_MEMORY_GIB } from "./config.ts";
 
 import {
   BASE_IMAGE_DIGEST,
@@ -85,9 +86,13 @@ function containerInspectTemplate(): string {
         NetworkMode: "bridge",
         PortBindings: {},
         PublishAllPorts: false,
-        Memory: 8 * 1024 * 1024 * 1024,
-        MemorySwap: 8 * 1024 * 1024 * 1024,
-        NanoCpus: 4_000_000_000,
+        // Derived from the configured VPS budget, not the Local VM's numbers:
+        // a fake inspect that claims a size the runtime would never build gets
+        // graded unsafe, the container is refused, and the turn never mounts a
+        // computer — which surfaces here as "the echoed turn never happened".
+        Memory: VPS_DEFAULT_MEMORY_GIB * 1024 * 1024 * 1024,
+        MemorySwap: VPS_DEFAULT_MEMORY_GIB * 1024 * 1024 * 1024,
+        NanoCpus: VPS_DEFAULT_CPUS * 1_000_000_000,
         PidsLimit: 512,
         CapDrop: ["ALL"],
         CapAdd: ["CAP_SETUID", "CAP_SETGID"],

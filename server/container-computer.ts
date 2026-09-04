@@ -769,14 +769,28 @@ export interface DockerHardeningConfig {
 
 /** One hardening contract for both managed containers (Local VM here, the
  * BYO-VPS backend in vps-computer.ts): exact resource limits, no privilege,
- * no host namespaces or devices, no disabled security profiles. The only
- * knob the callers legitimately disagree on is the restart policy — the VPS
+ * no host namespaces or devices, no disabled security profiles.
+ *
+ * Two knobs the callers legitimately disagree on. The restart policy: the VPS
  * container must survive a reboot nobody is watching ("unless-stopped"),
- * while the Local VM must NOT auto-resume: its desktop leaves a stale X lock
- * on stop, so a restarted container is a broken one. */
+ * while the Local VM must NOT auto-resume — its desktop leaves a stale X lock
+ * on stop, so a restarted container is a broken one. And the resource budget:
+ * the Local VM is the only desktop on the person's own workstation, whereas a
+ * VPS hosts one desktop PER BOT on a single shared machine, so it is sized as
+ * a fraction of that host.
+ *
+ * The limits are still compared exactly, not as a floor. That is the point:
+ * a container built with different limits than the caller now asks for is a
+ * container the caller no longer controls, so it is reported unsafe and
+ * replaced rather than quietly accepted. Callers pass the caps they used to
+ * create it; the defaults are the Local VM's. */
 export function dockerSecurityIsHardened(
   config: DockerHardeningConfig | undefined,
-  options: { restartPolicy?: "no" | "unless-stopped" } = {},
+  options: {
+    restartPolicy?: "no" | "unless-stopped";
+    memoryBytes?: number;
+    nanoCpus?: number;
+  } = {},
 ): boolean {
   if (!config) return false;
   const capDrop = (config.CapDrop ?? []).map((cap) => cap.toLowerCase());
@@ -789,10 +803,12 @@ export function dockerSecurityIsHardened(
     options.restartPolicy === "unless-stopped"
       ? restartPolicy === "unless-stopped"
       : restartPolicy === undefined || restartPolicy === "" || restartPolicy === "no";
+  const memoryBytes = options.memoryBytes ?? MEMORY_BYTES;
+  const nanoCpus = options.nanoCpus ?? NANO_CPUS;
   return (
-    config.Memory === MEMORY_BYTES &&
-    (config.MemorySwap ?? 0) === MEMORY_BYTES &&
-    (config.NanoCpus ?? 0) === NANO_CPUS &&
+    config.Memory === memoryBytes &&
+    (config.MemorySwap ?? 0) === memoryBytes &&
+    (config.NanoCpus ?? 0) === nanoCpus &&
     config.PidsLimit === PIDS_LIMIT &&
     capDrop.includes("all") &&
     capAdd.join(",") === "setgid,setuid" &&

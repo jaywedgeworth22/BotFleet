@@ -18,16 +18,36 @@ import {
   type DockerHardeningConfig,
   BASE_IMAGE_DIGEST,
   BASE_IMAGE_LABEL,
-  CONTAINER_CPUS_ARG,
-  CONTAINER_MEMORY_ARG,
   DRIVER_LABEL,
   IMAGE_LAYER_LABEL,
   IMAGE_LAYER_VERSION,
   MANAGED_LABEL,
 } from "./container-computer.ts";
-import { isValidSshAlias, vpsSshAlias, type AppConfig } from "./config.ts";
+import {
+  VPS_DEFAULT_CPUS,
+  VPS_DEFAULT_MEMORY_GIB,
+  isValidSshAlias,
+  vpsCpus,
+  vpsMemoryGib,
+  vpsSshAlias,
+  type AppConfig,
+} from "./config.ts";
 import { augmentedPath } from "./env-path.ts";
 import { SPAWNED_PROXIES } from "./proxy-paths.ts";
+
+/** The per-desktop budget for one managed VPS container.  The run arguments
+ * and the inspect matcher are both derived from this one value, so a desktop
+ * created with one budget can never be graded against another. */
+export interface VpsDesktopSize {
+  memoryGib: number;
+  cpus: number;
+}
+
+export function vpsDesktopSize(cfg: AppConfig): VpsDesktopSize {
+  return { memoryGib: vpsMemoryGib(cfg), cpus: vpsCpus(cfg) };
+}
+
+const GIB = 1024 * 1024 * 1024;
 
 export const VPS_IMAGE = CUA_IMAGE;
 export const VPS_MANAGED_LABEL = "com.botfleet.vps";
@@ -495,7 +515,15 @@ async function computeVpsComputerStatus(
     status.managed = managedFlag && namedByUs;
     status.network = hasNoPublishedPorts(detail?.HostConfig, detail?.NetworkSettings?.Networks) ? "private" : "unsafe";
     status.mounts = hasNoHostMounts(detail ?? {}) ? "none" : "unsafe";
-    status.security = dockerSecurityIsHardened(detail?.HostConfig, { restartPolicy: "unless-stopped" })
+    // Compared against the budget this operator configured, not a constant:
+    // a desktop built to a different size is one we no longer control, so it
+    // is reported unsafe and replaced rather than silently reused.
+    const size = vpsDesktopSize(cfg);
+    status.security = dockerSecurityIsHardened(detail?.HostConfig, {
+      restartPolicy: "unless-stopped",
+      memoryBytes: size.memoryGib * GIB,
+      nanoCpus: size.cpus * 1_000_000_000,
+    })
       ? "hardened"
       : "unsafe";
 
@@ -607,6 +635,7 @@ export function vpsContainerRunArgs(
   containerName: string,
   imageRef = VPS_IMAGE,
   viewerSecret = randomBytes(18).toString("base64url"),
+  size: VpsDesktopSize = { memoryGib: VPS_DEFAULT_MEMORY_GIB, cpus: VPS_DEFAULT_CPUS },
 ): string[] {
   if (!CONTAINER_NAME.test(containerName) || (imageRef !== VPS_IMAGE && !IMAGE_ID.test(imageRef))) {
     throw new Error("invalid managed VPS container or image reference");
@@ -632,11 +661,14 @@ export function vpsContainerRunArgs(
     "--label",
     `${IMAGE_LAYER_LABEL}=${IMAGE_LAYER_VERSION}`,
     "--memory",
-    CONTAINER_MEMORY_ARG,
+    `${size.memoryGib}g`,
+    // memory-swap pinned to memory means no swap: a desktop that would swap
+    // is one that has already lost, and on a shared host its swapping is
+    // every other bot's problem.
     "--memory-swap",
-    CONTAINER_MEMORY_ARG,
+    `${size.memoryGib}g`,
     "--cpus",
-    CONTAINER_CPUS_ARG,
+    String(size.cpus),
     "--pids-limit",
     String(PIDS_LIMIT),
     "--network",
@@ -810,7 +842,7 @@ export async function vpsComputerAction(
             imageRef = (await computeVpsComputerStatus(cfg, botId, runner)).image_id;
           }
           if (!imageRef) throw Object.assign(new Error("The prepared VPS image could not be identified"), { status: 409 });
-          await run(vpsContainerRunArgs(before.container_name, imageRef));
+          await run(vpsContainerRunArgs(before.container_name, imageRef, undefined, vpsDesktopSize(cfg)));
         } else {
           assertUsableContainer(before);
           if (before.container === "stopped") await run(["start", containerRef]);

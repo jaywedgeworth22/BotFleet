@@ -11,7 +11,7 @@ import {
   IMAGE_LAYER_VERSION,
   MANAGED_LABEL,
 } from "./container-computer.ts";
-import type { AppConfig } from "./config.ts";
+import { VPS_DEFAULT_CPUS, VPS_DEFAULT_MEMORY_GIB, type AppConfig } from "./config.ts";
 import {
   VPS_CONTAINER_LABEL,
   VPS_IMAGE,
@@ -64,7 +64,8 @@ function fixture({
   screenshotCaptureFails = false,
   desktopProbeFails = false,
   securityOpt = [],
-  memory = 8 * 1024 * 1024 * 1024,
+  memory = VPS_DEFAULT_MEMORY_GIB * 1024 * 1024 * 1024,
+  cpus = VPS_DEFAULT_CPUS,
   restartPolicyName = "unless-stopped",
   cgroupnsMode,
   imageLabelsMatch = true,
@@ -91,6 +92,7 @@ function fixture({
   desktopProbeFails?: boolean;
   securityOpt?: string[];
   memory?: number;
+  cpus?: number;
   restartPolicyName?: string;
   cgroupnsMode?: string;
   imageLabelsMatch?: boolean;
@@ -150,8 +152,10 @@ function fixture({
             PortBindings: publicPorts ? { "6901/tcp": [{ HostIp: "0.0.0.0" }] } : {},
             PublishAllPorts: publishAllPorts,
             Memory: memory,
-            MemorySwap: 8 * 1024 * 1024 * 1024,
-            NanoCpus: 4_000_000_000,
+            // Derived from the same two knobs the run arguments use, so a
+            // fixture can never claim a shape the runtime would not build.
+            MemorySwap: memory,
+            NanoCpus: cpus * 1_000_000_000,
             PidsLimit: 512,
             CapDrop: ["ALL"],
             CapAdd: capAdd,
@@ -385,6 +389,13 @@ describe("VPS computer", () => {
     expect(status.ready).toBe(true);
     const run = provision.calls.find(({ args }) => args[2] === "run")?.args ?? [];
     expect(run).toContain("--memory");
+    // A shared VPS carries one desktop per bot, so the default budget is a
+    // fraction of the host rather than a whole workstation's worth.
+    expect(run[run.indexOf("--memory") + 1]).toBe(`${VPS_DEFAULT_MEMORY_GIB}g`);
+    // memory-swap pinned to memory means no swap: on a shared host, one
+    // bot's swapping is every other bot's problem.
+    expect(run[run.indexOf("--memory-swap") + 1]).toBe(`${VPS_DEFAULT_MEMORY_GIB}g`);
+    expect(run[run.indexOf("--cpus") + 1]).toBe(String(VPS_DEFAULT_CPUS));
     expect(run).toContain("--pids-limit");
     expect(run).toContain("--ipc");
     expect(run[run.indexOf("--ipc") + 1]).toBe("private");
