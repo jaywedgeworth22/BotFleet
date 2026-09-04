@@ -3,7 +3,7 @@
 // banked per settled turn on each task (server/store.ts addTaskUsage) and
 // summed here; nothing is fetched.
 import * as React from "react";
-import { Check, CheckCircle, Loader2, RefreshCw, XCircle } from "lucide-react";
+import { Check, CheckCircle, ChevronDown, Loader2, RefreshCw, XCircle } from "lucide-react";
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
@@ -12,6 +12,8 @@ import { ProviderMark } from "./ProviderIcons";
 import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
+import { antigravityQuotaLines, quotaLinesSummary, usageWindowLines } from "@/lib/quota-display";
+import { isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
 interface QuotaCooldownInfo {
@@ -57,12 +59,18 @@ export function UsageSection() {
   const [antigravityQuota, setAntigravityQuota] = React.useState<AntigravityUsageSnapshot | null>(null);
   const [quotaWindows, setQuotaWindows] = React.useState<Array<{
     id: string;
+    provider: string;
+    sourceApp?: string | null;
     label: string;
     remainingPercent: number | null;
     resetAt: string | null;
     skip: boolean;
     status: string;
+    window?: string | null;
+    modelId?: string | null;
+    skipReason?: string | null;
   }>>([]);
+  const [expandedQuota, setExpandedQuota] = React.useState<string | null>(null);
   const usageConfig = state.config?.usage;
   const [ingestUrl, setIngestUrl] = React.useState(usageConfig?.ingestUrl ?? "");
   const [ingestToken, setIngestToken] = React.useState("");
@@ -241,7 +249,7 @@ export function UsageSection() {
 
       <Card
         title="Fleet Quotas & Provider Caps"
-        subtitle="Live quota tracking and session limits across fleet engines, mirroring the Usage Monitor app."
+        subtitle="Live quota tracking and session limits across fleet engines.  Hover or click a row for the full remaining breakdown."
       >
         <div className="flex flex-col divide-y divide-hairline/20">
           {state.instances.map((instance) => {
@@ -251,28 +259,23 @@ export function UsageSection() {
             const agModels = instance.instanceId === "antigravity"
               ? (antigravityQuota?.models ?? []).filter((model) => !model.isAutocompleteOnly)
               : [];
-            const agExhausted = agModels.filter((model) =>
-              model.isExhausted || typeof model.remainingPercentage !== "number" || model.remainingPercentage === 0,
-            );
-            const isCapped = wildcardCap || (agModels.length > 0
-              ? agExhausted.length === agModels.length
+            const agLines = antigravityQuotaLines(agModels);
+            const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
+            const windowLines = usageWindowLines(instanceWindows);
+            const planSkip = instanceWindows.some((window) => isPlanLevelSkip(window));
+            const agExhausted = agLines.filter((line) => line.exhausted);
+            const isCapped = wildcardCap || planSkip || (agLines.length > 0
+              ? agExhausted.length === agLines.length
               : instanceCooldowns.some((q) => q.model === "*"));
             const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
-            const agSummary = agModels.length > 0
-              ? agModels.slice(0, 4).map((model) => {
-                  if (model.isExhausted || typeof model.remainingPercentage !== "number" || model.remainingPercentage === 0) {
-                    return `${model.label}: exhausted`;
-                  }
-                  return `${model.label}: ${Math.round(model.remainingPercentage * 100)}%`;
-                }).join(" · ")
+            const detailLines = agLines.length > 0 ? agLines : windowLines;
+            const fullSummary = detailLines.length > 0
+              ? quotaLinesSummary(detailLines)
               : null;
-            // one line, clipped to the row width — a cap reason or an
-            // unavailable reason is exactly the text that gets cut off, so
-            // the same string rides the hover
-            const statusLine = agSummary
-              ? agSummary
+            const statusLine = fullSummary
+              ? fullSummary
               : isCapped
               ? `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
               : isPartial
@@ -282,37 +285,62 @@ export function UsageSection() {
               : isAvailable
               ? instance.snapshot.version ? `v${instance.snapshot.version} · Ready` : "Active and ready for turns"
               : instance.snapshot.reason ?? "Unavailable";
+            const open = expandedQuota === instance.instanceId;
 
             return (
-              <div key={instance.instanceId} className="flex items-center justify-between py-2.5 text-[13px]">
-                <div className="flex items-center gap-2.5 min-w-0">
-                  <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-control/60">
-                    <ProviderMark driverKind={instance.driverKind} size={16} />
+              <div key={instance.instanceId} className="py-1">
+                <button
+                  type="button"
+                  onClick={() => setExpandedQuota(open ? null : instance.instanceId)}
+                  aria-expanded={open}
+                  title={statusLine}
+                  className="flex w-full items-center justify-between py-1.5 text-left text-[13px] hover:bg-control/40 rounded-lg px-1 -mx-1"
+                >
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-control/60">
+                      <ProviderMark driverKind={instance.driverKind} size={16} />
+                    </div>
+                    <div className="flex flex-col min-w-0">
+                      <span className="truncate font-medium text-ink">{instance.displayName}</span>
+                      <span className="truncate text-[11.5px] text-ink-secondary">
+                        {statusLine}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex flex-col min-w-0">
-                    <span className="truncate font-medium text-ink" title={instance.displayName}>{instance.displayName}</span>
-                    <span className="truncate text-[11.5px] text-ink-secondary" title={statusLine}>
-                      {statusLine}
+                  <div className="flex shrink-0 items-center gap-2 pl-3">
+                    <span
+                      className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
+                        isCapped
+                          ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
+                          : isPartial
+                          ? "bg-amber-500/10 text-amber-800 dark:text-amber-200"
+                          : isDisabled
+                          ? "bg-inset text-ink-secondary"
+                          : isAvailable
+                          ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                          : "bg-inset text-ink-secondary"
+                      }`}
+                    >
+                      {isCapped ? "At Usage Cap" : isPartial ? "Partial cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
                     </span>
+                    <ChevronDown
+                      size={14}
+                      className={cn("text-ink-secondary transition-transform", open && "rotate-180")}
+                    />
                   </div>
-                </div>
-                <div className="shrink-0 pl-3">
-                  <span
-                    className={`rounded-full px-2.5 py-0.5 text-[11px] font-medium ${
-                      isCapped
-                        ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
-                        : isPartial
-                        ? "bg-amber-500/10 text-amber-800 dark:text-amber-200"
-                        : isDisabled
-                        ? "bg-inset text-ink-secondary"
-                        : isAvailable
-                        ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
-                        : "bg-inset text-ink-secondary"
-                    }`}
-                  >
-                    {isCapped ? "At Usage Cap" : isPartial ? "Partial cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
-                  </span>
-                </div>
+                </button>
+                {open && detailLines.length > 0 && (
+                  <div className="mb-1.5 ml-9 flex flex-col gap-1 rounded-lg border border-hairline/20 bg-inset/30 p-2.5">
+                    {detailLines.map((line) => (
+                      <div key={`${line.group}:${line.label}`} className="flex items-center justify-between gap-3 text-[12px]">
+                        <span className="min-w-0 truncate text-ink" title={line.label}>{line.label}</span>
+                        <span className={cn("shrink-0 tabular-nums", line.exhausted ? "text-amber-700 dark:text-amber-300" : "text-ink-secondary")}>
+                          {line.value}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             );
           })}

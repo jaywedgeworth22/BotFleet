@@ -25,6 +25,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
+- **2026-09-04 — GROK — IN PROGRESS — Quota rows hide Gemini/Cursor monthly; MiniMax CLI first-tier (board `d4d3343b`, issue #216, branch `grok/quota-breakdown-minimax`, worktree `~/apps/botfleet-grok-quota-breakdown`).**  Claimed Fri, Sep 4, 2026.
 - **2026-09-04 — GROK — IN PROGRESS — Usage Monitor URL and ingest token do not persist in Settings (board `5c0ee072`, issue #191, branch `grok/usage-monitor-save`, worktree `~/apps/botfleet-grok-usage-save`).**  `saveConfig()` omitted `usage`; adding Save + Test Connection.  Claimed Fri, Sep 4, 2026.  PR #192.
 - **2026-09-03 — AG — IN_PROGRESS — DSH driver hardening: fallback error classification, DSH_HOME-aware auth, honest model-set (branch `ag/dsh-first-class`, board `9effb254`, issue #188).**
 - **2026-09-03 — GROK — IN PROGRESS — Hosted macos-latest ios-ship path filter like CT/DealDex/ST (board `f9a51214`, issue #185, branch `grok/hosted-ios-ship`, worktree `~/apps/botfleet-grok-hosted-ios-ship`).**  Vendor `scripts/ios-fleet`, map existing `APPLE_API_*` + `IOS_CERT_*`, no extra flags, no mint.  PR opening this lane.  Merge may trigger the hosted job with `force_ship=0`.
