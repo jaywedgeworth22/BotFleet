@@ -318,9 +318,10 @@ distribution scope:
    search with exact-message landing, transcript export/share, reactions, and
    edit/version controls. Archived or hidden chat management remains desktop-only.
 3. **Notifications:** native permission, live/replayed alerts, time-sensitive
-   approvals, badges, and a brief background grace period are in the app.
-   Closed-app delivery still requires project-owned APNs credentials and a
-   hosted relay; Tailscale cannot wake a terminated iOS process.
+   approvals, badges, a brief background grace period, and APNs from the Mac
+   sidecar when a paired phone is not streaming.  Tailscale cannot wake a
+   terminated iOS process by itself.  A force-quit app still needs the user
+   to tap the lock-screen alert.
 4. **Distribution:** signing, bundle ownership, privacy declarations,
    TestFlight, and App Store review material. Swift tests and an unsigned
    simulator build already run in the repository CI.

@@ -22,9 +22,9 @@ detached task; opening whichever task happens to be active is a failure.
 
 Desktop notifications are suppressed while the window already has focus. The
 iOS app can present live or replayed notifications while it is running and uses
-the same bot/task target when the notification is tapped. Waking a terminated
-iOS app still requires a future APNs relay; local network or VPN connectivity
-alone cannot provide closed-app delivery.
+the same bot/task target when the notification is tapped. The Mac sidecar
+APNs-wakes a paired phone that is not streaming. Local network or VPN
+connectivity alone cannot provide closed-app delivery.
 
 ## Automated coverage
 
@@ -37,6 +37,8 @@ alone cannot provide closed-app delivery.
 | Real failed routine emits one `routine-failed` notification and no duplicate `done` | `server/notification-wiring.test.ts` |
 | iOS target parsing and detached-task decision | `ios/Tests/CompanionCoreTests/DecodingTests.swift` |
 | Paired-device route policy remains default-deny | `companion/test/routes.test.ts` |
+| APNs alert carries content-available; disconnected phones wake; 410 drops the token | `companion/src/apns.test.ts` |
+| APNs and local notification userInfo both parse to a bot/task target | `ios/Tests/CompanionCoreTests/DecodingTests.swift` |
 
 ## Manual release pass
 

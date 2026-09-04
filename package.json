@@ -1,7 +1,7 @@
 {
   "name": "botfleet",
   "private": true,
-  "version": "0.1.38",
+  "version": "1.0.30",
   "description": "A local-first chat app for running a team of AI agents.",
   "homepage": "https://botfleet.app",
   "repository": {

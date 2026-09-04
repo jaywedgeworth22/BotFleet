@@ -7,8 +7,9 @@
 // bot does while it works is not.
 //
 // Delivery is a separate concern. The harness emits a frame; whoever is
-// listening decides what to do with it — desktop and paired-phone local
-// notifications today, and closed-app APNs delivery once a relay exists.
+// listening decides what to do with it — desktop banners, paired-phone
+// local notifications while the companion is open, and APNs from the
+// sidecar when a paired phone is not streaming.
 
 export type NotifyKind = "approval" | "question" | "done" | "routine-failed" | "takeover";
 

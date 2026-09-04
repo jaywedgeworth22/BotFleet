@@ -159,6 +159,9 @@ watchHarnessNotifications({
   harnessPort: HARNESS_PORT,
   connectedIds: connectedDevices.ids,
   tokensForDisconnected: () => devices.pushTokens(),
+  forgetToken: (id) => {
+    devices.clearPushToken(id);
+  },
 });
 const companion = createServer(proxy);
 const managedOrigin = PRIVATE_ORIGIN ? createServer(proxy) : null;

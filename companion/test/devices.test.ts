@@ -228,6 +228,10 @@ describe("DeviceRegistry", () => {
     expect(registry.setPushToken(device.id, "not-hex")).toBe(false);
     expect(registry.setPushToken("missing", token)).toBe(false);
     expect(new DeviceRegistry().pushTokens()).toEqual([{ deviceId: device.id, token }]);
+    expect(registry.clearPushToken(device.id)).toBe(true);
+    expect(registry.pushTokens()).toEqual([]);
+    expect(registry.clearPushToken(device.id)).toBe(false);
+    expect(registry.clearPushToken("missing")).toBe(false);
   });
 
   it("rolls cloud desktop access back when it cannot be saved", () => {

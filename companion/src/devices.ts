@@ -388,6 +388,15 @@ export class DeviceRegistry {
     return true;
   }
 
+  /** Drop a token Apple has marked unregistered (HTTP 410). */
+  clearPushToken(id: string): boolean {
+    const device = this.devices.find((candidate) => candidate.id === id);
+    if (!device || typeof device.pushToken !== "string") return false;
+    delete device.pushToken;
+    this.persist();
+    return true;
+  }
+
   pushTokens(): { deviceId: string; token: string }[] {
     return this.devices
       .filter((device) => typeof device.pushToken === "string")
