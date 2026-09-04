@@ -338,10 +338,9 @@ export const RECALL_NOT_CONFIGURED = "Agent RAG is not configured — set a Serv
  * "did not answer" while the bots using it were fine. */
 const RECALL_CLI_TIMEOUT_MS = 30_000;
 
-/** Why a `recall` CLI call failed, in words a person can act on, and safe to
- * return over the API: no environment values, and anything the child printed
- * goes through the same redaction the chat cards use, because a CLI can echo
- * a URL — or a credential — into its own stderr. */
+// What a failed child process looks like, parsed rather than poked at: a
+// timeout kills the child (so it shows up as a signal), a non-zero exit
+// carries a numeric code, and a failure to start carries a string one.
 const cliFailureSchema = z.object({
   killed: z.boolean().optional(),
   signal: z.string().nullish(),
@@ -351,6 +350,10 @@ const cliFailureSchema = z.object({
 const cliExitCodeSchema = z.object({ code: z.number() });
 const cliSpawnFailureSchema = z.object({ code: z.literal("ENOENT") });
 
+/** Why a `recall` CLI call failed, in words a person can act on, and safe to
+ * return over the API: no environment values, and anything the child printed
+ * goes through the same redaction the chat cards use, because a CLI can echo
+ * a URL — or a credential — into its own stderr. */
 function describeCliFailure(err: unknown, timeoutMs: number): string {
   if (err instanceof SyntaxError) return "it printed output that was not JSON";
   const parsed = cliFailureSchema.safeParse(err);
