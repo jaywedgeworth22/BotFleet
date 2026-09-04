@@ -79,6 +79,8 @@ describe("what the app may do", () => {
     ["GET", "/api/connectors/catalog"],
     ["GET", "/api/connectors/connected"],
     ["GET", "/api/connectors"],
+    ["POST", "/api/connectors/slack/authorize"],
+    ["DELETE", "/api/connectors/slack/accounts/ca_123"],
   ];
 
   for (const [method, path] of calls) {
@@ -87,15 +89,15 @@ describe("what the app may do", () => {
 });
 
 describe("what it may not", () => {
-  it("keeps always-allow and connector authorize on the computer", () => {
+  it("keeps always-allow on the computer, and lets the phone connect an app", () => {
     expect(ask("POST", "/api/bots/bot_123/always-allow")).toEqual({
       status: 404,
       error: "no route: POST /api/bots/bot_123/always-allow",
     });
-    expect(ask("POST", "/api/connectors/slack/authorize")).toEqual({
-      status: 403,
-      error: "connected apps are set up on your computer",
-    });
+    // The phone shipped a Connect button the companion refused, so the
+    // option failed at the tap.  Owner's call: parity (see routes.ts).
+    expect(ask("POST", "/api/connectors/slack/authorize")).toBeNull();
+    expect(ask("DELETE", "/api/connectors/slack/accounts/ca_123")).toBeNull();
     // Profile subset and approval answers stay on the phone.  Privilege
     // fields on profile are still refused by the harness, not widened here.
     expect(ask("PATCH", "/api/bots/bot_123/profile")).toBeNull();
@@ -112,6 +114,7 @@ describe("what it may not", () => {
       ["POST", "/api/webhooks"],
       ["POST", "/api/webhooks/wh_1/rotate"],
       ["POST", "/api/resource-triggers"],
+      // one whole connected app, not one account of it
       ["DELETE", "/api/connectors/gmail"],
       ["POST", "/api/teams/import"],
     ] as Array<[string, string]>) {
@@ -191,9 +194,12 @@ describe("what it may not", () => {
     expect(allowed("POST", "/api/routine-runs/run_1/cancel")).toBe(false);
     expect(allowed("DELETE", "/api/connectors/slack")).toBe(false);
     expect(allowed("GET", "/api/connectors/connected/all")).toBe(false);
-    // listing is allowed; starting OAuth and detaching an account are not
-    expect(allowed("POST", "/api/connectors/slack/authorize")).toBe(false);
-    expect(allowed("DELETE", "/api/connectors/slack/accounts/ca_123")).toBe(false);
+    // listing, authorizing and detaching ONE account are allowed; an account
+    // id outside the harness's own charset still is not
+    expect(allowed("POST", "/api/connectors/slack/authorize")).toBe(true);
+    expect(allowed("DELETE", "/api/connectors/slack/accounts/ca_123")).toBe(true);
+    expect(allowed("DELETE", "/api/connectors/slack/accounts/../../config")).toBe(false);
+    expect(allowed("POST", "/api/connectors/slack/authorize/extra")).toBe(false);
     expect(allowed("DELETE", "/api/groups/room-1")).toBe(false);
   });
 

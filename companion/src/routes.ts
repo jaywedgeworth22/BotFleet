@@ -124,12 +124,27 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "DELETE", path: /^\/api\/routines\/[\w-]+$/ },
   { method: "POST", path: /^\/api\/routines\/[\w-]+\/run$/ },
 
-  // Multi-account Composio listing exposes opaque ids and aliases only.
-  // Authorize and revoke stay on the Mac: a stolen phone token must not
-  // start OAuth or detach an account.  EXPLAINED covers the write family.
+  // Connected apps have full parity with the computer: list, authorize, and
+  // detach an account.
+  //
+  // Authorize and revoke used to stay on the Mac, on the reasoning that a
+  // stolen phone token must not start OAuth or detach an account.  Two things
+  // decided against it.  The phone shipped the Connect button anyway — the
+  // iOS view was written to authorize — so the policy was not a locked door,
+  // it was a button that failed at the tap.  And the door it guarded is
+  // narrow: starting OAuth still needs the provider's own login in a browser
+  // and can only ADD an account, while a phone that can drive a bot with a
+  // connected app can already do what that app permits.  Owner's call,
+  // 2026-09-04: parity, so the roster on the phone means what it says.
+  //
+  // `accounts/:id` is the detach route; the bare `DELETE /api/connectors/:slug`
+  // remains off the list, and EXPLAINED still names the family for anything
+  // here that is not spelled out.
   { method: "GET", path: /^\/api\/connectors\/catalog$/ },
   { method: "GET", path: /^\/api\/connectors\/connected$/ },
   { method: "GET", path: /^\/api\/connectors$/ },
+  { method: "POST", path: /^\/api\/connectors\/[\w-]+\/authorize$/ },
+  { method: "DELETE", path: /^\/api\/connectors\/[\w-]+\/accounts\/[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/ },
 ];
 
 /** Route families worth naming in the refusal.
@@ -158,7 +173,10 @@ const EXPLAINED: ReadonlyArray<{ path: RegExp; error: string }> = [
     path: /^\/api\/resource-triggers(\/|$)/,
     error: "resource triggers are set up on your computer",
   },
-  { path: /^\/api\/connectors(\/|$)/, error: "connected apps are set up on your computer" },
+  // Listing, authorizing and detaching are allowed above.  What is left is
+  // the bare per-connector DELETE, which removes a whole integration rather
+  // than one account.
+  { path: /^\/api\/connectors(\/|$)/, error: "removing a whole connected app is done on your computer" },
   {
     path: /^\/api\/routines(\/|$)/,
     error: "this routine operation is only available on your computer",

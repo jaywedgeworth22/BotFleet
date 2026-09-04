@@ -1190,6 +1190,19 @@ final class Session: ObservableObject {
         catch { actionError = error.localizedDescription; return nil }
     }
 
+    /// Detach one connected account.  Returns whether it went through, so the
+    /// caller can refresh only on success and leave the row alone otherwise.
+    func removeConnectorAccount(_ slug: String, accountId: String) async -> Bool {
+        guard let client else { return false }
+        do {
+            try await client.removeConnectorAccount(slug: slug, accountId: accountId)
+            return true
+        } catch {
+            actionError = error.localizedDescription
+            return false
+        }
+    }
+
     func refreshNotificationAuthorization() async {
         notificationAuthorization = await NotificationCoordinator.shared.authorizationStatus()
         notificationAuthorizationResolved = true

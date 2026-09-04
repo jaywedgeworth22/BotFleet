@@ -344,7 +344,7 @@ describe("the sidecar in front of an unmodified harness", () => {
     }
   });
 
-  it("does not let a phone widen Auto or start connector OAuth", async () => {
+  it("does not let a phone widen Auto, but does carry a connector authorize to the harness", async () => {
     const { body } = await device("GET", "/api/bots");
     const bot = body.bots[0];
     const alwaysAllow = await device("POST", `/api/bots/${bot.id}/always-allow`, {
@@ -353,11 +353,25 @@ describe("the sidecar in front of an unmodified harness", () => {
     expect(alwaysAllow.status).toBe(404);
     expect(alwaysAllow.body.error).toMatch(/no route/);
 
+    // Connected apps have phone parity now (routes.ts explains why).  As with
+    // the reachability cases above, what matters is that the sidecar is not
+    // the one saying no: whatever this unconfigured fake harness answers, it
+    // must have been the harness that answered.
     const authorize = await device("POST", "/api/connectors/slack/authorize", {
       body: {},
     });
-    expect(authorize.status).toBe(403);
-    expect(authorize.body.error).toMatch(/on your computer/);
+    expect(authorize.status).not.toBe(403);
+    expect(authorize.status).not.toBe(404);
+
+    // Detaching one account rides the same allowlist; removing a whole
+    // connected app is still the computer's job.
+    const detach = await device("DELETE", "/api/connectors/slack/accounts/ca_123");
+    expect(detach.status).not.toBe(403);
+    expect(detach.status).not.toBe(404);
+
+    const removeApp = await device("DELETE", "/api/connectors/slack");
+    expect(removeApp.status).toBe(403);
+    expect(removeApp.body.error).toMatch(/on your computer/);
   });
 
   it("never passes the provider session cursors through", async () => {
