@@ -3271,11 +3271,26 @@ function startGroupTurn(groupId: string, text: string, replyTo?: Message) {
     if (operation.cancelled) return;
     const current = store.group(groupId);
     if (current?.busyBotId) {
+      // A member is mid-stop — after a turn timeout, that can take a while.
+      // The message used to be dropped here with "this message was not
+      // dispatched", which is the same work-thrown-away failure as the
+      // skipped round: the person typed, saw red, and had to type it again.
+      // Queue the responders instead; the drain runs them when the room
+      // frees up.
       const owner = store.bot(current.busyBotId);
+      const queued = responders.filter((responder) =>
+        queueRoomRound({ groupId, threadId, botId: responder.id, hop: 0 }, Date.now()),
+      );
       store.appendMessage(threadId, {
         role: "bot",
         kind: "activity",
-        tool: { name: `${owner?.name ?? "A room member"} is still stopping — this message was not dispatched`, ok: false },
+        tool: {
+          name: queued.length
+            ? `${owner?.name ?? "A room member"} is still stopping — queued for when the room frees up`
+            : `${owner?.name ?? "A room member"} is still stopping — already queued`,
+          ok: true,
+          kind: "notice",
+        },
       });
       return;
     }
