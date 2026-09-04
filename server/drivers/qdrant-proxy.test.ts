@@ -27,6 +27,12 @@ const PROXY_ENV_KEYS = [
   "OMB_QDRANT_COLLECTION",
   "QDRANT_COLLECTION",
   "RECALL_CLI_PATH",
+  "OMB_RECALL_ACCESS_CLIENT_ID",
+  "OMB_QDRANT_ACCESS_CLIENT_ID",
+  "CF_ACCESS_CLIENT_ID",
+  "OMB_RECALL_ACCESS_CLIENT_SECRET",
+  "OMB_QDRANT_ACCESS_CLIENT_SECRET",
+  "CF_ACCESS_CLIENT_SECRET",
 ] as const;
 
 const NOT_CONFIGURED = "Agent RAG is not configured — set a Service URL in Settings";
@@ -171,5 +177,111 @@ describe("Agent RAG proxy with a configured service", () => {
     expect(seen).toEqual(["POST /recall/search"]);
     expect(text).toContain("a stored lesson");
     expect(text).toContain("agent-memory");
+  });
+});
+
+describe("Agent RAG proxy behind Cloudflare Access", () => {
+  /** Start a stub that records the credential headers of every request. */
+  /** Node models a header as string | string[]; every one read here is
+   * single-valued, so the first value is the value. */
+  const headerValue = (raw: string | string[] | undefined): string | undefined =>
+    Array.isArray(raw) ? raw[0] : raw;
+
+  async function startRecordingService(handler: (req: { url: string }, res: import("node:http").ServerResponse) => void) {
+    const seen: Array<{ path: string; accessId?: string; accessSecret?: string; authorization?: string }> = [];
+    const server = createServer((req, res) => {
+      seen.push({
+        path: req.url ?? "",
+        accessId: headerValue(req.headers["cf-access-client-id"]),
+        accessSecret: headerValue(req.headers["cf-access-client-secret"]),
+        authorization: headerValue(req.headers.authorization),
+      });
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => handler({ url: req.url ?? "" }, res));
+    });
+    stub = server;
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // SAFETY: listen() has resolved on a TCP socket, so address() is an
+    // AddressInfo with a bound port, never null or a pipe name.
+    const port = (server.address() as { port: number }).port;
+    return { seen, url: `http://127.0.0.1:${port}` };
+  }
+
+  const okJson = (res: import("node:http").ServerResponse) => {
+    res.setHeader("content-type", "application/json");
+    res.end(JSON.stringify({ hits: [{ text: "a stored lesson", score: 0.9 }], doc_id: "doc-1", collection: "agent-memory" }));
+  };
+
+  it("sends the Access service token alongside the bearer on search and contribute", async () => {
+    const service = await startRecordingService((_req, res) => okJson(res));
+
+    const { callTool } = launch({
+      OMB_QDRANT_URL: service.url,
+      OMB_QDRANT_API_KEY: "bearer-fixture",
+      OMB_QDRANT_ACCESS_CLIENT_ID: "fixture-client.access",
+      OMB_QDRANT_ACCESS_CLIENT_SECRET: "fixture-access-secret",
+      OMB_QDRANT_COLLECTION: "agent-memory",
+    });
+
+    await callTool("recall_search", { query: "how do we deploy" });
+    await callTool("recall_contribute", {
+      text: "A lesson long enough to be a real contribution to the shared corpus.",
+      category: "lesson",
+    });
+
+    expect(service.seen.map((hit) => hit.path)).toEqual(["/recall/search", "/recall/contribute"]);
+    for (const hit of service.seen) {
+      expect(hit.accessId).toBe("fixture-client.access");
+      expect(hit.accessSecret).toBe("fixture-access-secret");
+      // Alongside, not instead of — some deployments gate at the edge, some
+      // at the origin, some at both.
+      expect(hit.authorization).toBe("Bearer bearer-fixture");
+    }
+  });
+
+  it("sends no Access headers when no service token is configured", async () => {
+    const service = await startRecordingService((_req, res) => okJson(res));
+
+    const { callTool } = launch({ OMB_QDRANT_URL: service.url, OMB_QDRANT_API_KEY: "bearer-fixture" });
+    await callTool("recall_search", { query: "how do we deploy" });
+
+    expect(service.seen).toHaveLength(1);
+    expect(service.seen[0].accessId).toBeUndefined();
+    expect(service.seen[0].accessSecret).toBeUndefined();
+    expect(service.seen[0].authorization).toBe("Bearer bearer-fixture");
+  });
+
+  it("sends only the bearer when just one half of a service token is set", async () => {
+    const service = await startRecordingService((_req, res) => okJson(res));
+
+    const { callTool } = launch({
+      OMB_QDRANT_URL: service.url,
+      OMB_QDRANT_API_KEY: "bearer-fixture",
+      OMB_QDRANT_ACCESS_CLIENT_ID: "fixture-client.access",
+    });
+    await callTool("recall_search", { query: "how do we deploy" });
+
+    expect(service.seen[0].accessId).toBeUndefined();
+    expect(service.seen[0].accessSecret).toBeUndefined();
+  });
+
+  it("says a login redirect means Access instead of reporting a parse failure", async () => {
+    const service = await startRecordingService((_req, res) => {
+      res.writeHead(302, {
+        location: "https://fixture-team.cloudflareaccess.com/cdn-cgi/access/login/recall.example.com?kid=fixture",
+      });
+      res.end();
+    });
+
+    const { callTool } = launch({ OMB_QDRANT_URL: service.url, OMB_QDRANT_API_KEY: "bearer-fixture" });
+    const text = await callTool("recall_search", { query: "how do we deploy" });
+
+    expect(text).toContain("login page");
+    expect(text).toContain("Cloudflare Access");
+    expect(text).toContain("service token");
+    // The old failure mode: the redirect got followed and the HTML came back
+    // as an unreadable search error.
+    expect(text).not.toMatch(/JSON|unexpected token/i);
   });
 });

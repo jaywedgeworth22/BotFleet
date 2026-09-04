@@ -183,6 +183,11 @@ const appConfigSchema = z.object({
     url: z.string().optional(),
     apiKey: z.string().optional(),
     collection: z.string().optional(),
+    // Cloudflare Access service token, for a recall service published
+    // behind Access.  Access ignores a bearer credential and wants this
+    // header pair instead, so it is a separate field, not another API key.
+    accessClientId: z.string().optional(),
+    accessClientSecret: z.string().optional(),
   }).optional(),
   // Usage telemetry has no built-in endpoint: whoever runs BotFleet points
   // it at their own usage monitor. Unconfigured means the stream is off.
@@ -230,8 +235,18 @@ export interface AppConfig {
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */
   localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
-  /** Shared Qdrant Agent RAG vector database settings. */
-  qdrant?: { enabled?: boolean; url?: string; apiKey?: string; collection?: string };
+  /** Shared Qdrant Agent RAG vector database settings.  `accessClientId` /
+   * `accessClientSecret` are a Cloudflare Access service token: a pair of
+   * headers, needed when the recall service sits behind Access, where a
+   * bearer credential is ignored. */
+  qdrant?: {
+    enabled?: boolean;
+    url?: string;
+    apiKey?: string;
+    collection?: string;
+    accessClientId?: string;
+    accessClientSecret?: string;
+  };
   /** Usage-monitor telemetry. `ingestUrl` is the operator's own endpoint —
    * BotFleet ships none — and `projects` classifies a turn's working
    * directory, bot name, or task title into a project slug. */

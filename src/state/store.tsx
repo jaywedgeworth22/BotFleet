@@ -372,7 +372,18 @@ export interface ConfigStatus {
   conversationMode?: ConversationMode;
   /** Shared Qdrant Bot RAG vector database status. `url` and `collection`
    * are empty until the operator sets them — BotFleet ships no endpoint. */
-  qdrant?: { enabled: boolean; url: string; configured: boolean; hasApiKey: boolean; collection: string };
+  qdrant?: {
+    enabled: boolean;
+    url: string;
+    configured: boolean;
+    hasApiKey: boolean;
+    collection: string;
+    /** Cloudflare Access service token.  The id comes back so the panel can
+     * show which token is in place; the secret half never does. */
+    accessClientId: string;
+    hasAccessClientSecret: boolean;
+    hasAccessServiceToken: boolean;
+  };
   /** Usage-monitor telemetry. `ingestUrl` is empty when unconfigured; the
    * token is never echoed back, only `hasToken`. */
   usage?: {
