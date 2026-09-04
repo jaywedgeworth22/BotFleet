@@ -8,7 +8,7 @@ type FetchResponse = {
   json(): Promise<unknown>;
 };
 
-const fetchMock = vi.fn<() => Promise<FetchResponse>>();
+const fetchMock = vi.fn<(input: string | URL, init?: RequestInit) => Promise<FetchResponse>>();
 
 function mockResponse(ok: boolean, status: number, body: unknown): FetchResponse {
   return {

@@ -136,13 +136,13 @@ export type WindowHeadline = {
   sourceWindow: string | null;
 };
 
-const BUCKET_DISPLAY = {
+const BUCKET_DISPLAY: Record<string, string> = {
   weekly: "Weekly",
   monthly: "Monthly",
   "5h": "5h",
   daily: "Daily",
   hourly: "Hourly",
-} satisfies Record<string, string>;
+};
 
 function bucketFor(window: string | null | undefined): string {
   if (!window) return "other";
