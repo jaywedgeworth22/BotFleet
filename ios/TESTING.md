@@ -277,9 +277,9 @@ port — only the route to it is different.
 
 Not built yet, so not bugs:
 
-- **Nothing arrives after the app is terminated.** Live and replayed notification
-  frames now become native alerts and badges, but closed-app push still needs an
-  APNs relay with project-owned Apple credentials.
+- **Force-quit still needs a tap.** APNs delivers a lock-screen alert and can
+  background-wake a suspended companion.  iOS will not relaunch an app the user
+  has swiped away until they tap the alert or open the app.
 - **No call mode, spoken replies, or routine management.** Composer dictation,
   tasks, SQLite transcript search/export,
   reactions, and edit/version switching are available from the conversation UI.

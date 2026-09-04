@@ -372,7 +372,7 @@ export function RoutineEditor({
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-hairline/40 bg-panel/95 px-5 py-4 backdrop-blur">
           <div>
             <div className="text-[17px] font-semibold text-ink">{routine ? "Edit Routine" : "New Routine"}</div>
-            <div className="mt-0.5 text-[12px] text-ink-secondary">Each run starts a fresh task for this bot. No cron syntax required.</div>
+            <div className="mt-0.5 text-[12px] text-ink-secondary">Later runs of the same routine continue the previous task.  No cron syntax required.</div>
           </div>
           <button onClick={onClose} className="rounded-lg p-2 text-ink-secondary hover:bg-raised hover:text-ink"><X size={18} /></button>
         </div>
@@ -661,7 +661,7 @@ export function RoutinesPage() {
         </div>
         <div className="mt-3 rounded-xl border border-hairline/45 bg-panel/70 px-3.5 py-2.5 text-[11.5px] leading-relaxed text-ink-secondary">
           {section === "calendar" ? (
-            <><strong className="font-medium text-ink">Task</strong> = one conversation and result. <strong className="font-medium text-ink">Routine</strong> = a reusable schedule that creates a fresh task each run, using that bot's model, tools, permissions, computer, and connected apps.</>
+            <><strong className="font-medium text-ink">Task</strong> = one conversation and result. <strong className="font-medium text-ink">Routine</strong> = a reusable schedule. Later runs of the same routine continue the previous task thread, using that bot's model, tools, permissions, computer, and connected apps.</>
           ) : section === "resources" ? (
             <><strong className="font-medium text-ink">Resource trigger</strong> = a local disk, RAM/swap, or CPU threshold that creates a fresh task. BotFleet must be running to sample this computer. A Mac launchd watch can also POST the Housekeeper webhook if you want coverage while the app is closed.</>
           ) : (

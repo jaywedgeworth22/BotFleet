@@ -14,7 +14,7 @@ struct TasksRoutinesView: View {
             Section {
                 VStack(alignment: .leading, spacing: 8) {
                     Label("Task = one conversation and result", systemImage: "bubble.left.and.text.bubble.right")
-                    Label("Routine = a schedule that creates a fresh task", systemImage: "calendar.badge.clock")
+                    Label("Routine = a schedule that continues the previous task", systemImage: "calendar.badge.clock")
                 }
                 .font(.subheadline)
             } footer: {
@@ -300,7 +300,7 @@ private struct RoutineEditorView: View {
                 } header: {
                     Text("Schedule")
                 } footer: {
-                    Text("Each occurrence creates a fresh task. No cron syntax is used.")
+                    Text("Later runs of the same routine continue the previous task.\u{00A0} No cron syntax is used.")
                 }
             }
             .navigationTitle(routine == nil ? "New routine" : "Edit routine")

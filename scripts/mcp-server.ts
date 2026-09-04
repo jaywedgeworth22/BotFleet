@@ -1371,15 +1371,37 @@ export async function handleToolCall(
     case "list_available_models": {
       const res = await fetcher("/api/instances");
       return {
-        instances: records(res.instances).map((instance) => ({
-          instanceId: instance.instanceId,
-          driverKind: instance.driverKind,
-          displayName: instance.displayName,
-          snapshot: { state: instance.snapshot?.state },
-          models: instance.models,
-          capabilities: instance.capabilities,
-          access: instance.access,
-        })),
+        instances: records(res.instances).map((instance) => {
+          const quota = instance.snapshot?.quota;
+          const cappedIds = new Set(
+            Object.entries((quota?.models ?? {}) as Record<string, { capped?: boolean }>)
+              .filter(([, row]) => row?.capped)
+              .map(([id]) => id),
+          );
+          const options = Array.isArray(instance.models?.options) ? instance.models.options : [];
+          const availableOptions = cappedIds.size
+            ? options.filter((option: { id?: string }) => !cappedIds.has(String(option.id)))
+            : options;
+          const defaultId = instance.models?.default;
+          const nextDefault = cappedIds.has(String(defaultId))
+            ? (availableOptions[0]?.id ?? defaultId)
+            : defaultId;
+          const models = cappedIds.size && availableOptions.length > 0
+            ? { default: nextDefault, options: availableOptions }
+            : instance.models;
+          return {
+            instanceId: instance.instanceId,
+            driverKind: instance.driverKind,
+            displayName: instance.displayName,
+            snapshot: {
+              state: instance.snapshot?.state,
+              ...(quota ? { quota } : {}),
+            },
+            models,
+            capabilities: instance.capabilities,
+            access: instance.access,
+          };
+        }),
       };
     }
 

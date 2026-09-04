@@ -328,6 +328,65 @@ function decodeConfig(raw: unknown): AntigravityConfig {
   };
 }
 
+/** How long stdout may keep draining after agy's own process exit before the
+ * turn is finished on the exit alone.  Long enough for a final `result` line
+ * to arrive, short enough that a grandchild holding the pipe cannot strand
+ * the bot in "Thinking". */
+const EXIT_DRAIN_GRACE_MS = 2_000;
+
+/** How much of agy's own error text survives into the chip.  Kept well under
+ * model-fallback.ts's 500-character quota-chip ceiling so a provider cap is
+ * still recognised as one after the `error: ` prefix the harness adds. */
+const AGY_ERROR_MAX = 300;
+
+/** agy's cap message carries its own reset window ("Resets in 44h3m45s."). */
+const AGY_RESET_CLAUSE = /\bresets?(?:\s+(?:in|at))?\s+[^.\n]{1,48}/i;
+
+/** The terminal half of agy's `result` event. Parsed rather than duck-typed:
+ * a turn's success and its only error text both come from here, and a shape
+ * drift that silently widened either one is how a failed turn goes quiet. */
+const agyTurnResultSchema = z.looseObject({
+  status: z.string().nullish().catch(null),
+  error: z.string().nullish().catch(null),
+});
+
+export type AntigravityTurnResult = z.infer<typeof agyTurnResultSchema>;
+
+/** Never throws: an unrecognised payload still has to end the turn. */
+export function parseAntigravityTurnResult(payload: unknown): AntigravityTurnResult {
+  return agyTurnResultSchema.safeParse(payload).data ?? { status: null, error: null };
+}
+
+/**
+ * The message BotFleet shows when a turn ends badly.
+ *
+ * agy reports every terminal failure the same way — one `result` event with
+ * `status: "ERROR"` and a human-readable `result.error` — and that is the only
+ * place a provider quota ever surfaces.  Observed against agy 1.1.12–1.1.25:
+ *
+ *   "Individual quota reached. Please upgrade your subscription to increase
+ *    your limits. Resets in 44h3m45s."
+ *   "Eligibility check failed: Post \"https://…\": read: connection reset by peer"
+ *   "timeout waiting for response"
+ *
+ * The text is passed through so model-fallback.ts can classify it (the quota
+ * wording matches QUOTA_OR_CAP, and "Resets in 44h…" parses as a reset time),
+ * prefixed with the engine name so the person reading the chip knows which
+ * provider ran out.  A long message is trimmed, but never at the cost of the
+ * reset window — that is the actionable half.
+ */
+export function antigravityTurnErrorMessage(result: AntigravityTurnResult): string {
+  const text = result.error?.trim() ?? "";
+  if (!text) {
+    const label = result.status?.trim() || "ERROR";
+    return `Antigravity: the turn ended with status ${label} and no reply`;
+  }
+  let body = text.length > AGY_ERROR_MAX ? `${text.slice(0, AGY_ERROR_MAX).trimEnd()}…` : text;
+  const reset = text.match(AGY_RESET_CLAUSE)?.[0]?.trim();
+  if (reset && !body.includes(reset)) body = `${body} ${reset.endsWith(".") ? reset : `${reset}.`}`;
+  return `Antigravity: ${body}`;
+}
+
 export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
   driverKind: DRIVER_KIND,
   metadata: { displayName: "Antigravity", supportsMultipleInstances: true },
@@ -427,9 +486,10 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       const resumeCursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
 
       let settled = false;
-      // backstop watchdog: if agy hangs without emitting `result` and without
-      // exiting, the bot would stay busy forever (agy's own --print-timeout 10m
-      // is the only other net). Assigned just below; settle() always clears it.
+      // Last backstop: a child that neither emits `result` nor exits. The
+      // exit/close handlers below cover a child that dies; this covers one
+      // that is alive and wedged, which would otherwise leave the bot busy
+      // forever. Assigned just below; settle() always clears it.
       let watchdog: ReturnType<typeof setTimeout> | undefined;
       // Assigned once the child exists. A child can emit `result` and then
       // hang, so settling must still arrange for process and MCP cleanup.
@@ -648,9 +708,24 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
                 output: payload.usage.output_tokens || 0,
               });
             }
+            // agy has no separate error event: a provider quota, a failed
+            // eligibility check, and its own "timeout waiting for response"
+            // all arrive as this one `result` with status ERROR and a
+            // human-readable `error`.  Surfacing it is the whole difference
+            // between a red chip the person can act on and a turn that just
+            // stops with nothing where the answer should be.
+            const result = parseAntigravityTurnResult(payload);
+            const ok = result.status === "SUCCESS";
+            if (!ok) {
+              emit({
+                ...base(threadId, turnId),
+                type: "runtime.error",
+                message: antigravityTurnErrorMessage(result),
+              });
+            }
             settle(
-              payload.status === "SUCCESS",
-              payload.status ?? null,
+              ok,
+              result.status ?? null,
               null,
               payload.usage
                 ? {
@@ -687,20 +762,41 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         settle(false, "spawn_error");
       });
 
-      child.on("close", (code) => {
+      // The turn must end when the child does, however it goes: a clean exit
+      // with no `result`, a crash, a kill, or a wedged process the watchdog
+      // reaps. Anything that leaves this unsettled leaves the bot busy with
+      // nothing on screen — the stuck-forever bug, of which a silently
+      // dropped quota was only the trigger.
+      let exitDrain: ReturnType<typeof setTimeout> | undefined;
+      const finishOnChildGone = (code: number | null, signal: NodeJS.Signals | null) => {
         childClosed = true;
-        children.delete(child); // close is the true process-exit signal
+        children.delete(child);
         clearTimeout(postSettleReaper);
         clearTimeout(terminationEscalation);
+        clearTimeout(exitDrain);
         finalizeMcp();
-        if (!settled) {
-          emit({
-            ...base(threadId, turnId),
-            type: "runtime.error",
-            message: `agy exited ${code} before result${stderr ? `: ${stderrExcerpt(stderr)}` : ""}`,
-          });
-          settle(false, "exit_before_result");
-        }
+        if (settled) return;
+        const how = code === null && signal ? `was killed by ${signal}` : `exited ${code}`;
+        emit({
+          ...base(threadId, turnId),
+          type: "runtime.error",
+          message: `agy ${how} before result${stderr ? `: ${stderrExcerpt(stderr)}` : ""}`,
+        });
+        settle(false, "exit_before_result");
+      };
+
+      child.on("close", (code, signal) => finishOnChildGone(code, signal));
+
+      // `close` waits for every stdio pipe to reach EOF, and agy's own MCP
+      // servers are grandchildren that inherited those pipes — one of them
+      // outliving agy holds `close` back indefinitely even though agy itself
+      // is gone. `exit` is the process's own death, so it is the honest
+      // signal; give stdout a short grace to drain a trailing `result` line
+      // (which settles the turn properly), then finish on the exit alone.
+      child.on("exit", (code, signal) => {
+        if (childClosed || exitDrain) return;
+        exitDrain = setTimeout(() => finishOnChildGone(code, signal), EXIT_DRAIN_GRACE_MS);
+        exitDrain.unref?.();
       });
 
       active.set(threadId, { stop, turnId });
@@ -710,7 +806,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // settles first; this is the backstop for a fully wedged child.
       watchdog = setTimeout(() => {
         if (!settled) {
-          emit({ ...base(threadId, turnId), type: "runtime.error", message: "agy watchdog timeout" });
+          emit({
+            ...base(threadId, turnId),
+            type: "runtime.error",
+            message: "Antigravity: the agy CLI stopped responding and never finished this turn — ending it after 11 minutes.",
+          });
           stop();
           settle(false, "timeout");
         }

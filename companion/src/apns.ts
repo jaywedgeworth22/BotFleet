@@ -71,6 +71,9 @@ export async function sendApnsAlert(
         sound: "default",
         "thread-id": alert.threadId,
         "mutable-content": 1,
+        // Background fetch so a suspended companion reconnects without a tap.
+        // A force-quit app still needs the lock-screen alert (user tap).
+        "content-available": 1,
       },
       threadId: alert.threadId,
       botId: alert.botId,
@@ -86,18 +89,30 @@ export function watchHarnessNotifications(options: {
   tokensForDisconnected: () => { deviceId: string; token: string }[];
   send?: typeof sendApnsAlert;
   config?: ApnsConfig | null;
+  forgetToken?: (deviceId: string) => void;
+  fetchImpl?: typeof fetch;
 }): () => void {
   const config = options.config === undefined ? loadApnsConfig() : options.config;
-  if (!config) return () => {};
+  if (!config) {
+    if (options.config === undefined) {
+      console.warn("companion: APNs key missing; closed-app phone wake is off");
+    }
+    return () => {};
+  }
   const send = options.send ?? sendApnsAlert;
+  const fetchImpl = options.fetchImpl ?? fetch;
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let abort: AbortController | null = null;
+  let retry: (() => void) | null = null;
 
   const pump = async () => {
     while (!stopped) {
+      abort = new AbortController();
       try {
-        const res = await fetch(`http://127.0.0.1:${options.harnessPort}/api/events`, {
+        const res = await fetchImpl(`http://127.0.0.1:${options.harnessPort}/api/events`, {
           headers: { accept: "text/event-stream" },
+          signal: abort.signal,
         });
         if (!res.ok || !res.body) throw new Error(String(res.status));
         const reader = res.body.getReader();
@@ -122,27 +137,42 @@ export function watchHarnessNotifications(options: {
             const connected = new Set(options.connectedIds());
             for (const row of options.tokensForDisconnected()) {
               if (connected.has(row.deviceId)) continue;
-              void send(config, row.token, {
-                title: frame.notification.title ?? "BotFleet",
-                body: frame.notification.body ?? "",
-                threadId: frame.notification.threadId,
-                botId: frame.notification.botId,
-              }).catch(() => {});
+              try {
+                const result = await send(config, row.token, {
+                  title: frame.notification.title ?? "BotFleet",
+                  body: frame.notification.body ?? "",
+                  threadId: frame.notification.threadId,
+                  botId: frame.notification.botId,
+                });
+                if (result.status === 410) {
+                  options.forgetToken?.(row.deviceId);
+                } else if (!result.ok) {
+                  console.warn(`companion: APNs ${result.status}`);
+                }
+              } catch {
+                console.warn("companion: APNs send failed");
+              }
             }
           }
         }
       } catch {
-        /* harness down — retry */
+        /* harness down or stop() — retry unless we were asked to quit */
       }
       if (stopped) return;
-      await new Promise((resolve) => {
-        timer = setTimeout(resolve, 4000);
+      await new Promise<void>((resolve) => {
+        retry = resolve;
+        timer = setTimeout(() => {
+          retry = null;
+          resolve();
+        }, 4000);
       });
     }
   };
   void pump();
   return () => {
     stopped = true;
+    abort?.abort();
     if (timer) clearTimeout(timer);
+    retry?.();
   };
 }

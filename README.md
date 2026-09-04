@@ -22,7 +22,7 @@ These are features this fork layered on after OpenMausBot.  **All of them are in
 ### Messaging, companion, and desktop
 
 - **Always-on iMessage relay** — a host daemon plus LaunchAgents keep bot group chats in Messages.app wired to the BotFleet backend in both directions while the relay is running.
-- **iOS companion (public TestFlight)** — pairing, universal links on `botfleet.app`, App Groups, thread tabs, unread Live Activities, and display-aware transcript windows.  Alerts are SSE plus local notifications while the companion is open; a killed app does not yet wake.  iPad still runs in compatibility mode.
+- **iOS companion (public TestFlight)** — pairing, universal links on `botfleet.app`, App Groups, thread tabs, unread Live Activities, and display-aware transcript windows.  Alerts are SSE plus local notifications while the companion is open.  A killed or backgrounded app wakes over APNs when the Mac sidecar is running and the phone has allowed notifications.  iPad still runs in compatibility mode.
 - **Nested conversations under channels** — renameable task threads live under their channel, can be moved, searched, and collapsed, with a custom word for "room" if you want one.
 - **Chat bubble and request-ID copy** — click a bubble to copy its text; hover and right-click also copy Request ID or Message ID.
 - **macOS menu bar tray** — a menu-bar extra keeps BotFleet reachable while the window is hidden.
@@ -35,7 +35,7 @@ These are features this fork layered on after OpenMausBot.  **All of them are in
 - **Gemini and Antigravity engines** — including Gemini 3.8 Flash, full tool loading, and local computer dispatch on those harnesses after opt-in.
 - **Multi-tier model fallbacks** — first, second, and third choice models per bot.  Quota, usage-cap, and session-limit chips fail over to the saved chain automatically, including after tools already ran and in rooms.  Other streamed error paths are still in review.
 - **Elapsed turn timer** — a live timer on the in-progress turn, plus duration on completed activity runs.
-- **Usage telemetry** — live token consumption (prompt, completion, cache hits) and model costs stream to a Usage Monitor instance you configure, with project and repo classification.
+- **Usage telemetry** — live token consumption (prompt, completion, cache hits) and model costs stream to a Usage Monitor instance you configure, with project and repo classification.  Working-directory classification uses the folder **basename only**, never the full path.
 - **Provider marks and picker filtering** — official-style marks for Grok, Claude, DeepSeek, Gemini/Antigravity, and others; unconfigured models stay out of the picker.
 
 ### Fleet ops, memory, and automation
@@ -78,16 +78,16 @@ See the [OpenMausBot repository](https://github.com/milind-soni/OpenMausBot) for
 
 ## Quick start
 
-**Released builds ([latest](https://github.com/jaywedgeworth22/BotFleet/releases/latest)):** the harness server is embedded, so no separate server setup is required.  Desktop `package.json` is currently 0.1.38; this page always points at the latest packaged assets rather than a frozen tag.
+**Released builds ([latest](https://github.com/jaywedgeworth22/BotFleet/releases/latest)):** the harness server is embedded, so no separate server setup is required.  Desktop numbering matches iOS (`1.0.x`).  This page always points at the latest packaged assets rather than a frozen tag.
 
 | | Download | Install |
 |---|---|---|
-| **macOS** (Apple silicon) | [BotFleet-0.1.38-arm64.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-0.1.38-arm64.dmg) | Drag it to Applications, open it.  Signed with the BotFleet Developer ID. |
-| **macOS** (Intel) | [BotFleet-0.1.38-x64.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-0.1.38-x64.dmg) | Same app, built for Intel Macs. |
+| **macOS** (Apple silicon) | [BotFleet-1.0.30-arm64.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-1.0.30-arm64.dmg) | Drag it to Applications, open it.  Signed with the BotFleet Developer ID. |
+| **macOS** (Intel) | [BotFleet-1.0.30-x64.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-1.0.30-x64.dmg) | Same app, built for Intel Macs. |
 | **Windows** (x64) | Not published yet | The Windows installer is built by the release workflow but no Windows build has shipped.  Watch the [releases page](https://github.com/jaywedgeworth22/BotFleet/releases) or build from source below. |
 | **Ubuntu 24.04** (x64) | Not published yet | Ubuntu packages are built by the release workflow but no Ubuntu build has shipped.  See the [Ubuntu Desktop guide](docs/linux-desktop.md) to build one from source. |
 
-In-app **Check for updates** needs the `latest-mac.yml` feed and zip artifacts on the release; the current release carries DMGs only, so updates are manual until the release workflow publishes a full asset set.
+In-app **Check for updates** reads `latest-mac.yml` plus the macOS zips on the GitHub release.  v0.1.38 shipped DMGs only; 1.0.30 is the first cut that is supposed to carry the feed.
 
 See the [Ubuntu Desktop guide](docs/linux-desktop.md) for installation, capabilities, and troubleshooting.
 

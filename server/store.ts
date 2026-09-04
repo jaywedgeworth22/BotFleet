@@ -217,6 +217,9 @@ export interface TaskRecord {
    * a folder that moved under a live session would break resume. `null`
    * = pinned to the default (home); absent = not pinned yet. */
   cwd?: string | null;
+  /** Optional engine for this conversation.  Absent means the bot's own
+   * modelSelection.  Used in Projects mode so a thread is not a named bot. */
+  modelSelection?: ModelSelection;
 }
 
 export interface TaskUsage {
@@ -928,6 +931,98 @@ export class Store {
    * changes is who answers next.  The conversation arrives without resume
    * cursors because those belong to the channel's turns, not this bot's:
    * the next turn starts a fresh provider session over the same history. */
+  /** Move one of a bot's conversations to another bot.
+   *
+   * The thread id survives, so the transcript comes with it; the resume
+   * cursors do not, because they name a provider session belonging to the
+   * bot it came from.  A bot keeps its last conversation, for the same
+   * reason a channel does: there would be nothing left to open. */
+  moveTaskToBot(fromBotId: string, threadId: string, toBotId: string): BotRecord[] | null {
+    if (fromBotId === toBotId) return null;
+    const from = this.bot(fromBotId);
+    const to = this.bot(toBotId);
+    if (!from || !to || !from.tasks || from.tasks.length < 2) return null;
+    const task = from.tasks.find((entry) => entry.threadId === threadId);
+    if (!task) return null;
+
+    from.tasks = from.tasks.filter((entry) => entry.threadId !== threadId);
+    if (from.threadId === threadId) {
+      const next = from.tasks[0]!;
+      from.threadId = next.threadId;
+      from.resumeCursors = {};
+    }
+    to.tasks = [{ ...task, resumeCursors: {}, lastInstanceId: undefined }, ...(to.tasks ?? [])];
+
+    this.saveBots();
+    this.emit({ type: "bot", botId: from.id });
+    this.emit({ type: "bot", botId: to.id });
+    return [from, to];
+  }
+
+  /** Fold one of a bot's conversations into another.  The destination
+   * thread keeps its id and resume cursors; the source task is deleted.
+   * A divider plus the source messages are appended so the transcript
+   * stays one conversation the model can keep reading. */
+  mergeBotTasks(botId: string, fromThreadId: string, intoThreadId: string): BotRecord | null {
+    if (fromThreadId === intoThreadId) return null;
+    const bot = this.bot(botId);
+    if (!bot || !bot.tasks || bot.tasks.length < 2) return null;
+    const from = bot.tasks.find((entry) => entry.threadId === fromThreadId);
+    const into = bot.tasks.find((entry) => entry.threadId === intoThreadId);
+    if (!from || !into) return null;
+
+    const incoming = this.messagesFor(fromThreadId);
+    if (incoming.length > 0) {
+      const label = from.title?.trim() || "Merged thread";
+      this.appendMessage(intoThreadId, {
+        role: "user",
+        kind: "text",
+        text: `Merged “${label}” into this thread.`,
+      });
+      for (const message of incoming) {
+        const { id: _id, parentId: _parent, ...rest } = message;
+        this.appendMessage(intoThreadId, rest);
+      }
+    }
+
+    return this.deleteTask(botId, fromThreadId);
+  }
+
+  /** Move one of a bot's conversations into a channel, where the channel's
+   * members answer it from then on. */
+  moveTaskToGroup(fromBotId: string, threadId: string, groupId: string): {
+    bot: BotRecord;
+    group: GroupRecord;
+  } | null {
+    const bot = this.bot(fromBotId);
+    const group = this.group(groupId);
+    if (!bot || !group || group.dm || !bot.tasks || bot.tasks.length < 2) return null;
+    const task = bot.tasks.find((entry) => entry.threadId === threadId);
+    if (!task) return null;
+
+    bot.tasks = bot.tasks.filter((entry) => entry.threadId !== threadId);
+    if (bot.threadId === threadId) {
+      const next = bot.tasks[0]!;
+      bot.threadId = next.threadId;
+      bot.resumeCursors = {};
+    }
+    group.tasks = [
+      {
+        threadId: task.threadId,
+        title: task.title,
+        createdAt: task.createdAt,
+        ...(task.cwd === undefined ? {} : { pinnedCwd: task.cwd }),
+      },
+      ...(group.tasks ?? []),
+    ];
+
+    this.saveBots();
+    this.saveGroups();
+    this.emit({ type: "bot", botId: bot.id });
+    this.emit({ type: "group", groupId: group.id });
+    return { bot, group };
+  }
+
   moveGroupTaskToBot(groupId: string, threadId: string, botId: string): {
     group: GroupRecord;
     bot: BotRecord;
@@ -1431,9 +1526,25 @@ export class Store {
   }
 
   renameTask(botId: string, threadId: string, title: string): TaskRecord | null {
+    return this.patchTask(botId, threadId, { title });
+  }
+
+  /** Rename and/or set a per-thread model.  `modelSelection: null` clears
+   * the override so the bot's engine is used again. */
+  patchTask(
+    botId: string,
+    threadId: string,
+    patch: { title?: string; modelSelection?: ModelSelection | null },
+  ): TaskRecord | null {
     const task = this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
     if (!task) return null;
-    task.title = title.trim().slice(0, 80) || UNTITLED_TASK;
+    if (patch.title !== undefined) {
+      task.title = patch.title.trim().slice(0, 80) || UNTITLED_TASK;
+    }
+    if (patch.modelSelection !== undefined) {
+      if (patch.modelSelection === null) delete task.modelSelection;
+      else task.modelSelection = patch.modelSelection;
+    }
     this.saveBots();
     this.emit({ type: "bot", botId });
     return task;

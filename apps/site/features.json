@@ -4,7 +4,7 @@
     "repo": "https://github.com/jaywedgeworth22/BotFleet",
     "upstream": "https://github.com/milind-soni/OpenMausBot",
     "releases": "https://github.com/jaywedgeworth22/BotFleet/releases",
-    "macDownload": "https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-0.1.38-arm64.dmg"
+    "macDownload": "https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-1.0.30-arm64.dmg"
   },
   "exampleFleet": ["Builder", "Reviewer", "Scout"],
   "sections": [
@@ -22,7 +22,7 @@
         },
         {
           "title": "iOS Companion on Public TestFlight",
-          "desc": "Pairing, universal links on botfleet.app, App Groups, thread tabs, unread Live Activities, and display-aware transcript windows.&nbsp; Alerts are SSE plus local notifications while the companion is open.&nbsp; A killed app does not yet wake.&nbsp; iPad still runs in compatibility mode.",
+          "desc": "Pairing, universal links on botfleet.app, App Groups, thread tabs, unread Live Activities, and display-aware transcript windows.&nbsp; Alerts are SSE plus local notifications while the companion is open.&nbsp; A killed or backgrounded app wakes over APNs when the Mac sidecar is running.&nbsp; iPad still runs in compatibility mode.",
           "prov": { "type": "pr", "prs": [26, 155], "state": "merged", "note": "Public TestFlight · in testing" }
         },
         {

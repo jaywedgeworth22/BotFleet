@@ -112,7 +112,23 @@ describe("tasks", () => {
     expect(store.messagesFor(second.threadId)).toHaveLength(0);
 
     expect(store.deleteTask(bot.id, first)).toBeNull();
+  });
+
+  it("merges one task's transcript into another and keeps the destination id", async () => {
+    const { store } = await freshStore();
+    const bot = store.createBot();
+    const first = bot.threadId;
+    store.appendMessage(first, { role: "user", kind: "text", text: "hello inbox" });
+    const second = store.createTask(bot.id, "Side work")!;
+    store.appendMessage(second.threadId, { role: "user", kind: "text", text: "side note" });
+
+    const merged = store.mergeBotTasks(bot.id, second.threadId, first);
+    expect(merged).toBeTruthy();
     expect(store.tasks(bot.id)).toHaveLength(1);
+    expect(store.bot(bot.id)!.threadId).toBe(first);
+    const texts = store.messagesFor(first).map((message) => message.text);
+    expect(texts.some((text) => text?.includes("Merged"))).toBe(true);
+    expect(texts).toContain("side note");
   });
 
   it("adopts a pre-tasks bot's endless thread as its first task", async () => {

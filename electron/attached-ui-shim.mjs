@@ -95,28 +95,43 @@ async function serveStatic(uiDir, pathname, req, res) {
 }
 
 function proxyHttp({ harnessHost, harnessPort, log }, req, res) {
-  const upstream = http.request(
-    {
-      host: harnessHost,
-      port: harnessPort,
-      method: req.method,
-      path: req.url,
-      headers: { ...req.headers, host: `${harnessHost}:${harnessPort}` },
-    },
-    (ures) => {
-      res.writeHead(ures.statusCode ?? 502, ures.headers);
-      ures.pipe(res);
-    },
-  );
-  upstream.on("error", (error) => {
-    log(`proxy to harness :${harnessPort} failed for ${req.method} ${req.url}: ${error?.code ?? error?.message ?? error}`);
-    if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
-    res.end(JSON.stringify({ error: `BotFleet harness on port ${harnessPort} is not reachable` }));
-  });
+  let attempts = 0;
+  let current = null;
+  const idempotent = req.method === "GET" || req.method === "HEAD";
   // The renderer's EventSource closes and reopens; each close must release
   // its upstream stream or the harness leaks one subscriber per reconnect.
-  res.on("close", () => upstream.destroy());
-  req.pipe(upstream);
+  res.on("close", () => current?.destroy());
+  const send = () => {
+    attempts += 1;
+    current?.destroy();
+    const upstream = http.request(
+      {
+        host: harnessHost,
+        port: harnessPort,
+        method: req.method,
+        path: req.url,
+        headers: { ...req.headers, host: `${harnessHost}:${harnessPort}` },
+      },
+      (ures) => {
+        res.writeHead(ures.statusCode ?? 502, ures.headers);
+        ures.pipe(res);
+      },
+    );
+    current = upstream;
+    upstream.on("error", (error) => {
+      if (idempotent && attempts < 2 && !res.headersSent) {
+        log(`proxy retry :${harnessPort} ${req.method} ${req.url}: ${error?.code ?? error?.message ?? error}`);
+        setTimeout(send, 150);
+        return;
+      }
+      log(`proxy to harness :${harnessPort} failed for ${req.method} ${req.url}: ${error?.code ?? error?.message ?? error}`);
+      if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
+      res.end(JSON.stringify({ error: `BotFleet harness on port ${harnessPort} is not reachable` }));
+    });
+    if (idempotent) upstream.end();
+    else req.pipe(upstream);
+  };
+  send();
 }
 
 function proxyUpgrade({ harnessHost, harnessPort }, req, socket, head) {

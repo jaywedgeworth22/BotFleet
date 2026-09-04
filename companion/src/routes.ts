@@ -58,6 +58,7 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // narrow route so the phone can change it without /api/config — which
   // carries API keys — ever accepting a write from a device.
   { method: "PATCH", path: /^\/api\/terminology$/ },
+  { method: "PATCH", path: /^\/api\/conversation-mode$/ },
   { method: "GET", path: /^\/api\/events$/ },
   { method: "GET", path: /^\/api\/instances$/ },
   // Sidecar-owned, authenticated endpoint metadata. The proxy terminates it

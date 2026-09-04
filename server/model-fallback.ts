@@ -3,6 +3,10 @@
 // assistant output, so the next saved engine must still be tried.  Quota,
 // usage-cap, and session-limit chips force the saved chain even when tools
 // already ran — those turns did not finish the user's request.
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { dirname } from "node:path";
+
+import { writeFileAtomic } from "./atomic.ts";
 import type { ModelSelection } from "./contracts.ts";
 
 export interface FallbackScanMessage {
@@ -141,6 +145,8 @@ export interface BotQuotaCooldown {
   resetsAt?: number | null;
   error: string;
   recordedAt: number;
+  /** Who wrote this row: a provider chip, or `antigravity-usage`. */
+  source?: string;
 }
 
 function computeNextOccurrence(targetHour: number, targetMinute: number, tz: string | undefined, now: number): number {
@@ -219,12 +225,61 @@ export function parseQuotaResetTime(text: string, now = Date.now()): QuotaResetI
 
 export class QuotaCooldownRegistry {
   private readonly cooldowns = new Map<string, BotQuotaCooldown>();
+  private persistPath: string | null = null;
+  private persistImpl: ((path: string, json: string) => void) | null = null;
+
+  enablePersist(path: string, write?: (path: string, json: string) => void): void {
+    this.persistPath = path;
+    this.persistImpl = write ?? null;
+    this.load();
+  }
+
+  private persist(): void {
+    if (!this.persistPath) return;
+    const body = JSON.stringify({ version: 1, cooldowns: [...this.cooldowns.values()] });
+    if (this.persistImpl) {
+      this.persistImpl(this.persistPath, body);
+      return;
+    }
+    try {
+      mkdirSync(dirname(this.persistPath), { recursive: true });
+      writeFileAtomic(this.persistPath, body);
+    } catch {
+      /* a failed persist must not break a turn */
+    }
+  }
+
+  private load(): void {
+    if (!this.persistPath) return;
+    try {
+      if (!existsSync(this.persistPath)) return;
+      const parsed = JSON.parse(readFileSync(this.persistPath, "utf8")) as {
+        version?: number;
+        cooldowns?: BotQuotaCooldown[];
+      };
+      if (!Array.isArray(parsed.cooldowns)) return;
+      const now = Date.now();
+      for (const cd of parsed.cooldowns) {
+        if (!cd || typeof cd !== "object") continue;
+        if (typeof cd.botId !== "string" || typeof cd.instanceId !== "string" || typeof cd.model !== "string") continue;
+        if (cd.resetsAt && now >= cd.resetsAt) continue;
+        this.cooldowns.set(`${cd.botId}:${cd.instanceId}:${cd.model}`, cd);
+      }
+    } catch {
+      /* corrupt file = empty registry */
+    }
+  }
 
   record(cooldown: BotQuotaCooldown): void {
     this.cooldowns.set(`${cooldown.botId}:${cooldown.instanceId}:${cooldown.model}`, cooldown);
+    this.persist();
   }
 
-  recordInstanceCap(instanceId: string, model = "*", opts: { resetsAt?: number | null; error?: string } = {}): void {
+  recordInstanceCap(
+    instanceId: string,
+    model = "*",
+    opts: { resetsAt?: number | null; error?: string; source?: string } = {},
+  ): void {
     const cd: BotQuotaCooldown = {
       botId: "*",
       instanceId,
@@ -232,8 +287,10 @@ export class QuotaCooldownRegistry {
       resetsAt: opts.resetsAt ?? null,
       error: opts.error ?? "Session limit or usage cap reached",
       recordedAt: Date.now(),
+      source: opts.source,
     };
     this.cooldowns.set(`*:${instanceId}:${model}`, cd);
+    this.persist();
   }
 
   get(botId: string, instanceId: string, model: string, now = Date.now()): BotQuotaCooldown | undefined {
@@ -244,6 +301,7 @@ export class QuotaCooldownRegistry {
       if (this.cooldowns.get(key) === cd) this.cooldowns.delete(key);
       if (this.cooldowns.get(`*:${instanceId}:${model}`) === cd) this.cooldowns.delete(`*:${instanceId}:${model}`);
       if (this.cooldowns.get(`*:${instanceId}:*`) === cd) this.cooldowns.delete(`*:${instanceId}:*`);
+      this.persist();
       return undefined;
     }
     return cd;
@@ -251,19 +309,30 @@ export class QuotaCooldownRegistry {
 
   list(now = Date.now()): BotQuotaCooldown[] {
     const active: BotQuotaCooldown[] = [];
+    let expired = false;
     for (const [key, cd] of [...this.cooldowns.entries()]) {
       if (cd.resetsAt && now >= cd.resetsAt) {
         this.cooldowns.delete(key);
+        expired = true;
       } else {
         active.push(cd);
       }
     }
+    if (expired) this.persist();
     return active;
+  }
+
+  /** Any live cooldown for this engine, including per-bot and per-model
+   * records.  The picker used to look up only `*:instance:*`, so Cursor
+   * and Antigravity stayed "Available" after a real cap on one model. */
+  forInstance(instanceId: string, now = Date.now()): BotQuotaCooldown | undefined {
+    return this.list(now).find((cd) => cd.instanceId === instanceId);
   }
 
   clear(botId: string, instanceId?: string, model?: string): void {
     if (instanceId && model) {
       this.cooldowns.delete(`${botId}:${instanceId}:${model}`);
+      this.persist();
       return;
     }
     for (const key of this.cooldowns.keys()) {
@@ -271,6 +340,17 @@ export class QuotaCooldownRegistry {
         this.cooldowns.delete(key);
       }
     }
+    this.persist();
+  }
+
+  clearWhere(predicate: (cooldown: BotQuotaCooldown) => boolean): void {
+    let changed = false;
+    for (const [key, cd] of [...this.cooldowns.entries()]) {
+      if (!predicate(cd)) continue;
+      this.cooldowns.delete(key);
+      changed = true;
+    }
+    if (changed) this.persist();
   }
 
   /**
@@ -301,4 +381,8 @@ export class QuotaCooldownRegistry {
 }
 
 export const quotaCooldowns = new QuotaCooldownRegistry();
+
+export function enableQuotaCooldownPersist(path: string): void {
+  quotaCooldowns.enablePersist(path);
+}
 

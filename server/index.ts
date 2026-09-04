@@ -12,6 +12,10 @@ import { z } from "zod";
 import { BOT_AVATAR_CROPS, botAvatarUrlFromStoredPath, botAvatarUrlSchema } from "../shared/bot-avatar.ts";
 import { DEFAULT_ROOM_TERMINOLOGY, resolveRoomLabels } from "../shared/terminology.ts";
 import {
+  allowsMultipleBotThreads,
+  parseConversationMode,
+} from "../shared/conversation-mode.ts";
+import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
   credentialIsConfigured,
@@ -39,7 +43,14 @@ import { parseBotProfilePatch } from "./bot-profile.ts";
 import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { telemetry } from "./telemetry.ts";
+import { usageQuotaPoller } from "./usage-quota.ts";
 import {
+  lastAntigravityQuotaSnapshot,
+  startAntigravityQuotaPoller,
+  stopAntigravityQuotaPoller,
+} from "./antigravity-quota.ts";
+import {
+  enableQuotaCooldownPersist,
   isQuotaOrCapText,
   lastUserTextIndex,
   parseQuotaResetTime,
@@ -206,7 +217,22 @@ telemetry.configure(() => ({
 }));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
-quotaCooldowns.recordInstanceCap("codex", "*", { error: "Codex session limit / usage cap reached" });
+usageQuotaPoller.configure({
+  settings: () => ({
+    ingestUrl: usageIngestUrl(cfg),
+    ingestToken: cfg.usage?.ingestToken,
+    readToken: cfg.usage?.readToken,
+  }),
+  instances: () =>
+    registry.instances().map((inst) => ({
+      instanceId: inst.instanceId,
+      driverKind: inst.driverKind,
+      models: inst.models,
+    })),
+});
+if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
+  usageQuotaPoller.start();
+}
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 
@@ -876,9 +902,72 @@ const DECISION_FILTER_WINDOW = 50_000;
 const lastReply = new Map<string, string>();
 /** Per-thread fallback steps already used this user request.  Reset on a
  * successful turn and on a user-initiated startTurn so a later message
- * gets the full saved chain.  A successful failover also patches the bot's
- * modelSelection so the rest of the thread stays on the fallback engine. */
+ * gets the full saved chain.  Keyed `botId:threadId` — deliberately without
+ * the instance id, so the count survives a cross-instance failover.
+ *
+ * A failover does NOT persist the new engine: the fallback dispatch passes
+ * `modelSelection` to startTurn as a per-turn override only, so a bot whose
+ * turn failed over still records the ORIGINAL instance while the live turn
+ * runs on the fallback's.  Never resolve a running turn's adapter through
+ * `bot.modelSelection` — sweep `registry.instances()` by `hasSession` (see
+ * interruptThreadEverywhere). */
 const fallbackAttemptByTurn = new Map<string, number>();
+/** Turns the user explicitly stopped, keyed exactly like
+ * `fallbackAttemptByTurn` so the entry survives a failover.
+ *
+ * Load-bearing: every driver settles a killed turn as `exit_before_result`,
+ * not `interrupted`, so selectTurnFallback's stop-reason gate cannot tell a
+ * user stop from a crash.  Without this latch, making Stop actually reach
+ * the driver would turn "Stop does nothing" into "Stop falls over to the
+ * next engine".  Written before the driver is awaited, consumed in the
+ * `turn.completed` fold. */
+const stoppedTurns = new Set<string>();
+
+/** Stop the live turn on `threadId` wherever it is really running, and say
+ * whether anything was actually stopped.
+ *
+ * Resolving one adapter from `bot.modelSelection.instanceId` is wrong twice
+ * over: after a cross-instance failover the bot record still names the
+ * ORIGINAL instance (the fallback engine is a per-turn override that is
+ * never persisted), so the stop lands on an adapter that does not own the
+ * process — a silent, total no-op.  Every adapter implements
+ * `hasSession(threadId)`, so ask each live instance whether it owns this
+ * thread instead of guessing from bookkeeping.
+ *
+ * Failures are logged rather than swallowed: an interrupt that throws is
+ * exactly the case the old blanket `.catch(() => {})` made invisible. */
+/** Outcome of a stop request.  `stopped` and `refused` are distinct on purpose:
+ * "nothing was running" and "a driver refused to stop" are opposite problems, and
+ * the second is exactly the case this endpoint exists to make visible. */
+type InterruptOutcome = { stopped: boolean; refused: boolean };
+
+async function interruptThreadEverywhere(threadId: string): Promise<InterruptOutcome> {
+  const owners = registry.instances().filter((instance) => {
+    try {
+      return instance.adapter.hasSession(threadId);
+    } catch (error) {
+      console.error(`interrupt: hasSession failed on instance ${instance.instanceId}:`, error);
+      return false;
+    }
+  });
+  const results = await Promise.all(
+    owners.map(async (instance) => {
+      try {
+        await instance.adapter.interruptTurn(threadId);
+        return true;
+      } catch (error) {
+        // A driver that refused to stop has NOT stopped: report the failure
+        // rather than letting the caller answer a hopeful stopped:true.
+        console.error(`interrupt failed on instance ${instance.instanceId} for thread ${threadId}:`, error);
+        return false;
+      }
+    }),
+  );
+  // A refusal is only interesting when it was the reason nothing stopped: if some
+  // other owner did stop the turn, the user got what they asked for.
+  const stopped = results.some(Boolean);
+  return { stopped, refused: !stopped && results.some((ok) => ok === false) };
+}
 /** Room turns re-enter the member engine after turn.completed so failover
  * does not race the sequential roster walk. */
 const pendingMemberFallback = new Map<string, { groupId: string; botId: string }>();
@@ -1511,7 +1600,12 @@ bus.subscribe((event: RuntimeEvent) => {
           : quotaOrCap
             ? autoFallbackChain(fallbackBot.modelSelection.instanceId)
             : undefined;
-        const next = selectTurnFallback({
+        // A user stop ends the request; it does not license wandering to the
+        // next engine.  Consume the latch BEFORE selectTurnFallback, because
+        // the driver reports this settle as `exit_before_result` and that
+        // gate would otherwise wave the failover straight through.
+        const userStopped = stoppedTurns.delete(fallbackKey);
+        const next = userStopped ? undefined : selectTurnFallback({
           ok: isOk,
           stopReason: event.stopReason,
           produced: turnProducedAssistantOutput(afterUser, { textIsError: isTextError }),
@@ -1943,13 +2037,14 @@ async function startTurn(
   if (bot.busy) throw Object.assign(new Error("the bot is already working — interrupt it first"), { status: 409 });
   const threadId = opts?.threadId ?? bot.threadId;
   // Nobody is at the keyboard for a turn an outside event started — a
-  // webhook, a resource threshold, the calendar — or for one inherited from
-  // a bot already running unattended. A manual "Run now" is a person
-  // clicking, so it stays attended.
+  // webhook or a resource threshold, whose payload is not the owner's
+  // prompt — or for one inherited from a bot already running unattended.
+  // A calendar tick uses the prompt the owner saved on that bot, so Auto
+  // mode applies (destructive/sensitive still card). A manual "Run now"
+  // is a person clicking, so it stays attended.
   if (
     opts?.automationSource === "webhook" ||
     opts?.automationSource === "resource" ||
-    opts?.automationSource === "schedule" ||
     opts?.unattended
   ) {
     markUnattended(bot.id);
@@ -1962,8 +2057,15 @@ async function startTurn(
   // a task takes its name from the first thing you asked it to do
   if (text.trim() && !opts?.cardContinuation) store.titleTaskFromFirstMessage(bot.id, text, threadId);
 
-  const selection = opts?.modelSelection ?? quotaCooldowns.resolveModel(bot.id, bot.modelSelection).selection;
-  if (!opts?.modelSelection) fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
+  const selection = opts?.modelSelection
+    ?? quotaCooldowns.resolveModel(bot.id, task.modelSelection ?? bot.modelSelection).selection;
+  // A fresh user turn re-arms both the saved chain and the stop latch; the
+  // fallback dispatch (which carries modelSelection) is a continuation of the
+  // turn that just settled, so it must inherit them instead.
+  if (!opts?.modelSelection) {
+    fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
+    stoppedTurns.delete(`${bot.id}:${threadId}`);
+  }
   const instance = opts?.runOn === "cloud"
     ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
     : registry.get(selection.instanceId);
@@ -2434,12 +2536,21 @@ routines = new RoutineManager({
     const bot = store.bot(botId);
     return !bot ? "missing" : bot.busy ? "busy" : "ready";
   },
+  conversationMode: () => parseConversationMode(cfg.conversationMode),
+  defaultThread: (botId) => store.bot(botId)?.threadId,
   createTask: (botId, title, activate = false) => {
     const task = store.createTask(botId, title, activate);
     const bot = store.bot(botId);
     if (task && bot) broadcast({ kind: "bot", bot: publicBot(bot) });
     return task;
   },
+  activateTask: (botId, threadId) => {
+    const bot = store.bot(botId);
+    if (!bot || bot.busy || bot.threadId === threadId) return;
+    const switched = store.switchTask(botId, threadId);
+    if (switched) broadcast({ kind: "bot", bot: publicBot(switched) });
+  },
+  taskExists: (botId, threadId) => Boolean(store.taskByThread(botId, threadId)),
   startTurn: (botId, threadId, prompt, runOn, triggerSource, onDispatchError) =>
     startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError }),
   interruptTurn: async (botId, threadId, runOn) => {
@@ -3458,6 +3569,7 @@ function configStatus() {
       ingestUrl: usageIngestUrl(cfg) ?? "",
       configured: telemetry.getStatus().enabled,
       hasToken: Boolean(cfg.usage?.ingestToken),
+      hasReadToken: Boolean(cfg.usage?.readToken || process.env.USAGE_READ_TOKEN),
       projects: usageProjectRules(cfg),
     },
     autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
@@ -3465,6 +3577,7 @@ function configStatus() {
     // Resolved here so the Mac app and the phone render the same words
     // without each re-deriving them from the key and drifting apart.
     roomLabels: resolveRoomLabels(cfg.terminology, cfg.terminologyCustom),
+    conversationMode: parseConversationMode(cfg.conversationMode),
     features: {
       skillRecorder: skillRecorderEnabled(cfg),
       showToolCalls: showToolCallsEnabled(cfg),
@@ -4221,7 +4334,7 @@ const server = createServer(async (req, res) => {
       const limit = pageSize(url.searchParams.get("messages"));
       if (limit === null) return json(res, 400, { error: "messages must be a non-negative whole number" });
       return json(res, 200, {
-        bots: store.bots.map((bot) => { console.log("BOT MESSAGES:", store.messagesFor(bot.threadId).length); return { ...publicBot(bot), ...messagePage(bot.threadId, limit) }; }),
+        bots: store.bots.map((bot) => ({ ...publicBot(bot), ...messagePage(bot.threadId, limit) })),
         groups: store.groups.map((g) => ({ ...publicGroupState(g), ...messagePage(g.threadId, limit) })),
         computerControl: Object.fromEntries(
           store.bots.map((bot) => {
@@ -4882,6 +4995,11 @@ const server = createServer(async (req, res) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
+      if (!allowsMultipleBotThreads(parseConversationMode(cfg.conversationMode))) {
+        return json(res, 409, {
+          error: "this workspace uses one conversation per channel — turn on Fleet or Projects in Settings to add another",
+        });
+      }
       const task = store.createGroupTask(group.id, typeof body.title === "string" ? body.title : undefined);
       if (!task) return json(res, 500, { error: "couldn't create that task" });
       const fresh = groupWithThread(store.group(group.id)!);
@@ -5195,11 +5313,18 @@ const server = createServer(async (req, res) => {
       // This covers setup-before-busy and responder handoffs, and makes every
       // queued responder observe cancellation before it can start.
       cancelGroupTurnOperations(group.id, group.threadId);
+      // The room fold keys fallback bookkeeping by the SPEAKING member, so the
+      // latch has to name that member — and it must be set before the driver
+      // is awaited, since the turn can settle before this handler resumes.
       const busy = group.busyBotId ? store.bot(group.busyBotId) : undefined;
-      const instance = busy ? registry.get(busy.modelSelection.instanceId) : undefined;
-      await instance?.adapter.interruptTurn(group.threadId).catch(() => {});
+      if (busy) {
+        stoppedTurns.add(`${busy.id}:${group.threadId}`);
+        fallbackAttemptByTurn.delete(`${busy.id}:${group.threadId}`);
+      }
+      pendingMemberFallback.delete(group.threadId);
+      const outcome = await interruptThreadEverywhere(group.threadId);
       closeOpenApprovals(group.threadId);
-      return json(res, 200, { ok: true });
+      return json(res, 200, { ok: true, stopped: outcome.stopped, refused: outcome.refused });
     }
 
     // emoji reactions — works on any thread (1:1 or room)
@@ -5996,9 +6121,21 @@ const server = createServer(async (req, res) => {
           return json(res, 409, { error: "this bot is running a routine in another conversation" });
         }
         await routines!.cancelRun(routineRun.id);
-        return json(res, 200, { ok: true });
+        return json(res, 200, { ok: true, stopped: true });
       }
-      const instance = registry.get(bot.modelSelection.instanceId);
+      // Latch the stop before anything is awaited.  The driver may settle the
+      // turn the instant it is killed, so the turn.completed fold can run
+      // before this handler resumes — if the latch were set after the await,
+      // the fold would already have failed over to the next engine.
+      const latchStop = (threadId: string) => {
+        stoppedTurns.add(`${bot.id}:${threadId}`);
+        // the user ended this request, so the next message starts the saved
+        // chain from the top rather than resuming mid-chain
+        fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
+        pendingMemberFallback.delete(threadId);
+      };
+      let stopped = false;
+      let refused = false;
       // a bot busy in a ROOM is running on the room's thread — stopping it
       // from its own chat must reach that turn, not just the 1:1 thread
       const busyGroup = store.groups.find((g) => g.busyBotId === bot.id);
@@ -6006,15 +6143,27 @@ const server = createServer(async (req, res) => {
         if (expectedThreadId !== undefined && busyGroup.threadId !== expectedThreadId) {
           return json(res, 409, { error: `this bot is working in channel ${busyGroup.id}` });
         }
-        await instance?.adapter.interruptTurn(busyGroup.threadId).catch(() => {});
+        latchStop(busyGroup.threadId);
+        const groupOutcome = await interruptThreadEverywhere(busyGroup.threadId);
+        if (groupOutcome.stopped) stopped = true;
+        if (groupOutcome.refused) refused = true;
         closeOpenApprovals(busyGroup.threadId);
       }
       if (expectedThreadId !== undefined && !busyGroup && bot.threadId !== expectedThreadId) {
         return json(res, 409, { error: "the bot switched tasks before it could be interrupted" });
       }
-      await instance?.adapter.interruptTurn(bot.threadId).catch(() => {});
-      closeOpenApprovals(bot.threadId);
-      return json(res, 200, { ok: true });
+      // A turn started on one task keeps running while the user reads another,
+      // so the live thread — not the visible one — is what has to be stopped.
+      const liveThreadId = bot.inflightThreadId ?? bot.threadId;
+      latchStop(liveThreadId);
+      const liveOutcome = await interruptThreadEverywhere(liveThreadId);
+      if (liveOutcome.stopped) stopped = true;
+      if (liveOutcome.refused) refused = true;
+      closeOpenApprovals(liveThreadId);
+      if (liveThreadId !== bot.threadId) closeOpenApprovals(bot.threadId);
+      // refused only matters when nothing stopped: a driver that threw while another
+      // owner succeeded is not something to put in front of the user.
+      return json(res, 200, { ok: true, stopped, refused: refused && !stopped });
     }
 
     // ── tasks: a bot's separate contexts ────────────────────────────────
@@ -6032,6 +6181,11 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
+      if (!allowsMultipleBotThreads(parseConversationMode(cfg.conversationMode))) {
+        return json(res, 409, {
+          error: "this workspace uses one conversation per bot — turn on Fleet or Projects in Settings to add another",
+        });
+      }
       if (bot.busy) return json(res, 409, { error: "this bot is working — let it finish before starting a task" });
       const body = await readBody(req);
       const task = store.createTask(bot.id, typeof body.title === "string" ? body.title : undefined);
@@ -6060,6 +6214,66 @@ const server = createServer(async (req, res) => {
     }
     if (m && method === "PATCH") {
       const body = await readBody(req);
+      // Reassigning a conversation to another bot, or into a channel. The
+      // thread keeps its id, so the transcript moves rather than being copied.
+      if (body.mergeInto !== undefined) {
+        const bot = store.bot(m[1]);
+        if (bot?.busy) return json(res, 409, { error: "this bot is working — stop it before merging tasks" });
+        const into = String(body.mergeInto);
+        const merged = store.mergeBotTasks(m[1], m[2], into);
+        if (!merged) {
+          return json(res, 400, {
+            error: "those conversations cannot merge — a bot keeps its last one",
+          });
+        }
+        broadcast({ kind: "bot", bot: botWithThread(merged) });
+        return json(res, 200, { bot: botWithThread(merged) });
+      }
+      if (body.botId !== undefined) {
+        const target = String(body.botId);
+        if (!store.bot(target)) return json(res, 404, { error: "no such bot" });
+        const moved = store.moveTaskToBot(m[1], m[2], target);
+        if (!moved) {
+          return json(res, 400, {
+            error: "that conversation cannot move — a bot keeps its last one",
+          });
+        }
+        for (const record of moved) broadcast({ kind: "bot", bot: botWithThread(record) });
+        return json(res, 200, { ok: true });
+      }
+      if (body.groupId !== undefined) {
+        const target = String(body.groupId);
+        const destination = store.group(target);
+        if (!destination) return json(res, 404, { error: "no such channel" });
+        if (destination.dm) {
+          return json(res, 400, { error: "bot-to-bot channels keep one canonical conversation" });
+        }
+        const moved = store.moveTaskToGroup(m[1], m[2], target);
+        if (!moved) {
+          return json(res, 400, {
+            error: "that conversation cannot move — a bot keeps its last one",
+          });
+        }
+        broadcast({ kind: "bot", bot: botWithThread(moved.bot) });
+        broadcast({ kind: "group", group: groupWithThread(moved.group) });
+        return json(res, 200, { ok: true });
+      }
+      if (body.modelSelection !== undefined) {
+        if (body.modelSelection === null) {
+          const cleared = store.patchTask(m[1], m[2], { modelSelection: null });
+          if (!cleared) return json(res, 404, { error: "no such task" });
+          const fresh = botWithThread(store.bot(m[1])!);
+          broadcast({ kind: "bot", bot: fresh });
+          return json(res, 200, { task: wireTask(cleared) });
+        }
+        const checked = checkedModelSelection(body.modelSelection);
+        if (!checked.ok) return json(res, checked.status, { error: checked.error });
+        const updated = store.patchTask(m[1], m[2], { modelSelection: checked.selection });
+        if (!updated) return json(res, 404, { error: "no such task" });
+        const fresh = botWithThread(store.bot(m[1])!);
+        broadcast({ kind: "bot", bot: fresh });
+        return json(res, 200, { task: wireTask(updated) });
+      }
       const task = store.renameTask(m[1], m[2], String(body.title ?? ""));
       if (!task) return json(res, 404, { error: "no such task" });
       const fresh = botWithThread(store.bot(m[1])!);
@@ -6203,6 +6417,8 @@ const server = createServer(async (req, res) => {
       return json(res, 200, {
         ok: true,
         cooldowns: quotaCooldowns.list(),
+        antigravity: lastAntigravityQuotaSnapshot(),
+        windows: usageQuotaPoller.getWindows(),
       });
     }
     if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {
@@ -6504,6 +6720,20 @@ const server = createServer(async (req, res) => {
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
     }
+    // Same reason as terminology: a layout word is not a credential, so the
+    // phone gets its own route rather than write access to /api/config.
+    if (method === "PATCH" && path === "/api/conversation-mode") {
+      const body = await readBody(req);
+      const patch = parseConfigPatch({ conversationMode: body.conversationMode });
+      if (patch.conversationMode === undefined) {
+        return json(res, 400, { error: "nothing to save" });
+      }
+      cfg.conversationMode = parseConversationMode(patch.conversationMode);
+      saveConfig(cfg);
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      return json(res, 200, status);
+    }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch = parseConfigPatch(body);
@@ -6591,7 +6821,8 @@ const server = createServer(async (req, res) => {
           key !== "usage" &&
           key !== "features" &&
           key !== "terminology" &&
-          key !== "terminologyCustom",
+          key !== "terminologyCustom" &&
+          key !== "conversationMode",
       );
       if (reloadKeys.length > 0) await reloadProviders();
       const status = configStatus();
@@ -6925,6 +7156,10 @@ const server = createServer(async (req, res) => {
 
 routines?.start();
 resourceTriggers.start();
+if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
+  enableQuotaCooldownPersist(join(DATA_DIR, "quota-cooldowns.json"));
+  startAntigravityQuotaPoller();
+}
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
@@ -6936,6 +7171,8 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     vps.closeAllVpsDesktopTunnels();
     watchdog.stop();
     routines?.stop();
+    stopAntigravityQuotaPoller();
+    usageQuotaPoller.stop();
     webhookIngress?.server.close();
     void registry.disposeAll().finally(() => process.exit(0));
   });

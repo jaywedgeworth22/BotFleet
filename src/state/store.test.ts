@@ -4,6 +4,7 @@ import {
   configStatusFromFrame,
   getRoomTerminology,
   initialState,
+  isHarnessUnreachableError,
   latestChatActivity,
   mergeHydrateBots,
   mergeHydrateGroups,
@@ -13,6 +14,41 @@ import {
   type Group,
   type Message,
 } from "./store";
+
+describe("harness unreachable banner", () => {
+  const banner = "BotFleet harness on port 8799 is not reachable";
+
+  it("recognizes the shim 502 and ignores unrelated errors", () => {
+    expect(isHarnessUnreachableError(banner)).toBe(true);
+    expect(isHarnessUnreachableError("Nothing was running to stop.")).toBe(false);
+    expect(isHarnessUnreachableError(null)).toBe(false);
+  });
+
+  it("clears the banner when the event stream reconnects", () => {
+    const errored = reducer(initialState, { type: "error", message: banner });
+    expect(errored.error).toBe(banner);
+    const live = reducer(errored, { type: "connected", value: true });
+    expect(live.connected).toBe(true);
+    expect(live.error).toBeNull();
+  });
+
+  it("keeps unrelated errors when the stream reconnects", () => {
+    const errored = reducer(initialState, { type: "error", message: "Nothing was running to stop." });
+    const live = reducer(errored, { type: "connected", value: true });
+    expect(live.error).toBe("Nothing was running to stop.");
+  });
+
+  it("clears the banner on a successful hydrate", () => {
+    const errored = reducer(initialState, { type: "error", message: banner });
+    const live = reducer(errored, {
+      type: "hydrate",
+      bots: [],
+      groups: [],
+      computerControl: {},
+    });
+    expect(live.error).toBeNull();
+  });
+});
 
 describe("latestChatActivity", () => {
   it("prefers a background task's lastActivity over the open thread's last message", () => {

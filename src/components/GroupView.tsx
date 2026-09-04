@@ -44,6 +44,7 @@ import { shortPath } from "@/lib/short-path";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
 import { showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
+import { modelChip } from "@/lib/model-chip";
 import { splitAttachedImages } from "@/lib/composer-attachments";
 import {
   TRANSCRIPT_WINDOW_SIZE,
@@ -1042,6 +1043,7 @@ export function GroupView({ group }: { group: Group }) {
   ]);
   const presenceVisible = waiting || popping !== null;
   const presenceSpeaker = speaker ?? members.find((member) => member.id === popping?.botId) ?? members[0];
+  const presenceModel = modelChip(presenceSpeaker, state.instances);
 
   // Windowed transcript, mirroring ChatView: only a tail of the room mounts;
   // count on-screen items so hidden tool chips cannot bury the prompt.
@@ -1457,6 +1459,8 @@ export function GroupView({ group }: { group: Group }) {
               visible={presenceVisible}
               label={activityLabel}
               answering={popping !== null}
+              modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} size={14} /> : undefined}
+              modelName={presenceModel?.name}
             >
               {popping ? (
                 <div className="w-fit max-w-[min(42rem,78%)] rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink">

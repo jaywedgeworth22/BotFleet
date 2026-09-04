@@ -23,6 +23,10 @@ import {
   type RoomLabels,
   type RoomTerminology,
 } from "../../shared/terminology";
+import {
+  parseConversationMode,
+  type ConversationMode,
+} from "../../shared/conversation-mode";
 import type { Routine, RoutineInput, RoutineRun } from "@/lib/routines";
 import type { ResourceTrigger } from "@/lib/resource-triggers";
 import type { WebhookAttempt, WebhookIngressStatus, WebhookTrigger } from "@/lib/webhooks";
@@ -188,6 +192,9 @@ export interface Task {
   /** folder this task's turns run in, pinned on its first turn; null =
    * legacy home-folder session; absent = not pinned yet */
   cwd?: string | null;
+  /** Optional engine for this conversation.  Absent means the bot's own
+   * modelSelection.  Used in Projects mode so a thread is not a named bot. */
+  modelSelection?: ModelSelection;
 }
 
 export interface TaskUsage {
@@ -327,6 +334,9 @@ export interface ConfigStatus {
   /** The finished words, resolved by the harness so every client
    * agrees. Absent only when talking to an older harness. */
   roomLabels?: RoomLabels;
+  /** Simple (Grok-style bots + group threads) or Projects (categories of
+   * threads).  Absent means simple. */
+  conversationMode?: ConversationMode;
   /** Shared Qdrant Bot RAG vector database status. `url` and `collection`
    * are empty until the operator sets them — BotFleet ships no endpoint. */
   qdrant?: { enabled: boolean; url: string; configured: boolean; hasApiKey: boolean; collection: string };
@@ -336,6 +346,7 @@ export interface ConfigStatus {
     ingestUrl: string;
     configured: boolean;
     hasToken: boolean;
+    hasReadToken?: boolean;
     projects: Array<{ slug: string; match: string[] }>;
   };
   /** Opt-in flags. Absent means off. */
@@ -358,9 +369,13 @@ export function getRoomTerminology(config?: ConfigStatus | null): {
   return { key, singular: labels.singular, plural: labels.plural };
 }
 
+export function getConversationMode(config?: ConfigStatus | null): ConversationMode {
+  return parseConversationMode(config?.conversationMode);
+}
+
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "qdrant" | "usage" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -380,6 +395,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     autoUpdate: frame.autoUpdate,
     terminology: frame.terminology,
     roomLabels: frame.roomLabels,
+    conversationMode: frame.conversationMode,
     qdrant: frame.qdrant,
     usage: frame.usage,
     features: frame.features,
@@ -413,6 +429,12 @@ export interface InstanceInfo {
       capped: boolean;
       resetsAt?: number | null;
       error?: string;
+      models?: Record<string, {
+        capped: boolean;
+        remainingPercent?: number | null;
+        resetsAt?: number | null;
+        error?: string;
+      }>;
     };
   };
   models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean }> };
@@ -561,6 +583,9 @@ export type Action =
   | { type: "renameGroupTask"; groupId: string; threadId: string; title: string }
   | { type: "moveGroupTask"; groupId: string; threadId: string; toGroupId: string }
   | { type: "moveGroupTaskToBot"; groupId: string; threadId: string; botId: string }
+  | { type: "moveTaskToBot"; botId: string; threadId: string; toBotId: string }
+  | { type: "moveTaskToGroup"; botId: string; threadId: string; toGroupId: string }
+  | { type: "mergeTasks"; botId: string; threadId: string; intoThreadId: string }
   | { type: "deleteGroupTask"; groupId: string; threadId: string }
   | { type: "toggleReaction"; threadId: string; messageId: string; emoji: string }
   | { type: "interruptGroup"; groupId: string }
@@ -734,6 +759,11 @@ function dismissOnboardingCard(state: AppState, botId: string): AppState {
   return quiz ? patchCard(state, botId, quiz.id, { dismissed: true }) : state;
 }
 
+/** Sticky top-bar 502 from the attached-UI shim.  Clear it once the harness answers. */
+export function isHarnessUnreachableError(message: string | null | undefined): boolean {
+  return typeof message === "string" && /harness on port \d+ is not reachable/i.test(message);
+}
+
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "hydrate": {
@@ -757,6 +787,7 @@ export function reducer(state: AppState, action: Action): AppState {
         ),
         computerControl: action.computerControl,
         selectedId,
+        error: isHarnessUnreachableError(state.error) ? null : state.error,
       };
     }
     case "showRoutines":
@@ -1072,7 +1103,14 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...next, botEpoch: bumpEpoch(next.botEpoch, action.botId) };
     }
     case "connected":
-      return { ...state, connected: action.value };
+      return {
+        ...state,
+        connected: action.value,
+        // A 502 from the UI shim sticks in `error` even after the always-on
+        // harness answers again.  SSE open (or a later hydrate) is proof
+        // the banner is stale.
+        error: action.value && isHarnessUnreachableError(state.error) ? null : state.error,
+      };
     case "error":
       return {
         ...(action.message && state.selectedId
@@ -1338,6 +1376,73 @@ export function reducer(state: AppState, action: Action): AppState {
         ),
       };
     }
+    case "mergeTasks": {
+      const source = state.bots.find((bot) => bot.id === action.botId);
+      if (!source || action.threadId === action.intoThreadId || (source.tasks ?? []).length < 2) return state;
+      const remaining = (source.tasks ?? []).filter((task) => task.threadId !== action.threadId);
+      if (remaining.length === (source.tasks ?? []).length) return state;
+      if (!remaining.some((task) => task.threadId === action.intoThreadId)) return state;
+      return {
+        ...state,
+        bots: state.bots.map((bot) =>
+          bot.id === action.botId
+            ? {
+                ...bot,
+                tasks: remaining,
+                threadId: bot.threadId === action.threadId ? action.intoThreadId : bot.threadId,
+              }
+            : bot,
+        ),
+      };
+    }
+    case "moveTaskToBot": {
+      const source = state.bots.find((bot) => bot.id === action.botId);
+      const moving = (source?.tasks ?? []).find((task) => task.threadId === action.threadId);
+      if (!moving || !source || (source.tasks ?? []).length < 2) return state;
+      return {
+        ...state,
+        bots: state.bots.map((bot) => {
+          if (bot.id === action.botId) {
+            const remaining = (bot.tasks ?? []).filter((task) => task.threadId !== action.threadId);
+            return {
+              ...bot,
+              tasks: remaining,
+              threadId: bot.threadId === action.threadId ? remaining[0]!.threadId : bot.threadId,
+            };
+          }
+          if (bot.id === action.toBotId) return { ...bot, tasks: [moving, ...(bot.tasks ?? [])] };
+          return bot;
+        }),
+      };
+    }
+    case "moveTaskToGroup": {
+      const source = state.bots.find((bot) => bot.id === action.botId);
+      const moving = (source?.tasks ?? []).find((task) => task.threadId === action.threadId);
+      if (!moving || !source || (source.tasks ?? []).length < 2) return state;
+      return {
+        ...state,
+        bots: state.bots.map((bot) => {
+          if (bot.id !== action.botId) return bot;
+          const remaining = (bot.tasks ?? []).filter((task) => task.threadId !== action.threadId);
+          return {
+            ...bot,
+            tasks: remaining,
+            threadId: bot.threadId === action.threadId ? remaining[0]!.threadId : bot.threadId,
+          };
+        }),
+        groups: state.groups.map((group) =>
+          group.id === action.toGroupId
+            ? {
+                ...group,
+                tasks: [
+                  { threadId: moving.threadId, title: moving.title, createdAt: moving.createdAt },
+                  ...(group.tasks ?? []),
+                ],
+              }
+            : group,
+        ),
+      };
+    }
     case "taskSwitched":
       return updateBot(state, action.bot.id, (bot) => ({ ...bot, ...action.bot, messages: action.bot.messages ?? [] }));
     case "newBot":
@@ -1395,13 +1500,21 @@ export const initialState: AppState = {
 
 // ── API client ─────────────────────────────────────────────────────────
 export async function api(path: string, init?: RequestInit): Promise<any> {
-  const res = await fetch(path, {
-    headers: { "content-type": "application/json" },
-    ...init,
-  });
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(body.error ?? `${res.status} ${res.statusText}`);
-  return body;
+  const method = (init?.method ?? "GET").toUpperCase();
+  const retryable = method === "GET" || method === "HEAD";
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < (retryable ? 2 : 1); attempt++) {
+    if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 200));
+    const res = await fetch(path, {
+      headers: { "content-type": "application/json" },
+      ...init,
+    });
+    const body = await res.json().catch(() => ({}));
+    if (res.ok) return body;
+    lastError = new Error(body.error ?? `${res.status} ${res.statusText}`);
+    if (res.status !== 502) break;
+  }
+  throw lastError ?? new Error("request failed");
 }
 
 /** Per-frame stream state lives in its OWN context: token frames update only
@@ -1779,7 +1892,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           }
           break;
         case "interrupt":
-          api(`/api/bots/${action.botId}/interrupt`, { method: "POST" }).catch(showError);
+          // The server answers `stopped` — whether a live turn was actually
+          // reached.  A Stop that silently matched nothing used to look
+          // identical to one that worked, which is how a wedged turn could
+          // swallow two minutes of presses without a word.
+          api(`/api/bots/${action.botId}/interrupt`, { method: "POST" })
+            .then((reply: any) => {
+              if (reply && reply.stopped === false) {
+                // Two opposite problems, so they must not share a message: a refusal
+                // means the engine was asked and would not stop, which is the case
+                // this endpoint exists to make visible.
+                rawDispatch({
+                  type: "error",
+                  message: reply.refused
+                    ? "The engine refused to stop that turn."
+                    : "Nothing was running to stop.",
+                });
+              }
+            })
+            .catch(showError);
           break;
         // tasks: the server answers with the bot AND the live transcript,
         // because switching changes which conversation is on screen
@@ -1832,6 +1963,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           api(`/api/groups/${action.groupId}/tasks/${action.threadId}`, {
             method: "PATCH",
             body: JSON.stringify({ botId: action.botId }),
+          }).catch(showError);
+          break;
+        case "mergeTasks":
+          api(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ mergeInto: action.intoThreadId }),
+          }).catch(showError);
+          break;
+        case "moveTaskToBot":
+          api(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ botId: action.toBotId }),
+          }).catch(showError);
+          break;
+        case "moveTaskToGroup":
+          api(`/api/bots/${action.botId}/tasks/${action.threadId}`, {
+            method: "PATCH",
+            body: JSON.stringify({ groupId: action.toGroupId }),
           }).catch(showError);
           break;
         case "deleteGroupTask":

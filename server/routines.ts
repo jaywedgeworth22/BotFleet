@@ -5,6 +5,12 @@ import { dirname, join } from "node:path";
 import { DATA_DIR } from "./config.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 import type { RoutineRequestOperation } from "../shared/routine-request.ts";
+import {
+  allowsMultipleBotThreads,
+  automationLaneTitle,
+  parseConversationMode,
+  type ConversationMode,
+} from "../shared/conversation-mode.ts";
 
 export type RoutineSchedule =
   | { type: "once"; at: number }
@@ -16,6 +22,18 @@ export type RoutineSchedule =
 export type RoutineRunOn = "maus" | "cloud";
 
 export type RoutineRunTrigger = "schedule" | "manual" | "webhook" | "resource";
+
+/** One shared task per bot for incoming events, one for calendar work. */
+export type AutomationLane = "trigger" | "schedule";
+
+export function automationLane(source?: RoutineRunTrigger): AutomationLane {
+  return source === "webhook" || source === "resource" ? "trigger" : "schedule";
+}
+
+export const AUTOMATION_LANE_TITLE: Record<AutomationLane, string> = {
+  trigger: "Triggers",
+  schedule: "Routines",
+};
 
 export type RoutineRunStatus =
   | "queued"
@@ -124,7 +142,20 @@ export interface RoutineManagerOptions {
    * is what lets the server number and replay them. */
   emit?: (payload: Record<string, unknown>) => void;
   botState: (botId: string) => "ready" | "busy" | "missing";
+  /** Live workspace layout.  Absent keeps the historical lane behavior so
+   * existing tests (and an older harness wiring) still mint Triggers /
+   * Routines tasks. */
+  conversationMode?: () => ConversationMode;
+  /** The bot's one conversation.  Used in simple mode so automation does
+   * not mint extra tasks. */
+  defaultThread?: (botId: string) => string | undefined;
   createTask: (botId: string, title: string, activate?: boolean) => { threadId: string } | null;
+  /** Switch the bot's live chat to this thread (webhook deliveries). */
+  activateTask?: (botId: string, threadId: string) => void;
+  /** True when this bot still has a task for `threadId`. Used so a later
+   * scheduled run of the same routine can keep writing in the previous thread
+   * instead of minting a new one every tick. */
+  taskExists?: (botId: string, threadId: string) => boolean;
   startTurn: (
     botId: string,
     threadId: string,
@@ -663,14 +694,56 @@ export class RoutineManager {
           this.failRun(run, "The assigned bot no longer exists");
           continue;
         }
-        // A webhook is an incoming message, so make its task the bot's live
-        // chat immediately. Scheduled work remains detached and unobtrusive.
-        const task = this.options.createTask(run.botId, run.routineName, run.triggerSource === "webhook");
-        if (!task) {
+        // A bot can only run one thread at a time.  Simple mode writes
+        // every event into that one conversation.  Fleet keeps Triggers
+        // and Routines.  Projects split Webhooks / Resources / Schedules
+        // so each type of incoming event has one thread.  A webhook still
+        // becomes the live chat so the incoming event is visible.
+        // No conversationMode hook means extra lanes (the historical
+        // behavior).  The live server always passes the workspace setting,
+        // whose default is Simple.
+        const mode = parseConversationMode(this.options.conversationMode?.() ?? "projects");
+        let threadId: string | undefined;
+        if (!allowsMultipleBotThreads(mode)) {
+          threadId = this.options.defaultThread?.(run.botId);
+          if (!threadId) {
+            this.failRun(run, "Could not find this bot's conversation");
+            continue;
+          }
+        } else {
+          const title = automationLaneTitle(mode, run.triggerSource);
+          const previous = [...this.runs].reverse().find(
+            (candidate) =>
+              candidate.botId === run.botId &&
+              candidate.id !== run.id &&
+              Boolean(candidate.threadId) &&
+              automationLaneTitle(mode, candidate.triggerSource) === title &&
+              this.options.taskExists?.(run.botId, candidate.threadId!),
+          );
+          threadId = previous?.threadId;
+          if (!threadId) {
+            const task = this.options.createTask(
+              run.botId,
+              title,
+              run.triggerSource === "webhook",
+            );
+            if (!task) {
+              this.failRun(run, "Could not create a task for this run");
+              continue;
+            }
+            threadId = task.threadId;
+          } else if (run.triggerSource === "webhook") {
+            this.options.activateTask?.(run.botId, threadId);
+          }
+        }
+        if (run.triggerSource === "webhook" && !allowsMultipleBotThreads(mode)) {
+          this.options.activateTask?.(run.botId, threadId);
+        }
+        if (!threadId) {
           this.failRun(run, "Could not create a task for this run");
           continue;
         }
-        run.threadId = task.threadId;
+        run.threadId = threadId;
         run.startedAt = this.now();
         run.status = "running";
         this.save();
@@ -678,20 +751,20 @@ export class RoutineManager {
         try {
           const prompt = run.prompt ?? this.routines.find((r) => r.id === run.routineId)?.prompt;
           if (!prompt) {
-            this.failThread(task.threadId, "The routine was deleted before it could start");
+            this.failThread(threadId, "The routine was deleted before it could start");
             continue;
           }
           const triggerSource = run.triggerSource ?? (run.manual ? "manual" : "schedule");
           await this.options.startTurn(
             run.botId,
-            task.threadId,
+            threadId,
             prompt,
             run.runOn ?? "maus",
             triggerSource,
-            (message) => this.failThread(task.threadId, message),
+            (message) => this.failThread(threadId, message),
           );
         } catch (error) {
-          this.failThread(task.threadId, error instanceof Error ? error.message : String(error));
+          this.failThread(threadId, error instanceof Error ? error.message : String(error));
         }
       }
     } finally {

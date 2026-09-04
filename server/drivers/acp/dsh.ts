@@ -2,7 +2,7 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { ModelCatalog, SendTurnInput } from "../../contracts.ts";
+import type { ModelCatalog, ProviderErrorCode, SendTurnInput } from "../../contracts.ts";
 import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
 
 /** Quote one argv token inside a `--mcp name=command args` spec.  JSON
@@ -35,6 +35,44 @@ export const STATIC_DSH_MODELS: ModelCatalog = {
   ],
 };
 
+/** Candidate credential files, honoring the same DSH_HOME / HOME precedence the
+ * `dsh` harness itself uses.  The `.deepseek` paths cover the platform API and
+ * Code CLI logins so one authenticated DeepSeek seat still lights up this rail. */
+export function dshCredentialCandidates(env: Record<string, string | undefined>): string[] {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const dshHome = env.DSH_HOME || join(home, ".dsh");
+  return [
+    join(dshHome, ".credentials.yaml"),
+    join(home, ".deepseek", "credentials.json"),
+    join(home, ".deepseek-code", "credentials", "deepseek-code.json"),
+  ];
+}
+
+/** Map DSH/DeepSeek failure text onto the canonical provider-error codes so the
+ * fallback chain (`server/model-fallback.ts`) treats DSH quota and auth failures
+ * like every other engine instead of as a generic rpc_error. */
+export function classifyDshError(error: unknown): ProviderErrorCode | undefined {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const code = error && typeof error === "object" ? (error as { code?: unknown }).code : undefined;
+  const blob = `${code ?? ""} ${message}`.toLowerCase();
+  if (/unauthoriz|unauthenticated|not signed in|not logged in|invalid api key|invalid_credentials|authentication required|auth.*(fail|missing|required)/.test(blob)) {
+    return "invalid_credentials";
+  }
+  if (/inactive subscription|subscription.*(expired|inactive)|upgrade your (plan|subscription)/.test(blob)) {
+    return "inactive_subscription";
+  }
+  if (/quota|rate.?limit|too many requests|insufficient.?balance|out of credits|credits? exhausted|\b429\b|\b402\b/.test(blob)) {
+    return "quota_or_region_restriction";
+  }
+  if (/overloaded|capacity|service unavailable|bad gateway|upstream|\b502\b|\b503\b|\b504\b/.test(blob)) {
+    return "upstream_outage";
+  }
+  if (/unknown model|model not found|no such model|invalid model/.test(blob)) {
+    return "model_catalog_outage";
+  }
+  return undefined;
+}
+
 const support: AcpSupport = {
   driverKind: "dshAgent",
   displayName: "DeepSeek Harness",
@@ -58,22 +96,28 @@ const support: AcpSupport = {
     if (!turn.model) return;
     try {
       await request("session/set_model", { sessionId, modelId: turn.model });
-    } catch {
-      // ignore
+    } catch (error) {
+      // A set_model that silently no-ops runs the profile's default model, not
+      // the picker's selection — the exact "silently wrong model" failure
+      // acp/core.ts guards against.  Fail the turn instead of pretending.
+      throw new Error(
+        `DeepSeek Harness did not switch to ${turn.model}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
     }
   },
 
   transformEnv: (_env) => {},
+
+  classifyError: classifyDshError,
 
   credentialEnv: ["DEEPSEEK_API_KEY", "DSH_HOME", "DSH_RUNTIME_ROOT", "DSH_PERMISSION_MODE"],
 
   pickAuthMethod: () => null,
   authFailure: "continue",
   isAuthenticated: (env) =>
-    existsSync(join(homedir(), ".dsh", ".credentials.yaml")) ||
-    existsSync(join(homedir(), ".deepseek", "credentials.json")) ||
-    existsSync(join(homedir(), ".deepseek-code", "credentials", "deepseek-code.json")) ||
-    Boolean(env.DEEPSEEK_API_KEY),
+    dshCredentialCandidates(env).some(existsSync) || Boolean(env.DEEPSEEK_API_KEY),
 
   buildPromptText: (turn) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),
 };

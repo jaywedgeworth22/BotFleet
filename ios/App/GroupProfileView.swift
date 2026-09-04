@@ -9,7 +9,7 @@ struct GroupProfileView: View {
 
     @State private var name = ""
     @State private var bulletin = ""
-    @State private var avatarCrop: AvatarCrop = .circle
+    @State private var avatarCrop: AvatarCrop = .rounded
     @State private var cwd = ""
     @State private var extraCwdsText = ""
     @State private var responderKind = "everyone"
@@ -180,7 +180,7 @@ struct GroupProfileView: View {
             .onAppear {
                 name = room.name
                 bulletin = room.bulletin
-                avatarCrop = room.avatarCrop ?? .circle
+                avatarCrop = room.avatarCrop ?? .rounded
                 cwd = room.cwd ?? ""
                 extraCwdsText = room.extraCwds?.joined(separator: "\n") ?? ""
                 responderKind = room.defaultResponder.kind

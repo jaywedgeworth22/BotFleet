@@ -184,11 +184,13 @@ the host computer remain unreachable through the companion.
 
 ## Limits in this version
 
-The live connection is foreground-only. Notification frames produce native
+The live connection is foreground SSE. Notification frames produce native
 banners, sounds, time-sensitive approval alerts, and an app badge while connected;
-the resume cursor replays alerts missed during a short background pause. There is
-no APNs delivery after the app is terminated, no call mode or spoken replies,
-and no hosted relay. Composer dictation is available.
+the resume cursor replays alerts missed during a short background pause. After
+notification authorization the app registers an APNs token with the Mac sidecar,
+which wakes a killed or backgrounded companion when a bot needs you. There is
+no call mode or spoken replies, and no hosted relay. Composer dictation is
+available.
 Task management, SQLite transcript search,
 transcript sharing, reactions, and edit/version controls use narrow companion
 routes and the computer remains the source of truth. Tailscale is supported

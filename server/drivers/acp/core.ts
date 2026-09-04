@@ -152,8 +152,30 @@ const INIT_TIMEOUT = 20_000;
 const SESSION_CONFIG_TIMEOUT = 20_000; // configureSession's per-request default
 /** Upper bound on per-driver model discovery during registry load. */
 const BOOT_MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
-const NEW_SESSION_TIMEOUT = 30_000;
+// session/new does strictly more than session/load — spawn, authenticate,
+// connect every MCP server — so it had no business being given a quarter of
+// the budget. Observed p90 is around 8 s; the old 30 s bound was tripping on
+// cold starts with many servers configured.
+const NEW_SESSION_TIMEOUT = 120_000;
 const LOAD_SESSION_TIMEOUT = 120_000; // history replay on a long thread is slow
+
+/** One spelling for a turn's stop reason.
+ *
+ * The ACP wire format is camelCase and several agents send `endTurn`, while
+ * this driver was written against the snake_case spelling and matched only
+ * `end_turn`.  Anything it did not recognise counted as a failure, so every
+ * successful turn from an agent using the other spelling was recorded as a
+ * failed one — silently, because the turn itself had gone fine.
+ *
+ * Both spellings mean the same thing, so accept both rather than picking a
+ * side, and leave an unknown reason alone so it still reads as a failure. */
+export function normalizeStopReason(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  return raw
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[\s-]+/g, "_")
+    .toLowerCase();
+}
 
 function decodeAcpConfig(defaultCli: string) {
   return (raw: unknown): AcpConfig => {
@@ -716,8 +738,8 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 output: usage.outputTokens ?? 0,
               });
             }
-            const reason = result?.stopReason;
-            if (reason === "end_turn") settle(true, null);
+            const reason = normalizeStopReason(result?.stopReason);
+            if (reason === "end_turn" || reason === "max_tokens") settle(true, null);
             else if (reason === "cancelled") settle(true, "cancelled");
             else settle(false, reason ?? "failed");
           } catch (e) {

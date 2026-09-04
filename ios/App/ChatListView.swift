@@ -24,6 +24,7 @@ struct ChatListView: View {
     @State private var searchOpen = false
     @State private var showingUpdates = false
     @State private var showingNewGroup = false
+    @State private var showingCompose = false
     @AppStorage("companion.chats.roomsExpanded") private var roomsExpanded = true
     @AppStorage("companion.chats.botsExpanded") private var botsExpanded = true
     @FocusState private var searchFocused: Bool
@@ -100,6 +101,17 @@ struct ChatListView: View {
                 open(Chat.room(room))
             }
         }
+        .confirmationDialog("New", isPresented: $showingCompose, titleVisibility: .visible) {
+            Button(session.config?.newPrimaryLabel ?? "New Bot") {
+                Task {
+                    if let bot = await session.createBot() { open(Chat.bot(bot)) }
+                }
+            }
+            Button(roomTerms.newLabel) {
+                showingNewGroup = true
+            }
+            Button("Cancel", role: .cancel) {}
+        }
         .task(id: query) {
             let expected = query
             guard expected.trimmingCharacters(in: .whitespacesAndNewlines).count >= 2 else {
@@ -162,7 +174,7 @@ struct ChatListView: View {
                             }
 
                             sectionToggle(
-                                title: "Bots",
+                                title: session.config?.primaryPlural ?? "Bots",
                                 count: botSummaries.count,
                                 expanded: $botsExpanded
                             )
@@ -203,8 +215,18 @@ struct ChatListView: View {
                                     at: summary.lastActivity,
                                     state: MausState.forChat(summary.chat, in: session.state),
                                     waiting: waitingChats.contains(summary.chat.id),
-                                    last: index == rows.count - 1
+                                    last: index == rows.count - 1 && nestedTasks(for: summary.chat).isEmpty
                                 )
+                            }
+                            if session.config?.allowsMultipleBotThreads == true {
+                                ForEach(nestedTasks(for: summary.chat), id: \.threadId) { task in
+                                    Button {
+                                        Task { await openTask(task, in: summary.chat) }
+                                    } label: {
+                                        ThreadRow(task: task, active: summary.chat.threadId == task.threadId)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
                             }
                         }
                     }
@@ -256,19 +278,12 @@ struct ChatListView: View {
 
     // MARK: - Header
 
-    /// The paired computer's profile on the left, one settings action on the
-    /// right, and where you are in between. The avatar is identity, not a
-    /// second hidden route to the same screen.
+    /// Title and connection status, with Settings on the right. The old
+    /// green initial was identity of the paired computer but read as a
+    /// tappable button, so it is gone.
     private var header: some View {
         HStack(alignment: .center) {
-            ProfileAvatar(name: session.connection?.name ?? "You", size: 30)
-                .frame(width: 44, height: 44)
-                .glassCapsule(interactive: false)
-                .accessibilityLabel("Connected to \(session.connection?.name ?? "your computer")")
-
-            Spacer(minLength: 8)
-
-            VStack(spacing: 2) {
+            VStack(alignment: .leading, spacing: 2) {
                 Text("Chats")
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(Color.primary)
@@ -390,11 +405,9 @@ struct ChatListView: View {
                     .accessibilityLabel("Search")
 
                     GlassButton(systemImage: "square.and.pencil", size: 48, weight: .medium) {
-                        Task {
-                            if let bot = await session.createBot() { open(Chat.bot(bot)) }
-                        }
+                        showingCompose = true
                     }
-                    .accessibilityLabel("New bot")
+                    .accessibilityLabel("New")
                 }
             }
         }
@@ -421,6 +434,20 @@ struct ChatListView: View {
 
     private var roomSummaries: [ChatSummary] {
         session.state.chatSummaries.filter { if case .room = $0.chat { return true } else { return false } }
+    }
+
+    private func nestedTasks(for chat: Chat) -> [BotTask] {
+        guard session.config?.allowsMultipleBotThreads == true else { return [] }
+        guard case let .bot(bot) = chat else { return [] }
+        let tasks = bot.tasks ?? []
+        guard tasks.count >= 2 else { return [] }
+        return tasks.sorted { ($0.lastActivity ?? $0.createdAt) > ($1.lastActivity ?? $1.createdAt) }
+    }
+
+    private func openTask(_ task: BotTask, in chat: Chat) async {
+        guard case let .bot(bot) = chat else { return }
+        await session.switchTask(task, for: bot)
+        if let live = session.state.bot(bot.id) { open(Chat.bot(live)) }
     }
 
     private var waitingChats: Set<String> {
@@ -517,6 +544,35 @@ struct GroupTile: View {
 
     private func memberBots(_ room: Room) -> [Bot] {
         room.memberIds.compactMap { session.state.bot($0) }
+    }
+}
+
+struct ThreadRow: View {
+    let task: BotTask
+    var active = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "text.bubble")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color.secondary)
+                .frame(width: 22)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(task.title.isEmpty ? "Untitled" : task.title)
+                    .font(.system(size: 15, weight: active ? .semibold : .regular))
+                    .foregroundStyle(Color.primary)
+                    .lineLimit(1)
+                Text(RelativeStamp.list(task.lastActivity ?? task.createdAt))
+                    .font(.system(size: 12))
+                    .foregroundStyle(Color.secondary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 44)
+        .padding(.trailing, 16)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
+        .accessibilityLabel(task.title.isEmpty ? "Untitled thread" : task.title)
     }
 }
 

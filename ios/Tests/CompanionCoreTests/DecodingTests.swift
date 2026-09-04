@@ -103,6 +103,22 @@ final class DecodingTests: XCTestCase {
         XCTAssertFalse(detached.requiresTaskSwitch(activeThreadId: "task-2"))
     }
 
+    func testNotificationTargetFromRemoteUserInfoReadsApnsOrLocalKeys() {
+        XCTAssertEqual(
+            NotificationTarget.fromRemoteUserInfo(["botId": "bot-1", "threadId": "task-2"]),
+            NotificationTarget(botId: "bot-1", threadId: "task-2")
+        )
+        XCTAssertEqual(
+            NotificationTarget.fromRemoteUserInfo([
+                "botId": "bot-1",
+                "aps": ["thread-id": "task-2", "alert": ["title": "Scout finished"]],
+            ]),
+            NotificationTarget(botId: "bot-1", threadId: "task-2")
+        )
+        XCTAssertNil(NotificationTarget.fromRemoteUserInfo(["aps": ["alert": "x"]]))
+        XCTAssertNil(NotificationTarget.fromRemoteUserInfo(["botId": "bot-1"]))
+    }
+
     func testDecodesTheCloudBackendAndItsAbsence() throws {
         // The cloud-desktop button hides on cloudBackend == "vps", so both
         // sides of that gate must decode: a harness that sends the field, and
@@ -366,6 +382,9 @@ final class DecodingTests: XCTestCase {
         let config = try decode(ConfigStatus.self, "config")
         XCTAssertEqual(config.profile?.name, "Ada Lovelace")
         XCTAssertEqual(config.box?.configured, false)
+        XCTAssertNil(config.conversationMode)
+        XCTAssertFalse(config.isProjectsMode)
+        XCTAssertFalse(config.allowsMultipleBotThreads)
         // Captured bytes, not our idea of them: `describeVoice` always sends
         // the engine, so a sidecar that stopped forwarding it fails here
         // instead of quietly sending every built-in-voices user back to an

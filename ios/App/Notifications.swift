@@ -3,8 +3,7 @@ import UserNotifications
 import CompanionCore
 
 /// The on-device notification surface. Delivery comes from live or replayed
-/// companion frames; a future APNs relay can feed the same categories and
-/// userInfo without changing the rest of the app.
+/// companion frames, and from APNs when the sidecar wakes a killed app.
 final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationCoordinator()
     private let center = UNUserNotificationCenter.current()
@@ -62,11 +61,9 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let strings = response.notification.request.content.userInfo.reduce(into: [String: String]()) { result, pair in
-            guard let key = pair.key as? String, let value = pair.value as? String else { return }
-            result[key] = value
+        if let target = NotificationTarget.fromRemoteUserInfo(response.notification.request.content.userInfo) {
+            responseHandler?(target)
         }
-        if let target = NotificationTarget(payload: strings) { responseHandler?(target) }
         completionHandler()
     }
 }

@@ -43,18 +43,20 @@ struct ThreadTabBar: View {
                         .accessibilityAddTraits(task.threadId == current.threadId ? .isSelected : [])
                         .accessibilityLabel(task.title.isEmpty ? "Untitled thread" : task.title)
                     }
-                    Button {
-                        Task { await session.createTask(for: current, title: nil) }
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 13, weight: .semibold))
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(Capsule().fill(Color.primary.opacity(0.05)))
+                    if session.config?.allowsMultipleBotThreads == true {
+                        Button {
+                            Task { await session.createTask(for: current, title: nil) }
+                        } label: {
+                            Image(systemName: "plus")
+                                .font(.system(size: 13, weight: .semibold))
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 8)
+                                .background(Capsule().fill(Color.primary.opacity(0.05)))
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(current.busy == true)
+                        .accessibilityLabel("New thread")
                     }
-                    .buttonStyle(.plain)
-                    .disabled(current.busy == true)
-                    .accessibilityLabel("New thread")
                 }
                 .padding(.horizontal, 16)
             }

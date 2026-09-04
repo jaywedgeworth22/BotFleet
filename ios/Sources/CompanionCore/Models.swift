@@ -180,6 +180,7 @@ public struct BotTask: Codable, Hashable, Sendable {
     /// Last message in this task's thread. Absent on older harnesses.
     public var lastActivity: Double?
     public var usage: TaskUsage?
+    public var modelSelection: ModelSelection?
 }
 
 public struct Bot: Codable, Hashable, Identifiable, Sendable {
@@ -536,6 +537,20 @@ public struct ConfigStatus: Codable, Sendable {
     /// The finished words, resolved by the harness so every client agrees.
     /// Absent only when talking to a harness older than this feature.
     public var roomLabels: RoomLabels?
+    /// `simple` or `projects`.  Absent means simple.  A leftover `fleet`
+    /// value is treated as projects.
+    public var conversationMode: String?
+
+    public var isProjectsMode: Bool {
+        let raw = conversationMode?.lowercased()
+        return raw == "projects" || raw == "fleet"
+    }
+
+    public var allowsMultipleBotThreads: Bool { isProjectsMode }
+
+    public var primarySingular: String { isProjectsMode ? "Thread" : "Bot" }
+    public var primaryPlural: String { isProjectsMode ? "Threads" : "Bots" }
+    public var newPrimaryLabel: String { isProjectsMode ? "New Thread" : "New Bot" }
 
     public var roomTerminologyLabel: String {
         roomLabels?.singular ?? Self.presetLabels(terminology).singular
@@ -861,6 +876,20 @@ public struct NotificationTarget: Equatable, Sendable {
 
     public init?(payload: [String: String]) {
         self.init(botId: payload["botId"], threadId: payload["threadId"])
+    }
+
+    /// Local banners store flat string keys.  APNs also nests `thread-id`
+    /// under `aps`.  Either shape must open the same bot and task.
+    public static func fromRemoteUserInfo(_ userInfo: [AnyHashable: Any]) -> NotificationTarget? {
+        func string(from value: Any?) -> String? {
+            guard let value = value as? String else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        let botId = string(from: userInfo["botId"])
+        let nested = userInfo["aps"] as? [AnyHashable: Any]
+        let threadId = string(from: userInfo["threadId"]) ?? string(from: nested?["thread-id"])
+        return NotificationTarget(botId: botId, threadId: threadId)
     }
 
     public func requiresTaskSwitch(activeThreadId: String) -> Bool {

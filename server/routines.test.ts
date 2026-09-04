@@ -17,6 +17,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   let now = start;
   let bot: "ready" | "busy" | "missing" = "ready";
   let task = 0;
+  const threads = new Set<string>();
   const started: Array<{ botId: string; threadId: string; prompt: string }> = [];
   const runOns: string[] = [];
   const triggerSources: string[] = [];
@@ -32,8 +33,11 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     turnLive: () => live,
     createTask: (_botId, _title, activate = false) => {
       taskActivations.push(activate);
-      return { threadId: `thread-${++task}` };
+      const threadId = `thread-${++task}`;
+      threads.add(threadId);
+      return { threadId };
     },
+    taskExists: (_botId, threadId) => threads.has(threadId),
     startTurn: async (botId, threadId, prompt, runOn, triggerSource) => {
       started.push({ botId, threadId, prompt });
       runOns.push(runOn);
@@ -241,6 +245,36 @@ describe("RoutineManager", () => {
     expect(h.taskActivations).toEqual([false]);
   });
 
+  it("reuses the previous thread for a later scheduled run of the same routine", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Morning brief",
+      prompt: "Summarize overnight",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "thread-1",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    expect(h.started).toEqual([{ botId: "maus-1", threadId: "thread-1", prompt: "Summarize overnight" }]);
+
+    const again = h.manager.listRoutines()[0]!;
+    h.setNow(again.nextRunAt!);
+    await h.manager.tick();
+    expect(h.started).toEqual([
+      { botId: "maus-1", threadId: "thread-1", prompt: "Summarize overnight" },
+      { botId: "maus-1", threadId: "thread-1", prompt: "Summarize overnight" },
+    ]);
+    expect(h.taskActivations).toEqual([false]);
+    expect(h.manager.listRuns().map((run) => run.threadId)).toEqual(["thread-1", "thread-1"]);
+  });
+
   it("cancels queued work when a routine is paused", async () => {
     const h = harness();
     h.setBot("busy");
@@ -332,6 +366,86 @@ describe("RoutineManager", () => {
     expect(h.runOns).toEqual(["cloud"]);
     expect(h.triggerSources).toEqual(["webhook"]);
     expect(h.taskActivations).toEqual([true]);
+  });
+
+  it("puts every webhook delivery for a bot on one Triggers thread", async () => {
+    const h = harness();
+    h.manager.enqueueWebhook({
+      webhookId: "hook-1",
+      webhookName: "New ticket",
+      prompt: "Handle ticket 42",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d1",
+      receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
+    });
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "thread-1",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    h.manager.enqueueWebhook({
+      webhookId: "hook-2",
+      webhookName: "Pager",
+      prompt: "Handle page",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d2",
+      receivedAt: new Date(2026, 7, 17, 8, 3).getTime(),
+    });
+    await h.manager.tick();
+    expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1"]);
+    expect(h.taskActivations).toEqual([true]);
+  });
+
+  it("writes every event into the bot's one conversation in simple mode", async () => {
+    const h = harness();
+    h.options.conversationMode = () => "simple";
+    h.options.defaultThread = () => "chat-thread";
+    h.manager.enqueueWebhook({
+      webhookId: "hook-1",
+      webhookName: "New ticket",
+      prompt: "Handle ticket 42",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d-simple",
+      receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
+    });
+    await h.manager.tick();
+    expect(h.started).toEqual([{ botId: "maus-webhook", threadId: "chat-thread", prompt: "Handle ticket 42" }]);
+    expect(h.taskActivations).toEqual([]);
+  });
+
+  it("puts every scheduled routine for a bot on one Routines thread", async () => {
+    const h = harness();
+    const morning = h.manager.create({
+      name: "Morning brief",
+      prompt: "Morning",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    h.setNow(morning.nextRunAt!);
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "thread-1",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    const evening = h.manager.create({
+      name: "Evening sweep",
+      prompt: "Evening",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "18:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    h.setNow(evening.nextRunAt!);
+    await h.manager.tick();
+    expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1"]);
+    expect(h.started.map((row) => row.prompt)).toEqual(["Morning", "Evening"]);
   });
 
   it("folds provider lifecycle events into the calendar receipt", async () => {

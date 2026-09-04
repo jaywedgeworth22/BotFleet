@@ -1,5 +1,5 @@
 import { track } from "@/lib/analytics";
-import { Fragment, useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Archive,
@@ -32,7 +32,15 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, getRoomTerminology, latestChatActivity, type Bot, type Group, type GroupTask } from "@/state/store";
+import { api, useStore, formatTime, visibleMessages, getRoomTerminology, getConversationMode, latestChatActivity, type Bot, type Group } from "@/state/store";
+import { allowsMultipleBotThreads, rosterPrimaryLabel } from "../../shared/conversation-mode";
+import {
+  THREAD_DRAG_TYPE,
+  beginThreadDrag,
+  endThreadDrag,
+  readThreadDragEvent,
+  threadDragTypes,
+} from "@/lib/thread-drag";
 
 import { BotAvatar, InitialsAvatar } from "./Avatar";
 import { stateForBot } from "@/lib/mascot";
@@ -236,29 +244,17 @@ function StackedMauses({ group, members, density }: { group: Group; members: Bot
   );
 }
 
-/** A conversation dragged from one channel to another.  A private MIME type
- * rather than text/plain so a stray text drop from anywhere else cannot be
- * mistaken for one of ours. */
-const THREAD_DRAG_TYPE = "application/x-botfleet-thread";
-
-interface ThreadDrag {
+/** Whatever a conversation hangs under in the sidebar: a bot or a channel.
+ * The two record types differ, so the rows work from this instead. */
+interface ThreadOwner {
+  kind: "bot" | "group";
+  id: string;
+  name: string;
+  /** The conversation this owner is currently showing. */
   threadId: string;
-  fromGroupId: string;
 }
 
-function readThreadDrag(event: React.DragEvent): ThreadDrag | null {
-  const raw = event.dataTransfer?.getData(THREAD_DRAG_TYPE);
-  if (!raw) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== "object") return null;
-    const { threadId, fromGroupId } = parsed as Partial<ThreadDrag>;
-    if (typeof threadId !== "string" || typeof fromGroupId !== "string") return null;
-    return { threadId, fromGroupId };
-  } catch {
-    return null;
-  }
-}
+const THREAD_DROP_CLASS = "bg-ink/15 ring-2 ring-ink/25";
 
 /** One conversation inside a channel.
  *
@@ -266,30 +262,39 @@ function readThreadDrag(event: React.DragEvent): ThreadDrag | null {
  * them be renamed, so this row is the missing half: somewhere to see the
  * name, change it, and move the conversation somewhere else. */
 function ThreadListItem({
-  group,
+  owner,
   task,
   density,
+  siblingCount,
   onMenu,
   renameSignal,
 }: {
-  group: Group;
-  task: GroupTask;
+  owner: ThreadOwner;
+  task: { threadId: string; title: string; createdAt: number; lastActivity?: number };
   density: SidebarDensity;
-  onMenu: (menu: { groupId: string; threadId: string; x: number; y: number }) => void;
+  siblingCount: number;
+  onMenu: (menu: { ownerId: string; threadId: string; x: number; y: number }) => void;
   /** Bumped by the context menu's Rename, which lives outside this row. */
   renameSignal: number;
 }) {
   const { state, dispatch } = useStore();
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState(task.title);
+  const [isDragTarget, setIsDragTarget] = useState(false);
   const active =
-    state.activeView === "chat" && state.selectedId === group.id && group.threadId === task.threadId;
+    state.activeView === "chat" &&
+    state.selectedId === owner.id &&
+    owner.threadId === task.threadId;
 
   const commit = () => {
     const title = draft.trim();
     setRenaming(false);
     if (!title || title === task.title) return;
-    dispatch({ type: "renameGroupTask", groupId: group.id, threadId: task.threadId, title });
+    dispatch(
+      owner.kind === "group"
+        ? { type: "renameGroupTask", groupId: owner.id, threadId: task.threadId, title }
+        : { type: "renameTask", botId: owner.id, threadId: task.threadId, title },
+    );
   };
 
   useEffect(() => {
@@ -325,19 +330,26 @@ function ThreadListItem({
 
   return (
     <button
-      draggable
+      draggable={siblingCount > 1}
       onDragStart={(event) => {
-        event.dataTransfer.setData(
-          THREAD_DRAG_TYPE,
-          JSON.stringify({ threadId: task.threadId, fromGroupId: group.id }),
-        );
+        const payload = beginThreadDrag({
+          threadId: task.threadId,
+          fromId: owner.id,
+          fromKind: owner.kind,
+        });
+        event.dataTransfer.setData(THREAD_DRAG_TYPE, payload);
+        event.dataTransfer.setData("text/plain", payload);
         event.dataTransfer.effectAllowed = "move";
       }}
+      onDragEnd={() => endThreadDrag()}
       onClick={() => {
-        dispatch({ type: "select", id: group.id });
-        if (group.threadId !== task.threadId) {
-          dispatch({ type: "switchGroupTask", groupId: group.id, threadId: task.threadId });
-        }
+        dispatch({ type: "select", id: owner.id });
+        if (owner.threadId === task.threadId) return;
+        dispatch(
+          owner.kind === "group"
+            ? { type: "switchGroupTask", groupId: owner.id, threadId: task.threadId }
+            : { type: "switchTask", botId: owner.id, threadId: task.threadId },
+        );
       }}
       onDoubleClick={(event) => {
         event.preventDefault();
@@ -346,24 +358,63 @@ function ThreadListItem({
       }}
       onContextMenu={(event) => {
         event.preventDefault();
-        onMenu({ groupId: group.id, threadId: task.threadId, x: event.clientX, y: event.clientY });
+        onMenu({ ownerId: owner.id, threadId: task.threadId, x: event.clientX, y: event.clientY });
       }}
       onKeyDown={(event) => {
         if (event.key !== "ContextMenu" && !(event.shiftKey && event.key === "F10")) return;
         event.preventDefault();
         const rect = event.currentTarget.getBoundingClientRect();
         onMenu({
-          groupId: group.id,
+          ownerId: owner.id,
           threadId: task.threadId,
           x: rect.left + rect.width / 2,
           y: rect.top + rect.height / 2,
         });
       }}
-      title={`${label}\u00a0 — double-click to rename, drag to move`}
+      onDragEnter={(event) => {
+        if (!threadDragTypes(event)) return;
+        event.preventDefault();
+        setIsDragTarget(true);
+      }}
+      onDragLeave={() => setIsDragTarget(false)}
+      onDragOver={(event) => {
+        if (!threadDragTypes(event)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        setIsDragTarget(false);
+        const dragged = readThreadDragEvent(event);
+        if (!dragged || dragged.threadId === task.threadId) return;
+        if (dragged.fromKind === "bot" && owner.kind === "bot" && dragged.fromId === owner.id) {
+          dispatch({
+            type: "mergeTasks",
+            botId: owner.id,
+            threadId: dragged.threadId,
+            intoThreadId: task.threadId,
+          });
+          return;
+        }
+        if (dragged.fromKind === "bot" && owner.kind === "bot") {
+          dispatch({
+            type: "moveTaskToBot",
+            botId: dragged.fromId,
+            threadId: dragged.threadId,
+            toBotId: owner.id,
+          });
+        }
+      }}
+      title={`${label}\u00a0 — double-click to rename, drag onto a bot to move, onto a thread to merge`}
       className={cn(
         "flex w-full items-center gap-2 rounded-lg py-1 pr-2 text-left transition-colors",
         density === "compact" ? "pl-8" : "pl-9",
-        active ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
+        isDragTarget
+          ? THREAD_DROP_CLASS
+          : active
+            ? "bg-raised text-ink"
+            : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
       )}
     >
       <span className="size-1.5 shrink-0 rounded-full bg-current opacity-40" />
@@ -384,16 +435,20 @@ function ThreadListItem({
  * list would be a step with nothing in it. */
 function ThreadContextMenu({
   menu,
+  owner,
+  siblingCount,
   onClose,
   onRename,
 }: {
-  menu: { groupId: string; threadId: string; x: number; y: number };
+  menu: { ownerId: string; threadId: string; x: number; y: number };
+  owner: ThreadOwner;
+  /** How many conversations the owner has; the last one cannot move. */
+  siblingCount: number;
   onClose: () => void;
   onRename: () => void;
 }) {
   const { state, dispatch } = useStore();
   const [open, setOpen] = useState<"channels" | "bots" | null>(null);
-  const group = state.groups.find((g) => g.id === menu.groupId);
   const terminology = getRoomTerminology(state.config);
 
   useEffect(() => {
@@ -411,12 +466,15 @@ function ThreadContextMenu({
     };
   }, [onClose]);
 
-  if (!group) return null;
-  // A channel keeps its last conversation, so with only one there is
-  // nowhere for this one to go.
-  const movable = (group.tasks ?? []).length > 1;
-  const otherRooms = state.groups.filter((g) => g.id !== group.id && !g.dm);
-  const bots = state.bots.filter((b) => !b.hidden);
+  // A bot and a channel each keep their last conversation, so with only one
+  // there is nowhere for this one to go.
+  const movable = siblingCount > 1;
+  const otherRooms = state.groups.filter(
+    (g) => !g.dm && !(owner.kind === "group" && g.id === owner.id),
+  );
+  const bots = state.bots.filter(
+    (b) => !b.hidden && !(owner.kind === "bot" && b.id === owner.id),
+  );
 
   const top = Math.min(menu.y, window.innerHeight - 220);
   const left = Math.min(menu.x, window.innerWidth - 250);
@@ -465,12 +523,21 @@ function ThreadContextMenu({
               submenu(
                 otherRooms.map((room) => ({ id: room.id, name: room.name })),
                 (id) =>
-                  dispatch({
-                    type: "moveGroupTask",
-                    groupId: group.id,
-                    threadId: menu.threadId,
-                    toGroupId: id,
-                  }),
+                  dispatch(
+                    owner.kind === "group"
+                      ? {
+                          type: "moveGroupTask",
+                          groupId: owner.id,
+                          threadId: menu.threadId,
+                          toGroupId: id,
+                        }
+                      : {
+                          type: "moveTaskToGroup",
+                          botId: owner.id,
+                          threadId: menu.threadId,
+                          toGroupId: id,
+                        },
+                  ),
               )}
           </div>
           <div className="relative" onMouseEnter={() => setOpen("bots")} onMouseLeave={() => setOpen(null)}>
@@ -482,19 +549,29 @@ function ThreadContextMenu({
               submenu(
                 bots.map((bot) => ({ id: bot.id, name: bot.name })),
                 (id) =>
-                  dispatch({
-                    type: "moveGroupTaskToBot",
-                    groupId: group.id,
-                    threadId: menu.threadId,
-                    botId: id,
-                  }),
+                  dispatch(
+                    owner.kind === "group"
+                      ? {
+                          type: "moveGroupTaskToBot",
+                          groupId: owner.id,
+                          threadId: menu.threadId,
+                          botId: id,
+                        }
+                      : {
+                          type: "moveTaskToBot",
+                          botId: owner.id,
+                          threadId: menu.threadId,
+                          toBotId: id,
+                        },
+                  ),
               )}
           </div>
         </>
       )}
       {!movable && (
         <div className="px-3 py-2 text-[12px] text-ink-secondary">
-          A {terminology.singular.toLowerCase()} keeps its last conversation.
+          {owner.kind === "group" ? `A ${terminology.singular.toLowerCase()}` : "A bot"} keeps its
+          last conversation.
         </div>
       )}
     </div>,
@@ -502,109 +579,15 @@ function ThreadContextMenu({
   );
 }
 
-function GroupBranch({
-  group,
-  density,
-  onMenu,
-  threadCount,
-  collapsed,
-  onToggle,
-}: {
-  group: Group;
-  density: SidebarDensity;
-  onMenu: (menu: { groupId: string; x: number; y: number }) => void;
-  threadCount: number;
-  collapsed: boolean;
-  onToggle: () => void;
-}) {
-  const [showAll, setShowAll] = useState(false);
-  const [threadMenu, setThreadMenu] = useState<{
-    groupId: string;
-    threadId: string;
-    x: number;
-    y: number;
-  } | null>(null);
-  const [renameSignals, setRenameSignals] = useState<Record<string, number>>({});
-  const tasks = group.tasks ?? [];
-  // Most recently active first, where activity is the last thing that
-  // happened in the thread whoever caused it — a person, a webhook or a
-  // schedule all land as messages.
-  const ordered = [...tasks].sort(
-    (a, b) => (b.lastActivity ?? b.createdAt) - (a.lastActivity ?? a.createdAt),
-  );
-  const branching = ordered.length > 1 && density !== "icons";
-  const shown = showAll ? ordered : ordered.slice(0, threadCount);
-  const hidden = ordered.length - shown.length;
-
-  return (
-    <div>
-      <div className="flex items-center">
-        {branching && (
-          <button
-            onClick={onToggle}
-            aria-expanded={!collapsed}
-            aria-label={`${collapsed ? "Show" : "Hide"} conversations in ${group.name}`}
-            className="shrink-0 rounded-md p-0.5 text-ink-secondary hover:bg-raised/50 hover:text-ink"
-          >
-            <ChevronRight size={14} className={cn("transition-transform", !collapsed && "rotate-90")} />
-          </button>
-        )}
-        <div className="min-w-0 flex-1">
-          <GroupListItem group={group} density={density} onMenu={onMenu} />
-        </div>
-      </div>
-      {branching && !collapsed && (
-        <div className="mt-0.5 flex flex-col gap-0.5">
-          {shown.map((task) => (
-            <ThreadListItem
-              key={task.threadId}
-              group={group}
-              task={task}
-              density={density}
-              onMenu={setThreadMenu}
-              renameSignal={renameSignals[task.threadId] ?? 0}
-            />
-          ))}
-          {hidden > 0 && (
-            <button
-              onClick={() => setShowAll(true)}
-              className={cn(
-                "w-full rounded-lg py-1 pr-2 text-left text-[12px] text-ink-secondary hover:bg-raised/50 hover:text-ink",
-                density === "compact" ? "pl-8" : "pl-9",
-              )}
-            >
-              More Threads&hellip; ({hidden})
-            </button>
-          )}
-          {showAll && ordered.length > threadCount && (
-            <button
-              onClick={() => setShowAll(false)}
-              className={cn(
-                "w-full rounded-lg py-1 pr-2 text-left text-[12px] text-ink-secondary hover:bg-raised/50 hover:text-ink",
-                density === "compact" ? "pl-8" : "pl-9",
-              )}
-            >
-              Show Fewer
-            </button>
-          )}
-        </div>
-      )}
-      {threadMenu && (
-        <ThreadContextMenu
-          menu={threadMenu}
-          onClose={() => setThreadMenu(null)}
-          onRename={() =>
-            setRenameSignals((current) => ({
-              ...current,
-              [threadMenu.threadId]: (current[threadMenu.threadId] ?? 0) + 1,
-            }))
-          }
-        />
-      )}
-    </div>
-  );
-}
-
+/** The conversations belonging to one bot or channel, under its row.
+ *
+ * Both kinds own conversations, and most of them live under bots — a bot
+ * that runs a nightly routine collects one per firing — so hanging them off
+ * channels alone would have hidden nearly all of them.
+ *
+ * Collapsed state and how many to show are presentation, so they live in
+ * this device's storage rather than the harness: the phone has its own
+ * screen and its own idea of how much fits. */
 function GroupListItem({
   group,
   density,
@@ -624,8 +607,7 @@ function GroupListItem({
   const last = group.messages.at(-1);
   const activityAt = latestChatActivity(group.tasks, last?.at, group.createdAt);
 
-  const acceptsThread = (e: React.DragEvent) =>
-    Array.from(e.dataTransfer?.types ?? []).includes(THREAD_DRAG_TYPE);
+  const acceptsThread = (e: React.DragEvent) => threadDragTypes(e);
 
   const carriesFiles = (e: React.DragEvent) =>
     Array.from(e.dataTransfer?.types ?? []).includes("Files");
@@ -656,14 +638,19 @@ function GroupListItem({
     e.stopPropagation();
     dragDepth.current = 0;
     setIsDragTarget(false);
-    const dragged = readThreadDrag(e);
+    const dragged = readThreadDragEvent(e);
     if (dragged) {
-      // Dropping a conversation on the channel it already lives in is a
-      // no-op rather than an error — the gesture just did not go anywhere.
-      if (dragged.fromGroupId !== group.id) {
+      if (dragged.fromKind === "group" && dragged.fromId !== group.id) {
         dispatch({
           type: "moveGroupTask",
-          groupId: dragged.fromGroupId,
+          groupId: dragged.fromId,
+          threadId: dragged.threadId,
+          toGroupId: group.id,
+        });
+      } else if (dragged.fromKind === "bot") {
+        dispatch({
+          type: "moveTaskToGroup",
+          botId: dragged.fromId,
           threadId: dragged.threadId,
           toGroupId: group.id,
         });
@@ -710,7 +697,7 @@ function GroupListItem({
         "relative flex w-full items-center rounded-xl text-left transition-all",
         density === "icons" ? "justify-center px-1 py-1.5" : density === "compact" ? "gap-2 px-2 py-1.5" : "gap-3 px-3 py-2.5",
         isDragTarget
-          ? "ring-2 ring-accent bg-accent/20 scale-[1.02]"
+          ? THREAD_DROP_CLASS
           : selected
             ? "bg-raised"
             : "hover:bg-raised/50",
@@ -733,6 +720,155 @@ function GroupListItem({
         <span className="absolute bottom-1.5 right-1.5 size-2 rounded-full border border-panel bg-accent" />
       )}
     </button>
+  );
+}
+
+function ThreadBranch({
+  owner,
+  tasks,
+  density,
+  threadCount,
+  collapsed,
+}: {
+  owner: ThreadOwner;
+  tasks: Array<{ threadId: string; title: string; createdAt: number; lastActivity?: number }>;
+  density: SidebarDensity;
+  threadCount: number;
+  collapsed: boolean;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const [threadMenu, setThreadMenu] = useState<{
+    ownerId: string;
+    threadId: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const [renameSignals, setRenameSignals] = useState<Record<string, number>>({});
+
+  // Most recently active first, where activity is the last thing that
+  // happened in the thread whoever caused it — a person, a webhook or a
+  // schedule all land as messages.
+  const ordered = [...tasks].sort(
+    (a, b) => (b.lastActivity ?? b.createdAt) - (a.lastActivity ?? a.createdAt),
+  );
+  const shown = showAll ? ordered : ordered.slice(0, threadCount);
+  const hidden = ordered.length - shown.length;
+  const moreClass = cn(
+    "w-full rounded-lg py-1 pr-2 text-left text-[12px] text-ink-secondary hover:bg-raised/50 hover:text-ink",
+    density === "compact" ? "pl-8" : "pl-9",
+  );
+
+  if (collapsed) return null;
+  return (
+    <div className="mt-0.5 flex flex-col gap-0.5">
+      {shown.map((task) => (
+        <ThreadListItem
+          key={task.threadId}
+          owner={owner}
+          task={task}
+          density={density}
+          siblingCount={ordered.length}
+          onMenu={setThreadMenu}
+          renameSignal={renameSignals[task.threadId] ?? 0}
+        />
+      ))}
+      {hidden > 0 && (
+        <button onClick={() => setShowAll(true)} className={moreClass}>
+          More Threads&hellip; ({hidden})
+        </button>
+      )}
+      {showAll && ordered.length > threadCount && (
+        <button onClick={() => setShowAll(false)} className={moreClass}>
+          Show Fewer
+        </button>
+      )}
+      {threadMenu && (
+        <ThreadContextMenu
+          menu={threadMenu}
+          owner={owner}
+          siblingCount={ordered.length}
+          onClose={() => setThreadMenu(null)}
+          onRename={() =>
+            setRenameSignals((current) => ({
+              ...current,
+              [threadMenu.threadId]: (current[threadMenu.threadId] ?? 0) + 1,
+            }))
+          }
+        />
+      )}
+    </div>
+  );
+}
+
+/** The disclosure triangle that opens a row's conversations.  Rendered as a
+ * sibling of the row rather than inside it: the rows are buttons, and a
+ * button inside a button is neither valid nor reachable. */
+function ThreadDisclosure({
+  count,
+  collapsed,
+  name,
+  onToggle,
+}: {
+  count: number;
+  collapsed: boolean;
+  name: string;
+  onToggle: () => void;
+}) {
+  if (count < 1) return <span className="w-[18px] shrink-0" aria-hidden="true" />;
+  return (
+    <button
+      onClick={onToggle}
+      aria-expanded={!collapsed}
+      aria-label={`${collapsed ? "Show" : "Hide"} the ${count} conversation${count === 1 ? "" : "s"} in ${name}`}
+      className="shrink-0 rounded-md p-0.5 text-ink-secondary hover:bg-raised/50 hover:text-ink"
+    >
+      <ChevronRight size={14} className={cn("transition-transform", !collapsed && "rotate-90")} />
+    </button>
+  );
+}
+
+/** Wraps any sidebar row with its disclosure triangle and its
+ * conversations, so bots and channels get the same treatment without
+ * either row component having to know about threads. */
+function ThreadTree({
+  owner,
+  tasks,
+  density,
+  threadCount,
+  collapsed,
+  onToggle,
+  children,
+}: {
+  owner: ThreadOwner;
+  tasks: Array<{ threadId: string; title: string; createdAt: number; lastActivity?: number }>;
+  density: SidebarDensity;
+  threadCount: number;
+  collapsed: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  // Avatars-only mode has no room for a tree, and one conversation is just
+  // the row itself said twice.
+  if (density === "icons" || tasks.length < 2) return <>{children}</>;
+  return (
+    <div>
+      <div className="flex items-center">
+        <ThreadDisclosure
+          count={tasks.length}
+          collapsed={collapsed}
+          name={owner.name}
+          onToggle={onToggle}
+        />
+        <div className="min-w-0 flex-1">{children}</div>
+      </div>
+      <ThreadBranch
+        owner={owner}
+        tasks={tasks}
+        density={density}
+        threadCount={threadCount}
+        collapsed={collapsed}
+      />
+    </div>
   );
 }
 
@@ -1349,29 +1485,55 @@ function BotListItem({
   const [isDragTarget, setIsDragTarget] = useState(false);
   const dragDepth = useRef(0);
 
+  const acceptsThread = (e: React.DragEvent) => threadDragTypes(e);
+  const carriesFiles = (e: React.DragEvent) =>
+    Array.from(e.dataTransfer?.types ?? []).includes("Files");
+
   const onDragEnter = (e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    if (!carriesFiles(e) && !acceptsThread(e)) return;
     e.preventDefault();
     dragDepth.current += 1;
     setIsDragTarget(true);
   };
   const onDragLeave = (e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    if (!carriesFiles(e) && !acceptsThread(e)) return;
     dragDepth.current = Math.max(0, dragDepth.current - 1);
     if (dragDepth.current === 0) setIsDragTarget(false);
   };
   const onDragOver = (e: React.DragEvent) => {
-    if (Array.from(e.dataTransfer?.types ?? []).includes("Files")) {
+    if (carriesFiles(e)) {
       e.preventDefault();
       e.dataTransfer.dropEffect = "copy";
+    } else if (acceptsThread(e)) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
     }
   };
   const onDrop = async (e: React.DragEvent) => {
-    if (!Array.from(e.dataTransfer?.types ?? []).includes("Files")) return;
+    if (!carriesFiles(e) && !acceptsThread(e)) return;
     e.preventDefault();
     e.stopPropagation();
     dragDepth.current = 0;
     setIsDragTarget(false);
+    const dragged = readThreadDragEvent(e);
+    if (dragged) {
+      if (dragged.fromKind === "bot" && dragged.fromId !== bot.id) {
+        dispatch({
+          type: "moveTaskToBot",
+          botId: dragged.fromId,
+          threadId: dragged.threadId,
+          toBotId: bot.id,
+        });
+      } else if (dragged.fromKind === "group") {
+        dispatch({
+          type: "moveGroupTaskToBot",
+          groupId: dragged.fromId,
+          threadId: dragged.threadId,
+          botId: bot.id,
+        });
+      }
+      return;
+    }
     const files = Array.from(e.dataTransfer?.files ?? []);
     if (!files.length) return;
     dispatch({ type: "select", id: bot.id });
@@ -1410,7 +1572,7 @@ function BotListItem({
       onDrop={onDrop}
       className={cn(
         "group relative rounded-xl transition-all",
-        isDragTarget && "ring-2 ring-accent bg-accent/20 scale-[1.02]",
+        isDragTarget && THREAD_DROP_CLASS,
       )}
       title={iconOnly ? bot.name : undefined}
     >
@@ -1848,6 +2010,9 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
       (g.tasks ?? []).some((task) => task.title.toLowerCase().includes(q)),
   );
   const terminology = getRoomTerminology(state.config);
+  const conversationMode = getConversationMode(state.config);
+  const showExtraThreads = allowsMultipleBotThreads(conversationMode);
+  const primary = rosterPrimaryLabel(conversationMode);
   const sectionedGroups = visibleGroups.filter((g) => g.section);
   const unsectionedGroups = visibleGroups.filter((g) => !g.section);
   // sections keep first-appearance order within the current list; a section
@@ -1995,7 +2160,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   className="flex w-full items-center gap-3 px-3.5 py-2 text-left text-[14px] text-ink hover:bg-raised/70"
                 >
                   <BotIcon size={16} className="text-ink-secondary" />
-                  New Bot
+                  {primary.newLabel}
                 </button>
                 <button
                   onClick={() => {
@@ -2056,7 +2221,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => e.key === "Escape" && setQuery("")}
             placeholder="Search"
-            aria-label="Search Bots and Messages"
+            aria-label={`Search ${primary.plural} and Messages`}
             className="w-full bg-transparent text-[14px] text-ink placeholder:text-ink-secondary focus:outline-none"
           />
         </div>
@@ -2074,37 +2239,59 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
           )}
           {unsectionedChief && (
             <div className="mb-1.5">
-              <BotListItem
-                bot={unsectionedChief}
+              <ThreadTree
+                key={unsectionedChief.id}
+                owner={{ kind: "bot", id: unsectionedChief.id, name: unsectionedChief.name, threadId: unsectionedChief.threadId }}
+                tasks={showExtraThreads ? (unsectionedChief.tasks ?? []) : []}
                 density={density}
-                onMenu={setMenu}
-                onArchive={(bot) => void archiveBot(bot)}
-                archiveDisabled
-              />
+                threadCount={threadCount}
+                collapsed={collapsedRooms.has(unsectionedChief.id)}
+                onToggle={() => toggleRoom(unsectionedChief.id)}
+              >
+                <BotListItem
+                  bot={unsectionedChief}
+                  density={density}
+                  onMenu={setMenu}
+                  onArchive={(bot) => void archiveBot(bot)}
+                  archiveDisabled
+                />
+              </ThreadTree>
             </div>
           )}
           {unsectionedGroups.length > 0 && density !== "icons" && <SectionDivider name={terminology.plural} />}
           {unsectionedGroups.map((g) => (
-            <GroupBranch
+            <ThreadTree
               key={g.id}
-              group={g}
+              owner={{ kind: "group", id: g.id, name: g.name, threadId: g.threadId }}
+              tasks={showExtraThreads ? (g.tasks ?? []) : []}
               density={density}
-              onMenu={setRoomMenu}
               threadCount={threadCount}
               collapsed={collapsedRooms.has(g.id)}
               onToggle={() => toggleRoom(g.id)}
-            />
+            >
+              <GroupListItem group={g} density={density} onMenu={setRoomMenu} />
+            </ThreadTree>
           ))}
-          {visibleBots.length > 0 && density !== "icons" && <SectionDivider name="Bots" />}
+          {visibleBots.length > 0 && density !== "icons" && <SectionDivider name={primary.plural} />}
           {visibleBots.map((b) => (
-            <BotListItem
+            <ThreadTree
               key={b.id}
-              bot={b}
+              owner={{ kind: "bot", id: b.id, name: b.name, threadId: b.threadId }}
+              tasks={showExtraThreads ? (b.tasks ?? []) : []}
               density={density}
-              onMenu={setMenu}
-              onArchive={(bot) => void archiveBot(bot)}
-              archiveDisabled={activeBotCount <= 1}
-            />
+              threadCount={threadCount}
+              collapsed={collapsedRooms.has(b.id)}
+              onToggle={() => toggleRoom(b.id)}
+            >
+              <BotListItem
+                key={b.id}
+                bot={b}
+                density={density}
+                onMenu={setMenu}
+                onArchive={(bot) => void archiveBot(bot)}
+                archiveDisabled={activeBotCount <= 1}
+              />
+            </ThreadTree>
           ))}
           {sectionNames.map((name) => (
             <Fragment key={name}>
@@ -2112,39 +2299,61 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               {sectionChiefs
                 .filter((bot) => bot.section === name)
                 .map((bot) => (
-                  <BotListItem
+                  <ThreadTree
                     key={bot.id}
-                    bot={bot}
+                    owner={{ kind: "bot", id: bot.id, name: bot.name, threadId: bot.threadId }}
+                    tasks={showExtraThreads ? (bot.tasks ?? []) : []}
                     density={density}
-                    onMenu={setMenu}
-                    onArchive={(candidate) => void archiveBot(candidate)}
-                    archiveDisabled
-                  />
+                    threadCount={threadCount}
+                    collapsed={collapsedRooms.has(bot.id)}
+                    onToggle={() => toggleRoom(bot.id)}
+                  >
+                    <BotListItem
+                      key={bot.id}
+                      bot={bot}
+                      density={density}
+                      onMenu={setMenu}
+                      onArchive={(candidate) => void archiveBot(candidate)}
+                      archiveDisabled
+                    />
+                  </ThreadTree>
                 ))}
               {sectionedGroups
                 .filter((g) => g.section === name)
                 .map((g) => (
-                  <GroupBranch
-              key={g.id}
-              group={g}
-              density={density}
-              onMenu={setRoomMenu}
-              threadCount={threadCount}
-              collapsed={collapsedRooms.has(g.id)}
-              onToggle={() => toggleRoom(g.id)}
-            />
+                  <ThreadTree
+                    key={g.id}
+                    owner={{ kind: "group", id: g.id, name: g.name, threadId: g.threadId }}
+                    tasks={showExtraThreads ? (g.tasks ?? []) : []}
+                    density={density}
+                    threadCount={threadCount}
+                    collapsed={collapsedRooms.has(g.id)}
+                    onToggle={() => toggleRoom(g.id)}
+                  >
+                    <GroupListItem group={g} density={density} onMenu={setRoomMenu} />
+                  </ThreadTree>
                 ))}
               {sectionedBots
                 .filter((b) => b.section === name)
                 .map((b) => (
-                  <BotListItem
+                  <ThreadTree
                     key={b.id}
-                    bot={b}
+                    owner={{ kind: "bot", id: b.id, name: b.name, threadId: b.threadId }}
+                    tasks={showExtraThreads ? (b.tasks ?? []) : []}
                     density={density}
-                    onMenu={setMenu}
-                    onArchive={(bot) => void archiveBot(bot)}
-                    archiveDisabled={activeBotCount <= 1}
-                  />
+                    threadCount={threadCount}
+                    collapsed={collapsedRooms.has(b.id)}
+                    onToggle={() => toggleRoom(b.id)}
+                  >
+                    <BotListItem
+                      key={b.id}
+                      bot={b}
+                      density={density}
+                      onMenu={setMenu}
+                      onArchive={(bot) => void archiveBot(bot)}
+                      archiveDisabled={activeBotCount <= 1}
+                    />
+                  </ThreadTree>
                 ))}
             </Fragment>
           ))}
