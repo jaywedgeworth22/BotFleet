@@ -312,13 +312,14 @@ function Bubble({
     <div className={row.gutter}>
       <div className={row.chrome}>
         {/* Row 1: date / time */}
-        <div className="flex items-center text-[11.5px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
+        <div className="flex items-center text-[12.5px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
           {formatHoverTime(message.at)}
         </div>
         {/* Row 2: copy, reply, pin — plus Regenerate, which only ever
             joins them on the newest reply. */}
         <div className="flex items-center gap-1.5">
           <CopyButton
+            iconSize={17}
             text={copyContent}
             messageId={message.id}
             requestId={requestId}
@@ -335,7 +336,7 @@ function Bubble({
             className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
             title="Reply"
           >
-            <MessageSquareReply size={14} />
+            <MessageSquareReply size={17} />
           </button>
 
           <button
@@ -354,7 +355,7 @@ function Bubble({
                 : "Pin this message to the top of the thread"
             }
           >
-            {bot.pinnedMessageId === message.id ? <PinOff size={14} /> : <Pin size={14} />}
+            {bot.pinnedMessageId === message.id ? <PinOff size={17} /> : <Pin size={17} />}
           </button>
 
           {isLastBotText && !bot.busy && onRegenerate && (
@@ -364,7 +365,7 @@ function Bubble({
               title="Regenerate Response"
               className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
             >
-              <RefreshCw size={14} />
+              <RefreshCw size={17} />
             </button>
           )}
         </div>
@@ -377,7 +378,7 @@ function Bubble({
               className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
               title={bot.modelSelection.model}
             >
-              <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={14} />
+              <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={16} />
             </span>
           )}
         </div>
@@ -405,7 +406,7 @@ function Bubble({
           <div className={row.gutter}>
             <div className={row.chrome}>
               {/* Row 1: date / time */}
-              <div className="flex items-center text-[11.5px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
+              <div className="flex items-center text-[12.5px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
                 {formatHoverTime(message.at)}
               </div>
               {/* Row 2: Edit (waits for the turn to end — same rule as the
@@ -421,10 +422,11 @@ function Bubble({
                     className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
                     title="Edit Message"
                   >
-                    <Pencil size={14} />
+                    <Pencil size={17} />
                   </button>
                 )}
                 <CopyButton
+                  iconSize={17}
                   text={copyContent}
                   messageId={message.id}
                   requestId={requestId}
@@ -451,7 +453,7 @@ function Bubble({
                       : "Pin this message to the top of the thread"
                   }
                 >
-                  {bot.pinnedMessageId === message.id ? <PinOff size={14} /> : <Pin size={14} />}
+                  {bot.pinnedMessageId === message.id ? <PinOff size={17} /> : <Pin size={17} />}
                 </button>
               </div>
             </div>

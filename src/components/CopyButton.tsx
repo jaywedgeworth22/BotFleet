@@ -9,6 +9,9 @@ export interface CopyButtonProps {
   className?: string;
   copied?: boolean;
   onCopy?: () => void;
+  /** Icon size in px.  The message chrome renders these larger than the
+   * default so its stacked rows read at a comparable weight. */
+  iconSize?: number;
 }
 
 export function CopyButton({
@@ -18,6 +21,7 @@ export function CopyButton({
   className,
   copied: externalCopied,
   onCopy,
+  iconSize = 14,
 }: CopyButtonProps) {
   const [copiedType, setCopiedType] = useState<"text" | "id" | null>(null);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -97,7 +101,7 @@ export function CopyButton({
           className,
         )}
       >
-        {isCopied ? <Check size={14} className="text-success" /> : <Copy size={14} />}
+        {isCopied ? <Check size={iconSize} className="text-success" /> : <Copy size={iconSize} />}
       </button>
 
       {menuOpen && (
