@@ -16,7 +16,7 @@ Forty-five consecutive TestFlight workflow runs failed.  The last ones died on e
 - `scripts/ios-fleet/` — vendored ship script, ASC helper, ExportOptions, BotFleet-only `apps.json` (`app.botfleet`, team `CC8UTF7ATG`, marketing `1.0.N`, build UTC `YYYYMMDDHHMM`).
 - `scripts/ios-appstore-gm-prepare.sh` — maps existing secrets `APPLE_API_KEY_ID`, `APPLE_API_ISSUER_ID`, `APPLE_API_KEY_P8_BASE64`, `IOS_CERT_P12_BASE64`, `IOS_CERT_PASSWORD`.  Decodes the p8.  Imports Apple Distribution.  Never prints values.  Does not mint a key.  Does not install a new provisioning profile (automatic signing).
 - `scripts/ios-ship-testflight.sh` — prefers the in-repo fleet copy, then `/Users/jay/apps/ios-fleet`.
-- Contract tests in `scripts/ios-ship-workflow.test.mjs` plus the scheduled-gate offline suite.
+- Contract tests in `scripts/ios-ship-workflow.node-test.mjs` plus the scheduled-gate offline suite.
 
 ## Secrets
 
@@ -24,7 +24,7 @@ Existing repo Actions names only.  No new secret names.  No new profiles.  `IOS_
 
 ## Verification
 
-- `node --test scripts/ios-ship-workflow.test.mjs`
+- `node --test scripts/ios-ship-workflow.node-test.mjs`
 - `bash scripts/ios-fleet/test-scheduled-ship-gate.sh`
 - `pnpm typecheck` (unchanged product code)
 

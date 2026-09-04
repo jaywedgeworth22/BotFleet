@@ -14,7 +14,7 @@ The app is native Swift and uses XcodeGen; EAS commands do not apply.
 
 Merges that touch `ios/**` (or the ship scripts) run `.github/workflows/ios-ship.yml` on GitHub-hosted `macos-latest`.  The job maps existing `APPLE_API_*` and `IOS_CERT_*` repository secrets, then calls `scripts/ios-ship-testflight.sh` with no extra flags.  Marketing stays on the `1.0.N` train (`+1` on every rebuild).  `CURRENT_PROJECT_VERSION` is UTC `YYYYMMDDHHMM`.  Do not mint a new key.  Do not install a new provisioning profile (automatic signing).
 
-The Mac wrapper remains a fallback when the hosted job cannot run.  It prefers `scripts/ios-fleet/`, then `/Users/jay/apps/ios-fleet`.
+The Mac wrapper remains a fallback when the hosted job cannot run.  It prefers `scripts/ios-fleet/`, then a local `ios-fleet` checkout (for example `~/apps/ios-fleet`).
 
 ## Before every upload
 
