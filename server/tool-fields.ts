@@ -20,13 +20,29 @@ export interface ToolFields {
 export function toolFields(
   name: string | undefined,
   rawInput: unknown,
-  options: { hint?: string; locations?: unknown } = {},
+  options: { hint?: string; locations?: unknown; cwd?: string } = {},
 ): ToolFields {
   const activity = toolActivity(name, {
     hint: options.hint,
     rawInput,
     locations: options.locations,
     home: homedir(),
+    cwd: options.cwd,
   });
   return { target: activity.target, toolKind: activity.kind };
+}
+
+/** OpenAI-shaped tool arguments arrive as a JSON *string*.  A partial or
+ * malformed one is normal — arguments stream in fragments — so a parse
+ * failure is not an error, it just means the row shows the tool's name and
+ * nothing more. */
+export function parseToolArguments(raw: unknown): unknown {
+  if (typeof raw !== "string") return raw;
+  const text = raw.trim();
+  if (!text) return undefined;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }

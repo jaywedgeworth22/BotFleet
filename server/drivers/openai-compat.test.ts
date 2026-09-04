@@ -225,3 +225,106 @@ describe("OpenAICompatDriver", () => {
     await inst.dispose();
   });
 });
+
+describe("OpenAICompatDriver tool steps", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("emits contract-shaped tool steps naming what each call touched", async () => {
+    // it used to emit `tool_call.delta` and `itemType: "tool_call"`, neither
+    // of which is in the RuntimeEvent union — both were cast past the type
+    // checker, the harness had no arm for either, and a turn that called a
+    // tool rendered no steps at all
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        if (String(input).endsWith("/models")) {
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        }
+        return new Response(
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":""}}]}}]}\n' +
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"file_path\\":\\"/srv/app/store.ts\\"}"}}]}}]}\n' +
+            "data: [DONE]\n",
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }),
+    );
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "test-tool-steps",
+      displayName: "Tools",
+      enabled: true,
+      config: { url: "https://example.test/v1", apiKeyEnv: "TEST_KEY" },
+      environment: { TEST_KEY: "secret" },
+    });
+    const recorder = recordEvents(inst.adapter);
+
+    await inst.adapter.sendTurn({ threadId: "tool-thread", text: "read it", model: "vendor/model" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const started = recorder.events.filter(
+      (event) => event.type === "item.started" && event.itemType === "tool",
+    );
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ itemId: "call_1", title: "read_file", toolKind: "read" });
+
+    expect(recorder.events).toContainEqual(
+      expect.objectContaining({ type: "item.completed", itemType: "tool", itemId: "call_1", ok: true }),
+    );
+    // the old off-contract shapes cannot recur: `tool_call.delta` and
+    // `itemType: "tool_call"` are not in the RuntimeEvent union, so the type
+    // checker now refuses them where an `as any` used to wave them through
+    recorder.stop();
+    await inst.dispose();
+  });
+
+  it("does not open a second step for a call whose arguments streamed in fragments", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        if (String(input).endsWith("/models")) {
+          return new Response(JSON.stringify({ data: [] }), { status: 200 });
+        }
+        return new Response(
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"bash","arguments":"{\\"comm"}}]}}]}\n' +
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"arguments":"and\\":\\"ls\\"}"}}]}}]}\n' +
+            "data: [DONE]\n",
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }),
+    );
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "test-tool-fragments",
+      displayName: "Tools",
+      enabled: true,
+      config: { url: "https://example.test/v1", apiKeyEnv: "TEST_KEY" },
+      environment: { TEST_KEY: "secret" },
+    });
+    const recorder = recordEvents(inst.adapter);
+
+    await inst.adapter.sendTurn({ threadId: "fragment-thread", text: "run it", model: "vendor/model" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const started = recorder.events.filter(
+      (event) => event.type === "item.started" && event.itemType === "tool",
+    );
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ itemId: "call_a", toolKind: "execute" });
+    recorder.stop();
+    await inst.dispose();
+  });
+
+  it("does not advertise a local-computer tool it never mounts", async () => {
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "test-caps",
+      displayName: "Caps",
+      enabled: true,
+      config: { url: "https://example.test/v1", apiKeyEnv: "TEST_KEY" },
+      environment: { TEST_KEY: "secret" },
+    });
+    expect(inst.adapter.capabilities.localComputerMcp).toBeFalsy();
+    expect(await inst.adapter.respondToRequest("t", "r", { behavior: "allow" })).toBe("unavailable");
+    await inst.dispose();
+  });
+});

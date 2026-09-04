@@ -15,6 +15,7 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { appendNative } from "./native.ts";
+import { parseToolArguments, toolFields } from "../tool-fields.ts";
 
 const DRIVER_KIND = "grok";
 const DEFAULT_URL = "https://api.x.ai/v1";
@@ -45,7 +46,11 @@ function decodeConfig(raw: unknown): GrokConfig {
 export const GrokDriver: ProviderDriver<GrokConfig> = {
   driverKind: DRIVER_KIND,
   // "(API)" distinguishes this key-billed driver from grokAgent, the CLI one
-  metadata: { displayName: "Grok (API)", supportsMultipleInstances: true },
+  // BYOK, billed to the user's own XAI_API_KEY — the same shape as
+  // "MiniMax (API)" and openai-compat, both of which say so.  Omitting it
+  // defaulted to "subscription" and put a bring-your-own-key engine above
+  // the picker's Custom divider alongside Claude and Codex.
+  metadata: { displayName: "Grok (API)", supportsMultipleInstances: true, access: "custom" },
   models: MODELS,
   decodeConfig,
   defaultConfig: () => decodeConfig({}),
@@ -122,8 +127,14 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           for (const tc of toolCallsDelta) {
             const tcIndex = tc.index ?? 0;
             if (!streamToolCalls[tcIndex]) streamToolCalls[tcIndex] = { id: "", function: { name: "", arguments: "" } };
-            if (tc.id) streamToolCalls[tcIndex].id += tc.id;
-            if (tc.function?.name) streamToolCalls[tcIndex].function.name += tc.function.name;
+            // Only the arguments stream in fragments.  A provider that
+            // repeats the id and the name on every chunk — several do — used
+            // to accumulate `call_acall_acall_a` and `bashbashbash`, so the
+            // settled call could never be matched to the step it opened.
+            if (tc.id && !streamToolCalls[tcIndex].id) streamToolCalls[tcIndex].id = tc.id;
+            if (tc.function?.name && !streamToolCalls[tcIndex].function.name) {
+              streamToolCalls[tcIndex].function.name = tc.function.name;
+            }
             if (tc.function?.arguments) streamToolCalls[tcIndex].function.arguments += tc.function.arguments;
             opts.onToolCallDelta?.(tcIndex, tc.id, tc.function?.name, tc.function?.arguments);
           }
@@ -212,6 +223,12 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       emit({ ...base(threadId, turnId), type: "turn.started" });
       emit({ ...base(threadId, turnId), type: "session.started", sessionId: null, model: turn.model ?? MODELS.default });
 
+      // Tool ids this turn has already opened a step for.  The stream
+      // announces a call once and then keeps sending argument fragments for
+      // it, and the settled reply repeats every call — without this a single
+      // tool would open a dozen rows.
+      const started = new Set<string>();
+
       (async () => {
         let attempt = 0;
         for (;;) {
@@ -224,8 +241,25 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
                 streamedText = true;
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
               },
-              onToolCallDelta: (index, id, name, args) => {
-                emit({ ...base(threadId, turnId), type: "tool_call.delta", index, toolCallId: id, name, args } as any);
+              // Contract-shaped tool steps.  These three API drivers used to
+              // emit `tool_call.delta` and `itemType: "tool_call"` — neither
+              // is in the RuntimeEvent union, both were cast past the type
+              // checker with `as any`, and the harness's switch has no arm
+              // for either, so a turn that called five tools rendered no
+              // steps at all.  A streamed delta is only the argument text
+              // arriving, so the step starts here and settles on the
+              // completed call below, where the arguments are whole.
+              onToolCallDelta: (_index, id, name) => {
+                if (!id || started.has(id)) return;
+                started.add(id);
+                emit({
+                  ...base(threadId, turnId),
+                  type: "item.started",
+                  itemType: "tool",
+                  itemId: id,
+                  title: name || "tool",
+                  ...toolFields(name, undefined),
+                });
               },
             });
             appendNative(threadId, { dir: "in", source: "xai.chat.completions", msg: { text, usage } });
@@ -234,7 +268,26 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
             }
             if (tool_calls && tool_calls.length > 0) {
               for (const tc of tool_calls) {
-                emit({ ...base(threadId, turnId), type: "item.completed", itemType: "tool_call", toolCallId: tc.id, name: tc.function.name, args: tc.function.arguments } as any);
+                // a step whose arguments never streamed still needs a start,
+                // or the completion below settles a row nothing opened
+                if (tc.id && !started.has(tc.id)) {
+                  started.add(tc.id);
+                  emit({
+                    ...base(threadId, turnId),
+                    type: "item.started",
+                    itemType: "tool",
+                    itemId: tc.id,
+                    title: tc.function.name,
+                    ...toolFields(tc.function.name, parseToolArguments(tc.function.arguments)),
+                  });
+                }
+                emit({
+                  ...base(threadId, turnId),
+                  type: "item.completed",
+                  itemType: "tool",
+                  itemId: tc.id,
+                  ok: true,
+                });
               }
             }
             if (usage) {
@@ -320,7 +373,10 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        capabilities: { sessionModelSwitch: "in-session", localComputerMcp: true },
+        // no MCP server is mounted anywhere in this file and respondToRequest
+        // answers "unavailable", so localComputerMcp would be a knob the
+        // driver cannot turn — contracts.ts is explicit that we never show one
+        capabilities: { sessionModelSwitch: "in-session" },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const, // this engine has no asks to answer

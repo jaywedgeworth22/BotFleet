@@ -2,6 +2,9 @@ import { describe, expect, it } from "vitest";
 import type { Bot, InstanceInfo } from "@/state/store";
 import {
   autoSelectsLocalComputer,
+  computerDestinationDisabledReason,
+  instanceSupportsCloudComputer,
+  instanceSupportsLocalVm,
   instanceSupportsLocalComputer,
   linuxAutoDescription,
   localComputerDisabledReason,
@@ -98,5 +101,47 @@ describe("local computer UI eligibility", () => {
         localSelectable: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("computer destination eligibility", () => {
+  const bot = { modelSelection: { instanceId: "engine", model: "m" } } satisfies Pick<Bot, "modelSelection">;
+  // SAFETY: the eligibility helpers read only these four fields, so a
+  // partial instance is the whole contract they exercise.
+  const engine = (
+    capabilities: Partial<InstanceInfo["capabilities"]>,
+    driverKind = "claudeAgent",
+    displayName = "Claude",
+  ): InstanceInfo[] =>
+    [{ instanceId: "engine", driverKind, displayName, capabilities }] as InstanceInfo[];
+
+  it("offers a Local VM only to an engine that can mount one", () => {
+    // the real cost of not checking: 51 turns died on "this model engine
+    // cannot use the Local VM" after the picker had offered it
+    expect(instanceSupportsLocalVm(engine({ computerMcp: true }), bot)).toBe(true);
+    expect(instanceSupportsLocalVm(engine({}), bot)).toBe(false);
+    expect(instanceSupportsLocalVm(engine({ localComputerMcp: true }), bot)).toBe(false);
+  });
+
+  it("does not offer a Local VM to the Computer engine, which runs on the box itself", () => {
+    expect(instanceSupportsLocalVm(engine({ computerMcp: true }, "boxAgent", "Computer"), bot)).toBe(false);
+  });
+
+  it("offers a remote desktop to the Computer engine and to anything with the computer surface", () => {
+    expect(instanceSupportsCloudComputer(engine({}, "boxAgent", "Computer"), bot)).toBe(true);
+    expect(instanceSupportsCloudComputer(engine({ computerMcp: true }), bot)).toBe(true);
+    expect(instanceSupportsCloudComputer(engine({}), bot)).toBe(false);
+  });
+
+  it("lets the server have the last word on an engine the client does not know", () => {
+    expect(instanceSupportsLocalVm([], bot)).toBe(true);
+    expect(instanceSupportsCloudComputer([], bot)).toBe(true);
+  });
+
+  it("names the engine in the reason, so the fix is obvious from the tooltip", () => {
+    const reason = computerDestinationDisabledReason("vm", engine({}, "grokAgent", "Grok"), bot);
+    expect(reason).toContain("Grok");
+    expect(reason).toContain("Local VM");
+    expect(computerDestinationDisabledReason("vm", engine({ computerMcp: true }), bot)).toBeNull();
   });
 });

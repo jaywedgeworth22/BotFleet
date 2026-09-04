@@ -660,11 +660,14 @@ describe("applyPiLocalCatalog", () => {
 describe("PiDriver snapshot", () => {
   beforeEach(() => chmodSync(FAKE_CLI, 0o755));
 
-  it("reports available with the CLI version against the fake", async () => {
+  it("reports available with the CLI version, and signed in once pi has written its auth", async () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-pi-auth-"));
+    mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+    writeFileSync(join(home, ".pi", "agent", "auth.json"), "{}");
     const instance = await PiDriver.create({
       instanceId: "pi-snap",
       displayName: undefined,
-      environment: {},
+      environment: { HOME: home, USERPROFILE: home },
       enabled: true,
       config: { cli: FAKE_CLI, fullAuto: false },
     });
@@ -672,6 +675,36 @@ describe("PiDriver snapshot", () => {
     expect(snap.state).toBe("available");
     expect(snap.version).toBe("pi 0.84.2 (fake)");
     expect(snap.authenticated).toBe(true);
+    await instance.dispose();
+  });
+
+  it("reports an installed but unauthenticated pi as not signed in, so setup can offer to fix it", async () => {
+    // it used to answer a hardcoded `true`, so the user found out at the
+    // first failed turn instead of at the setup card
+    const home = mkdtempSync(join(tmpdir(), "omb-pi-noauth-"));
+    const instance = await PiDriver.create({
+      instanceId: "pi-snap-noauth",
+      displayName: undefined,
+      environment: { HOME: home, USERPROFILE: home },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    const snap = await instance.snapshot();
+    expect(snap.state).toBe("available");
+    expect(snap.authenticated).toBe(false);
+    await instance.dispose();
+  });
+
+  it("counts an API key as signed in — pi is BYOK and never writes auth.json for one", async () => {
+    const home = mkdtempSync(join(tmpdir(), "omb-pi-key-"));
+    const instance = await PiDriver.create({
+      instanceId: "pi-snap-key",
+      displayName: undefined,
+      environment: { HOME: home, USERPROFILE: home, PI_API_KEY: "set" },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    expect((await instance.snapshot()).authenticated).toBe(true);
     await instance.dispose();
   });
 

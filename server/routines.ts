@@ -11,6 +11,7 @@ import {
   parseConversationMode,
   type ConversationMode,
 } from "../shared/conversation-mode.ts";
+import { foldPrompts, gapEndsAt, withinGap } from "./trigger-gap.ts";
 
 export type RoutineSchedule =
   | { type: "once"; at: number }
@@ -34,6 +35,28 @@ export const AUTOMATION_LANE_TITLE: Record<AutomationLane, string> = {
   trigger: "Triggers",
   schedule: "Routines",
 };
+
+/** Which conversation a run belongs in — the identity of the thing that
+ * fired it, not the kind of thing it is.
+ *
+ * A lane put every webhook in one "Webhooks" thread and every schedule in
+ * one "Schedules" thread, which is better than a thread per firing but still
+ * mixes unrelated work: an uptime alert and a Sentry incident are not the
+ * same conversation.  Keying on the webhook, the resource trigger, or the
+ * routine gives each one a thread that accumulates — "UptimeRobot Outage &
+ * Issue Alerts" is one conversation with a history, the way a person reading
+ * it expects.
+ *
+ * Manual runs share the routine's thread deliberately: "Run now" is the same
+ * work as the schedule, done impatiently. */
+export function automationThreadKey(run: {
+  routineId: string;
+  webhookId?: string;
+  triggerSource?: RoutineRunTrigger;
+}): string {
+  if (run.triggerSource === "webhook" && run.webhookId) return `webhook:${run.webhookId}`;
+  return `routine:${run.routineId}`;
+}
 
 export type RoutineRunStatus =
   | "queued"
@@ -142,6 +165,9 @@ export interface RoutineManagerOptions {
    * is what lets the server number and replay them. */
   emit?: (payload: Record<string, unknown>) => void;
   botState: (botId: string) => "ready" | "busy" | "missing";
+  /** Minutes this run's trigger must stay quiet after it activates.  Absent
+   * or 0 runs every delivery as it lands. */
+  minGapMinutes?: (run: RoutineRun) => number | undefined;
   /** Live workspace layout.  Absent keeps the historical lane behavior so
    * existing tests (and an older harness wiring) still mint Triggers /
    * Routines tasks. */
@@ -258,6 +284,16 @@ export class RoutineManager {
   private routineRequestReceipts: RoutineRequestReceipt[] = [];
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** When each trigger last STARTED, keyed by `automationThreadKey`.
+   *
+   * In memory only: a gap is a rate limit on waking a bot, and after a
+   * restart the right thing is to run the next delivery rather than hold it
+   * for a quiet period nobody remembers asking for. */
+  private readonly lastStartedByKey = new Map<string, number>();
+  /** A one-shot timer for the moment a gap closes, so a batch that arrived
+   * during the quiet period does not sit until the next periodic tick. */
+  private gapWake: ReturnType<typeof setTimeout> | null = null;
+  private gapWakeAt = 0;
 
   constructor(options: RoutineManagerOptions) {
     this.options = options;
@@ -654,6 +690,28 @@ export class RoutineManager {
   stop() {
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
+    if (this.gapWake) clearTimeout(this.gapWake);
+    this.gapWake = null;
+    this.gapWakeAt = 0;
+  }
+
+  /** Come back when a gap closes.
+   *
+   * The periodic tick would find the batch eventually, but "eventually" is a
+   * whole interval late for work the person can watch arriving.  One timer is
+   * kept — the earliest pending open — because every later gap is covered by
+   * the tick that timer causes. */
+  private scheduleGapWake(at: number): void {
+    if (this.gapWake && this.gapWakeAt <= at) return;
+    if (this.gapWake) clearTimeout(this.gapWake);
+    this.gapWakeAt = at;
+    const delay = Math.max(0, at - this.now());
+    this.gapWake = setTimeout(() => {
+      this.gapWake = null;
+      this.gapWakeAt = 0;
+      void this.tick();
+    }, delay);
+    this.gapWake.unref?.();
   }
 
   async tick(): Promise<void> {
@@ -694,14 +752,31 @@ export class RoutineManager {
           this.failRun(run, "The assigned bot no longer exists");
           continue;
         }
-        // A bot can only run one thread at a time.  Simple mode writes
-        // every event into that one conversation.  Fleet keeps Triggers
-        // and Routines.  Projects split Webhooks / Resources / Schedules
-        // so each type of incoming event has one thread.  A webhook still
+        // A trigger with a minimum gap stays quiet after it runs.  The
+        // deliveries that arrive meanwhile are not dropped: they stay queued
+        // and the whole batch goes into one turn when the gap closes, which
+        // is both cheaper and a better prompt ("these six checks failed"
+        // rather than six copies of "a check failed").
+        const key = automationThreadKey(run);
+        const gapMinutes = this.options.minGapMinutes?.(run);
+        if (gapMinutes) {
+          const lastStartedAt = this.lastStartedByKey.get(key);
+          if (withinGap(lastStartedAt, this.now(), gapMinutes)) {
+            const opensAt = gapEndsAt(lastStartedAt, gapMinutes);
+            if (opensAt !== null) this.scheduleGapWake(opensAt);
+            continue;
+          }
+        }
+        // A bot can only run one thread at a time.  Simple mode writes every
+        // event into that bot's one conversation.  Otherwise each SOURCE —
+        // this webhook, this routine — gets a thread that accumulates, so
+        // "UptimeRobot Outage & Issue Alerts" is one conversation with a
+        // history rather than a hundred one-message tasks.  A webhook still
         // becomes the live chat so the incoming event is visible.
-        // No conversationMode hook means extra lanes (the historical
-        // behavior).  The live server always passes the workspace setting,
-        // whose default is Simple.
+        //
+        // No conversationMode hook means the source-keyed behavior (what the
+        // tests and an older harness wiring expect).  The live server always
+        // passes the workspace setting, whose default is Simple.
         const mode = parseConversationMode(this.options.conversationMode?.() ?? "projects");
         let threadId: string | undefined;
         if (!allowsMultipleBotThreads(mode)) {
@@ -711,13 +786,16 @@ export class RoutineManager {
             continue;
           }
         } else {
-          const title = automationLaneTitle(mode, run.triggerSource);
+          const key = automationThreadKey(run);
+          // The routine's own name, not the lane's: the person recognises
+          // "Fleet PR Health Sweep", not "Schedules".
+          const title = run.routineName?.trim() || automationLaneTitle(mode, run.triggerSource);
           const previous = [...this.runs].reverse().find(
             (candidate) =>
               candidate.botId === run.botId &&
               candidate.id !== run.id &&
               Boolean(candidate.threadId) &&
-              automationLaneTitle(mode, candidate.triggerSource) === title &&
+              automationThreadKey(candidate) === key &&
               this.options.taskExists?.(run.botId, candidate.threadId!),
           );
           threadId = previous?.threadId;
@@ -746,14 +824,43 @@ export class RoutineManager {
         run.threadId = threadId;
         run.startedAt = this.now();
         run.status = "running";
+        this.lastStartedByKey.set(key, run.startedAt);
+        // Everything else of this trigger that was waiting rides along.  The
+        // receipts settle here rather than each starting a turn of its own.
+        const waiting = this.runs.filter(
+          (candidate) =>
+            candidate.status === "queued" &&
+            candidate.id !== run.id &&
+            candidate.botId === run.botId &&
+            automationThreadKey(candidate) === key,
+        );
+        for (const folded of waiting) {
+          folded.status = "completed";
+          folded.threadId = threadId;
+          folded.startedAt = run.startedAt;
+          folded.finishedAt = run.startedAt;
+          folded.output = `Handled together with ${run.routineName}`;
+          this.emitRun(folded);
+        }
         this.save();
         this.emitRun(run);
         try {
-          const prompt = run.prompt ?? this.routines.find((r) => r.id === run.routineId)?.prompt;
-          if (!prompt) {
+          const own = run.prompt ?? this.routines.find((r) => r.id === run.routineId)?.prompt;
+          if (!own) {
             this.failThread(threadId, "The routine was deleted before it could start");
             continue;
           }
+          const prompt = waiting.length
+            ? foldPrompts({
+                run: { id: run.id, key, scheduledFor: run.scheduledFor, prompt: own },
+                folded: waiting.map((candidate) => ({
+                  id: candidate.id,
+                  key,
+                  scheduledFor: candidate.scheduledFor,
+                  prompt: candidate.prompt,
+                })),
+              })
+            : own;
           const triggerSource = run.triggerSource ?? (run.manual ? "manual" : "schedule");
           await this.options.startTurn(
             run.botId,

@@ -22,6 +22,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   const runOns: string[] = [];
   const triggerSources: string[] = [];
   const taskActivations: boolean[] = [];
+  const taskTitles: string[] = [];
   const emitted: any[] = [];
   const failed: any[] = [];
   let live = true;
@@ -31,8 +32,9 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     emit: (payload) => emitted.push(payload),
     botState: () => bot,
     turnLive: () => live,
-    createTask: (_botId, _title, activate = false) => {
+    createTask: (_botId, title, activate = false) => {
       taskActivations.push(activate);
+      taskTitles.push(title);
       const threadId = `thread-${++task}`;
       threads.add(threadId);
       return { threadId };
@@ -51,6 +53,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     options,
     emitted,
     started,
+    taskTitles,
     runOns,
     triggerSources,
     taskActivations,
@@ -368,11 +371,42 @@ describe("RoutineManager", () => {
     expect(h.taskActivations).toEqual([true]);
   });
 
-  it("puts every webhook delivery for a bot on one Triggers thread", async () => {
+  it("keeps every delivery of ONE webhook on that webhook's own thread", async () => {
+    // it used to mint a task per delivery — a real fleet ended up with 146
+    // one-message tasks on a single bot, most of them uptime pings
+    const h = harness();
+    for (const deliveryId of ["d1", "d2", "d3"]) {
+      h.manager.enqueueWebhook({
+        webhookId: "hook-1",
+        webhookName: "UptimeRobot alerts",
+        prompt: `Handle ${deliveryId}`,
+        botId: "maus-webhook",
+        runOn: "maus",
+        deliveryId,
+        receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
+      });
+      await h.manager.tick();
+      // SAFETY: the manager reads only these fields off a completion frame.
+      h.manager.handleRuntimeEvent({
+        type: "turn.completed",
+        threadId: "thread-1",
+        ok: true,
+        cost: 0,
+        denials: [],
+      } as any);
+    }
+    expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1", "thread-1"]);
+    // and only the first delivery had to mint a task
+    expect(h.taskActivations).toEqual([true]);
+  });
+
+  it("gives two different webhooks two different threads", async () => {
+    // an uptime alert and a Sentry incident are not the same conversation,
+    // which a single shared "Triggers" lane could not express
     const h = harness();
     h.manager.enqueueWebhook({
       webhookId: "hook-1",
-      webhookName: "New ticket",
+      webhookName: "UptimeRobot alerts",
       prompt: "Handle ticket 42",
       botId: "maus-webhook",
       runOn: "maus",
@@ -389,7 +423,7 @@ describe("RoutineManager", () => {
     } as any);
     h.manager.enqueueWebhook({
       webhookId: "hook-2",
-      webhookName: "Pager",
+      webhookName: "Sentry incidents",
       prompt: "Handle page",
       botId: "maus-webhook",
       runOn: "maus",
@@ -397,8 +431,25 @@ describe("RoutineManager", () => {
       receivedAt: new Date(2026, 7, 17, 8, 3).getTime(),
     });
     await h.manager.tick();
-    expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1"]);
-    expect(h.taskActivations).toEqual([true]);
+    const threads = h.started.map((row) => row.threadId);
+    expect(threads).toHaveLength(2);
+    expect(new Set(threads).size).toBe(2);
+  });
+
+  it("names the thread after the routine, not after the lane", async () => {
+    const h = harness();
+    h.manager.enqueueWebhook({
+      webhookId: "hook-1",
+      webhookName: "UptimeRobot alerts",
+      prompt: "Handle ticket 42",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d1",
+      receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
+    });
+    await h.manager.tick();
+    // the person recognises "UptimeRobot alerts", not "Webhooks"
+    expect(h.taskTitles).toContain("UptimeRobot alerts");
   });
 
   it("writes every event into the bot's one conversation in simple mode", async () => {
@@ -419,7 +470,33 @@ describe("RoutineManager", () => {
     expect(h.taskActivations).toEqual([]);
   });
 
-  it("puts every scheduled routine for a bot on one Routines thread", async () => {
+  it("keeps every tick of ONE routine on that routine's thread", async () => {
+    // a daily routine used to leave a task behind on every run: five days of
+    // "Fleet PR Health Sweep" was five separate one-message conversations
+    const h = harness();
+    const morning = h.manager.create({
+      name: "Morning brief",
+      prompt: "Morning",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    for (let day = 0; day < 3; day++) {
+      h.setNow(h.manager.listRoutines().find((r) => r.id === morning.id)!.nextRunAt!);
+      await h.manager.tick();
+      // SAFETY: the manager reads only these fields off a completion frame.
+      h.manager.handleRuntimeEvent({
+        type: "turn.completed",
+        threadId: "thread-1",
+        ok: true,
+        cost: 0,
+        denials: [],
+      } as any);
+    }
+    expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1", "thread-1"]);
+    expect(h.taskTitles).toEqual(["Morning brief"]);
+  });
+
+  it("gives two different routines two different threads", async () => {
     const h = harness();
     const morning = h.manager.create({
       name: "Morning brief",
@@ -444,8 +521,10 @@ describe("RoutineManager", () => {
     });
     h.setNow(evening.nextRunAt!);
     await h.manager.tick();
-    expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1"]);
+    const threads = h.started.map((row) => row.threadId);
+    expect(new Set(threads).size).toBe(2);
     expect(h.started.map((row) => row.prompt)).toEqual(["Morning", "Evening"]);
+    expect(h.taskTitles).toEqual(["Morning brief", "Evening sweep"]);
   });
 
   it("folds provider lifecycle events into the calendar receipt", async () => {
