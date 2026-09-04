@@ -82,6 +82,7 @@ import {
   computerLabel,
   computerSystemPrompt,
   nameMounts,
+  resolveCloudBackend,
   resolveGrants,
   type ComputerMount,
 } from "./computer-grants.ts";
@@ -2257,13 +2258,16 @@ async function startTurn(
       // is a capability, not a preference: each one is resolved on its own
       // terms below and mounted with its own tools, so the agent chooses per
       // task. Granting only the VM therefore means only the VM.
-      const { granted, auto } = resolveGrants(bot.computers, opts?.runOn);
+      const { granted, auto } = resolveGrants(bot.computers, opts?.runOn, cfg.botDefaults?.computers);
       const wantsCloud = granted.includes("cloud");
       const wantsVm = granted.includes("vm");
       const wantsLocal = granted.includes("local");
       // Cloud routines always use Box/BoxAgent. The per-bot backend applies
       // only to ordinary turns that mount a computer into the local agent.
-      const cloudBackend = opts?.runOn === "cloud" || bot.cloudBackend !== "vps" ? "box" : "vps";
+      // Same rule as the destinations: the workspace default stands in only
+      // for a bot that has never chosen a backend of its own.
+      const botBackend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
+      const cloudBackend = opts?.runOn === "cloud" ? "box" : botBackend;
       const mountsComputerMcp = instance.adapter.capabilities.computerMcp === true;
       const mountsCloudComputer = mountsComputerMcp || instance.driverKind === "boxAgent";
       const mountsLocalComputer = instance.adapter.capabilities.localComputerMcp === true;
@@ -3622,6 +3626,13 @@ function configStatus() {
     // not a secret — the sidebar shows it
     profile: { name: cfg.profile?.name ?? "", email: cfg.profile?.email ?? "" },
     rooms: { turnTimeoutMinutes: roomTurnTimeoutMinutes(cfg) },
+    // What an unconfigured bot is given.  The client needs this to label a
+    // bot's destination honestly: without it the panel shows "ASCII.dev Box"
+    // for a bot the workspace default sends to a VPS.
+    botDefaults: {
+      computers: cfg.botDefaults?.computers ?? [],
+      cloudBackend: cfg.botDefaults?.cloudBackend ?? "box",
+    },
     ingress: { publicUrl: cfg.ingress?.publicUrl || "" },
     localVm: {
       mode: cfg.localVm?.mode ?? "shared",
@@ -7086,7 +7097,7 @@ const server = createServer(async (req, res) => {
     if (m && method === "GET") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      return bot.cloudBackend === "vps"
+      return resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "vps"
         ? json(res, 200, { backend: "vps", ...(await vps.vpsComputerStatus(cfg, bot.id)) })
         : json(res, 200, { backend: "box", ...(await box.boxStatus(cfg, bot.id)) });
     }
@@ -7140,7 +7151,9 @@ const server = createServer(async (req, res) => {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
-      return json(res, 200, bot.cloudBackend === "vps" ? vps.closeVpsDesktopTunnel(bot.id) : { closed: false });
+      return json(res, 200, resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "vps"
+        ? vps.closeVpsDesktopTunnel(bot.id)
+        : { closed: false });
     }
     m = path.match(/^\/api\/bots\/([\w-]+)\/computer\/(provision|join|sleep|exec|screenshot|remove)$/);
     if (m && method === "POST") {
@@ -7155,7 +7168,7 @@ const server = createServer(async (req, res) => {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
       }
-      if (bot.cloudBackend === "vps") {
+      if (resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "vps") {
         if (m[2] === "exec") {
           return json(res, 409, { error: "the VPS console is available to the bot through its scoped computer tools" });
         }

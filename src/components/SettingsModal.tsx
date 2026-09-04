@@ -26,6 +26,7 @@ import { ApiKeyRow, VpsConnection } from "./ApiKeys";
 import { useUpdaterState } from "@/lib/updater";
 import { EnginesSettings } from "./EnginesSettings";
 import { FleetModelsSection } from "./FleetModelsSection";
+import { BotComputerDefaults } from "./BotComputerDefaults";
 import { LocalComputerSection } from "./LocalComputerSection";
 import { CompanionSection } from "./CompanionSection";
 import { Card } from "./SettingsPrimitives";
@@ -861,7 +862,12 @@ export function SettingsModal() {
 
             {section === "companion" && <CompanionSection profileEmail={state.config?.profile?.email} />}
 
-            {section === "computers" && <LocalComputerSection />}
+            {section === "computers" && (
+              <>
+                <BotComputerDefaults />
+                <LocalComputerSection />
+              </>
+            )}
 
             {section === "usage" && <UsageSection />}
           </div>

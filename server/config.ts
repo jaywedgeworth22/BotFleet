@@ -99,6 +99,20 @@ const vpsConfigSchema = z.object({
   memoryGib: z.number().int().min(VPS_MEMORY_GIB_RANGE.min).max(VPS_MEMORY_GIB_RANGE.max).optional(),
   cpus: z.number().int().min(VPS_CPUS_RANGE.min).max(VPS_CPUS_RANGE.max).optional(),
 });
+/** What a bot that has never been configured is given.
+ *
+ * This fills in for `computers: undefined` only.  A bot whose computers were
+ * explicitly emptied stays off, and a bot with its own destinations keeps
+ * them — the workspace default is the answer to "nobody has said", not an
+ * override of anyone who has.
+ *
+ * Unset ships as unset, so a fresh install still behaves exactly as before:
+ * reuse whatever already exists, provision nothing, and on macOS fall back to
+ * host control.  Nobody gets a server they did not ask for. */
+const botDefaultsSchema = z.object({
+  computers: z.array(z.enum(["cloud", "vm", "local"])).max(3).optional(),
+  cloudBackend: z.enum(["box", "vps"]).optional(),
+});
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
     .number()
@@ -154,6 +168,7 @@ const appConfigSchema = z.object({
   /** Non-secret profile details shown in the sidebar. */
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
   rooms: roomConfigSchema.optional(),
+  botDefaults: botDefaultsSchema.optional(),
   ingress: z.object({
     publicUrl: z
       .string()
@@ -210,6 +225,7 @@ export interface AppConfig {
   autoUpdate?: { enabled?: boolean };
   profile?: { name?: string; email?: string };
   rooms?: { turnTimeoutMinutes: number };
+  botDefaults?: { computers?: Array<"cloud" | "vm" | "local">; cloudBackend?: "box" | "vps" };
   ingress?: { publicUrl?: string };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */

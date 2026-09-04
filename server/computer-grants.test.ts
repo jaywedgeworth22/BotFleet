@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computerLabel,
+  resolveCloudBackend,
   resolveGrants,
   computerSystemPrompt,
   hostToolPrefix,
@@ -197,5 +198,41 @@ describe("resolveGrants", () => {
   it("leaves an ordinary turn alone when runOn is anything else", () => {
     expect(resolveGrants(["vm"], "maus")).toEqual({ granted: ["vm"], auto: false });
     expect(resolveGrants(undefined, undefined)).toEqual({ granted: [], auto: true });
+  });
+});
+
+describe("workspace defaults", () => {
+  it("fills in for a bot that was never configured", () => {
+    expect(resolveGrants(undefined, undefined, ["cloud", "local"])).toEqual({
+      granted: ["cloud", "local"],
+      auto: false,
+    });
+  });
+
+  it("does NOT undo a bot that was explicitly turned off", () => {
+    // Turning a bot's computer off should not be reversed by a setting made
+    // somewhere else — that is the same class of surprise as Off granting
+    // the host in the first place.
+    expect(resolveGrants([], undefined, ["cloud", "local"])).toEqual({ granted: [], auto: false });
+  });
+
+  it("does not override a bot that chose for itself", () => {
+    expect(resolveGrants(["vm"], undefined, ["cloud", "local"])).toEqual({ granted: ["vm"], auto: false });
+  });
+
+  it("leaves auto alone when no default is set", () => {
+    expect(resolveGrants(undefined, undefined, [])).toEqual({ granted: [], auto: true });
+    expect(resolveGrants(undefined, undefined, undefined)).toEqual({ granted: [], auto: true });
+  });
+
+  it("still sends a cloud routine to the box", () => {
+    expect(resolveGrants(undefined, "cloud", ["local"])).toEqual({ granted: ["cloud"], auto: false });
+  });
+
+  it("resolves the backend the same way, and ships as box", () => {
+    expect(resolveCloudBackend(undefined, undefined)).toBe("box");
+    expect(resolveCloudBackend(undefined, "vps")).toBe("vps");
+    expect(resolveCloudBackend("box", "vps")).toBe("box");
+    expect(resolveCloudBackend("vps", "box")).toBe("vps");
   });
 });

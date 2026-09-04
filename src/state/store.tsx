@@ -349,6 +349,8 @@ export interface ConfigStatus {
   box: { configured: boolean };
   vps: { configured: boolean; sshAlias: string };
   rooms: { turnTimeoutMinutes: number };
+  /** What a bot that has never been configured is given. */
+  botDefaults?: { computers: Array<"cloud" | "vm" | "local">; cloudBackend: "box" | "vps" };
   ingress?: { publicUrl?: string };
   localVm: { mode: "shared" | "per-bot"; maxInstances: number };
   opencodeGo?: { configured: boolean };
