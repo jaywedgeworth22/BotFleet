@@ -114,4 +114,23 @@ describe("accessLoginHint", () => {
     // A redirect with no Location is not evidence of anything.
     expect(accessLoginHint(response({ status: 302 }))).toBeNull();
   });
+
+  it("stays quiet for a followed redirect that lands back on the same, non-Access host", () => {
+    // This is what a `redirect: "follow"` fetch hands back after
+    // transparently resolving a same-host http:// -> https:// upgrade (301)
+    // or a trailing-slash normalisation (308): by the time accessLoginHint
+    // sees the response, the redirect is already gone and this just looks
+    // like the service's own 2xx JSON answer.  Only a followed redirect that
+    // actually lands on an Access-shaped host or path is worth a word — see
+    // "catches a redirect that was already followed to an Access host" above.
+    const hint = accessLoginHint(
+      response({
+        status: 200,
+        redirected: true,
+        url: "https://recall.example.com/health",
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    expect(hint).toBeNull();
+  });
 });
