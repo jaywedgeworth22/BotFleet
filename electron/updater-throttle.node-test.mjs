@@ -4,6 +4,7 @@
 // runtime — updater.mjs itself imports the same module.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { join } from "node:path";
 
 import {
   AUTO_CHECK_THROTTLE_MS,
@@ -75,15 +76,21 @@ test("macAppFingerprint reads CFBundleVersion and hashes the executable's size+m
   <string>202609041230</string>
 </dict>
 </plist>`;
+  // The function uses node:path's join to compose the Info.plist and exec
+  // paths, so on Windows the separator is a backslash and a hard-coded
+  // forward-slash string would never match.  Build the expected paths
+  // through the same join so the mock stays portable across platforms.
+  const bundle = "/Applications/BotFleet.app";
+  const infoPlist = join(bundle, "Contents", "Info.plist");
+  const execPath = join(bundle, "Contents", "MacOS", "BotFleet");
   const result = macAppFingerprint({
     platform: "darwin",
-    candidates: ["/Applications/BotFleet.app"],
-    execPath: "/Applications/BotFleet.app/Contents/MacOS/BotFleet",
+    candidates: [bundle],
+    execPath,
     readVersion: () => "202609041230",
     readFileSync: () => Buffer.from(plist, "utf8"),
     statSync: () => ({ size: 12345, mtimeMs: 1700000000000 }),
-    existsSync: (p) => p === "/Applications/BotFleet.app/Contents/Info.plist"
-      || p === "/Applications/BotFleet.app/Contents/MacOS/BotFleet",
+    existsSync: (p) => p === infoPlist || p === execPath,
   });
   assert.ok(result);
   assert.equal(result?.startsWith("202609041230:"), true);

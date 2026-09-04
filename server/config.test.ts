@@ -649,6 +649,5 @@ describe("public ingress URL", () => {
       publicIngressUrlEffective({ ingress: { publicUrl: "https://hooks.example.com" } }),
     ).toBe("https://hooks.example.com");
     expect(publicIngressUrlEffective({})).toBeNull();
->>>>>>> 5b35509e (feat(settings): webhooks enable+save+test, max-turn band, 6h auto-update throttle)
   });
 });
