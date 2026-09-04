@@ -82,6 +82,7 @@ import {
   computerLabel,
   computerSystemPrompt,
   nameMounts,
+  resolveGrants,
   type ComputerMount,
 } from "./computer-grants.ts";
 import {
@@ -2225,12 +2226,7 @@ async function startTurn(
       // is a capability, not a preference: each one is resolved on its own
       // terms below and mounted with its own tools, so the agent chooses per
       // task. Granting only the VM therefore means only the VM.
-      const granted = (opts?.runOn === "cloud" ? ["cloud"] : (bot.computers ?? [])) as Array<
-        "cloud" | "vm" | "local"
-      >; // cloud routine overrides the MAUS default
-      // No grant at all is "auto": reuse what already exists, provision
-      // nothing, and fall back to host control at the end.
-      const auto = granted.length === 0;
+      const { granted, auto } = resolveGrants(bot.computers, opts?.runOn);
       const wantsCloud = granted.includes("cloud");
       const wantsVm = granted.includes("vm");
       const wantsLocal = granted.includes("local");
