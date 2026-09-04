@@ -193,7 +193,9 @@ export function UsageSection() {
             const agModels = instance.instanceId === "antigravity"
               ? (antigravityQuota?.models ?? []).filter((model) => !model.isAutocompleteOnly)
               : [];
-            const agExhausted = agModels.filter((model) => model.isExhausted || model.remainingPercentage === 0);
+            const agExhausted = agModels.filter((model) =>
+              model.isExhausted || typeof model.remainingPercentage !== "number" || model.remainingPercentage === 0,
+            );
             const isCapped = wildcardCap || (agModels.length > 0
               ? agExhausted.length === agModels.length
               : instanceCooldowns.some((q) => q.model === "*"));
@@ -202,11 +204,10 @@ export function UsageSection() {
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
             const agSummary = agModels.length > 0
               ? agModels.slice(0, 4).map((model) => {
-                  if (model.isExhausted || model.remainingPercentage === 0) return `${model.label}: exhausted`;
-                  if (typeof model.remainingPercentage === "number") {
-                    return `${model.label}: ${Math.round(model.remainingPercentage * 100)}%`;
+                  if (model.isExhausted || typeof model.remainingPercentage !== "number" || model.remainingPercentage === 0) {
+                    return `${model.label}: exhausted`;
                   }
-                  return `${model.label}: not reported`;
+                  return `${model.label}: ${Math.round(model.remainingPercentage * 100)}%`;
                 }).join(" · ")
               : null;
 
