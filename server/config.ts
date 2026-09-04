@@ -550,7 +550,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   // not wipe a stored token.  Omitting them from this list meant PATCH
   // /api/config { usage } never wrote ~/.botfleet/config.json, so Settings
   // reloaded empty fields.
-  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant"] as const) {
+  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "botDefaults"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

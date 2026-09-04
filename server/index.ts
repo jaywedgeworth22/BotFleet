@@ -7086,9 +7086,17 @@ const server = createServer(async (req, res) => {
         ? (requested ?? cfg.botDefaults?.computers ?? [])
         : (requested ?? cfg.botDefaults?.computers ?? []).filter((entry) => allowed.includes(entry));
       const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
-      for (const bot of store.bots) {
-        const patched = store.patchBot(bot.id, { computers: next });
-        if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
+      // An empty filtered set is NOT a permission to clear every bot.  The
+      // operator who narrowed the allowlist already has each bot on its
+      // own choice; the apply would silently strip that choice and leave
+      // the bot with an empty "Off" computers list, which is the exact
+      // mistake the test for "leaves a bot's own choice alone" guards
+      // against.  Skip the patch loop when the filter empties the apply.
+      if (next.length > 0) {
+        for (const bot of store.bots) {
+          const patched = store.patchBot(bot.id, { computers: next });
+          if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
+        }
       }
       cfg.botDefaults = { ...(cfg.botDefaults ?? {}), ...incoming, computers: next };
       saveConfig(cfg);
