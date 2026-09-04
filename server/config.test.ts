@@ -262,6 +262,42 @@ describe("Instance CLI override", () => {
   });
 });
 
+describe("Instance enable/disable", () => {
+  it("sets enabled=false on a default-fleet instance", () => {
+    const cfg: AppConfig = {};
+    const result = patchInstanceConfig(cfg, "claude", { enabled: false });
+    expect(result.ok).toBe(true);
+    expect(result.config.instances!.claude.enabled).toBe(false);
+  });
+
+  it("re-enabling clears the flag entirely so it round-trips like a fresh install", () => {
+    const cfg: AppConfig = { instances: { claude: { driver: "claudeAgent", enabled: false } } };
+    const result = patchInstanceConfig(cfg, "claude", { enabled: true });
+    expect(result.ok).toBe(true);
+    // The field is GONE on disk after re-enable, not `enabled: true` —
+    // matches `entry.enabled !== false` in registry.load.
+    expect(result.config.instances!.claude.enabled).toBeUndefined();
+  });
+
+  it("preserves a per-instance CLI override when toggling enabled", () => {
+    const cfg: AppConfig = {
+      instances: { claude: { driver: "claudeAgent", config: { cli: "/opt/claude" } } },
+    };
+    const off = patchInstanceConfig(cfg, "claude", { enabled: false });
+    expect(off.config.instances!.claude.config).toEqual({ cli: "/opt/claude" });
+    expect(off.config.instances!.claude.enabled).toBe(false);
+
+    const back = patchInstanceConfig(off.config, "claude", { enabled: true });
+    expect(back.config.instances!.claude.config).toEqual({ cli: "/opt/claude" });
+    expect(back.config.instances!.claude.enabled).toBeUndefined();
+  });
+
+  it("rejects an unknown instance", () => {
+    const cfg: AppConfig = {};
+    expect(patchInstanceConfig(cfg, "nope", { enabled: false }).ok).toBe(false);
+  });
+});
+
 describe("OpenCode Go configuration", () => {
   it("injects the key only into OpenCode Go instances", () => {
     const cfg: AppConfig = {

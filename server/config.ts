@@ -158,6 +158,12 @@ const appConfigSchema = z.object({
   vps: vpsConfigSchema.optional(),
   /** Optional OpenCode key; persisted write-only and passed only to its child. */
   opencodeGo: z.object({ apiKey: optionalText }).optional(),
+  /** Optional DeepSeek API key — used only to display the user's account
+   * balance under the engine row, never injected into the engine's process
+   * environment. The user can run a deepseek CLI without this set; the
+   * engine does not need the key to function. "for my user" — workspace
+   * scope, not per-bot. */
+  deepseek: z.object({ key: optionalText, url: optionalText }).optional(),
   /** Voice credentials and the selected voice id. `provider` picks the
    * engine: "elevenlabs" (default; needs a key) or "system" (the Mac's
    * built-in voices, no key). */
@@ -225,6 +231,7 @@ export interface AppConfig {
   /** A named host from the user's SSH config. Authentication stays with SSH. */
   vps?: { sshAlias?: string; memoryGib?: number; cpus?: number };
   opencodeGo?: { apiKey?: string };
+  deepseek?: { key?: string; url?: string };
   tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system" };
   imageGen?: { key?: string };
   autoUpdate?: { enabled?: boolean };
@@ -554,7 +561,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
 export function patchInstanceConfig(
   cfg: AppConfig,
   instanceId: string,
-  patch: { cli?: string; fullAuto?: boolean },
+  patch: { cli?: string; fullAuto?: boolean; enabled?: boolean },
 ): InstanceCliUpdate {
   const next: AppConfig = structuredClone(cfg);
   const map = instanceConfigs(next);
@@ -564,7 +571,7 @@ export function patchInstanceConfig(
   // comes off the URL, where `__proto__` passes the route's [\w.-]+ regex)
   if (!Object.hasOwn(map, instanceId)) return { ok: false, config: cfg };
   const entry = map[instanceId];
-  
+
   const currentConfig = jsonObjectSchema.safeParse(entry.config);
   const nextConfig: JsonObject = currentConfig.success ? { ...currentConfig.data } : {};
 
@@ -582,6 +589,18 @@ export function patchInstanceConfig(
       nextConfig.fullAuto = true;
     } else {
       delete nextConfig.fullAuto;
+    }
+  }
+
+  // `enabled` lives on the entry envelope, not in `entry.config` — same shape
+  // the registry reads in ProviderRegistry.load. Re-enabling clears the flag
+  // entirely so a true re-enable and a fresh install both round-trip as the
+  // same on-disk form.
+  if (patch.enabled !== undefined) {
+    if (patch.enabled) {
+      delete entry.enabled;
+    } else {
+      entry.enabled = false;
     }
   }
 

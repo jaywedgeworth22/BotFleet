@@ -6,7 +6,7 @@ import { Check, CircleHelp, ExternalLink, Loader2, TriangleAlert } from "lucide-
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 
-export type ConfigSection = "composio" | "box" | "opencodeGo";
+export type ConfigSection = "composio" | "box" | "opencodeGo" | "deepseek";
 
 const SECTIONS: Record<
   ConfigSection,
@@ -18,12 +18,22 @@ const SECTIONS: Record<
   },
   box: { body: (v) => ({ box: { token: v } }), flag: (c) => c.box.configured },
   opencodeGo: { body: (v) => ({ opencodeGo: { apiKey: v } }), flag: (c) => c.opencodeGo?.configured ?? false },
+  // The deepseek key lives at the user level and is used only to fetch the
+  // account balance for the engine row chip — never injected into any
+  // engine's process environment, so a bot can run on the DeepSeek harness
+  // without this key set.
+  deepseek: { body: (v) => ({ deepseek: { key: v } }), flag: (c) => c.deepseek?.configured ?? false },
 };
 
-const ELECTRON_CREDENTIAL: Record<ConfigSection, "composioApiKey" | "boxToken" | "opencodeGoApiKey"> = {
+const ELECTRON_CREDENTIAL: Record<ConfigSection, "composioApiKey" | "boxToken" | "opencodeGoApiKey" | "deepseekApiKey"> = {
   composio: "composioApiKey",
   box: "boxToken",
   opencodeGo: "opencodeGoApiKey",
+  // No Electron credential key yet — for now the deepseek key rides through
+  // PUT /api/config (the Vite dev path), which `cfg.deepseek.key` reads.
+  // When the desktop shell grows a dedicated keychain entry, add the
+  // matching name to the ogb.d.ts credential union at the same time.
+  deepseek: "deepseekApiKey",
 };
 
 const CREDENTIALS: Record<
@@ -61,6 +71,14 @@ const CREDENTIALS: Record<
     description: "Optional. Existing OpenCode Zen, Go, and other provider connections are detected automatically.",
     href: "https://opencode.ai/docs/providers/",
     linkLabel: "Open the OpenCode provider guide",
+    optional: true,
+  },
+  deepseek: {
+    label: "DeepSeek API key (balance display only)",
+    placeholder: "sk-…",
+    description: "Used only to display your account balance under the DeepSeek engine row. Never sent to the engine itself, so the harness works without it.",
+    href: "https://platform.deepseek.com/api_keys",
+    linkLabel: "Open the DeepSeek API key page",
     optional: true,
   },
 };

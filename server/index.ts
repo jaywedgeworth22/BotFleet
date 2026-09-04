@@ -44,6 +44,7 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { telemetry } from "./telemetry.ts";
 import { usageQuotaPoller } from "./usage-quota.ts";
+import { getDeepSeekBalance } from "./deepseek-balance.ts";
 import {
   lastAntigravityQuotaSnapshot,
   startAntigravityQuotaPoller,
@@ -3736,6 +3737,7 @@ function configStatus() {
       cpus: vpsCpus(cfg),
     },
     opencodeGo: { configured: Boolean(cfg.opencodeGo?.apiKey) },
+    deepseek: { configured: Boolean(cfg.deepseek?.key) },
     // the chosen voice is a setting, not a secret; the key is reported the
     // same configured-or-not way as every other credential
     tts: tts.describeVoice(cfg),
@@ -6627,11 +6629,17 @@ const server = createServer(async (req, res) => {
       return json(res, 200, result);
     }
     if (method === "GET" && path === "/api/quotas") {
+      // Best-effort balance fetch: the UI hides the chip if the key is
+      // missing, so this never throws. A bad URL or a transient outage
+      // returns an error string instead of a balance — the chip reads
+      // "balance unavailable", which is the honest answer.
+      const deepseek = await getDeepSeekBalance(cfg.deepseek?.key, cfg.deepseek?.url);
       return json(res, 200, {
         ok: true,
         cooldowns: quotaCooldowns.list(),
         antigravity: lastAntigravityQuotaSnapshot(),
         windows: usageQuotaPoller.getWindows(),
+        deepseek,
       });
     }
     if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {
@@ -6914,7 +6922,7 @@ const server = createServer(async (req, res) => {
     }
 
     // ── per-instance CLI path override (custom builds / versioned bins) ──
-    // PATCH /api/instances/:id {cli?: string, fullAuto?: boolean}
+    // PATCH /api/instances/:id {cli?: string, fullAuto?: boolean, enabled?: boolean}
     // Kills in-flight turns like any provider reload.
     const instancePatch = /^\/api\/instances\/([\w.-]+)$/.exec(path);
     if (method === "PATCH" && instancePatch) {
@@ -6923,7 +6931,7 @@ const server = createServer(async (req, res) => {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       const body = await readBody(req);
-      const patchOptions: { cli?: string; fullAuto?: boolean } = {};
+      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean } = {};
 
       if (body?.cli !== undefined) {
         if (typeof body.cli !== "string") return json(res, 400, { error: "cli must be a string" });
@@ -6934,6 +6942,11 @@ const server = createServer(async (req, res) => {
       if (body?.fullAuto !== undefined) {
         if (typeof body.fullAuto !== "boolean") return json(res, 400, { error: "fullAuto must be a boolean" });
         patchOptions.fullAuto = body.fullAuto;
+      }
+
+      if (body?.enabled !== undefined) {
+        if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled must be a boolean" });
+        patchOptions.enabled = body.enabled;
       }
 
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
@@ -7053,6 +7066,7 @@ const server = createServer(async (req, res) => {
         if (persisted.composio?.apiKey !== undefined) persisted.composio.apiKey = "";
         if (persisted.box?.token !== undefined) persisted.box.token = "";
         if (persisted.opencodeGo?.apiKey !== undefined) persisted.opencodeGo.apiKey = "";
+        if (persisted.deepseek?.key !== undefined) persisted.deepseek.key = "";
         if (persisted.tts?.key !== undefined) persisted.tts.key = "";
         if (persisted.imageGen?.key !== undefined) persisted.imageGen.key = "";
         saveConfig(persisted);

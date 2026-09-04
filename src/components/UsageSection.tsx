@@ -12,7 +12,7 @@ import { ProviderMark } from "./ProviderIcons";
 import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
-import { antigravityQuotaLines, quotaLinesSummary, usageWindowLines } from "@/lib/quota-display";
+import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, quotaLinesSummary, usageWindowLines, windowHeadlines } from "@/lib/quota-display";
 import { isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
@@ -40,6 +40,15 @@ interface AntigravityUsageSnapshot {
   models: AntigravityUsageModel[];
 }
 
+interface DeepSeekBalanceView {
+  balanceUsd: number | null;
+  grantedUsd: number | null;
+  toppedUpUsd: number | null;
+  availability: "available" | "exhausted" | "unknown";
+  fetchedAt: number;
+  error: string | null;
+}
+
 function formatCountdown(resetsAt?: number | null): string {
   if (!resetsAt) return "Rolling refresh window";
   const diffMs = resetsAt - Date.now();
@@ -51,12 +60,19 @@ function formatCountdown(resetsAt?: number | null): string {
   return `Resets in ${minutes}m`;
 }
 
+function formatUsdBalance(balance: number | null): string {
+  if (balance == null) return "Balance unavailable";
+  if (balance === 0) return "$0.00 remaining";
+  return `$${balance.toFixed(2)} remaining`;
+}
+
 export function UsageSection() {
   const { state, dispatch } = useStore();
   const [telemetryStatus, setTelemetryStatus] = React.useState<TelemetryStatusView | null>(null);
   const [telemetryFetchError, setTelemetryFetchError] = React.useState<string | null>(null);
   const [quotas, setQuotas] = React.useState<QuotaCooldownInfo[]>([]);
   const [antigravityQuota, setAntigravityQuota] = React.useState<AntigravityUsageSnapshot | null>(null);
+  const [deepseekBalance, setDeepSeekBalance] = React.useState<DeepSeekBalanceView | null>(null);
   const [quotaWindows, setQuotaWindows] = React.useState<Array<{
     id: string;
     provider: string;
@@ -107,6 +123,9 @@ export function UsageSection() {
         }
         if (Array.isArray(data?.windows)) {
           setQuotaWindows(data.windows);
+        }
+        if (data?.deepseek && typeof data.deepseek === "object") {
+          setDeepSeekBalance(data.deepseek);
         }
       })
       .catch(() => {});
@@ -259,22 +278,63 @@ export function UsageSection() {
             const agModels = instance.instanceId === "antigravity"
               ? (antigravityQuota?.models ?? []).filter((model) => !model.isAutocompleteOnly)
               : [];
+            const agGroups = antigravityGroupSummary(agModels);
             const agLines = antigravityQuotaLines(agModels);
             const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
+            const headlines = windowHeadlines(instanceWindows);
             const windowLines = usageWindowLines(instanceWindows);
             const planSkip = instanceWindows.some((window) => isPlanLevelSkip(window));
-            const agExhausted = agLines.filter((line) => line.exhausted);
-            const isCapped = wildcardCap || planSkip || (agLines.length > 0
-              ? agExhausted.length === agLines.length
+            const agExhausted = agGroups.filter((line) => line.exhausted);
+            // The cap verdict accounts for Antigravity group exhaustion too:
+            // the user's complaint was a four-name slice hiding an all-spent
+            // group behind a "70% remaining" average. With the two-line
+            // summary, an all-spent group reads as exhausted directly.
+            const isCapped = wildcardCap || planSkip || (agGroups.length > 0
+              ? agExhausted.length === agGroups.length
               : instanceCooldowns.some((q) => q.model === "*"));
-            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
+            // DeepSeek balance only applies to the DeepSeek engine. Surfaced
+            // as a third status line so the user can see "$12.34 remaining"
+            // (or "Balance unavailable") without expanding the row.
+            const deepseekRow = instance.driverKind === "deepseekAgent" || instance.driverKind === "deepseek"
+              ? deepseekBalance
+              : null;
+            const deepseekLine = deepseekRow
+              ? deepseekRow.error
+                ? `DeepSeek balance unavailable · ${deepseekRow.error}`
+                : formatUsdBalance(deepseekRow.balanceUsd)
+              : null;            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
             const detailLines = agLines.length > 0 ? agLines : windowLines;
             const fullSummary = detailLines.length > 0
               ? quotaLinesSummary(detailLines)
               : null;
-            const statusLine = fullSummary
+            // The "headline" lines sit directly under the engine name: for
+            // Antigravity, "Gemini %" and "Third Party %" (collapsed); for
+            // every other engine, the most-restrictive window per bucket
+            // with the time-until-reset next to it. The chip on the right
+            // (Available / At Usage Cap / …) is the verdict; the headline
+            // is the numbers behind it.
+            const headlineLines = agGroups.length > 0
+              ? agGroups.map((group) => {
+                  const value = group.remainingPercent == null
+                    ? "not reported"
+                    : `${group.remainingPercent}%`;
+                  return `${group.label} ${value}`;
+                })
+              : headlines.map((headline) => {
+                  const value = headline.remainingPercent == null
+                    ? "not reported"
+                    : `${headline.remainingPercent}%`;
+                  const reset = formatResetCountdown(headline.resetAtMs);
+                  return reset ? `${headline.display} ${value} · resets in ${reset}` : `${headline.display} ${value}`;
+                });
+            const allHeadlineLines = deepseekLine
+              ? [...headlineLines, deepseekLine]
+              : headlineLines;
+            const statusLine = allHeadlineLines.length > 0
+              ? allHeadlineLines.join("  ·  ")
+              : fullSummary
               ? fullSummary
               : isCapped
               ? `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
@@ -359,7 +419,7 @@ export function UsageSection() {
           </div>
         ) : null}
         <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-          Antigravity remaining percent is read locally from the antigravity-usage CLI every minute.  Other engines use Usage Monitor remaining windows when a read token is set.  Exhausted models fail over to the saved chain before the next turn.
+          Antigravity remaining percent is read locally from the antigravity-usage CLI every minute and collapsed to "Third Party" and "Gemini" summaries.  Other engines surface their weekly and 5-hour caps directly; the monthly plan limit (Cursor) is honored as a wildcard cap.  Exhausted models fail over to the saved chain before the next turn.
         </div>
       </Card>
 
