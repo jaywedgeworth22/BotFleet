@@ -62,4 +62,4 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - 2026-09-01 — GROK moved resource-triggers (#65/#80) and iOS Sentry Cocoa (#55) from In Progress to Completed after merge.  Added delta-audit Batch 4+6 claim on `grok/delta-audit-fixes`.
 - 2026-08-29 — Deployed always-on iMessage bidirectional relay for 12 BotFleet bots (AG).
 - 2026-08-28 — bootstrapped by onboard-new-app.sh.
-- **2026-09-04 - MINIMAX - COMPLETED - settings-rev2-B: engines enable/disable, Antigravity collapse, weekly+5h window surfacing, DeepSeek balance, Cursor monthly cap end-to-end.  PR #218 squash `f6e75930`.  Board `0ad2b059`.  Lane B of the settings revamp.**
+- **2026-09-04 - MINIMAX - IN_PROGRESS - settings-rev2-B: engines enable/disable, Antigravity collapse, weekly+5h window surfacing, DeepSeek balance, Cursor monthly cap end-to-end (board `0ad2b059`, branch `minimax/settings-rev2-b`, worktree `~/apps/botfleet-minimax-b`).**  Lane B of the settings revamp.

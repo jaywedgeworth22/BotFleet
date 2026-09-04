@@ -178,4 +178,23 @@ describe("ProviderRegistry", () => {
     expect(registry.entries()).toHaveLength(0);
     expect(registry.get("a")).toBeNull();
   });
+
+  it("marks a `enabled: false` instance as unavailable in describe() so the default-pick filter excludes it", async () => {
+    // The lane-B user requirement: disabling an engine must remove it from
+    // routing. The picker filters `described.filter(d => d.snapshot.state === "available")`,
+    // so a disabled engine needs to publish snapshot.state === "unavailable".
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({
+      live: { driver: "fake" },
+      muted: { driver: "fake", enabled: false },
+    });
+
+    const described = Object.fromEntries((await registry.describe()).map((d) => [d.instanceId, d]));
+    expect(described.live.snapshot.state).toBe("available");
+    expect(described.muted.snapshot.state).toBe("unavailable");
+    expect(described.muted.snapshot.reason).toBe("Disabled in settings");
+    // The boolean flag itself surfaces for the UI to render the toggle.
+    expect(described.muted.enabled).toBe(false);
+  });
 });
