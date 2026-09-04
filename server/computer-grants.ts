@@ -214,9 +214,32 @@ export function hostToolPrefix(mounts: ComputerMount[]): string | null {
 export function resolveGrants(
   botComputers: ComputerDestination[] | undefined,
   runOn?: string,
+  workspaceDefault?: ComputerDestination[],
 ): { granted: ComputerDestination[]; auto: boolean } {
   // A cloud routine runs on the box whatever the bot is set to, and is never
   // auto — it named its destination.
   if (runOn === "cloud") return { granted: ["cloud"], auto: false };
+  // The workspace default answers "nobody has said" — it fills in for a bot
+  // that was never configured, and only then. An explicitly emptied bot stays
+  // off, because turning a bot's computer off should not be undone by a
+  // setting made somewhere else.
+  if (botComputers === undefined && workspaceDefault?.length) {
+    return { granted: [...workspaceDefault], auto: false };
+  }
   return { granted: botComputers ?? [], auto: botComputers === undefined };
+}
+
+
+/** Which cloud backend a bot uses.
+ *
+ * One accessor, because the answer is read in four places — the turn that
+ * mounts the computer, the status endpoint, the desktop tunnel, and the
+ * lifecycle actions. If the turn honored a workspace default and the status
+ * endpoint did not, a bot would run on a VPS while its panel reported on a
+ * hosted box it never touches. */
+export function resolveCloudBackend(
+  botCloudBackend: "box" | "vps" | undefined,
+  workspaceDefault?: "box" | "vps",
+): "box" | "vps" {
+  return botCloudBackend ?? workspaceDefault ?? "box";
 }
