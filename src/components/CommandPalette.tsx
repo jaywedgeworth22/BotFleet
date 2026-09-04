@@ -191,9 +191,9 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
               () => void activate({ kind: "bot", bot }),
               <>
                 <BotIcon size={16} className="shrink-0 text-ink-secondary" />
-                <span className="truncate text-[14px] text-ink">{bot.name}</span>
+                <span className="truncate text-[14px] text-ink" title={bot.name}>{bot.name}</span>
                 {bot.title && (
-                  <span className="min-w-0 truncate text-[12.5px] text-ink-secondary">{bot.title}</span>
+                  <span className="min-w-0 truncate text-[12.5px] text-ink-secondary" title={bot.title}>{bot.title}</span>
                 )}
               </>,
             ),
@@ -210,7 +210,7 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
               () => void activate({ kind: "room", group }),
               <>
                 <Users size={16} className="shrink-0 text-ink-secondary" />
-                <span className="truncate text-[14px] text-ink">{group.name}</span>
+                <span className="truncate text-[14px] text-ink" title={group.name}>{group.name}</span>
               </>,
             ),
           )}
@@ -229,12 +229,15 @@ export function CommandPalette({ onOpenChange }: { onOpenChange?: (open: boolean
                 messageOffset + i,
                 () => void activate({ kind: "message", hit }),
                 <>
-                  <span className="flex items-center gap-2 truncate text-[13px] font-medium text-ink">
+                  <span
+                    className="flex items-center gap-2 truncate text-[13px] font-medium text-ink"
+                    title={hit.task ? `${hit.name} · ${hit.task}` : hit.name}
+                  >
                     <MessageSquare size={13} className="shrink-0 text-ink-secondary" />
                     {hit.name}
                     {hit.task ? <span className="font-normal text-ink-secondary"> · {hit.task}</span> : null}
                   </span>
-                  <span className="line-clamp-2 text-[12.5px] text-ink-secondary">
+                  <span className="line-clamp-2 text-[12.5px] text-ink-secondary" title={hit.snippet}>
                     {before}<mark className="rounded-sm bg-accent/25 px-0.5 text-ink">{match}</mark>{after}
                   </span>
                 </>,

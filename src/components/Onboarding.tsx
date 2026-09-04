@@ -42,7 +42,7 @@ function StatusRow({
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 text-[14px] font-medium text-ink">
           {mark}
-          <span className="min-w-0 truncate">{title}</span>
+          <span className="min-w-0 truncate" title={title}>{title}</span>
         </div>
         {detail && <div className="mt-0.5 text-[12.5px] leading-relaxed text-ink-secondary">{detail}</div>}
         {children}
@@ -81,7 +81,7 @@ function ReadyTile(entry: EngineEntry) {
     <div className="flex items-start gap-2.5 rounded-xl bg-card p-3">
       <ProviderMark driverKind={entry.instance.driverKind} size={17} />
       <div className="min-w-0">
-        <div className="truncate text-[13.5px] font-medium text-ink">{engineTitle(entry)}</div>
+        <div className="truncate text-[13.5px] font-medium text-ink" title={engineTitle(entry)}>{engineTitle(entry)}</div>
         <div className="mt-0.5 text-[12px] leading-snug text-ink-secondary">{entry.readyNote}</div>
       </div>
     </div>

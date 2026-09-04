@@ -235,13 +235,15 @@ export function QdrantRagConnection() {
             )}
           </div>
 
-          {/* A failure gets a full-width, wrapping row: the useful ones name
-              a cause ("behind Cloudflare Access", "timed out after 30s") and
-              a truncated single line hid exactly the part worth reading. */}
+          {/* A failure gets a full-width, wrapping row rather than one
+              truncated line: the useful messages name a cause ("behind
+              Cloudflare Access", "timed out after 30s"), and truncation hid
+              exactly the part worth reading.  The title still carries the
+              full text, per the readable-on-hover rule. */}
           {testResult && !testResult.ready && (
             <div className="flex items-start gap-1.5 text-[12.5px] text-danger">
               <XCircle size={14} className="mt-0.5 shrink-0" />
-              <span>{testResult.error || "Not reachable"}</span>
+              <span title={testResult.error || "Not reachable"}>{testResult.error || "Not reachable"}</span>
             </div>
           )}
         </div>

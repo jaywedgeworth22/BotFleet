@@ -471,7 +471,7 @@ export function SkillRecorderPage() {
                           <span className="flex size-8 shrink-0 items-center justify-center rounded-xl bg-card text-ink-secondary"><Icon size={15} /></span>
                           <div className="min-w-0 flex-1">
                             <div className="text-[12px] font-medium">{index + 1}. {eventLabel(event)}</div>
-                            <div className="truncate text-[10.5px] text-ink-secondary">{context}</div>
+                            <div className="truncate text-[10.5px] text-ink-secondary" title={context}>{context}</div>
                           </div>
                           <button type="button" aria-label={`Remove step ${index + 1}`} onClick={() => removeEvent(event.id)} className="rounded-lg p-2 text-ink-secondary opacity-60 hover:bg-raised hover:text-danger group-hover:opacity-100"><X size={14} /></button>
                         </div>

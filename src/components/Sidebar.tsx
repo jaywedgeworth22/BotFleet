@@ -495,6 +495,7 @@ function ThreadContextMenu({
               onClose();
             }}
             className="block w-full truncate px-3 py-2 text-left text-[13px] text-ink hover:bg-raised/70"
+            title={entry.name}
           >
             {entry.name}
           </button>
@@ -708,11 +709,11 @@ function GroupListItem({
       <StackedMauses group={group} members={members} density={density} />
       <div className={cn("min-w-0 flex-1", density === "icons" && "hidden")}>
         <div className="flex items-baseline justify-between gap-2">
-          <span className="truncate text-[15px] font-semibold text-ink">{group.name}</span>
+          <span className="truncate text-[15px] font-semibold text-ink" title={group.name}>{group.name}</span>
           {selected && activityAt > 0 && <span className="shrink-0 text-xs text-ink-secondary">{formatTime(activityAt)}</span>}
         </div>
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate text-[13px] text-ink-secondary">{groupPreview(group, state.bots)}</span>
+          <span className="truncate text-[13px] text-ink-secondary" title={groupPreview(group, state.bots)}>{groupPreview(group, state.bots)}</span>
           {group.unread && <span className="size-2 shrink-0 rounded-full bg-accent" />}
         </div>
       </div>
@@ -1214,7 +1215,7 @@ function SectionPicker({
                 section === current ? "bg-raised text-ink" : "text-ink hover:bg-raised/70",
               )}
             >
-              <span className="truncate">{section}</span>
+              <span className="truncate" title={section}>{section}</span>
               {section === current && <Check size={14} className="shrink-0 text-accent" />}
             </button>
           ))}
@@ -1473,7 +1474,7 @@ function BotListItem({
               </span>
             )}
             {bot.chiefOfStaff && preview(bot) && <span className="shrink-0 text-ink-secondary/60">·</span>}
-            <span className="truncate">{preview(bot)}</span>
+            <span className="truncate" title={preview(bot)}>{preview(bot)}</span>
           </span>
           {bot.unread && (
             <span className="size-2 shrink-0 rounded-full bg-accent" />
@@ -1731,8 +1732,8 @@ function ArchivedBotsPanel({
               <div key={bot.id} className="flex min-h-[82px] items-center gap-3 border-b border-hairline/35 px-1 py-3">
                 <BotAvatar bot={bot} state={stateForBot(bot)} size={42} animated={false} />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-[14px] font-medium text-ink">{bot.name}</div>
-                  <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary">{bot.title || "Bot"}</div>
+                  <div className="truncate text-[14px] font-medium text-ink" title={bot.name}>{bot.name}</div>
+                  <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary" title={bot.title || "Bot"}>{bot.title || "Bot"}</div>
                 </div>
                 <button
                   onClick={() => void restore(bot)}
@@ -2429,7 +2430,10 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             title={density === "icons" ? (state.config?.profile?.name?.trim() || "App Settings") : undefined}
           >
             <InitialsAvatar initials={profileInitials(state.config?.profile)} size={28} />
-            <span className={cn("truncate text-[14px] text-ink", density === "icons" && "hidden")}>
+            <span
+              className={cn("truncate text-[14px] text-ink", density === "icons" && "hidden")}
+              title={state.config?.profile?.name?.trim() || state.config?.profile?.email?.trim() || "You"}
+            >
               {state.config?.profile?.name?.trim() || state.config?.profile?.email?.trim() || "You"}
             </span>
           </button>

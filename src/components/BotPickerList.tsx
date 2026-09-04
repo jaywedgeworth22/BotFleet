@@ -31,7 +31,7 @@ export function BotPickerList({
           className="flex items-center gap-2.5 rounded-lg px-2 py-1.5 text-left hover:bg-raised/50"
         >
           <BotAvatar bot={b} state={stateForBot(b)} size={28} />
-          <span className="min-w-0 flex-1 truncate text-[14px] text-ink">{b.name}</span>
+          <span className="min-w-0 flex-1 truncate text-[14px] text-ink" title={b.name}>{b.name}</span>
           <span
             className={cn(
               "flex size-[18px] shrink-0 items-center justify-center rounded-full border",

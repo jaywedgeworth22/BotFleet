@@ -40,10 +40,10 @@ function BotNode({ bot, chief = false }: { bot: Bot; chief?: boolean }) {
       />
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
-          <span className="truncate text-[13.5px] font-semibold text-ink">{bot.name}</span>
+          <span className="truncate text-[13.5px] font-semibold text-ink" title={bot.name}>{bot.name}</span>
           {chief && <Crown size={12} className="shrink-0 text-warning" aria-label="Chief of Staff" />}
         </span>
-        <span className="block truncate text-[11.5px] text-ink-secondary">{bot.title || bot.modelSelection.model}</span>
+        <span className="block truncate text-[11.5px] text-ink-secondary" title={bot.title || bot.modelSelection.model}>{bot.title || bot.modelSelection.model}</span>
       </span>
       <span className="flex shrink-0 items-center gap-1.5 text-[10.5px] text-ink-secondary">
         <span className={cn("size-1.5 rounded-full", statusTone[status.tone], status.label === "Working" && "animate-pulse")} />
@@ -65,11 +65,11 @@ function EdgeRow({ edge, bots }: { edge: TeamMapEdge; bots: Bot[] }) {
       className="flex w-full items-center gap-3 rounded-xl border border-hairline/40 bg-card px-3 py-2.5 text-left transition hover:bg-raised/50"
     >
       <div className="flex min-w-0 flex-1 items-center gap-2">
-        <span className="truncate text-[13px] font-medium text-ink">{source.name}</span>
+        <span className="truncate text-[13px] font-medium text-ink" title={source.name}>{source.name}</span>
         <ArrowRight size={13} className={cn("shrink-0", live ? "text-accent" : "text-ink-secondary")} />
-        <span className="truncate text-[13px] font-medium text-ink">{target.name}</span>
+        <span className="truncate text-[13px] font-medium text-ink" title={target.name}>{target.name}</span>
       </div>
-      {edge.reason && <span className="max-w-[220px] truncate text-[11.5px] text-ink-secondary">{edge.reason}</span>}
+      {edge.reason && <span className="max-w-[220px] truncate text-[11.5px] text-ink-secondary" title={edge.reason}>{edge.reason}</span>}
       <span
         className={cn(
           "rounded-full px-2 py-0.5 text-[10.5px] font-medium",

@@ -138,7 +138,7 @@ function TaskTimeline({ messages, busy }: { messages: Message[]; busy: boolean }
                 )}
               />
               <span className="sr-only">{event.state}: </span>
-              <span className="truncate">{event.label}</span>
+              <span className="truncate" title={event.label}>{event.label}</span>
               <time className="ml-auto shrink-0 text-[11px] text-ink-secondary/70">{formatTime(event.at)}</time>
             </li>
           ))}
@@ -582,7 +582,7 @@ function ActivityChip({ bot, message }: { bot: Bot, message: Message }) {
              <div className="flex items-center justify-between">
                 <button onClick={() => setExpanded(false)} className="flex items-center gap-2 text-[13px] text-ink-secondary hover:text-ink">
                   <MausAvatar color={comm.withColor} state="happy" size={16} />
-                  <span className="font-medium truncate">{tool.name}</span>
+                  <span className="font-medium truncate" title={tool.name}>{tool.name}</span>
                   <ChevronDown size={13} />
                 </button>
                 <button
@@ -608,7 +608,7 @@ function ActivityChip({ bot, message }: { bot: Bot, message: Message }) {
           className="flex items-center gap-2 rounded-xl border border-hairline/40 bg-panel px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink"
         >
           <MausAvatar color={comm.withColor} state="happy" size={16} />
-          <span className="max-w-[480px] truncate">{tool.name}</span>
+          <span className="max-w-[480px] truncate" title={tool.name}>{tool.name}</span>
           <ChevronRight size={13} />
         </button>
       </div>
@@ -834,7 +834,7 @@ function PinnedBanner({
           title="Jump to the pinned message"
         >
           <span className="shrink-0 text-[11.5px] font-medium text-accent">{sender}</span>
-          <span className="truncate text-[12.5px] text-ink-secondary">{text}</span>
+          <span className="truncate text-[12.5px] text-ink-secondary" title={text}>{text}</span>
         </button>
         <button
           onClick={onUnpin}
@@ -1433,7 +1433,7 @@ function ChatHeaderOverflowMenu({ bot }: { bot: Bot }) {
             <Folder size={15} className="shrink-0 text-ink-secondary" />
             <div className="min-w-0 flex-1">
               <div className="text-[12.5px] font-medium">Working Folder</div>
-              <div className="truncate font-mono text-[11px] text-ink-secondary">
+              <div className="truncate font-mono text-[11px] text-ink-secondary" title={folderName ?? "Private bot workspace"}>
                 {folderName ?? "Private bot workspace"}
               </div>
             </div>

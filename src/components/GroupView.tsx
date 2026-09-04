@@ -594,7 +594,7 @@ function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: ()
       title={`Primary: ${folder}${extraCount > 0 ? ` (+${extraCount} additional repos)` : ""}`}
     >
       <Folder size={12} className="@max-4xl/chathead:size-[14px]" />
-      <span className="truncate font-mono @max-4xl/chathead:hidden">{name}</span>
+      <span className="truncate font-mono @max-4xl/chathead:hidden" title={name}>{name}</span>
       {extraCount > 0 && (
         <span className="rounded bg-accent/20 px-1.5 py-0.2 text-[10.5px] font-semibold text-accent @max-4xl/chathead:hidden">
           +{extraCount}
@@ -805,7 +805,7 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
                     className={cn("shrink-0 text-ink-secondary transition-transform", leadPickerOpen && "rotate-180")}
                   />
                 </span>
-                <span className="ml-6 mt-2 truncate text-[11.5px] text-ink-secondary">
+                <span className="ml-6 mt-2 truncate text-[11.5px] text-ink-secondary" title={selectedLead?.name ?? "Choose a teammate"}>
                   {selectedLead?.name ?? "Choose a teammate"}
                 </span>
               </button>
@@ -844,8 +844,8 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
                             animated={false}
                           />
                           <span className="min-w-0 flex-1">
-                            <span className="block truncate text-[13px] font-medium text-ink">{member.name}</span>
-                            <span className="block truncate text-[11px] text-ink-secondary">{member.title}</span>
+                            <span className="block truncate text-[13px] font-medium text-ink" title={member.name}>{member.name}</span>
+                            <span className="block truncate text-[11px] text-ink-secondary" title={member.title}>{member.title}</span>
                           </span>
                           {selected && <Check size={15} className="shrink-0 text-accent" />}
                         </button>
@@ -1245,7 +1245,7 @@ export function GroupView({ group }: { group: Group }) {
                 ))}
               </div>
             )}
-            <span className="truncate min-w-[80px] text-[15px] font-semibold text-ink">{group.name}</span>
+            <span className="truncate min-w-[80px] text-[15px] font-semibold text-ink" title={group.name}>{group.name}</span>
           </button>
         </div>
         <div className="flex shrink-0 items-center gap-1.5 md:gap-2">
@@ -1331,7 +1331,12 @@ export function GroupView({ group }: { group: Group }) {
             title="Channel bulletin — shared instructions for every bot here"
           >
             <Pin size={12} className="shrink-0 text-ink-secondary" />
-            <span className={cn("truncate text-[12.5px]", group.bulletin ? "text-ink-secondary" : "text-ink-secondary/60")}>
+            <span
+              className={cn("truncate text-[12.5px]", group.bulletin ? "text-ink-secondary" : "text-ink-secondary/60")}
+              // the chip shows the first line clipped; the hover carries the
+              // whole bulletin, which is the point of a shared instruction
+              title={group.bulletin || "Add channel instructions…"}
+            >
               {group.bulletin.split("\n")[0] || "Add channel instructions…"}
             </span>
           </button>
@@ -1363,7 +1368,7 @@ export function GroupView({ group }: { group: Group }) {
                 title="Jump to the pinned message"
               >
                 <span className="shrink-0 text-[11.5px] font-medium text-accent">{sender}</span>
-                <span className="truncate text-[12.5px] text-ink-secondary">{text}</span>
+                <span className="truncate text-[12.5px] text-ink-secondary" title={text}>{text}</span>
               </button>
               <button
                 onClick={() => dispatch({ type: "patchGroup", groupId: group.id, patch: { pinnedMessageId: "" } })}

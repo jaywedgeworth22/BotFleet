@@ -451,7 +451,7 @@ export function TeamLibraryPanel({
                   <ArrowLeft size={18} />
                 </button>
               )}
-              <h2 id="team-library-title" className="truncate text-[22px] font-semibold tracking-[-0.01em] text-ink">
+              <h2 id="team-library-title" className="truncate text-[22px] font-semibold tracking-[-0.01em] text-ink" title={pending ? pending.name : "Teams"}>
                 {pending ? pending.name : "Teams"}
               </h2>
             </div>
@@ -509,8 +509,8 @@ export function TeamLibraryPanel({
                       {member.name.slice(0, 1).toUpperCase()}
                     </div>
                     <div className="min-w-0">
-                      <div className="truncate text-[14px] font-medium text-ink">{member.name}</div>
-                      <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary">{member.title || "General assistant"}</div>
+                      <div className="truncate text-[14px] font-medium text-ink" title={member.name}>{member.name}</div>
+                      <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary" title={member.title || "General assistant"}>{member.title || "General assistant"}</div>
                     </div>
                   </div>
                 ))}
@@ -657,8 +657,8 @@ export function TeamLibraryPanel({
                         <article key={entry.slug} className="flex min-h-[104px] items-center gap-3 border-b border-hairline/35 px-1 py-4">
                           <TeamGlyph index={index} />
                           <div className="min-w-0 flex-1">
-                            <h3 className="truncate text-[14px] font-medium text-ink">{entry.name}</h3>
-                            <p className="mt-0.5 truncate text-[12.5px] text-ink-secondary">{entry.outcome ?? entry.summary}</p>
+                            <h3 className="truncate text-[14px] font-medium text-ink" title={entry.name}>{entry.name}</h3>
+                            <p className="mt-0.5 truncate text-[12.5px] text-ink-secondary" title={entry.outcome ?? entry.summary}>{entry.outcome ?? entry.summary}</p>
                             <p className="mt-1 truncate text-[11.5px] text-ink-secondary/80">
                               {entry.members} bots · {entry.skills.length} playbooks
                               {entry.requires.apps.length > 0 && ` · ${entry.requires.apps.join(", ")}`}
@@ -816,10 +816,10 @@ export function TeamLibraryPanel({
                               {member.name.slice(0, 1).toUpperCase()}
                             </div>
                             <div className="min-w-0">
-                              <div className="truncate text-[14px] font-medium text-ink">
+                              <div className="truncate text-[14px] font-medium text-ink" title={`${member.name} · ${member.title}`}>
                                 {member.name} <span className="font-normal text-ink-secondary">· {member.title}</span>
                               </div>
-                              <div className="mt-0.5 truncate text-[12px] text-ink-secondary">
+                              <div className="mt-0.5 truncate text-[12px] text-ink-secondary" title={scouted.suggestion.reasons[member.key] ?? ""}>
                                 {scouted.suggestion.reasons[member.key] ?? ""}
                               </div>
                             </div>
@@ -848,11 +848,14 @@ export function TeamLibraryPanel({
                                     className="size-4 accent-accent"
                                   />
                                   <div className="min-w-0 flex-1">
-                                    <div className="truncate text-[13.5px] font-medium text-ink">
+                                    <div
+                                      className="truncate text-[13.5px] font-medium text-ink"
+                                      title={candidate.category ? `${candidate.name} · ${candidate.category}` : candidate.name}
+                                    >
                                       {candidate.name}
                                       {candidate.category && <span className="font-normal text-ink-secondary"> · {candidate.category}</span>}
                                     </div>
-                                    <div className="mt-0.5 truncate text-[12px] text-ink-secondary">
+                                    <div className="mt-0.5 truncate text-[12px] text-ink-secondary" title={`Matches ${candidate.matched.join(", ")}`}>
                                       Matches {candidate.matched.join(", ")}
                                     </div>
                                   </div>
