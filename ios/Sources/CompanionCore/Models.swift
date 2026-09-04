@@ -878,6 +878,20 @@ public struct NotificationTarget: Equatable, Sendable {
         self.init(botId: payload["botId"], threadId: payload["threadId"])
     }
 
+    /// Local banners store flat string keys.  APNs also nests `thread-id`
+    /// under `aps`.  Either shape must open the same bot and task.
+    public static func fromRemoteUserInfo(_ userInfo: [AnyHashable: Any]) -> NotificationTarget? {
+        func string(from value: Any?) -> String? {
+            guard let value = value as? String else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        let botId = string(from: userInfo["botId"])
+        let nested = userInfo["aps"] as? [AnyHashable: Any]
+        let threadId = string(from: userInfo["threadId"]) ?? string(from: nested?["thread-id"])
+        return NotificationTarget(botId: botId, threadId: threadId)
+    }
+
     public func requiresTaskSwitch(activeThreadId: String) -> Bool {
         threadId != activeThreadId
     }

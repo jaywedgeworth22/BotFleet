@@ -37,13 +37,11 @@ electron-updater reads a feed file, not the DMG:
 
 A release that carries only DMGs, as
 [`v0.1.38`](https://github.com/jaywedgeworth22/BotFleet/releases/tag/v0.1.38)
-does today, cannot be found by any installed app: **Check for updates** fails
-on every platform.  Until the
-workflow runs green, the fix is manual: run `pnpm package:mac` locally,
-notarize and staple, regenerate the feed with
-`node scripts/regenerate-mac-feed.mjs`, and upload `latest-mac.yml`, both
-zips, and both blockmaps to the `v0.1.38` release.  Never hand-edit or carry
-forward a feed file; it pins sha512 hashes of the exact bytes on the release.
+did, cannot be found by any installed app: **Check for updates** fails
+on every platform.  `1.0.30` is the first desktop version that is supposed to
+ship with `latest-mac.yml` and both macOS zips from `release.yml`.  Never
+hand-edit or carry forward a feed file; it pins sha512 hashes of the exact
+bytes on the release.
 
 ## Why the Gates Exist
 

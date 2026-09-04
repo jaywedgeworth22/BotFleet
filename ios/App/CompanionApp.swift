@@ -33,6 +33,9 @@ struct CompanionApp: App {
                     appDelegate.onRemoteWake = {
                         session.connect()
                     }
+                    appDelegate.onRemoteTarget = { target in
+                        Task { await session.openNotification(target) }
+                    }
                     session.connect()
                     session.registerForRemoteNotificationsIfAllowed()
                     liveActivities.attach(to: session)
@@ -57,6 +60,7 @@ struct CompanionApp: App {
 final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
     var onDeviceToken: ((String) -> Void)?
     var onRemoteWake: (() -> Void)?
+    var onRemoteTarget: ((NotificationTarget) -> Void)?
 
     func application(
         _ application: UIApplication,
@@ -79,6 +83,9 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
         onRemoteWake?()
+        if let target = NotificationTarget.fromRemoteUserInfo(userInfo) {
+            onRemoteTarget?(target)
+        }
         completionHandler(.newData)
     }
 }
