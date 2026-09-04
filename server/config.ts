@@ -46,24 +46,58 @@ export function isAbsoluteHttpUrl(value: unknown): value is string {
   }
 }
 
+/** Per-desktop budget on a VPS.  Unlike the Local VM — the only desktop on
+ * the person's own workstation — a VPS runs one desktop per bot on a single
+ * shared machine, so the default is a fraction of that host rather than a
+ * whole workstation's worth.  3 GiB and 2 CPUs leaves an idle XFCE desktop
+ * several times its observed footprint while letting a modest box carry four
+ * to six bots at once.  Operators with a bigger or smaller VPS override it. */
+export const VPS_DEFAULT_MEMORY_GIB = 3;
+export const VPS_DEFAULT_CPUS = 2;
+
+/** Bounds, not preferences: below these a desktop cannot boot, and above them
+ * the value is far more likely a typo than an intent. */
+const VPS_MEMORY_GIB_RANGE = { min: 2, max: 64 } as const;
+const VPS_CPUS_RANGE = { min: 1, max: 32 } as const;
+
+function normalizeVpsNumber(
+  value: unknown,
+  field: string,
+  range: { min: number; max: number },
+): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < range.min || value > range.max) {
+    throw new Error(`vps.${field} must be a whole number between ${range.min} and ${range.max}`);
+  }
+  return value;
+}
+
 /** Keep the persisted VPS shape deliberately smaller than an SSH connection. */
-export function normalizeVpsConfig(raw: unknown): { sshAlias?: string } {
+export function normalizeVpsConfig(raw: unknown): { sshAlias?: string; memoryGib?: number; cpus?: number } {
   if (raw === undefined || raw === null) return {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("vps must be an object containing an SSH config alias");
   }
-  const alias = (raw as Record<string, unknown>).sshAlias;
-  if (alias === undefined || alias === "") return {};
+  const record = raw as Record<string, unknown>;
+  const memoryGib = normalizeVpsNumber(record.memoryGib, "memoryGib", VPS_MEMORY_GIB_RANGE);
+  const cpus = normalizeVpsNumber(record.cpus, "cpus", VPS_CPUS_RANGE);
+  const sizing = { ...(memoryGib === undefined ? {} : { memoryGib }), ...(cpus === undefined ? {} : { cpus }) };
+  const alias = record.sshAlias;
+  // Sizing is meaningful on its own: an operator may set the budget before
+  // naming the host, and dropping it here would silently lose the setting.
+  if (alias === undefined || alias === "") return sizing;
   if (!isValidSshAlias(alias)) {
     throw new Error("vps.sshAlias must be a simple SSH config alias (letters, numbers, dot, dash, or underscore)");
   }
-  return { sshAlias: alias };
+  return { sshAlias: alias, ...sizing };
 }
 
 const vpsConfigSchema = z.object({
   sshAlias: z.string().refine((value) => value === "" || isValidSshAlias(value), {
     message: "must be a simple SSH config alias",
   }).optional(),
+  memoryGib: z.number().int().min(VPS_MEMORY_GIB_RANGE.min).max(VPS_MEMORY_GIB_RANGE.max).optional(),
+  cpus: z.number().int().min(VPS_CPUS_RANGE.min).max(VPS_CPUS_RANGE.max).optional(),
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -169,7 +203,7 @@ export interface AppConfig {
   composio?: { apiKey?: string; userId?: string; sessionId?: string; brokerUrl?: string };
   box?: { token?: string };
   /** A named host from the user's SSH config. Authentication stays with SSH. */
-  vps?: { sshAlias?: string };
+  vps?: { sshAlias?: string; memoryGib?: number; cpus?: number };
   opencodeGo?: { apiKey?: string };
   tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system" };
   imageGen?: { key?: string };
@@ -235,6 +269,17 @@ export function parseConfigPatch(value: JsonValue): ConfigPatch {
 
 export function vpsSshAlias(cfg: AppConfig): string | null {
   return isValidSshAlias(cfg.vps?.sshAlias) ? cfg.vps.sshAlias : null;
+}
+
+/** The per-desktop budget on this operator's VPS.  Both accessors fall back
+ * to the shared-host default, so an unconfigured VPS still gets a size that
+ * lets several bots coexist on one machine. */
+export function vpsMemoryGib(cfg: AppConfig): number {
+  return cfg.vps?.memoryGib ?? VPS_DEFAULT_MEMORY_GIB;
+}
+
+export function vpsCpus(cfg: AppConfig): number {
+  return cfg.vps?.cpus ?? VPS_DEFAULT_CPUS;
 }
 
 export function roomTurnTimeoutMinutes(cfg: AppConfig): number {
