@@ -567,6 +567,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 ...toolFields(u.title ?? u.rawInput?.command, u.rawInput, {
                   hint: u.kind,
                   locations: u.locations,
+                  cwd: turn.cwd,
                 }),
               });
               break;

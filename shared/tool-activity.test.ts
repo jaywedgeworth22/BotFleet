@@ -56,6 +56,21 @@ describe("shortenPath", () => {
     expect(shortenPath("C:\\Users\\jay\\x", "C:\\Users\\jay")).toBe("~\\x");
   });
 
+  it("drops the working folder first — the row should say which file, not where the bot lives", () => {
+    // a hundred-step turn in one repo repeated the repo path a hundred times
+    expect(shortenPath("/home/ada/apps/thing/server/index.ts", "/home/ada", "/home/ada/apps/thing")).toBe(
+      "server/index.ts",
+    );
+    // outside the folder, home is still the fallback
+    expect(shortenPath("/home/ada/notes.md", "/home/ada", "/home/ada/apps/thing")).toBe("~/notes.md");
+    // the folder itself is not shortened to nothing
+    expect(shortenPath("/home/ada/apps/thing", "/home/ada", "/home/ada/apps/thing")).toBe("~/apps/thing");
+    // a sibling folder must not be mistaken for a child
+    expect(shortenPath("/home/ada/apps/thing-two/x", "/home/ada", "/home/ada/apps/thing")).toBe(
+      "~/apps/thing-two/x",
+    );
+  });
+
   it("leaves a path outside home alone, and survives no home at all", () => {
     expect(shortenPath("/etc/hosts", "/Users/jay")).toBe("/etc/hosts");
     expect(shortenPath("/etc/hosts")).toBe("/etc/hosts");

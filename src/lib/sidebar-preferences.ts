@@ -112,3 +112,32 @@ export function saveCollapsedRooms(
     // See above.
   }
 }
+
+/** Which roster sections are collapsed.
+ *
+ * A separate key from the channel one on purpose: a section groups channels
+ * and bots, so one list holding both would make "Apps" and a channel called
+ * "Apps" the same entry.  Collapsed is the exception here too — an unknown
+ * section starts open, which is what a newly created one should do. */
+export const SIDEBAR_COLLAPSED_SECTIONS_KEY = "botfleet.sidebarCollapsedSections";
+
+export function loadCollapsedSections(storage?: Pick<Storage, "getItem"> | null): Set<string> {
+  try {
+    const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
+    return parseCollapsedRooms(target?.getItem(SIDEBAR_COLLAPSED_SECTIONS_KEY) ?? null);
+  } catch {
+    return new Set();
+  }
+}
+
+export function saveCollapsedSections(
+  collapsed: Set<string>,
+  storage?: Pick<Storage, "setItem"> | null,
+): void {
+  try {
+    const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
+    target?.setItem(SIDEBAR_COLLAPSED_SECTIONS_KEY, JSON.stringify([...collapsed]));
+  } catch {
+    // See above.
+  }
+}

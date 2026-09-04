@@ -72,3 +72,54 @@ export function autoSelectsLocalComputer({
 }): boolean {
   return platform !== "linux" && !(computers ?? []).includes("cloud") && capabilitiesReady && localSelectable;
 }
+
+/** Can this bot's engine drive a Local VM?
+ *
+ * The server refuses at turn time (`server/index.ts`, the `wantsVm` gate),
+ * and refusing there alone cost a real fleet 51 failed turns: the person
+ * picked a destination the button offered, sent work, and found out when
+ * the turn died.  contracts.ts states the rule the picker should have been
+ * following all along — never show a knob the driver cannot turn — so the
+ * same condition is answered here, before the choice is made.
+ *
+ * Box runs the agent on the remote box, so it does not mount a VM into a
+ * local agent; that is why it is excluded despite having computerMcp. */
+export function instanceSupportsLocalVm(
+  instances: InstanceInfo[],
+  bot: Pick<Bot, "modelSelection">,
+): boolean {
+  const instance = instances.find((candidate) => candidate.instanceId === bot.modelSelection.instanceId);
+  if (!instance) return true; // unknown engine: let the server have the last word
+  if (instance.driverKind === "boxAgent") return false;
+  return instance.capabilities?.computerMcp === true;
+}
+
+/** Can this bot's engine mount a cloud computer at all?
+ *
+ * `boxAgent` runs the turn on the box itself, so it always can; every other
+ * engine needs the computer MCP surface. */
+export function instanceSupportsCloudComputer(
+  instances: InstanceInfo[],
+  bot: Pick<Bot, "modelSelection">,
+): boolean {
+  const instance = instances.find((candidate) => candidate.instanceId === bot.modelSelection.instanceId);
+  if (!instance) return true;
+  if (instance.driverKind === "boxAgent") return true;
+  return instance.capabilities?.computerMcp === true;
+}
+
+/** Why a computer destination is not offered, in the words the picker shows.
+ * `null` means it is available. */
+export function computerDestinationDisabledReason(
+  mode: "cloud" | "vm",
+  instances: InstanceInfo[],
+  bot: Pick<Bot, "modelSelection">,
+): string | null {
+  const supported = mode === "vm" ? instanceSupportsLocalVm(instances, bot) : instanceSupportsCloudComputer(instances, bot);
+  if (supported) return null;
+  const engine = instances.find((candidate) => candidate.instanceId === bot.modelSelection.instanceId);
+  const name = engine?.displayName ?? "This engine";
+  return mode === "vm"
+    ? `${name} cannot drive a Local VM.  Choose Claude or an ACP engine, or another destination.`
+    : `${name} cannot drive a remote desktop.  Choose Claude or an ACP engine, or another destination.`;
+}

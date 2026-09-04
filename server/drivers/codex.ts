@@ -391,7 +391,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
                 itemType: "tool",
                 itemId: item.id,
                 title,
-                ...toolFields(title, item),
+                ...toolFields(title, item, { cwd: turn.cwd }),
               });
             }
             break;

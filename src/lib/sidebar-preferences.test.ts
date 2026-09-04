@@ -8,6 +8,9 @@ import {
   SIDEBAR_DENSITY_KEY,
   SIDEBAR_THREAD_COUNT_KEY,
   loadCollapsedRooms,
+  loadCollapsedSections,
+  saveCollapsedSections,
+  SIDEBAR_COLLAPSED_SECTIONS_KEY,
   loadSidebarThreadCount,
   parseCollapsedRooms,
   parseSidebarThreadCount,
@@ -72,5 +75,27 @@ describe("which channels are collapsed", () => {
     saveCollapsedRooms(new Set(["grp_1", "grp_2"]), { setItem });
     expect(setItem).toHaveBeenCalledWith(SIDEBAR_COLLAPSED_ROOMS_KEY, '["grp_1","grp_2"]');
     expect([...parseCollapsedRooms('["grp_1",7,null,"grp_2"]')]).toEqual(["grp_1", "grp_2"]);
+  });
+});
+
+describe("collapsed roster sections", () => {
+  it("starts every section open, so a new one is never hidden", () => {
+    expect(loadCollapsedSections(null).size).toBe(0);
+    expect(loadCollapsedSections({ getItem: () => null }).size).toBe(0);
+  });
+
+  it("round-trips the collapsed names", () => {
+    const setItem = vi.fn();
+    saveCollapsedSections(new Set(["Apps", "Bots"]), { setItem });
+    expect(setItem).toHaveBeenCalledWith(SIDEBAR_COLLAPSED_SECTIONS_KEY, '["Apps","Bots"]');
+  });
+
+  it("keeps its own key, so a section and a channel of the same name never collide", () => {
+    expect(SIDEBAR_COLLAPSED_SECTIONS_KEY).not.toBe(SIDEBAR_COLLAPSED_ROOMS_KEY);
+  });
+
+  it("survives a blocked store the way every other preference does", () => {
+    expect(loadCollapsedSections({ getItem: () => { throw new Error("blocked"); } }).size).toBe(0);
+    expect(() => saveCollapsedSections(new Set(["Apps"]), { setItem: () => { throw new Error("blocked"); } })).not.toThrow();
   });
 });

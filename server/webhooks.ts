@@ -27,6 +27,10 @@ export interface WebhookTrigger {
   verificationSample?: WebhookVerificationSample;
   /** Optional event-name allowlist. Empty means every event type. */
   eventTypes?: string[];
+  /** Minimum minutes between activations of this trigger.  Deliveries that
+   * arrive inside the gap wait and run together when it closes, rather than
+   * waking the bot once each.  Absent or 0 runs every delivery. */
+  minGapMinutes?: number;
 }
 
 export interface WebhookTriggerInput {
@@ -37,6 +41,7 @@ export interface WebhookTriggerInput {
   enabled?: boolean;
   verificationPending?: boolean;
   eventTypes?: string[];
+  minGapMinutes?: number;
 }
 
 type CleanWebhookInput = Omit<
@@ -144,6 +149,9 @@ const MAX_PENDING_RUNS = 3;
 
 const runOnSchema = z.enum(["maus", "cloud"]);
 const eventTypesSchema = z.array(z.string()).max(20).optional();
+/** A whole number of minutes.  A day is the ceiling — past that a person
+ * wants a schedule, not a trigger. */
+const minGapSchema = z.number().int().min(0).max(1440).optional();
 const triggerInputSchema = z.object({
   name: z.string(),
   prompt: z.string(),
@@ -152,6 +160,7 @@ const triggerInputSchema = z.object({
   enabled: z.boolean().optional(),
   verificationPending: z.boolean().optional(),
   eventTypes: eventTypesSchema,
+  minGapMinutes: minGapSchema,
 });
 const triggerPatchSchema = triggerInputSchema.partial();
 const verificationSampleSchema = z.object({
@@ -177,6 +186,7 @@ const storedWebhookSchema = z.object({
   verifiedAt: z.number().finite().nonnegative().optional(),
   verificationSample: verificationSampleSchema.optional(),
   eventTypes: eventTypesSchema,
+  minGapMinutes: minGapSchema,
   secretHash: z.string().regex(/^[a-f0-9]{64}$/),
 });
 const deliveryReceiptSchema = z.object({
@@ -255,6 +265,9 @@ function cleanInput(input: WebhookTriggerInput): CleanWebhookInput {
     verificationPending: enabled ? false : input.verificationPending === true,
   };
   if (eventTypes.length) clean.eventTypes = eventTypes;
+  // 0 means "no gap", which is also the absent value — keep the record small
+  const minGapMinutes = Math.max(0, Math.min(1440, Math.round(input.minGapMinutes ?? 0)));
+  if (minGapMinutes > 0) clean.minGapMinutes = minGapMinutes;
   return clean;
 }
 
@@ -397,10 +410,12 @@ export class WebhookManager {
       enabled: patch.enabled ?? trigger.enabled,
       verificationPending: patch.verificationPending ?? trigger.verificationPending,
       eventTypes: patch.eventTypes ?? trigger.eventTypes,
+      minGapMinutes: patch.minGapMinutes ?? trigger.minGapMinutes,
     });
     if (this.options.botState(clean.botId) === "missing") fail(400, "That MAUS no longer exists");
     Object.assign(trigger, clean, { updatedAt: this.now() });
     if (!clean.eventTypes?.length) delete trigger.eventTypes;
+    if (!clean.minGapMinutes) delete trigger.minGapMinutes;
     if (patch.enabled === false) {
       this.options.cancelQueued?.(trigger.id, "The webhook was paused before this delivery started");
     }

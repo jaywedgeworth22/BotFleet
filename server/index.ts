@@ -2633,6 +2633,18 @@ routines = new RoutineManager({
     return !bot ? "missing" : bot.busy ? "busy" : "ready";
   },
   conversationMode: () => parseConversationMode(cfg.conversationMode),
+  // The gap is a property of the trigger definition, so it is read live —
+  // changing it in Settings applies to the next delivery, not the next
+  // restart.
+  //
+  // Webhooks only.  A resource trigger already has `cooldownMinutes`, which
+  // works a layer earlier by suppressing the SAMPLE, and a schedule has its
+  // own cadence by definition; adding a second rate limit to either would
+  // give one behavior two knobs that disagree.
+  minGapMinutes: (run) =>
+    run.triggerSource === "webhook" && run.webhookId
+      ? webhooks.list().find((hook) => hook.id === run.webhookId)?.minGapMinutes
+      : undefined,
   defaultThread: (botId) => store.bot(botId)?.threadId,
   createTask: (botId, title, activate = false) => {
     const task = store.createTask(botId, title, activate);

@@ -20,13 +20,14 @@ export interface ToolFields {
 export function toolFields(
   name: string | undefined,
   rawInput: unknown,
-  options: { hint?: string; locations?: unknown } = {},
+  options: { hint?: string; locations?: unknown; cwd?: string } = {},
 ): ToolFields {
   const activity = toolActivity(name, {
     hint: options.hint,
     rawInput,
     locations: options.locations,
     home: homedir(),
+    cwd: options.cwd,
   });
   return { target: activity.target, toolKind: activity.kind };
 }
