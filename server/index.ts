@@ -101,6 +101,8 @@ import {
   patchInstanceConfig,
   usageIngestUrl,
   usageProjectRules,
+  vpsCpus,
+  vpsMemoryGib,
   vpsSshAlias,
   DATA_DIR,
   EVENTS_DIR,
@@ -3575,7 +3577,14 @@ function configStatus() {
       managedSetup: composio.managedSetup(),
     },
     box: { configured: Boolean(cfg.box?.token) },
-    vps: { configured: Boolean(vpsSshAlias(cfg)), sshAlias: vpsSshAlias(cfg) ?? "" },
+    vps: {
+      configured: Boolean(vpsSshAlias(cfg)),
+      sshAlias: vpsSshAlias(cfg) ?? "",
+      // The per-desktop budget, always resolved: the client shows what a new
+      // desktop will actually get, not whether someone happened to set it.
+      memoryGib: vpsMemoryGib(cfg),
+      cpus: vpsCpus(cfg),
+    },
     opencodeGo: { configured: Boolean(cfg.opencodeGo?.apiKey) },
     // the chosen voice is a setting, not a secret; the key is reported the
     // same configured-or-not way as every other credential

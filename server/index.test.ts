@@ -15,6 +15,7 @@ import { z } from "zod";
 import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
 import { openSse } from "./testing/sse.ts";
 import { IMAGE_MAX_BYTES } from "./attachments.ts";
+import { VPS_DEFAULT_CPUS, VPS_DEFAULT_MEMORY_GIB } from "./config.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(SERVER_DIR, "..");
@@ -2764,7 +2765,15 @@ describe("harness HTTP API", () => {
 
     const saved = await api("PUT", "/api/config", { vps: { sshAlias: "production-vps" } });
     expect(saved.status).toBe(200);
-    expect(saved.body.vps).toEqual({ configured: true, sshAlias: "production-vps" });
+    // The per-desktop budget is always resolved in the response, so the client
+    // can show what a new desktop will actually get rather than whether
+    // someone happened to set it.
+    expect(saved.body.vps).toEqual({
+      configured: true,
+      sshAlias: "production-vps",
+      memoryGib: VPS_DEFAULT_MEMORY_GIB,
+      cpus: VPS_DEFAULT_CPUS,
+    });
     expect(JSON.stringify(saved.body)).not.toContain("privateKey");
 
     const patched = await api("PATCH", `/api/bots/${bot.id}`, { cloudBackend: "vps" });

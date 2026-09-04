@@ -77,6 +77,33 @@ host is unknown simply fails until you have done this once.
   mounts, and memory/CPU/pid limits. A container missing any of that — including one someone created under
   the managed name — is refused, not repaired.
 
+## Sizing the desktops
+
+Each bot gets its own desktop container, and they all share one machine — so the per-desktop budget is a
+fraction of the server, not a whole workstation's worth. The default is **3 GiB of memory and 2 CPUs**,
+which leaves an idle XFCE desktop several times its real footprint while letting a modest VPS carry four
+to six bots at once. (The Local VM on your own computer defaults to 8 GiB and 4 CPUs instead, because it
+is the only desktop on that machine.)
+
+Override it when your server is bigger or smaller, in `~/.botfleet/config.json`:
+
+```json
+{ "vps": { "sshAlias": "my-vps", "memoryGib": 6, "cpus": 3 } }
+```
+
+Memory accepts 2–64 GiB and CPUs 1–32; anything outside those bounds is rejected as a typo rather than
+silently clamped. Swap is pinned to the memory limit, so a desktop never swaps — on a shared host, one
+bot's swapping is every other bot's problem.
+
+Budget for the number of bots you actually run at once, not the number you have. Docker limits are ceilings
+rather than reservations, so the sum of the caps may exceed physical memory; what must not exceed it is the
+memory those desktops genuinely use together.
+
+**Changing the budget replaces existing containers.** BotFleet compares a running container against the
+budget you configured and refuses one built to a different size — a container it did not size is one it no
+longer controls. The next provision removes and recreates it, which wipes its filesystem. That is the same
+disposability the rest of this page describes, but it is worth knowing before you edit the numbers.
+
 ## Container lifecycle
 
 Each bot owns one container on the VPS, named `botfleet-vps-<bot>-<hash>` — stable across restarts and
