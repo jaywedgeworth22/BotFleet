@@ -79,6 +79,7 @@ describe("Title Case for controls and headings", () => {
     ["components/RoutinesPage.tsx", "Tasks &amp; routines", "Tasks &amp; Routines"],
     ["components/Sidebar.tsx", ">Archived bots<", ">Archived Bots<"],
     ["components/SettingsModal.tsx", 'title="Usage analytics"', 'title="Usage Analytics"'],
+    ["components/UsageSection.tsx", "Test connection", "Test Connection"],
   ];
 
   for (const [file, wrong, right] of LABELS) {

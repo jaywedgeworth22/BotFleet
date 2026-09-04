@@ -224,6 +224,10 @@ export function parseConfigPatch(value: JsonValue): ConfigPatch {
     throw Object.assign(new Error(schemaIssue(parsed.error, "Invalid configuration")), { status: 400 });
   }
   const { conversationMode: rawMode, ...rest } = parsed.data;
+  const ingestUrl = rest.usage?.ingestUrl;
+  if (ingestUrl !== undefined && ingestUrl.trim() && !isAbsoluteHttpUrl(ingestUrl)) {
+    throw Object.assign(new Error("usage.ingestUrl must be an absolute http(s) URL"), { status: 400 });
+  }
   return rawMode === undefined
     ? rest
     : { ...rest, conversationMode: parseConversationMode(rawMode) };
@@ -419,7 +423,12 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     /* first write */
   }
   const checkedPatch = appConfigSchema.partial().parse(patch);
-  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress"] as const) {
+  // usage and qdrant are operator-supplied endpoints (Usage Monitor telemetry,
+  // Bot RAG).  They must merge like the other sections: a URL-only patch must
+  // not wipe a stored token.  Omitting them from this list meant PATCH
+  // /api/config { usage } never wrote ~/.botfleet/config.json, so Settings
+  // reloaded empty fields.
+  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

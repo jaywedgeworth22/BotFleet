@@ -11,6 +11,7 @@ import {
   localVmMaxInstances,
   parseConfigPatch,
   parseStoredConfig,
+  saveConfig,
   roomTurnTimeoutMinutes,
   showToolCallsEnabled,
   summarizeToolCallsEnabled,
@@ -41,6 +42,13 @@ describe("configuration boundaries", () => {
     expect(() => parseStoredConfig({ instances: { claude: { driver: 42 } } })).toThrow("instances.claude.driver");
     expect(() => parseConfigPatch({ opencodeGo: { apiKey: 42 } })).toThrow("opencodeGo.apiKey");
     expect(() => parseConfigPatch({ profile: [] })).toThrow("profile");
+    expect(() => parseConfigPatch({ usage: { ingestUrl: "usage.example.com" } })).toThrow(
+      "usage.ingestUrl must be an absolute http(s) URL",
+    );
+    expect(parseConfigPatch({ usage: { ingestUrl: "https://usage.example.com", ingestToken: "tok" } })).toEqual({
+      usage: { ingestUrl: "https://usage.example.com", ingestToken: "tok" },
+    });
+    expect(parseConfigPatch({ usage: { ingestUrl: "" } })).toEqual({ usage: { ingestUrl: "" } });
   });
 
   it("accepts only a simple VPS SSH config alias and exposes no credentials", () => {
@@ -392,6 +400,48 @@ describe("credential env preference", () => {
     expect(process.env.COMPOSIO_API_KEY).toBe("ak_just_saved");
     expect(process.env.BOX_TOKEN).toBeUndefined();
     expect(process.env.OMB_TTS_KEY).toBeUndefined();
+  });
+});
+
+describe("saveConfig section merge", () => {
+  beforeEach(() => {
+    mkdirSync(DATA_DIR, { recursive: true });
+    rmSync(join(DATA_DIR, "config.json"), { force: true });
+  });
+  afterEach(() => {
+    rmSync(join(DATA_DIR, "config.json"), { force: true });
+  });
+
+  it("persists usage URL and token, and a later URL-only patch keeps the token", () => {
+    saveConfig({ usage: { ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" } });
+    expect(loadConfig().usage).toMatchObject({
+      ingestUrl: "https://usage.example.com",
+      ingestToken: "tok_abc",
+    });
+
+    saveConfig({ usage: { ingestUrl: "https://usage.example.com/app" } });
+    expect(loadConfig().usage).toMatchObject({
+      ingestUrl: "https://usage.example.com/app",
+      ingestToken: "tok_abc",
+    });
+  });
+
+  it("persists qdrant URL and api key the same way", () => {
+    saveConfig({
+      qdrant: { url: "https://qdrant.example.com", apiKey: "qk", collection: "fleet-agents" },
+    });
+    expect(loadConfig().qdrant).toMatchObject({
+      url: "https://qdrant.example.com",
+      apiKey: "qk",
+      collection: "fleet-agents",
+    });
+
+    saveConfig({ qdrant: { collection: "other" } });
+    expect(loadConfig().qdrant).toMatchObject({
+      url: "https://qdrant.example.com",
+      apiKey: "qk",
+      collection: "other",
+    });
   });
 });
 

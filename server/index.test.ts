@@ -2310,6 +2310,43 @@ describe("harness HTTP API", () => {
     await api("PATCH", "/api/config", { features: { skillRecorder: false, showToolCalls: false, summarizeToolCalls: true } });
   });
 
+  it("persists usage monitor URL and token without echoing the secret", async () => {
+    const saved = await api("PATCH", "/api/config", {
+      usage: { ingestUrl: "https://usage.example.com", ingestToken: "tok_secret" },
+    });
+    expect(saved.status).toBe(200);
+    expect(saved.body.usage).toMatchObject({
+      ingestUrl: "https://usage.example.com",
+      hasToken: true,
+    });
+    expect(JSON.stringify(saved.body)).not.toContain("tok_secret");
+
+    const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+    expect(disk.usage).toMatchObject({
+      ingestUrl: "https://usage.example.com",
+      ingestToken: "tok_secret",
+    });
+
+    const merged = await api("PATCH", "/api/config", {
+      usage: { ingestUrl: "https://usage.example.com/app" },
+    });
+    expect(merged.status).toBe(200);
+    expect(merged.body.usage.ingestUrl).toBe("https://usage.example.com/app");
+    expect(merged.body.usage.hasToken).toBe(true);
+    const afterDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+    expect(afterDisk.usage.ingestToken).toBe("tok_secret");
+
+    const invalid = await api("PATCH", "/api/config", { usage: { ingestUrl: "usage.example.com" } });
+    expect(invalid.status).toBe(400);
+    expect(String(invalid.body.error)).toMatch(/absolute http/);
+
+    await api("PATCH", "/api/config", { usage: { ingestUrl: "", ingestToken: "" } });
+    const afterClear = await api("POST", "/api/telemetry/test");
+    expect(afterClear.status).toBe(200);
+    expect(afterClear.body.ok).toBe(false);
+    expect(String(afterClear.body.error)).toMatch(/token/i);
+  });
+
   it("persists autoUpdate and ingress without reloading providers", async () => {
     try {
       const saved = await api("PATCH", "/api/config", {
