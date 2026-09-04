@@ -3006,7 +3006,15 @@ async function probeIngressUrl(raw: string): Promise<IngressProbeResult> {
     };
   }
   const status = response.status;
-  const tunnel = describeTunnel(response.headers as unknown as Record<string, string | string[] | undefined>);
+  // response.headers is a `Headers` instance; describeTunnel expects a plain
+  // record of header values so its `headers["server"]` lookups can find
+  // them, instead of always returning `undefined` (which would silently
+  // make every probe report "no tunnel" and lose the operator's hint).
+  const headerRecord: Record<string, string | string[] | undefined> = {};
+  response.headers.forEach((value, key) => {
+    headerRecord[key.toLowerCase()] = value;
+  });
+  const tunnel = describeTunnel(headerRecord);
   if (status >= 500) {
     return {
       ok: false,
