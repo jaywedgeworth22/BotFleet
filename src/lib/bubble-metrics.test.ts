@@ -4,6 +4,7 @@ import {
   BUBBLE_EDITOR_WIDTH,
   BUBBLE_GUTTER,
   BUBBLE_GUTTER_REM,
+  BUBBLE_GUTTER_REM_WIDE,
   BUBBLE_MAX_WIDTH,
   BUBBLE_MAX_WIDTH_REM,
   BUBBLE_WIDTH,
@@ -66,6 +67,17 @@ describe("the classes that hold the invariant up", () => {
     expect(BUBBLE_GUTTER).toContain("shrink-0");
   });
 
+  it("grows the reserve once the container affords a single row again", () => {
+    // narrow (stacked, three rows tall) needs less width than wide (one row)
+    expect(BUBBLE_GUTTER_REM).toBeLessThan(BUBBLE_GUTTER_REM_WIDE);
+    expect(BUBBLE_GUTTER).toContain(`@4xl/chat:w-[${BUBBLE_GUTTER_REM_WIDE}rem]`);
+  });
+
+  it("stacks the chrome by default and falls back to one row at @4xl/chat", () => {
+    expect(BUBBLE_CHROME).toContain("flex-col");
+    expect(BUBBLE_CHROME).toContain("@4xl/chat:flex-row");
+  });
+
   it("caps every bubble with one number", () => {
     expect(BUBBLE_MAX_WIDTH).toBe(`max-w-[${BUBBLE_MAX_WIDTH_REM}rem]`);
     expect(BUBBLE_WIDTH).toContain(BUBBLE_MAX_WIDTH);
@@ -92,6 +104,13 @@ describe("column layout", () => {
   it("anchors the chrome against the bubble on both sides", () => {
     expect(bubbleRow("user").chrome).toContain("right-0");
     expect(bubbleRow("bot").chrome).toContain("left-0");
+  });
+
+  it("hugs the near edge on every stacked row, then re-centers once it falls back to one row", () => {
+    expect(bubbleRow("user").chrome).toContain("items-end");
+    expect(bubbleRow("bot").chrome).toContain("items-start");
+    expect(bubbleRow("user").chrome).toContain("@4xl/chat:items-center");
+    expect(bubbleRow("bot").chrome).toContain("@4xl/chat:items-center");
   });
 
   it("gives both columns the identical box", () => {
