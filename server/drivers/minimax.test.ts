@@ -37,6 +37,11 @@ describe("MinimaxDriver", () => {
     vi.restoreAllMocks();
   });
 
+  it("sits on the Cloud rail as MiniMax CLI", () => {
+    expect(MinimaxDriver.metadata.displayName).toBe("MiniMax CLI");
+    expect(MinimaxDriver.metadata.access).toBeUndefined();
+  });
+
   it("offers only current official text models", () => {
     expect(MinimaxDriver.models).toEqual({
       default: "MiniMax-M3",

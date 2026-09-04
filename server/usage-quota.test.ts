@@ -69,4 +69,29 @@ describe("usage quota mapping", () => {
       }),
     ).toEqual(["claude-sonnet-4-6", "gpt-oss-120b-medium"]);
   });
+
+  it("maps a Cursor monthly skip onto the whole cursor engine", () => {
+    const monthly: RemoteQuotaWindow = {
+      id: "cursor-monthly",
+      provider: "cursor",
+      sourceApp: "cursor-cli",
+      label: "Cursor Pro monthly",
+      modelId: null,
+      modelType: "cursor",
+      window: "monthly",
+      remainingPercent: 0,
+      resetAt: "2026-09-15T00:00:00.000Z",
+      status: "exhausted",
+      skip: true,
+      skipReason: "0% remaining",
+    };
+    expect(driverKindsForWindow(monthly)).toEqual(["cursorAgent"]);
+    expect(
+      modelsToSkip(monthly, {
+        instanceId: "cursor",
+        driverKind: "cursorAgent",
+        models: { options: [{ id: "auto" }, { id: "composer-2.5" }] },
+      }),
+    ).toEqual(["*"]);
+  });
 });

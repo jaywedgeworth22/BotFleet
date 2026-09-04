@@ -46,9 +46,8 @@ function decodeConfig(raw: unknown): GrokConfig {
 export const GrokDriver: ProviderDriver<GrokConfig> = {
   driverKind: DRIVER_KIND,
   // "(API)" distinguishes this key-billed driver from grokAgent, the CLI one
-  // BYOK, billed to the user's own XAI_API_KEY — the same shape as
-  // "MiniMax (API)" and openai-compat, both of which say so.  Omitting it
-  // defaulted to "subscription" and put a bring-your-own-key engine above
+  // billed to the user's own XAI_API_KEY — the same shape as openai-compat.
+  // Omitting access defaulted to "subscription" and put a BYOK engine above
   // the picker's Custom divider alongside Claude and Codex.
   metadata: { displayName: "Grok (API)", supportsMultipleInstances: true, access: "custom" },
   models: MODELS,

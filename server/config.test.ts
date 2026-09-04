@@ -136,6 +136,13 @@ describe("default fleet", () => {
     expect(map.cursor).toEqual({ driver: "cursorAgent", environment: {} });
   });
 
+  it("ships MiniMax CLI as a default-fleet engine", () => {
+    const map = instanceConfigs({});
+    expect(map.minimax).toEqual({ driver: "minimax", environment: {} });
+    const existing = instanceConfigs({ instances: { claude: { driver: "claudeAgent" } } });
+    expect(existing.minimax?.driver).toBe("minimax");
+  });
+
   it("carries the saved OpenAI-compatible URL into the live default instance", () => {
     const map = instanceConfigs({
       openaiCompat: { key: "secret", url: "https://models.example.test/v1" },

@@ -214,9 +214,12 @@ export class ProviderRegistry {
             if (inst.instanceId === "antigravity") {
               Object.assign(models, quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot()));
             }
+            const catalogIds = inst.models?.options?.map((option) => option.id) ?? [];
+            const allCatalogCapped =
+              catalogIds.length > 0 && catalogIds.every((id) => models[id]?.capped === true);
             if (wildcard || Object.keys(models).length > 0) {
               snapshot.quota = {
-                capped: Boolean(wildcard),
+                capped: Boolean(wildcard) || allCatalogCapped,
                 resetsAt: wildcard?.resetsAt,
                 error: wildcard?.error,
                 ...(Object.keys(models).length > 0 ? { models } : {}),

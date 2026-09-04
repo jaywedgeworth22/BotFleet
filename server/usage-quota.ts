@@ -1,4 +1,18 @@
 import { quotaCooldowns } from "./model-fallback.ts";
+import {
+  driverKindsForWindow,
+  isPlanLevelSkip,
+  modelsToSkip,
+} from "./quota-window-map.ts";
+
+export {
+  driverKindsForWindow,
+  familiesForWindow,
+  isPlanLevelSkip,
+  modelsToSkip,
+  modelTypeFromId,
+  windowsForDriver,
+} from "./quota-window-map.ts";
 
 export type RemoteQuotaWindow = {
   id: string;
@@ -53,45 +67,6 @@ export function quotaWindowsUrl(ingestUrl?: string | null): string | null {
   } catch {
     return null;
   }
-}
-
-export function driverKindsForWindow(window: RemoteQuotaWindow): string[] {
-  const hay = `${window.provider} ${window.sourceApp} ${window.label}`.toLowerCase();
-  if (hay.includes("antigravity") || hay.includes("gemini")) return ["antigravityAgent"];
-  if (hay.includes("codex") || hay.includes("openai")) return ["codexAgent"];
-  if (hay.includes("anthropic") || hay.includes("claude")) return ["claudeAgent"];
-  if (hay.includes("grok") || hay.includes("xai")) return ["grokAgent", "grok"];
-  if (hay.includes("minimax")) return ["minimaxAgent"];
-  return [];
-}
-
-export function familiesForWindow(window: RemoteQuotaWindow): string[] {
-  const label = window.label.toLowerCase();
-  if (label.includes("claude and gpt")) return ["claude-opus", "claude-sonnet", "claude-haiku", "claude", "gpt"];
-  if (label.includes("gemini")) return ["gemini-pro", "gemini-flash", "gemini"];
-  return window.modelType ? [window.modelType] : [];
-}
-
-export function modelTypeFromId(modelId: string): string {
-  const raw = modelId.toLowerCase();
-  if (/opus/.test(raw)) return "claude-opus";
-  if (/sonnet/.test(raw)) return "claude-sonnet";
-  if (/haiku/.test(raw)) return "claude-haiku";
-  if (/claude/.test(raw)) return "claude";
-  if (/gemini/.test(raw) && /pro/.test(raw)) return "gemini-pro";
-  if (/gemini/.test(raw) && /flash/.test(raw)) return "gemini-flash";
-  if (/gemini/.test(raw)) return "gemini";
-  if (/gpt|codex/.test(raw)) return "gpt";
-  if (/grok/.test(raw)) return "grok";
-  return raw;
-}
-
-export function modelsToSkip(window: RemoteQuotaWindow, instance: QuotaPollerInstance): string[] {
-  if (!window.skip) return [];
-  if (window.modelId) return [window.modelId];
-  const families = new Set(familiesForWindow(window));
-  const options = instance.models?.options ?? [];
-  return options.map((row) => row.id).filter((id) => families.has(modelTypeFromId(id)));
 }
 
 function resetsAtMs(resetAt: string | null): number | null {
@@ -153,7 +128,9 @@ export class UsageQuotaPoller {
         if (instance.driverKind === "antigravityAgent") continue;
         if (!kinds.has(instance.driverKind)) continue;
         const models = modelsToSkip(window, instance);
-        for (const model of models) {
+        const planSkip = isPlanLevelSkip(window) || models.includes("*");
+        const targets = planSkip ? ["*", ...models.filter((model) => model !== "*")] : models;
+        for (const model of targets) {
           const key = `${instance.instanceId}:${model}`;
           quotaCooldowns.recordInstanceCap(instance.instanceId, model, {
             resetsAt: resetsAtMs(window.resetAt),
