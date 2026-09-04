@@ -594,7 +594,7 @@ function RoomWorkingFolderChip({ group, onToggle }: { group: Group; onToggle: ()
       title={`Primary: ${folder}${extraCount > 0 ? ` (+${extraCount} additional repos)` : ""}`}
     >
       <Folder size={12} className="@max-4xl/chathead:size-[14px]" />
-      <span className="truncate font-mono @max-4xl/chathead:hidden" title={name}>{name}</span>
+      <span className="truncate font-mono @max-4xl/chathead:hidden">{name}</span>
       {extraCount > 0 && (
         <span className="rounded bg-accent/20 px-1.5 py-0.2 text-[10.5px] font-semibold text-accent @max-4xl/chathead:hidden">
           +{extraCount}
@@ -1335,7 +1335,7 @@ export function GroupView({ group }: { group: Group }) {
               className={cn("truncate text-[12.5px]", group.bulletin ? "text-ink-secondary" : "text-ink-secondary/60")}
               // the chip shows the first line clipped; the hover carries the
               // whole bulletin, which is the point of a shared instruction
-              title={group.bulletin || "Add channel instructions…"}
+              title={group.bulletin || undefined}
             >
               {group.bulletin.split("\n")[0] || "Add channel instructions…"}
             </span>

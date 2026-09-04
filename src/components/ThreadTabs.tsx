@@ -110,7 +110,7 @@ function ConversationThreadTabs({
                   role="tab"
                   aria-selected={active}
                   disabled={busy && !active}
-                  title={`${TASK_RENAME_HINT}${usageLabel ? ` · ${usageLabel}` : ""}`}
+                  title={`${task.title || "Untitled"} · ${TASK_RENAME_HINT}${usageLabel ? ` · ${usageLabel}` : ""}`}
                   onClick={(e) => {
                     if (taskPickerPointerIntent("click", e.detail) !== "select") return;
                     if (!active) onSwitch(task.threadId);
@@ -131,7 +131,7 @@ function ConversationThreadTabs({
                     busy && !active && "opacity-40",
                   )}
                 >
-                  <span className="block truncate" title={task.title || "Untitled"}>{task.title || "Untitled"}</span>
+                  <span className="block truncate">{task.title || "Untitled"}</span>
                   <span className="block truncate text-[10.5px] font-normal text-ink-secondary">
                     {formatTime(task.lastActivity ?? task.createdAt)}
                   </span>

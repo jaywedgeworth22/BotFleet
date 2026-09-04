@@ -118,10 +118,12 @@ export function ToolLine({ message, actor }: { message: Message; actor?: string 
                   failed ? "text-danger" : "select-text text-ink-secondary",
                   !failed && (kind === "read" || kind === "edit") && "font-mono text-[12px]",
                 )}
-                // the row clips to one line, and a failed step with no target
-                // has no disclosure triangle either — without this the reason
-                // it failed is unreadable
-                title={line}
+                // A failed step clips its reason to one line, and one with
+                // no target has no disclosure triangle either — so the reason
+                // rides the hover.  A step that did not fail says nothing the
+                // row's own title does not already say in full, and shadowing
+                // it there would lose the tool name and the time.
+                title={failed ? line : undefined}
               >
                 {line}
               </span>

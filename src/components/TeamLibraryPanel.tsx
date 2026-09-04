@@ -819,7 +819,7 @@ export function TeamLibraryPanel({
                               <div className="truncate text-[14px] font-medium text-ink" title={`${member.name} · ${member.title}`}>
                                 {member.name} <span className="font-normal text-ink-secondary">· {member.title}</span>
                               </div>
-                              <div className="mt-0.5 truncate text-[12px] text-ink-secondary" title={scouted.suggestion.reasons[member.key] ?? ""}>
+                              <div className="mt-0.5 truncate text-[12px] text-ink-secondary" title={scouted.suggestion.reasons[member.key] || undefined}>
                                 {scouted.suggestion.reasons[member.key] ?? ""}
                               </div>
                             </div>

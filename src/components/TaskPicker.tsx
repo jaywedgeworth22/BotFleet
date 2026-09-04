@@ -263,9 +263,9 @@ function ConversationTaskPicker({
                         startRename(task);
                       }}
                       className="min-w-0 flex-1 text-left"
-                      title={TASK_RENAME_HINT}
+                      title={task.title ? `${task.title} · ${TASK_RENAME_HINT}` : TASK_RENAME_HINT}
                     >
-                      <div className="truncate text-[13px] text-ink" title={task.title}>{task.title}</div>
+                      <div className="truncate text-[13px] text-ink">{task.title}</div>
                       <div className="text-[11px] text-ink-secondary">
                         {formatTime(task.createdAt)}
                         <TaskUsage usage={task.usage} />
