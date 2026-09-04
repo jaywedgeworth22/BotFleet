@@ -1,0 +1,20 @@
+{
+  "teamId": "CC8UTF7ATG",
+  "apps": {
+    "botfleet": {
+      "displayName": "BotFleet",
+      "bundleId": "app.botfleet",
+      "appleId": 6806379515,
+      "platform": "iOS",
+      "scheme": "BotFleet",
+      "projectRel": "ios/BotFleet.xcodeproj",
+      "xcodegenDir": "ios",
+      "worktreeHint": "~/apps/botfleet-grok",
+      "marketingVersionDefault": "1.0.30",
+      "extraBundleIds": [
+        "app.botfleet.widgets"
+      ],
+      "notes": "BotFleet companion iOS app. AppleId 6806379515. Team CC8UTF7ATG. ASC SKU botfleet. Marketing train is 1.0.N; build is UTC YYYYMMDDHHMM. Hosted ships use GitHub Actions secrets APPLE_API_* and IOS_CERT_*; do not mint a new key."
+    }
+  }
+}

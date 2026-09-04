@@ -10,7 +10,7 @@
 #   scripts/bump-ios-version.sh 202609021530
 #
 # The build-number scheme is shared with ios/project.yml and the fleet ship
-# script (/Users/jay/apps/ios-fleet/ship-testflight.sh).  An epoch-seconds
+# script (scripts/ios-fleet/ship-testflight.sh).  An epoch-seconds
 # value (10 digits) sorts LOWER than every yyyymmddHHMM build already shipped
 # (12 digits), and App Store Connect rejects a CFBundleVersion that does not
 # increase, so this script refuses anything that is not a later 12-digit stamp.
