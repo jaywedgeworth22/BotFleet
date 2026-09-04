@@ -966,6 +966,28 @@ public struct CompanionClient: Sendable {
         return url
     }
 
+    /// Detach one connected account.
+    ///
+    /// The account id is validated here for the same reason the slug is: the
+    /// companion's allowlist matches the harness's own charset, and a value
+    /// outside it should fail as a bad request rather than as a puzzling 404
+    /// from a route that refused to match.
+    public func removeConnectorAccount(slug: String, accountId: String) async throws {
+        guard Self.validConnectorSlug(slug), Self.validAccountId(accountId) else { throw APIError.badURL }
+        try await send(try makeRequest("DELETE", "/api/connectors/\(slug)/accounts/\(accountId)"))
+    }
+
+    /// Matches the harness's `[A-Za-z0-9][A-Za-z0-9_-]{0,127}` account id.
+    private static func validAccountId(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard (1...128).contains(bytes.count) else { return false }
+        func alnum(_ b: UInt8) -> Bool {
+            (48...57).contains(b) || (65...90).contains(b) || (97...122).contains(b)
+        }
+        guard alnum(bytes[0]) else { return false }
+        return bytes.dropFirst().allSatisfy { alnum($0) || $0 == 95 || $0 == 45 }
+    }
+
     /// Matches the companion's `[\w-]+` toolkit route component. JavaScript
     /// `\w` is ASCII here; Unicode letters must not become a confusing 404.
     private static func validConnectorSlug(_ value: String) -> Bool {
