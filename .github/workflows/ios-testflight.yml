@@ -76,15 +76,73 @@ jobs:
           echo "should_ship=$should" >> "$GITHUB_OUTPUT"
           echo "should_ship=$should"
 
-      - name: Check that every signing secret is configured
+      # Identity stays on GitHub.  Apple/iOS signing material comes from Infisical prod.
+      - name: Load Infisical signing secrets
         if: steps.gate.outputs.should_ship == '1'
         env:
-          IOS_CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
-          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
-          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
+          INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_PROJECT_ID }}
+          INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID }}
+          INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET }}
+          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
+          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+        run: |
+          set +o xtrace
+          set -euo pipefail
+          export INFISICAL_DISABLE_UPDATE_CHECK=true
+
+          if ! command -v infisical >/dev/null 2>&1; then
+            NONINTERACTIVE=1 HOMEBREW_NO_AUTO_UPDATE=1 brew install infisical/get-cli/infisical
+          fi
+          command -v infisical >/dev/null 2>&1 || {
+            echo "::error::Infisical CLI is not installed."
+            exit 1
+          }
+
+          if [ -z "${INFISICAL_PROJECT_ID:-}" ]; then
+            echo "::error::Missing INFISICAL_PROJECT_ID GitHub secret."
+            exit 1
+          fi
+          CLIENT_ID="${INFISICAL_UNIVERSAL_AUTH_CLIENT_ID:-${INFISICAL_CLIENT_ID:-}}"
+          CLIENT_SECRET="${INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET:-${INFISICAL_CLIENT_SECRET:-}}"
+          if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
+            echo "::error::Missing Infisical machine identity.  Set INFISICAL_UNIVERSAL_AUTH_CLIENT_ID/SECRET (fallback INFISICAL_CLIENT_ID/SECRET) on the repo."
+            exit 1
+          fi
+
+          TOKEN="$(
+            env -u INFISICAL_CLIENT_ID -u INFISICAL_CLIENT_SECRET -u INFISICAL_TOKEN \
+              INFISICAL_UNIVERSAL_AUTH_CLIENT_ID="$CLIENT_ID" \
+              INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET="$CLIENT_SECRET" \
+              infisical login --method=universal-auth --silent --plain --telemetry=false 2>/dev/null || true
+          )"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Infisical universal-auth login failed."
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+
+          for name in APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8_BASE64 \
+                      IOS_CERT_P12_BASE64 IOS_CERT_PASSWORD IOS_PROVISIONING_PROFILE_BASE64; do
+            val="$(
+              INFISICAL_TOKEN="$TOKEN" infisical secrets get "$name" \
+                --plain --silent --telemetry=false --expand=false \
+                --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/ \
+                2>/dev/null || true
+            )"
+            if [ -z "$val" ]; then
+              continue
+            fi
+            echo "::add-mask::$val"
+            {
+              echo "${name}<<INFISICAL_EOF"
+              printf '%s\n' "$val"
+              echo "INFISICAL_EOF"
+            } >> "$GITHUB_ENV"
+          done
+          unset TOKEN CLIENT_ID CLIENT_SECRET val
+
+      - name: Check that every signing secret is configured
+        if: steps.gate.outputs.should_ship == '1'
         run: |
           missing=()
           for name in IOS_CERT_P12_BASE64 IOS_CERT_PASSWORD IOS_PROVISIONING_PROFILE_BASE64 \
@@ -92,7 +150,7 @@ jobs:
             [ -n "${!name}" ] || missing+=("$name")
           done
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::error::Missing repository secrets: ${missing[*]}.  Add them under Settings > Secrets and variables > Actions, or ship from the Mac with scripts/ios-ship-testflight.sh."
+            echo "::error::Missing Infisical prod secrets after export: ${missing[*]}.  Confirm the six Apple/iOS signing names exist in Infisical env=prod, or ship from the Mac with scripts/ios-ship-testflight.sh."
             exit 1
           fi
 
@@ -118,9 +176,6 @@ jobs:
 
       - name: Import Apple Certificate to Keychain
         if: steps.gate.outputs.should_ship == '1'
-        env:
-          IOS_CERT_P12_BASE64: ${{ secrets.IOS_CERT_P12_BASE64 }}
-          IOS_CERT_PASSWORD: ${{ secrets.IOS_CERT_PASSWORD }}
         run: |
           KEYCHAIN="$RUNNER_TEMP/build.keychain-db"
           KEYCHAIN_PASSWORD="$(uuidgen)"
@@ -137,8 +192,6 @@ jobs:
 
       - name: Install Provisioning Profile
         if: steps.gate.outputs.should_ship == '1'
-        env:
-          IOS_PROVISIONING_PROFILE_BASE64: ${{ secrets.IOS_PROVISIONING_PROFILE_BASE64 }}
         run: |
           mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
           echo "$IOS_PROVISIONING_PROFILE_BASE64" | base64 --decode > ~/Library/MobileDevice/Provisioning\ Profiles/build.mobileprovision
@@ -164,10 +217,6 @@ jobs:
 
       - name: Export and Upload to TestFlight
         if: steps.gate.outputs.should_ship == '1'
-        env:
-          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
-          APPLE_API_ISSUER_ID: ${{ secrets.APPLE_API_ISSUER_ID }}
-          APPLE_API_KEY_P8_BASE64: ${{ secrets.APPLE_API_KEY_P8_BASE64 }}
         run: |
           cd ios
           cat << 'PLIST' > "$RUNNER_TEMP/ExportOptions.plist"
