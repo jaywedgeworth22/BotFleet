@@ -91,6 +91,7 @@ import {
   instanceConfigs,
   loadConfig,
   localVmMaxInstances,
+  allowedBotComputers,
   parseConfigPatch,
   publicIngressUrl,
   roomTurnTimeoutMinutes,
@@ -2337,7 +2338,12 @@ async function startTurn(
       // is a capability, not a preference: each one is resolved on its own
       // terms below and mounted with its own tools, so the agent chooses per
       // task. Granting only the VM therefore means only the VM.
-      const { granted, auto } = resolveGrants(bot.computers, opts?.runOn, cfg.botDefaults?.computers);
+      const { granted, auto } = resolveGrants(
+        bot.computers,
+        opts?.runOn,
+        cfg.botDefaults?.computers,
+        allowedBotComputers(cfg),
+      );
       const wantsCloud = granted.includes("cloud");
       const wantsVm = granted.includes("vm");
       const wantsLocal = granted.includes("local");
@@ -3749,6 +3755,10 @@ function configStatus() {
     botDefaults: {
       computers: cfg.botDefaults?.computers ?? [],
       cloudBackend: cfg.botDefaults?.cloudBackend ?? "box",
+      // null = every destination is allowed (the shipped default).  An array
+      // narrows the operator-level allowlist; the empty array is a real,
+      // persisted "no destination at all".
+      allowedComputers: allowedBotComputers(cfg),
     },
     ingress: { publicUrl: cfg.ingress?.publicUrl || "" },
     localVm: {
@@ -6550,6 +6560,51 @@ const server = createServer(async (req, res) => {
         image: await containerComputerScreenshot(undefined, undefined, SHARED_LOCAL_VM_TARGET),
       });
     }
+    // Switch between the shared singleton VM and per-bot VMs. The shared
+    // container is removed in either direction so a stale desktop cannot
+    // outlive the policy it was started under — a shared desktop that
+    // belonged to a single bot, or a per-bot desktop that was being
+    // recycled across bots, would be the same kind of silent host-mix-up
+    // Lane A exists to prevent.
+    if (method === "POST" && path === "/api/local-computer/mode") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return json(res, 400, { error: "body must be a JSON object" });
+      }
+      const parsed = z.object({ mode: z.enum(["shared", "per-bot"]) }).safeParse(body);
+      if (!parsed.success) {
+        return json(res, 400, { error: "mode must be shared or per-bot" });
+      }
+      const requested = parsed.data.mode;
+      const current = cfg.localVm?.mode ?? "shared";
+      if (requested === current) {
+        return json(res, 200, { mode: current, maxInstances: localVmMaxInstances(cfg) });
+      }
+      if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.size > 0) {
+        return json(res, 409, { error: "another Local VM setup action is still running" });
+      }
+      const owner = localVmLeaseFor(SHARED_LOCAL_VM_TARGET).current(localVmOwnerBusy);
+      if (owner) {
+        return json(res, 409, { error: "the Local VM is being used by a bot — stop that turn first" });
+      }
+      localVmModeChangeBusy = true;
+      try {
+        const sharedStatus = await containerComputerStatus(undefined, undefined, SHARED_LOCAL_VM_TARGET).catch(() => null);
+        if (sharedStatus?.container === "running" || sharedStatus?.container === "stopped") {
+          await containerComputerAction("remove", undefined, undefined, SHARED_LOCAL_VM_TARGET);
+        }
+        cfg.localVm = { ...(cfg.localVm ?? {}), mode: requested };
+        saveConfig(cfg);
+        const status = configStatus();
+        broadcast({ kind: "config", ...status });
+        return json(res, 200, { mode: requested, maxInstances: localVmMaxInstances(cfg), config: status });
+      } finally {
+        localVmModeChangeBusy = false;
+      }
+    }
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer$/);
     if (m && method === "GET") {
@@ -6995,6 +7050,142 @@ const server = createServer(async (req, res) => {
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
+    }
+    // ── apply workspace defaults to every bot ──────────────────────────
+    // The "Set all bots to default" buttons on the Computers and Models
+    // settings pages.  Both endpoints validate the workspace defaults first
+    // (reusing the same zod schemas the /api/config patch does) and refuse
+    // bad input the same way, so the client cannot push a malformed default
+    // into the store and then have it crash every bot.
+    if (method === "POST" && path === "/api/bots/apply-defaults") {
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return json(res, 400, { error: "body must be a JSON object" });
+      }
+      const defaults = parseConfigPatch({ botDefaults: body.botDefaults ?? cfg.botDefaults });
+      const incoming = defaults.botDefaults;
+      if (!incoming) {
+        return json(res, 400, { error: "botDefaults must include computers or cloudBackend" });
+      }
+      const requested = incoming.computers;
+      if (requested !== undefined) {
+        if (!Array.isArray(requested)) {
+          return json(res, 400, { error: "botDefaults.computers must be an array of destinations" });
+        }
+        for (const entry of requested) {
+          if (entry !== "cloud" && entry !== "vm" && entry !== "local") {
+            return json(res, 400, { error: `unknown computer destination: ${String(entry)}` });
+          }
+        }
+      }
+      // Filter through the operator allowlist so a "Set all bots" cannot
+      // smuggle a destination the operator already disabled at the top of
+      // the settings page.  The allowlist wins, every time.
+      const allowed = allowedBotComputers(cfg);
+      const next = allowed === null
+        ? (requested ?? cfg.botDefaults?.computers ?? [])
+        : (requested ?? cfg.botDefaults?.computers ?? []).filter((entry) => allowed.includes(entry));
+      const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
+      for (const bot of store.bots) {
+        const patched = store.patchBot(bot.id, { computers: next });
+        if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
+      }
+      cfg.botDefaults = { ...(cfg.botDefaults ?? {}), ...incoming, computers: next };
+      saveConfig(cfg);
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      for (const { bot } of updated) broadcast({ kind: "bot", bot });
+      return json(res, 200, {
+        ok: true,
+        applied: updated.length,
+        computers: next,
+        config: status,
+      });
+    }
+    if (method === "POST" && path === "/api/bots/apply-model-defaults") {
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return json(res, 400, { error: "body must be a JSON object" });
+      }
+      // The four slots may each be present OR absent.  An absent slot is
+      // "do not touch bots that already have a value here" — exactly the
+      // behavior the UI promises when an empty picker means "leave alone".
+      const slots = body.slots as
+        | { primary?: unknown; secondary?: unknown; fallback1?: unknown; fallback2?: unknown }
+        | undefined;
+      if (!slots || typeof slots !== "object") {
+        return json(res, 400, { error: "slots must be a JSON object" });
+      }
+      const readSlot = (value: unknown): ModelSelection | null => {
+        if (value === undefined) return null;
+        if (value === null) return null;
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw Object.assign(new Error("model slot must be an object"), { status: 400 });
+        }
+        const candidate = value as Record<string, unknown>;
+        if (typeof candidate.instanceId !== "string" || typeof candidate.model !== "string") {
+          throw Object.assign(new Error("model slot must include instanceId and model"), { status: 400 });
+        }
+        return { instanceId: candidate.instanceId, model: candidate.model };
+      };
+      let primary: ModelSelection | null;
+      let secondary: ModelSelection | null;
+      let fallback1: ModelSelection | null;
+      let fallback2: ModelSelection | null;
+      try {
+        primary = readSlot(slots.primary);
+        secondary = readSlot(slots.secondary);
+        fallback1 = readSlot(slots.fallback1);
+        fallback2 = readSlot(slots.fallback2);
+      } catch (error) {
+        const status = (error as { status?: number }).status ?? 400;
+        return json(res, status, { error: (error as Error).message });
+      }
+      // Validate every supplied selection against the available engines,
+      // reusing the same gate the PATCH /api/bots/:id endpoint runs.
+      const check = (selection: ModelSelection) =>
+        checkedModelSelection(selection, undefined, false);
+      for (const selection of [primary, secondary, fallback1, fallback2]) {
+        if (selection === null) continue;
+        const checked = check(selection);
+        if (!checked.ok) return json(res, checked.status, { error: checked.error });
+      }
+      const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
+      for (const bot of store.bots) {
+        const next: ModelSelection = { ...bot.modelSelection };
+        const existingFallbacks = next.fallbacks ?? [];
+        if (primary) next.instanceId = primary.instanceId, next.model = primary.model;
+        // Secondary and the two fallbacks all map onto the same fallbacks
+        // list: secondary is the first entry, the fallbacks are the rest.
+        const nextFallbacks: ModelSelection[] = [];
+        if (secondary) nextFallbacks.push(secondary);
+        if (fallback1) nextFallbacks.push(fallback1);
+        if (fallback2) nextFallbacks.push(fallback2);
+        if (nextFallbacks.length > 0) {
+          // Only OVERWRITE positions that the defaults actually supplied.
+          // An empty picker at the UI level MUST leave the bot's value at
+          // that slot alone — that is the contract "Set all bots to
+          // default" promises when a default is empty.
+          const merged: ModelSelection[] = [...existingFallbacks];
+          while (merged.length < nextFallbacks.length) merged.push(nextFallbacks[merged.length]!);
+          for (let i = 0; i < nextFallbacks.length; i++) merged[i] = nextFallbacks[i]!;
+          // Trim trailing empties: the user can carry fewer fallbacks than
+          // the default offers, and we should not pad their bot to match.
+          next.fallbacks = merged.filter(
+            (entry, i) => i < nextFallbacks.length || entry.instanceId !== "" || entry.model !== "",
+          );
+          if (next.fallbacks.length === 0) delete next.fallbacks;
+        }
+        if (bot.modelSelection.instanceId === next.instanceId &&
+            bot.modelSelection.model === next.model &&
+            JSON.stringify(bot.modelSelection.fallbacks ?? []) === JSON.stringify(next.fallbacks ?? [])) {
+          continue;
+        }
+        const patched = store.patchBot(bot.id, { modelSelection: next });
+        if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
+      }
+      for (const { bot } of updated) broadcast({ kind: "bot", bot });
+      return json(res, 200, { ok: true, applied: updated.length });
     }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);

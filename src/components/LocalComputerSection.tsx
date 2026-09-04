@@ -11,6 +11,7 @@ import {
   Square,
   Trash2,
 } from "lucide-react";
+import { api, useStore, type ConfigStatus } from "@/state/store";
 import { Card, CommandLine } from "./SettingsPrimitives";
 import { cn } from "@/lib/cn";
 
@@ -100,11 +101,20 @@ function ActionButton({
 }
 
 export function LocalComputerSection() {
+  const { state, dispatch } = useStore();
   const [status, setStatus] = useState<Status | null>(null);
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [modePending, setModePending] = useState(false);
+  const [modeError, setModeError] = useState<string | null>(null);
     const [refreshKey, setRefreshKey] = useState(0);
+
+  // Read the per-bot/shared mode from the config so a toggled switch
+  // shows up in this card without a server round-trip per render.  The
+  // history of why this matters: a hardcoded `perBot = false` used to
+  // leave the panel describing a per-bot workspace as a shared one.
+  const perBot = state.config?.localVm?.mode === "per-bot";
 
   const refresh = useCallback(async (signal?: AbortSignal) => {
     const response = await fetch("/api/local-computer", { signal });
@@ -197,9 +207,23 @@ export function LocalComputerSection() {
   );
   const unavailable = !loading && !status;
   const host = status?.platform === "darwin" ? "Mac" : "computer";
-  const perBot = false;
   const perBotRuntimeUnsupported = perBot && status?.runtime === "container";
   const headerReady = perBot ? Boolean(status?.daemonUp && status?.image && !perBotRuntimeUnsupported) : ready;
+
+  const switchMode = (next: "shared" | "per-bot") => {
+    if (modePending) return;
+    setModePending(true);
+    setModeError(null);
+    api("/api/local-computer/mode", {
+      method: "POST",
+      body: JSON.stringify({ mode: next }),
+    })
+      .then((response: { config: ConfigStatus }) => {
+        dispatch({ type: "configStatus", config: response.config });
+      })
+      .catch((e) => setModeError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setModePending(false));
+  };
 
   return (
     <>
@@ -251,6 +275,46 @@ export function LocalComputerSection() {
           )}
         </div>
         {error && <div className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger">{error}</div>}
+      </Card>
+
+      <Card
+        title="VM Mode"
+        subtitle={
+          perBot
+            ? "Each bot gets its own private container, durable workspace, and loopback viewer. Idle desktops stop on their own after 8 hours."
+            : "One shared container on this machine, used by bots one at a time. Cookies, sign-ins, files, and installed apps/CLI tools are all shared across bots."
+        }
+      >
+        {unavailable ? (
+          <div className="flex items-center gap-2 text-[13px] text-ink-secondary">
+            <AlertTriangle size={14} className="text-warning" />
+            Status is unavailable, so VM mode is greyed out. Re-check above.
+          </div>
+        ) : (
+          <div className="flex overflow-hidden rounded-lg border border-hairline/40">
+            {(["shared", "per-bot"] as const).map((option, i) => (
+              <button
+                key={option}
+                disabled={modePending}
+                onClick={() => switchMode(option)}
+                className={cn(
+                  "flex-1 py-1.5 text-[13px]",
+                  i > 0 && "border-l border-hairline/40",
+                  modePending && "opacity-60",
+                  (perBot ? option === "per-bot" : option === "shared")
+                    ? "bg-control text-ink"
+                    : "text-ink-secondary hover:bg-control/60 hover:text-ink",
+                )}
+              >
+                {option === "per-bot" ? "Per-Bot" : "Shared"}
+              </button>
+            ))}
+          </div>
+        )}
+        <div className="mt-2 text-[11.5px] text-ink-secondary">
+          Switching modes removes the existing desktop on the way out, so a shared workspace cannot be silently inherited by a per-bot one (or vice versa).
+        </div>
+        {modeError && <div className="mt-2 text-[11.5px] text-danger">{modeError}</div>}
       </Card>
 
 

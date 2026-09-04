@@ -350,7 +350,12 @@ export interface ConfigStatus {
   vps: { configured: boolean; sshAlias: string };
   rooms: { turnTimeoutMinutes: number };
   /** What a bot that has never been configured is given. */
-  botDefaults?: { computers: Array<"cloud" | "vm" | "local">; cloudBackend: "box" | "vps" };
+  botDefaults?: {
+    computers: Array<"cloud" | "vm" | "local">;
+    cloudBackend: "box" | "vps";
+    /** null = every destination is allowed (the shipped default). */
+    allowedComputers: Array<"cloud" | "vm" | "local"> | null;
+  };
   ingress?: { publicUrl?: string };
   localVm: { mode: "shared" | "per-bot"; maxInstances: number };
   opencodeGo?: { configured: boolean };
