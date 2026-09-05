@@ -140,12 +140,28 @@ export class ProviderRegistry {
    * spawns one probe per engine, not one per caller. */
   private lastDescribe: { at: number; result: Promise<Awaited<ReturnType<ProviderRegistry["describeFresh"]>>> } | null = null;
 
-  async describe(opts?: { maxAgeMs?: number }) {
+  async describe(opts?: { maxAgeMs?: number; staleWhileRevalidate?: boolean }) {
     const maxAge = opts?.maxAgeMs ?? 0;
     const now = Date.now();
-    if (maxAge > 0 && this.lastDescribe && now - this.lastDescribe.at <= maxAge) return this.lastDescribe.result;
+    const memo = this.lastDescribe;
+    if (maxAge > 0 && memo && now - memo.at <= maxAge) return memo.result;
+
+    // A caller that can live with a slightly old answer gets the previous one
+    // immediately while a new probe runs behind it.  Probing every engine CLI
+    // takes tens of seconds on a machine with many installed, which is longer
+    // than the phone waits before giving up — so making every caller block on
+    // it is what makes the model picker look empty rather than slow.
+    if (opts?.staleWhileRevalidate && memo) {
+      void this.refreshDescribe(now);
+      return memo.result;
+    }
+
+    return this.refreshDescribe(now);
+  }
+
+  private refreshDescribe(at: number) {
     const result = this.describeFresh();
-    this.lastDescribe = { at: now, result };
+    this.lastDescribe = { at, result };
     // a failed probe must not be served from the memo
     result.catch(() => {
       if (this.lastDescribe?.result === result) this.lastDescribe = null;

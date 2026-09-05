@@ -36,6 +36,10 @@ struct AgentProfileView: View {
     @State private var prompt = ""
     @State private var voices: [Voice] = []
     @State private var instances: [Instance] = []
+    /// Whether the engine list has been fetched yet.  Without this an empty
+    /// list is indistinguishable from a slow one, and the picker sat on
+    /// "Loading models…" forever whenever the fetch timed out.
+    @State private var instancesLoaded = false
     @State private var config: ConfigStatus?
     @State private var busy = false
     @State private var player: AVAudioPlayer?
@@ -138,8 +142,15 @@ struct AgentProfileView: View {
 
                 Section("Model & Fallbacks") {
                     if instances.isEmpty {
-                        Text("Loading models...")
-                            .foregroundStyle(.secondary)
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(instancesLoaded
+                                 ? "No engines to choose from.  Your computer did not report any."
+                                 : "Loading models\u{2026}")
+                                .foregroundStyle(.secondary)
+                            if instancesLoaded {
+                                Button("Try Again") { Task { await reloadInstances() } }
+                            }
+                        }
                     } else {
                         VStack(alignment: .leading, spacing: 6) {
                             Text("Primary Model")
@@ -402,9 +413,14 @@ struct AgentProfileView: View {
                 config = loadedConfig
                 voices = await options
                 let rawInstances = await fetchedInstances
-                instances = rawInstances.filter { inst in
+                let usable = rawInstances.filter { inst in
                     inst.snapshot.isAvailable || inst.id == current.modelSelection.instanceId
                 }
+                // Offering only healthy engines is right, but never at the cost
+                // of an empty picker: if the computer reports none as available
+                // the person should still see the list and be able to choose.
+                instances = usable.isEmpty ? rawInstances : usable
+                instancesLoaded = true
                 if let loadedConfig, !loadedConfig.canSpeak(agentVoice: voice) {
                     speakReplies = false
                 }
@@ -414,6 +430,17 @@ struct AgentProfileView: View {
                 Task { await upload(item) }
             }
         }
+    }
+
+    /// Re-fetch the engine list after a slow or failed load.
+    private func reloadInstances() async {
+        instancesLoaded = false
+        let raw = await session.instances()
+        let usable = raw.filter { inst in
+            inst.snapshot.isAvailable || inst.id == bot.modelSelection.instanceId
+        }
+        instances = usable.isEmpty ? raw : usable
+        instancesLoaded = true
     }
 
     private func profilePatch() -> BotProfilePatch {
