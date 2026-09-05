@@ -86,6 +86,45 @@ final class StoreTests: XCTestCase {
         XCTAssertEqual(state.hasMore["t1"], true)
     }
 
+    func testBusySendChipShowsUntilDrainAndDoesNotStayAfterQueueIdLands() throws {
+        var state = try hydrated()
+        let threadId = try XCTUnwrap(state.bots.first).threadId
+        let before = state.visibleTranscript(forThread: threadId).count
+
+        state.rememberPendingQueued(threadId: threadId, queueId: "q-busy", text: "later")
+        let visible = state.visibleTranscript(forThread: threadId)
+        XCTAssertEqual(visible.count, before + 1)
+        XCTAssertEqual(visible.last?.text, "later")
+        XCTAssertEqual(visible.last?.queued, true)
+        XCTAssertEqual(visible.last?.queueId, "q-busy")
+        XCTAssertEqual(state.transcript(forThread: threadId).count, before, "steer-queue is not in messages[] yet")
+
+        var drained = message("real-1", text: "later")
+        drained.queueId = "q-busy"
+        state.apply(.message(threadId: threadId, message: drained))
+        XCTAssertNil(state.pendingQueued[threadId])
+        XCTAssertEqual(state.visibleTranscript(forThread: threadId).last?.id, "real-1")
+        XCTAssertNotEqual(state.visibleTranscript(forThread: threadId).last?.queued, true)
+    }
+
+    func testDrainFrameBeforePOSTContinuationDoesNotResurrectTheChip() throws {
+        var state = try hydrated()
+        let threadId = try XCTUnwrap(state.bots.first).threadId
+        var drained = message("real-1", text: "later")
+        drained.queueId = "q-race"
+        state.apply(.message(threadId: threadId, message: drained))
+        state.rememberPendingQueued(threadId: threadId, queueId: "q-race", text: "later")
+        XCTAssertNil(state.pendingQueued[threadId])
+    }
+
+    func testCancelRemovesThePendingChip() throws {
+        var state = try hydrated()
+        let threadId = try XCTUnwrap(state.bots.first).threadId
+        state.rememberPendingQueued(threadId: threadId, queueId: "q-1", text: "nope")
+        state.cancelPendingQueued(threadId: threadId, queueId: "q-1")
+        XCTAssertFalse(state.visibleTranscript(forThread: threadId).contains { $0.queueId == "q-1" })
+    }
+
     // MARK: - Bots
 
     func testABotFrameMergesRatherThanWipingTheTranscript() throws {

@@ -77,6 +77,33 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(fleet.bots.first?.avatarCrop, .mascot)
     }
 
+    func testBusySend202BodyKeepsQueueId() throws {
+        let result = try JSONDecoder().decode(
+            SendMessageResult.self,
+            from: Data(#"{"ok":true,"queued":true,"queueId":"q-7","threadId":"task-1"}"#.utf8)
+        )
+        XCTAssertEqual(result.queued, true)
+        XCTAssertEqual(result.queueId, "q-7")
+        XCTAssertEqual(result.threadId, "task-1")
+
+        let live = try JSONDecoder().decode(
+            SendMessageResult.self,
+            from: Data(#"{"ok":true}"#.utf8)
+        )
+        XCTAssertEqual(live.ok, true)
+        XCTAssertNil(live.queueId)
+        XCTAssertNotEqual(live.queued, true)
+    }
+
+    func testDrainedUserLineKeepsQueueId() throws {
+        let message = try JSONDecoder().decode(
+            Message.self,
+            from: Data(#"{"id":"m1","role":"user","kind":"text","at":1,"text":"later","queueId":"q-7"}"#.utf8)
+        )
+        XCTAssertEqual(message.queueId, "q-7")
+        XCTAssertEqual(message.text, "later")
+    }
+
     func testFutureRoutineScheduleKindRemainsVisibleAsUnknown() throws {
         let schedule = try JSONDecoder().decode(
             RoutineSchedule.self,
