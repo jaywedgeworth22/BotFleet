@@ -26,7 +26,7 @@ const FIXTURE = {
       modelId: "claude-opus-4-6-thinking",
       remainingPercentage: 0,
       isExhausted: false,
-      resetTime: "2026-09-09T07:04:37Z",
+      resetTime: "2027-09-09T07:04:37Z",
       timeUntilResetMs: 441874826,
       isAutocompleteOnly: false,
     },
@@ -35,7 +35,7 @@ const FIXTURE = {
       modelId: "claude-sonnet-4-6",
       remainingPercentage: 0.29751188,
       isExhausted: false,
-      resetTime: "2026-09-09T07:04:37Z",
+      resetTime: "2027-09-09T07:04:37Z",
       timeUntilResetMs: 441874826,
       isAutocompleteOnly: false,
     },
@@ -43,24 +43,24 @@ const FIXTURE = {
       label: "Gemini 2.5 Pro",
       modelId: "gemini-2.5-pro",
       isExhausted: false,
-      resetTime: "2026-09-05T03:58:25Z",
-      timeUntilResetMs: 85102826,
+      resetTime: "2027-09-05T03:58:25Z",
+      timeUntilResetMs: 31_622_400_000,
       isAutocompleteOnly: true,
     },
     {
       label: "Gemini 3.1 Pro (High)",
       modelId: "gemini-3.1-pro-high",
       isExhausted: false,
-      resetTime: "2026-09-05T03:58:25Z",
-      timeUntilResetMs: 85102826,
+      resetTime: "2027-09-05T03:58:25Z",
+      timeUntilResetMs: 31_622_400_000,
       isAutocompleteOnly: false,
     },
     {
       label: "Gemini 3.6 Flash (High)",
       modelId: "gemini-3.6-flash-high",
       isExhausted: true,
-      resetTime: "2026-09-05T03:58:25Z",
-      timeUntilResetMs: 85102826,
+      resetTime: "2027-09-05T03:58:25Z",
+      timeUntilResetMs: 31_622_400_000,
       isAutocompleteOnly: false,
     },
   ],
@@ -95,19 +95,20 @@ describe("applyAntigravityUsageToRegistry", () => {
   it("caps N/A remaining (Gemini) and remaining 0, and leaves remaining>0 available", () => {
     const registry = new QuotaCooldownRegistry();
     const snapshot = parseAntigravityUsageJson(FIXTURE);
-    const applied = applyAntigravityUsageToRegistry(snapshot, registry, Date.parse("2026-09-04T04:20:02.182Z"));
+    const now = Date.parse("2026-09-04T04:20:02.182Z");
+    const applied = applyAntigravityUsageToRegistry(snapshot, registry, now);
     expect(applied.capped.sort()).toEqual([
       "claude-opus-4-6-thinking",
       "gemini-3.1-pro-high",
       "gemini-3.6-flash-high",
     ]);
-    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "claude-opus-4-6-thinking")).toMatchObject({
+    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "claude-opus-4-6-thinking", now)).toMatchObject({
       source: ANTIGRAVITY_USAGE_SOURCE,
       model: "claude-opus-4-6-thinking",
     });
-    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "claude-sonnet-4-6")).toBeUndefined();
-    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "gemini-3.1-pro-high")).toBeDefined();
-    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "gemini-2.5-pro")).toBeUndefined();
+    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "claude-sonnet-4-6", now)).toBeUndefined();
+    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "gemini-3.1-pro-high", now)).toBeDefined();
+    expect(registry.get("any-bot", ANTIGRAVITY_INSTANCE_ID, "gemini-2.5-pro", now)).toBeUndefined();
     const overlay = quotaModelsFromSnapshot(snapshot);
     expect(overlay["claude-sonnet-4-6"]?.capped).toBe(false);
     expect(overlay["claude-sonnet-4-6"]?.remainingPercent).toBe(29.75);
@@ -182,3 +183,4 @@ describe("findAntigravityUsageBin", () => {
     expect(findAntigravityUsageBin({ ANTIGRAVITY_USAGE_BIN: bin }, (path) => path === bin)).toBe(bin);
   });
 });
+
