@@ -39,3 +39,7 @@ cloudflare/control-plane/worker-configuration.d.ts
 /trace*.py
 /trace*.out
 /test-time.js
+
+# Editor / shell backup files (PR #218 inadvertently committed docs/EFFORT-LOG.md.bak)
+*.bak
+*.bak-*
