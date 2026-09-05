@@ -233,6 +233,11 @@ telemetry.configure(() => ({
 }));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
+// Warm the engine probe in the background.  The first describe() costs tens
+// of seconds on a machine with many CLIs installed; doing it now means the
+// first client to ask — often the phone, which waits 20 s and no longer —
+// is answered from the memo instead of waiting for a cold probe.
+void registry.describe().catch(() => {});
 usageQuotaPoller.configure({
   settings: () => ({
     ingestUrl: usageIngestUrl(cfg),
@@ -7109,7 +7114,11 @@ const server = createServer(async (req, res) => {
       // actions and right after a CLI/fullAuto override is saved — bypasses
       // it so the user's own action is never served a stale answer.
       const fresh = url.searchParams.get("fresh") === "1";
-      return json(res, 200, { instances: await registry.describe(fresh ? undefined : { maxAgeMs: 15_000 }) });
+      return json(res, 200, {
+        instances: await registry.describe(
+          fresh ? undefined : { maxAgeMs: 15_000, staleWhileRevalidate: true },
+        ),
+      });
     }
 
     // ── CLI binary discovery for the Engines "detected" dropdown ──
