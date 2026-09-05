@@ -437,7 +437,7 @@ struct AgentProfileView: View {
         instancesLoaded = false
         let raw = await session.instances()
         let usable = raw.filter { inst in
-            inst.snapshot.isAvailable || inst.id == bot.modelSelection.instanceId
+            inst.snapshot.isAvailable || inst.id == current.modelSelection.instanceId
         }
         instances = usable.isEmpty ? raw : usable
         instancesLoaded = true
