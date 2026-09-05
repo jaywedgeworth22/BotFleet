@@ -16,8 +16,14 @@ import {
 } from "./antigravity-quota.ts";
 import { QuotaCooldownRegistry } from "./model-fallback.ts";
 
+// QuotaCooldownRegistry.get drops cooldowns whose resetsAt is already past
+// Date.now().  Hardcoded 2026-09-05T03:58:25Z started failing every PR once
+// CI ran after that instant.  Keep fixture resets relative to now.
+const RESET_MS = 5 * 24 * 60 * 60 * 1000;
+const futureReset = new Date(Date.now() + RESET_MS).toISOString();
+
 const FIXTURE = {
-  timestamp: "2026-09-04T04:20:02.182Z",
+  timestamp: new Date().toISOString(),
   method: "google",
   email: "redacted@example.com",
   models: [
@@ -26,8 +32,8 @@ const FIXTURE = {
       modelId: "claude-opus-4-6-thinking",
       remainingPercentage: 0,
       isExhausted: false,
-      resetTime: "2026-09-09T07:04:37Z",
-      timeUntilResetMs: 441874826,
+      resetTime: futureReset,
+      timeUntilResetMs: RESET_MS,
       isAutocompleteOnly: false,
     },
     {
@@ -35,32 +41,32 @@ const FIXTURE = {
       modelId: "claude-sonnet-4-6",
       remainingPercentage: 0.29751188,
       isExhausted: false,
-      resetTime: "2026-09-09T07:04:37Z",
-      timeUntilResetMs: 441874826,
+      resetTime: futureReset,
+      timeUntilResetMs: RESET_MS,
       isAutocompleteOnly: false,
     },
     {
       label: "Gemini 2.5 Pro",
       modelId: "gemini-2.5-pro",
       isExhausted: false,
-      resetTime: "2026-09-05T03:58:25Z",
-      timeUntilResetMs: 85102826,
+      resetTime: futureReset,
+      timeUntilResetMs: RESET_MS,
       isAutocompleteOnly: true,
     },
     {
       label: "Gemini 3.1 Pro (High)",
       modelId: "gemini-3.1-pro-high",
       isExhausted: false,
-      resetTime: "2026-09-05T03:58:25Z",
-      timeUntilResetMs: 85102826,
+      resetTime: futureReset,
+      timeUntilResetMs: RESET_MS,
       isAutocompleteOnly: false,
     },
     {
       label: "Gemini 3.6 Flash (High)",
       modelId: "gemini-3.6-flash-high",
       isExhausted: true,
-      resetTime: "2026-09-05T03:58:25Z",
-      timeUntilResetMs: 85102826,
+      resetTime: futureReset,
+      timeUntilResetMs: RESET_MS,
       isAutocompleteOnly: false,
     },
   ],
@@ -95,7 +101,7 @@ describe("applyAntigravityUsageToRegistry", () => {
   it("caps N/A remaining (Gemini) and remaining 0, and leaves remaining>0 available", () => {
     const registry = new QuotaCooldownRegistry();
     const snapshot = parseAntigravityUsageJson(FIXTURE);
-    const applied = applyAntigravityUsageToRegistry(snapshot, registry, Date.parse("2026-09-04T04:20:02.182Z"));
+    const applied = applyAntigravityUsageToRegistry(snapshot, registry, Date.now());
     expect(applied.capped.sort()).toEqual([
       "claude-opus-4-6-thinking",
       "gemini-3.1-pro-high",

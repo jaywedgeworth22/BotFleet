@@ -43,6 +43,8 @@ cd ios && swift test
 
 Unsigned `xcodebuild -scheme BotFleet -destination 'generic/platform=iOS'` was started locally and sat resolving sentry-cocoa; CI `ios` job is the merge gate for the app target.  No TestFlight upload from this seat.
 
+CI `typecheck + test` on PR #224 failed on all three OS jobs in `server/antigravity-quota.test.ts`: fixture `resetTime` `2026-09-05T03:58:25Z` had passed, so `QuotaCooldownRegistry.get` dropped Gemini cooldowns.  Fixture resets are now `Date.now() + 5d`.  That file is unrelated to the iOS chip; it was blocking the P0 merge.
+
 ## Next Steps & Blockers
 
 Hosted ios-ship may pick up `ios/**` on merge.  That is the existing schedule, not an extra-ship from this seat.
