@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   DATA_DIR,
+  allowedBotComputers,
+  filterAllowedComputers,
   instanceConfigs,
   isValidSshAlias,
   loadConfig,
@@ -21,6 +23,10 @@ import {
   vpsSshAlias,
   patchInstanceConfig,
   WORKSPACE_CREDENTIAL_ENV,
+  autoUpdateDue,
+  AUTO_UPDATE_THROTTLE_MS,
+  publicIngressUrl,
+  publicIngressUrlEffective,
   type AppConfig,
 } from "./config.ts";
 
@@ -134,6 +140,13 @@ describe("default fleet", () => {
   it("ships Cursor as a default-fleet subscription engine", () => {
     const map = instanceConfigs({});
     expect(map.cursor).toEqual({ driver: "cursorAgent", environment: {} });
+  });
+
+  it("ships MiniMax CLI as a default-fleet engine", () => {
+    const map = instanceConfigs({});
+    expect(map.minimax).toEqual({ driver: "minimax", environment: {} });
+    const existing = instanceConfigs({ instances: { claude: { driver: "claudeAgent" } } });
+    expect(existing.minimax?.driver).toBe("minimax");
   });
 
   it("carries the saved OpenAI-compatible URL into the live default instance", () => {
@@ -252,6 +265,42 @@ describe("Instance CLI override", () => {
     const custom = { instances: { claude: { driver: "claudeAgent", environment: { MY_FLAG: "1" } } } };
     const kept = patchInstanceConfig(custom, "claude", { cli: "/x" });
     expect(kept.config.instances!.claude.environment).toEqual({ MY_FLAG: "1" });
+  });
+});
+
+describe("Instance enable/disable", () => {
+  it("sets enabled=false on a default-fleet instance", () => {
+    const cfg: AppConfig = {};
+    const result = patchInstanceConfig(cfg, "claude", { enabled: false });
+    expect(result.ok).toBe(true);
+    expect(result.config.instances!.claude.enabled).toBe(false);
+  });
+
+  it("re-enabling clears the flag entirely so it round-trips like a fresh install", () => {
+    const cfg: AppConfig = { instances: { claude: { driver: "claudeAgent", enabled: false } } };
+    const result = patchInstanceConfig(cfg, "claude", { enabled: true });
+    expect(result.ok).toBe(true);
+    // The field is GONE on disk after re-enable, not `enabled: true` —
+    // matches `entry.enabled !== false` in registry.load.
+    expect(result.config.instances!.claude.enabled).toBeUndefined();
+  });
+
+  it("preserves a per-instance CLI override when toggling enabled", () => {
+    const cfg: AppConfig = {
+      instances: { claude: { driver: "claudeAgent", config: { cli: "/opt/claude" } } },
+    };
+    const off = patchInstanceConfig(cfg, "claude", { enabled: false });
+    expect(off.config.instances!.claude.config).toEqual({ cli: "/opt/claude" });
+    expect(off.config.instances!.claude.enabled).toBe(false);
+
+    const back = patchInstanceConfig(off.config, "claude", { enabled: true });
+    expect(back.config.instances!.claude.config).toEqual({ cli: "/opt/claude" });
+    expect(back.config.instances!.claude.enabled).toBeUndefined();
+  });
+
+  it("rejects an unknown instance", () => {
+    const cfg: AppConfig = {};
+    expect(patchInstanceConfig(cfg, "nope", { enabled: false }).ok).toBe(false);
   });
 });
 
@@ -467,5 +516,138 @@ describe("workspace credential env strip", () => {
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("OMB_OPENAI_IMAGE_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("DEEPSEEK_API_KEY");
     expect(WORKSPACE_CREDENTIAL_ENV).toContain("DEEPSEEK_URL");
+  });
+});
+
+describe("operator-level computer allowlist", () => {
+  it("returns null when the allowlist is absent, so legacy installs pass through", () => {
+    // The shipped default: every destination is allowed, and the runtime
+    // never sees the allowlist at all.  This is what an upgraded install
+    // looks like until the operator narrows the toggle.
+    expect(allowedBotComputers({})).toBeNull();
+    expect(allowedBotComputers({ botDefaults: { computers: ["cloud", "local"] } })).toBeNull();
+  });
+
+  it("de-duplicates the allowlist while preserving the operator's order", () => {
+    expect(
+      allowedBotComputers({ botDefaults: { allowedComputers: ["local", "vm", "local", "cloud"] } }),
+    ).toEqual(["local", "vm", "cloud"]);
+  });
+
+  it("treats an empty allowlist as a real, persisted nothing-is-allowed", () => {
+    expect(allowedBotComputers({ botDefaults: { allowedComputers: [] } })).toEqual([]);
+  });
+
+  it("filters a granted set through the allowlist and keeps the input order", () => {
+    // A bot granted [local, vm, cloud] with the operator's allowlist set to
+    // [cloud, vm] should land on [vm, cloud] — the allowlist does not
+    // re-order, it only drops.
+    expect(filterAllowedComputers(["local", "vm", "cloud"], ["cloud", "vm"])).toEqual([
+      "vm",
+      "cloud",
+    ]);
+  });
+
+  it("passes everything through when the allowlist is null", () => {
+    expect(filterAllowedComputers(["local", "vm", "cloud"], null)).toEqual(["local", "vm", "cloud"]);
+  });
+
+  it("returns an empty list when nothing in the grant is allowed", () => {
+    expect(filterAllowedComputers(["local", "vm"], ["cloud"])).toEqual([]);
+  });
+
+  it("persists allowedComputers through the schema and the round-trip", () => {
+    expect(parseConfigPatch({ botDefaults: { allowedComputers: ["local"] } })).toEqual({
+      botDefaults: { allowedComputers: ["local"] },
+    });
+    expect(() => parseConfigPatch({ botDefaults: { allowedComputers: ["box"] } })).toThrow(
+      "botDefaults.allowedComputers",
+    );
+  });
+});
+
+describe("autoUpdate throttle", () => {
+  it("treats the first run as due when no lastCheckMs is recorded and the toggle is on", () => {
+    const now = 1_700_000_000_000;
+    expect(autoUpdateDue({ autoUpdate: { enabled: true } }, now)).toBe(true);
+    expect(autoUpdateDue({ autoUpdate: { enabled: true, lastCheckMs: -1 } }, now)).toBe(true);
+    expect(autoUpdateDue({ autoUpdate: { enabled: true, lastCheckMs: Number.NaN } }, now)).toBe(true);
+  });
+
+  it("refuses to run when the toggle is off, even if no lastCheckMs is recorded", () => {
+    const now = 1_700_000_000_000;
+    // no autoUpdate at all = the user has not opted in
+    expect(autoUpdateDue({}, now)).toBe(false);
+    expect(autoUpdateDue({ autoUpdate: {} }, now)).toBe(false);
+    expect(autoUpdateDue({ autoUpdate: { enabled: undefined } }, now)).toBe(false);
+  });
+
+  it("blocks a run inside the 6-hour window", () => {
+    const now = 1_700_000_000_000;
+    expect(autoUpdateDue({ autoUpdate: { enabled: true, lastCheckMs: now - 1 } }, now)).toBe(false);
+    expect(
+      autoUpdateDue(
+        { autoUpdate: { enabled: true, lastCheckMs: now - (AUTO_UPDATE_THROTTLE_MS - 1) } },
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows a run at or after the 6-hour mark", () => {
+    const now = 1_700_000_000_000;
+    expect(
+      autoUpdateDue({ autoUpdate: { enabled: true, lastCheckMs: now - AUTO_UPDATE_THROTTLE_MS } }, now),
+    ).toBe(true);
+    expect(
+      autoUpdateDue(
+        { autoUpdate: { enabled: true, lastCheckMs: now - (AUTO_UPDATE_THROTTLE_MS + 60_000) } },
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses to run when the autoUpdate toggle is off", () => {
+    const now = 1_700_000_000_000;
+    expect(autoUpdateDue({ autoUpdate: { enabled: false, lastCheckMs: now - 60_000 } }, now)).toBe(false);
+  });
+
+  it("round-trips the new fields through the patch parser", () => {
+    const parsed = parseConfigPatch({ autoUpdate: { enabled: true, lastCheckMs: 1700000000000, lastAppFingerprint: "1.0.30:abc123" } });
+    expect(parsed.autoUpdate).toEqual({
+      enabled: true,
+      lastCheckMs: 1700000000000,
+      lastAppFingerprint: "1.0.30:abc123",
+    });
+  });
+
+  it("rejects a negative lastCheckMs so a corrupt value cannot pin the throttle open", () => {
+    expect(() =>
+      parseConfigPatch({ autoUpdate: { lastCheckMs: -5 } }),
+    ).toThrow();
+  });
+});
+
+describe("public ingress URL", () => {
+  it("returns the trimmed URL on the raw helper and null when disabled", () => {
+    expect(publicIngressUrl({ ingress: { publicUrl: "https://hooks.example.com/" } })).toBe(
+      "https://hooks.example.com",
+    );
+    expect(publicIngressUrl({ ingress: { publicUrl: "  https://hooks.example.com/abc/  " } })).toBe(
+      "https://hooks.example.com/abc",
+    );
+    expect(publicIngressUrl({})).toBeNull();
+    expect(publicIngressUrl({ ingress: { publicUrl: "not-a-url" } })).toBeNull();
+  });
+
+  it("publicIngressUrlEffective returns null when the URL is disabled, even if saved", () => {
+    expect(
+      publicIngressUrlEffective({ ingress: { publicUrl: "https://hooks.example.com", enabled: false } }),
+    ).toBeNull();
+    // an absent flag defaults to on, so a config written by an older build
+    // keeps applying its URL
+    expect(
+      publicIngressUrlEffective({ ingress: { publicUrl: "https://hooks.example.com" } }),
+    ).toBe("https://hooks.example.com");
+    expect(publicIngressUrlEffective({})).toBeNull();
   });
 });

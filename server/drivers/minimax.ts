@@ -95,7 +95,7 @@ export function decodeMinimaxConfig(raw: unknown): MinimaxConfig {
 
 export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
   driverKind: DRIVER_KIND,
-  metadata: { displayName: "MiniMax (API)", supportsMultipleInstances: true, access: "custom" },
+  metadata: { displayName: "MiniMax CLI", supportsMultipleInstances: true },
   models: MODELS,
   install: {
     docsUrl: "https://platform.minimax.io/docs/token-plan/minimax-cli",

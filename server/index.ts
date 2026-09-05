@@ -44,6 +44,7 @@ import { groupTurnCwd } from "./room-cwd.ts";
 import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from "./room-turn-timeout.ts";
 import { telemetry } from "./telemetry.ts";
 import { usageQuotaPoller } from "./usage-quota.ts";
+import { getDeepSeekBalance } from "./deepseek-balance.ts";
 import {
   lastAntigravityQuotaSnapshot,
   startAntigravityQuotaPoller,
@@ -91,8 +92,9 @@ import {
   instanceConfigs,
   loadConfig,
   localVmMaxInstances,
+  allowedBotComputers,
   parseConfigPatch,
-  publicIngressUrl,
+  publicIngressUrlEffective,
   roomTurnTimeoutMinutes,
   saveConfig,
   showToolCallsEnabled,
@@ -105,6 +107,7 @@ import {
   vpsCpus,
   vpsMemoryGib,
   vpsSshAlias,
+  autoUpdateDue,
   DATA_DIR,
   EVENTS_DIR,
   NATIVE_DIR,
@@ -185,6 +188,7 @@ import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
 import { accessHeaders, accessLoginHint, hasAccessServiceToken, type AccessTokenHeaders } from "./recall-access.ts";
+import { RECALL_CLI_TIMEOUT_MS, describeCliFailure } from "./cli-failure.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { RoutineRequestService } from "./routine-requests.ts";
@@ -330,48 +334,6 @@ function connectedAppsIntegration(botId: string, threadId: string) {
 
 export const RECALL_NOT_CONFIGURED = "Agent RAG is not configured — set a Service URL in Settings";
 
-/** How long the settings probe gives a local `recall` CLI to answer.  The
- * bot-facing proxy (qdrant-proxy's executeRecallCli) already allows 30s, and
- * this probe runs the same binary against the same corpus: a `recall stats`
- * that has to wake an embedder and round-trip a collection genuinely takes
- * several seconds.  The old 6s ceiling was under the measured cost, so a
- * perfectly healthy corpus timed out on every probe and the panel reported
- * "did not answer" while the bots using it were fine. */
-const RECALL_CLI_TIMEOUT_MS = 30_000;
-
-// What a failed child process looks like, parsed rather than poked at: a
-// timeout kills the child (so it shows up as a signal), a non-zero exit
-// carries a numeric code, and a failure to start carries a string one.
-const cliFailureSchema = z.object({
-  killed: z.boolean().optional(),
-  signal: z.string().nullish(),
-  stderr: z.string().optional(),
-  message: z.string().optional(),
-});
-const cliExitCodeSchema = z.object({ code: z.number() });
-const cliSpawnFailureSchema = z.object({ code: z.literal("ENOENT") });
-
-/** Why a `recall` CLI call failed, in words a person can act on, and safe to
- * return over the API: no environment values, and anything the child printed
- * goes through the same redaction the chat cards use, because a CLI can echo
- * a URL — or a credential — into its own stderr. */
-function describeCliFailure(err: unknown, timeoutMs: number): string {
-  if (err instanceof SyntaxError) return "it printed output that was not JSON";
-  const parsed = cliFailureSchema.safeParse(err);
-  const failure = parsed.success ? parsed.data : {};
-  // execFile kills the child on timeout, so a signal is how a timeout looks
-  // from here — there is no distinct error code for it.
-  if (failure.killed || failure.signal === "SIGTERM" || failure.signal === "SIGKILL") {
-    return `it timed out after ${Math.round(timeoutMs / 1000)}s`;
-  }
-  if (cliSpawnFailureSchema.safeParse(err).success) return "the executable could not be run";
-  const raw = (failure.stderr?.trim() || failure.message || String(err)).trim();
-  const safe = redactSecretsInText(raw).replace(/\s+/g, " ").trim().slice(0, 300);
-  const exit = cliExitCodeSchema.safeParse(err);
-  const exited = exit.success ? `it exited ${exit.data.code}` : "it failed";
-  return safe ? `${exited}: ${safe}` : exited;
-}
-
 /** Whether a real recall route lets this caller through.  A public /health
  * says nothing about the routes a bot actually calls — on a service behind
  * Cloudflare Access, /health is commonly the one bypass while /recall/* is
@@ -384,7 +346,12 @@ async function recallRouteGate(
   try {
     const probe = await fetch(`${url}/recall/stats`, {
       headers,
-      redirect: "manual",
+      // Followed, so a benign same-host redirect (an http:// -> https://
+      // upgrade, a trailing-slash normalisation) just works instead of being
+      // misread as a login gate.  accessLoginHint still catches a real Access
+      // login page here — it checks the followed response's final URL and
+      // content type, and that check runs before status is inspected below.
+      redirect: "follow",
       signal: AbortSignal.timeout(4000),
     });
     const gate = accessLoginHint(probe);
@@ -2373,7 +2340,12 @@ async function startTurn(
       // is a capability, not a preference: each one is resolved on its own
       // terms below and mounted with its own tools, so the agent chooses per
       // task. Granting only the VM therefore means only the VM.
-      const { granted, auto } = resolveGrants(bot.computers, opts?.runOn, cfg.botDefaults?.computers);
+      const { granted, auto } = resolveGrants(
+        bot.computers,
+        opts?.runOn,
+        cfg.botDefaults?.computers,
+        allowedBotComputers(cfg),
+      );
       const wantsCloud = granted.includes("cloud");
       const wantsVm = granted.includes("vm");
       const wantsLocal = granted.includes("local");
@@ -2927,9 +2899,142 @@ try {
 
 const webhookIngressStatus = () => ({
   available: Boolean(webhookIngress),
-  baseUrl: publicIngressUrl(cfg) || webhookIngress?.baseUrl || `http://127.0.0.1:${WEBHOOK_PORT}`,
+  baseUrl: publicIngressUrlEffective(cfg) || webhookIngress?.baseUrl || `http://127.0.0.1:${WEBHOOK_PORT}`,
   ...(webhookIngressError ? { error: webhookIngressError } : {}),
 });
+
+/** Result of a single ingress probe: did the URL resolve, did it answer,
+ * and what does the answer say about the tunnel/reverse-proxy in front of
+ * it?  A failed probe carries `reason` for the Settings panel to show. */
+interface IngressProbeResult {
+  ok: boolean;
+  url: string;
+  resolved: boolean;
+  /** One short sentence the UI shows on success or failure. */
+  reason: string;
+  /** Best-guess name of the tunnel/reverse-proxy, when one left a marker. */
+  tunnel?: string;
+}
+
+const INGRESS_PROBE_TIMEOUT_MS = 5_000;
+const INGRESS_PROBE_USER_AGENT = "BotFleet-Ingress-Probe/1.0";
+
+/** Categorize a host or a Server header to name the tunnel/reverse-proxy.
+ * Cloudflare's edge always identifies itself; Caddy, nginx, and Traefik are
+ * named on a best-effort basis via `Server`.  Anything not in the list
+ * reports `tunnel: undefined` and the reason carries the raw banner. */
+function describeTunnel(headers: Record<string, string | string[] | undefined>): string | undefined {
+  const rawServer = headers["server"];
+  const server = Array.isArray(rawServer) ? rawServer[0] : (typeof rawServer === "string" ? rawServer : undefined);
+  const cfRay = headers["cf-ray"];
+  const rawPoweredBy = headers["x-powered-by"];
+  const poweredBy = Array.isArray(rawPoweredBy) ? rawPoweredBy[0] : (typeof rawPoweredBy === "string" ? rawPoweredBy : undefined);
+  if (cfRay || server?.toLowerCase().includes("cloudflare")) return "cloudflare";
+  if (server?.toLowerCase().includes("caddy")) return "caddy";
+  if (server?.toLowerCase().includes("nginx")) return "nginx";
+  if (server?.toLowerCase().includes("traefik")) return "traefik";
+  if (poweredBy?.toLowerCase().includes("cloudflare-tunnel")) return "cloudflare-tunnel";
+  return undefined;
+}
+
+/** Probe one URL.  Used by POST /api/ingress/test and the dry-run on the
+ * Settings panel; the result is the same either way.  Never throws —
+ * callers rely on the typed `reason` to render the outcome.
+ *
+ * What "ok" means here: the URL parsed as absolute http(s), DNS resolved
+ * to at least one address, and the origin returned a non-5xx response to a
+ * GET.  4xx still counts as a live origin (it answered).  Anything that
+ * looks like a Cloudflare Tunnel or Caddy is named; otherwise the
+ * `reason` reports the raw `Server` banner so the operator can confirm. */
+async function probeIngressUrl(raw: string): Promise<IngressProbeResult> {
+  let parsed: URL;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    return {
+      ok: false,
+      url: raw,
+      resolved: false,
+      reason: "The URL is not a valid http(s) address.",
+    };
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return {
+      ok: false,
+      url: raw,
+      resolved: false,
+      reason: "Only http and https URLs are supported.",
+    };
+  }
+  if (parsed.username || parsed.password) {
+    return {
+      ok: false,
+      url: raw,
+      resolved: false,
+      reason: "URLs with embedded credentials are not allowed.",
+    };
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), INGRESS_PROBE_TIMEOUT_MS);
+  let response: Response | undefined;
+  let fetchError: unknown = undefined;
+  try {
+    response = await fetch(parsed.toString(), {
+      method: "GET",
+      redirect: "follow",
+      signal: controller.signal,
+      headers: { "user-agent": INGRESS_PROBE_USER_AGENT },
+    });
+  } catch (error) {
+    fetchError = error;
+  } finally {
+    clearTimeout(timer);
+  }
+  if (fetchError || !response) {
+    const message =
+      fetchError instanceof Error
+        ? fetchError.name === "AbortError"
+          ? "The request timed out before the server answered."
+          : fetchError.message
+        : "The server did not answer.";
+    return {
+      ok: false,
+      url: raw,
+      resolved: false,
+      reason: message,
+    };
+  }
+  const status = response.status;
+  // response.headers is a `Headers` instance; describeTunnel expects a plain
+  // record of header values so its `headers["server"]` lookups can find
+  // them, instead of always returning `undefined` (which would silently
+  // make every probe report "no tunnel" and lose the operator's hint).
+  const headerRecord: Record<string, string | string[] | undefined> = {};
+  response.headers.forEach((value, key) => {
+    headerRecord[key.toLowerCase()] = value;
+  });
+  const tunnel = describeTunnel(headerRecord);
+  if (status >= 500) {
+    return {
+      ok: false,
+      url: raw,
+      resolved: true,
+      reason: `The server answered with HTTP ${status}.`,
+      ...(tunnel ? { tunnel } : {}),
+    };
+  }
+  const head = tunnel
+    ? `${tunnel === "cloudflare" ? "Cloudflare" : tunnel.charAt(0).toUpperCase() + tunnel.slice(1)} answered with HTTP ${status}.`
+    : `The server answered with HTTP ${status}.`;
+  return {
+    ok: true,
+    url: raw,
+    resolved: true,
+    reason: head,
+    ...(tunnel ? { tunnel } : {}),
+  };
+}
 
 const resourceTriggers = new ResourceTriggerManager({
   emit: broadcast,
@@ -3772,6 +3877,7 @@ function configStatus() {
       cpus: vpsCpus(cfg),
     },
     opencodeGo: { configured: Boolean(cfg.opencodeGo?.apiKey) },
+    deepseek: { configured: Boolean(cfg.deepseek?.key) },
     // the chosen voice is a setting, not a secret; the key is reported the
     // same configured-or-not way as every other credential
     tts: tts.describeVoice(cfg),
@@ -3785,8 +3891,17 @@ function configStatus() {
     botDefaults: {
       computers: cfg.botDefaults?.computers ?? [],
       cloudBackend: cfg.botDefaults?.cloudBackend ?? "box",
+      // null = every destination is allowed (the shipped default).  An array
+      // narrows the operator-level allowlist; the empty array is a real,
+      // persisted "no destination at all".
+      allowedComputers: allowedBotComputers(cfg),
     },
-    ingress: { publicUrl: cfg.ingress?.publicUrl || "" },
+    ingress: {
+      publicUrl: cfg.ingress?.publicUrl || "",
+      // Absent flag means on; the toggle is opt-out so a config written by
+      // an older build keeps applying its URL.
+      enabled: cfg.ingress?.enabled !== false,
+    },
     localVm: {
       mode: cfg.localVm?.mode ?? "shared",
       maxInstances: localVmMaxInstances(cfg),
@@ -3813,7 +3928,15 @@ function configStatus() {
       hasReadToken: Boolean(cfg.usage?.readToken || process.env.USAGE_READ_TOKEN),
       projects: usageProjectRules(cfg),
     },
-    autoUpdate: { enabled: cfg.autoUpdate?.enabled ?? false },
+    autoUpdate: {
+      enabled: cfg.autoUpdate?.enabled ?? false,
+      lastCheckMs: cfg.autoUpdate?.lastCheckMs ?? null,
+      // Throttle derived state so the Settings copy never has to compute
+      // it from a wall clock: a tick that fires inside the 6h window
+      // reports `due: false` and the UI can stay quiet.
+      due: autoUpdateDue(cfg),
+      lastAppFingerprint: cfg.autoUpdate?.lastAppFingerprint ?? null,
+    },
     terminology: cfg.terminology ?? DEFAULT_ROOM_TERMINOLOGY,
     // Resolved here so the Mac app and the phone render the same words
     // without each re-deriving them from the key and drifting apart.
@@ -6586,6 +6709,51 @@ const server = createServer(async (req, res) => {
         image: await containerComputerScreenshot(undefined, undefined, SHARED_LOCAL_VM_TARGET),
       });
     }
+    // Switch between the shared singleton VM and per-bot VMs. The shared
+    // container is removed in either direction so a stale desktop cannot
+    // outlive the policy it was started under — a shared desktop that
+    // belonged to a single bot, or a per-bot desktop that was being
+    // recycled across bots, would be the same kind of silent host-mix-up
+    // Lane A exists to prevent.
+    if (method === "POST" && path === "/api/local-computer/mode") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return json(res, 400, { error: "body must be a JSON object" });
+      }
+      const parsed = z.object({ mode: z.enum(["shared", "per-bot"]) }).safeParse(body);
+      if (!parsed.success) {
+        return json(res, 400, { error: "mode must be shared or per-bot" });
+      }
+      const requested = parsed.data.mode;
+      const current = cfg.localVm?.mode ?? "shared";
+      if (requested === current) {
+        return json(res, 200, { mode: current, maxInstances: localVmMaxInstances(cfg) });
+      }
+      if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.size > 0) {
+        return json(res, 409, { error: "another Local VM setup action is still running" });
+      }
+      const owner = localVmLeaseFor(SHARED_LOCAL_VM_TARGET).current(localVmOwnerBusy);
+      if (owner) {
+        return json(res, 409, { error: "the Local VM is being used by a bot — stop that turn first" });
+      }
+      localVmModeChangeBusy = true;
+      try {
+        const sharedStatus = await containerComputerStatus(undefined, undefined, SHARED_LOCAL_VM_TARGET).catch(() => null);
+        if (sharedStatus?.container === "running" || sharedStatus?.container === "stopped") {
+          await containerComputerAction("remove", undefined, undefined, SHARED_LOCAL_VM_TARGET);
+        }
+        cfg.localVm = { ...(cfg.localVm ?? {}), mode: requested };
+        saveConfig(cfg);
+        const status = configStatus();
+        broadcast({ kind: "config", ...status });
+        return json(res, 200, { mode: requested, maxInstances: localVmMaxInstances(cfg), config: status });
+      } finally {
+        localVmModeChangeBusy = false;
+      }
+    }
 
     m = path.match(/^\/api\/bots\/([\w-]+)\/local-computer$/);
     if (m && method === "GET") {
@@ -6662,12 +6830,40 @@ const server = createServer(async (req, res) => {
       const result = await telemetry.probe();
       return json(res, 200, result);
     }
+    // ── ingress test: confirm the configured webhook URL answers and
+    // describes the tunnel/reverse-proxy that fronts it.  Body shape matches
+    // the field the Settings panel saves, so the form's "Test Setup" button
+    // can dry-run a value the user has not yet persisted.
+    if (method === "POST" && path === "/api/ingress/test") {
+      // Local-only probe — same gate as the lifecycle routes so a hostile
+      // page cannot trigger outbound TCP from a simple text/plain request.
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      const body = await readBody(req);
+      const raw = typeof body?.publicUrl === "string" ? body.publicUrl.trim() : "";
+      if (!raw) {
+        return json(res, 200, {
+          ok: false,
+          url: "",
+          resolved: false,
+          reason: "Enter a public URL to test.",
+        });
+      }
+      return json(res, 200, await probeIngressUrl(raw));
+    }
     if (method === "GET" && path === "/api/quotas") {
+      // Best-effort balance fetch: the UI hides the chip if the key is
+      // missing, so this never throws. A bad URL or a transient outage
+      // returns an error string instead of a balance — the chip reads
+      // "balance unavailable", which is the honest answer.
+      const deepseek = await getDeepSeekBalance(cfg.deepseek?.key, cfg.deepseek?.url);
       return json(res, 200, {
         ok: true,
         cooldowns: quotaCooldowns.list(),
         antigravity: lastAntigravityQuotaSnapshot(),
         windows: usageQuotaPoller.getWindows(),
+        deepseek,
       });
     }
     if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {
@@ -6748,9 +6944,11 @@ const server = createServer(async (req, res) => {
       try {
         const healthRes = await fetch(`${url}/health`, {
           headers: recallHeaders,
-          // Manual, so a login redirect is visible as a redirect instead of
-          // being followed into an HTML page that fails to parse as JSON.
-          redirect: "manual",
+          // Followed, so a benign same-host redirect just works instead of
+          // being misread as a login gate.  accessLoginHint still catches a
+          // real Access login page — the check below runs before any JSON
+          // parsing, on the followed response's final URL and content type.
+          redirect: "follow",
           signal: AbortSignal.timeout(4000),
         });
         gateProblem = accessLoginHint(healthRes);
@@ -6796,7 +6994,8 @@ const server = createServer(async (req, res) => {
       try {
         const headers: Record<string, string> = { "Content-Type": "application/json", ...access };
         if (apiKey) headers["api-key"] = apiKey;
-        const resList = await fetch(`${url}/collections`, { headers, redirect: "manual", signal: AbortSignal.timeout(4000) });
+        // Followed, for the same reason as the /health probe above.
+        const resList = await fetch(`${url}/collections`, { headers, redirect: "follow", signal: AbortSignal.timeout(4000) });
         const listGate = accessLoginHint(resList);
         if (listGate) {
           return json(res, 200, { ready: false, configured: true, url, collection, accessGated: true, error: `The service is reachable but ${listGate}.` });
@@ -6947,7 +7146,7 @@ const server = createServer(async (req, res) => {
     }
 
     // ── per-instance CLI path override (custom builds / versioned bins) ──
-    // PATCH /api/instances/:id {cli?: string, fullAuto?: boolean}
+    // PATCH /api/instances/:id {cli?: string, fullAuto?: boolean, enabled?: boolean}
     // Kills in-flight turns like any provider reload.
     const instancePatch = /^\/api\/instances\/([\w.-]+)$/.exec(path);
     if (method === "PATCH" && instancePatch) {
@@ -6956,7 +7155,7 @@ const server = createServer(async (req, res) => {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       const body = await readBody(req);
-      const patchOptions: { cli?: string; fullAuto?: boolean } = {};
+      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean } = {};
 
       if (body?.cli !== undefined) {
         if (typeof body.cli !== "string") return json(res, 400, { error: "cli must be a string" });
@@ -6967,6 +7166,11 @@ const server = createServer(async (req, res) => {
       if (body?.fullAuto !== undefined) {
         if (typeof body.fullAuto !== "boolean") return json(res, 400, { error: "fullAuto must be a boolean" });
         patchOptions.fullAuto = body.fullAuto;
+      }
+
+      if (body?.enabled !== undefined) {
+        if (typeof body.enabled !== "boolean") return json(res, 400, { error: "enabled must be a boolean" });
+        patchOptions.enabled = body.enabled;
       }
 
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
@@ -7029,6 +7233,150 @@ const server = createServer(async (req, res) => {
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
     }
+    // ── apply workspace defaults to every bot ──────────────────────────
+    // The "Set all bots to default" buttons on the Computers and Models
+    // settings pages.  Both endpoints validate the workspace defaults first
+    // (reusing the same zod schemas the /api/config patch does) and refuse
+    // bad input the same way, so the client cannot push a malformed default
+    // into the store and then have it crash every bot.
+    if (method === "POST" && path === "/api/bots/apply-defaults") {
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return json(res, 400, { error: "body must be a JSON object" });
+      }
+      const defaults = parseConfigPatch({ botDefaults: body.botDefaults ?? cfg.botDefaults });
+      const incoming = defaults.botDefaults;
+      if (!incoming) {
+        return json(res, 400, { error: "botDefaults must include computers or cloudBackend" });
+      }
+      const requested = incoming.computers;
+      if (requested !== undefined) {
+        if (!Array.isArray(requested)) {
+          return json(res, 400, { error: "botDefaults.computers must be an array of destinations" });
+        }
+        for (const entry of requested) {
+          if (entry !== "cloud" && entry !== "vm" && entry !== "local") {
+            return json(res, 400, { error: `unknown computer destination: ${String(entry)}` });
+          }
+        }
+      }
+      // Filter through the operator allowlist so a "Set all bots" cannot
+      // smuggle a destination the operator already disabled at the top of
+      // the settings page.  The allowlist wins, every time.
+      const allowed = allowedBotComputers(cfg);
+      const next = allowed === null
+        ? (requested ?? cfg.botDefaults?.computers ?? [])
+        : (requested ?? cfg.botDefaults?.computers ?? []).filter((entry) => allowed.includes(entry));
+      const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
+      // An empty filtered set is NOT a permission to clear every bot.  The
+      // operator who narrowed the allowlist already has each bot on its
+      // own choice; the apply would silently strip that choice and leave
+      // the bot with an empty "Off" computers list, which is the exact
+      // mistake the test for "leaves a bot's own choice alone" guards
+      // against.  Skip the patch loop when the filter empties the apply.
+      if (next.length > 0) {
+        for (const bot of store.bots) {
+          const patched = store.patchBot(bot.id, { computers: next });
+          if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
+        }
+      }
+      cfg.botDefaults = { ...(cfg.botDefaults ?? {}), ...incoming, computers: next };
+      saveConfig(cfg);
+      const status = configStatus();
+      broadcast({ kind: "config", ...status });
+      for (const { bot } of updated) broadcast({ kind: "bot", bot });
+      return json(res, 200, {
+        ok: true,
+        applied: updated.length,
+        computers: next,
+        config: status,
+      });
+    }
+    if (method === "POST" && path === "/api/bots/apply-model-defaults") {
+      const body = await readBody(req);
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        return json(res, 400, { error: "body must be a JSON object" });
+      }
+      // The four slots may each be present OR absent.  An absent slot is
+      // "do not touch bots that already have a value here" — exactly the
+      // behavior the UI promises when an empty picker means "leave alone".
+      const slots = body.slots as
+        | { primary?: unknown; secondary?: unknown; fallback1?: unknown; fallback2?: unknown }
+        | undefined;
+      if (!slots || typeof slots !== "object") {
+        return json(res, 400, { error: "slots must be a JSON object" });
+      }
+      const readSlot = (value: unknown): ModelSelection | null => {
+        if (value === undefined) return null;
+        if (value === null) return null;
+        if (!value || typeof value !== "object" || Array.isArray(value)) {
+          throw Object.assign(new Error("model slot must be an object"), { status: 400 });
+        }
+        const candidate = value as Record<string, unknown>;
+        if (typeof candidate.instanceId !== "string" || typeof candidate.model !== "string") {
+          throw Object.assign(new Error("model slot must include instanceId and model"), { status: 400 });
+        }
+        return { instanceId: candidate.instanceId, model: candidate.model };
+      };
+      let primary: ModelSelection | null;
+      let secondary: ModelSelection | null;
+      let fallback1: ModelSelection | null;
+      let fallback2: ModelSelection | null;
+      try {
+        primary = readSlot(slots.primary);
+        secondary = readSlot(slots.secondary);
+        fallback1 = readSlot(slots.fallback1);
+        fallback2 = readSlot(slots.fallback2);
+      } catch (error) {
+        const status = (error as { status?: number }).status ?? 400;
+        return json(res, status, { error: (error as Error).message });
+      }
+      // Validate every supplied selection against the available engines,
+      // reusing the same gate the PATCH /api/bots/:id endpoint runs.
+      const check = (selection: ModelSelection) =>
+        checkedModelSelection(selection, undefined, false);
+      for (const selection of [primary, secondary, fallback1, fallback2]) {
+        if (selection === null) continue;
+        const checked = check(selection);
+        if (!checked.ok) return json(res, checked.status, { error: checked.error });
+      }
+      const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
+      for (const bot of store.bots) {
+        const next: ModelSelection = { ...bot.modelSelection };
+        const existingFallbacks = next.fallbacks ?? [];
+        if (primary) next.instanceId = primary.instanceId, next.model = primary.model;
+        // Secondary and the two fallbacks all map onto the same fallbacks
+        // list: secondary is the first entry, the fallbacks are the rest.
+        const nextFallbacks: ModelSelection[] = [];
+        if (secondary) nextFallbacks.push(secondary);
+        if (fallback1) nextFallbacks.push(fallback1);
+        if (fallback2) nextFallbacks.push(fallback2);
+        if (nextFallbacks.length > 0) {
+          // Only OVERWRITE positions that the defaults actually supplied.
+          // An empty picker at the UI level MUST leave the bot's value at
+          // that slot alone — that is the contract "Set all bots to
+          // default" promises when a default is empty.
+          const merged: ModelSelection[] = [...existingFallbacks];
+          while (merged.length < nextFallbacks.length) merged.push(nextFallbacks[merged.length]!);
+          for (let i = 0; i < nextFallbacks.length; i++) merged[i] = nextFallbacks[i]!;
+          // Trim trailing empties: the user can carry fewer fallbacks than
+          // the default offers, and we should not pad their bot to match.
+          next.fallbacks = merged.filter(
+            (entry, i) => i < nextFallbacks.length || entry.instanceId !== "" || entry.model !== "",
+          );
+          if (next.fallbacks.length === 0) delete next.fallbacks;
+        }
+        if (bot.modelSelection.instanceId === next.instanceId &&
+            bot.modelSelection.model === next.model &&
+            JSON.stringify(bot.modelSelection.fallbacks ?? []) === JSON.stringify(next.fallbacks ?? [])) {
+          continue;
+        }
+        const patched = store.patchBot(bot.id, { modelSelection: next });
+        if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
+      }
+      for (const { bot } of updated) broadcast({ kind: "bot", bot });
+      return json(res, 200, { ok: true, applied: updated.length });
+    }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
       const patch = parseConfigPatch(body);
@@ -7086,6 +7434,7 @@ const server = createServer(async (req, res) => {
         if (persisted.composio?.apiKey !== undefined) persisted.composio.apiKey = "";
         if (persisted.box?.token !== undefined) persisted.box.token = "";
         if (persisted.opencodeGo?.apiKey !== undefined) persisted.opencodeGo.apiKey = "";
+        if (persisted.deepseek?.key !== undefined) persisted.deepseek.key = "";
         if (persisted.tts?.key !== undefined) persisted.tts.key = "";
         if (persisted.imageGen?.key !== undefined) persisted.imageGen.key = "";
         saveConfig(persisted);

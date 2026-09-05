@@ -236,3 +236,70 @@ describe("workspace defaults", () => {
     expect(resolveCloudBackend("vps", "box")).toBe("vps");
   });
 });
+
+describe("operator allowlist", () => {
+  it("passes every grant through when the allowlist is absent", () => {
+    // null is the shipped default: the operator has not narrowed anything,
+    // so the existing behavior is preserved bit-for-bit.
+    expect(resolveGrants(["cloud", "vm", "local"], undefined, undefined, null)).toEqual({
+      granted: ["cloud", "vm", "local"],
+      auto: false,
+    });
+  });
+
+  it("filters a bot's grant through the allowlist and keeps its order", () => {
+    expect(resolveGrants(["local", "vm", "cloud"], undefined, undefined, ["cloud", "vm"])).toEqual({
+      granted: ["vm", "cloud"],
+      auto: false,
+    });
+  });
+
+  it("strips the local destination when the operator disables This Computer", () => {
+    // The whole point of the toggle: globally turning off "This Computer"
+    // must keep any bot from running on the host, no matter what it picked.
+    expect(resolveGrants(["local"], undefined, undefined, ["cloud", "vm"])).toEqual({
+      granted: [],
+      auto: false,
+    });
+    expect(resolveGrants(["cloud", "local"], undefined, undefined, ["cloud"])).toEqual({
+      granted: ["cloud"],
+      auto: false,
+    });
+  });
+
+  it("keeps an unconfigured bot auto when every default destination is blocked", () => {
+    // The allowlist is narrower than the workspace default.  The bot still
+    // has not picked a destination of its own, so it should fall through to
+    // its historical auto behavior instead of being silently granted nothing
+    // and never even learning a desktop is unavailable.
+    expect(resolveGrants(undefined, undefined, ["local", "vm"], ["cloud"])).toEqual({
+      granted: ["local", "vm"],
+      auto: true,
+    });
+  });
+
+  it("does not retroactively un-allow a cloud routine", () => {
+    // The cloud destination is what the routine named.  The allowlist
+    // describes what is allowed; the call already happened.
+    expect(resolveGrants(["local"], "cloud", undefined, ["local"])).toEqual({
+      granted: ["cloud"],
+      auto: false,
+    });
+  });
+
+  it("treats an empty allowlist as nothing is allowed", () => {
+    expect(resolveGrants(["cloud", "vm"], undefined, undefined, [])).toEqual({
+      granted: [],
+      auto: false,
+    });
+    // …but a never-configured bot still goes through the auto path, so the
+    // runtime can react to "no desktop at all" instead of the absence of a
+    // grant the operator can also undo.  The original granted set is
+    // returned alongside the auto flag, so the runtime can still see what
+    // the workspace default was trying to offer.
+    expect(resolveGrants(undefined, undefined, ["cloud", "local"], [])).toEqual({
+      granted: ["cloud", "local"],
+      auto: true,
+    });
+  });
+});

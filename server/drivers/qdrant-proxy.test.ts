@@ -267,10 +267,19 @@ describe("Agent RAG proxy behind Cloudflare Access", () => {
   });
 
   it("says a login redirect means Access instead of reporting a parse failure", async () => {
-    const service = await startRecordingService((_req, res) => {
-      res.writeHead(302, {
-        location: "https://fixture-team.cloudflareaccess.com/cdn-cgi/access/login/recall.example.com?kid=fixture",
-      });
+    // The redirect target carries Access's own path marker
+    // (/cdn-cgi/access/login/...), which is what a real Access gateway always
+    // sends regardless of which host answers it — so this stays hermetic
+    // (same origin as the stub, no live DNS/network dependency) while still
+    // exercising the real "follow, then recognise" path a genuine Access
+    // redirect takes.
+    const service = await startRecordingService((req, res) => {
+      if ((req.url ?? "").startsWith("/cdn-cgi/access/login/")) {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end("<html><body>Sign in with your identity provider to continue.</body></html>");
+        return;
+      }
+      res.writeHead(302, { location: "/cdn-cgi/access/login/recall.example.com?kid=fixture" });
       res.end();
     });
 
@@ -283,5 +292,106 @@ describe("Agent RAG proxy behind Cloudflare Access", () => {
     // The old failure mode: the redirect got followed and the HTML came back
     // as an unreadable search error.
     expect(text).not.toMatch(/JSON|unexpected token/i);
+  });
+});
+
+describe("Agent RAG proxy follows benign same-host redirects", () => {
+  // The bug this guards against: a fetch made with `redirect: "manual"`
+  // treats ANY 3xx as an identity gateway, so a plain http:// -> https://
+  // upgrade (301) or a trailing-slash normalisation (308) on the operator's
+  // own host got misdiagnosed as "behind Cloudflare Access — add a service
+  // token" when the real fix was just the URL.  These follow the redirect
+  // (matching the driver's `redirect: "follow"`) and land on the service's
+  // real answer.
+
+  it("follows a same-host 301 (e.g. an http:// -> https:// upgrade) instead of reporting an Access gate", async () => {
+    const server = createServer((req, res) => {
+      if (req.url === "/health") {
+        res.writeHead(301, { location: "/health-canonical" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ collection: "agent-memory", points: 12, backend_ok: true, version: "1.0.0" }));
+    });
+    stub = server;
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // SAFETY: listen() has resolved on a TCP socket, so address() is an
+    // AddressInfo with a bound port, never null or a pipe name.
+    const port = (server.address() as { port: number }).port;
+
+    const { callTool } = launch({ OMB_QDRANT_URL: `http://127.0.0.1:${port}`, OMB_QDRANT_COLLECTION: "agent-memory" });
+    const text = await callTool("recall_stats");
+
+    expect(text).not.toMatch(/identity gateway|Cloudflare Access|login page/i);
+    expect(text).toContain("agent-memory");
+  });
+
+  it("follows a same-host 308 trailing-slash normalisation instead of reporting an Access gate", async () => {
+    const server = createServer((req, res) => {
+      if (req.url === "/health") {
+        res.writeHead(308, { location: "/health/" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ collection: "agent-memory", points: 34, backend_ok: true, version: "1.0.0" }));
+    });
+    stub = server;
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // SAFETY: listen() has resolved on a TCP socket, so address() is an
+    // AddressInfo with a bound port, never null or a pipe name.
+    const port = (server.address() as { port: number }).port;
+
+    const { callTool } = launch({ OMB_QDRANT_URL: `http://127.0.0.1:${port}`, OMB_QDRANT_COLLECTION: "agent-memory" });
+    const text = await callTool("recall_stats");
+
+    expect(text).not.toMatch(/identity gateway|Cloudflare Access|login page/i);
+    expect(text).toContain("agent-memory");
+  });
+
+  it("recall_search and recall_contribute follow a benign same-host redirect instead of reporting an Access gate", async () => {
+    // This is the bot path, not just the settings-panel probe above — the
+    // same bug made every tool call through a redirected host look dead.
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        const url = req.url ?? "";
+        if (url === "/recall/search") {
+          res.writeHead(307, { location: "/recall/search/canonical" });
+          res.end();
+          return;
+        }
+        if (url === "/recall/contribute") {
+          res.writeHead(307, { location: "/recall/contribute/canonical" });
+          res.end();
+          return;
+        }
+        res.writeHead(200, { "content-type": "application/json" });
+        if (url === "/recall/search/canonical") {
+          res.end(JSON.stringify({ hits: [{ text: "a stored lesson", score: 0.9 }], mode: "hybrid" }));
+          return;
+        }
+        res.end(JSON.stringify({ doc_id: "doc-99", collection: "agent-memory" }));
+      });
+    });
+    stub = server;
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // SAFETY: listen() has resolved on a TCP socket, so address() is an
+    // AddressInfo with a bound port, never null or a pipe name.
+    const port = (server.address() as { port: number }).port;
+
+    const { callTool } = launch({ OMB_QDRANT_URL: `http://127.0.0.1:${port}`, OMB_QDRANT_COLLECTION: "agent-memory" });
+    const searchText = await callTool("recall_search", { query: "how do we deploy" });
+    const contributeText = await callTool("recall_contribute", {
+      text: "A lesson long enough to be a real contribution to the shared corpus.",
+      category: "lesson",
+    });
+
+    expect(searchText).toContain("a stored lesson");
+    expect(searchText).not.toMatch(/identity gateway|Cloudflare Access|login page/i);
+    expect(contributeText).toContain("doc-99");
+    expect(contributeText).not.toMatch(/identity gateway|Cloudflare Access|login page/i);
   });
 });

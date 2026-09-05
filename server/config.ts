@@ -108,10 +108,17 @@ const vpsConfigSchema = z.object({
  *
  * Unset ships as unset, so a fresh install still behaves exactly as before:
  * reuse whatever already exists, provision nothing, and on macOS fall back to
- * host control.  Nobody gets a server they did not ask for. */
+ * host control.  Nobody gets a server they did not ask for.
+ *
+ * `allowedComputers` is the operator-level allowlist: every granted set is
+ * filtered through it before it is mounted, so disabling "This Computer" at the
+ * top of the settings page is enough to keep any bot from running on the
+ * host.  Absent means "every destination is allowed", preserving the shipped
+ * behavior for every existing install. */
 const botDefaultsSchema = z.object({
   computers: z.array(z.enum(["cloud", "vm", "local"])).max(3).optional(),
   cloudBackend: z.enum(["box", "vps"]).optional(),
+  allowedComputers: z.array(z.enum(["cloud", "vm", "local"])).max(3).optional(),
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -158,13 +165,31 @@ const appConfigSchema = z.object({
   vps: vpsConfigSchema.optional(),
   /** Optional OpenCode key; persisted write-only and passed only to its child. */
   opencodeGo: z.object({ apiKey: optionalText }).optional(),
+  /** Optional DeepSeek API key — used only to display the user's account
+   * balance under the engine row, never injected into the engine's process
+   * environment. The user can run a deepseek CLI without this set; the
+   * engine does not need the key to function. "for my user" — workspace
+   * scope, not per-bot. */
+  deepseek: z.object({ key: optionalText, url: optionalText }).optional(),
   /** Voice credentials and the selected voice id. `provider` picks the
    * engine: "elevenlabs" (default; needs a key) or "system" (the Mac's
    * built-in voices, no key). */
   tts: z.object({ key: optionalText, voice: optionalText, provider: z.enum(["elevenlabs", "system"]).optional() }).optional(),
   /** OpenAI key used only by the in-process avatar image generator. */
   imageGen: z.object({ key: optionalText }).optional(),
-  autoUpdate: z.object({ enabled: z.boolean().optional() }).optional(),
+  autoUpdate: z
+    .object({
+      enabled: z.boolean().optional(),
+      /** Wall-clock ms of the last successful automatic check.  Used by the
+       * desktop shell to enforce the 6-hour throttle without consulting the
+       * harness on every tick. */
+      lastCheckMs: z.number().int().nonnegative().optional(),
+      /** Fingerprint of the BotFleet.app bundle at the last check, so a
+       * reinstall that landed an out-of-band build between checks still
+       * shows up as "different from last known" on the next cycle. */
+      lastAppFingerprint: z.string().optional(),
+    })
+    .optional(),
   /** Non-secret profile details shown in the sidebar. */
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
   rooms: roomConfigSchema.optional(),
@@ -176,6 +201,10 @@ const appConfigSchema = z.object({
       .refine((value) => value === undefined || value === "" || isAbsoluteHttpUrl(value), {
         message: "must be an absolute http(s) URL",
       }),
+    /** Whether the public URL is applied at all. Off keeps the stored URL
+     * for the next time the toggle is flipped on, but the webhook receiver
+     * does not advertise it. */
+    enabled: z.boolean().optional(),
   }).optional(),
   localVm: localVmConfigSchema.optional(),
   qdrant: z.object({
@@ -225,13 +254,23 @@ export interface AppConfig {
   /** A named host from the user's SSH config. Authentication stays with SSH. */
   vps?: { sshAlias?: string; memoryGib?: number; cpus?: number };
   opencodeGo?: { apiKey?: string };
+  deepseek?: { key?: string; url?: string };
   tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system" };
   imageGen?: { key?: string };
-  autoUpdate?: { enabled?: boolean };
+  autoUpdate?: {
+    enabled?: boolean;
+    lastCheckMs?: number;
+    lastAppFingerprint?: string;
+  };
   profile?: { name?: string; email?: string };
   rooms?: { turnTimeoutMinutes: number };
-  botDefaults?: { computers?: Array<"cloud" | "vm" | "local">; cloudBackend?: "box" | "vps" };
-  ingress?: { publicUrl?: string };
+  botDefaults?: {
+    computers?: Array<"cloud" | "vm" | "local">;
+    cloudBackend?: "box" | "vps";
+    /** Operator-level allowlist; an absent entry means the destination is allowed. */
+    allowedComputers?: Array<"cloud" | "vm" | "local">;
+  };
+  ingress?: { publicUrl?: string; enabled?: boolean };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */
   localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
@@ -317,9 +356,32 @@ export function roomTurnTimeoutMinutes(cfg: AppConfig): number {
   return cfg.rooms?.turnTimeoutMinutes ?? DEFAULT_ROOM_TURN_TIMEOUT_MINUTES;
 }
 
+export const AUTO_UPDATE_THROTTLE_MS = 6 * 60 * 60 * 1000;
+
+/** True when an automatic check is allowed to run right now.  The toggle
+ * gates the throttle: an off setting means no auto check ever, regardless
+ * of how long it has been since the last one.  Manual "Check for Updates"
+ * always bypasses this helper. */
+export function autoUpdateDue(cfg: AppConfig, nowMs: number = Date.now()): boolean {
+  if (cfg.autoUpdate?.enabled !== true) return false;
+  const last = cfg.autoUpdate?.lastCheckMs;
+  if (typeof last !== "number" || !Number.isFinite(last) || last < 0) return true;
+  return nowMs - last >= AUTO_UPDATE_THROTTLE_MS;
+}
+
 export function publicIngressUrl(cfg: AppConfig): string | null {
   const raw = cfg.ingress?.publicUrl?.trim();
   return raw && isAbsoluteHttpUrl(raw) ? raw.replace(/\/+$/, "") : null;
+}
+
+/** The public URL that should actually be advertised.  Disabled
+ * (`ingress.enabled === false`) keeps the stored value on disk for the next
+ * time the user flips the switch, but the harness behaves as if the URL
+ * were empty.  An absent flag defaults to on, so a config without the field
+ * keeps working as it did before the toggle existed. */
+export function publicIngressUrlEffective(cfg: AppConfig): string | null {
+  if (cfg.ingress?.enabled === false) return null;
+  return publicIngressUrl(cfg);
 }
 
 
@@ -345,6 +407,29 @@ export function usageProjectRules(cfg: AppConfig): Array<{ slug: string; match: 
 
 export function localVmMaxInstances(cfg: AppConfig): number {
   return cfg.localVm?.maxInstances ?? DEFAULT_LOCAL_VM_MAX_INSTANCES;
+}
+
+/** The destinations any bot is allowed to run on.  An absent allowlist means
+ * "every destination is allowed", which is the shipped default and the
+ * behavior an upgraded install sees until the operator narrows it.  An empty
+ * allowlist is a deliberate, persisted "no bot may run on any desktop here". */
+export function allowedBotComputers(cfg: AppConfig): Array<"cloud" | "vm" | "local"> | null {
+  const list = cfg.botDefaults?.allowedComputers;
+  if (list === undefined) return null;
+  // De-duplicate while keeping the order the operator chose.
+  return [...new Set(list)];
+}
+
+/** Filter a granted set against the operator allowlist.  An absent allowlist
+ * passes everything through.  An entry blocked by the allowlist is dropped;
+ * the result keeps the order of the input. */
+export function filterAllowedComputers<T extends "cloud" | "vm" | "local">(
+  granted: readonly T[],
+  allowed: Array<"cloud" | "vm" | "local"> | null,
+): T[] {
+  if (allowed === null) return [...granted];
+  const set = new Set(allowed);
+  return granted.filter((entry) => set.has(entry));
 }
 
 export function skillRecorderEnabled(cfg: AppConfig): boolean {
@@ -515,7 +600,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   // not wipe a stored token.  Omitting them from this list meant PATCH
   // /api/config { usage } never wrote ~/.botfleet/config.json, so Settings
   // reloaded empty fields.
-  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant"] as const) {
+  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "botDefaults"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -554,7 +639,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
 export function patchInstanceConfig(
   cfg: AppConfig,
   instanceId: string,
-  patch: { cli?: string; fullAuto?: boolean },
+  patch: { cli?: string; fullAuto?: boolean; enabled?: boolean },
 ): InstanceCliUpdate {
   const next: AppConfig = structuredClone(cfg);
   const map = instanceConfigs(next);
@@ -564,7 +649,7 @@ export function patchInstanceConfig(
   // comes off the URL, where `__proto__` passes the route's [\w.-]+ regex)
   if (!Object.hasOwn(map, instanceId)) return { ok: false, config: cfg };
   const entry = map[instanceId];
-  
+
   const currentConfig = jsonObjectSchema.safeParse(entry.config);
   const nextConfig: JsonObject = currentConfig.success ? { ...currentConfig.data } : {};
 
@@ -582,6 +667,18 @@ export function patchInstanceConfig(
       nextConfig.fullAuto = true;
     } else {
       delete nextConfig.fullAuto;
+    }
+  }
+
+  // `enabled` lives on the entry envelope, not in `entry.config` — same shape
+  // the registry reads in ProviderRegistry.load. Re-enabling clears the flag
+  // entirely so a true re-enable and a fresh install both round-trip as the
+  // same on-disk form.
+  if (patch.enabled !== undefined) {
+    if (patch.enabled) {
+      delete entry.enabled;
+    } else {
+      entry.enabled = false;
     }
   }
 
@@ -646,6 +743,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     claude: { driver: "claudeAgent" },
     codex: { driver: "codex" },
     antigravity: { driver: "antigravityAgent" },
+    minimax: { driver: "minimax" },
     opencodeGo: { driver: "opencodeGo" },
     computer: { driver: "boxAgent" },
     openaiCompat: { driver: "openai-compat" },
@@ -666,6 +764,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     cursor: { driver: "cursorAgent" },
     openaiCompat: { driver: "openai-compat" },
     dsh: { driver: "dshAgent" },
+    minimax: { driver: "minimax" },
     ...CUSTOM_ONLY,
   } as const;
   const configured = cfg.instances && Object.keys(cfg.instances).length ? cfg.instances : null;

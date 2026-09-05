@@ -26,6 +26,7 @@ export function initSentry(env: NodeJS.ProcessEnv = process.env): boolean {
   // SAFETY: lazy-load so vitest importing the harness does not boot the Node SDK.
   const Sentry = require("@sentry/node") as SentryNode;
   const tracesSampleRate = Number(env.SENTRY_TRACES_SAMPLE_RATE ?? "0.2");
+  const profileSessionSampleRate = Number(env.SENTRY_PROFILE_SESSION_SAMPLE_RATE ?? "1");
   Sentry.init({
     dsn,
     environment: (env.SENTRY_ENV || env.NODE_ENV || "production").trim(),
@@ -34,7 +35,19 @@ export function initSentry(env: NodeJS.ProcessEnv = process.env): boolean {
       : 0.2,
     enableLogs: true,
     sendDefaultPii: false,
+    profileSessionSampleRate: Number.isFinite(profileSessionSampleRate)
+      ? Math.min(Math.max(profileSessionSampleRate, 0), 1)
+      : 1,
+    profileLifecycle: "trace",
   });
+  try {
+    const { nodeProfilingIntegration } = require("@sentry/profiling-node") as {
+      nodeProfilingIntegration: () => unknown;
+    };
+    Sentry.addIntegration(nodeProfilingIntegration() as never);
+  } catch {
+    // Native profiler is optional.  Missing binary must not take down Sentry.init.
+  }
   sentrySdk = Sentry;
   initialized = true;
   return true;

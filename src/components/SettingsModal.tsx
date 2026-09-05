@@ -98,14 +98,33 @@ function ProfileFields() {
 
 function CustomIngressFields() {
   const { state, dispatch } = useStore();
-  const [publicUrl, setPublicUrl] = useState(state.config?.ingress?.publicUrl ?? "");
+  // The persisted value drives the toggle and the input; the toggle defaults
+  // to "on" so a config written by an older build keeps applying its URL.
+  const persistedEnabled = state.config?.ingress?.enabled !== false;
+  const persistedUrl = state.config?.ingress?.publicUrl ?? "";
+  const [publicUrl, setPublicUrl] = useState(persistedUrl);
+  const [enabled, setEnabled] = useState(persistedEnabled);
+  // "dirty" means the user has typed or toggled something the server has
+  // not yet seen.  Only the Save button publishes; the input never autosaves
+  // on blur anymore.
+  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
   const [useFreeUrl, setUseFreeUrl] = useState(false);
   const [tunnelUrl, setTunnelUrl] = useState("");
+  // Test Setup result.  `null` = never run, otherwise the server's reply.
+  const [test, setTest] = useState<
+    | null
+    | { kind: "running" }
+    | { kind: "ok"; reason: string; tunnel?: string }
+    | { kind: "error"; reason: string; tunnel?: string }
+  >(null);
+
   useEffect(() => {
     let active = true;
     const bridge = (window as any).ogb?.companion;
     if (!bridge) return;
-    
+
     // Poll the companion state
     const poll = async () => {
       try {
@@ -121,19 +140,75 @@ function CustomIngressFields() {
   }, []);
 
 
+  // A remote config refresh (e.g. the harness broadcast a newer config)
+  // resets the local draft so the fields never silently disagree with what
+  // is on disk.  A pending edit wins until the user actually saves it.
   useEffect(() => {
-    setPublicUrl(state.config?.ingress?.publicUrl ?? "");
-  }, [state.config?.ingress?.publicUrl]);
+    if (dirty) return;
+    setPublicUrl(persistedUrl);
+    setEnabled(persistedEnabled);
+  }, [persistedUrl, persistedEnabled, dirty]);
 
-  const save = () => {
-    void fetch("/api/config", {
-      method: "PUT",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ ingress: { publicUrl: publicUrl.trim() || undefined } }),
-    })
-      .then((r) => r.json())
-      .then((config) => dispatch({ type: "configStatus", config }))
-      .catch(() => {});
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      const trimmed = publicUrl.trim();
+      const response = await fetch("/api/config", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          ingress: {
+            publicUrl: trimmed || undefined,
+            enabled,
+          },
+        }),
+      });
+      if (!response.ok) {
+        setTest({ kind: "error", reason: `Save failed: HTTP ${response.status}` });
+        return;
+      }
+      const config = await response.json();
+      dispatch({ type: "configStatus", config });
+      setDirty(false);
+      setSavedAt(Date.now());
+    } catch (cause) {
+      setTest({ kind: "error", reason: cause instanceof Error ? cause.message : String(cause) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Run Test Setup against either the unsaved draft (so the user can dry-run
+  // a value before saving it) or, when the input is empty, the saved URL.
+  const runTest = async () => {
+    const candidate = publicUrl.trim();
+    if (!candidate) {
+      setTest({ kind: "error", reason: "Enter a public URL first, then run Test Setup." });
+      return;
+    }
+    setTest({ kind: "running" });
+    try {
+      const response = await fetch("/api/ingress/test", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ publicUrl: candidate }),
+      });
+      const body = (await response.json()) as {
+        ok: boolean;
+        reason: string;
+        tunnel?: string;
+      };
+      setTest(body.ok ? { kind: "ok", reason: body.reason, ...(body.tunnel ? { tunnel: body.tunnel } : {}) } : { kind: "error", reason: body.reason, ...(body.tunnel ? { tunnel: body.tunnel } : {}) });
+    } catch (cause) {
+      setTest({ kind: "error", reason: cause instanceof Error ? cause.message : String(cause) });
+    }
+  };
+
+  const toggleEnabled = () => {
+    const next = !enabled;
+    setEnabled(next);
+    setDirty(true);
   };
 
   const toggleFreeUrl = () => {
@@ -144,25 +219,75 @@ function CustomIngressFields() {
     }
   };
 
+  const inputClass =
+    "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none disabled:opacity-50";
+  const buttonSecondary =
+    "rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40 disabled:hover:bg-transparent";
+
   return (
     <div className="flex flex-col gap-3">
+      <label className="flex items-center gap-2 text-[13px] text-ink">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={toggleEnabled}
+          className="accent-ink"
+          aria-label="Enable custom webhook domain"
+        />
+        Enable Custom Webhook Domain
+      </label>
+
       <div className="flex flex-col gap-1.5">
         <input
           type="url"
           value={publicUrl}
-          onChange={(e) => setPublicUrl(e.target.value)}
-          onBlur={save}
+          onChange={(e) => {
+            setPublicUrl(e.target.value);
+            setDirty(true);
+            // a new URL invalidates the previous test result
+            if (test && test.kind !== "running") setTest(null);
+          }}
           placeholder="https://agents.botfleet.app"
-          disabled={useFreeUrl}
-          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none disabled:opacity-50"
+          disabled={!enabled || useFreeUrl}
+          className={inputClass}
         />
         <div className="text-[12px] text-ink-secondary leading-relaxed">
-          If you run your own Cloudflare Tunnel (e.g. agents.botfleet.app), enter its public URL here to route webhooks.
+          {enabled
+            ? "If you run your own Cloudflare Tunnel (e.g. agents.botfleet.app), enter its public URL here to route webhooks."
+            : `When this is off, the saved URL is kept on disk but BotFleet advertises its local webhook receiver instead.${"\u00A0 "}Flip the switch back on to apply it again.`}
         </div>
       </div>
-      
+
+      <div className="flex flex-wrap items-center gap-2">
+        <button
+          onClick={() => void save()}
+          disabled={saving || !dirty}
+          aria-label="Save custom webhook domain"
+          className={buttonSecondary}
+        >
+          {saving ? "Saving…" : dirty ? "Save" : savedAt ? "Saved" : "Save"}
+        </button>
+        <button
+          onClick={() => void runTest()}
+          disabled={test?.kind === "running" || !publicUrl.trim()}
+          aria-label="Test custom webhook domain"
+          className={buttonSecondary}
+        >
+          {test?.kind === "running" ? "Testing…" : "Test Setup"}
+        </button>
+        {test && test.kind !== "running" ? (
+          <span
+            role={test.kind === "ok" ? "status" : "alert"}
+            data-testid="ingress-test-result"
+            className={`text-[12px] leading-relaxed ${test.kind === "ok" ? "text-success" : "text-danger"}`}
+          >
+            {test.reason}
+          </span>
+        ) : null}
+      </div>
+
       <div className="h-px w-full bg-hairline/40" />
-      
+
       <div className="flex flex-col gap-1.5">
         <label className="flex items-center gap-2 text-[13px] text-ink cursor-pointer">
           <input
@@ -175,7 +300,7 @@ function CustomIngressFields() {
         </label>
 
         <div className="text-[12px] text-ink-secondary leading-relaxed">
-          Generates a free, temporary URL for quick phone pairing. This URL changes every time BotFleet restarts, so it is not recommended for permanent webhooks like Slack.
+          Generates a free, temporary URL for quick phone pairing.{"\u00A0 "}This URL changes every time BotFleet restarts, so it is not recommended for permanent webhooks like Slack.
         </div>
         {useFreeUrl && tunnelUrl && (
           <div className="mt-2 flex items-center justify-between rounded-lg border border-hairline/50 bg-control px-3 py-2">
@@ -212,7 +337,10 @@ function UpdatesRow() {
               ? `Check failed: ${s.message ?? "unknown error"}`
               : "You're on the latest version we know of.";
   return (
-    <Card title="Updates" subtitle={label}>
+    <Card
+      title="Updates"
+      subtitle={`${label}${"\u00A0 "}Auto-checks at most once per 6 hours;${"\u00A0 "}you can manually check any time if an update is available.`}
+    >
       <div className="flex flex-col items-end gap-3">
         <label className="flex items-center gap-2 text-[13px] text-ink">
           <input
@@ -409,7 +537,7 @@ function TerminologyRow() {
       {current === "custom" && (
         <div className="mt-3 space-y-2">
           <p className="text-[12px] text-ink-secondary">
-            Enter both forms.&nbsp; The plural is not always just an added
+            Enter both forms.{"\u00A0 "}The plural is not always just an added
             &ldquo;s&rdquo;, so it has its own box &mdash; Category and Categories.
           </p>
           <div className="flex gap-2">
@@ -835,6 +963,7 @@ export function SettingsModal() {
                   <ApiKeyRow section="box" />
                   <VpsConnection />
                   <ApiKeyRow section="opencodeGo" />
+                  <ApiKeyRow section="deepseek" />
                   <QdrantRagConnection />
                   <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
                     <summary className="cursor-pointer text-[13px] text-ink-secondary">Custom Webhook Domain / Ingress</summary>

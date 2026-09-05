@@ -2378,8 +2378,10 @@ describe("harness HTTP API", () => {
         ingress: { publicUrl: "https://hooks.example.com" },
       });
       expect(saved.status).toBe(200);
-      expect(saved.body.autoUpdate).toEqual({ enabled: true });
-      expect(saved.body.ingress).toEqual({ publicUrl: "https://hooks.example.com" });
+      expect(saved.body.autoUpdate).toMatchObject({ enabled: true });
+      // configStatus now also reports the `enabled` flag (defaulting to
+      // true); the equality check would break every time that field grows.
+      expect(saved.body.ingress).toMatchObject({ publicUrl: "https://hooks.example.com" });
 
       const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
       expect(disk.autoUpdate).toEqual({ enabled: true });
@@ -2387,12 +2389,111 @@ describe("harness HTTP API", () => {
 
       const invalid = await api("PATCH", "/api/config", { ingress: { publicUrl: "hooks.example.com" } });
       expect(invalid.status).toBe(400);
+
+      // disabling the public URL keeps the value on disk but stops the
+      // webhook receiver from advertising it
+      const disabled = await api("PATCH", "/api/config", {
+        ingress: { publicUrl: "https://hooks.example.com", enabled: false },
+      });
+      expect(disabled.status).toBe(200);
+      expect(disabled.body.ingress).toMatchObject({
+        publicUrl: "https://hooks.example.com",
+        enabled: false,
+      });
+      const diskAfter = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(diskAfter.ingress).toEqual({
+        publicUrl: "https://hooks.example.com",
+        enabled: false,
+      });
+      const status = await api("GET", "/api/webhooks");
+      expect(status.body.ingress.baseUrl).toMatch(/127\.0\.0\.1/);
     } finally {
       await api("PATCH", "/api/config", {
         autoUpdate: { enabled: false },
         ingress: { publicUrl: "" },
       });
     }
+  });
+
+  it("POST /api/ingress/test reports a clear failure for malformed URLs", async () => {
+    const missing = await api("POST", "/api/ingress/test", { publicUrl: "" });
+    expect(missing.status).toBe(200);
+    expect(missing.body.ok).toBe(false);
+    expect(String(missing.body.reason)).toMatch(/enter a public url/i);
+
+    const wrongScheme = await api("POST", "/api/ingress/test", { publicUrl: "ftp://hooks.example.com" });
+    expect(wrongScheme.status).toBe(200);
+    expect(wrongScheme.body.ok).toBe(false);
+    expect(String(wrongScheme.body.reason)).toMatch(/http|https/);
+
+    const credentials = await api("POST", "/api/ingress/test", {
+      publicUrl: "https://user:pass@hooks.example.com",
+    });
+    expect(credentials.status).toBe(200);
+    expect(credentials.body.ok).toBe(false);
+    expect(String(credentials.body.reason)).toMatch(/credentials/);
+  });
+
+  it("POST /api/ingress/test refuses non-JSON content types", async () => {
+    const response = await fetch(`${BASE}/api/ingress/test`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "https://hooks.example.com",
+    });
+    expect(response.status).toBe(415);
+  });
+
+  it("POST /api/ingress/test reports the tunnel when Cloudflare is in front", async () => {
+    // The server runs in a child process, so mocking globalThis.fetch here
+    // would not intercept its probe.  Spin up a real local HTTP server and
+    // point the probe at it so the test exercises the live follow / parse
+    // path without depending on the public internet.
+    const fakeOrigin = createServer((_req, res) => {
+      res.writeHead(200, {
+        server: "cloudflare",
+        "cf-ray": "8a1b2c3d4e5f6789-SJC",
+      });
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => fakeOrigin.listen(0, "127.0.0.1", resolve));
+    const port = (fakeOrigin.address() as { port: number }).port;
+    try {
+      const result = await api("POST", "/api/ingress/test", { publicUrl: `http://127.0.0.1:${port}` });
+      expect(result.status).toBe(200);
+      expect(result.body.ok).toBe(true);
+      expect(result.body.tunnel).toBe("cloudflare");
+      expect(String(result.body.reason)).toMatch(/cloudflare/i);
+    } finally {
+      await new Promise<void>((resolve) => fakeOrigin.close(() => resolve()));
+    }
+  });
+
+  it("POST /api/ingress/test reports 5xx as a failure that still names the tunnel", async () => {
+    const fakeOrigin = createServer((_req, res) => {
+      res.writeHead(502, { server: "caddy" });
+      res.end("upstream");
+    });
+    await new Promise<void>((resolve) => fakeOrigin.listen(0, "127.0.0.1", resolve));
+    const port = (fakeOrigin.address() as { port: number }).port;
+    try {
+      const result = await api("POST", "/api/ingress/test", { publicUrl: `http://127.0.0.1:${port}` });
+      expect(result.status).toBe(200);
+      expect(result.body.ok).toBe(false);
+      expect(result.body.tunnel).toBe("caddy");
+      expect(String(result.body.reason)).toMatch(/502/);
+    } finally {
+      await new Promise<void>((resolve) => fakeOrigin.close(() => resolve()));
+    }
+  });
+
+  it("POST /api/ingress/test reports a fetch error when the origin is unreachable", async () => {
+    // A local port that nothing is listening on: the OS rejects the
+    // connection with ECONNREFUSED, which is exactly the upstream-originated
+    // error we want the server to surface.
+    const result = await api("POST", "/api/ingress/test", { publicUrl: "http://127.0.0.1:1" });
+    expect(result.status).toBe(200);
+    expect(result.body.ok).toBe(false);
+    expect(String(result.body.reason)).toMatch(/ECONNREFUSED|did not answer|fetch failed/i);
   });
 
   it("keeps shared Local VM mode by default and resolves isolated targets per bot when enabled", async () => {
@@ -3582,7 +3683,12 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
 
   /** A stub recall service that only answers callers carrying a Cloudflare
    * Access service token, and otherwise redirects to a login page — exactly
-   * what a host published behind Access does. */
+   * what a host published behind Access does.  The redirect target carries
+   * Access's own path marker (/cdn-cgi/access/login/...) on the SAME origin
+   * as the stub rather than a real cloudflareaccess.com host: that marker is
+   * what a genuine Access gateway always sends regardless of which host
+   * answers it, so the probe's real "follow, then recognise" path gets
+   * exercised without this test depending on live DNS/network access. */
   const startGatedRecall = async (token: { id: string; secret: string } | null) => {
     // Node models a header as string | string[]; every one read here is
     // single-valued, so the first value is the value.
@@ -3598,11 +3704,14 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
         hasAccessSecret: (accessSecret ?? "").length > 0,
         authorization: headerValue(req.headers.authorization),
       });
+      if ((req.url ?? "").startsWith("/cdn-cgi/access/login/")) {
+        res.writeHead(200, { "content-type": "text/html" });
+        res.end("<html><body>Sign in with your identity provider to continue.</body></html>");
+        return;
+      }
       const admitted = token !== null && accessId === token.id && accessSecret === token.secret;
       if (!admitted) {
-        res.writeHead(302, {
-          location: "https://fixture-team.cloudflareaccess.com/cdn-cgi/access/login/recall.example.com?kid=fixture",
-        });
+        res.writeHead(302, { location: "/cdn-cgi/access/login/recall.example.com?kid=fixture" });
         res.end();
         return;
       }
@@ -3716,6 +3825,38 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
     } finally {
       await clear();
       await stub.close();
+      setRecallMode("ok");
+    }
+  });
+
+  it("follows a same-host redirect (e.g. an http:// -> https:// upgrade) instead of reporting an Access gate", async () => {
+    // The bug this guards against: a fetch made with `redirect: "manual"`
+    // treated ANY 3xx as an identity gateway, so a plain scheme upgrade or a
+    // trailing-slash normalisation on the operator's own host produced the
+    // same "behind Cloudflare Access — add a service token" message this
+    // block's earlier tests pin for a real gateway.
+    setRecallMode("fail");
+    const server = createServer((req, res) => {
+      if (req.url === "/health") {
+        res.writeHead(301, { location: "/health-canonical" });
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ collection: "fake-corpus", points: 500, backend_ok: true, version: "1.2.3" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // SAFETY: listen() has resolved on a TCP socket, so address() is an
+    // AddressInfo with a bound port, never null or a pipe name.
+    const port = (server.address() as { port: number }).port;
+    const clear = await configureRecall({ url: `http://127.0.0.1:${port}`, collection: "fake-corpus" });
+    try {
+      const status = await api("GET", "/api/qdrant/status");
+      expect(status.body).toMatchObject({ ready: true, configured: true, source: "recall-service", collection: "fake-corpus" });
+      expect(status.body.accessGated).toBeUndefined();
+    } finally {
+      await clear();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
       setRecallMode("ok");
     }
   });
@@ -3899,6 +4040,112 @@ describe("PATCH /api/terminology", () => {
     expect(res.status).toBe(200);
     const status = await api("GET", "/api/config");
     expect(status.body.profile?.name).not.toBe("Someone Else");
+  });
+});
+
+describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
+  it("applies the workspace default to every bot, filtered through the allowlist", async () => {
+    const ada = (await api("POST", "/api/bots", { name: "Ada Apply" })).body.bot;
+    const lin = (await api("POST", "/api/bots", { name: "Lin Apply" })).body.bot;
+
+    // Narrow the operator allowlist so the apply cannot smuggle a blocked
+    // destination into a bot's computers list.
+    const allow = await api("PUT", "/api/config", { botDefaults: { allowedComputers: ["cloud", "vm"] } });
+    expect(allow.status).toBe(200);
+    expect(allow.body.botDefaults.allowedComputers).toEqual(["cloud", "vm"]);
+
+    const apply = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["cloud", "vm", "local"] },
+    });
+    expect(apply.status).toBe(200);
+    expect(apply.body.applied).toBeGreaterThanOrEqual(2);
+    // The applied set is the workspace default intersected with the
+    // allowlist — the client should see exactly what every bot received.
+    expect(apply.body.computers).toEqual(["cloud", "vm"]);
+
+    const bots = (await api("GET", "/api/bots")).body.bots;
+    const adaAfter = bots.find((b: { id: string }) => b.id === ada.id);
+    const linAfter = bots.find((b: { id: string }) => b.id === lin.id);
+    expect(adaAfter.computers).toEqual(["cloud", "vm"]);
+    expect(linAfter.computers).toEqual(["cloud", "vm"]);
+
+    await api("DELETE", `/api/bots/${ada.id}`);
+    await api("DELETE", `/api/bots/${lin.id}`);
+  });
+
+  it("rejects a non-array destination list and an unknown destination", async () => {
+    const notArray = await api("POST", "/api/bots/apply-defaults", { botDefaults: { computers: "cloud" } });
+    expect(notArray.status).toBe(400);
+    const unknown = await api("POST", "/api/bots/apply-defaults", { botDefaults: { computers: ["box"] } });
+    expect(unknown.status).toBe(400);
+  });
+
+  it("leaves a bot's own choice alone when the allowlist empties the apply set", async () => {
+    const noAllow = await api("PUT", "/api/config", { botDefaults: { allowedComputers: ["cloud"] } });
+    expect(noAllow.status).toBe(200);
+
+    const eira = (await api("POST", "/api/bots", { name: "Eira Keep" })).body.bot;
+    // The smoke environment is darwin; the host-mac acknowledgement is
+    // only required when granting local for the first time.
+    const set = await api("PATCH", `/api/bots/${eira.id}`, {
+      computers: ["local"],
+      autoApprove: true,
+      acknowledgeLocalAuto: true,
+    });
+    expect(set.status).toBe(200);
+    expect(set.body.bot.computers).toEqual(["local"]);
+
+    // A workspace default the allowlist blocks entirely must NOT clear
+    // the bot's local choice.  The apply's "computers" is the empty
+    // intersection, and the runtime treats the bot's own [] as "Off" —
+    // not as a permission to overwrite the bot's last named choice.
+    const apply = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["local"] },
+    });
+    expect(apply.status).toBe(200);
+    expect(apply.body.computers).toEqual([]);
+
+    const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === eira.id);
+    // The bot's own previous choice stays put; the apply neither
+    // overwrites it (filtered set is empty) nor strips it.
+    expect(after.computers).toEqual(["local"]);
+
+    await api("DELETE", `/api/bots/${eira.id}`);
+    // restore the open allowlist for the next describe block
+    await api("PUT", "/api/config", { botDefaults: { allowedComputers: null } });
+  });
+});
+
+describe("POST /api/bots/apply-model-defaults (set all bots to default models)", () => {
+  it("applies only the supplied slots, leaving the rest of the bot alone", async () => {
+    const ada = (await api("POST", "/api/bots", { name: "Ada Models" })).body.bot;
+    // Pin a known primary so the test can detect an over-write later.
+    const set = await api("PATCH", `/api/bots/${ada.id}`, {
+      modelSelection: { instanceId: "fake", model: "before" },
+    });
+    expect(set.status).toBe(200);
+
+    // Only primary is supplied; fallbacks must remain absent on the bot.
+    const apply = await api("POST", "/api/bots/apply-model-defaults", {
+      slots: { primary: { instanceId: "fake", model: "after" } },
+    });
+    expect(apply.status).toBe(200);
+    expect(apply.body.applied).toBeGreaterThanOrEqual(1);
+
+    const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === ada.id);
+    expect(after.modelSelection.model).toBe("after");
+    expect(after.modelSelection.fallbacks ?? []).toEqual([]);
+
+    await api("DELETE", `/api/bots/${ada.id}`);
+  });
+
+  it("rejects a slot that is not an object, and one missing instanceId", async () => {
+    const bad = await api("POST", "/api/bots/apply-model-defaults", { slots: { primary: "fake" } });
+    expect(bad.status).toBe(400);
+    const missing = await api("POST", "/api/bots/apply-model-defaults", {
+      slots: { primary: { instanceId: "fake" } },
+    });
+    expect(missing.status).toBe(400);
   });
 });
 

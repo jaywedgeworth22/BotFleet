@@ -324,9 +324,12 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
     const res = await fetch(`${RECALL_URL}/recall/search`, {
       method: "POST",
       headers,
-      // Manual, so a login redirect is reported as one instead of being
-      // followed into an HTML page that fails to parse as search results.
-      redirect: "manual",
+      // Followed, so a benign same-host redirect (an http:// -> https://
+      // upgrade, a trailing-slash normalisation) just works instead of being
+      // misread as a login gate.  accessLoginHint still catches a real Access
+      // login page here — it checks the followed response's final URL and
+      // content type, and that check runs before any JSON parsing below.
+      redirect: "follow",
       body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15_000),
     });
@@ -384,7 +387,9 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
     const res = await fetch(`${RECALL_URL}/recall/contribute`, {
       method: "POST",
       headers,
-      redirect: "manual",
+      // See the matching comment in recallSearch above: followed, so a
+      // benign same-host redirect just works.
+      redirect: "follow",
       body: JSON.stringify({ text, category, app, seat, title, url, force }),
       signal: AbortSignal.timeout(15_000),
     });
@@ -424,7 +429,9 @@ async function recallStats(): Promise<string> {
   try {
     const healthRes = await fetch(`${RECALL_URL}/health`, {
       headers: recallHttpHeaders(),
-      redirect: "manual",
+      // See the matching comment in recallSearch above: followed, so a
+      // benign same-host redirect just works.
+      redirect: "follow",
       signal: AbortSignal.timeout(6_000),
     });
     const gate = accessLoginHint(healthRes);

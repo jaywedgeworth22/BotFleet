@@ -311,64 +311,77 @@ function Bubble({
   const botChrome = (
     <div className={row.gutter}>
       <div className={row.chrome}>
-        <div className="flex items-center text-[11px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
+        {/* Row 1: date / time */}
+        <div className="flex items-center text-[12.5px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
           {formatHoverTime(message.at)}
+        </div>
+        {/* Row 2: copy, reply, pin — plus Regenerate, which only ever
+            joins them on the newest reply. */}
+        <div className="flex items-center gap-1.5">
+          <CopyButton
+            iconSize={17}
+            text={copyContent}
+            messageId={message.id}
+            requestId={requestId}
+            copied={copied}
+            onCopy={() => {
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1400);
+            }}
+          />
+          <button
+            type="button"
+            onClick={onReply}
+            aria-label="Reply to Message"
+            className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            title="Reply"
+          >
+            <MessageSquareReply size={17} />
+          </button>
+
+          <button
+            onClick={() =>
+              dispatch({
+                type: "updateBot",
+                botId: bot.id,
+                patch: { pinnedMessageId: bot.pinnedMessageId === message.id ? "" : message.id },
+              })
+            }
+            aria-label={bot.pinnedMessageId === message.id ? "Unpin Message" : "Pin Message"}
+            className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            title={
+              bot.pinnedMessageId === message.id
+                ? "Unpin this message"
+                : "Pin this message to the top of the thread"
+            }
+          >
+            {bot.pinnedMessageId === message.id ? <PinOff size={17} /> : <Pin size={17} />}
+          </button>
+
+          {isLastBotText && !bot.busy && onRegenerate && (
+            <button
+              onClick={onRegenerate}
+              aria-label="Regenerate Response"
+              title="Regenerate Response"
+              className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+            >
+              <RefreshCw size={17} />
+            </button>
+          )}
+        </div>
+        {/* Row 3: reactions, the "+", then which model answered — the mark
+            is a logo only; the model name still lives in its tooltip. */}
+        <div className="flex items-center gap-1.5">
+          {message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
           {bot && bot.modelSelection && (
-            <span className="ml-1.5 flex items-center" title={bot.modelSelection.model}>
-              <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={12} />
+            <span
+              className="flex items-center opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100"
+              title={bot.modelSelection.model}
+            >
+              <ProviderMark driverKind={state.instances.find((i: any) => i.instanceId === bot.modelSelection.instanceId)?.driverKind ?? "openai"} size={16} />
             </span>
           )}
         </div>
-        <CopyButton
-          text={copyContent}
-          messageId={message.id}
-          requestId={requestId}
-          copied={copied}
-          onCopy={() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 1400);
-          }}
-        />
-        <button
-          type="button"
-          onClick={onReply}
-          aria-label="Reply to Message"
-          className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-          title="Reply"
-        >
-          <MessageSquareReply size={14} />
-        </button>
-
-        <button
-          onClick={() =>
-            dispatch({
-              type: "updateBot",
-              botId: bot.id,
-              patch: { pinnedMessageId: bot.pinnedMessageId === message.id ? "" : message.id },
-            })
-          }
-          aria-label={bot.pinnedMessageId === message.id ? "Unpin Message" : "Pin Message"}
-          className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-          title={
-            bot.pinnedMessageId === message.id
-              ? "Unpin this message"
-              : "Pin this message to the top of the thread"
-          }
-        >
-          {bot.pinnedMessageId === message.id ? <PinOff size={14} /> : <Pin size={14} />}
-        </button>
-
-        {isLastBotText && !bot.busy && onRegenerate && (
-          <button
-            onClick={onRegenerate}
-            aria-label="Regenerate Response"
-            title="Regenerate Response"
-            className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-          >
-            <RefreshCw size={14} />
-          </button>
-        )}
-        {message.kind === "text" && <ReactionBar threadId={bot.threadId} message={message} />}
       </div>
     </div>
   );
@@ -392,50 +405,57 @@ function Bubble({
         {humanTyped && (
           <div className={row.gutter}>
             <div className={row.chrome}>
-              {/* editing rewinds the thread, so it waits for the turn to end —
-                  same rule as the version switcher below */}
-              {message.kind === "text" && !webhookView && !bot.busy && (
-                <button
-                  onClick={onStartEdit}
-                  aria-label="Edit Message"
-                  className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                  title="Edit Message"
-                >
-                  <Pencil size={14} />
-                </button>
-              )}
-              <div className="flex items-center text-[11px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
+              {/* Row 1: date / time */}
+              <div className="flex items-center text-[12.5px] text-ink-secondary/70 opacity-0 transition-opacity group-hover:opacity-100 px-1">
                 {formatHoverTime(message.at)}
               </div>
-              <CopyButton
-                text={copyContent}
-                messageId={message.id}
-                requestId={requestId}
-                copied={copied}
-                onCopy={() => {
-                  setCopied(true);
-                  setTimeout(() => setCopied(false), 1400);
-                }}
-              />
+              {/* Row 2: Edit (waits for the turn to end — same rule as the
+                  version switcher below, since editing rewinds the thread),
+                  copy, pin. There is no reply/reactions row here: you can't
+                  reply to or react to your own message today, so row 3 is
+                  simply empty. */}
+              <div className="flex items-center gap-1.5">
+                {message.kind === "text" && !webhookView && !bot.busy && (
+                  <button
+                    onClick={onStartEdit}
+                    aria-label="Edit Message"
+                    className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+                    title="Edit Message"
+                  >
+                    <Pencil size={17} />
+                  </button>
+                )}
+                <CopyButton
+                  iconSize={17}
+                  text={copyContent}
+                  messageId={message.id}
+                  requestId={requestId}
+                  copied={copied}
+                  onCopy={() => {
+                    setCopied(true);
+                    setTimeout(() => setCopied(false), 1400);
+                  }}
+                />
 
-              <button
-                onClick={() =>
-                  dispatch({
-                    type: "updateBot",
-                    botId: bot.id,
-                    patch: { pinnedMessageId: bot.pinnedMessageId === message.id ? "" : message.id },
-                  })
-                }
-                aria-label={bot.pinnedMessageId === message.id ? "Unpin Message" : "Pin Message"}
-                className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
-                title={
-                  bot.pinnedMessageId === message.id
-                    ? "Unpin this message"
-                    : "Pin this message to the top of the thread"
-                }
-              >
-                {bot.pinnedMessageId === message.id ? <PinOff size={14} /> : <Pin size={14} />}
-              </button>
+                <button
+                  onClick={() =>
+                    dispatch({
+                      type: "updateBot",
+                      botId: bot.id,
+                      patch: { pinnedMessageId: bot.pinnedMessageId === message.id ? "" : message.id },
+                    })
+                  }
+                  aria-label={bot.pinnedMessageId === message.id ? "Unpin Message" : "Pin Message"}
+                  className="rounded-md p-1.5 text-ink-secondary opacity-0 transition-opacity hover:bg-raised hover:text-ink focus-visible:opacity-100 group-hover:opacity-100 group-focus-within:opacity-100"
+                  title={
+                    bot.pinnedMessageId === message.id
+                      ? "Unpin this message"
+                      : "Pin this message to the top of the thread"
+                  }
+                >
+                  {bot.pinnedMessageId === message.id ? <PinOff size={17} /> : <Pin size={17} />}
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -1257,8 +1277,14 @@ export function ChatView({ bot }: { bot: Bot }) {
       {showToolCallsEnabled(state.config) && <TaskTimeline messages={messages} busy={bot.busy ?? false} />}
 
       {/* Messages + composer share one pane so bubbles scroll into the pill
-          instead of dying on a rectangular clip above a black dock. */}
-      <div className="relative min-h-0 flex-1">
+          instead of dying on a rectangular clip above a black dock.
+          `@container/chat`: the hover chrome beside every bubble reads this
+          pane's width to decide stacked-vs-single-row (bubble-metrics.ts).
+          Side effect worth knowing about: container-size containment makes
+          this the containing block for any `fixed`-positioned descendant —
+          today that's only ChatMarkdown's file-link menu backdrop, which
+          still covers the whole transcript, just not the sidebar/header. */}
+      <div className="relative min-h-0 flex-1 @container/chat">
       <div
         ref={scrollRef}
         className="h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"

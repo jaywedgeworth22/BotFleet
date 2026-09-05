@@ -1,0 +1,227 @@
+name: iOS TestFlight ship (GitHub-hosted macOS)
+
+# Archive + upload on GitHub-hosted macos-latest (fleet protocol 2026-08-24:
+# GH-hosted runners for iOS ships; local Mac self-hosted runners are not
+# the primary path). Unsigned compile stays in ci.yml. Fork PRs never run
+# here. The wrapper is invoked with no extra flags.
+#
+# Signing + ASC keys come from Infisical prod (BotFleet project, type=shared).
+# Identity stays on GitHub only:
+#   INFISICAL_PROJECT_ID, INFISICAL_UNIVERSAL_AUTH_CLIENT_ID/SECRET
+#   (fallback INFISICAL_CLIENT_ID/SECRET).
+# After should_ship=1 the job loads into GITHUB_ENV (masked):
+#   APPLE_API_KEY_ID, APPLE_API_ISSUER_ID, APPLE_API_KEY_P8_BASE64,
+#   IOS_CERT_P12_BASE64, IOS_CERT_PASSWORD
+# scripts/ios-appstore-gm-prepare.sh maps those onto
+# ~/.secrets/appstore-connect.env and imports the Distribution identity.
+# Values are never printed. Do not mint a new key. Do not create a new
+# provisioning profile (fleet automatic signing + -allowProvisioningUpdates).
+# Leftover GitHub APPLE_/IOS_ secrets stay for a later cleanup.
+#
+# The in-repo wrapper prefers scripts/ios-fleet/, then
+# /Users/jay/apps/ios-fleet. App key `botfleet`, bundle `app.botfleet`,
+# team `CC8UTF7ATG`. Marketing train is 1.0.N; build is UTC YYYYMMDDHHMM.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ios/**'
+      - '.github/workflows/ios-ship.yml'
+      - 'scripts/ios-fleet/**'
+      - 'scripts/ios-ship-testflight.sh'
+      - 'scripts/ios-appstore-gm-prepare.sh'
+  workflow_dispatch:
+  schedule:
+    # Twice an hour, offset from Socratic.Trade ('*/30'), Congress.Trade
+    # ('7,37'), DealDex ('22,52'), and Usage-Monitor ('13,43').
+    - cron: '18,48 * * * *'
+
+# WHY THE CRON EXISTS, AND WHY IT NEEDS A GATE
+# --------------------------------------------
+# `push:` alone is not a reliable trigger. A PR merged by github-actions[bot]
+# lands on main under GitHub's recursion guard and dispatches NOTHING (measured
+# on Socratic.Trade PR #2675 and Congress.Trade PR #1835). So iOS code can
+# reach main and never reach a phone, and the cron is what notices.
+#
+# But a cron carries no `paths:` filter, and the ship script's own gate only
+# knows "is HEAD the sha I last shipped" plus a time interval -- neither of
+# which knows whether ios/ changed. The "Scheduled ship gate" step below is
+# what stops that. Hosted runners have an empty home each job, so
+# ~/.cache/ios-fleet is restored from actions/cache. A scheduled tick with
+# no last-ship file skips (first ship is a push that passed paths: or an
+# explicit workflow_dispatch).
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-ship-botfleet
+  cancel-in-progress: false
+
+jobs:
+  ship:
+    name: TestFlight archive + upload
+    if: github.event.repository.fork == false
+    runs-on: macos-latest
+    timeout-minutes: 90
+    env:
+      DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
+      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+      SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+    steps:
+      # fetch-depth: 0 is load-bearing, not hygiene. The default depth-1
+      # checkout leaves the runner workspace with exactly ONE commit, so
+      # `git log <last-shipped-sha>..HEAD` fails with "unknown revision" and
+      # both the scheduled gate and TestFlight release notes go empty.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Restore iOS ship state
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ios-fleet
+          key: ios-fleet-botfleet-${{ github.run_id }}
+          restore-keys: |
+            ios-fleet-botfleet-
+
+      # Runs FIRST so a tick with nothing to ship costs seconds and cannot go
+      # red on an unrelated environment problem. The logic lives in a script,
+      # not inline YAML, so Ubuntu CI can unit-test it on every PR.
+      - name: Scheduled ship gate (skip unless iOS code changed)
+        id: gate
+        run: |
+          bash "$GITHUB_WORKSPACE/scripts/ios-fleet/scheduled-ship-gate.sh" \
+            --event "${{ github.event_name }}" \
+            --path-prefix 'ios/' \
+            --repo-root "$GITHUB_WORKSPACE" \
+            botfleet
+
+      - name: Assert stable Xcode (never beta)
+        if: steps.gate.outputs.should_ship == '1'
+        run: |
+          echo "DEVELOPER_DIR=${DEVELOPER_DIR}"
+          xcodebuild -version
+          ver=$(xcodebuild -version | awk 'NR==1{print $2}')
+          echo "Xcode version: ${ver}"
+          case "$DEVELOPER_DIR" in
+            *[Bb]eta*)
+              echo "::error::DEVELOPER_DIR resolves to a beta Xcode: $DEVELOPER_DIR"
+              exit 1
+              ;;
+          esac
+          if xcodebuild -version | grep -qi beta; then
+            echo "::error::xcodebuild reports a beta Xcode toolchain"
+            exit 1
+          fi
+          os=$(sw_vers -productVersion)
+          build=$(sw_vers -buildVersion)
+          echo "macOS ${os} (${build})"
+          if echo "$build" | grep -Eq '[0-9][a-z]$'; then
+            echo "::error::macOS ${os} build ${build} is a beta host. App Store rejects these as INVALID_BINARY."
+            exit 1
+          fi
+
+      - name: Install xcodegen
+        if: steps.gate.outputs.should_ship == '1'
+        run: |
+          # ios/BotFleet.xcodeproj is gitignored. Hosted ships must generate it.
+          if command -v xcodegen >/dev/null 2>&1; then
+            xcodegen --version
+          else
+            brew install xcodegen
+          fi
+
+
+      # Identity stays on GitHub.  Apple/iOS signing material comes from Infisical prod.
+      - name: Load Infisical signing secrets
+        if: steps.gate.outputs.should_ship == '1'
+        env:
+          INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_PROJECT_ID }}
+          INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID }}
+          INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET }}
+          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
+          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
+        run: |
+          set +o xtrace
+          set -euo pipefail
+          export INFISICAL_DISABLE_UPDATE_CHECK=true
+
+          if ! command -v infisical >/dev/null 2>&1; then
+            NONINTERACTIVE=1 HOMEBREW_NO_AUTO_UPDATE=1 brew install infisical/get-cli/infisical
+          fi
+          command -v infisical >/dev/null 2>&1 || {
+            echo "::error::Infisical CLI is not installed."
+            exit 1
+          }
+
+          if [ -z "${INFISICAL_PROJECT_ID:-}" ]; then
+            echo "::error::Missing INFISICAL_PROJECT_ID GitHub secret."
+            exit 1
+          fi
+          CLIENT_ID="${INFISICAL_UNIVERSAL_AUTH_CLIENT_ID:-${INFISICAL_CLIENT_ID:-}}"
+          CLIENT_SECRET="${INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET:-${INFISICAL_CLIENT_SECRET:-}}"
+          if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
+            echo "::error::Missing Infisical machine identity.  Set INFISICAL_UNIVERSAL_AUTH_CLIENT_ID/SECRET (fallback INFISICAL_CLIENT_ID/SECRET) on the repo."
+            exit 1
+          fi
+
+          TOKEN="$(
+            env -u INFISICAL_CLIENT_ID -u INFISICAL_CLIENT_SECRET -u INFISICAL_TOKEN \
+              INFISICAL_UNIVERSAL_AUTH_CLIENT_ID="$CLIENT_ID" \
+              INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET="$CLIENT_SECRET" \
+              infisical login --method=universal-auth --silent --plain --telemetry=false 2>/dev/null || true
+          )"
+          if [ -z "$TOKEN" ]; then
+            echo "::error::Infisical universal-auth login failed."
+            exit 1
+          fi
+          echo "::add-mask::$TOKEN"
+
+          for name in APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8_BASE64 \
+                      IOS_CERT_P12_BASE64 IOS_CERT_PASSWORD; do
+            val="$(
+              INFISICAL_TOKEN="$TOKEN" infisical secrets get "$name" \
+                --plain --silent --telemetry=false --expand=false \
+                --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/ \
+                2>/dev/null || true
+            )"
+            if [ -z "$val" ]; then
+              continue
+            fi
+            echo "::add-mask::$val"
+            {
+              echo "${name}<<INFISICAL_EOF"
+              printf '%s\n' "$val"
+              echo "INFISICAL_EOF"
+            } >> "$GITHUB_ENV"
+          done
+          unset TOKEN CLIENT_ID CLIENT_SECRET val
+
+      # Do not use `secrets.*` in `if:` -- GitHub's dispatch parser rejects
+      # that named-value (HTTP 422: Unrecognized named-value: 'secrets') and
+      # the whole workflow dies at 0s with 0 jobs.  Same class as DealDex #175
+      # and Usage-Monitor #1343. Check APPLE_API_KEY_ID from step env.
+      - name: Import signing + ASC key
+        if: steps.gate.outputs.should_ship == '1'
+        run: |
+          # Empty env means Infisical export missed the name. Do not mint a new key.
+          if [ -z "${APPLE_API_KEY_ID:-}" ]; then
+            echo "::error::APPLE_API_KEY_ID empty after Infisical prod export. Confirm the five Apple/iOS signing names exist in Infisical env=prod (APPLE_API_KEY_ID, APPLE_API_ISSUER_ID, APPLE_API_KEY_P8_BASE64, IOS_CERT_P12_BASE64, IOS_CERT_PASSWORD). Do not mint a new key."
+            exit 1
+          fi
+          bash "$GITHUB_WORKSPACE/scripts/ios-appstore-gm-prepare.sh"
+
+      # Route through the in-repo wrapper. scripts/ios-ship-testflight.sh
+      # execs scripts/ios-fleet/ship-testflight.sh (BotFleet apps.json is
+      # app.botfleet, 1.0.N).
+      #
+      # No extra flags. Standing gate is DEFAULT_MIN_INTERVAL_SEC=3600
+      # (1 hour) in the fleet script. The 30-minute cron picks up an unbuilt
+      # merge on the next eligible hour; same-HEAD ticks still exit 0
+      # without shipping.
+      - name: Ship BotFleet to TestFlight
+        if: steps.gate.outputs.should_ship == '1'
+        run: bash scripts/ios-ship-testflight.sh

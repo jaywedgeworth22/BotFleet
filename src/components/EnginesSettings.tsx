@@ -19,6 +19,12 @@ interface ProbeResult {
   message?: string;
 }
 
+/** Default the toggle to ON when the persisted config never had the field
+ * — the registry treats absent `enabled` as `true` and the UI must match. */
+function isEngineEnabled(instance: InstanceInfo): boolean {
+  return instance.enabled !== false;
+}
+
 function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
   instance: InstanceInfo;
   cliDefault?: string;
@@ -205,6 +211,13 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
   const [error, setError] = useState<string | null>(null);
   const wasOpenFor = useRef<string | null>(null);
 
+  // A disabled engine keeps the same controls visible — ungrey them while
+  // you flip the toggle back on is the right call — but none of them should
+  // be *clickable*. Use the per-row `enabled` state, not the snapshot reason,
+  // because a separately-disabled wildcard cooldown on an otherwise available
+  // engine is the wrong gate (we want settings, not quotas, to block the row).
+  const enabled = isEngineEnabled(instance);
+
   // Close the picker when this instance's override changes to anything else
   // — a save from this row, another tab, or the 5-min refresh. The picker
   // initialized its fields from the OLD value and never re-syncs, so staying
@@ -217,7 +230,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
   }, [instance.cli]);
 
   const reset = () => {
-    if (switching) return;
+    if (switching || !enabled) return;
     setSwitching(true);
     setError(null);
     api(`/api/instances/${encodeURIComponent(instance.instanceId)}`, {
@@ -234,37 +247,72 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
       .finally(() => setSwitching(false));
   };
 
+  const toggleEnabled = (next: boolean) => {
+    if (switching) return;
+    setSwitching(true);
+    setError(null);
+    api(`/api/instances/${encodeURIComponent(instance.instanceId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ enabled: next }),
+    })
+      // fresh: true — same reason as the fullAuto toggle: the checkbox must
+      // reflect the value just saved, not a memoed one.
+      .then(() => Promise.resolve(refreshInstances({ fresh: true })).catch(() => {}))
+      .catch((e) => setError(e.message))
+      .finally(() => setSwitching(false));
+  };
+
   return (
     <div>
       <div className="flex items-center gap-2 text-[13px]">
+        <label
+          className={cn(
+            "flex shrink-0 items-center gap-1.5 text-[11.5px] uppercase tracking-wide",
+            enabled ? "text-ink-secondary cursor-pointer" : "text-ink-secondary/70 cursor-pointer",
+          )}
+          title={enabled ? "Disable this engine" : "Enable this engine"}
+        >
+          <input
+            type="checkbox"
+            aria-label={`${instance.displayName} enabled`}
+            className="accent-accent"
+            checked={enabled}
+            disabled={switching}
+            onChange={(e) => toggleEnabled(e.target.checked)}
+          />
+          {enabled ? "On" : "Off"}
+        </label>
         <span className={cn("size-1.5 shrink-0 rounded-full", instance.cli ? "bg-accent" : "bg-raised-hover")} />
         <ProviderMark driverKind={instance.driverKind} size={14} />
-        <span className="shrink-0 text-ink">{instance.displayName}</span>
+        <span className={cn("shrink-0", enabled ? "text-ink" : "text-ink-secondary/70")}>{instance.displayName}</span>
         {instance.cli ? (
-          <span className="truncate font-mono text-[11.5px] text-accent" title={instance.cli}>
+          <span className={cn("truncate font-mono text-[11.5px]", enabled ? "text-accent" : "text-ink-secondary/60")} title={instance.cli}>
             {instance.cli}
           </span>
         ) : (
           instance.cliDefault && (
-            <span className="truncate text-[11px] text-ink-secondary" title={`${instance.cliDefault} · default`}>{instance.cliDefault} · default</span>
+            <span className={cn("truncate text-[11px]", enabled ? "text-ink-secondary" : "text-ink-secondary/60")} title={`${instance.cliDefault} · default`}>{instance.cliDefault} · default</span>
           )
         )}
         <span className="flex-1" />
         {instance.cli && (
           <button
             onClick={reset}
-            disabled={switching}
-            className="shrink-0 text-[11.5px] text-ink-secondary hover:text-ink disabled:opacity-50"
+            disabled={switching || !enabled}
+            className="shrink-0 text-[11.5px] text-ink-secondary hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
             {switching ? "Resetting…" : "Reset"}
           </button>
         )}
-        <label className="flex items-center gap-1.5 shrink-0 text-[12px] text-ink-secondary hover:text-ink cursor-pointer">
+        <label className={cn(
+          "flex items-center gap-1.5 shrink-0 text-[12px] text-ink-secondary",
+          enabled && !switching ? "hover:text-ink cursor-pointer" : "cursor-not-allowed opacity-60",
+        )}>
           <input
             type="checkbox"
             className="accent-accent"
             checked={!!instance.fullAuto}
-            disabled={switching}
+            disabled={switching || !enabled}
             onChange={(e) => {
               const checked = e.target.checked;
               setSwitching(true);
@@ -284,10 +332,15 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
         </label>
         <button
           onClick={() => setOpen((v) => !v)}
+          disabled={!enabled || switching}
           aria-expanded={open}
           className={cn(
             "shrink-0 rounded-lg border border-hairline/40 px-3 py-1 text-[12px]",
-            open ? "bg-accent/15 text-accent" : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
+            !enabled || switching
+              ? "cursor-not-allowed opacity-40"
+              : open
+                ? "bg-accent/15 text-accent"
+                : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
           )}
         >
           Set CLI…
@@ -307,7 +360,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
         </div>
       )}
       {error && <div role="alert" className="mt-1 text-[12px] text-danger">{error}</div>}
-      {open && (
+      {open && enabled && (
         <CustomPicker
           instance={instance}
           cliDefault={instance.cliDefault}
@@ -325,14 +378,26 @@ export function EnginesSettings() {
   // neither unless an override was set. Including them keeps a Reset-able row
   // (and a Set CLI… path) for engines the running build doesn't recognize.
   const rows = state.instances.filter((i) => i.cli !== undefined || i.cliDefault !== undefined);
+  // Disabled rows are surfaced separately so the active rail is short and
+  // scannable; the show/hide toggle defaults to hidden to keep the everyday
+  // view focused.
+  const [showDisabled, setShowDisabled] = useState(false);
 
   return (
     <div className="flex flex-col gap-5">
+      <div className="text-[12px] leading-relaxed text-ink-secondary">
+        <strong className="text-ink">Reset</strong> clears the binary override and goes back to the driver's default CLI.{" "}
+        <strong className="text-ink">Bypass permissions</strong> hands the engine full tool autonomy (no approval cards) — useful for headless runs, risky on a workstation.{" "}
+        <strong className="text-ink">Set CLI…</strong> points the engine at a specific binary — a versioned build, a wrapper script, or an absolute path.{" "}
+        Saving any of these reloads providers and interrupts any running turns.
+      </div>
       {rows.length === 0 && (
         <div className="text-[13px] text-ink-secondary">No CLI engines detected yet.</div>
       )}
       {(() => {
-        const { subscription, custom } = splitEngineRail(rows);
+        const enabled = rows.filter(isEngineEnabled);
+        const disabled = rows.filter((row) => !isEngineEnabled(row));
+        const { subscription, custom } = splitEngineRail(enabled);
         subscription.sort((a, b) => (a.snapshot.state === "unavailable" ? 1 : 0) - (b.snapshot.state === "unavailable" ? 1 : 0));
         return (
           <>
@@ -344,13 +409,31 @@ export function EnginesSettings() {
             {custom.map((i) => (
               <EngineRow key={i.instanceId} instance={i} />
             ))}
+            {disabled.length > 0 && (
+              <>
+                <div className="mt-2 flex items-center gap-2">
+                  <EngineGroupLabel>Engine CLIs Not Enabled</EngineGroupLabel>
+                  <button
+                    type="button"
+                    onClick={() => setShowDisabled((value) => !value)}
+                    aria-expanded={showDisabled}
+                    className="text-[11px] text-ink-secondary hover:text-ink"
+                  >
+                    {showDisabled ? "Hide" : `Show (${disabled.length})`}
+                  </button>
+                </div>
+                {showDisabled && (
+                  <div className="flex flex-col gap-3 opacity-80">
+                    {disabled.map((i) => (
+                      <EngineRow key={i.instanceId} instance={i} />
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
           </>
         );
       })()}
-      <div className="text-[12px] leading-relaxed text-ink-secondary">
-        Set CLI points an engine at a specific binary — a versioned build, a wrapper script, or an
-        absolute path. Saving reloads providers and interrupts any running turns.
-      </div>
     </div>
   );
 }
