@@ -2378,8 +2378,10 @@ describe("harness HTTP API", () => {
         ingress: { publicUrl: "https://hooks.example.com" },
       });
       expect(saved.status).toBe(200);
-      expect(saved.body.autoUpdate).toEqual({ enabled: true });
-      expect(saved.body.ingress).toEqual({ publicUrl: "https://hooks.example.com" });
+      expect(saved.body.autoUpdate).toMatchObject({ enabled: true });
+      // configStatus now also reports the `enabled` flag (defaulting to
+      // true); the equality check would break every time that field grows.
+      expect(saved.body.ingress).toMatchObject({ publicUrl: "https://hooks.example.com" });
 
       const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
       expect(disk.autoUpdate).toEqual({ enabled: true });
@@ -2387,12 +2389,111 @@ describe("harness HTTP API", () => {
 
       const invalid = await api("PATCH", "/api/config", { ingress: { publicUrl: "hooks.example.com" } });
       expect(invalid.status).toBe(400);
+
+      // disabling the public URL keeps the value on disk but stops the
+      // webhook receiver from advertising it
+      const disabled = await api("PATCH", "/api/config", {
+        ingress: { publicUrl: "https://hooks.example.com", enabled: false },
+      });
+      expect(disabled.status).toBe(200);
+      expect(disabled.body.ingress).toMatchObject({
+        publicUrl: "https://hooks.example.com",
+        enabled: false,
+      });
+      const diskAfter = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(diskAfter.ingress).toEqual({
+        publicUrl: "https://hooks.example.com",
+        enabled: false,
+      });
+      const status = await api("GET", "/api/webhooks");
+      expect(status.body.ingress.baseUrl).toMatch(/127\.0\.0\.1/);
     } finally {
       await api("PATCH", "/api/config", {
         autoUpdate: { enabled: false },
         ingress: { publicUrl: "" },
       });
     }
+  });
+
+  it("POST /api/ingress/test reports a clear failure for malformed URLs", async () => {
+    const missing = await api("POST", "/api/ingress/test", { publicUrl: "" });
+    expect(missing.status).toBe(200);
+    expect(missing.body.ok).toBe(false);
+    expect(String(missing.body.reason)).toMatch(/enter a public url/i);
+
+    const wrongScheme = await api("POST", "/api/ingress/test", { publicUrl: "ftp://hooks.example.com" });
+    expect(wrongScheme.status).toBe(200);
+    expect(wrongScheme.body.ok).toBe(false);
+    expect(String(wrongScheme.body.reason)).toMatch(/http|https/);
+
+    const credentials = await api("POST", "/api/ingress/test", {
+      publicUrl: "https://user:pass@hooks.example.com",
+    });
+    expect(credentials.status).toBe(200);
+    expect(credentials.body.ok).toBe(false);
+    expect(String(credentials.body.reason)).toMatch(/credentials/);
+  });
+
+  it("POST /api/ingress/test refuses non-JSON content types", async () => {
+    const response = await fetch(`${BASE}/api/ingress/test`, {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: "https://hooks.example.com",
+    });
+    expect(response.status).toBe(415);
+  });
+
+  it("POST /api/ingress/test reports the tunnel when Cloudflare is in front", async () => {
+    // The server runs in a child process, so mocking globalThis.fetch here
+    // would not intercept its probe.  Spin up a real local HTTP server and
+    // point the probe at it so the test exercises the live follow / parse
+    // path without depending on the public internet.
+    const fakeOrigin = createServer((_req, res) => {
+      res.writeHead(200, {
+        server: "cloudflare",
+        "cf-ray": "8a1b2c3d4e5f6789-SJC",
+      });
+      res.end("ok");
+    });
+    await new Promise<void>((resolve) => fakeOrigin.listen(0, "127.0.0.1", resolve));
+    const port = (fakeOrigin.address() as { port: number }).port;
+    try {
+      const result = await api("POST", "/api/ingress/test", { publicUrl: `http://127.0.0.1:${port}` });
+      expect(result.status).toBe(200);
+      expect(result.body.ok).toBe(true);
+      expect(result.body.tunnel).toBe("cloudflare");
+      expect(String(result.body.reason)).toMatch(/cloudflare/i);
+    } finally {
+      await new Promise<void>((resolve) => fakeOrigin.close(() => resolve()));
+    }
+  });
+
+  it("POST /api/ingress/test reports 5xx as a failure that still names the tunnel", async () => {
+    const fakeOrigin = createServer((_req, res) => {
+      res.writeHead(502, { server: "caddy" });
+      res.end("upstream");
+    });
+    await new Promise<void>((resolve) => fakeOrigin.listen(0, "127.0.0.1", resolve));
+    const port = (fakeOrigin.address() as { port: number }).port;
+    try {
+      const result = await api("POST", "/api/ingress/test", { publicUrl: `http://127.0.0.1:${port}` });
+      expect(result.status).toBe(200);
+      expect(result.body.ok).toBe(false);
+      expect(result.body.tunnel).toBe("caddy");
+      expect(String(result.body.reason)).toMatch(/502/);
+    } finally {
+      await new Promise<void>((resolve) => fakeOrigin.close(() => resolve()));
+    }
+  });
+
+  it("POST /api/ingress/test reports a fetch error when the origin is unreachable", async () => {
+    // A local port that nothing is listening on: the OS rejects the
+    // connection with ECONNREFUSED, which is exactly the upstream-originated
+    // error we want the server to surface.
+    const result = await api("POST", "/api/ingress/test", { publicUrl: "http://127.0.0.1:1" });
+    expect(result.status).toBe(200);
+    expect(result.body.ok).toBe(false);
+    expect(String(result.body.reason)).toMatch(/ECONNREFUSED|did not answer|fetch failed/i);
   });
 
   it("keeps shared Local VM mode by default and resolves isolated targets per bot when enabled", async () => {

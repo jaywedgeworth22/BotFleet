@@ -23,6 +23,10 @@ import {
   vpsSshAlias,
   patchInstanceConfig,
   WORKSPACE_CREDENTIAL_ENV,
+  autoUpdateDue,
+  AUTO_UPDATE_THROTTLE_MS,
+  publicIngressUrl,
+  publicIngressUrlEffective,
   type AppConfig,
 } from "./config.ts";
 
@@ -559,5 +563,91 @@ describe("operator-level computer allowlist", () => {
     expect(() => parseConfigPatch({ botDefaults: { allowedComputers: ["box"] } })).toThrow(
       "botDefaults.allowedComputers",
     );
+  });
+});
+
+describe("autoUpdate throttle", () => {
+  it("treats the first run as due when no lastCheckMs is recorded and the toggle is on", () => {
+    const now = 1_700_000_000_000;
+    expect(autoUpdateDue({ autoUpdate: { enabled: true } }, now)).toBe(true);
+    expect(autoUpdateDue({ autoUpdate: { enabled: true, lastCheckMs: -1 } }, now)).toBe(true);
+    expect(autoUpdateDue({ autoUpdate: { enabled: true, lastCheckMs: Number.NaN } }, now)).toBe(true);
+  });
+
+  it("refuses to run when the toggle is off, even if no lastCheckMs is recorded", () => {
+    const now = 1_700_000_000_000;
+    // no autoUpdate at all = the user has not opted in
+    expect(autoUpdateDue({}, now)).toBe(false);
+    expect(autoUpdateDue({ autoUpdate: {} }, now)).toBe(false);
+    expect(autoUpdateDue({ autoUpdate: { enabled: undefined } }, now)).toBe(false);
+  });
+
+  it("blocks a run inside the 6-hour window", () => {
+    const now = 1_700_000_000_000;
+    expect(autoUpdateDue({ autoUpdate: { enabled: true, lastCheckMs: now - 1 } }, now)).toBe(false);
+    expect(
+      autoUpdateDue(
+        { autoUpdate: { enabled: true, lastCheckMs: now - (AUTO_UPDATE_THROTTLE_MS - 1) } },
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it("allows a run at or after the 6-hour mark", () => {
+    const now = 1_700_000_000_000;
+    expect(
+      autoUpdateDue({ autoUpdate: { enabled: true, lastCheckMs: now - AUTO_UPDATE_THROTTLE_MS } }, now),
+    ).toBe(true);
+    expect(
+      autoUpdateDue(
+        { autoUpdate: { enabled: true, lastCheckMs: now - (AUTO_UPDATE_THROTTLE_MS + 60_000) } },
+        now,
+      ),
+    ).toBe(true);
+  });
+
+  it("refuses to run when the autoUpdate toggle is off", () => {
+    const now = 1_700_000_000_000;
+    expect(autoUpdateDue({ autoUpdate: { enabled: false, lastCheckMs: now - 60_000 } }, now)).toBe(false);
+  });
+
+  it("round-trips the new fields through the patch parser", () => {
+    const parsed = parseConfigPatch({ autoUpdate: { enabled: true, lastCheckMs: 1700000000000, lastAppFingerprint: "1.0.30:abc123" } });
+    expect(parsed.autoUpdate).toEqual({
+      enabled: true,
+      lastCheckMs: 1700000000000,
+      lastAppFingerprint: "1.0.30:abc123",
+    });
+  });
+
+  it("rejects a negative lastCheckMs so a corrupt value cannot pin the throttle open", () => {
+    expect(() =>
+      parseConfigPatch({ autoUpdate: { lastCheckMs: -5 } }),
+    ).toThrow();
+  });
+});
+
+describe("public ingress URL", () => {
+  it("returns the trimmed URL on the raw helper and null when disabled", () => {
+    expect(publicIngressUrl({ ingress: { publicUrl: "https://hooks.example.com/" } })).toBe(
+      "https://hooks.example.com",
+    );
+    expect(publicIngressUrl({ ingress: { publicUrl: "  https://hooks.example.com/abc/  " } })).toBe(
+      "https://hooks.example.com/abc",
+    );
+    expect(publicIngressUrl({})).toBeNull();
+    expect(publicIngressUrl({ ingress: { publicUrl: "not-a-url" } })).toBeNull();
+  });
+
+  it("publicIngressUrlEffective returns null when the URL is disabled, even if saved", () => {
+    expect(
+      publicIngressUrlEffective({ ingress: { publicUrl: "https://hooks.example.com", enabled: false } }),
+    ).toBeNull();
+    // an absent flag defaults to on, so a config written by an older build
+    // keeps applying its URL
+    expect(
+      publicIngressUrlEffective({ ingress: { publicUrl: "https://hooks.example.com" } }),
+    ).toBe("https://hooks.example.com");
+    expect(publicIngressUrlEffective({})).toBeNull();
   });
 });

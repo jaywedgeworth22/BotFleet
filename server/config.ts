@@ -177,7 +177,19 @@ const appConfigSchema = z.object({
   tts: z.object({ key: optionalText, voice: optionalText, provider: z.enum(["elevenlabs", "system"]).optional() }).optional(),
   /** OpenAI key used only by the in-process avatar image generator. */
   imageGen: z.object({ key: optionalText }).optional(),
-  autoUpdate: z.object({ enabled: z.boolean().optional() }).optional(),
+  autoUpdate: z
+    .object({
+      enabled: z.boolean().optional(),
+      /** Wall-clock ms of the last successful automatic check.  Used by the
+       * desktop shell to enforce the 6-hour throttle without consulting the
+       * harness on every tick. */
+      lastCheckMs: z.number().int().nonnegative().optional(),
+      /** Fingerprint of the BotFleet.app bundle at the last check, so a
+       * reinstall that landed an out-of-band build between checks still
+       * shows up as "different from last known" on the next cycle. */
+      lastAppFingerprint: z.string().optional(),
+    })
+    .optional(),
   /** Non-secret profile details shown in the sidebar. */
   profile: z.object({ name: optionalText, email: optionalText }).optional(),
   rooms: roomConfigSchema.optional(),
@@ -189,6 +201,10 @@ const appConfigSchema = z.object({
       .refine((value) => value === undefined || value === "" || isAbsoluteHttpUrl(value), {
         message: "must be an absolute http(s) URL",
       }),
+    /** Whether the public URL is applied at all. Off keeps the stored URL
+     * for the next time the toggle is flipped on, but the webhook receiver
+     * does not advertise it. */
+    enabled: z.boolean().optional(),
   }).optional(),
   localVm: localVmConfigSchema.optional(),
   qdrant: z.object({
@@ -241,7 +257,11 @@ export interface AppConfig {
   deepseek?: { key?: string; url?: string };
   tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system" };
   imageGen?: { key?: string };
-  autoUpdate?: { enabled?: boolean };
+  autoUpdate?: {
+    enabled?: boolean;
+    lastCheckMs?: number;
+    lastAppFingerprint?: string;
+  };
   profile?: { name?: string; email?: string };
   rooms?: { turnTimeoutMinutes: number };
   botDefaults?: {
@@ -250,7 +270,7 @@ export interface AppConfig {
     /** Operator-level allowlist; an absent entry means the destination is allowed. */
     allowedComputers?: Array<"cloud" | "vm" | "local">;
   };
-  ingress?: { publicUrl?: string };
+  ingress?: { publicUrl?: string; enabled?: boolean };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
    * separate container, durable workspace, viewer and lease. */
   localVm?: { mode?: "shared" | "per-bot"; maxInstances?: number };
@@ -336,9 +356,32 @@ export function roomTurnTimeoutMinutes(cfg: AppConfig): number {
   return cfg.rooms?.turnTimeoutMinutes ?? DEFAULT_ROOM_TURN_TIMEOUT_MINUTES;
 }
 
+export const AUTO_UPDATE_THROTTLE_MS = 6 * 60 * 60 * 1000;
+
+/** True when an automatic check is allowed to run right now.  The toggle
+ * gates the throttle: an off setting means no auto check ever, regardless
+ * of how long it has been since the last one.  Manual "Check for Updates"
+ * always bypasses this helper. */
+export function autoUpdateDue(cfg: AppConfig, nowMs: number = Date.now()): boolean {
+  if (cfg.autoUpdate?.enabled !== true) return false;
+  const last = cfg.autoUpdate?.lastCheckMs;
+  if (typeof last !== "number" || !Number.isFinite(last) || last < 0) return true;
+  return nowMs - last >= AUTO_UPDATE_THROTTLE_MS;
+}
+
 export function publicIngressUrl(cfg: AppConfig): string | null {
   const raw = cfg.ingress?.publicUrl?.trim();
   return raw && isAbsoluteHttpUrl(raw) ? raw.replace(/\/+$/, "") : null;
+}
+
+/** The public URL that should actually be advertised.  Disabled
+ * (`ingress.enabled === false`) keeps the stored value on disk for the next
+ * time the user flips the switch, but the harness behaves as if the URL
+ * were empty.  An absent flag defaults to on, so a config without the field
+ * keeps working as it did before the toggle existed. */
+export function publicIngressUrlEffective(cfg: AppConfig): string | null {
+  if (cfg.ingress?.enabled === false) return null;
+  return publicIngressUrl(cfg);
 }
 
 

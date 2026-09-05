@@ -7,12 +7,27 @@
 // electron-updater is vendored (electron/vendor/electron-updater.cjs) because
 // the packaged app ships no node_modules.
 import { app, ipcMain } from "electron";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { createUpdaterCoordinator } from "./updater-coordinator.mjs";
+import {
+  AUTO_CHECK_THROTTLE_MS,
+  macAppFingerprint,
+  nextAutoUpdateRecord,
+  readAutoUpdateConfig,
+  shouldRunAutomaticCheck,
+} from "./updater-throttle.mjs";
 
 const require = createRequire(import.meta.url);
+
+// Throttle window: the auto-check interval is a poll, not a contract.  The
+// user-visible cadence is "no more than once per 6 hours", so the timers
+// stay short (so the user sees a fresh result quickly after turning the
+// setting on) but every tick consults `shouldRunAutomaticCheck` first.
+const POLL_INTERVAL_MS = 60 * 60 * 1000;
+const FIRST_CHECK_DELAY_MS = 15_000;
 
 let autoUpdater = null;
 let win = null;
@@ -47,14 +62,48 @@ function setState(patch) {
   }
 }
 
+function configPath() {
+  return join(
+    process.env.OMB_DATA_DIR || process.env.BOTFLEET_DATA_DIR || join(homedir(), ".botfleet"),
+    "config.json",
+  );
+}
+
+function recordSuccessfulAutoCheck() {
+  if (!autoUpdateEnabled) return;
+  // PATCH the same file the harness reads so the next tick and the next
+  // launch agree.  Read-modify-write, not a full config save: this module
+  // never touches anything other than `autoUpdate`.
+  try {
+    const path = configPath();
+    let disk = {};
+    try {
+      disk = JSON.parse(readFileSync(path, "utf8"));
+    } catch {
+      /* first write */
+    }
+    const fingerprint = macAppFingerprint();
+    disk.autoUpdate = nextAutoUpdateRecord(disk.autoUpdate ?? {}, { fingerprint });
+    // preserve the live enabled state — the helper does not know about it
+    disk.autoUpdate.enabled = autoUpdateEnabled;
+    const directory = join(path, "..");
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    appendFileSync(path, ""); // touch if missing
+  } catch {
+    /* never let the check fail because we could not persist */
+  }
+}
+
 export function registerUpdaterIpc() {
   ipcMain.handle("update:get-state", () => state);
+  // Manual check always bypasses the 6-hour throttle — the whole point
+  // of the button is "ask now", and the Settings copy says so.
   ipcMain.handle("update:check", () => updaterCoordinator?.check(true));
   ipcMain.handle("update:download", () => updaterCoordinator?.download());
   ipcMain.handle("update:install", () => updaterCoordinator?.install());
   ipcMain.handle("update:set-enabled", (_event, enabled) => {
     autoUpdateEnabled = Boolean(enabled);
-    if (autoUpdateEnabled) void updaterCoordinator?.check(true);
+    if (autoUpdateEnabled) void updaterCoordinator?.check();
   });
 }
 
@@ -68,17 +117,11 @@ export function startUpdater(mainWindow) {
   }
 
   try {
-    const { readFileSync } = require("node:fs");
-    const { homedir } = require("node:os");
-    const configPath = join(
-      process.env.OMB_DATA_DIR || process.env.BOTFLEET_DATA_DIR || join(homedir(), ".botfleet"),
-      "config.json",
-    );
-    const config = JSON.parse(readFileSync(configPath, "utf8"));
+    const config = readAutoUpdateConfig(configPath());
     // Always wire the coordinator in packaged apps so enabling the setting
     // or pressing Check for updates works without a restart. Automatic
     // periodic checks still honor autoUpdate.enabled below.
-    autoUpdateEnabled = config.autoUpdate?.enabled === true;
+    autoUpdateEnabled = config.enabled === true;
   } catch (e) {
     autoUpdateEnabled = false;
   }
@@ -99,16 +142,39 @@ export function startUpdater(mainWindow) {
 
   updaterCoordinator = createUpdaterCoordinator(autoUpdater, setState);
 
-  // first check ~15s after launch (let the app settle), then hourly — both
-  // silent on failure, hence the arrow: a bare `check` would receive the
-  // timer's argument as `manual` and start reporting errors again.
+  // Wrap the coordinator so a successful check is what actually counts
+  // as "last checked".  The coordinator's `check` returns the in-flight
+  // promise; we hook .then so the timestamp and fingerprint get
+  // persisted only on the success path.  Both manual and automatic
+  // checks persist a timestamp — only the throttle consults it, and the
+  // throttle ignores manual checks, so recording both is correct and
+  // lets the next auto-tick honour the full window.
+  const trackedCheck = (manual) => {
+    const promise = updaterCoordinator?.check(manual);
+    if (promise && typeof promise.then === "function") {
+      promise.then(() => recordSuccessfulAutoCheck()).catch(() => {});
+    }
+    return promise;
+  };
+
+  // First automatic check ~15s after launch (let the app settle), then
+  // hourly — both silent on failure.  Every tick consults
+  // `shouldRunAutomaticCheck`, which combines the toggle and the
+  // 6-hour throttle into a single decision.
   // Manual "Check for updates" always works once the coordinator exists.
   // Timers stay armed so enabling the setting later takes effect without
   // a restart; they no-op while autoUpdateEnabled is false.
   setTimeout(() => {
-    if (autoUpdateEnabled) void updaterCoordinator?.check();
-  }, 15_000).unref?.();
+    if (shouldRunAutomaticCheck({ enabled: autoUpdateEnabled, lastCheckMs: readAutoUpdateConfig(configPath()).lastCheckMs })) {
+      void trackedCheck(false);
+    }
+  }, FIRST_CHECK_DELAY_MS).unref?.();
   setInterval(() => {
-    if (autoUpdateEnabled) void updaterCoordinator?.check();
-  }, 60 * 60 * 1000).unref?.();
+    if (shouldRunAutomaticCheck({ enabled: autoUpdateEnabled, lastCheckMs: readAutoUpdateConfig(configPath()).lastCheckMs })) {
+      void trackedCheck(false);
+    }
+  }, POLL_INTERVAL_MS).unref?.();
 }
+
+// Exposed for tests; the helpers themselves live in updater-throttle.mjs.
+export { AUTO_CHECK_THROTTLE_MS };
