@@ -28,11 +28,20 @@ test("ios-ship.yml targets botfleet / ios on GitHub-hosted macos-latest", () => 
   assert.match(yml, /bash scripts\/ios-ship-testflight\.sh/);
   assert.doesNotMatch(yml, /--force-ship/);
   assert.match(yml, /ios-appstore-gm-prepare\.sh/);
-  assert.match(yml, /secrets\.APPLE_API_KEY_ID/);
-  assert.match(yml, /secrets\.APPLE_API_ISSUER_ID/);
-  assert.match(yml, /secrets\.APPLE_API_KEY_P8_BASE64/);
-  assert.match(yml, /secrets\.IOS_CERT_P12_BASE64/);
-  assert.match(yml, /secrets\.IOS_CERT_PASSWORD/);
+  // Signing material comes from Infisical prod; identity stays on GitHub.
+  assert.match(yml, /Load Infisical signing secrets/);
+  assert.match(yml, /secrets\.INFISICAL_PROJECT_ID/);
+  assert.match(yml, /secrets\.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID/);
+  assert.match(yml, /secrets\.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET/);
+  assert.match(yml, /infisical login --method=universal-auth/);
+  assert.match(yml, /infisical secrets get/);
+  assert.match(yml, /APPLE_API_KEY_ID/);
+  assert.match(yml, /IOS_CERT_P12_BASE64/);
+  assert.doesNotMatch(yml, /secrets\.APPLE_API_KEY_ID/);
+  assert.doesNotMatch(yml, /secrets\.APPLE_API_ISSUER_ID/);
+  assert.doesNotMatch(yml, /secrets\.APPLE_API_KEY_P8_BASE64/);
+  assert.doesNotMatch(yml, /secrets\.IOS_CERT_P12_BASE64/);
+  assert.doesNotMatch(yml, /secrets\.IOS_CERT_PASSWORD/);
   assert.doesNotMatch(yml, /secrets\.ASC_KEY_ID/);
   assert.doesNotMatch(yml, /if:.*secrets\./);
   assert.match(yml, /cron:\s*'18,48 \* \* \* \*'/);
@@ -139,3 +148,4 @@ test("scheduled-ship-gate skips empty last-ship on schedule", () => {
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.match(run.stdout, /scheduled-ship-gate: all tests passed/);
 });
+
