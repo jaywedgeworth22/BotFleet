@@ -984,7 +984,10 @@ struct MessageRow: View {
                     .foregroundStyle(Color.secondary)
             }
 
-            if message.queued == true, case let .bot(bot) = chat, bot.busy == true {
+            // Stay up while `message.queued` is true, even after `bot.busy`
+            // flips false.  Gating on busy made the chip vanish in the gap
+            // between turn-end and the drain frame (Sentry on #224).
+            if message.queued == true, case let .bot(bot) = chat {
                 HStack(spacing: 4) {
                     Image(systemName: "clock")
                     Text("Queued — sends when this turn finishes")
