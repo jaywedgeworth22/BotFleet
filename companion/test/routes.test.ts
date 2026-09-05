@@ -44,6 +44,7 @@ describe("what the app may do", () => {
     ["GET", "/api/bots"],
     ["POST", "/api/bots"],
     ["POST", "/api/bots/bot_123/messages"],
+    ["DELETE", "/api/bots/bot_123/queue/q_1"],
     ["POST", "/api/bots/bot_123/interrupt"],
     ["POST", "/api/bots/bot_123/read"],
     ["POST", "/api/bots/bot_123/messages/msg_2/edit"],

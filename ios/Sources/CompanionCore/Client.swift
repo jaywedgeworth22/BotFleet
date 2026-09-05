@@ -919,8 +919,16 @@ public struct CompanionClient: Sendable {
         return try await send(try makeRequest("POST", "/api/groups", body: body), as: CreatedRoom.self).group
     }
 
-    public func send(text: String, toBot botId: String) async throws {
-        try await send(try makeRequest("POST", "/api/bots/\(botId)/messages", body: ["text": text]))
+    @discardableResult
+    public func send(text: String, toBot botId: String) async throws -> SendMessageResult {
+        try await send(
+            try makeRequest("POST", "/api/bots/\(botId)/messages", body: ["text": text]),
+            as: SendMessageResult.self
+        )
+    }
+
+    public func cancelQueued(botId: String, queueId: String) async throws {
+        try await send(try makeRequest("DELETE", "/api/bots/\(botId)/queue/\(queueId)"))
     }
 
     public func send(text: String, toRoom groupId: String) async throws {

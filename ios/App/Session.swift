@@ -645,7 +645,15 @@ final class Session: ObservableObject {
             }
             guard !prompt.isEmpty else { return false }
             switch chat {
-            case let .bot(bot): try await client.send(text: prompt, toBot: bot.id)
+            case let .bot(bot):
+                let result = try await client.send(text: prompt, toBot: bot.id)
+                if result.queued == true, let queueId = result.queueId, !queueId.isEmpty {
+                    state.rememberPendingQueued(
+                        threadId: result.threadId ?? bot.threadId,
+                        queueId: queueId,
+                        text: prompt
+                    )
+                }
             case let .room(room): try await client.send(text: prompt, toRoom: room.id)
             }
             return true
@@ -660,6 +668,25 @@ final class Session: ObservableObject {
 
     func registerPushToken(_ hex: String) async {
         await perform(quietly: true) { try await $0.registerPushToken(hex) }
+    }
+
+    func cancelQueued(botId: String, queueId: String) async {
+        guard let client else { return }
+        do {
+            try await client.cancelQueued(botId: botId, queueId: queueId)
+            if let threadId = state.bot(botId)?.threadId {
+                state.cancelPendingQueued(threadId: threadId, queueId: queueId)
+            } else {
+                for (threadId, entries) in state.pendingQueued where entries.contains(where: { $0.queueId == queueId }) {
+                    state.cancelPendingQueued(threadId: threadId, queueId: queueId)
+                    break
+                }
+            }
+        } catch let error as APIError where error.isUnauthorized {
+            status = .unauthorized
+        } catch {
+            actionError = error.localizedDescription
+        }
     }
 
     func answer(chat: Chat, card: OptionCard, choice: String, rememberingPermission: Bool = true) async {

@@ -984,6 +984,21 @@ struct MessageRow: View {
                     .foregroundStyle(Color.secondary)
             }
 
+            if message.queued == true, case let .bot(bot) = chat, bot.busy == true {
+                HStack(spacing: 4) {
+                    Image(systemName: "clock")
+                    Text("Queued — sends when this turn finishes")
+                    Button {
+                        Task { await session.cancelQueued(botId: bot.id, queueId: message.queueId ?? message.id) }
+                    } label: {
+                        Image(systemName: "xmark")
+                    }
+                    .accessibilityLabel("Cancel queued message")
+                }
+                .font(.system(size: 11))
+                .foregroundStyle(Color.secondary)
+            }
+
             if let reactions = message.reactions, !reactions.isEmpty {
                 HStack(spacing: 6) {
                     ForEach(reactionGroups(reactions), id: \.emoji) { group in

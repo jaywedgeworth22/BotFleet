@@ -36,6 +36,12 @@ public struct CompanionState: Sendable {
     /// `screens=on`, and only the newest frame is kept — these are hundreds
     /// of kilobytes each and a history of them is worth nothing.
     public var screens: [String: ScreenFrame] = [:]
+    /// Mid-turn sends waiting in the server steer-queue, keyed by thread.
+    /// The harness holds those lines out of `messages[]` until drain, so
+    /// the phone has to remember the 202 `queueId` or the user's words vanish.
+    public var pendingQueued: [String: [QueuedSend]] = [:]
+    /// queueIds whose drain frame beat the POST continuation. One-shot.
+    public var consumedQueueIds: Set<String> = []
 
     public init() {}
 
@@ -51,17 +57,64 @@ public struct CompanionState: Sendable {
     /// threads return their full transcript.
     public func visibleTranscript(forThread threadId: String) -> [Message] {
         let all = transcript(forThread: threadId)
-        guard let leafId = bot(forThread: threadId)?.activeLeafId else { return all }
-        let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
-        guard var current = byId[leafId] else { return all }
-        var visible: [Message] = []
-        var visited = Set<String>()
-        while visited.insert(current.id).inserted {
-            visible.append(current)
-            guard let parentId = current.parentId, let parent = byId[parentId] else { break }
-            current = parent
+        let branch: [Message]
+        if let leafId = bot(forThread: threadId)?.activeLeafId {
+            let byId = Dictionary(all.map { ($0.id, $0) }, uniquingKeysWith: { _, newest in newest })
+            if var current = byId[leafId] {
+                var visible: [Message] = []
+                var visited = Set<String>()
+                while visited.insert(current.id).inserted {
+                    visible.append(current)
+                    guard let parentId = current.parentId, let parent = byId[parentId] else { break }
+                    current = parent
+                }
+                branch = visible.reversed()
+            } else {
+                branch = all
+            }
+        } else {
+            branch = all
         }
-        return visible.reversed()
+        let pending = pendingQueued[threadId] ?? []
+        guard !pending.isEmpty else { return branch }
+        let now = Date().timeIntervalSince1970 * 1000
+        let queued = pending.map { entry -> Message in
+            var message = Message(id: entry.queueId, role: .user, kind: .text, at: now)
+            message.text = entry.text
+            message.queueId = entry.queueId
+            message.queued = true
+            return message
+        }
+        return branch + queued
+    }
+
+    public mutating func rememberPendingQueued(threadId: String, queueId: String, text: String) {
+        if consumedQueueIds.contains(queueId) {
+            consumedQueueIds.remove(queueId)
+            return
+        }
+        var list = pendingQueued[threadId] ?? []
+        if list.contains(where: { $0.queueId == queueId }) { return }
+        list.append(QueuedSend(queueId: queueId, text: text))
+        pendingQueued[threadId] = list
+    }
+
+    public mutating func consumePendingQueued(threadId: String, queueId: String) {
+        let prev = pendingQueued[threadId] ?? []
+        let rest = prev.filter { $0.queueId != queueId }
+        if rest.count == prev.count {
+            consumedQueueIds.insert(queueId)
+            return
+        }
+        if rest.isEmpty { pendingQueued.removeValue(forKey: threadId) }
+        else { pendingQueued[threadId] = rest }
+    }
+
+    public mutating func cancelPendingQueued(threadId: String, queueId: String) {
+        let prev = pendingQueued[threadId] ?? []
+        let rest = prev.filter { $0.queueId != queueId }
+        if rest.isEmpty { pendingQueued.removeValue(forKey: threadId) }
+        else { pendingQueued[threadId] = rest }
     }
 
     public func bot(_ id: String) -> Bot? {
@@ -110,6 +163,14 @@ public struct CompanionState: Sendable {
             messages[room.threadId] = room.messages ?? []
             hasMore[room.threadId] = room.hasMore ?? false
         }
+        // Drain may have landed while we were disconnected. Retire chips
+        // whose queueId is now a real transcript row.
+        for (threadId, entries) in pendingQueued {
+            let landed = Set((messages[threadId] ?? []).compactMap(\.queueId))
+            for entry in entries where landed.contains(entry.queueId) {
+                consumePendingQueued(threadId: threadId, queueId: entry.queueId)
+            }
+        }
     }
 
     /// Prepend an older page fetched for scrollback.
@@ -156,6 +217,9 @@ public struct CompanionState: Sendable {
 
         case let .message(threadId, message):
             append(message, to: threadId)
+            if let queueId = message.queueId, !queueId.isEmpty {
+                consumePendingQueued(threadId: threadId, queueId: queueId)
+            }
             if let index = bots.firstIndex(where: { $0.threadId == threadId }) {
                 bots[index].activeLeafId = message.id
             }

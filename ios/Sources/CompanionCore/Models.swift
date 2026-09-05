@@ -147,8 +147,36 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     /// Screen messages in the full shape: base64 pixels, inline.
     public var png: String?
     public var mime: String?
+    /// Identity of a steer-queue entry. The 202 busy-send body carries this
+    /// as `queueId`; drain stamps the same value on the real user line so
+    /// the pending chip can retire. Absent on ordinary messages.
+    public var queueId: String? = nil
+    /// Client-only: this row is still waiting in the in-memory steer-queue
+    /// and has not been appended to the transcript yet.
+    public var queued: Bool? = nil
 
     public var date: Date { Date(timeIntervalSince1970: at / 1000) }
+}
+
+/// One mid-turn send the phone is holding until drain appends it.
+public struct QueuedSend: Hashable, Sendable {
+    public var queueId: String
+    public var text: String
+
+    public init(queueId: String, text: String) {
+        self.queueId = queueId
+        self.text = text
+    }
+}
+
+/// Body of `POST /api/bots/:id/messages`. A live send is `{ok:true}`; a
+/// busy bot is `{ok:true, queued:true, queueId, threadId}`.
+public struct SendMessageResult: Codable, Hashable, Sendable {
+    public var ok: Bool?
+    public var queued: Bool?
+    public var steered: Bool?
+    public var queueId: String?
+    public var threadId: String?
 }
 
 // MARK: - Bots and rooms

@@ -71,6 +71,7 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "POST", path: /^\/api\/bots$/ },
   { method: "POST", path: /^\/api\/desktop\/open$/ },
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/messages$/ },
+  { method: "DELETE", path: /^\/api\/bots\/[\w-]+\/queue\/[\w-]+$/ },
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/interrupt$/ },
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/read$/ },
   // always-allow is Mac-only: a stolen phone token must not widen Auto.
