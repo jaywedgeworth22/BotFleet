@@ -348,8 +348,8 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
       </div>
       {instance.driverKind === "antigravityAgent" && (
         <div className="mt-2 rounded bg-raised/40 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-hairline/40">
-          Antigravity's print mode has no approval cards.&nbsp; With the bypass off, file edits go through and shell
-          commands are refused.&nbsp; With it on, every tool runs on this computer without asking, and BotFleet's
+          Antigravity's print mode has no approval cards.  With the bypass off, file edits go through and shell
+          commands are refused.  With it on, every tool runs on this computer without asking, and BotFleet's
           permission guards do not apply.
         </div>
       )}

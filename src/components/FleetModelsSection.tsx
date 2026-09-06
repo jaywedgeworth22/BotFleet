@@ -341,7 +341,7 @@ export function FleetModelsSection() {
       <div>
         <h2 className="text-[15px] font-semibold text-ink">Models</h2>
         <p className="mt-1 text-[13px] text-ink-secondary">
-          Every bot's primary engine and its fallbacks, together.&nbsp; A turn that fails
+          Every bot's primary engine and its fallbacks, together.  A turn that fails
           because a provider is capped moves down this list, so the fallbacks matter most
           when a provider is having a bad day.
         </p>

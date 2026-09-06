@@ -2,7 +2,8 @@
 // Renders index.html from template.html + features.json.
 // Rules encoded here: a section with zero features is hidden entirely
 // (owner rule: hide a section if it has zero features); descriptions are
-// trusted HTML (sentence gaps use &nbsp; per fleet copy rules).
+// trusted HTML (sentence gaps use a real U+00A0 per fleet copy rules —
+// never the &nbsp; entity, so the six characters can't leak as text).
 import { readFileSync, writeFileSync } from "node:fs";
 
 const data = JSON.parse(readFileSync(new URL("./features.json", import.meta.url), "utf8"));
