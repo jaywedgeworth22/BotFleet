@@ -524,6 +524,7 @@ export interface InstanceInfo {
 export type AppSettingsSection =
   | "general"
   | "connections"
+  | "remote"
   | "engines"
   | "models"
   | "companion"

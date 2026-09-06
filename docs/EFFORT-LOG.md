@@ -27,6 +27,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
+- **2026-09-06 — GROK — IN PROGRESS — Settings Remote Access UX for named tunnel https://botfleet.jays.services (board `a4b7edb0`, issue #226, branch `grok/remote-access-named-tunnel`, worktree `~/apps/botfleet-grok-remote-access`).**  Designer copy.  Copyable Remote URL.  No TryCloudflare on this path.  Companion Gateway on Phone.
 - **2026-09-04 — GROK — IN PROGRESS — Quota rows hide Gemini/Cursor monthly; MiniMax CLI first-tier (board `d4d3343b`, issue #216, branch `grok/quota-breakdown-minimax`, worktree `~/apps/botfleet-grok-quota-breakdown`).**  Claimed Fri, Sep 4, 2026.
 - **2026-09-04 — GROK — IN PROGRESS — Usage Monitor URL and ingest token do not persist in Settings (board `5c0ee072`, issue #191, branch `grok/usage-monitor-save`, worktree `~/apps/botfleet-grok-usage-save`).**  `saveConfig()` omitted `usage`; adding Save + Test Connection.  Claimed Fri, Sep 4, 2026.  PR #192.
 - **2026-09-03 — AG — IN_PROGRESS — DSH driver hardening: fallback error classification, DSH_HOME-aware auth, honest model-set (branch `ag/dsh-first-class`, board `9effb254`, issue #188).**
