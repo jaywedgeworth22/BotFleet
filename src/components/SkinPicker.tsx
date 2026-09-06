@@ -15,8 +15,17 @@ import {
   readCustomAccent,
   readCustomTheme,
   saveCustomTheme,
+  readUserAutoPair,
+  saveUserAutoPair,
+  USER_AUTO_LIGHT_IDS,
+  USER_AUTO_DARK_IDS,
+  followsComputerLook,
+  osPrefersDark,
+  resolveSkin,
   type SkinId,
+  type ConcreteSkinId,
   type CustomThemeConfig,
+  type UserAutoPair,
 } from "@/lib/skins";
 import { cn } from "@/lib/cn";
 
@@ -26,10 +35,11 @@ import { cn } from "@/lib/cn";
  * accent on purpose — a skin is mostly judged by where its colour lands, and a
  * single dot was too small to judge.
  */
-function Miniature({ skin }: { skin: SkinId }) {
+function Miniature({ skin, pair }: { skin: SkinId; pair?: UserAutoPair }) {
+  const painted = followsComputerLook(skin) ? resolveSkin(skin, pair ? { pair } : undefined) : skin;
   return (
     <div
-      data-skin={skin}
+      data-skin={painted}
       aria-hidden="true"
       className="flex h-[78px] w-full overflow-hidden rounded-lg bg-app ring-1 ring-hairline/60"
     >
@@ -74,12 +84,21 @@ function Miniature({ skin }: { skin: SkinId }) {
   );
 }
 
+function skinName(id: SkinId): string {
+  return SKINS.find((skin) => skin.id === id)?.name ?? id;
+}
+
+function adoptCustomIntoUserAuto(pair: UserAutoPair): UserAutoPair {
+  const side = osPrefersDark() ? "dark" : "light";
+  if (pair[side] === "custom") return pair;
+  return { ...pair, [side]: "custom" };
+}
+
 export function SkinPicker() {
-  const [active, setActive] = useState<SkinId>(
-    () => (document.documentElement.dataset.skin as SkinId) || readSkin(),
-  );
+  const [active, setActive] = useState<SkinId>(() => readSkin());
   const [customAccent, setCustomAccent] = useState<string | null>(() => readCustomAccent());
   const [customTheme, setCustomTheme] = useState<CustomThemeConfig>(() => readCustomTheme());
+  const [userAutoPair, setUserAutoPair] = useState<UserAutoPair>(() => readUserAutoPair());
 
   const handleSelectSkin = (id: SkinId) => {
     setActive(id);
@@ -91,10 +110,32 @@ export function SkinPicker() {
     applyCustomAccent(hex);
   };
 
+  const handleUserAutoSide = (side: keyof UserAutoPair, id: ConcreteSkinId) => {
+    const next = { ...userAutoPair, [side]: id };
+    setUserAutoPair(next);
+    saveUserAutoPair(next);
+    if (active !== "user-auto") {
+      setActive("user-auto");
+      applySkin("user-auto");
+    }
+  };
+
+  const applyCustomOnUserAuto = () => {
+    const next = adoptCustomIntoUserAuto(userAutoPair);
+    setUserAutoPair(next);
+    saveUserAutoPair(next);
+    setActive("user-auto");
+    applySkin("user-auto");
+  };
+
   const handleUpdateCustomField = (key: keyof CustomThemeConfig, value: string) => {
     const next = { ...customTheme, [key]: value };
     setCustomTheme(next);
     saveCustomTheme(next);
+    if (active === "user-auto") {
+      applyCustomOnUserAuto();
+      return;
+    }
     if (active !== "custom") {
       setActive("custom");
       applySkin("custom");
@@ -105,6 +146,10 @@ export function SkinPicker() {
     const next = { ...customTheme, ...preset };
     setCustomTheme(next);
     saveCustomTheme(next);
+    if (active === "user-auto") {
+      applyCustomOnUserAuto();
+      return;
+    }
     if (active !== "custom") {
       setActive("custom");
       applySkin("custom");
@@ -131,7 +176,7 @@ export function SkinPicker() {
                     : "border-hairline/60 hover:border-hairline hover:bg-control/50",
                 )}
               >
-                <Miniature skin={skin.id} />
+                <Miniature skin={skin.id} pair={userAutoPair} />
                 <div className="flex items-start gap-1.5 px-0.5 pb-0.5">
                   <div className="min-w-0 flex-1">
                     <div className="text-[13px] font-medium text-ink">{skin.name}</div>
@@ -146,6 +191,47 @@ export function SkinPicker() {
           })}
         </div>
       </div>
+
+      {active === "user-auto" && (
+        <div className="rounded-xl border border-hairline/60 bg-control/40 p-3.5">
+          <div className="text-[13px] font-medium text-ink">User Auto Themes</div>
+          <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
+            When this computer is light, BotFleet uses the light theme you pick.{"\u00a0 "}When it is dark, BotFleet uses the dark theme you pick.
+          </div>
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            <label className="flex min-w-0 flex-col gap-1.5">
+              <span className="text-[12px] font-medium text-ink">When The Computer Is Light</span>
+              <select
+                value={userAutoPair.light}
+                onChange={(event) => handleUserAutoSide("light", event.target.value as ConcreteSkinId)}
+                className="rounded-lg border border-hairline bg-raised px-2.5 py-1.5 text-[13px] text-ink"
+              >
+                {USER_AUTO_LIGHT_IDS.map((id) => (
+                  <option key={id} value={id}>
+                    {skinName(id)}
+                  </option>
+                ))}
+              </select>
+              <Miniature skin={userAutoPair.light} />
+            </label>
+            <label className="flex min-w-0 flex-col gap-1.5">
+              <span className="text-[12px] font-medium text-ink">When The Computer Is Dark</span>
+              <select
+                value={userAutoPair.dark}
+                onChange={(event) => handleUserAutoSide("dark", event.target.value as ConcreteSkinId)}
+                className="rounded-lg border border-hairline bg-raised px-2.5 py-1.5 text-[13px] text-ink"
+              >
+                {USER_AUTO_DARK_IDS.map((id) => (
+                  <option key={id} value={id}>
+                    {skinName(id)}
+                  </option>
+                ))}
+              </select>
+              <Miniature skin={userAutoPair.dark} />
+            </label>
+          </div>
+        </div>
+      )}
 
       {/* Accent Color Section */}
       <div className="rounded-xl border border-hairline/60 bg-control/40 p-3.5">
