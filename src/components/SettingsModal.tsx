@@ -47,7 +47,7 @@ const SECTIONS: Array<{
 }> = [
   { id: "general", label: "General", icon: User, keywords: ["profile", "name", "email", "skin", "theme", "appearance", "analytics", "updates", "tools", "tool calls", "simple", "projects", "threads", "workspace"] },
   { id: "connections", label: "Connections", icon: KeyRound, keywords: ["keys", "api", "composio", "box", "xai", "vps", "elevenlabs", "voice", "tts", "speech"] },
-  { id: "remote", label: "Remote Access", icon: Globe, keywords: ["remote", "url", "tunnel", "cloudflare", "access", "jays.services", "jay's tunnel", "health"] },
+  { id: "remote", label: "Remote Access", icon: Globe, keywords: ["remote", "url", "tunnel", "cloudflare", "access", "jay's tunnel", "health"] },
   { id: "engines", label: "Engines", icon: Terminal, keywords: ["models", "claude", "grok", "providers", "cli"] },
   { id: "models", label: "Models", icon: Layers, keywords: ["model", "fallback", "primary", "engine", "per bot", "fleet"] },
   { id: "companion", label: "Phone", icon: Smartphone, keywords: ["companion", "phone", "pair", "mobile", "gateway", "sidecar"] },

@@ -19,7 +19,7 @@ describe("RemoteAccessSection", () => {
     expect(html).toContain(REMOTE_ACCESS_HEADING);
     expect(html).toContain(REMOTE_URL_LABEL);
     expect(html).toContain(NAMED_REMOTE_URL);
-    expect(html).toContain(sentenceGapHtml(REMOTE_ACCESS_BLURB));
+    expect(html).toContain(sentenceGapHtml(REMOTE_ACCESS_BLURB).replaceAll("'", "&#x27;"));
     expect(html).toContain('aria-label="Copy Remote URL"');
     expect(html).toContain("Copy");
     expect(html.toLowerCase()).not.toContain("trycloudflare");
