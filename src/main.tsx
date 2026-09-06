@@ -1,7 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
-import { applySkin, readSkin } from "./lib/skins";
+import { applySkin, followsComputerLook, readSkin } from "./lib/skins";
 import { initSentry } from "./lib/sentry";
 import "./styles.css";
 
@@ -13,9 +13,8 @@ applySkin(readSkin());
 
 if (typeof window !== "undefined" && window.matchMedia) {
   window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-    if (readSkin() === "system") {
-      applySkin("system");
-    }
+    const pref = readSkin();
+    if (followsComputerLook(pref)) applySkin(pref);
   });
 }
 

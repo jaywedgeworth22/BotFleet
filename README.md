@@ -26,7 +26,7 @@ These are features this fork layered on after OpenMausBot.  **All of them are in
 - **Nested conversations under channels** — renameable task threads live under their channel, can be moved, searched, and collapsed, with a custom word for "room" if you want one.
 - **Chat bubble and request-ID copy** — click a bubble to copy its text; hover and right-click also copy Request ID or Message ID.
 - **macOS menu bar tray** — a menu-bar extra keeps BotFleet reachable while the window is hidden.
-- **Studio light default** — first visit uses Studio (light).  Dark and System Auto are explicit picker rows.  Code fences use a light Shiki theme so they stay readable on the default skin.
+- **System Auto default** — first visit follows this computer's light or dark look (Studio in light, Midnight in dark).  User Auto follows the same computer look with the light and dark themes you pick.  Manual theme rows stay available.  Code fences follow the painted theme so they stay readable.
 - **Always-on harness attach** — the desktop app attaches to an already-running BotFleet harness instead of forking a second one.
 
 ### Engines, failover, and telemetry
