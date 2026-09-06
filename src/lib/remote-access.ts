@@ -12,7 +12,7 @@ export const REMOTE_ACCESS_BLURB =
 
 export const COMPANION_GATEWAY_LABEL = "Companion Gateway";
 export const COMPANION_GATEWAY_BLURB =
-  "agents.botfleet.app is a separate path.  Leave it alone until that sidecar is up.";
+  `Phone pairing uses https://agents.botfleet.app.  That path is separate from Remote Access (botfleet.${personalServiceDomain}).`;
 
 /** HTML/JSX collapses ASCII double-spaces.  Convert Designer copy to NBSP+space. */
 export function sentenceGapHtml(text: string): string {

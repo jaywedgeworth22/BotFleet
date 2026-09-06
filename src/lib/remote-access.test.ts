@@ -26,14 +26,14 @@ describe("Remote Access Designer copy", () => {
     );
     expect(COMPANION_GATEWAY_LABEL).toBe("Companion Gateway");
     expect(COMPANION_GATEWAY_BLURB).toBe(
-      "agents.botfleet.app is a separate path.  Leave it alone until that sidecar is up.",
+      "Phone pairing uses https://agents.botfleet.app.  That path is separate from Remote Access (botfleet.jays.services).",
     );
   });
 
   it("keeps two ASCII spaces between sentences in the source blurbs", () => {
     expect(REMOTE_ACCESS_BLURB).toMatch(/Tunnel\.  Sign/);
     expect(REMOTE_ACCESS_BLURB).toMatch(/services\)\.  Health/);
-    expect(COMPANION_GATEWAY_BLURB).toMatch(/path\.  Leave/);
+    expect(COMPANION_GATEWAY_BLURB).toMatch(/app\.  That/);
   });
 
   it("turns those gaps into NBSP+space for HTML", () => {
@@ -41,7 +41,7 @@ describe("Remote Access Designer copy", () => {
     expect(html).toContain("Tunnel.\u00A0 Sign");
     expect(html).toContain("services).\u00A0 Health");
     expect(html).not.toMatch(/Tunnel\.  Sign/);
-    expect(sentenceGapHtml(COMPANION_GATEWAY_BLURB)).toContain("path.\u00A0 Leave");
+    expect(sentenceGapHtml(COMPANION_GATEWAY_BLURB)).toContain("app.\u00A0 That");
   });
 
   it("does not invent TryCloudflare on the named-tunnel path", () => {
