@@ -194,13 +194,13 @@ export function SkinPicker() {
 
       {active === "user-auto" && (
         <div className="rounded-xl border border-hairline/60 bg-control/40 p-3.5">
-          <div className="text-[13px] font-medium text-ink">User Auto Themes</div>
+          <div className="text-[13px] font-medium text-ink">Light And Dark Themes</div>
           <div className="mt-0.5 text-[11.5px] leading-snug text-ink-secondary">
-            When this computer is light, BotFleet uses the light theme you pick.{"\u00a0 "}When it is dark, BotFleet uses the dark theme you pick.
+            When this computer is light, BotFleet uses the light theme you pick.  When it is dark, BotFleet uses the dark theme you pick.
           </div>
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <label className="flex min-w-0 flex-col gap-1.5">
-              <span className="text-[12px] font-medium text-ink">When The Computer Is Light</span>
+              <span className="text-[12px] font-medium text-ink">When This Computer Is Light</span>
               <select
                 value={userAutoPair.light}
                 onChange={(event) => handleUserAutoSide("light", event.target.value as ConcreteSkinId)}
@@ -215,7 +215,7 @@ export function SkinPicker() {
               <Miniature skin={userAutoPair.light} />
             </label>
             <label className="flex min-w-0 flex-col gap-1.5">
-              <span className="text-[12px] font-medium text-ink">When The Computer Is Dark</span>
+              <span className="text-[12px] font-medium text-ink">When This Computer Is Dark</span>
               <select
                 value={userAutoPair.dark}
                 onChange={(event) => handleUserAutoSide("dark", event.target.value as ConcreteSkinId)}

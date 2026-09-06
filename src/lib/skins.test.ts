@@ -90,9 +90,9 @@ describe("skins", () => {
     const main = readFileSync(join(here, "../main.tsx"), "utf8");
     expect(settings).toContain("<SkinPicker />");
     expect(picker).toContain('useState<SkinId>(() => readSkin())');
-    expect(picker).toContain("User Auto Themes");
-    expect(picker).toContain("When The Computer Is Light");
-    expect(picker).toContain("When The Computer Is Dark");
+    expect(picker).toContain("Light And Dark Themes");
+    expect(picker).toContain("When This Computer Is Light");
+    expect(picker).toContain("When This Computer Is Dark");
     expect(picker).toContain("followsComputerLook(skin) ? resolveSkin");
     expect(main).toContain("followsComputerLook(pref)");
   });
