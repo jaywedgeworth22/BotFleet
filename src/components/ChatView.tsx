@@ -1414,23 +1414,22 @@ export function ChatView({ bot }: { bot: Bot }) {
         </div>
       </div>
 
-      {/* Reading scrollback — one tap back to the end, streaming or not */}
-      {!follow && (
-        <button
-          onClick={jumpToLatest}
-          aria-label="Jump to Latest Messages"
-          className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
-        >
-          <ArrowDown size={13} /> Jump to Latest
-        </button>
-      )}
-
       {/* keyed by bot: a draft belongs to the conversation it was typed in,
           so switching bots starts from an empty composer instead of carrying
           the previous bot's half-written message over. ArrowUp-to-edit is
           gated on busy like the pencil button — editing rewinds the thread,
           which a live turn forbids (the server 409s it). */}
-      <div className="absolute inset-x-0 bottom-0 z-[2]">
+      <div className="absolute inset-x-0 bottom-0 z-[2] flex flex-col items-center">
+      {!follow && (
+        <button
+          onClick={jumpToLatest}
+          aria-label="Jump to Latest Messages"
+          className="animate-pop-in relative z-10 mb-2 flex items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
+        >
+          <ArrowDown size={13} /> Jump to Latest
+        </button>
+      )}
+      <div className="w-full">
       <Composer
         key={bot.id}
         bot={bot}
@@ -1438,6 +1437,7 @@ export function ChatView({ bot }: { bot: Bot }) {
         onClearReply={() => setReplyTo(null)}
         onEditLast={lastUserMessage && !bot.busy ? () => setEditingId(lastUserMessage.id) : undefined}
       />
+      </div>
       </div>
       </div>
 

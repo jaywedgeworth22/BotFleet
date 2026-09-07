@@ -88,6 +88,21 @@ export function fileAttachment(name: string, path: string, size: number): FileAt
  * oversized paste is refused before the upload starts, not mid-stream. */
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
+/** Formats the transcript can preview and most engines can open. */
+const PREVIEWABLE_IMAGE_MIMES = new Set(["image/png", "image/jpeg", "image/gif", "image/webp"]);
+/** Apple screenshot paste (TIFF) and camera roll (HEIC/HEIF) plus AVIF/BMP.
+ * SVG stays previewable via <img> (main); not transcoded. */
+const CONVERTIBLE_IMAGE_MIMES = new Set([
+  "image/heic",
+  "image/heif",
+  "image/heic-sequence",
+  "image/heif-sequence",
+  "image/avif",
+  "image/tiff",
+  "image/bmp",
+  "image/x-ms-bmp",
+]);
+
 const IMAGE_MIMES = [
   "image/png",
   "image/jpeg",
@@ -96,6 +111,7 @@ const IMAGE_MIMES = [
   "image/heic",
   "image/heif",
   "image/avif",
+  "image/tiff",
   "image/bmp",
   "image/x-ms-bmp",
   "image/svg+xml",
@@ -110,6 +126,8 @@ const IMAGE_EXT_MIME: Record<string, string> = {
   heic: "image/heic",
   heif: "image/heif",
   avif: "image/avif",
+  tif: "image/tiff",
+  tiff: "image/tiff",
   bmp: "image/bmp",
   svg: "image/svg+xml",
 };
@@ -124,8 +142,81 @@ export function guessImageMime(file: { type: string; name?: string }): string | 
   return IMAGE_EXT_MIME[ext] ?? null;
 }
 
-export function isImageFile(file: { type: string; size: number; name?: string }): boolean {
-  return guessImageMime(file) != null;
+function imageMimeOf(file: { type: string; name?: string }): string {
+  return guessImageMime(file) ?? (file.type || "").split(";")[0]!.trim().toLowerCase();
+}
+
+export function isImageFile(file: { type: string; size?: number; name?: string }): boolean {
+  const mime = imageMimeOf(file);
+  return PREVIEWABLE_IMAGE_MIMES.has(mime) || CONVERTIBLE_IMAGE_MIMES.has(mime) || mime === "image/svg+xml";
+}
+
+export function attachmentLabel(file: { name?: string; type?: string }): string {
+  const name = (file.name || "").trim();
+  if (name && name !== "blob" && name !== "image.png") return name;
+  const mime = (file.type || "").split(";")[0]!.trim().toLowerCase();
+  if (mime === "image/heic" || mime === "image/heif") return "Pasted Photo.heic";
+  if (mime === "image/tiff") return "Pasted Screenshot.tiff";
+  if (mime.startsWith("image/")) return "Pasted Screenshot.png";
+  return name || mime || "untitled";
+}
+
+/** Cmd-V of a screenshot often puts the bitmap on `items`, not `files`. */
+export function filesFromClipboard(data: DataTransfer | null | undefined): File[] {
+  if (!data) return [];
+  const out: File[] = [];
+  const seen = new Set<string>();
+  const add = (file: File | null) => {
+    if (!file || file.size === 0) return;
+    const key = `${file.type}:${file.size}:${file.name}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    out.push(file);
+  };
+  for (const file of Array.from(data.files ?? [])) add(file);
+  for (const item of Array.from(data.items ?? [])) {
+    if (item.kind === "file" || item.type.startsWith("image/")) add(item.getAsFile());
+  }
+  return out;
+}
+
+/** Decode HEIC/TIFF/AVIF via the OS image stack and re-encode JPEG so the
+ * transcript preview (png|jpg|gif|webp only) and most engines can open it. */
+export async function previewableImageFile(file: {
+  name: string;
+  size: number;
+  type: string;
+  arrayBuffer: () => Promise<ArrayBuffer>;
+}): Promise<{ name: string; size: number; type: string; arrayBuffer: () => Promise<ArrayBuffer> }> {
+  const mime = imageMimeOf(file);
+  if (PREVIEWABLE_IMAGE_MIMES.has(mime) || mime === "image/svg+xml") {
+    return { name: file.name || attachmentLabel(file), size: file.size, type: mime || file.type, arrayBuffer: () => file.arrayBuffer() };
+  }
+  if (typeof createImageBitmap !== "function") return file;
+  try {
+    const blob = new Blob([await file.arrayBuffer()], { type: mime || "application/octet-stream" });
+    const bitmap = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return file;
+    ctx.drawImage(bitmap, 0, 0);
+    bitmap.close();
+    const jpeg = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("encode failed"))), "image/jpeg", 0.92);
+    });
+    const buffer = await jpeg.arrayBuffer();
+    const base = attachmentLabel(file).replace(/\.[^.]+$/, "") || "Pasted Screenshot";
+    return {
+      name: `${base}.jpg`,
+      size: buffer.byteLength,
+      type: "image/jpeg",
+      arrayBuffer: async () => buffer,
+    };
+  } catch {
+    return file;
+  }
 }
 
 /** Persist a pasted image server-side and return the attachment chip data.
@@ -137,13 +228,13 @@ export async function imageAttachmentFromFile(file: {
   type: string;
   arrayBuffer: () => Promise<ArrayBuffer>;
 }): Promise<ImageAttachment | null> {
-  const mime = guessImageMime(file);
-  if (!mime) return null;
-  if (file.size > IMAGE_MAX_BYTES) throw Object.assign(new Error(`${file.name} exceeds 10 MB`), { status: 413 });
-  const bytes = new Uint8Array(await file.arrayBuffer());
+  const prepared = await previewableImageFile(file);
+  if (!isImageFile(prepared)) return null;
+  if (prepared.size > IMAGE_MAX_BYTES) throw Object.assign(new Error(`${attachmentLabel(file)} exceeds 10 MB`), { status: 413 });
+  const bytes = new Uint8Array(await prepared.arrayBuffer());
   const response = await fetch("/api/attachments", {
     method: "POST",
-    headers: { "content-type": mime },
+    headers: { "content-type": prepared.type || file.type },
     body: bytes,
   });
   if (!response.ok) {
@@ -151,7 +242,7 @@ export async function imageAttachmentFromFile(file: {
     throw Object.assign(new Error(detail.error ?? "upload failed"), { status: response.status });
   }
   const saved = (await response.json()) as { path: string; mime: string; bytes: number };
-  return { kind: "image", id: newId(), path: saved.path, name: file.name || "pasted image", size: saved.bytes, mime: saved.mime };
+  return { kind: "image", id: newId(), path: saved.path, name: prepared.name || file.name || "pasted image", size: saved.bytes, mime: saved.mime };
 }
 
 export function pasteAttachment(text: string): PasteAttachment {
@@ -207,7 +298,9 @@ export type DroppedFile = Pick<File, "name" | "size" | "type" | "text"> & {
 export async function attachmentsFromDroppedFiles<T extends DroppedFile>(
   files: readonly T[],
   getPath: (file: T) => string,
+  opts: { allowImages?: boolean } = {},
 ): Promise<{ attachments: Attachment[]; rejectedNames: string[] }> {
+  const allowImages = opts.allowImages !== false;
   const results = await Promise.all(
     files.map(async (file) => {
       let path = "";
@@ -216,11 +309,11 @@ export async function attachmentsFromDroppedFiles<T extends DroppedFile>(
       } catch {
         // A browser or older desktop shell has no disk path to expose.
       }
-      if (path) return { attachment: fileAttachment(file.name, path, file.size) };
-      if (isImageFile(file) && file.arrayBuffer) {
+      if (path) return { attachment: fileAttachment(file.name || attachmentLabel(file), path, file.size) };
+      if (allowImages && isImageFile(file) && file.arrayBuffer) {
         try {
           const image = await imageAttachmentFromFile({
-            name: file.name,
+            name: file.name || attachmentLabel(file),
             size: file.size,
             type: file.type,
             arrayBuffer: file.arrayBuffer,
@@ -240,17 +333,22 @@ export async function attachmentsFromDroppedFiles<T extends DroppedFile>(
       if (file.arrayBuffer) {
         try {
           const uploaded = await uploadPathlessFile({
-            name: file.name,
+            name: file.name || attachmentLabel(file),
             size: file.size,
             type: file.type,
             arrayBuffer: file.arrayBuffer,
           });
-          if (uploaded) return { attachment: uploaded };
+          if (uploaded) {
+            if (!allowImages && uploaded.kind === "image") {
+              return { attachment: fileAttachment(uploaded.name, uploaded.path, uploaded.size) };
+            }
+            return { attachment: uploaded };
+          }
         } catch {
           // Named below as rejected.
         }
       }
-      return { rejectedName: file.name };
+      return { rejectedName: attachmentLabel(file) };
     }),
   );
 
@@ -374,11 +472,11 @@ export async function intakeFiles<T extends DroppedFile & { type: string }>(
         const attachment = await uploadImage(file);
         if (attachment) attachments.push(attachment);
       } catch (err) {
-        imageErrors.push(`${file.name}: ${err instanceof Error ? err.message : "upload failed"}`);
+        imageErrors.push(`${attachmentLabel(file)}: ${err instanceof Error ? err.message : "upload failed"}`);
       }
       continue;
     }
-    const result = await attachmentsFromDroppedFiles([file], getPath);
+    const result = await attachmentsFromDroppedFiles([file], getPath, { allowImages });
     attachments.push(...result.attachments);
     rejectedNames.push(...result.rejectedNames);
   }

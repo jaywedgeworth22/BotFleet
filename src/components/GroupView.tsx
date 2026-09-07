@@ -1530,6 +1530,7 @@ export function GroupView({ group }: { group: Group }) {
         )}
       </div>
 
+      <div className="absolute inset-x-0 bottom-0 z-[2] flex flex-col items-center">
       {!follow && (
         <button
           onClick={() => {
@@ -1544,13 +1545,12 @@ export function GroupView({ group }: { group: Group }) {
             });
           }}
           aria-label="Jump to Latest Messages"
-          className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
+          className="animate-pop-in relative z-10 mb-2 flex items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
         >
-          <ArrowDown size={13} /> Jump to latest
+          <ArrowDown size={13} /> Jump to Latest
         </button>
       )}
-
-      <div className="absolute inset-x-0 bottom-0 z-[2]">
+      <div className="w-full">
       <Composer
         key={group.threadId}
         group={group}
@@ -1559,6 +1559,7 @@ export function GroupView({ group }: { group: Group }) {
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
       />
+      </div>
       </div>
       </div>
     </main>
