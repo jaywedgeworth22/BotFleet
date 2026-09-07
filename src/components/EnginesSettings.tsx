@@ -283,7 +283,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
           {enabled ? "On" : "Off"}
         </label>
         <span className={cn("size-1.5 shrink-0 rounded-full", instance.cli ? "bg-accent" : "bg-raised-hover")} />
-        <ProviderMark driverKind={instance.driverKind} size={14} />
+        <ProviderMark driverKind={instance.driverKind} size={18} />
         <span className={cn("shrink-0", enabled ? "text-ink" : "text-ink-secondary/70")}>{instance.displayName}</span>
         {instance.cli ? (
           <span className={cn("truncate font-mono text-[11.5px]", enabled ? "text-accent" : "text-ink-secondary/60")} title={instance.cli}>
