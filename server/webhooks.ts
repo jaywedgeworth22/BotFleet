@@ -122,6 +122,9 @@ export interface WebhookManagerOptions {
   now?: () => number;
   emit?: (event: WebhookManagerEvent) => void;
   botState: (botId: string) => "ready" | "busy" | "missing";
+  /** Resolve a live bot by display name. Used to reroute fleet-infra Sentry
+   * onto Plumber without baking that bot's id into the webhook record. */
+  findBotIdByName?: (name: string) => string | undefined;
   enqueue: (input: {
     webhookId: string;
     webhookName: string;
@@ -314,7 +317,53 @@ function taskFromPayload(payload: JsonValue): string {
   return task.trim().slice(0, 20_000);
 }
 
-function eventPrompt(trigger: StoredWebhookTrigger, event: WebhookEvent, receivedAt: number, deliveryId: string): string {
+function asRecord(value: JsonValue | undefined): Record<string, JsonValue> | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  return value as Record<string, JsonValue>;
+}
+
+/** Sentry issue-webhook project slug, when the payload carries one. */
+export function sentryProjectSlug(payload: JsonValue): string | undefined {
+  const root = asRecord(payload);
+  if (!root) return undefined;
+  const data = asRecord(root.data) ?? root;
+  const issue = asRecord(data.issue);
+  const projectValue = issue?.project ?? data.project ?? root.project;
+  if (typeof projectValue === "string" && projectValue.trim()) return projectValue.trim();
+  const project = asRecord(projectValue);
+  const slug = project?.slug ?? project?.name;
+  return typeof slug === "string" && slug.trim() ? slug.trim() : undefined;
+}
+
+export const FLEET_INFRA_SENTRY_PROJECT = "fleet-infra";
+export const PLUMBER_BOT_NAME = "Plumber";
+
+export function resolveWebhookBotId(
+  triggerBotId: string,
+  payload: JsonValue,
+  findBotIdByName?: (name: string) => string | undefined,
+  botState?: (botId: string) => "ready" | "busy" | "missing",
+): { botId: string; skipConfiguredPrompt: boolean } {
+  if (sentryProjectSlug(payload) !== FLEET_INFRA_SENTRY_PROJECT) {
+    return { botId: triggerBotId, skipConfiguredPrompt: false };
+  }
+  const plumberId = findBotIdByName?.(PLUMBER_BOT_NAME)?.trim();
+  if (!plumberId || plumberId === triggerBotId) {
+    return { botId: triggerBotId, skipConfiguredPrompt: false };
+  }
+  if (botState?.(plumberId) === "missing") {
+    return { botId: triggerBotId, skipConfiguredPrompt: false };
+  }
+  return { botId: plumberId, skipConfiguredPrompt: true };
+}
+
+function eventPrompt(
+  trigger: StoredWebhookTrigger,
+  event: WebhookEvent,
+  receivedAt: number,
+  deliveryId: string,
+  opts?: { skipConfiguredPrompt?: boolean },
+): string {
   const metadata = [
     `Received: ${new Date(receivedAt).toISOString()}`,
     `Delivery ID: ${deliveryId}`,
@@ -322,7 +371,7 @@ function eventPrompt(trigger: StoredWebhookTrigger, event: WebhookEvent, receive
     event.contentType && `Content-Type: ${event.contentType.slice(0, 200)}`,
     event.userAgent && `Sender: ${event.userAgent.slice(0, 300)}`,
   ].filter(Boolean);
-  const configured = trigger.prompt.trim();
+  const configured = opts?.skipConfiguredPrompt ? "" : trigger.prompt.trim();
   const requestedTask = configured ? "" : taskFromPayload(event.payload);
   const instructionBlock = configured
     ? ["[USER-CONFIGURED WEBHOOK INSTRUCTIONS]", configured, "[/USER-CONFIGURED WEBHOOK INSTRUCTIONS]"]
@@ -546,11 +595,19 @@ export class WebhookManager {
     this.rate.set(trigger.endpointId, recent);
 
     const deliveryId = requestedDeliveryId || randomUUID();
+    const route = resolveWebhookBotId(
+      trigger.botId,
+      event.payload,
+      this.options.findBotIdByName,
+      this.options.botState,
+    );
     const run = this.options.enqueue({
       webhookId: trigger.id,
       webhookName: trigger.name,
-      prompt: eventPrompt(trigger, event, now, deliveryId),
-      botId: trigger.botId,
+      prompt: eventPrompt(trigger, event, now, deliveryId, {
+        skipConfiguredPrompt: route.skipConfiguredPrompt,
+      }),
+      botId: route.botId,
       runOn: trigger.runOn,
       deliveryId,
       receivedAt: now,
