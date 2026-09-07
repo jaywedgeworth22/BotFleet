@@ -281,14 +281,16 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       const abort = new AbortController();
       active.set(threadId, { abort, turnId });
 
-      const openAiTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
-        type: "function",
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
-        },
-      })) : undefined;
+      const openAiTools = turn.tools && turn.tools.length > 0
+        ? turn.tools.map((t) => ({
+            type: "function",
+            function: {
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+            },
+          }))
+        : undefined;
 
       const messages = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
