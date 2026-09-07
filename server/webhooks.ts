@@ -339,20 +339,25 @@ export const FLEET_INFRA_SENTRY_PROJECT = "fleet-infra";
 export const PLUMBER_BOT_NAME = "Plumber";
 
 export function resolveWebhookBotId(
-  triggerBotId: string,
+  trigger: { botId: string; name: string },
   payload: JsonValue,
   findBotIdByName?: (name: string) => string | undefined,
   botState?: (botId: string) => "ready" | "busy" | "missing",
 ): { botId: string; skipConfiguredPrompt: boolean } {
+  // Name is owner-configured, not attacker-controlled.  Do not reroute an
+  // unrelated webhook just because its untrusted JSON mentioned fleet-infra.
+  if (!/\bsentry\b/i.test(trigger.name)) {
+    return { botId: trigger.botId, skipConfiguredPrompt: false };
+  }
   if (sentryProjectSlug(payload) !== FLEET_INFRA_SENTRY_PROJECT) {
-    return { botId: triggerBotId, skipConfiguredPrompt: false };
+    return { botId: trigger.botId, skipConfiguredPrompt: false };
   }
   const plumberId = findBotIdByName?.(PLUMBER_BOT_NAME)?.trim();
-  if (!plumberId || plumberId === triggerBotId) {
-    return { botId: triggerBotId, skipConfiguredPrompt: false };
+  if (!plumberId || plumberId === trigger.botId) {
+    return { botId: trigger.botId, skipConfiguredPrompt: false };
   }
   if (botState?.(plumberId) === "missing") {
-    return { botId: triggerBotId, skipConfiguredPrompt: false };
+    return { botId: trigger.botId, skipConfiguredPrompt: false };
   }
   return { botId: plumberId, skipConfiguredPrompt: true };
 }
@@ -596,7 +601,7 @@ export class WebhookManager {
 
     const deliveryId = requestedDeliveryId || randomUUID();
     const route = resolveWebhookBotId(
-      trigger.botId,
+      trigger,
       event.payload,
       this.options.findBotIdByName,
       this.options.botState,

@@ -166,6 +166,21 @@ describe("WebhookManager", () => {
     expect(h.queued[1]?.prompt).toContain("You are BF-Fixer");
   });
 
+  it("does not reroute a non-Sentry webhook whose payload mentions fleet-infra", () => {
+    const h = harness();
+    h.options.findBotIdByName = (name) => (name === "Plumber" ? "maus-plumber" : undefined);
+    const { webhook, secret } = h.manager.create({
+      name: "UptimeRobot Outage",
+      prompt: "You are Monitor.",
+      botId: "maus-monitor",
+    });
+    h.manager.receive(webhook.endpointId, secret, {
+      payload: { data: { issue: { project: { slug: "fleet-infra" } } } },
+    });
+    expect(h.queued[0]).toMatchObject({ botId: "maus-monitor" });
+    expect(h.queued[0]?.prompt).toContain("You are Monitor.");
+  });
+
   it("stays on the assigned bot when Plumber is missing", () => {
     const h = harness();
     h.options.findBotIdByName = () => "maus-plumber";
