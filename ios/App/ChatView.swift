@@ -107,7 +107,16 @@ struct ChatView: View {
         .onChange(of: current.unread) { _, unread in
             if unread { Task { await session.markRead(current) } }
         }
-        .onDisappear { dictation.stop() }
+        .onAppear { NotificationCoordinator.shared.viewingThreadId = threadId }
+        .onChange(of: threadId) { _, newId in
+            NotificationCoordinator.shared.viewingThreadId = newId
+        }
+        .onDisappear {
+            dictation.stop()
+            if NotificationCoordinator.shared.viewingThreadId == threadId {
+                NotificationCoordinator.shared.viewingThreadId = nil
+            }
+        }
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { dictation.stop() }
         }
@@ -447,6 +456,8 @@ struct ChatView: View {
         let run: () -> Void
     }
 
+    private static let steerPrompt = "Pause and explain your current plan"
+
     private var plusActions: [PlusAction] {
         var out: [PlusAction] = []
         out.append(PlusAction(
@@ -457,6 +468,32 @@ struct ChatView: View {
             id: "file", systemImage: "doc", title: "File",
             subtitle: "Attach any file from Files"
         ) { pickingFile = true })
+        out.append(PlusAction(
+            id: "dictate",
+            systemImage: dictation.isListening ? "mic.fill" : "mic",
+            title: dictation.isListening ? "Stop dictation" : "Dictate",
+            subtitle: dictation.isListening ? "Stop listening and keep the text" : "Talk instead of typing"
+        ) {
+            dictation.toggle(capturing: draft)
+        })
+        out.append(PlusAction(
+            id: "commands", systemImage: "command", title: "Slash commands",
+            subtitle: "Computer, tasks, steer, and more"
+        ) {
+            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
+                showCommandHUD = true
+            }
+            if !draft.hasPrefix("/") { draft = "/" }
+            composerFocused = true
+        })
+        if current.busy, case .bot = current {
+            out.append(PlusAction(
+                id: "steer", systemImage: "steeringwheel", title: "Steer",
+                subtitle: canSend
+                    ? "Send this into the running turn"
+                    : "Redirect what this bot is doing now"
+            ) { steer() })
+        }
         if clipboardHasAttachment {
             out.append(PlusAction(
                 id: "paste", systemImage: "doc.on.clipboard", title: "Paste from clipboard",
@@ -553,6 +590,11 @@ struct ChatView: View {
         ])
     }
 
+    private func steer() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        submit(text.isEmpty ? Self.steerPrompt : nil)
+    }
+
     private func submit(_ explicitText: String? = nil) {
         // This also cancels an in-flight permission prompt before it can
         // open the microphone after the message has already been sent.
@@ -609,7 +651,26 @@ struct ChatView: View {
                     }
                 }
                 .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if draft.isEmpty && !current.busy && !hasPendingApproval {
+            } else if current.busy, case .bot = current {
+                HStack(spacing: 8) {
+                    Button(action: steer) {
+                        HStack(spacing: 5) {
+                            Image(systemName: "steeringwheel")
+                                .font(.system(size: 12, weight: .semibold))
+                            Text("Steer")
+                                .font(.caption.weight(.semibold))
+                        }
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(Capsule().fill(Color.secondary.opacity(0.14)))
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Steer the running turn")
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 4)
+                .transition(.opacity)
+            } else if draft.isEmpty && !hasPendingApproval {
                 PredictiveActionChipsView(accentColor: MausPalette.color(current.color)) { chip in
                     submit(chip.prompt)
                 }
@@ -671,23 +732,6 @@ struct ChatView: View {
                     .accessibilityLabel(showingPlus ? "Close" : "More")
 
                     HStack(alignment: .bottom, spacing: 6) {
-                        Button {
-                            dictation.stop()
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) {
-                                showCommandHUD.toggle()
-                            }
-                            Haptics.selection()
-                        } label: {
-                            Image(systemName: "command")
-                                .font(.system(size: 13, weight: .bold))
-                                .foregroundStyle(showCommandHUD ? Color.primary : Color.secondary)
-                                .frame(width: 30, height: 32)
-                        }
-                        .buttonStyle(.plain)
-                        .accessibilityLabel("Slash commands")
-                        .padding(.leading, 6)
-                        .padding(.bottom, 6)
-
                         TextField(
                             dictation.isListening ? "Listening…" : "Ask \(current.name)",
                             text: $draft,
@@ -695,9 +739,10 @@ struct ChatView: View {
                         )
                             .lineLimit(1...8)
                             .font(.body)
+                            .padding(.leading, 14)
                             .padding(.vertical, 11)
                             .focused($composerFocused)
-                            .submitLabel(sizeClass == .regular ? .return : .send)
+                            .submitLabel(.return)
                             // Partial transcripts rebuild from a frozen base;
                             // prevent competing edits without dimming the text.
                             .allowsHitTesting(!dictation.isListening && !dictation.isStarting)
@@ -706,38 +751,22 @@ struct ChatView: View {
                                     showCommandHUD = value.hasPrefix("/")
                                 }
                             }
-                            .onKeyPress(.return, phases: .down) { press in
-                                // iPad: Return inserts a newline; send is the button.
-                                // Phone: Return sends, Shift-Return is a soft return.
-                                if sizeClass == .regular { return .ignored }
-                                guard !press.modifiers.contains(.shift) else { return .ignored }
-                                submit()
-                                return .handled
-                            }
-                            .onSubmit {
-                                if sizeClass != .regular { submit() }
-                            }
 
-                        Button {
-                            composerFocused = false
-                            dictation.toggle(capturing: draft)
-                        } label: {
-                            Image(systemName: dictation.isListening ? "mic.fill" : "mic")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundStyle(dictation.isListening ? Color.red : Color.primary)
-                                .frame(width: 32, height: 32)
-                                .background(
-                                    Circle().fill(
-                                        dictation.isListening
-                                            ? Color.red.opacity(0.2)
-                                            : Color.secondary.opacity(0.12)
-                                    )
-                                )
-                                .symbolEffect(.pulse, isActive: dictation.isListening)
+                        if dictation.isListening {
+                            Button {
+                                dictation.toggle(capturing: draft)
+                            } label: {
+                                Image(systemName: "mic.fill")
+                                    .font(.system(size: 15, weight: .semibold))
+                                    .foregroundStyle(Color.red)
+                                    .frame(width: 32, height: 32)
+                                    .background(Circle().fill(Color.red.opacity(0.2)))
+                                    .symbolEffect(.pulse, isActive: true)
+                            }
+                            .buttonStyle(.plain)
+                            .padding(.bottom, 6)
+                            .accessibilityLabel("Stop dictation")
                         }
-                        .buttonStyle(.plain)
-                        .padding(.bottom, 6)
-                        .accessibilityLabel(dictation.isListening ? "Stop dictation" : "Start dictation")
 
                         Button { submit() } label: {
                             Image(systemName: "arrow.up")
@@ -755,7 +784,7 @@ struct ChatView: View {
                         .animation(.easeOut(duration: 0.15), value: canSend)
                     }
                     .frame(minHeight: 44)
-                    .glassCapsule(interactive: false)
+                    .glassRounded(cornerRadius: 18, interactive: false)
                 }
             }
         }
@@ -1000,6 +1029,10 @@ struct MessageRow: View {
                 }
                 .font(.system(size: 11))
                 .foregroundStyle(Color.secondary)
+            } else if message.steered == true {
+                Text("Sent mid-turn")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.secondary)
             }
 
             if let reactions = message.reactions, !reactions.isEmpty {
