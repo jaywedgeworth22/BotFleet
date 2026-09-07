@@ -76,17 +76,16 @@ fi
 
 if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then
   team="${VERCEL_ORG_ID:-}"
-  qs="projectId=${VERCEL_PROJECT_ID}&target=production&limit=1"
+  qs="projectId=${VERCEL_PROJECT_ID}&target=production&state=READY&limit=1"
   if [[ -n "$team" ]]; then
     qs="${qs}&teamId=${team}"
   fi
   created=$(curl -fsS -H "Authorization: Bearer ${VERCEL_TOKEN}" \
     "https://api.vercel.com/v6/deployments?${qs}" \
-    | python3 -c "import json,sys
-d=json.load(sys.stdin)
-deps=d.get('deployments') or []
-print(deps[0]['created'] if deps else 0)" 2>/dev/null || echo 0)
-  now_ms=$(python3 -c "import time; print(int(time.time()*1000))")
+    | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const j=JSON.parse(d);console.log(j.deployments?.[0]?.created||0);}catch{console.log(0);}});' 2>/dev/null \
+    || python3 -c "import json,sys; d=json.load(sys.stdin); deps=d.get('deployments') or []; print(deps[0]['created'] if deps else 0)" 2>/dev/null \
+    || echo 0)
+  now_ms=$(node -e 'console.log(Date.now())' 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
   if [[ "$created" =~ ^[0-9]+$ ]] && [[ "$created" -gt 0 ]]; then
     age=$(( (now_ms - created) / 1000 ))
     if [[ "$age" -lt 3600 ]]; then
