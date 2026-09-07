@@ -24,7 +24,7 @@
 export interface ComputerMount {
   /** MCP server name, and therefore the agent's tool prefix. */
   name: string;
-  /** Human label used in the system prompt ("Shared VM", "This Mac"). */
+  /** Human label used in the system prompt ("My VPS", "This Mac"). */
   label: string;
   kind: ComputerKind;
   box?: {
@@ -67,7 +67,7 @@ export function computerLabel(kind: ComputerKind, hostPlatform: NodeJS.Platform)
     case "box":
       return "ASCII.dev Box";
     case "vps":
-      return "Shared VM";
+      return "My VPS";
     case "vm":
       return "Local VM";
     case "local":
@@ -105,7 +105,7 @@ function multiLine(mount: ComputerMount): string {
     case "box":
       return `${mount.label} — your own cloud Linux desktop, through the ${tools}. In Chrome prefer browser_snapshot with browser_click/browser_fill; use computer_exec for shell work.`;
     case "vps":
-      return `${mount.label} — a self-hosted remote Linux desktop shared with the other bots, through the ${tools}. Its filesystem is disposable, so push long-lived work to a remote instead of leaving it there.`;
+      return `${mount.label} — your own isolated, self-hosted remote Linux desktop (one container per bot, not shared with the other bots), through the ${tools}. Its filesystem is disposable, so push long-lived work to a remote instead of leaving it there.`;
     case "local":
       return `${mount.label} — the user's own machine, through the ${tools}. Every action here is brokered for the user's approval, so it is slower and more intrusive than a remote desktop.`;
   }
