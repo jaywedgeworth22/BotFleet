@@ -354,9 +354,13 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
         </div>
       )}
       {["minimax"].includes(instance.driverKind) && (
-        <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
-          <strong>Limited functionality:</strong> This native HTTP driver does not support BotFleet tools. 
-          For full tool support, use the Pi Engine's OpenAI compat, or the DeepSeek Harness (<code>dsh</code>) instead.
+        <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
+          <strong className="text-ink">Native HTTP API.</strong>&nbsp; Optimized for fast, low-cost text turns
+          with up to a 1M-token context window.&nbsp; Streams token-level responses, supports the OpenAI
+          function-calling shape, and accepts a <code>turn.tools</code> array the harness can populate
+          for any tools the agent should be able to call.&nbsp; For tool-using agents that need to read
+          files, run shell, or drive a browser, pick an ACP engine (Claude, Codex, DSH, Droid) instead —
+          they spawn MCP servers natively and execute the calls.
         </div>
       )}
       {error && <div role="alert" className="mt-1 text-[12px] text-danger">{error}</div>}

@@ -152,4 +152,105 @@ describe("MinimaxDriver", () => {
     recorder.stop();
     await instance.dispose();
   });
+
+  it("forwards turn.tools to the API in OpenAI function-calling shape", async () => {
+    let body: any;
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response('data: {"choices":[{"delta":{"content":"hi"}}]}\ndata: [DONE]\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    }));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-tools",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({
+      threadId: "thread",
+      text: "list my bots",
+      tools: [
+        {
+          name: "list_bots",
+          description: "List every bot in the fleet.",
+          parameters: {
+            type: "object",
+            properties: { section: { type: "string" } },
+            required: [],
+          },
+        },
+        {
+          name: "ask_bot",
+          description: "Delegate a subtask to another bot.",
+          parameters: { type: "object" },
+        },
+      ],
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(body.tools).toEqual([
+      {
+        type: "function",
+        function: {
+          name: "list_bots",
+          description: "List every bot in the fleet.",
+          parameters: {
+            type: "object",
+            properties: { section: { type: "string" } },
+            required: [],
+          },
+        },
+      },
+      {
+        type: "function",
+        function: {
+          name: "ask_bot",
+          description: "Delegate a subtask to another bot.",
+          parameters: { type: "object" },
+        },
+      },
+    ]);
+    expect(body.tools).toHaveLength(2);
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("streams tool_call deltas as item.started so steps render in the transcript", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_bots","arguments":""}}]}}]}\n' +
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"section\\":\\"ops\\"}"}}]}}]}\n' +
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":""}}]}}]}\n' +
+      'data: [DONE]\n',
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-tool-stream",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({
+      threadId: "thread",
+      text: "list ops bots",
+      tools: [{ name: "list_bots" }],
+    });
+    const started = await recorder.until((event) => event.type === "item.started" && event.itemType === "tool");
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(started).toMatchObject({
+      itemId: "call_1",
+      title: "list_bots",
+    });
+    expect(completed).toMatchObject({ ok: true });
+    recorder.stop();
+    await instance.dispose();
+  });
 });
