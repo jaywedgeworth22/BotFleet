@@ -45,6 +45,13 @@ final class Session: ObservableObject {
     @Published private(set) var pairingInvite: PairingInvite?
     @Published var config: ConfigStatus?
 
+    /// instanceId -> driverKind, cached from the last `instances()` fetch so
+    /// the chat header can resolve a bot's current-model provider mark
+    /// synchronously instead of firing a network call per render.  Never
+    /// parse `instanceId` for this — it is operator-named (e.g.
+    /// "claude-bypass", "agy-test") and not reliably prefixed by driver kind.
+    @Published private(set) var instanceDriverKinds: [String: String] = [:]
+
     /// A notification response that should be pushed by the roster's
     /// NavigationStack after the exact detached task has been activated.
     @Published private(set) var notificationChat: Chat?
@@ -1088,8 +1095,17 @@ final class Session: ObservableObject {
 
     func instances() async -> [Instance] {
         guard let client else { return [] }
-        do { return try await client.instances() }
-        catch { actionError = error.localizedDescription; return [] }
+        do {
+            let fetched = try await client.instances()
+            instanceDriverKinds = Dictionary(
+                fetched.map { ($0.instanceId, $0.driverKind) },
+                uniquingKeysWith: { _, latest in latest }
+            )
+            return fetched
+        } catch {
+            actionError = error.localizedDescription
+            return []
+        }
     }
 
     // MARK: - Routines

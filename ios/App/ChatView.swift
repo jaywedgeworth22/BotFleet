@@ -70,6 +70,17 @@ struct ChatView: View {
         return max(0, session.state.unreadCount - mine)
     }
 
+    /// The provider driving this bot's current model, for the header's
+    /// logo badge.  Rooms have many bots and no single current model, so
+    /// this is `nil` (and the badge renders nothing) for anything but a
+    /// single bot chat.  Joins through the cached instanceId -> driverKind
+    /// map on `Session` rather than parsing `instanceId`, which is
+    /// operator-named and not reliably prefixed by driver kind.
+    private var currentDriverKind: String? {
+        guard case let .bot(bot) = current else { return nil }
+        return session.instanceDriverKinds[bot.modelSelection.instanceId]
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             transcriptColumn
@@ -349,6 +360,12 @@ struct ChatView: View {
                             state: MausState.forChat(current, in: session.state),
                             animated: MausState.forChat(current, in: session.state).showsActivity
                         )
+                        .overlay(alignment: .bottomTrailing) {
+                            if let currentDriverKind {
+                                ProviderMarkView(driverKind: currentDriverKind, size: 15)
+                                    .offset(x: 2, y: 2)
+                            }
+                        }
                         VStack(alignment: .leading, spacing: 1) {
                             Text(current.name)
                                 .font(.system(size: 15, weight: .semibold))
