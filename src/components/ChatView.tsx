@@ -1383,6 +1383,21 @@ export function ChatView({ bot }: { bot: Bot }) {
             modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} size={14} /> : undefined}
             modelName={presenceModel?.name}
           >
+            {/* Live streaming text: shown while the driver is still
+             * emitting tokens, before the settled message lands.  Without
+             * this, a 30-second turn reads as a spinner with no signal
+             * for the entire duration — the assistant is "working" but
+             * the user cannot see what they are working on.  When the
+             * settled `popping` message arrives it takes over and animates
+             * into place, so we never render both at once. */}
+            {!popping && streaming ? (
+              <div className={cn(BUBBLE_WIDTH, "rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink")}>
+                <MessageBoundary fallbackText={streaming}>
+                  <ChatMarkdown text={streaming} />
+                </MessageBoundary>
+                <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-ink-secondary/60 align-middle" aria-hidden />
+              </div>
+            ) : null}
             {popping ? (
               <div className={cn(BUBBLE_WIDTH, "rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink")}>
                 <MessageBoundary fallbackText={popping.text}>
