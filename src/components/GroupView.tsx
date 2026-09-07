@@ -29,7 +29,7 @@ import { GroupThreadTabs } from "./ThreadTabs";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
-import { AttachedImageGallery } from "./AttachmentPreview";
+import { AttachedFileChips, AttachedImageGallery } from "./AttachmentPreview";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { CopyButton } from "./CopyButton";
@@ -140,7 +140,7 @@ function GroupTextRow({
     const selection = window.getSelection()?.toString();
     if (selection && selection.trim().length > 0) return;
     const target = e.target as HTMLElement | null;
-    if (target?.closest("a, button, input, textarea, summary, pre, code")) return;
+    if (target?.closest("a, button, input, textarea, summary, pre, code, img")) return;
     if (!copyContent) return;
     void navigator.clipboard?.writeText(copyContent);
     setCopied(true);
@@ -206,6 +206,9 @@ function GroupTextRow({
             <>
               {attachedImages && attachedImages.images.length > 0 && (
                 <AttachedImageGallery paths={attachedImages.images} />
+              )}
+              {attachedImages && attachedImages.files.length > 0 && (
+                <AttachedFileChips paths={attachedImages.files} />
               )}
               {attachedImages?.display ?? m.text}
             </>

@@ -53,7 +53,7 @@ import { ChatFindBar } from "./ChatFindBar";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
-import { AttachedImageGallery } from "./AttachmentPreview";
+import { AttachedFileChips, AttachedImageGallery } from "./AttachmentPreview";
 import { ModelPicker } from "./ModelPicker";
 import { RenameTitle } from "./RenameTitle";
 import { ThreadTabs } from "./ThreadTabs";
@@ -276,7 +276,7 @@ function Bubble({
     const selection = window.getSelection()?.toString();
     if (selection && selection.trim().length > 0) return;
     const target = e.target as HTMLElement | null;
-    if (target?.closest("a, button, input, textarea, summary, pre, code")) return;
+    if (target?.closest("a, button, input, textarea, summary, pre, code, img")) return;
     if (!copyContent) return;
     void navigator.clipboard?.writeText(copyContent);
     setCopied(true);
@@ -489,6 +489,9 @@ function Bubble({
             <>
               {attachedImages && attachedImages.images.length > 0 && (
                 <AttachedImageGallery paths={attachedImages.images} />
+              )}
+              {attachedImages && attachedImages.files.length > 0 && (
+                <AttachedFileChips paths={attachedImages.files} />
               )}
               <div
                 className={cn(collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}

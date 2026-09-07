@@ -3,9 +3,9 @@
 // resolves them through attachmentImageUrl rather than loading them as URLs.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Download, ImageOff, Maximize2, X } from "lucide-react";
+import { Download, File as FileIcon, ImageOff, Maximize2, X } from "lucide-react";
 
-import { attachmentBasename, attachmentImageUrl } from "@/lib/composer-attachments";
+import { attachmentBasename, attachmentFileUrl, attachmentImageUrl } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 
 export interface PreviewImage {
@@ -144,6 +144,35 @@ function Thumbnail({ image, onPreview }: { image: PreviewImage; onPreview: () =>
         <Maximize2 size={13} />
       </span>
     </button>
+  );
+}
+
+export function AttachedFileChips({ paths, className }: { paths: string[]; className?: string }) {
+  if (paths.length === 0) return null;
+  return (
+    <div className={cn("mb-2 flex flex-wrap gap-2", className)}>
+      {paths.map((path) => {
+        const name = attachmentBasename(path) || "File";
+        const href = attachmentFileUrl(path);
+        const inner = (
+          <>
+            <FileIcon size={16} className="shrink-0 text-ink-secondary" />
+            <span className="min-w-0 truncate text-[13px] font-medium text-ink" title={name}>{name}</span>
+          </>
+        );
+        const chipClass =
+          "flex max-w-[220px] items-center gap-2 rounded-xl border border-hairline/40 bg-inset px-2.5 py-2 text-left hover:border-hairline hover:bg-panel";
+        return href ? (
+          <a key={path} href={href} target="_blank" rel="noreferrer" className={chipClass} aria-label={`Open ${name}`}>
+            {inner}
+          </a>
+        ) : (
+          <div key={path} className={chipClass} title={path}>
+            {inner}
+          </div>
+        );
+      })}
+    </div>
   );
 }
 

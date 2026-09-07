@@ -414,20 +414,36 @@ export function escapeAttribute(value: string): string {
     .replaceAll("\n", "&#10;");
 }
 
-/** Split a stored user message into its display text and the images it
- * attached, for transcript rendering. The tag never shows in the bubble. */
-export function splitAttachedImages(text: string): { display: string; images: string[] } {
+function unescapeAttachmentPath(raw: string): string {
+  return raw
+    .replaceAll("&quot;", '"')
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
+}
+
+/** Split a stored user message into display text, images, and other files.
+ * Both `<attached-image>` and `<attached-file>` tags are stripped from the
+ * bubble.  A file whose saved name is a previewable image (png/jpg/gif/webp)
+ * is shown as an image even when the engine stored it as a file. */
+export function splitAttachedImages(text: string): { display: string; images: string[]; files: string[] } {
   const images: string[] = [];
-  const display = text.replace(/<attached-image\s+path="([^"]*)"\s*\/?>(?:\s*\n)?/g, (_match, raw: string) => {
-    const path = raw
-      .replaceAll("&quot;", '"')
-      .replaceAll("&lt;", "<")
-      .replaceAll("&gt;", ">")
-      .replaceAll("&amp;", "&");
-    if (path) images.push(path);
-    return "";
-  });
-  return { display: display.trim(), images };
+  const files: string[] = [];
+  const take = (kind: "image" | "file", path: string) => {
+    if (!path) return;
+    if (kind === "image" || attachmentImageUrl(path)) images.push(path);
+    else files.push(path);
+  };
+  const display = text
+    .replace(/<attached-image\s+path="([^"]*)"\s*\/?>(?:\s*\n)?/g, (_match, raw: string) => {
+      take("image", unescapeAttachmentPath(raw));
+      return "";
+    })
+    .replace(/<attached-file\s+path="([^"]*)"\s*\/?>(?:\s*\n)?/g, (_match, raw: string) => {
+      take("file", unescapeAttachmentPath(raw));
+      return "";
+    });
+  return { display: display.trim(), images, files };
 }
 
 /** The bare filename a saved attachment path ends in — what the serving
@@ -444,6 +460,14 @@ export function attachmentBasename(path: string): string {
 export function attachmentImageUrl(path: string): string | null {
   const name = attachmentBasename(path);
   if (!/^[A-Za-z0-9-]+\.(png|jpg|gif|webp|heic|heif|avif|bmp|svg)$/.test(name)) return null;
+  return `/api/attachments/${encodeURIComponent(name)}`;
+}
+
+/** Same-origin URL for a saved chat file (pdf, zip, …).  Generated names only. */
+export function attachmentFileUrl(path: string): string | null {
+  const name = attachmentBasename(path);
+  if (!/^[A-Za-z0-9-]+\.[A-Za-z0-9]{1,8}$/.test(name)) return null;
+  if (name.startsWith(".")) return null;
   return `/api/attachments/${encodeURIComponent(name)}`;
 }
 
