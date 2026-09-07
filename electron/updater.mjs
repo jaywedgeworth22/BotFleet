@@ -7,7 +7,8 @@
 // electron-updater is vendored (electron/vendor/electron-updater.cjs) because
 // the packaged app ships no node_modules.
 import { app, ipcMain } from "electron";
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -32,9 +33,17 @@ const FIRST_CHECK_DELAY_MS = 15_000;
 let autoUpdater = null;
 let win = null;
 // status: idle | checking | available | downloading | downloaded | installing | error
-let state = { status: "idle" };
+let state = { status: "idle", canLocalUpdate: false };
 let updaterCoordinator = null;
 let autoUpdateEnabled = false;
+
+function localUpdateScript() {
+  return join(homedir(), "apps", "update-botfleet.sh");
+}
+
+function canLocalUpdate() {
+  return process.platform === "darwin" && existsSync(localUpdateScript());
+}
 
 function updaterLogger() {
   const directory = app.getPath("logs");
@@ -54,7 +63,7 @@ function updaterLogger() {
 }
 
 function setState(patch) {
-  state = { ...state, ...patch };
+  state = { ...state, canLocalUpdate: canLocalUpdate(), ...patch };
   try {
     win?.webContents?.send("update:state", state);
   } catch {
@@ -104,6 +113,20 @@ export function registerUpdaterIpc() {
   ipcMain.handle("update:set-enabled", (_event, enabled) => {
     autoUpdateEnabled = Boolean(enabled);
     if (autoUpdateEnabled) void updaterCoordinator?.check();
+  });
+  ipcMain.handle("update:local", () => {
+    const script = localUpdateScript();
+    if (!canLocalUpdate()) {
+      setState({ status: "error", message: "No local update script on this Mac." });
+      return;
+    }
+    setState({ status: "installing", message: "Updating from this Mac…" });
+    const child = spawn("/bin/bash", [script], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, BOTFLEET_CHECKOUT: join(homedir(), "apps", "botfleet-server") },
+    });
+    child.unref();
   });
 }
 

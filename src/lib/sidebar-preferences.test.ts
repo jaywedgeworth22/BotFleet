@@ -19,6 +19,8 @@ import {
   loadSidebarDensity,
   parseSidebarDensity,
   saveSidebarDensity,
+  BOT_CHATS_SECTION,
+  partitionSidebarGroups,
 } from "./sidebar-preferences";
 
 describe("sidebar density preferences", () => {
@@ -97,5 +99,20 @@ describe("collapsed roster sections", () => {
   it("survives a blocked store the way every other preference does", () => {
     expect(loadCollapsedSections({ getItem: () => { throw new Error("blocked"); } }).size).toBe(0);
     expect(() => saveCollapsedSections(new Set(["Apps"]), { setItem: () => { throw new Error("blocked"); } })).not.toThrow();
+  });
+});
+
+describe("partitionSidebarGroups", () => {
+  it("keeps bot-to-bot DMs out of Apps even when a leftover section is set", () => {
+    const { botChats, sectionedRooms, unsectionedRooms } = partitionSidebarGroups([
+      { name: "Apps room", section: undefined },
+      { name: "Work room", section: "Work" },
+      { name: "Compiler ⇄ Designer", dm: true, section: "Apps" },
+      { name: "New DM", dm: true },
+    ]);
+    expect(BOT_CHATS_SECTION).toBe("Bot Chats");
+    expect(botChats.map((g) => g.name)).toEqual(["Compiler ⇄ Designer", "New DM"]);
+    expect(unsectionedRooms.map((g) => g.name)).toEqual(["Apps room"]);
+    expect(sectionedRooms.map((g) => g.name)).toEqual(["Work room"]);
   });
 });

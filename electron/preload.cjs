@@ -191,6 +191,7 @@ contextBridge.exposeInMainWorld("ogb", {
     check: () => ipcRenderer.invoke("update:check"),
     download: () => ipcRenderer.invoke("update:download"),
     install: () => ipcRenderer.invoke("update:install"),
+    local: () => ipcRenderer.invoke("update:local"),
     setEnabled: (enabled) => ipcRenderer.invoke("update:set-enabled", enabled),
     onState: (cb) => {
       ipcRenderer

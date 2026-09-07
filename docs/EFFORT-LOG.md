@@ -27,6 +27,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - [AG] 2026-08-30 — iOS app updates: Added Model choices, custom channel photos UI, fixed Return key, and fixed auto-scroll behavior.
 
 ## In Progress
+- **2026-09-08 — BF-COMPILER — IN PR — Bot-to-bot chats out of Apps/Channels; restore ubf checkout; local Update when GitHub has no latest-mac.yml (board `6ce09e3d`, branch `compiler/bot-chats-sidebar`, worktree `~/apps/botfleet-compiler-ubf`).**  `getOrCreateChannel` no longer copies `from.section`.  Sidebar lists DMs under Bot Chats.  `~/apps/botfleet-server` detached worktree restored.  No TestFlight upload.
 - **2026-09-07 — AG — IN PROGRESS — Fix Vercel auto-deploy rate-limit query (&state=READY) across sites (branch `ag/vercel-ignore-state-ready`, worktree `~/apps/botfleet-ag-vercel-fix`).**
 - **2026-09-06 — GROK — IN PROGRESS — Settings Remote Access UX for named tunnel https://botfleet.jays.services (board `a4b7edb0`, issue #226, branch `grok/remote-access-named-tunnel`, worktree `~/apps/botfleet-grok-remote-access`).**  Designer copy.  Copyable Remote URL.  No TryCloudflare on this path.  Companion Gateway on Phone.
 - **2026-09-04 — GROK — IN PROGRESS — Quota rows hide Gemini/Cursor monthly; MiniMax CLI first-tier (board `d4d3343b`, issue #216, branch `grok/quota-breakdown-minimax`, worktree `~/apps/botfleet-grok-quota-breakdown`).**  Claimed Fri, Sep 4, 2026.
