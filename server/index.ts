@@ -207,6 +207,7 @@ import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
+import { buildTurnTools } from "./turn-tools.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -2617,6 +2618,11 @@ async function startTurn(
         text: turnText,
         model,
         effort,
+        // HTTP drivers (MiniMax, OpenAI-compatible) have no MCP process to
+        // discover tools from — hand them the static catalog of every tool
+        // whose integration is mounted this turn.  CLI drivers ignore
+        // this field and discover tools from the running server instead.
+        tools: buildTurnTools(integrations),
         // a rewound thread never resumes the abandoned branch's session
         // the active task's own session — another task's cursor would
         // resume the wrong conversation and defeat the context bubble
@@ -3345,6 +3351,7 @@ async function runGroupMemberTurn(
         system: roomSystem,
         cwd,
         integrations,
+        tools: buildTurnTools(integrations),
         ...memberTurnSelection(bot.modelSelection),
       })
       .catch((err) => {
