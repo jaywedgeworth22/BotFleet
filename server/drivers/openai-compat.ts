@@ -369,7 +369,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
                 // tools rendered no steps at all.  A streamed delta is only
                 // the argument text arriving, so the step starts here and
                 // settles below where the arguments are whole.
-                onToolCallDelta: (_index, id, name) => {
+                onToolCallDelta: (_index, id, name, args) => {
                   if (!id || started.has(id)) return;
                   started.add(id);
                   emit({
@@ -379,6 +379,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
                     itemId: id,
                     title: name || "tool",
                     ...toolFields(name, undefined),
+                    arguments: args,
                   });
                 },
               }),
@@ -404,6 +405,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
                 itemId: call.id,
                 title: call.function?.name ?? "tool",
                 ...toolFields(call.function?.name, parseToolArguments(call.function?.arguments)),
+                arguments: call.function?.arguments,
               });
             }
             emit({
@@ -486,7 +488,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         provider: DRIVER_KIND,
         // no MCP server is mounted in this file and respondToRequest answers
         // "unavailable": localComputerMcp would be a knob nothing can turn
-        capabilities: { sessionModelSwitch: "in-session" },
+        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const,

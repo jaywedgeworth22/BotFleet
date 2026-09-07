@@ -123,6 +123,8 @@ import {
   type RequestOutcome,
   type RuntimeEvent,
 } from "./contracts.ts";
+import { buildTurnTools } from "./turn-tools.ts";
+import { sendTurnWithToolLoop } from "./tool-executor.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -275,6 +277,7 @@ utilityParentPort?.on("message", (event) => {
 });
 
 const bus = new EventBus();
+export { bus };
 bus.attach(registry.instances());
 initSentry();
 bus.subscribe((event: RuntimeEvent) => observeRuntimeEvent(event));
@@ -453,7 +456,7 @@ function controlIntegration(botId: string) {
 /** Run a turn on `targetBotId` and resolve with its assistant text — the
  * synchronous half of ask_bot. Subscribes to the bus, folds assistant_text
  * for that thread, resolves on turn.completed (or a 4-min ceiling). */
-function askBotAndWait(targetBotId: string, message: string, depth: number, fromBotId?: string): Promise<string> {
+export function askBotAndWait(targetBotId: string, message: string, depth: number, fromBotId?: string): Promise<string> {
   const target = store.bot(targetBotId);
   if (!target) return Promise.resolve("(no such bot)");
   const threadId = target.threadId;
@@ -605,6 +608,7 @@ function checkedMemberIds(value: unknown): { ok: true; memberIds: string[] } | {
 const bootSelection = await defaultSelection();
 const store = new Store(() => bootSelection);
 store.seedIfEmpty();
+export { store };
 
 /** A bot as a client may see it: no provider session bookkeeping.
  *
@@ -2612,7 +2616,15 @@ async function startTurn(
       // a turn.
       if (checkpointCwd) await checkpoints.snapshot(bot.id, checkpointCwd, `turn ${threadId.slice(0, 8)}`);
       watchdog.watch(threadId, bot.id);
-      await instance.adapter.sendTurn({
+      // HTTP drivers (MiniMax, OpenAI-compatible) cannot spawn MCP servers
+      // and so cannot run the model's tool calls themselves — the model
+      // asks for a tool, the driver emits `item.started` with the call,
+      // and the harness has to make the call and re-feed the result.
+      // `sendTurnWithToolLoop` is that re-feed loop; CLI drivers manage
+      // their own loop and call `instance.adapter.sendTurn` directly.
+      const isHttpDriver =
+        instance.driverKind === "minimax" || instance.driverKind === "openai-compat";
+      const turnInput = {
         threadId,
         text: turnText,
         model,
@@ -2622,15 +2634,21 @@ async function startTurn(
         // resume the wrong conversation and defeat the context bubble
         resumeCursor: resume ? task.resumeCursors[instanceId] : undefined,
         transcript,
+        // `buildTurnTools` only returns tool surfaces the harness can
+        // actually execute: agents for HTTP today, more in a follow-up
+        // (Composio + computer-use still need an MCP-spawning path).
+        tools: buildTurnTools(integrations),
         system:
           persona +
           computerSystemPrompt(granted_mounts, {
             boxAgent: instance.driverKind === "boxAgent",
             hostPlatform: process.platform,
           }) +
-          // gated on the integration, not the key: the hint only goes to a
-          // bot whose driver actually mounted the tools
-          (integrations.composio
+          // gated on the integration AND the driver: the hint only goes to
+          // a bot whose driver actually mounted the tools.  An HTTP driver
+          // has no MCP server, so a Composio hint would invite wasted
+          // calls the executor can only return "not wired" to.
+          (integrations.composio && !isHttpDriver
             ? " The user's connected apps (Gmail, Calendar, Slack, Notion, and the rest) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Reach for them before telling the user you have no access to a service."
             : "") +
           (coordinationPrompt ? ` ${coordinationPrompt}` : "") +
@@ -2652,7 +2670,16 @@ async function startTurn(
             : ""),
         integrations,
         cwd,
-      });
+      };
+      if (isHttpDriver) {
+        await sendTurnWithToolLoop(instance, turnInput, {
+          threadId,
+          fromBotId: bot.id,
+          commsDepth,
+        });
+      } else {
+        await instance.adapter.sendTurn(turnInput);
+      }
       // dispatched: the rewind is spent, and the old cursors are dead
       if (rewound) store.patchBot(bot.id, { rewound: false, resumeCursors: {} });
       // and this engine now owns the thread's most recent turn

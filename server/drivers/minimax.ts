@@ -274,15 +274,6 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         }),
         { role: "user", content: turn.text },
       ];
-      
-      for (const m of (turn.transcript ?? [])) {
-        if (m.role === "assistant") {
-          messages.push({ role: "assistant", content: m.text });
-        } else {
-          messages.push({ role: "user", content: m.text });
-        }
-      }
-      messages.push({ role: "user", content: turn.text });
 
       appendNative(threadId, {
         dir: "out",
@@ -307,7 +298,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
             signal: abort.signal,
             onDelta: (delta) =>
               emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
-            onToolCallDelta: (_index, id, name) => {
+            onToolCallDelta: (_index, id, name, args) => {
               if (!id || started.has(id)) return;
               started.add(id);
               emit({
@@ -317,6 +308,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
                 itemId: id,
                 title: name || "tool",
                 ...toolFields(name, undefined),
+                arguments: args,
               });
             },
           });
@@ -341,6 +333,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
                     itemId: tc.id,
                     title: tc.function.name,
                     ...toolFields(tc.function.name, parseToolArguments(tc.function.arguments)),
+                    arguments: tc.function.arguments,
                   });
                 }
                 emit({
@@ -409,7 +402,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         provider: DRIVER_KIND,
         // no MCP server is mounted in this file and respondToRequest answers
         // "unavailable": localComputerMcp would be a knob nothing can turn
-        capabilities: { sessionModelSwitch: "in-session" },
+        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async (): Promise<"unavailable"> => "unavailable",
