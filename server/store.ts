@@ -680,10 +680,12 @@ export class Store {
     }
     for (const g of this.groups) {
       g.busyBotId = null;
-      const liveMembers = g.memberIds.filter((id) => this.bot(id));
-      if (liveMembers.length !== g.memberIds.length) {
-        g.memberIds = liveMembers;
-        groupsMigrated = true;
+      if (!g.dm) {
+        const liveMembers = g.memberIds.filter((id) => this.bot(id));
+        if (liveMembers.length !== g.memberIds.length) {
+          g.memberIds = liveMembers;
+          groupsMigrated = true;
+        }
       }
       const normalized = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, Boolean(g.dm));
       if (JSON.stringify(normalized) !== JSON.stringify(g.defaultResponder)) groupsMigrated = true;

@@ -465,6 +465,13 @@ describe("Store", () => {
     expect(reloaded.group(room.id)?.memberIds).toEqual([bot.id]);
   });
 
+  it("does not strip a direct-message pair on reload when the ids are not live bots", () => {
+    const store = new Store(selection);
+    const dm = store.createGroup("Private", ["test-bot-a", "test-bot-b"], true);
+    const reloaded = new Store(selection);
+    expect(reloaded.group(dm.id)?.memberIds).toEqual(["test-bot-a", "test-bot-b"]);
+  });
+
   it("migrates a pre-branching flat transcript file", () => {
     const store = new Store(selection);
     // seedMessages:false — a legacy-era thread has its history ONLY in the

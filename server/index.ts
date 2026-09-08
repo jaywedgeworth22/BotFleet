@@ -717,7 +717,11 @@ function groupIsWorking(group: GroupRecord): boolean {
 }
 
 function publicGroupState(group: GroupRecord) {
-  const memberIds = group.memberIds.filter((id) => store.bot(id));
+  // Direct-message channels are a fixed pair, including in tests that seed
+  // ids that are not live bots.  Only real rooms drop leftover ghosts.
+  const memberIds = group.dm
+    ? group.memberIds
+    : group.memberIds.filter((id) => store.bot(id));
   return { ...group, memberIds, working: groupIsWorking(group) };
 }
 
