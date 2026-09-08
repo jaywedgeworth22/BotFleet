@@ -154,6 +154,8 @@ import { ProviderRegistry } from "./harness/registry.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import {
   mentionedBots,
+  normalizeGroupDefaultResponder,
+  resolveRoomMemberIds,
   roomResponders,
   sectionKey,
   Store,
@@ -649,17 +651,11 @@ function checkedGroupResponder(value: unknown, memberIds: string[]): GroupDefaul
   return null;
 }
 
-function checkedMemberIds(value: unknown): { ok: true; memberIds: string[] } | { ok: false; error: string } {
-  if (!Array.isArray(value)) return { ok: false, error: "memberIds must be a list of bot IDs" };
-  const invalidIndex = value.findIndex(
-    (id) => typeof id !== "string" || !id.trim() || !store.bot(id),
-  );
-  if (invalidIndex !== -1) {
-    return { ok: false, error: `unknown channel member: ${String(value[invalidIndex])}` };
-  }
-  const memberIds = [...new Set(value as string[])];
-  if (!memberIds.length) return { ok: false, error: "a channel needs at least one bot" };
-  return { ok: true, memberIds };
+function checkedMemberIds(
+  value: unknown,
+  existingIds?: readonly string[],
+): { ok: true; memberIds: string[] } | { ok: false; error: string } {
+  return resolveRoomMemberIds(value, existingIds, (id) => Boolean(store.bot(id)));
 }
 const bootSelection = await defaultSelection();
 const store = new Store(() => bootSelection);
@@ -721,7 +717,12 @@ function groupIsWorking(group: GroupRecord): boolean {
 }
 
 function publicGroupState(group: GroupRecord) {
-  return { ...group, working: groupIsWorking(group) };
+  // Direct-message channels are a fixed pair, including in tests that seed
+  // ids that are not live bots.  Only real rooms drop leftover ghosts.
+  const memberIds = group.dm
+    ? group.memberIds
+    : group.memberIds.filter((id) => store.bot(id));
+  return { ...group, memberIds, working: groupIsWorking(group) };
 }
 
 function beginGroupTurnOperation(groupId: string, threadId: string): GroupTurnOperation {
@@ -5853,15 +5854,35 @@ const server = createServer(async (req, res) => {
       if (body.memberIds !== undefined) {
         // A DM is the pair it was opened for; only real rooms have a roster.
         if (existing.dm) return json(res, 400, { error: "direct-message channels cannot change members" });
-        const roster = checkedMemberIds(body.memberIds);
+        const roster = checkedMemberIds(body.memberIds, existing.memberIds);
         if (!roster.ok) return json(res, 400, { error: roster.error.replace("channel", "room") });
         patch.memberIds = roster.memberIds;
       }
       if (body.defaultResponder !== undefined) {
-        const memberIds = (patch.memberIds as string[] | undefined) ?? existing.memberIds;
-        const responder = checkedGroupResponder(body.defaultResponder, memberIds);
-        if (!responder) return json(res, 400, { error: "invalid default responder" });
-        patch.defaultResponder = responder;
+        const memberIds = (patch.memberIds as string[] | undefined) ?? existing.memberIds.filter((id) => store.bot(id));
+        const raw = body.defaultResponder as { kind?: unknown; botId?: unknown } | null;
+        const existingLead =
+          existing.defaultResponder.kind === "member" ? existing.defaultResponder.botId : undefined;
+        const ghostLead =
+          raw &&
+          typeof raw === "object" &&
+          raw.kind === "member" &&
+          typeof raw.botId === "string" &&
+          raw.botId === existingLead &&
+          !memberIds.includes(raw.botId);
+        if (ghostLead) {
+          // Phone saves send the current lead even when that bot was deleted.
+          // Dropping the ghost roster id must not then 400 the rest of the save.
+          patch.defaultResponder = normalizeGroupDefaultResponder(
+            { kind: "everyone" },
+            memberIds,
+            Boolean(existing.dm),
+          );
+        } else {
+          const responder = checkedGroupResponder(body.defaultResponder, memberIds);
+          if (!responder) return json(res, 400, { error: "invalid default responder" });
+          patch.defaultResponder = responder;
+        }
       }
       // A paired phone reaches this route through the sidecar, which stamps
       // every forwarded request (companion/src/proxy.ts forwardHeaders); the

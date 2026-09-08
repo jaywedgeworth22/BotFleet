@@ -97,16 +97,18 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
   };
 
   const toggleMember = (botId: string) => {
-    const isMember = group.memberIds.includes(botId);
+    const known = new Set(state.bots.map((bot) => bot.id));
+    const live = group.memberIds.filter((id) => known.has(id));
+    const isMember = live.includes(botId);
     let updated: string[];
     if (isMember) {
-      if (group.memberIds.length <= 1) {
+      if (live.length <= 1) {
         setError("A channel must have at least one bot member.");
         return;
       }
-      updated = group.memberIds.filter((id) => id !== botId);
+      updated = live.filter((id) => id !== botId);
     } else {
-      updated = [...group.memberIds, botId];
+      updated = [...live, botId];
     }
     patch({ memberIds: updated });
   };

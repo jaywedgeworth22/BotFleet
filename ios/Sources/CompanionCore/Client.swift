@@ -350,6 +350,11 @@ public enum APIError: Error, LocalizedError, Sendable {
         if case let .status(code, _) = self { return code == 401 }
         return false
     }
+
+    public var isNotFound: Bool {
+        if case let .status(code, _) = self { return code == 404 }
+        return false
+    }
 }
 
 public struct CompanionClient: Sendable {

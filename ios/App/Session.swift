@@ -672,8 +672,7 @@ final class Session: ObservableObject {
 
     func cancelQueued(botId: String, queueId: String) async {
         guard let client else { return }
-        do {
-            try await client.cancelQueued(botId: botId, queueId: queueId)
+        func dropLocalChip() {
             if let threadId = state.bot(botId)?.threadId {
                 state.cancelPendingQueued(threadId: threadId, queueId: queueId)
             } else {
@@ -682,8 +681,21 @@ final class Session: ObservableObject {
                     break
                 }
             }
+        }
+        do {
+            try await client.cancelQueued(botId: botId, queueId: queueId)
+            dropLocalChip()
         } catch let error as APIError where error.isUnauthorized {
             status = .unauthorized
+        } catch let error as APIError where error.isNotFound {
+            let message = error.errorDescription ?? ""
+            if message.contains("no route") {
+                // Packaged companion older than #224 deny-lists DELETE /queue/.
+                // Dropping the chip locally would hide a message that still sends.
+                actionError = "This Mac is running an older BotFleet.  Update BotFleet on your computer, then you can cancel a queued message."
+            } else {
+                dropLocalChip()
+            }
         } catch {
             actionError = error.localizedDescription
         }
@@ -885,8 +897,8 @@ final class Session: ObservableObject {
         extraCwds: [String]? = nil,
         defaultResponder: GroupResponder? = nil,
         memberIds: [String]? = nil
-    ) async {
-        guard let client else { return }
+    ) async -> Bool {
+        guard let client else { return false }
         do {
             let patch = RoomPatch(
                 name: name,
@@ -901,8 +913,10 @@ final class Session: ObservableObject {
             if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
                 state.rooms[index] = updated
             }
+            return true
         } catch {
             actionError = error.localizedDescription
+            return false
         }
     }
 
