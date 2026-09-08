@@ -143,6 +143,8 @@ import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage } from 
 import { cancelRoomRounds, drainRoomRounds, queueRoomRound } from "./room-queue.ts";
 import { EventBus } from "./harness/bus.ts";
 import { observability, observabilityBootLine } from "./observability.ts";
+import { formatListenInUse, isListenInUse, listenErrorDisposition } from "./harness-ports.ts";
+import { getSentry, isSentryActive } from "./sentry.ts";
 import { configureTurnIdentity, observeRuntimeEvent } from "./sentry-ai.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
@@ -3003,7 +3005,11 @@ try {
   webhookIngress = await listenWebhookIngress(webhooks, { port: WEBHOOK_PORT });
   console.log(`botfleet webhook receiver on ${webhookIngress.baseUrl}`);
 } catch (error) {
-  webhookIngressError = error instanceof Error ? error.message : String(error);
+  webhookIngressError = isListenInUse(error)
+    ? formatListenInUse(WEBHOOK_PORT, "webhook")
+    : error instanceof Error
+      ? error.message
+      : String(error);
   console.error(`botfleet webhook receiver unavailable: ${webhookIngressError}`);
 }
 
@@ -7961,6 +7967,21 @@ if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   enableQuotaCooldownPersist(join(DATA_DIR, "quota-cooldowns.json"));
   startAntigravityQuotaPoller();
 }
+
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (listenErrorDisposition(error) === "named-exit") {
+    console.error(formatListenInUse(PORT, "harness"));
+    process.exit(1);
+  }
+  console.error(error);
+  const sentry = isSentryActive() ? getSentry() : null;
+  if (sentry) {
+    sentry.captureException(error, { tags: { component: "harness-listen" } });
+    void sentry.flush(2000).finally(() => process.exit(1));
+    return;
+  }
+  process.exit(1);
+});
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
