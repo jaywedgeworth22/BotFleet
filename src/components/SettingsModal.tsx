@@ -125,6 +125,10 @@ function CustomIngressFields() {
     | { kind: "ok"; reason: string; tunnel?: string }
     | { kind: "error"; reason: string; tunnel?: string }
   >(null);
+  // Save failures render next to the Save button, not into the Test Setup
+  // slot above -- the two actions are independent, so a failed Save must
+  // not be mistaken for (or overwrite) a Test Setup result and vice versa.
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -158,6 +162,7 @@ function CustomIngressFields() {
   const save = async () => {
     if (saving) return;
     setSaving(true);
+    setSaveError(null);
     try {
       const trimmed = publicUrl.trim();
       const response = await fetch("/api/config", {
@@ -165,13 +170,18 @@ function CustomIngressFields() {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           ingress: {
-            publicUrl: trimmed || undefined,
+            // Always send the trimmed value, including "" -- the server
+            // reads an *absent* publicUrl as "no change" (so a stray
+            // `|| undefined` here silently dropped the field from the JSON
+            // body and clearing the input never reached disk), but an
+            // explicit "" is the documented clear-the-URL path.
+            publicUrl: trimmed,
             enabled,
           },
         }),
       });
       if (!response.ok) {
-        setTest({ kind: "error", reason: `Save failed: HTTP ${response.status}` });
+        setSaveError(`Save failed: HTTP ${response.status}`);
         return;
       }
       const config = await response.json();
@@ -179,16 +189,17 @@ function CustomIngressFields() {
       setDirty(false);
       setSavedAt(Date.now());
     } catch (cause) {
-      setTest({ kind: "error", reason: cause instanceof Error ? cause.message : String(cause) });
+      setSaveError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
     }
   };
 
   // Run Test Setup against either the unsaved draft (so the user can dry-run
-  // a value before saving it) or, when the input is empty, the saved URL.
+  // a value before saving it) or, when the input is empty, the saved URL --
+  // the more useful behaviour, and the one this comment already promised.
   const runTest = async () => {
-    const candidate = publicUrl.trim();
+    const candidate = publicUrl.trim() || persistedUrl.trim();
     if (!candidate) {
       setTest({ kind: "error", reason: "Enter a public URL first, then run Test Setup." });
       return;
@@ -215,6 +226,7 @@ function CustomIngressFields() {
     const next = !enabled;
     setEnabled(next);
     setDirty(true);
+    setSaveError(null);
   };
 
   const toggleFreeUrl = () => {
@@ -250,6 +262,7 @@ function CustomIngressFields() {
           onChange={(e) => {
             setPublicUrl(e.target.value);
             setDirty(true);
+            setSaveError(null);
             // a new URL invalidates the previous test result
             if (test && test.kind !== "running") setTest(null);
           }}
@@ -275,13 +288,17 @@ function CustomIngressFields() {
         </button>
         <button
           onClick={() => void runTest()}
-          disabled={test?.kind === "running" || !publicUrl.trim()}
+          disabled={test?.kind === "running" || !(publicUrl.trim() || persistedUrl.trim())}
           aria-label="Test custom webhook domain"
           className={buttonSecondary}
         >
           {test?.kind === "running" ? "Testing…" : "Test Setup"}
         </button>
-        {test && test.kind !== "running" ? (
+        {saveError ? (
+          <span role="alert" data-testid="ingress-save-error" className="text-[12px] leading-relaxed text-danger">
+            {saveError}
+          </span>
+        ) : test && test.kind !== "running" ? (
           <span
             role={test.kind === "ok" ? "status" : "alert"}
             data-testid="ingress-test-result"
