@@ -4,7 +4,7 @@
 // behind a menu. Active threads now sit in a top tab bar: click to switch,
 // double-click or right-click to rename, plus to start a fresh one.
 import { useEffect, useRef, useState } from "react";
-import { Plus, X } from "lucide-react";
+import { GitMerge, Plus, X } from "lucide-react";
 import { useStore, formatTime, type Bot, type Group, type Task } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { nextRename } from "@/lib/rename";
@@ -24,6 +24,7 @@ function ConversationThreadTabs({
   onSwitch,
   onRename,
   onDelete,
+  onMerge,
 }: {
   threadId: string;
   tasks: TabTask[];
@@ -32,11 +33,14 @@ function ConversationThreadTabs({
   onSwitch: (threadId: string) => void;
   onRename: (threadId: string, title: string) => void;
   onDelete: (threadId: string) => void;
+  onMerge?: (threadId: string, intoThreadId: string) => void;
 }) {
   const [renaming, setRenaming] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const finishingRename = useRef(false);
   const scroller = useRef<HTMLDivElement>(null);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [pendingMerge, setPendingMerge] = useState<{ from: string; into: string } | null>(null);
 
   const current = tasks.find((task) => task.threadId === threadId);
 
@@ -81,6 +85,7 @@ function ConversationThreadTabs({
               className={cn(
                 "group relative flex min-w-[7.5rem] max-w-[16rem] shrink-0 items-center border-b-2 px-1",
                 active ? "border-accent bg-raised/40" : "border-transparent hover:bg-raised/30",
+                picked.includes(task.threadId) && "bg-accent/15",
               )}
             >
               {renaming === task.threadId ? (
@@ -113,7 +118,35 @@ function ConversationThreadTabs({
                   title={`${task.title || "Untitled"} · ${TASK_RENAME_HINT}${usageLabel ? ` · ${usageLabel}` : ""}`}
                   onClick={(e) => {
                     if (taskPickerPointerIntent("click", e.detail) !== "select") return;
+                    if (e.metaKey || e.ctrlKey) {
+                      e.preventDefault();
+                      setPicked((current) =>
+                        current.includes(task.threadId)
+                          ? current.filter((id) => id !== task.threadId)
+                          : [...current, task.threadId],
+                      );
+                      return;
+                    }
+                    setPicked([]);
                     if (!active) onSwitch(task.threadId);
+                  }}
+                  draggable={Boolean(onMerge)}
+                  onDragStart={(event) => {
+                    if (!onMerge) return;
+                    event.dataTransfer.setData("text/plain", task.threadId);
+                    event.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDragOver={(event) => {
+                    if (!onMerge) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                  }}
+                  onDrop={(event) => {
+                    if (!onMerge) return;
+                    event.preventDefault();
+                    const from = event.dataTransfer.getData("text/plain");
+                    if (!from || from === task.threadId) return;
+                    setPendingMerge({ from, into: task.threadId });
                   }}
                   onDoubleClick={(e) => {
                     e.preventDefault();
@@ -153,6 +186,21 @@ function ConversationThreadTabs({
           );
         })}
       </div>
+      {onMerge && picked.length >= 2 && (
+        <button
+          type="button"
+          onClick={() => {
+            const into = picked.includes(threadId) ? threadId : picked[0];
+            const rest = picked.filter((id) => id !== into);
+            const first = rest[0];
+            if (first) setPendingMerge({ from: first, into });
+          }}
+          className="flex shrink-0 items-center gap-1 border-l border-hairline/40 px-3 text-[13px] font-medium text-ink hover:bg-raised"
+        >
+          <GitMerge size={14} />
+          <span className="hidden sm:inline">Merge Threads</span>
+        </button>
+      )}
       <button
         type="button"
         onClick={onNew}
@@ -165,6 +213,32 @@ function ConversationThreadTabs({
         <span className="hidden sm:inline">New</span>
       </button>
       {current ? <span className="sr-only">Current thread: {current.title}</span> : null}
+      {pendingMerge && onMerge && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4" role="dialog" aria-labelledby="merge-threads-title">
+          <div className="w-full max-w-sm rounded-2xl bg-card p-4 shadow-2xl">
+            <div id="merge-threads-title" className="text-[15px] font-semibold text-ink">Merge Threads?</div>
+            <p className="mt-2 text-[13px] text-ink-secondary">
+              This folds the dragged conversation into the other thread.  You cannot undo it from this bar.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <button type="button" className="rounded-lg px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-raised" onClick={() => setPendingMerge(null)}>
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white"
+                onClick={() => {
+                  onMerge(pendingMerge.from, pendingMerge.into);
+                  setPicked([]);
+                  setPendingMerge(null);
+                }}
+              >
+                Merge Threads
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -182,6 +256,7 @@ export function ThreadTabs({ bot }: { bot: Bot }) {
       onSwitch={(threadId) => dispatch({ type: "switchTask", botId: bot.id, threadId })}
       onRename={(threadId, title) => dispatch({ type: "renameTask", botId: bot.id, threadId, title })}
       onDelete={(threadId) => dispatch({ type: "deleteTask", botId: bot.id, threadId })}
+      onMerge={(threadId, intoThreadId) => dispatch({ type: "mergeTasks", botId: bot.id, threadId, intoThreadId })}
     />
   );
 }

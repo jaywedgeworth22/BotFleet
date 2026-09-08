@@ -9,7 +9,10 @@ import {
   SIDEBAR_THREAD_COUNT_KEY,
   loadCollapsedRooms,
   loadCollapsedSections,
+  loadCollapsedSectionsWithBotChatsDefault,
   saveCollapsedSections,
+  orderSectionNames,
+  BOT_CHATS_SECTION,
   SIDEBAR_COLLAPSED_SECTIONS_KEY,
   loadSidebarThreadCount,
   parseCollapsedRooms,
@@ -19,7 +22,6 @@ import {
   loadSidebarDensity,
   parseSidebarDensity,
   saveSidebarDensity,
-  BOT_CHATS_SECTION,
   partitionSidebarGroups,
 } from "./sidebar-preferences";
 
@@ -114,5 +116,31 @@ describe("partitionSidebarGroups", () => {
     expect(botChats.map((g) => g.name)).toEqual(["Compiler ⇄ Designer", "New DM"]);
     expect(unsectionedRooms.map((g) => g.name)).toEqual(["Apps room"]);
     expect(sectionedRooms.map((g) => g.name)).toEqual(["Work room"]);
+  });
+});
+
+describe("sidebar section order and Bot Chats", () => {
+  it("keeps stored context order and parks unknown names after", () => {
+    expect(orderSectionNames(["Work", "Home", "Apps"], ["Apps", "Work"])).toEqual(["Apps", "Work", "Home"]);
+  });
+
+  it("never treats Bot Chats as a user-reorderable context", () => {
+    expect(orderSectionNames(["Work", BOT_CHATS_SECTION], ["Work"])).toEqual(["Work"]);
+  });
+
+  it("collapses Bot Chats the first time the sidebar loads", () => {
+    const store: Record<string, string> = {};
+    const memory = {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => {
+        store[key] = value;
+      },
+    };
+    const first = loadCollapsedSectionsWithBotChatsDefault(memory);
+    expect(first.has(BOT_CHATS_SECTION)).toBe(true);
+    first.delete(BOT_CHATS_SECTION);
+    saveCollapsedSections(first, memory);
+    const second = loadCollapsedSectionsWithBotChatsDefault(memory);
+    expect(second.has(BOT_CHATS_SECTION)).toBe(false);
   });
 });
