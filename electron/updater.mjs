@@ -126,6 +126,30 @@ export function registerUpdaterIpc() {
       stdio: "ignore",
       env: { ...process.env, BOTFLEET_CHECKOUT: join(homedir(), "apps", "botfleet-server") },
     });
+    const LOCAL_UPDATE_TIMEOUT_MS = 2 * 60 * 1000;
+    const timer = setTimeout(() => {
+      setState({
+        status: "error",
+        message: "The local update did not finish. Quit the app and try again.",
+      });
+    }, LOCAL_UPDATE_TIMEOUT_MS);
+    timer.unref?.();
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      setState({
+        status: "error",
+        message: error instanceof Error ? error.message : "The local update could not start.",
+      });
+    });
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (code && code !== 0) {
+        setState({
+          status: "error",
+          message: `The local update exited ${code}. Try again from this Mac.`,
+        });
+      }
+    });
     child.unref();
   });
 }

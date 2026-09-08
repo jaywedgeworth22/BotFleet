@@ -15,7 +15,7 @@ export interface CommsBus {
 }
 
 /** Find or create the bot⇄bot channel for the pair. The channel keeps
- * the pair's full exchange. It is a DM, not a user room — it must not
+ * the pair's full exchange.  It is a DM, not a user room — it must not
  * inherit the sender's Apps/Work/Channels section, or every new thread
  * lands in that roster instead of Bot Chats. */
 export function getOrCreateChannel(store: Store, from: BotRecord, target: BotRecord): GroupRecord {
