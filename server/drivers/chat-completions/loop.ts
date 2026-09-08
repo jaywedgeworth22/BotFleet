@@ -163,6 +163,14 @@ export interface TurnLoopDeps {
    *  `turn.completed` may dispatch the next queued turn synchronously, and
    *  it must not find this thread still busy. */
   onSettled?: (exit: TurnLoopExit) => void;
+  /** Turns this turn's summed usage into a dollar cost for the terminal
+   *  event, on the success path AND every error path — usage already
+   *  reflects real API spend for whatever rounds completed before a later
+   *  round errored, so it is priced the same way regardless of how the
+   *  turn ended.  Absent (no price table wired up yet) or a model the
+   *  driver's table cannot price both resolve to `null` here, never `0`:
+   *  a hard-coded zero reads as "this turn was free". */
+  computeCost?: (usage: TurnUsage) => number | null;
   now?: () => number;
 }
 
@@ -492,9 +500,11 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
       type: "turn.completed" as const,
       ok: TERMINAL_OK[exit],
       stopReason: stopReasonOverride ?? STOP_REASON[exit],
-      // priced in a later PR; a hard-coded 0 would read as "this turn was
-      // free", which is worse than an honest blank
-      cost: null,
+      // Priced from the SAME totals the terminal event's own `usage` field
+      // carries below, on the success path and every error path alike — a
+      // hard-coded 0 would read as "this turn was free", which is worse
+      // than an honest blank.
+      cost: sawUsage ? (deps.computeCost?.(totals) ?? null) : null,
     };
     // The one terminal event.  Nothing else in this file emits this type.
     deps.emit(sawUsage ? { ...completed, usage: { ...totals } } : completed);

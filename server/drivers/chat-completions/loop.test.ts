@@ -63,6 +63,7 @@ interface Harness {
     budget?: Partial<TurnLoopBudget>;
     now?: () => number;
     emit?: (event: RuntimeEvent) => void;
+    computeCost?: (usage: { input: number; output: number; cachedInput?: number }) => number | null;
   }) => Promise<TurnLoopExit>;
 }
 
@@ -107,6 +108,7 @@ function harness(rounds: ScriptedRound[]): Harness {
         toolHost: over?.toolHost,
         budget: over?.budget,
         now: over?.now,
+        computeCost: over?.computeCost,
         runRound: async (roundMessages, opts) => {
           roundsSeen.push(roundMessages.map((m) => ({ ...m })));
           const scripted = rounds[Math.min(opts.round - 1, rounds.length - 1)];
@@ -360,6 +362,59 @@ describe("runTurnLoop — usage", () => {
     const h = harness([answer("done")]);
     await h.run();
     expect(terminals(h.events)[0].usage).toBeUndefined();
+  });
+
+  it("prices the terminal event from the SAME summed usage it reports, on the success path", async () => {
+    const h = harness([
+      wantsTools([call("c1")], { input: 10, output: 5 }),
+      answer("done", { input: 7, output: 3 }),
+    ]);
+    const seen: unknown[] = [];
+    await h.run({
+      toolHost: hostReturning({ kind: "result", content: "[]" }),
+      computeCost: (usage) => {
+        seen.push(usage);
+        return usage.input + usage.output;
+      },
+    });
+    const settled = terminals(h.events)[0];
+    expect(settled.ok).toBe(true);
+    expect(settled.usage).toEqual({ input: 17, output: 8 });
+    expect(settled.cost).toBe(25);
+    // computeCost is called exactly once, with the FINAL cumulative totals
+    // — never once per round
+    expect(seen).toEqual([{ input: 17, output: 8 }]);
+  });
+
+  it("prices the terminal event on the error path too, from whatever usage streamed before the failure", async () => {
+    const h = harness([
+      wantsTools([call("c1")], { input: 40, output: 2 }),
+      async () => {
+        throw new Error("MiniMax HTTP 503");
+      },
+    ]);
+    const exit = await h.run({
+      toolHost: hostReturning({ kind: "result", content: "[]" }),
+      computeCost: (usage) => usage.input * 2 + usage.output,
+    });
+    expect(exit).toBe("provider_error");
+    const settled = terminals(h.events)[0];
+    expect(settled.ok).toBe(false);
+    expect(settled.cost).toBe(82);
+  });
+
+  it("never calls computeCost, and never invents a cost, when no round reported usage", async () => {
+    const h = harness([answer("done")]);
+    const computeCost = vi.fn(() => 99);
+    await h.run({ computeCost });
+    expect(computeCost).not.toHaveBeenCalled();
+    expect(terminals(h.events)[0].cost).toBeNull();
+  });
+
+  it("stays null — never 0 — when the driver has no computeCost wired up at all", async () => {
+    const h = harness([answer("done", { input: 1, output: 1 })]);
+    await h.run();
+    expect(terminals(h.events)[0].cost).toBeNull();
   });
 
   it("keeps the live indicator cumulative, never per-round", async () => {

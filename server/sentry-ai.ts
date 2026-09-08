@@ -408,7 +408,15 @@ export function resetSentryAiForTests(): void {
   identityResolver = null;
 }
 
-/** Record tool names from an API-backed driver that does not emit item.started. */
+/** Record tool names from an API-backed driver that does not emit
+ *  item.started/item.completed for its tool calls.
+ *
+ *  Do NOT call this from a driver whose tool calls already flow through
+ *  item.started/item.completed (any driver running server/drivers/
+ *  chat-completions/loop.ts, or any CLI/ACP driver) — those already become
+ *  execute_tool spans generically, via observeRuntimeEvent, with a REAL
+ *  outcome and REAL start/end timing.  Calling both for the same tool call
+ *  produces two execute_tool spans instead of one. */
 export function recordExecutedTools(
   conversationId: string,
   toolNames: string[],

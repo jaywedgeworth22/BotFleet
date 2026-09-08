@@ -23,7 +23,9 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { toolFields } from "../tool-fields.ts";
-import { runTurnLoop, type ChatMessage, type TurnLoopDeps } from "./chat-completions/loop.ts";
+import { runTurnLoop, type ChatMessage, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
+import { costUsd, type ChatCompletionsPriceTable } from "./chat-completions/pricing.ts";
+import { genAiProvider, withChatSpan } from "../sentry-ai.ts";
 
 const DRIVER_KIND = "minimax";
 const API_KEY_ENV = "MINIMAX_API_KEY";
@@ -38,6 +40,53 @@ const MODELS: ModelCatalog = {
     { id: "MiniMax-M2.7-highspeed", label: "MiniMax M2.7 Highspeed", contextWindow: 204_800 },
   ],
 };
+
+/** Published MiniMax API rates, USD per million tokens, STANDARD service
+ *  tier — this driver never sends `service_tier: "priority"`.  Source:
+ *  https://platform.minimax.io/docs/guides/pricing-paygo, verified
+ *  Tue, Sep 8, 2026.  MiniMax-M3's listed rates already reflect MiniMax's
+ *  own "Permanent 50% off" discount, and M3 is the one model here with a
+ *  published >512K-input-token tier at double the base rate — the tier
+ *  list below is checked against each ROUND's own prompt size, which is
+ *  how MiniMax itself bills a single request.
+ *
+ *  Must stay in lockstep with MINIMAX_PRICE_PER_MILLION in
+ *  src/lib/minimax-prices.ts: the Vite client cannot import this file (it
+ *  reads local files with node:fs), so that is a separately maintained
+ *  display copy of the same numbers — the same relationship
+ *  src/lib/deepseek-prices.ts has with its own driver.  A price CHANGE
+ *  upstream is a data change nothing here can detect on its own; the
+ *  coverage test in minimax-prices.test.ts only forces a decision when a
+ *  MODEL is ADDED to the catalog with no row.  Treat a quarterly re-check
+ *  against the pricing page above as the maintenance cost of having a
+ *  cost column at all. */
+export const MINIMAX_PRICE_PER_MILLION: ChatCompletionsPriceTable = {
+  "MiniMax-M3": [
+    { maxInputTokens: 512_000, input: 0.3, output: 1.2, cachedInput: 0.06 },
+    { input: 0.6, output: 2.4, cachedInput: 0.12 },
+  ],
+  "MiniMax-M2.7": [{ input: 0.3, output: 1.2, cachedInput: 0.06 }],
+  "MiniMax-M2.7-highspeed": [{ input: 0.6, output: 2.4, cachedInput: 0.06 }],
+};
+
+/** Titles and summaries (generateText) are a short, latency-sensitive round
+ *  that never needs the flagship's 1M-token context — the highspeed variant
+ *  is MiniMax's own faster-inference tier for exactly this shape of call.
+ *  Fixed independent of `models.default`, which local mmx-cli config can
+ *  repoint at any catalog model. */
+const UTILITY_MODEL = "MiniMax-M2.7-highspeed";
+
+/** MiniMax nests a cached-read count under `prompt_tokens_details`
+ *  (verified against MiniMax's own example response, Sep 8, 2026):
+ *  `{ prompt_tokens, completion_tokens, prompt_tokens_details:
+ *  { cached_tokens } }`.  `cached_tokens` is a SUBSET of `prompt_tokens`,
+ *  never additional to it. */
+function toTurnUsage(raw: any): TurnUsage {
+  const usage: TurnUsage = { input: raw?.prompt_tokens ?? 0, output: raw?.completion_tokens ?? 0 };
+  const cached = raw?.prompt_tokens_details?.cached_tokens;
+  if (Number.isFinite(cached)) usage.cachedInput = cached;
+  return usage;
+}
 
 export interface MinimaxConfig {
   url: string;
@@ -148,7 +197,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       messages: any[],
       model: string,
       opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
-    ): Promise<{ text: string; tool_calls?: any[]; usage: { input: number; output: number } | null }> => {
+    ): Promise<{ text: string; tool_calls?: any[]; usage: TurnUsage | null }> => {
       // When the caller supplies a signal it already carries the request
       // deadline (the turn loop arms one per round).  A second timer here
       // would race it and make a timeout indistinguishable from a provider
@@ -184,15 +233,13 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         return {
           text: json.choices?.[0]?.message?.content ?? "",
           tool_calls: json.choices?.[0]?.message?.tool_calls,
-          usage: json.usage
-            ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
-            : null,
+          usage: json.usage ? toTurnUsage(json.usage) : null,
         };
       }
 
       // SSE streaming — identical to grok.ts pattern
       let text = "";
-      let usage: { input: number; output: number } | null = null;
+      let usage: TurnUsage | null = null;
       const streamToolCalls: any[] = [];
       if (!res.body) throw new Error("MiniMax returned no response body");
       const reader = res.body.getReader();
@@ -228,7 +275,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
               }
             }
             if (chunk.usage) {
-              usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
+              usage = toTurnUsage(chunk.usage);
             }
           }
         }
@@ -308,26 +355,39 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
           source: "minimax.chat.completions",
           msg: { model, messageCount: roundMessages.length, round: opts.round },
         });
-        const { text, usage, tool_calls } = await complete(roundMessages, model, {
-          stream: true,
-          tools: openAiTools,
-          signal: opts.signal,
-          onDelta: (delta) =>
-            emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
-          onToolCallDelta: (_index, id, name, args) => {
-            if (!id || started.has(id)) return;
-            started.add(id);
-            emit({
-              ...base(threadId, turnId),
-              type: "item.started",
-              itemType: "tool",
-              itemId: id,
-              title: name || "tool",
-              ...toolFields(name, undefined),
-              arguments: args,
-            });
-          },
-        });
+        // One gen_ai.chat span per model round, nested under the
+        // gen_ai.invoke_agent span turn.started already opened generically
+        // (bus.subscribe → observeRuntimeEvent, driver-agnostic).  Tool spans
+        // are NOT duplicated here with recordExecutedTools: the loop below
+        // already emits real item.started/item.completed for every call —
+        // with a real outcome, not an assumed ok:true — and
+        // observeRuntimeEvent turns those into execute_tool spans on their
+        // own.  recordExecutedTools exists for a driver that does not emit
+        // item.started at all; calling it here would double every tool span.
+        const { text, usage, tool_calls } = await withChatSpan(
+          { model, conversationId: threadId, provider: genAiProvider(DRIVER_KIND) },
+          () =>
+            complete(roundMessages, model, {
+              stream: true,
+              tools: openAiTools,
+              signal: opts.signal,
+              onDelta: (delta) =>
+                emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
+              onToolCallDelta: (_index, id, name, args) => {
+                if (!id || started.has(id)) return;
+                started.add(id);
+                emit({
+                  ...base(threadId, turnId),
+                  type: "item.started",
+                  itemType: "tool",
+                  itemId: id,
+                  title: name || "tool",
+                  ...toolFields(name, undefined),
+                  arguments: args,
+                });
+              },
+            }),
+        );
         appendNative(threadId, {
           dir: "in",
           source: "minimax.chat.completions",
@@ -349,6 +409,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         signal: abort.signal,
         startedToolIds: started,
         onSettled: () => active.delete(threadId),
+        // Priced from the SAME `model` every round of this turn ran
+        // against — the loop calls this once, with the turn's final
+        // cumulative usage, on the success path and every error path alike.
+        computeCost: (usage) => costUsd(usage, MINIMAX_PRICE_PER_MILLION, model),
       });
 
       return { turnId };
@@ -405,7 +469,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         },
       },
       generateText: async (prompt: string) => {
-        const { text } = await complete([{ role: "user", content: prompt }], models.default, { stream: false });
+        // Titles and summaries never need the flagship's 1M-token context —
+        // see UTILITY_MODEL's own comment — and are fixed to it independent
+        // of `models.default`, which local mmx-cli config can repoint.
+        const { text } = await complete([{ role: "user", content: prompt }], UTILITY_MODEL, { stream: false });
         return text;
       },
       dispose: async () => {

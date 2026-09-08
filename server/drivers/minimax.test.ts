@@ -4,9 +4,11 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { TurnToolHost } from "../contracts.ts";
+import type { RuntimeEvent, TurnToolHost } from "../contracts.ts";
 import { recordEvents } from "../testing/events.ts";
-import { decodeMinimaxConfig, loadLocalMiniMaxConfig, MinimaxDriver } from "./minimax.ts";
+import { observeRuntimeEvent, resetSentryAiForTests, type SentryAiSink } from "../sentry-ai.ts";
+import { costUsd } from "./chat-completions/pricing.ts";
+import { decodeMinimaxConfig, loadLocalMiniMaxConfig, MinimaxDriver, MINIMAX_PRICE_PER_MILLION } from "./minimax.ts";
 
 /** One scripted SSE response, [DONE]-terminated. */
 const sse = (...frames: string[]) =>
@@ -24,6 +26,35 @@ const TOOL_CALL_ROUND = [
 const answeringHost: TurnToolHost = {
   execute: async (call) => ({ kind: "result", content: `${call.name} ok` }),
 };
+
+// SAFETY: every call site passes an event already matched by
+// `event.type === "turn.completed"` via `recorder.until`, which is exactly
+// the RuntimeEvent variant carrying `cost`.
+const costOf = (event: RuntimeEvent): number | null => (event as { cost: number | null }).cost;
+
+/** A minimal Sentry sink that just remembers which spans opened and whether
+ *  each one was ended — enough to prove span COUNT and lifecycle without
+ *  standing up real Sentry. */
+function recordingSink() {
+  const spans: Array<{ op: string; ended: boolean }> = [];
+  const sink: SentryAiSink = {
+    setConversationId: () => undefined,
+    startInactiveSpan: (opts) => {
+      const rec = { op: opts.op, ended: false };
+      spans.push(rec);
+      return {
+        setAttribute: () => undefined,
+        setStatus: () => undefined,
+        end: () => {
+          rec.ended = true;
+        },
+      };
+    },
+    captureException: () => undefined,
+    addBreadcrumb: () => undefined,
+  };
+  return { sink, spans };
+}
 
 describe("MinimaxDriver", () => {
   const saved = {
@@ -53,6 +84,7 @@ describe("MinimaxDriver", () => {
     else process.env.MINIMAX_BASE_URL = saved.url;
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+    resetSentryAiForTests();
   });
 
   it("sits on the Cloud rail as MiniMax CLI", () => {
@@ -419,6 +451,208 @@ describe("MinimaxDriver", () => {
     await expect(instance.adapter.sendTurn({ threadId: "thread", text: "second" })).rejects.toThrow(
       /already running/,
     );
+    await instance.dispose();
+  });
+
+  it("has a real price row for every model in its own catalog", () => {
+    for (const option of MinimaxDriver.models.options) {
+      expect(Object.prototype.hasOwnProperty.call(MINIMAX_PRICE_PER_MILLION, option.id)).toBe(true);
+    }
+  });
+
+  it("prices a settled turn from its real usage, at the M3 ≤512K-token rate", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      sse(
+        '{"choices":[{"delta":{"content":"here you go"}}]}',
+        '{"choices":[],"usage":{"prompt_tokens":100000,"completion_tokens":50000}}',
+      ),
+    ));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-price",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hello" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({ ok: true, usage: { input: 100_000, output: 50_000 } });
+    // (100,000 @ $0.30/M) + (50,000 @ $1.20/M) = $0.03 + $0.06 = $0.09
+    expect(costOf(completed)).toBeCloseTo(0.09, 10);
+    expect(costOf(completed)).toBe(
+      costUsd({ input: 100_000, output: 50_000 }, MINIMAX_PRICE_PER_MILLION, "MiniMax-M3"),
+    );
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("reads prompt_tokens_details.cached_tokens into cachedInput and bills it at the cache rate", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      sse(
+        '{"choices":[{"delta":{"content":"here you go"}}]}',
+        '{"choices":[],"usage":{"prompt_tokens":100000,"completion_tokens":10000,"prompt_tokens_details":{"cached_tokens":40000}}}',
+      ),
+    ));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-cache",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hello" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({
+      ok: true,
+      usage: { input: 100_000, output: 10_000, cachedInput: 40_000 },
+    });
+    // 60,000 uncached @ $0.30/M + 40,000 cached @ $0.06/M + 10,000 out @ $1.20/M
+    // = $0.018 + $0.0024 + $0.012 = $0.0324
+    expect(costOf(completed)).toBeCloseTo(0.0324, 10);
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("returns a null cost — never 0 — for a model outside the priced catalog, even with real usage", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      sse(
+        '{"choices":[{"delta":{"content":"hi"}}]}',
+        '{"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":50}}',
+      ),
+    ));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-unpriced-model",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hi", model: "MiniMax-Unreleased" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({ ok: true, usage: { input: 100, output: 50 } });
+    expect(costOf(completed)).toBeNull();
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("prices the terminal event on the ERROR path too, from the usage a successful earlier round already reported", async () => {
+    let round = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      round += 1;
+      if (round === 1) return sse(...TOOL_CALL_ROUND);
+      throw new Error("network down");
+    }));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-error-cost",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({
+      threadId: "thread",
+      text: "who is around?",
+      tools: [{ name: "list_bots" }, { name: "ask_bot" }],
+      toolHost: answeringHost,
+    });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    // TOOL_CALL_ROUND's own usage: prompt_tokens: 10, completion_tokens: 5
+    expect(completed).toMatchObject({ ok: false, stopReason: "error", usage: { input: 10, output: 5 } });
+    expect(costOf(completed)).toBeCloseTo(
+      costUsd({ input: 10, output: 5 }, MINIMAX_PRICE_PER_MILLION, "MiniMax-M3")!,
+      12,
+    );
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("routes generateText (titles, summaries) through the highspeed utility model, not models.default", async () => {
+    let body: any;
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      body = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({ choices: [{ message: { content: "a title" } }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-utility-model",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+
+    const text = await instance.generateText?.("Summarize this thread in five words.");
+
+    expect(text).toBe("a title");
+    expect(body.model).toBe("MiniMax-M2.7-highspeed");
+    expect(body.model).not.toBe(MinimaxDriver.models.default);
+    await instance.dispose();
+  });
+
+  // withChatSpan's OWN default sink resolves through the real, un-stubbed
+  // Sentry loader (server/sentry.ts), which is inert under VITEST — so it
+  // is a transparent pass-through here, exactly as it is in every other
+  // test in this file, and its own span-emitting behavior is unit-tested
+  // in sentry-ai.test.ts against a fake sink it is handed directly.  What
+  // IS observable at the driver level, with no Sentry stubbing at all, is
+  // the generic event-driven path every consumer (including the real
+  // server/index.ts bus) actually uses: turn.started/item.started/
+  // item.completed/turn.completed feed observeRuntimeEvent, which is what
+  // produces the invoke_agent and execute_tool spans this test asserts on.
+  it("produces one invoke_agent span with one execute_tool child per tool call — never duplicated by also calling recordExecutedTools", async () => {
+    const { sink, spans } = recordingSink();
+    let round = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      round += 1;
+      return round === 1
+        ? sse(...TOOL_CALL_ROUND)
+        : sse(
+            '{"choices":[{"delta":{"content":"here you go"}}]}',
+            '{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}',
+          );
+    }));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-spans",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    // Mirrors how server/index.ts's real bus feeds EVERY driver's events
+    // through observeRuntimeEvent generically — nothing MiniMax-specific
+    // is wired here, which is the whole point.
+    instance.adapter.onEvent((event) => observeRuntimeEvent(event, sink));
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({
+      threadId: "thread",
+      text: "who is around?",
+      tools: [{ name: "list_bots" }, { name: "ask_bot" }],
+      toolHost: answeringHost,
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(spans.filter((s) => s.op === "gen_ai.invoke_agent")).toHaveLength(1);
+    // one execute_tool span per tool call, from item.started/item.completed
+    // alone — recordExecutedTools is deliberately NOT also called for this
+    // driver, or this count would be 4, not 2
+    expect(spans.filter((s) => s.op === "gen_ai.execute_tool")).toHaveLength(2);
+    expect(spans.every((s) => s.ended)).toBe(true);
+    recorder.stop();
     await instance.dispose();
   });
 });
