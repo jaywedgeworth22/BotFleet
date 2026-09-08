@@ -333,7 +333,8 @@ export function UsageSection() {
               ? quotaLinesSummary(detailLines)
               : null;
             // The "headline" lines sit directly under the engine name: for
-            // Antigravity, "Gemini %" and "Third Party %" (collapsed); for
+            // Antigravity, "Gemini %" and "Third-Party %" (the only two
+            // numbers the CLI reports); for
             // every other engine, the most-restrictive window per bucket
             // with the time-until-reset next to it. The chip on the right
             // (Available / At Usage Cap / …) is the verdict; the headline
@@ -460,7 +461,7 @@ export function UsageSection() {
           </div>
         ) : null}
         <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-          Antigravity remaining percent is read locally from the antigravity-usage CLI every minute and collapsed to "Third Party" and "Gemini" summaries.  Other engines surface their weekly and 5-hour caps directly; the monthly plan limit (Cursor) is honored as a wildcard cap.  Exhausted models fail over to the saved chain before the next turn.
+          Antigravity remaining percent is read locally from the antigravity-usage CLI every minute and shown as "Gemini" and "Third-Party" only — those two buckets each share one number.  Other engines surface their weekly and 5-hour caps directly; the monthly plan limit (Cursor) is honored as a wildcard cap.  Exhausted models fail over to the saved chain before the next turn.
         </div>
       </Card>
 

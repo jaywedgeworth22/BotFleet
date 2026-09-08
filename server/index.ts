@@ -5145,6 +5145,9 @@ const server = createServer(async (req, res) => {
         "content-length": String(attachment.bytes.byteLength),
         "cache-control": "private, max-age=31536000, immutable",
         "x-content-type-options": "nosniff",
+        ...(attachment.mime === "image/svg+xml"
+          ? { "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox" }
+          : {}),
       });
       return res.end(attachment.bytes);
     }

@@ -793,9 +793,13 @@ public struct CompanionClient: Sendable {
     /// must use `uploadChatAttachment` and embed the disk `path` instead —
     /// agents cannot open `/api/attachments/:name`.
     public func uploadAvatar(data: Data, mime: String) async throws -> String {
-        let allowed = ["image/png", "image/jpeg", "image/gif", "image/webp"]
+        let allowed = [
+            "image/png", "image/jpeg", "image/gif", "image/webp",
+            "image/heic", "image/heif", "image/avif",
+            "image/bmp", "image/svg+xml",
+        ]
         guard allowed.contains(mime), data.count <= 10 * 1_024 * 1_024 else {
-            throw APIError.transport("Choose a PNG, JPEG, GIF, or WebP image up to 10 MB.")
+            throw APIError.transport("Choose a PNG, JPEG, GIF, WebP, HEIC, BMP, or SVG image up to 10 MB.")
         }
         var request = try makeRequest("POST", "/api/attachments")
         request.setValue(mime, forHTTPHeaderField: "Content-Type")

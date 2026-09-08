@@ -18,18 +18,16 @@ describe("antigravity quota lines", () => {
     { label: "Tab", modelId: "gemini-tab", remainingPercentage: 0.9, isExhausted: false, isAutocompleteOnly: true },
   ];
 
-  it("puts Gemini first, marks omitted remaining as exhausted, and drops autocomplete", () => {
+  it("emits only Gemini and Third-Party, not per-model rows", () => {
     const lines = antigravityQuotaLines(models);
     expect(lines.map((line) => `${line.label}: ${line.value}`)).toEqual([
-      "Gemini 3 Flash: exhausted",
-      "Gemini 3.1 Pro: exhausted",
-      "Claude 4.6 Sonnet: 30%",
+      "Gemini: exhausted",
+      "Third-Party: 30%",
     ]);
   });
 
-  it("joins every model for hover, not a four-name slice", () => {
-    expect(quotaLinesSummary(antigravityQuotaLines(models))).toContain("Gemini 3.1 Pro: exhausted");
-    expect(quotaLinesSummary(antigravityQuotaLines(models))).toContain("Claude 4.6 Sonnet: 30%");
+  it("joins the two buckets for hover, not a per-model slice", () => {
+    expect(quotaLinesSummary(antigravityQuotaLines(models))).toBe("Gemini: exhausted · Third-Party: 30%");
   });
 
   it("treats N/A remaining as exhausted", () => {
@@ -86,7 +84,17 @@ describe("antigravity group summary", () => {
     // slot would dilute the read of the models the user can still send to.
     expect(groups).toEqual([
       { group: "gemini", label: "Gemini", remainingPercent: 80, exhausted: false },
-      { group: "external", label: "Third Party", remainingPercent: 25, exhausted: false },
+      { group: "external", label: "Third-Party", remainingPercent: 20, exhausted: false },
+    ]);
+  });
+
+  it("does not show 0% when the group still has a usable model", () => {
+    const groups = antigravityGroupSummary([
+      { label: "Gemini 3.1 Pro", modelId: "gemini-3.1-pro-high", remainingPercentage: 0, isExhausted: false },
+      { label: "Gemini 3 Flash", modelId: "gemini-3-flash", remainingPercentage: 0.4, isExhausted: false },
+    ]);
+    expect(groups).toEqual([
+      { group: "gemini", label: "Gemini", remainingPercent: 40, exhausted: false },
     ]);
   });
 

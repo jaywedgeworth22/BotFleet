@@ -88,11 +88,44 @@ export function fileAttachment(name: string, path: string, size: number): FileAt
  * oversized paste is refused before the upload starts, not mid-stream. */
 export const IMAGE_MAX_BYTES = 10 * 1024 * 1024;
 
-export function isImageFile(file: { type: string; size: number }): boolean {
-  return (
-    file.type.startsWith("image/") &&
-    ["image/png", "image/jpeg", "image/gif", "image/webp"].includes(file.type.split(";")[0]!.trim().toLowerCase())
-  );
+const IMAGE_MIMES = [
+  "image/png",
+  "image/jpeg",
+  "image/gif",
+  "image/webp",
+  "image/heic",
+  "image/heif",
+  "image/avif",
+  "image/bmp",
+  "image/x-ms-bmp",
+  "image/svg+xml",
+] as const;
+
+const IMAGE_EXT_MIME: Record<string, string> = {
+  png: "image/png",
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  gif: "image/gif",
+  webp: "image/webp",
+  heic: "image/heic",
+  heif: "image/heif",
+  avif: "image/avif",
+  bmp: "image/bmp",
+  svg: "image/svg+xml",
+};
+
+/** Browser drops often arrive with an empty type; use the filename then. */
+export function guessImageMime(file: { type: string; name?: string }): string | null {
+  const declared = file.type.split(";")[0]!.trim().toLowerCase();
+  if ((IMAGE_MIMES as readonly string[]).includes(declared)) {
+    return declared === "image/x-ms-bmp" ? "image/bmp" : declared;
+  }
+  const ext = (file.name ?? "").split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXT_MIME[ext] ?? null;
+}
+
+export function isImageFile(file: { type: string; size: number; name?: string }): boolean {
+  return guessImageMime(file) != null;
 }
 
 /** Persist a pasted image server-side and return the attachment chip data.
@@ -104,12 +137,13 @@ export async function imageAttachmentFromFile(file: {
   type: string;
   arrayBuffer: () => Promise<ArrayBuffer>;
 }): Promise<ImageAttachment | null> {
-  if (!isImageFile(file)) return null;
+  const mime = guessImageMime(file);
+  if (!mime) return null;
   if (file.size > IMAGE_MAX_BYTES) throw Object.assign(new Error(`${file.name} exceeds 10 MB`), { status: 413 });
   const bytes = new Uint8Array(await file.arrayBuffer());
   const response = await fetch("/api/attachments", {
     method: "POST",
-    headers: { "content-type": file.type },
+    headers: { "content-type": mime },
     body: bytes,
   });
   if (!response.ok) {
@@ -311,7 +345,7 @@ export function attachmentBasename(path: string): string {
  * that looks remote can at most resolve to a local generated filename. */
 export function attachmentImageUrl(path: string): string | null {
   const name = attachmentBasename(path);
-  if (!/^[A-Za-z0-9-]+\.(png|jpg|gif|webp)$/.test(name)) return null;
+  if (!/^[A-Za-z0-9-]+\.(png|jpg|gif|webp|heic|heif|avif|bmp|svg)$/.test(name)) return null;
   return `/api/attachments/${encodeURIComponent(name)}`;
 }
 
