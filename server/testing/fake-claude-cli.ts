@@ -17,7 +17,20 @@
 //                      inherited-api-key — what `auth status` reports
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, renameSync, writeFileSync } from "node:fs";
+
+// The dump is read by a separate process that only knows the file exists.
+// A plain writeFileSync creates the file and then fills it, so a reader that
+// polls existsSync() can open it mid-write and get truncated JSON — the
+// "Unexpected end of JSON input" flake.  Writing a sibling temp file and
+// renaming it into place makes the swap atomic: a reader sees either no file
+// or the whole thing.  The temp name carries the pid so two fake CLIs sharing
+// one dump path cannot clobber each other's partial write.
+const writeFileAtomic = (path: string, body: string): void => {
+  const tmp = `${path}.tmp-${process.pid}`;
+  writeFileSync(tmp, body);
+  renameSync(tmp, path);
+};
 
 const mode = process.env.FAKE_CLAUDE_MODE ?? "happy";
 
@@ -63,7 +76,7 @@ if (argAfter("--output-format") === "text") {
     process.stdin.on("end", () => resolve(input));
   });
   if (process.env.FAKE_CLAUDE_DUMP) {
-    writeFileSync(
+    writeFileAtomic(
       process.env.FAKE_CLAUDE_DUMP,
       JSON.stringify({ pid: process.pid, argv, env: process.env, prompt, mcpConfig: null }, null, 2),
     );
@@ -109,7 +122,7 @@ const playTurn = (prompt: JsonValue) => {
         /* leave null — the test will see it */
       }
     }
-    writeFileSync(process.env.FAKE_CLAUDE_DUMP, JSON.stringify({ pid: process.pid, argv, env: process.env, prompt, mcpConfig }, null, 2));
+    writeFileAtomic(process.env.FAKE_CLAUDE_DUMP, JSON.stringify({ pid: process.pid, argv, env: process.env, prompt, mcpConfig }, null, 2));
   }
 
   if (mode === "exit-early") {

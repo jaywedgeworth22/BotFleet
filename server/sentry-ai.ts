@@ -6,13 +6,31 @@
 // would: invoke_agent, execute_tool, gen_ai.chat.  Conversation id is the
 // thread id.  Prompts, transcripts, and tool arguments stay off the wire
 // (they can carry credentials).
+//
+// The gen_ai.* vocabulary here is SENTRY's, not Usage Monitor's.  `x_ai`,
+// `gcp.gemini`, and `moonshot` are Sentry provider names; the Usage Monitor
+// canon (`xai`, `google-ai`, …) lives in server/telemetry.ts.  The two must
+// not be unified — they are different registries that happen to overlap.
 import type { RuntimeEvent } from "./contracts.ts";
-import { getSentry, isSentryInitialized } from "./sentry.ts";
+import { observability } from "./observability.ts";
+import { getSentry, isSentryActive } from "./sentry.ts";
 
 export type SpanLike = {
   setAttribute(key: string, value: string | number | boolean): void;
   setStatus?(status: { code: number; message?: string }): void;
   end(): void;
+};
+
+/** Scope a single capture without touching the global Sentry scope. */
+export type SentryCaptureContext = {
+  tags?: Record<string, string>;
+};
+
+export type SentryBreadcrumb = {
+  category: string;
+  message: string;
+  level?: "info" | "warning" | "error";
+  data?: Record<string, string | number | boolean>;
 };
 
 export type SentryAiSink = {
@@ -22,27 +40,122 @@ export type SentryAiSink = {
     name: string;
     attributes?: Record<string, string | number | boolean>;
   }) => SpanLike;
-  captureException: (error: Error) => void;
+  captureException: (error: Error, context?: SentryCaptureContext) => void;
+  addBreadcrumb?: (crumb: SentryBreadcrumb) => void;
 };
+
+/** Who ran this turn.  A driver only ever knows a thread id; the harness
+ * store knows which bot, which engine instance, and which room that thread
+ * belongs to, so the harness installs a resolver at boot and every span
+ * picks the identity up from there. */
+export interface TurnIdentity {
+  botId?: string;
+  botName?: string;
+  instanceId?: string;
+  model?: string;
+  roomId?: string;
+  roomName?: string;
+}
 
 type AgentTurn = {
   span: SpanLike;
   model?: string;
   provider: string;
+  identity: TurnIdentity | null;
   tools: Map<string, SpanLike>;
 };
 
 const turns = new Map<string, AgentTurn>();
+
+let identityResolver: ((threadId: string) => TurnIdentity | null) | null = null;
+
+/** Install (or clear, with null) the harness's thread → identity lookup. */
+export function configureTurnIdentity(
+  resolver: ((threadId: string) => TurnIdentity | null) | null,
+): void {
+  identityResolver = resolver;
+}
+
+function identityFor(threadId: string): TurnIdentity | null {
+  if (!identityResolver) return null;
+  try {
+    return identityResolver(threadId);
+  } catch {
+    // Telemetry must never take down a turn.  A resolver that throws —
+    // a store lookup racing a deleted bot — degrades to no identity.
+    return null;
+  }
+}
+
+function clean(value: string | null | undefined): string | undefined {
+  const trimmed = value?.trim() ?? "";
+  return trimmed || undefined;
+}
+
+/** The botfleet.* attributes one turn contributes to a span or a capture.
+ * Every field is optional because a blank one is skipped outright: an
+ * empty-string tag is worse than an absent one, since Sentry then groups
+ * every unidentified turn under a single facet value. */
+export type TurnIdentityAttributes = {
+  "botfleet.bot.id"?: string;
+  "botfleet.bot.name"?: string;
+  "botfleet.instance.id"?: string;
+  "botfleet.room.id"?: string;
+  "botfleet.room.name"?: string;
+};
+
+/** Identity attributes plus `gen_ai.agent.name`, for the span shapes that
+ * have no driver kind to fall back on. */
+export type IdentifiedAgentAttributes = TurnIdentityAttributes & {
+  "gen_ai.agent.name"?: string;
+};
+
+/** What a failed turn is tagged with in Sentry. */
+export type TurnFailureTags = TurnIdentityAttributes & {
+  "botfleet.provider": string;
+  "botfleet.thread.id": string;
+  "gen_ai.provider.name": string;
+  "gen_ai.request.model"?: string;
+};
+
+function identityAttributes(identity: TurnIdentity | null): TurnIdentityAttributes {
+  const out: TurnIdentityAttributes = {};
+  if (!identity) return out;
+  const put = (key: keyof TurnIdentityAttributes, value: string | undefined) => {
+    const text = clean(value);
+    if (text) out[key] = text;
+  };
+  put("botfleet.bot.id", identity.botId);
+  put("botfleet.bot.name", identity.botName);
+  put("botfleet.instance.id", identity.instanceId);
+  put("botfleet.room.id", identity.roomId);
+  put("botfleet.room.name", identity.roomName);
+  return out;
+}
+
+function identityWithAgentName(identity: TurnIdentity | null): IdentifiedAgentAttributes {
+  const out: IdentifiedAgentAttributes = identityAttributes(identity);
+  const botName = clean(identity?.botName);
+  if (botName) out["gen_ai.agent.name"] = botName;
+  return out;
+}
+
+function agentName(identity: TurnIdentity | null, fallback: string): string {
+  return clean(identity?.botName) ?? fallback;
+}
 
 function turnKey(threadId: string, turnId?: string): string {
   return `${threadId}:${turnId ?? "_"}`;
 }
 
 function liveSink(): SentryAiSink | null {
-  if (!isSentryInitialized()) return null;
+  if (!isSentryActive()) return null;
   const Sentry = getSentry();
   if (!Sentry) return null;
   return {
+    setConversationId: (id) => {
+      Sentry.setConversationId(id);
+    },
     startInactiveSpan: (opts) => {
       const span = Sentry.startInactiveSpan({
         op: opts.op,
@@ -52,8 +165,17 @@ function liveSink(): SentryAiSink | null {
       // SAFETY: Sentry v10 inactive spans expose setAttribute/end; setStatus is optional.
       return span as SpanLike;
     },
-    captureException: (error) => {
-      Sentry.captureException(error);
+    captureException: (error, context) => {
+      Sentry.captureException(error, context?.tags ? { tags: context.tags } : undefined);
+      observability.noteCapture();
+    },
+    addBreadcrumb: (crumb) => {
+      Sentry.addBreadcrumb({
+        category: crumb.category,
+        message: crumb.message,
+        level: crumb.level ?? "info",
+        data: crumb.data,
+      });
     },
   };
 }
@@ -62,14 +184,40 @@ function applyConversation(sink: SentryAiSink, threadId: string): void {
   sink.setConversationId?.(threadId);
 }
 
-function genAiProvider(driverKind: string): string {
-  const kind = driverKind.toLowerCase();
-  if (kind.includes("claude") || kind.includes("anthropic")) return "anthropic";
-  if (kind.includes("codex") || kind.includes("openai")) return "openai";
-  if (kind.includes("grok") || kind.includes("xai")) return "x_ai";
-  if (kind.includes("gemini") || kind.includes("antigravity")) return "gcp.gemini";
-  if (kind.includes("deepseek")) return "deepseek";
-  return driverKind || "custom";
+// Sentry's gen_ai.provider.name vocabulary, keyed by lowercased driver kind.
+// A substring test used to answer "openai" for `openai-compat`, which put
+// every OpenRouter and Groq span in the OpenAI provider bucket.
+const GEN_AI_PROVIDERS = new Map<string, string>([
+  ["codex", "openai"],
+  ["openai", "openai"],
+  ["openai-compat", "openai-compat"],
+  ["claude", "anthropic"],
+  ["claudeagent", "anthropic"],
+  ["anthropic", "anthropic"],
+  ["grok", "x_ai"],
+  ["grokagent", "x_ai"],
+  ["xai", "x_ai"],
+  ["antigravity", "gcp.gemini"],
+  ["antigravityagent", "gcp.gemini"],
+  ["gemini", "gcp.gemini"],
+  ["deepseek", "deepseek"],
+  ["deepseekagent", "deepseek"],
+  ["dsh", "deepseek"],
+  ["dshagent", "deepseek"],
+  ["kimi", "moonshot"],
+  ["kimiagent", "moonshot"],
+  ["cursor", "cursor"],
+  ["cursoragent", "cursor"],
+  ["minimax", "minimax"],
+  ["boxagent", "box"],
+]);
+
+/** Map a BotFleet driver kind onto Sentry's provider vocabulary.  An engine
+ * Sentry has no name for keeps its own kind rather than being folded into a
+ * neighbour it does not belong to. */
+export function genAiProvider(driverKind: string): string {
+  const kind = (driverKind || "").trim().toLowerCase();
+  return GEN_AI_PROVIDERS.get(kind) ?? (driverKind || "custom");
 }
 
 function endTurn(key: string, ok: boolean, usage?: { input?: number; output?: number; cachedInput?: number }): void {
@@ -94,18 +242,22 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
 
   switch (event.type) {
     case "turn.started": {
+      const identity = identityFor(event.threadId);
       const span = sink.startInactiveSpan({
         op: "gen_ai.invoke_agent",
         name: `invoke_agent ${event.provider}`,
         attributes: {
           "gen_ai.operation.name": "invoke_agent",
-          "gen_ai.agent.name": event.provider,
+          "gen_ai.agent.name": agentName(identity, event.provider),
           "gen_ai.provider.name": provider,
           "gen_ai.conversation.id": event.threadId,
           "gen_ai.system": provider,
+          ...identityAttributes(identity),
         },
       });
-      turns.set(key, { span, provider, tools: new Map() });
+      const model = clean(identity?.model);
+      if (model) span.setAttribute("gen_ai.request.model", model);
+      turns.set(key, { span, provider, identity, model, tools: new Map() });
       break;
     }
     case "session.started": {
@@ -113,6 +265,15 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       if (turn && event.model) {
         turn.model = event.model;
         turn.span.setAttribute("gen_ai.request.model", event.model);
+      }
+      break;
+    }
+    case "session.exited": {
+      // A session that dies mid-turn never sends turn.completed, so the
+      // invoke_agent span would hang open until the process exits.
+      const prefix = `${event.threadId}:`;
+      for (const openKey of turns.keys()) {
+        if (openKey.startsWith(prefix)) endTurn(openKey, false);
       }
       break;
     }
@@ -129,7 +290,8 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
           "gen_ai.operation.name": "execute_tool",
           "gen_ai.tool.name": toolName,
           "gen_ai.conversation.id": event.threadId,
-          "gen_ai.agent.name": event.provider,
+          "gen_ai.agent.name": agentName(turn.identity, event.provider),
+          ...identityAttributes(turn.identity),
         },
       });
       turn.tools.set(toolId, toolSpan);
@@ -141,7 +303,13 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       if (!turn || !event.itemId) break;
       const toolSpan = turn.tools.get(event.itemId);
       if (!toolSpan) break;
-      if (!event.ok) toolSpan.setStatus?.({ code: 2, message: "internal_error" });
+      if (!event.ok) {
+        toolSpan.setStatus?.({ code: 2, message: "internal_error" });
+        // A failure's one-line detail is the whole reason the row is worth
+        // reading.  Arguments stay off the wire; only the result line goes.
+        const detail = clean(event.detail);
+        if (detail) toolSpan.setAttribute("gen_ai.tool.result.detail", detail.slice(0, 200));
+      }
       toolSpan.end();
       turn.tools.delete(event.itemId);
       break;
@@ -159,10 +327,36 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
           "gen_ai.operation.name": "execute_tool",
           "gen_ai.tool.name": toolName,
           "gen_ai.conversation.id": event.threadId,
-          "gen_ai.agent.name": event.provider,
+          "gen_ai.agent.name": agentName(turn.identity, event.provider),
+          ...identityAttributes(turn.identity),
         },
       });
       turn.tools.set(toolId, toolSpan);
+      break;
+    }
+    case "request.resolved": {
+      const turn = turns.get(key);
+      if (!turn || !event.requestId) break;
+      const toolSpan = turn.tools.get(event.requestId);
+      if (!toolSpan) break;
+      toolSpan.setAttribute("botfleet.approval.behavior", event.behavior);
+      toolSpan.setAttribute("botfleet.approval.source", event.source);
+      toolSpan.end();
+      turn.tools.delete(event.requestId);
+      break;
+    }
+    case "turn.retrying": {
+      sink.addBreadcrumb?.({
+        category: "botfleet.turn",
+        message: `turn retrying: ${clean(event.reason)?.slice(0, 200) ?? "unknown"}`,
+        level: "warning",
+        data: {
+          attempt: event.attempt,
+          delayMs: event.delayMs,
+          provider: event.provider,
+          threadId: event.threadId,
+        },
+      });
       break;
     }
     case "thread.token-usage.updated": {
@@ -180,6 +374,23 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       break;
     }
     case "turn.completed": {
+      if (!event.ok) {
+        // A failed turn is the thing an operator wants an Issue for.  Most
+        // drivers report the failure only here — they never emit
+        // runtime.error — so without this a broken engine was invisible.
+        const turn = turns.get(key);
+        const identity = turn?.identity ?? identityFor(event.threadId);
+        const tags: TurnFailureTags = {
+          "botfleet.provider": event.provider,
+          "botfleet.thread.id": event.threadId,
+          "gen_ai.provider.name": provider,
+          ...identityAttributes(identity),
+        };
+        const model = clean(turn?.model) ?? clean(identity?.model);
+        if (model) tags["gen_ai.request.model"] = model;
+        const stopReason = clean(event.stopReason)?.slice(0, 200) ?? "unknown";
+        sink.captureException(new Error(`bot turn failed: ${stopReason}`), { tags });
+      }
       endTurn(key, event.ok, event.usage);
       break;
     }
@@ -194,6 +405,7 @@ export function resetSentryAiForTests(): void {
     turn.span.end();
   }
   turns.clear();
+  identityResolver = null;
 }
 
 /** Record tool names from an API-backed driver that does not emit item.started. */
@@ -204,6 +416,7 @@ export function recordExecutedTools(
 ): void {
   if (!sink || toolNames.length === 0) return;
   applyConversation(sink, conversationId);
+  const identityAttrs = identityWithAgentName(identityFor(conversationId));
   for (const raw of toolNames) {
     const toolName = raw.trim() || "tool";
     const span = sink.startInactiveSpan({
@@ -213,6 +426,7 @@ export function recordExecutedTools(
         "gen_ai.operation.name": "execute_tool",
         "gen_ai.tool.name": toolName,
         "gen_ai.conversation.id": conversationId,
+        ...identityAttrs,
       },
     });
     span.end();
@@ -227,6 +441,7 @@ export async function withChatSpan<T extends { usage?: { input: number; output: 
 ): Promise<T> {
   if (!sink) return fn();
   const provider = opts.provider ?? "openai";
+  const identityAttrs = identityWithAgentName(identityFor(opts.conversationId));
   const span = sink.startInactiveSpan({
     op: "gen_ai.chat",
     name: `chat ${opts.model}`,
@@ -236,6 +451,7 @@ export async function withChatSpan<T extends { usage?: { input: number; output: 
       "gen_ai.provider.name": provider,
       "gen_ai.system": provider,
       "gen_ai.conversation.id": opts.conversationId,
+      ...identityAttrs,
     },
   });
   try {

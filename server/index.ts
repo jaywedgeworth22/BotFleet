@@ -99,6 +99,7 @@ import {
   loadConfig,
   localVmMaxInstances,
   allowedBotComputers,
+  observabilitySettings,
   parseConfigPatch,
   publicIngressUrlEffective,
   roomTurnTimeoutMinutes,
@@ -141,8 +142,8 @@ import { _loadPending, discardDelegations, drainDelegations, pendingDelegationSn
 import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage } from "./steer-queue.ts";
 import { cancelRoomRounds, drainRoomRounds, queueRoomRound } from "./room-queue.ts";
 import { EventBus } from "./harness/bus.ts";
-import { initSentry } from "./sentry.ts";
-import { observeRuntimeEvent } from "./sentry-ai.ts";
+import { observability, observabilityBootLine } from "./observability.ts";
+import { configureTurnIdentity, observeRuntimeEvent } from "./sentry-ai.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
 import {
@@ -285,7 +286,12 @@ utilityParentPort?.on("message", (event) => {
 const bus = new EventBus();
 export { bus };
 bus.attach(registry.instances());
-initSentry();
+// Diagnostics resolve the way telemetry does: a getter over the live config,
+// so a DSN saved in Settings takes effect on the next request rather than the
+// next restart.  The boot line names the ingest host and the project id; the
+// DSN itself never reaches a log file.
+observability.configure(() => observabilitySettings(cfg));
+console.log(observabilityBootLine(observability.apply()));
 bus.subscribe((event: RuntimeEvent) => observeRuntimeEvent(event));
 
 // ── peer-agent comms wiring ────────────────────────────────────────────
@@ -1070,6 +1076,26 @@ function notify(notification: Notification | null) {
 // records the active member here before dispatching its turn.
 const groupSpeakers = new Map<string, { botId: string; name: string; color: string }>();
 
+// A Sentry span only ever sees a thread id.  This is what turns one into the
+// bot, the engine, and the room behind it, so a failed turn in the Issues
+// list says which bot ran it and where.  It is installed beside the speaker
+// map rather than beside the bus subscription above because it reads both
+// that map and the store.
+configureTurnIdentity((threadId) => {
+  const group = store.groupByThread(threadId);
+  const speaker = groupSpeakers.get(threadId);
+  const bot = speaker ? store.bot(speaker.botId) : store.botByThread(threadId);
+  if (!bot && !group) return null;
+  return {
+    botId: bot?.id,
+    botName: bot?.name ?? speaker?.name,
+    instanceId: bot?.modelSelection.instanceId,
+    model: bot?.modelSelection.model,
+    roomId: group?.id,
+    roomName: group?.name,
+  };
+});
+
 // The latest running token totals for the turn in flight on each thread.
 // Providers report cumulative-within-turn numbers; the final value is folded
 // into the task's tally when the turn settles.
@@ -1670,6 +1696,12 @@ bus.subscribe((event: RuntimeEvent) => {
       turnUsage.delete(event.threadId);
       const speaker = groupSpeakers.get(event.threadId);
       const group = store.groupByThread(event.threadId);
+      // What this turn spent.  The driver's own per-turn figure
+      // (turn.completed.usage) is authoritative; a driver that only streams
+      // the running indicator falls back to its last value.  Read here rather
+      // than inside the 1:1 branch because a room turn burns the same tokens
+      // and reports them the same way.
+      const tokens = event.usage ?? lastReported;
       const fallbackBot = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
       let fallbackUserMessage: Message | undefined;
       let fallbackSelection: ModelSelection | undefined;
@@ -1751,19 +1783,17 @@ bus.subscribe((event: RuntimeEvent) => {
           fallbackUserMessage = undefined;
         }
       }
-      // group turns run on the room's thread — the speaking bot's task
-      // tally is not the right home for a shared room's spend, so only
-      // 1:1 task turns are tallied for now.
+      // Group turns run on the room's thread — the speaking bot's task tally
+      // is not the right home for a shared room's spend, so only 1:1 task
+      // turns are tallied here.  Usage Monitor hears about both: the room
+      // branch below reports the same turn tagged with the room it ran in.
       if (bot) {
         const vpsTurn = activeVpsThreads.get(bot.id) === event.threadId;
         const clearVpsTurn = () => {
           if (activeVpsThreads.get(bot.id) === event.threadId) activeVpsThreads.delete(bot.id);
         };
         // bank what this turn spent before the bot broadcast carries the
-        // task list to every window. The driver's own per-turn figure
-        // (turn.completed.usage) is authoritative; a driver that only
-        // streams the running indicator falls back to its last value.
-        const tokens = event.usage ?? lastReported;
+        // task list to every window
         store.addTaskUsage(bot.id, event.threadId, {
           input: tokens?.input,
           output: tokens?.output,
@@ -1779,6 +1809,11 @@ bus.subscribe((event: RuntimeEvent) => {
           cwd: currentTask?.cwd || bot.cwd,
           instanceId: bot.modelSelection.instanceId,
           modelId: bot.modelSelection.model,
+          // The engine, not the instance id.  `bus.attach` refuses any event
+          // whose `provider` is not the emitting instance's own driver kind,
+          // so this is the engine that actually ran the turn — and an engine
+          // id is ours, where an instance id is whatever the operator typed.
+          driverKind: event.provider,
           inputTokens: tokens?.input,
           outputTokens: tokens?.output,
           cachedInputTokens: tokens?.cachedInput,
@@ -1816,6 +1851,32 @@ bus.subscribe((event: RuntimeEvent) => {
           }).finally(clearVpsTurn);
         } else if (vpsTurn) {
           clearVpsTurn();
+        }
+      } else if (group && speaker) {
+        // A room turn spends real money too, and until now none of it reached
+        // Usage Monitor.  It goes out tagged with the room, so shared spend
+        // can be told apart from a 1:1 task turn; the per-bot task ledger
+        // above stays 1:1 on purpose.
+        const roomBot = store.bot(speaker.botId);
+        if (roomBot) {
+          telemetry.trackTurn({
+            botId: roomBot.id,
+            botName: roomBot.name,
+            threadId: event.threadId,
+            taskTitle: store.groupTaskByThread(group.id, event.threadId)?.title,
+            cwd: group.cwd || roomBot.cwd,
+            instanceId: roomBot.modelSelection.instanceId,
+            modelId: roomBot.modelSelection.model,
+            // The engine that ran the turn, same as the 1:1 branch above.
+            driverKind: event.provider,
+            inputTokens: tokens?.input,
+            outputTokens: tokens?.output,
+            cachedInputTokens: tokens?.cachedInput,
+            costUsd: event.cost ?? null,
+            success: event.ok !== false,
+            roomId: group.id,
+            roomName: group.name,
+          });
         }
       }
       if (speaker && group?.busyBotId === speaker.botId) {
@@ -3972,6 +4033,7 @@ async function localVmPayload(target: LocalVmTarget) {
 
 
 function configStatus() {
+  const diagnostics = observability.getStatus();
   return {
     xai: { configured: Boolean(cfg.xai?.key) },
     composio: {
@@ -4039,6 +4101,19 @@ function configStatus() {
       hasToken: Boolean(cfg.usage?.ingestToken),
       hasReadToken: Boolean(cfg.usage?.readToken || process.env.USAGE_READ_TOKEN),
       projects: usageProjectRules(cfg),
+    },
+    // This frame is broadcast to every window and, with Remote Access on,
+    // travels the tunnel — so it carries the ingest host and never the DSN.
+    // The renderer reads the DSN from /api/observability instead.
+    observability: {
+      configured: diagnostics.configured,
+      enabled: diagnostics.enabled,
+      hasDsn: diagnostics.configured,
+      host: diagnostics.host,
+      source: diagnostics.source,
+      environment: diagnostics.environment,
+      tracesSampleRate: diagnostics.tracesSampleRate,
+      logsEnabled: diagnostics.logsEnabled,
     },
     autoUpdate: {
       enabled: cfg.autoUpdate?.enabled ?? false,
@@ -6885,6 +6960,18 @@ const server = createServer(async (req, res) => {
       const result = await telemetry.probe();
       return json(res, 200, result);
     }
+    // The desktop renderer starts a browser SDK of its own, which cannot run
+    // on a host and a project id — so this one loopback route hands over the
+    // whole DSN.  /api/config stays host-only, because that frame reaches
+    // every window and the tunnel.
+    if (method === "GET" && path === "/api/observability") {
+      return json(res, 200, { ...observability.getStatus(), dsn: observability.effectiveDsn() });
+    }
+    // One real event, sent deliberately: the operator gets to watch it land
+    // in their own project instead of trusting a green pill.
+    if (method === "POST" && path === "/api/observability/test") {
+      return json(res, 200, await observability.probe());
+    }
     // ── ingress test: confirm the configured webhook URL answers and
     // describes the tunnel/reverse-proxy that fronts it.  Body shape matches
     // the field the Settings panel saves, so the form's "Test Setup" button
@@ -7509,6 +7596,12 @@ const server = createServer(async (req, res) => {
         syncCredentialEnv(patch);
         Object.assign(cfg, loadConfig());
       }
+      // A new DSN, or a flipped kill switch, takes effect on this request:
+      // the Sentry client is closed and re-opened in place.  Nothing waits for
+      // a restart, and the line printed here says exactly what changed.
+      if (patch.observability !== undefined) {
+        console.log(observabilityBootLine(observability.apply()));
+      }
       // Provider keys change the fleet. Profile, voice, VPS, and room timeout
       // changes do not rebuild it: no driver reads them, and they should not
       // interrupt in-flight turns.  Terminology is only a display word, so
@@ -7524,6 +7617,7 @@ const server = createServer(async (req, res) => {
           key !== "autoUpdate" &&
           key !== "ingress" &&
           key !== "usage" &&
+          key !== "observability" &&
           key !== "features" &&
           key !== "terminology" &&
           key !== "terminologyCustom" &&

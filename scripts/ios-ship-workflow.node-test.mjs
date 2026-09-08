@@ -37,6 +37,17 @@ test("ios-ship.yml targets botfleet / ios on GitHub-hosted macos-latest", () => 
   assert.match(yml, /infisical secrets get/);
   assert.match(yml, /APPLE_API_KEY_ID/);
   assert.match(yml, /IOS_CERT_P12_BASE64/);
+  // SENTRY_DSN comes from Infisical prod at ship time, with the GitHub
+  // secret as a synced fallback read from step env -- never a job-level
+  // `secrets.SENTRY_DSN`, which is re-applied per step and would fight the
+  // later GITHUB_ENV write.
+  assert.match(yml, /infisical secrets get "SENTRY_DSN"/);
+  assert.match(yml, /GH_FALLBACK_SENTRY_DSN/);
+  assert.match(
+    yml,
+    /SENTRY_DSN is empty after the Infisical prod export and the GitHub secret fallback/
+  );
+  assert.doesNotMatch(yml, /^\s*SENTRY_DSN:\s*\$\{\{\s*secrets\.SENTRY_DSN\s*\}\}\s*$/m);
   assert.doesNotMatch(yml, /secrets\.APPLE_API_KEY_ID/);
   assert.doesNotMatch(yml, /secrets\.APPLE_API_ISSUER_ID/);
   assert.doesNotMatch(yml, /secrets\.APPLE_API_KEY_P8_BASE64/);

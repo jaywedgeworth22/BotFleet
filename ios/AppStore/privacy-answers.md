@@ -9,8 +9,10 @@ production hosted service still match this repository.
 - Third-party advertising or analytics SDKs: **None** for advertising or
   product analytics.  The app links the **Sentry** crash-reporting SDK
   (`sentry-cocoa`, see `ios/App/SentryTelemetry.swift`).  It is inactive unless
-  the build was cut with a `SENTRY_DSN`; builds shipped through the fleet
-  script and the TestFlight workflow include one.
+  the build was cut with a `SENTRY_DSN`.  The TestFlight workflow resolves one
+  from Infisical prod (GitHub Actions secret `SENTRY_DSN` as a fallback) before
+  archiving, but ships the app with Sentry inert rather than failing the build
+  when neither resolves.
 - Data used for **App Functionality** (diagnostics, not linked to the user):
   - Diagnostics: **Crash Data**, **Performance Data** (app hangs longer than
     two seconds, a 20% sample of traces, and failed HTTP 5xx requests with
