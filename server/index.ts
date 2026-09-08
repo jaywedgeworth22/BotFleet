@@ -5861,11 +5861,14 @@ const server = createServer(async (req, res) => {
       if (body.defaultResponder !== undefined) {
         const memberIds = (patch.memberIds as string[] | undefined) ?? existing.memberIds.filter((id) => store.bot(id));
         const raw = body.defaultResponder as { kind?: unknown; botId?: unknown } | null;
+        const existingLead =
+          existing.defaultResponder.kind === "member" ? existing.defaultResponder.botId : undefined;
         const ghostLead =
           raw &&
           typeof raw === "object" &&
           raw.kind === "member" &&
           typeof raw.botId === "string" &&
+          raw.botId === existingLead &&
           !memberIds.includes(raw.botId);
         if (ghostLead) {
           // Phone saves send the current lead even when that bot was deleted.

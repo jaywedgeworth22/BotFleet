@@ -1,4 +1,4 @@
-# 2026-09-08 — iOS app save and queued-message cancel
+# 2026-09-08 — iOS App Save And Queued-Message Cancel
 
 ## Context & Objective
 

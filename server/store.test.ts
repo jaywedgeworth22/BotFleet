@@ -376,6 +376,19 @@ describe("Store", () => {
     expect(reloaded.bots).toEqual([]);
   });
 
+  it("does not strip room rosters when bots.json is corrupt", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({ name: "Lead" });
+    const room = store.createGroup("Ops", [bot.id]);
+    expect(room.memberIds).toEqual([bot.id]);
+    writeFileSync(join(DATA_DIR, "bots.json"), "{not json");
+
+    const reloaded = new Store(selection);
+    expect(reloaded.bots).toEqual([]);
+    expect(reloaded.group(room.id)?.memberIds).toEqual([bot.id]);
+    expect(reloaded.group(room.id)?.defaultResponder).toEqual({ kind: "member", botId: bot.id });
+  });
+
   it("busy is wiped even when bots.json says otherwise", () => {
     const store = new Store(selection);
     const bot = store.createBot();

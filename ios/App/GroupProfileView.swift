@@ -130,7 +130,7 @@ struct GroupProfileView: View {
                                 } else {
                                     memberIds.remove(bot.id)
                                     if leadBotId == bot.id {
-                                        leadBotId = memberIds.first ?? ""
+                                        leadBotId = memberIds.sorted().first ?? ""
                                     }
                                 }
                             }
@@ -199,7 +199,7 @@ struct GroupProfileView: View {
                 if memberIds.contains(lead) {
                     leadBotId = lead
                 } else {
-                    leadBotId = memberIds.first ?? ""
+                    leadBotId = memberIds.sorted().first ?? ""
                     if responderKind == "member" && leadBotId.isEmpty { responderKind = "everyone" }
                 }
             }
