@@ -6,10 +6,14 @@
 // a user as "my tokens are already going there". Second, project
 // classification is the operator's list, not a list of somebody's repos
 // baked into the binary.
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseStoredConfig, usageIngestUrl, usageProjectRules, type AppConfig } from "./config.ts";
-import { inferProject, telemetry, type UsageSettings } from "./telemetry.ts";
+import { inferProject, inferProviderAndService, telemetry, type UsageSettings } from "./telemetry.ts";
 
 const ENV_KEYS = ["USAGE_MONITOR_INGEST_URL", "USAGE_MONITOR_INGEST_TOKEN", "USAGE_INGEST_TOKEN"] as const;
 const saved = new Map<string, string | undefined>();
@@ -160,8 +164,11 @@ describe("telemetry probe", () => {
     withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
     const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
       expect(url).toBe("https://usage.example.com/api/ingest/usage");
+      // SAFETY: this suite's own manager builds the headers as a plain record.
       const headers = init?.headers as Record<string, string>;
       expect(headers.Authorization).toBe("Bearer tok_abc");
+      // SAFETY: the posted body is the v2 batch this manager just wrote, so
+      // its producer id and events array are exactly the shape asserted below.
       const body = JSON.parse(String(init?.body)) as {
         producerId: string;
         events: Array<{ label: string; metadata?: { probe?: boolean } }>;
@@ -226,5 +233,197 @@ describe("usage config", () => {
       },
     };
     expect(usageProjectRules(cfg)).toEqual([{ slug: "keep", match: ["x"] }]);
+  });
+});
+
+describe("provider naming", () => {
+  // Usage Monitor joins on its own provider canon (provider-identity.ts).
+  // A raw instance id lands as its own provider row, which is how one
+  // engine's spend ends up split across several rows nobody configured.
+  it("maps every shipped engine to a Usage Monitor provider name", () => {
+    const cases: Array<[driverKind: string, provider: string]> = [
+      ["claudeAgent", "anthropic"],
+      ["codex", "openai"],
+      ["grokAgent", "xai"],
+      ["grok", "xai"],
+      ["antigravityAgent", "google-ai"],
+      ["deepseekAgent", "deepseek"],
+      ["kimiAgent", "moonshot"],
+      ["cursorAgent", "cursor"],
+      ["minimax", "minimax"],
+      ["boxAgent", "box"],
+      ["openrouter", "openrouter"],
+    ];
+
+    for (const [driverKind, provider] of cases) {
+      expect(inferProviderAndService("instance-7", "some-model", driverKind).provider).toBe(provider);
+    }
+  });
+
+  it("gives the ACP engines a name of their own instead of an instance id", () => {
+    const cases: Array<[driverKind: string, provider: string]> = [
+      ["droidAgent", "droid"],
+      ["dshAgent", "dsh"],
+      ["opencodeGo", "opencode"],
+      ["qwenAgent", "qwen"],
+      ["hermesAgent", "hermes"],
+      ["piAgent", "pi"],
+    ];
+
+    for (const [driverKind, provider] of cases) {
+      const result = inferProviderAndService("operator-named-instance", undefined, driverKind);
+      expect(result.provider).toBe(provider);
+      expect(result.provider).not.toBe("operator-named-instance");
+      expect(result.provider).not.toBe("custom");
+    }
+  });
+
+  it("does not claim an OpenAI-compatible instance is OpenAI", () => {
+    const result = inferProviderAndService("openaiCompat", "llama-3.3-70b", "openai-compat");
+
+    expect(result.provider).toBe("openai-compat");
+    expect(result.service).toBe("llama-3.3-70b");
+  });
+
+  it("lets the model settle an OpenAI-compatible turn when it can", () => {
+    expect(inferProviderAndService("openaiCompat", "deepseek-chat", "openai-compat").provider).toBe("deepseek");
+  });
+
+  it("prefers the engine over an instance id that reads like another provider", () => {
+    // An operator is free to name an instance "claude-ish"; the engine that
+    // actually ran the turn is not up for interpretation.
+    expect(inferProviderAndService("claude-ish", "grok-4", "grokAgent").provider).toBe("xai");
+  });
+
+  it("falls back to the instance id only when nothing else names a provider", () => {
+    expect(inferProviderAndService("homegrown", undefined).provider).toBe("homegrown");
+    expect(inferProviderAndService("", undefined).provider).toBe("custom");
+  });
+
+  // An engine this table does not know is not canonical either, so running
+  // it through `normaliseEngine` would only rename the operator's instance —
+  // punctuation stripped, a trailing "agent" chopped — into a second Usage
+  // Monitor provider row, splitting that engine's spend history in two and
+  // breaking any provider-key binding set up against the old name.
+  it("never rewrites an operator's own instance id into a mangled provider", () => {
+    for (const instanceId of ["local_llm", "computer-2", "my.llm", "Home Lab"]) {
+      expect(inferProviderAndService(instanceId, undefined).provider).toBe(instanceId);
+      expect(inferProviderAndService(instanceId, undefined, "someFutureAgent").provider).toBe(instanceId);
+    }
+  });
+
+  it("keeps two instances of one engine in a single provider row", () => {
+    // The built-in `computer` instance and an operator's second Box desktop
+    // run the same engine; the instance id is the only thing that differs,
+    // and it must not be what decides the provider.
+    expect(inferProviderAndService("computer", undefined, "boxAgent").provider).toBe("box");
+    expect(inferProviderAndService("computer-2", undefined, "boxAgent").provider).toBe("box");
+    expect(inferProviderAndService("whatever-the-operator-typed", "gpt-5", "boxAgent").provider).toBe("box");
+  });
+});
+
+describe("ingest acknowledgement accounting", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    telemetry.configure(null);
+  });
+
+  // A 200 is not the same as "kept".  Usage Monitor answers a batch it
+  // validated but refused with 200 and a `rejected` count, and that used to
+  // be filed as a clean send — the status card would read healthy while
+  // every event was being dropped on the floor.
+  it("counts rejected events as failures even though the POST returned 200", async () => {
+    withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
+    const before = telemetry.getStatus();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              schemaVersion: 2,
+              received: 3,
+              persisted: 1,
+              duplicates: 0,
+              pruned: 0,
+              rejected: 2,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    );
+
+    const result = await telemetry.probe();
+    const after = telemetry.getStatus();
+
+    expect(result.ok).toBe(false);
+    expect(after.totalFailed).toBe(before.totalFailed + 2);
+    expect(after.totalSent).toBe(before.totalSent);
+    expect(after.lastError).toMatch(/rejected 2 of 3/);
+    expect(after.lastAckAt).toBeTruthy();
+  });
+
+  it("treats a clean acknowledgement as a send and clears the last error", async () => {
+    withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
+    const before = telemetry.getStatus();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            JSON.stringify({
+              ok: true,
+              schemaVersion: 2,
+              received: 3,
+              persisted: 3,
+              duplicates: 0,
+              pruned: 0,
+              rejected: 0,
+            }),
+            { status: 200, headers: { "content-type": "application/json" } },
+          ),
+      ),
+    );
+
+    const result = await telemetry.probe();
+    const after = telemetry.getStatus();
+
+    expect(result.ok).toBe(true);
+    expect(after.totalSent).toBe(before.totalSent + 1);
+    expect(after.totalFailed).toBe(before.totalFailed);
+    expect(after.lastError).toBeNull();
+  });
+
+  it("does not invent a failure when the receiver answers with no counts", async () => {
+    withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
+    const before = telemetry.getStatus();
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
+
+    const result = await telemetry.probe();
+    const after = telemetry.getStatus();
+
+    expect(result.ok).toBe(true);
+    expect(after.totalFailed).toBe(before.totalFailed);
+    expect(after.totalSent).toBe(before.totalSent + 1);
+  });
+});
+
+// The payload arithmetic is checked in telemetry-payload.test.ts; what is
+// checked here is that the harness hands `trackTurn` the right *engine*.
+// `driverKind` is documented as the engine (`claudeAgent`, `codex`,
+// `opencodeGo`) and is preferred over the instance-id heuristics precisely
+// because an instance id is operator-chosen and an engine id is not.  Both
+// call sites once passed `…modelSelection.instanceId`, which fed the
+// operator's own text into provider canonicalisation and, before the
+// fallback was tightened, renamed custom instances in Usage Monitor.
+describe("harness telemetry wiring", () => {
+  const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const indexSource = readFileSync(join(ROOT, "server", "index.ts"), "utf8");
+
+  it("reports the engine that ran the turn, never the operator's instance id", () => {
+    const fromEngine = indexSource.match(/driverKind:\s*event\.provider\b/g) ?? [];
+    expect(fromEngine.length).toBe(2);
+    expect(indexSource).not.toMatch(/driverKind:\s*\w+\.modelSelection\.instanceId/);
   });
 });

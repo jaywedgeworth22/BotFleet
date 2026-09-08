@@ -407,6 +407,19 @@ export interface ConfigStatus {
   };
   /** Opt-in flags. Absent means off. */
   features?: { skillRecorder: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
+  /** Sentry diagnostics.  `configured` mirrors `hasDsn` — a key is on file,
+   * whether or not `enabled` is currently true.  The DSN itself never
+   * appears here; it travels only over `GET /api/observability`. */
+  observability?: {
+    configured: boolean;
+    enabled: boolean;
+    hasDsn: boolean;
+    host: string | null;
+    source: "env" | "config" | "none";
+    environment: string;
+    tracesSampleRate: number;
+    logsEnabled: boolean;
+  };
 }
 
 export type { RoomTerminology };
@@ -431,7 +444,7 @@ export function getConversationMode(config?: ConfigStatus | null): ConversationM
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -455,6 +468,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     qdrant: frame.qdrant,
     usage: frame.usage,
     features: frame.features,
+    observability: frame.observability,
   };
 }
 
@@ -529,7 +543,8 @@ export type AppSettingsSection =
   | "models"
   | "companion"
   | "computers"
-  | "usage";
+  | "usage"
+  | "observability";
 
 export interface AppState {
   bots: Bot[];

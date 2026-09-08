@@ -2,6 +2,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { z } from "zod";
 
 import { parseJson, type JsonValue } from "./schema.ts";
+import { getSentry, isSentryActive } from "./sentry.ts";
 import type { WebhookManager } from "./webhooks.ts";
 
 export const MAX_WEBHOOK_BODY_BYTES = 256 * 1024;
@@ -151,6 +152,15 @@ export function createWebhookIngressHandler(manager: WebhookManager) {
           contentType: header(req, "content-type"),
           eventName: eventName(req),
           deliveryId: deliveryId(req),
+        });
+      }
+      // A 500-class failure is the receiver breaking, not a caller sending
+      // rubbish, so it is the one branch worth an Issue.  The body is
+      // untrusted and can carry credentials, and the endpoint id is half of
+      // a capability URL — neither goes to Sentry.
+      if (status >= 500 && isSentryActive()) {
+        getSentry()?.captureException(error instanceof Error ? error : new Error(message), {
+          tags: { component: "webhook-ingress", "http.status_code": String(status) },
         });
       }
       return json(res, status, { error: message });
