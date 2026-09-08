@@ -82,6 +82,9 @@ describe("Title Case for controls and headings", () => {
     ["components/SettingsModal.tsx", 'title="Usage analytics"', 'title="Usage Analytics"'],
     ["components/SettingsModal.tsx", 'label: "Remote access"', 'label: "Remote Access"'],
     ["components/UsageSection.tsx", "Test connection", "Test Connection"],
+    ["components/FleetModelsSection.tsx", "Set default", "Set Default"],
+    ["components/FleetModelsSection.tsx", "Add fallback", "Add Fallback"],
+    ["components/FleetModelsSection.tsx", "Workspace default", "Workspace Default"],
   ];
 
   for (const [file, wrong, right] of LABELS) {
@@ -92,4 +95,39 @@ describe("Title Case for controls and headings", () => {
       expect(source!.text).not.toContain(wrong);
     });
   }
+});
+
+describe("Settings Models layout", () => {
+  it("grows the Settings dialog about 25-30 percent", () => {
+    const settings = FILES.find((entry) => entry.rel === "components/SettingsModal.tsx");
+    expect(settings, "SettingsModal.tsx is missing").toBeDefined();
+    expect(settings!.text).toContain("max-w-[1100px]");
+    expect(settings!.text).toContain("h-[min(720px,calc(100dvh-3rem))]");
+    expect(settings!.text).not.toContain("h-[560px]");
+    expect(settings!.text).not.toContain("max-w-[860px]");
+  });
+
+  it("wraps fleet model pills so Primary, fallbacks, and Add Fallback do not overlap", () => {
+    const models = FILES.find((entry) => entry.rel === "components/FleetModelsSection.tsx");
+    const picker = FILES.find((entry) => entry.rel === "components/ModelPicker.tsx");
+    expect(models, "FleetModelsSection.tsx is missing").toBeDefined();
+    expect(picker, "ModelPicker.tsx is missing").toBeDefined();
+    expect(models!.text).toContain("flex-wrap");
+    expect(models!.text).toContain("Add Fallback");
+    expect(models!.text).toContain("flex-[1_1_16rem]");
+    expect(models!.text).not.toContain("grid-cols-[minmax(0,1.1fr)");
+    expect(models!.text).not.toContain("&nbsp;");
+    expect(picker!.text).toContain('contained && !label && "w-full min-w-0 justify-between"');
+    expect(picker!.text).toContain("if (selection.fallbacks?.length) nextSelection.fallbacks = selection.fallbacks");
+  });
+
+  it("stacks iOS primary and fallback pickers on their own rows", () => {
+    const swift = readFileSync(join(SRC, "../ios/App/AgentProfileView.swift"), "utf8");
+    expect(swift).toContain('Section("Primary Model")');
+    expect(swift).toContain('Section("Fallback \\(index + 1)")');
+    expect(swift).toContain(".pickerStyle(.navigationLink)");
+    expect(swift).toContain('Button("Add Fallback"');
+    expect(swift).not.toContain("Add fallback model");
+    expect(swift).not.toContain("VStack(alignment: .leading, spacing: 6)");
+  });
 });
