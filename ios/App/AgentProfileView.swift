@@ -276,7 +276,11 @@ struct AgentProfileView: View {
                         }
                     }
 
-                    if computers.contains("cloud") {
+                    // Unset `bot.computers` is Auto mode: the harness still
+                    // reads `cloudBackend` / `autoStartVps` to inspect and
+                    // provision a VPS.  Hide these only when Cloud is
+                    // explicitly off.
+                    if computers.contains("cloud") || computers.isEmpty {
                         Picker("Cloud provider", selection: $cloudBackend) {
                             Text("ASCII.dev Box").tag("box")
                             Text("My VPS").tag("vps")
