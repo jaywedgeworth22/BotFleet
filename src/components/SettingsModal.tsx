@@ -198,8 +198,17 @@ function CustomIngressFields() {
   // Run Test Setup against either the unsaved draft (so the user can dry-run
   // a value before saving it) or, when the input is empty, the saved URL --
   // the more useful behaviour, and the one this comment already promised.
+  // The input starts pre-filled from `persistedUrl`, so the only way it can
+  // be empty while a saved URL still exists is the user having deliberately
+  // cleared it -- silently testing the URL they just tried to remove would
+  // be confusing, so that case is called out in the result text instead of
+  // being folded in unannounced.
   const runTest = async () => {
-    const candidate = publicUrl.trim() || persistedUrl.trim();
+    setSaveError(null);
+    const draft = publicUrl.trim();
+    const savedUrl = persistedUrl.trim();
+    const usingSavedFallback = !draft && Boolean(savedUrl);
+    const candidate = draft || savedUrl;
     if (!candidate) {
       setTest({ kind: "error", reason: "Enter a public URL first, then run Test Setup." });
       return;
@@ -216,7 +225,8 @@ function CustomIngressFields() {
         reason: string;
         tunnel?: string;
       };
-      setTest(body.ok ? { kind: "ok", reason: body.reason, ...(body.tunnel ? { tunnel: body.tunnel } : {}) } : { kind: "error", reason: body.reason, ...(body.tunnel ? { tunnel: body.tunnel } : {}) });
+      const reason = usingSavedFallback ? `${body.reason} (testing the saved URL -- the field is empty)` : body.reason;
+      setTest(body.ok ? { kind: "ok", reason, ...(body.tunnel ? { tunnel: body.tunnel } : {}) } : { kind: "error", reason, ...(body.tunnel ? { tunnel: body.tunnel } : {}) });
     } catch (cause) {
       setTest({ kind: "error", reason: cause instanceof Error ? cause.message : String(cause) });
     }

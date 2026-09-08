@@ -188,16 +188,20 @@ export function startUpdater(mainWindow) {
   updaterCoordinator = createUpdaterCoordinator(autoUpdater, setState);
 
   // Wrap the coordinator so a successful check is what actually counts
-  // as "last checked".  The coordinator's `check` returns the in-flight
-  // promise; we hook .then so the timestamp and fingerprint get
-  // persisted only on the success path.  Both manual and automatic
-  // checks persist a timestamp — only the throttle consults it, and the
-  // throttle ignores manual checks, so recording both is correct and
-  // lets the next auto-tick honour the full window.
+  // as "last checked".  The coordinator's `check` resolves to `{ ok }`
+  // rather than throwing, so a rejected `checkForUpdates()` (network
+  // hiccup, update-service outage) resolves `ok: false` and must not be
+  // recorded — recording it would throttle every automatic retry for the
+  // next 6 hours over one transient failure.  Only the timer-driven ticks
+  // route through here; the manual "Check for updates" button and the
+  // set-enabled handler call the coordinator directly and do not persist
+  // a timestamp themselves.
   const trackedCheck = (manual) => {
     const promise = updaterCoordinator?.check(manual);
     if (promise && typeof promise.then === "function") {
-      promise.then(() => recordSuccessfulAutoCheck()).catch(() => {});
+      promise.then((result) => {
+        if (result?.ok !== false) recordSuccessfulAutoCheck();
+      }).catch(() => {});
     }
     return promise;
   };

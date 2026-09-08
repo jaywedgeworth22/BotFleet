@@ -4,6 +4,7 @@
 // runtime — updater.mjs itself imports the same module.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -167,6 +168,49 @@ test("macAppFingerprint returns null when the bundle is not installed", () => {
     existsSync: () => false,
   });
   assert.equal(result, null);
+});
+
+// Regression: the default exec path used to be hardcoded to the first
+// (system-wide) candidate regardless of which bundle Info.plist actually
+// came from. A user-local install (~/Applications/BotFleet.app, which
+// `candidates` already lists as a fallback) would then always hash a
+// nonexistent -- or an unrelated system-wide -- executable, so a local
+// rebuild that kept the same CFBundleVersion could never be told apart
+// from the previous run for that install. This exercises the DEFAULT
+// execPath derivation (no explicit `execPath` override) against the
+// second candidate to prove it now follows the bundle Info.plist matched.
+test("macAppFingerprint hashes the executable from the SAME bundle Info.plist matched, not a hardcoded system path", () => {
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleVersion</key>
+  <string>202609041230</string>
+</dict>
+</plist>`;
+  const systemBundle = "/Applications/BotFleet.app";
+  const userBundle = "/Users/operator/Applications/BotFleet.app";
+  const systemInfoPlist = join(systemBundle, "Contents", "Info.plist");
+  const userInfoPlist = join(userBundle, "Contents", "Info.plist");
+  const userExecPath = join(userBundle, "Contents", "MacOS", "BotFleet");
+  // No `execPath` override here -- this is exactly what a real boot does:
+  // only `candidates` are supplied, so the function must derive execPath
+  // itself from whichever candidate's Info.plist it found.
+  const result = macAppFingerprint({
+    platform: "darwin",
+    candidates: [systemBundle, userBundle],
+    readVersion: () => "202609041230",
+    readFileSync: () => Buffer.from(plist, "utf8"),
+    // Only the user-local bundle exists on disk -- the system-wide
+    // candidate is absent, so resolution must fall through to the second
+    // candidate for BOTH the Info.plist read and the exec-path default.
+    existsSync: (p) => p === userInfoPlist || p === userExecPath,
+    statSync: (p) => {
+      assert.equal(p, userExecPath, "must stat the executable under the matched (user) bundle, not the system one");
+      return { size: 999, mtimeMs: 1700000000000 };
+    },
+  });
+  assert.ok(result);
+  assert.equal(result, "202609041230:" + createHash("sha1").update("999:1700000000000").digest("hex").slice(0, 12));
 });
 
 test("nextAutoUpdateRecord stamps lastCheckMs and preserves enabled", () => {
