@@ -4,7 +4,7 @@
 // runtime — the test runner is plain Node).
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 export const AUTO_CHECK_THROTTLE_MS = 6 * 60 * 60 * 1000;
 
@@ -84,6 +84,21 @@ function extractCFBundleVersion(plistText) {
   return match ? match[1].trim() : null;
 }
 
+/** The .app bundle root a macOS executable path launched from, three
+ * segments below it (Contents/MacOS/<name>) -- or null when the path
+ * doesn't look like a bundled executable (a dev/unpackaged run, for
+ * instance).  Used to prefer the bundle this exact process is running
+ * from over a static list of "well-known install locations". */
+function bundleFromExecPath(execPath) {
+  if (typeof execPath !== "string" || !execPath) return null;
+  const macosDir = dirname(execPath);
+  if (basename(macosDir) !== "MacOS") return null;
+  const contentsDir = dirname(macosDir);
+  if (basename(contentsDir) !== "Contents") return null;
+  const bundle = dirname(contentsDir);
+  return bundle.endsWith(".app") ? bundle : null;
+}
+
 /** Compute a short fingerprint of the running Mac app bundle so a
  * reinstall that landed an out-of-band build between checks still shows
  * up as "different from last known" on the next cycle.  Returns null on
@@ -99,7 +114,18 @@ export function macAppFingerprint(options = {}) {
   const statSyncFn = options.statSync ?? statSync;
   const existsSyncFn = options.existsSync ?? existsSync;
   const readFileSyncFn = options.readFileSync ?? readFileSync;
+  // The bundle this exact process launched from, when it can be told from
+  // Electron's own process.execPath.  Checked FIRST, ahead of the static
+  // "well-known install location" list below: two installs can coexist on
+  // one Mac (a fresh drag-install into ~/Applications next to an old
+  // /Applications copy), and picking "whichever exists first" from a
+  // static list in that case fingerprints whichever bundle happens to be
+  // listed first -- not necessarily the one actually running -- which can
+  // both hide a real reinstall of the running copy and spuriously bypass
+  // the throttle over an unrelated, dormant copy changing.
+  const runningBundle = bundleFromExecPath(options.processExecPath ?? process.execPath);
   const candidates = options.candidates ?? [
+    ...(runningBundle ? [runningBundle] : []),
     "/Applications/BotFleet.app",
     join(options.home ?? process.env.HOME ?? "", "Applications", "BotFleet.app"),
   ];
