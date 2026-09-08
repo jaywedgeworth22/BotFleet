@@ -4272,14 +4272,19 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     expect(host.computers).toEqual(["local"]);
 
     await api("DELETE", `/api/bots/${auto.id}`);
-    // Put every bot back on the default the earlier case in this block left
-    // them on — an apply is fleet-wide, so this test has to clean up after
-    // itself or it hands host control to the rest of the suite.
+    // An apply is fleet-wide, so this test has to clean up after itself or it
+    // hands host control to the rest of the suite.  Cloud only, deliberately:
+    // every later turn in this file runs against the box stub, and a "vm" in
+    // the workspace default would send each unconfigured bot looking for a
+    // Local VM container that no CI runner has.  Until this branch that could
+    // not bite, because the allowlist above could never be reopened — the
+    // PUT that restores it answered 400 — so "vm" was being filtered out of
+    // every later turn by a bug rather than by intent.
     const restore = await api("POST", "/api/bots/apply-defaults", {
-      botDefaults: { computers: ["cloud", "vm"] },
+      botDefaults: { computers: ["cloud"] },
     });
     expect(restore.status).toBe(200);
-    expect(restore.body.computers).toEqual(["cloud", "vm"]);
+    expect(restore.body.computers).toEqual(["cloud"]);
     // Four fleet-wide applies, two of which revoke host control from every
     // bot and so wait on each driver's cancel.  The default 20s is not enough
     // headroom for that on a loaded machine.
@@ -4331,6 +4336,10 @@ describe("POST /api/bots/apply-model-defaults (set all bots to default models)",
     try {
       expect((await api("PATCH", `/api/bots/${bot.id}`, {
         modelSelection: { instanceId: "claude", model: claude.models.default },
+        // Explicitly no computer.  This test is about the model gate, and a
+        // bot left on "auto" would inherit whatever workspace default an
+        // earlier block persisted and spend the turn trying to mount it.
+        computers: [],
       })).status).toBe(200);
       // the fixture CLI hangs, so this turn stays live until it is stopped
       expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hang forever" })).status).toBe(202);
