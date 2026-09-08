@@ -4,6 +4,8 @@
 // runtime — updater.mjs itself imports the same module.
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
@@ -11,6 +13,7 @@ import {
   macAppFingerprint,
   nextAutoUpdateRecord,
   readAutoUpdateConfig,
+  recordAutomaticCheck,
   shouldRunAutomaticCheck,
 } from "./updater-throttle.mjs";
 
@@ -49,6 +52,64 @@ test("shouldRunAutomaticCheck refuses to run when the toggle is off", () => {
   const now = 1_700_000_000_000;
   assert.equal(shouldRunAutomaticCheck({ enabled: false, lastCheckMs: now - 30_000 }, now), false);
   assert.equal(shouldRunAutomaticCheck({ enabled: undefined }, now), false);
+});
+
+// A changed Mac bundle fingerprint is the "out-of-band reinstall" signal
+// nextAutoUpdateRecord stores every cycle (see the tests below) but that,
+// before this fix, nothing ever compared against the running app -- so a
+// reinstall between checks never bypassed the 6-hour window. Both branches:
+// same fingerprint stays throttled, a changed one checks immediately.
+test("shouldRunAutomaticCheck stays throttled inside the window when the fingerprint has not changed", () => {
+  const now = 1_700_000_000_000;
+  assert.equal(
+    shouldRunAutomaticCheck(
+      {
+        enabled: true,
+        lastCheckMs: now - 30_000,
+        lastAppFingerprint: "202609041230:abcdef123456",
+        currentFingerprint: "202609041230:abcdef123456",
+      },
+      now,
+    ),
+    false,
+  );
+});
+
+test("shouldRunAutomaticCheck bypasses the 6-hour window when the fingerprint has changed", () => {
+  const now = 1_700_000_000_000;
+  assert.equal(
+    shouldRunAutomaticCheck(
+      {
+        enabled: true,
+        // well inside the throttle window -- only the fingerprint mismatch
+        // should be why this returns true
+        lastCheckMs: now - 30_000,
+        lastAppFingerprint: "202609041230:abcdef123456",
+        currentFingerprint: "202609051115:different000",
+      },
+      now,
+    ),
+    true,
+  );
+});
+
+test("shouldRunAutomaticCheck ignores the fingerprint fields when either side is missing", () => {
+  const now = 1_700_000_000_000;
+  // no lastAppFingerprint on record yet (pre-upgrade config, or the bundle
+  // could not be read the first time) -- falls back to the plain throttle
+  assert.equal(
+    shouldRunAutomaticCheck({ enabled: true, lastCheckMs: now - 30_000, currentFingerprint: "new" }, now),
+    false,
+  );
+  // platform can't compute a fingerprint right now (non-darwin, or the
+  // bundle is missing) -- same fallback
+  assert.equal(
+    shouldRunAutomaticCheck(
+      { enabled: true, lastCheckMs: now - 30_000, lastAppFingerprint: "old" },
+      now,
+    ),
+    false,
+  );
 });
 
 test("AUTO_CHECK_THROTTLE_MS is the documented 6-hour window", () => {
@@ -137,4 +198,70 @@ test("nextAutoUpdateRecord omits the fingerprint on a non-darwin host", () => {
   assert.equal(next.enabled, true);
   assert.equal(next.lastCheckMs, now);
   assert.equal(next.lastAppFingerprint, undefined);
+});
+
+// `recordAutomaticCheck` is the read-modify-write updater.mjs's
+// `recordSuccessfulAutoCheck` delegates to.  Before this fix that function
+// ended in `appendFileSync(path, "")` -- a no-op touch of an existing file
+// that never wrote the updated `disk` object back, so `lastCheckMs` never
+// reached config.json and the 6-hour throttle never actually engaged
+// (`shouldRunAutomaticCheck` always saw `lastCheckMs: undefined` and kept
+// returning "first run, check now"). These exercise it against a real temp
+// file so the regression -- the throttle silently never engaging -- cannot
+// come back unnoticed.
+test("recordAutomaticCheck persists lastCheckMs to a fresh config file", () => {
+  const dir = mkdtempSync(join(tmpdir(), "omb-updater-throttle-"));
+  const configPath = join(dir, "config.json");
+  try {
+    const before = Date.now();
+    recordAutomaticCheck(configPath, { enabled: true, fingerprint: "202609041230:abcdef123456" });
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.equal(typeof onDisk.autoUpdate.lastCheckMs, "number");
+    assert.ok(onDisk.autoUpdate.lastCheckMs >= before);
+    assert.equal(onDisk.autoUpdate.lastAppFingerprint, "202609041230:abcdef123456");
+    assert.equal(onDisk.autoUpdate.enabled, true);
+    // readAutoUpdateConfig (the harness's own reader) agrees with what was
+    // just written -- the whole point of persisting is that the next tick
+    // and the next launch see the same thing.
+    assert.deepEqual(readAutoUpdateConfig(configPath), onDisk.autoUpdate);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recordAutomaticCheck merges into an existing config without disturbing other sections", () => {
+  const dir = mkdtempSync(join(tmpdir(), "omb-updater-throttle-"));
+  const configPath = join(dir, "config.json");
+  try {
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        profile: { name: "Operator" },
+        autoUpdate: { enabled: false, lastCheckMs: 1_600_000_000_000, lastAppFingerprint: "old" },
+      }),
+    );
+    recordAutomaticCheck(configPath, { enabled: true, fingerprint: "new-fingerprint" });
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.deepEqual(onDisk.profile, { name: "Operator" });
+    assert.equal(onDisk.autoUpdate.enabled, true);
+    assert.equal(onDisk.autoUpdate.lastAppFingerprint, "new-fingerprint");
+    assert.ok(onDisk.autoUpdate.lastCheckMs > 1_600_000_000_000);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("recordAutomaticCheck starts fresh when the config file is missing or unreadable", () => {
+  const dir = mkdtempSync(join(tmpdir(), "omb-updater-throttle-"));
+  // A nested, not-yet-created directory -- recordAutomaticCheck must create
+  // it (mkdirSync recursive) rather than throwing.
+  const configPath = join(dir, "nested", "config.json");
+  try {
+    recordAutomaticCheck(configPath, { enabled: true, fingerprint: null });
+    const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.equal(typeof onDisk.autoUpdate.lastCheckMs, "number");
+    assert.equal(onDisk.autoUpdate.enabled, true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

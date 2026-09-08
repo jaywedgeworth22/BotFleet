@@ -3,7 +3,7 @@
 // importing the `electron` package (which only exists in the packaged
 // runtime — the test runner is plain Node).
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const AUTO_CHECK_THROTTLE_MS = 6 * 60 * 60 * 1000;
@@ -21,12 +21,57 @@ export function readAutoUpdateConfig(configPath) {
   }
 }
 
+/** Persist a completed automatic-update check to disk: read-modify-write
+ * just the `autoUpdate` section of `configPath` so the next tick and the
+ * next launch agree on `lastCheckMs` (and `lastAppFingerprint`).
+ *
+ * A missing or unparsable file is "first write" -- not an error -- since
+ * that is the state of a fresh install.  The write is temp-file-then-rename
+ * (matching electron/main.mjs's own config migrations) so a crash mid-write
+ * leaves the previous config intact instead of truncated JSON the harness
+ * can't parse on the next launch.
+ *
+ * Exported (and pure aside from the fs calls) so it can be exercised
+ * against a real temp file without an `electron` runtime -- updater.mjs
+ * imports `electron` at module scope, which plain `node --test` cannot
+ * load, so the disk I/O for the throttle lives here instead of there. */
+export function recordAutomaticCheck(configPath, { enabled, fingerprint } = {}) {
+  let disk = {};
+  try {
+    disk = JSON.parse(readFileSync(configPath, "utf8"));
+  } catch {
+    /* first write, or an unreadable file — start fresh */
+  }
+  disk.autoUpdate = nextAutoUpdateRecord(disk.autoUpdate ?? {}, { fingerprint });
+  // preserve the live enabled state — the record helper does not know it
+  disk.autoUpdate.enabled = Boolean(enabled);
+  const directory = join(configPath, "..");
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const temporary = `${configPath}.${process.pid}.tmp`;
+  writeFileSync(temporary, JSON.stringify(disk, null, 2), { mode: 0o600 });
+  renameSync(temporary, configPath);
+}
+
 /** True when an automatic check is allowed to run right now.  Manual checks
- * bypass this entirely and must not consult it. */
+ * bypass this entirely and must not consult it.
+ *
+ * `config.currentFingerprint`, when supplied alongside a stored
+ * `config.lastAppFingerprint`, lets an out-of-band reinstall (a build that
+ * landed on disk between two checks, outside the updater's own download +
+ * install path) surface immediately instead of waiting out the rest of the
+ * 6-hour window: a changed bundle is new information the throttle has not
+ * seen yet, so it is treated the same as "never checked". */
 export function shouldRunAutomaticCheck(config, nowMs = Date.now()) {
   if (config?.enabled !== true) return false;
   const last = config?.lastCheckMs;
   if (typeof last !== "number" || !Number.isFinite(last) || last < 0) return true;
+  if (
+    typeof config?.currentFingerprint === "string" &&
+    typeof config?.lastAppFingerprint === "string" &&
+    config.currentFingerprint !== config.lastAppFingerprint
+  ) {
+    return true;
+  }
   return nowMs - last >= AUTO_CHECK_THROTTLE_MS;
 }
 
