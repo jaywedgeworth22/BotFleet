@@ -16,6 +16,12 @@ import {
   parseConversationMode,
 } from "../shared/conversation-mode.ts";
 import {
+  IMESSAGE_PERSONA_RULE,
+  isImessageInboundSource,
+  outboundImessageText,
+  wrapImessageInbound,
+} from "../shared/imessage-message.ts";
+import {
   CREDENTIAL_TARGETS,
   credentialResumeOutcome,
   credentialIsConfigured,
@@ -2282,6 +2288,7 @@ async function startTurn(
     bot.title && `Role: ${bot.title}.`,
     bot.description && `About: ${bot.description}`,
     `Slack communication rules: Use Slack channel #agent-sync sparingly — ONLY to claim/unclaim tasks on the shared board or for strictly necessary coordination with external agents outside BotFleet. Never post unprompted status spam or routine commentary to Slack.`,
+    IMESSAGE_PERSONA_RULE,
     isImessageTask && `iMessage communication rule: When replying in this iMessage thread, be concise, direct, and action-oriented. Do not leave out key details, but avoid verbose fluff, unnecessary conversational padding, or multi-paragraph meta commentary. Provide clear, direct summaries.`,
   ]
     .filter(Boolean)
@@ -6320,8 +6327,8 @@ const server = createServer(async (req, res) => {
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
       }
-      const text = String(body.text ?? "").trim();
-      if (!text) return json(res, 400, { error: "text required" });
+      const rawText = String(body.text ?? "").trim();
+      if (!rawText) return json(res, 400, { error: "text required" });
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       if (body.threadId !== undefined && (typeof body.threadId !== "string" || !/^[\w-]+$/.test(body.threadId))) {
@@ -6334,13 +6341,16 @@ const server = createServer(async (req, res) => {
       // Audit log the incoming message source
       const userAgent = Array.isArray(req.headers["user-agent"]) ? req.headers["user-agent"][0] : req.headers["user-agent"] ?? "unknown";
       const origin = req.headers.origin ?? "direct";
-      console.log(`[inbound-message] bot=${bot.name} (${bot.id}) thread=${bot.threadId} origin=${origin} ua=${userAgent} len=${text.length}`);
+      const fromImessage = isImessageInboundSource(body.source, userAgent);
+      const text = fromImessage ? wrapImessageInbound(rawText) : rawText;
+      console.log(`[inbound-message] bot=${bot.name} (${bot.id}) thread=${bot.threadId} origin=${origin} ua=${userAgent} imessage=${fromImessage} len=${text.length}`);
 
       // Server-side loop breaker: drop duplicate echoes of the bot's own recent output
       const recentBotMessages = store.messagesFor(bot.threadId).slice(-5).filter((msg) => msg.role === "bot" && msg.text);
-      const isSelfEcho = recentBotMessages.some(
-        (msg) => msg.text?.trim() === text || (text.length > 50 && msg.text?.trim().includes(text)),
-      );
+      const isSelfEcho = recentBotMessages.some((msg) => {
+        const botText = outboundImessageText(msg.text ?? "") ?? msg.text?.trim() ?? "";
+        return botText === rawText || (rawText.length > 50 && botText.includes(rawText));
+      });
       if (isSelfEcho) {
         console.warn(`[inbound-message] DROPPING duplicate self-echo for bot ${bot.name} (${bot.id})`);
         return json(res, 200, { ok: true, ignored: "self_echo" });
@@ -7278,6 +7288,8 @@ const server = createServer(async (req, res) => {
       }
       cfg.conversationMode = parseConversationMode(patch.conversationMode);
       saveConfig(cfg);
+      const mergeThreads = body.mergeThreads === true && cfg.conversationMode === "simple";
+      if (mergeThreads) store.mergeAllExtraThreads();
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);

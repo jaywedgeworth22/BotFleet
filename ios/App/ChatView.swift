@@ -1053,7 +1053,9 @@ struct MessageRow: View {
             ForEach(Self.reactionChoices, id: \.self) { emoji in
                 Button(emoji) { Task { await session.react(to: message, in: chat.threadId, emoji: emoji) } }
             }
-            if message.role == .user, message.kind == .text, WebhookMessageView.parse(message.text) == nil,
+            if message.role == .user, message.kind == .text,
+               WebhookMessageView.parse(message.text) == nil,
+               ImessageMessageView.parse(message.text) == nil,
                case let .bot(bot) = chat {
                 Divider()
                 Button("Edit and retry", systemImage: "pencil") {
@@ -1091,6 +1093,8 @@ struct MessageRow: View {
         case .text:
             if message.role == .user, let webhook = WebhookMessageView.parse(message.text) {
                 WebhookEventCard(view: webhook)
+            } else if message.role == .user, let imessage = ImessageMessageView.parse(message.text) {
+                ImessageEventCard(view: imessage)
             } else {
                 TextBubble(message: message, chat: chat, tailed: endsRun)
             }
@@ -1246,7 +1250,13 @@ struct TextBubble: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     } else if !split.display.isEmpty {
-                        MarkdownText(source: split.display)
+                        let toImessage = ImessageMessageView.stripToImessagePrefix(split.display)
+                        if toImessage != nil {
+                            Text("To iMessage")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundStyle(Color.accentColor)
+                        }
+                        MarkdownText(source: toImessage ?? split.display)
                             .foregroundStyle(Color.primary)
                             .textSelection(.enabled)
                             .fixedSize(horizontal: false, vertical: true)
@@ -1285,6 +1295,39 @@ struct TextBubble: View {
 /// as the turn prompt.  That does not mean a person typed it.
 struct WebhookEventCard: View {
     let view: WebhookMessageView
+
+    var body: some View {
+        ChannelEventCard(
+            headline: view.headline,
+            subtitle: view.subtitle,
+            payload: view.payload,
+            systemImage: "bolt.horizontal.circle.fill",
+            accessibilityName: "Webhook"
+        )
+    }
+}
+
+/// Incoming iMessage as the same left-edge work card as a webhook trigger.
+struct ImessageEventCard: View {
+    let view: ImessageMessageView
+
+    var body: some View {
+        ChannelEventCard(
+            headline: view.headline,
+            subtitle: view.subtitle,
+            payload: view.payload,
+            systemImage: "message.fill",
+            accessibilityName: "iMessage"
+        )
+    }
+}
+
+struct ChannelEventCard: View {
+    let headline: String
+    let subtitle: String?
+    let payload: String?
+    let systemImage: String
+    let accessibilityName: String
     @Environment(\.colorScheme) private var colorScheme
     @State private var isExpanded = false
 
@@ -1292,7 +1335,7 @@ struct WebhookEventCard: View {
         let isDark = colorScheme == .dark
         VStack(alignment: .leading, spacing: 6) {
             Button {
-                guard view.payload != nil else { return }
+                guard payload != nil else { return }
                 withAnimation(.spring(response: 0.32, dampingFraction: 0.76)) {
                     isExpanded.toggle()
                 }
@@ -1303,18 +1346,18 @@ struct WebhookEventCard: View {
                         Circle()
                             .fill(Color.secondary.opacity(0.14))
                             .frame(width: 26, height: 26)
-                        Image(systemName: "bolt.horizontal.circle.fill")
+                        Image(systemName: systemImage)
                             .font(.system(size: 12, weight: .semibold))
                             .foregroundStyle(Color.secondary)
                     }
 
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(view.headline)
+                        Text(headline)
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundStyle(isDark ? Color.white : Color.primary)
                             .lineLimit(isExpanded ? 4 : 2)
                             .truncationMode(.tail)
-                        if let subtitle = view.subtitle {
+                        if let subtitle {
                             Text(subtitle)
                                 .font(.system(size: 11.5))
                                 .foregroundStyle(Color.secondary)
@@ -1325,7 +1368,7 @@ struct WebhookEventCard: View {
 
                     Spacer()
 
-                    if view.payload != nil {
+                    if payload != nil {
                         HStack(spacing: 4) {
                             Text(isExpanded ? "Collapse" : "Details")
                                 .font(.system(size: 11.5, weight: .medium))
@@ -1344,9 +1387,9 @@ struct WebhookEventCard: View {
                 .padding(.vertical, 8)
             }
             .buttonStyle(.plain)
-            .disabled(view.payload == nil)
+            .disabled(payload == nil)
 
-            if isExpanded, let payload = view.payload {
+            if isExpanded, let payload {
                 ScrollView {
                     Text(payload)
                         .font(.system(size: 11, design: .monospaced))
@@ -1370,8 +1413,8 @@ struct WebhookEventCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Webhook. \(view.headline)")
-        .accessibilityHint(view.payload == nil ? "" : (isExpanded ? "Collapses the event payload" : "Shows the event payload"))
+        .accessibilityLabel("\(accessibilityName). \(headline)")
+        .accessibilityHint(payload == nil ? "" : (isExpanded ? "Collapses the event payload" : "Shows the event payload"))
     }
 }
 

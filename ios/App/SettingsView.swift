@@ -7,6 +7,7 @@ import UIKit
 struct SettingsView: View {
     @EnvironmentObject private var session: Session
     @State private var enablingNotifications = false
+    @State private var confirmSimpleMerge = false
     private let onConnect: (() -> Void)?
 
     init(onConnect: (() -> Void)? = nil) {
@@ -86,7 +87,11 @@ struct SettingsView: View {
                     Picker(selection: Binding(
                         get: { session.config?.isProjectsMode == true ? "projects" : "simple" },
                         set: { mode in
-                            Task { _ = await session.updateConversationMode(mode) }
+                            if mode == "simple", session.config?.isProjectsMode == true {
+                                confirmSimpleMerge = true
+                            } else {
+                                Task { _ = await session.updateConversationMode(mode) }
+                            }
                         }
                     )) {
                         Text("Simple").tag("simple")
@@ -143,6 +148,21 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
         .task { await session.refreshNotificationAuthorization() }
+        .confirmationDialog(
+            "Merge Extra Threads?",
+            isPresented: $confirmSimpleMerge,
+            titleVisibility: .visible
+        ) {
+            Button("Merge All Threads") {
+                Task { _ = await session.updateConversationMode("simple", mergeThreads: true) }
+            }
+            Button("Keep Extra Threads Hidden") {
+                Task { _ = await session.updateConversationMode("simple") }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Simple is one conversation per bot.\u{00A0} Merge extra threads into that conversation, or keep them saved but hidden.")
+        }
     }
 
     private var workspaceFooter: String {

@@ -1032,10 +1032,10 @@ final class Session: ObservableObject {
     }
 
     @MainActor
-    func updateConversationMode(_ conversationMode: String) async -> ConfigStatus? {
+    func updateConversationMode(_ conversationMode: String, mergeThreads: Bool = false) async -> ConfigStatus? {
         guard let client else { return nil }
         do {
-            let updated = try await client.updateConversationMode(conversationMode)
+            let updated = try await client.updateConversationMode(conversationMode, mergeThreads: mergeThreads)
             self.config = updated
             return updated
         } catch {

@@ -306,6 +306,29 @@ beforeAll(async () => {
   // The rest of this file exercises extra conversations, so stay in Projects.
 }, 30_000);
 
+  it("merges extra threads when switching to Simple with mergeThreads", async () => {
+    const created = await api("POST", "/api/bots");
+    const bot = created.body.bot;
+    const extra = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Side work" });
+    expect(extra.status).toBe(201);
+    expect(extra.body.bot.tasks.length).toBeGreaterThan(1);
+
+    const merged = await api("PATCH", "/api/conversation-mode", {
+      conversationMode: "simple",
+      mergeThreads: true,
+    });
+    expect(merged.status).toBe(200);
+    expect(merged.body.conversationMode).toBe("simple");
+
+    const after = await api("GET", "/api/bots");
+    const fresh = after.body.bots.find((candidate: { id: string }) => candidate.id === bot.id);
+    expect(fresh.tasks).toHaveLength(1);
+
+    const back = await api("PATCH", "/api/conversation-mode", { conversationMode: "projects" });
+    expect(back.status).toBe(200);
+    expect(back.body.conversationMode).toBe("projects");
+  });
+
 afterAll(async () => {
   boxStub?.close();
   // Upstream fixed this same Linux scratch-cleanup flake with an inline

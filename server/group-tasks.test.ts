@@ -84,6 +84,25 @@ describe("channel tasks", () => {
     expect(store.deleteGroupTask(channel.id, first)).toBeNull();
   });
 
+  it("merges extra room threads into the active conversation", async () => {
+    const { store } = await freshStore();
+    const bot = store.createBot();
+    const channel = store.createGroup("Product", [bot.id]);
+    const first = channel.threadId;
+    store.appendMessage(first, { role: "user", kind: "text", text: "room inbox" });
+    const second = store.createGroupTask(channel.id, "Research")!;
+    store.appendMessage(second.threadId, { role: "user", kind: "text", text: "research note" });
+    store.switchGroupTask(channel.id, first);
+
+    const stats = store.mergeAllExtraThreads();
+    expect(stats).toEqual({ bots: 0, groups: 1, threads: 1 });
+    expect(store.groupTasks(channel.id)).toHaveLength(1);
+    expect(store.group(channel.id)!.threadId).toBe(first);
+    const texts = store.messagesFor(first).map((message) => message.text);
+    expect(texts).toContain("room inbox");
+    expect(texts).toContain("research note");
+  });
+
   it("adopts a legacy channel thread without losing its folder or pin", async () => {
     const { store, Store } = await freshStore();
     const bot = store.createBot();

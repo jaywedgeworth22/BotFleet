@@ -4,13 +4,26 @@
 // the turn prompt.  That does not mean a person typed it.  The card sits on
 // the transcript's left edge like a tool-run fold: a one-line headline, with
 // the untrusted payload behind Details.
-import { useState } from "react";
+import { type ReactNode, useState } from "react";
 import { ChevronDown, ChevronRight, Webhook } from "lucide-react";
 
 import { cn } from "@/lib/cn";
-import type { WebhookMessageView } from "@/lib/webhook-message";
 
-export function WebhookCard({ view }: { view: WebhookMessageView }) {
+export interface TriggerCardView {
+  headline: string;
+  subtitle?: string;
+  payload?: string;
+}
+
+export function WebhookCard({
+  view,
+  icon,
+  detailsNoun = "Event Payload",
+}: {
+  view: TriggerCardView;
+  icon?: ReactNode;
+  detailsNoun?: string;
+}) {
   const [open, setOpen] = useState(false);
   const expandable = Boolean(view.payload);
 
@@ -27,14 +40,14 @@ export function WebhookCard({ view }: { view: WebhookMessageView }) {
           onClick={expandable ? () => setOpen((value) => !value) : undefined}
           aria-expanded={expandable ? open : undefined}
           disabled={!expandable}
-          title={expandable ? (open ? "Collapse Event Payload" : "Show Event Payload") : view.headline}
+          title={expandable ? (open ? `Collapse ${detailsNoun}` : `Show ${detailsNoun}`) : view.headline}
           className={cn(
             "group flex w-full items-center gap-2.5 px-3.5 py-2 text-left text-[13px] text-ink-secondary",
             expandable ? "cursor-pointer hover:bg-raised/60 rounded-xl" : "cursor-default",
             open && "rounded-lg border-b border-hairline/30 pb-1.5 hover:bg-transparent",
           )}
         >
-          <Webhook size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />
+          {icon ?? <Webhook size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />}
           <span className="flex min-w-0 flex-1 flex-col">
             <span className="truncate font-medium text-ink" title={view.headline}>
               {view.headline}
