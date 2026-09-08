@@ -1053,7 +1053,8 @@ struct MessageRow: View {
             ForEach(Self.reactionChoices, id: \.self) { emoji in
                 Button(emoji) { Task { await session.react(to: message, in: chat.threadId, emoji: emoji) } }
             }
-            if message.role == .user, message.kind == .text, case let .bot(bot) = chat {
+            if message.role == .user, message.kind == .text, WebhookMessageView.parse(message.text) == nil,
+               case let .bot(bot) = chat {
                 Divider()
                 Button("Edit and retry", systemImage: "pencil") {
                     editingText = message.text ?? ""
@@ -1088,7 +1089,11 @@ struct MessageRow: View {
     private var content: some View {
         switch message.kind {
         case .text:
-            TextBubble(message: message, chat: chat, tailed: endsRun)
+            if message.role == .user, let webhook = WebhookMessageView.parse(message.text) {
+                WebhookEventCard(view: webhook)
+            } else {
+                TextBubble(message: message, chat: chat, tailed: endsRun)
+            }
         case .options:
             CardView(chat: chat, message: message)
         case .activity:
@@ -1272,6 +1277,101 @@ struct TextBubble: View {
 
             if !mine { Spacer(minLength: 44) }
         }
+    }
+}
+
+/// Incoming webhook as a collapsible work card, not a blue user bubble.
+/// The harness stores the trigger as role=user so the model still sees it
+/// as the turn prompt.  That does not mean a person typed it.
+struct WebhookEventCard: View {
+    let view: WebhookMessageView
+    @Environment(\.colorScheme) private var colorScheme
+    @State private var isExpanded = false
+
+    var body: some View {
+        let isDark = colorScheme == .dark
+        VStack(alignment: .leading, spacing: 6) {
+            Button {
+                guard view.payload != nil else { return }
+                withAnimation(.spring(response: 0.32, dampingFraction: 0.76)) {
+                    isExpanded.toggle()
+                }
+                Haptics.selection()
+            } label: {
+                HStack(alignment: .center, spacing: 8) {
+                    ZStack {
+                        Circle()
+                            .fill(Color.secondary.opacity(0.14))
+                            .frame(width: 26, height: 26)
+                        Image(systemName: "bolt.horizontal.circle.fill")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(Color.secondary)
+                    }
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(view.headline)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(isDark ? Color.white : Color.primary)
+                            .lineLimit(isExpanded ? 4 : 2)
+                            .truncationMode(.tail)
+                        if let subtitle = view.subtitle {
+                            Text(subtitle)
+                                .font(.system(size: 11.5))
+                                .foregroundStyle(Color.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                    }
+
+                    Spacer()
+
+                    if view.payload != nil {
+                        HStack(spacing: 4) {
+                            Text(isExpanded ? "Collapse" : "Details")
+                                .font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(Color.secondary)
+                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundStyle(Color.secondary)
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(Color.secondary.opacity(0.1))
+                        .clipShape(Capsule())
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
+            }
+            .buttonStyle(.plain)
+            .disabled(view.payload == nil)
+
+            if isExpanded, let payload = view.payload {
+                ScrollView {
+                    Text(payload)
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(Color.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 220)
+                .padding(.horizontal, 10)
+                .padding(.bottom, 8)
+            }
+        }
+        .background(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.03))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.secondary.opacity(0.15), lineWidth: 0.75)
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 2)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Webhook. \(view.headline)")
+        .accessibilityHint(view.payload == nil ? "" : (isExpanded ? "Collapses the event payload" : "Shows the event payload"))
     }
 }
 
