@@ -156,13 +156,15 @@ describe("refresh: a good sync", () => {
 });
 
 describe("refresh: a second caller while one is in flight", () => {
-  it("awaits the run already going instead of answering from the old snapshot", async () => {
+  it("queues its own read behind the one going instead of joining it", async () => {
     // The window is real: a timer refresh holds the manager for two HTTP
     // calls (up to 16 s on the default budget) and `preload()`'s losing
     // refresh outlives boot.  A Sync Now that lands inside it used to get an
     // untouched status back and answer 200, so the card re-rendered with the
     // same `lastSyncAt` it had before the click -- indistinguishable, to the
-    // operator, from a broken button.
+    // operator, from a broken button.  Joining the run in flight fixed the
+    // symptom and left the real one: that run listed the store before the
+    // click, so it cannot reflect anything the click was about.
     withSettings({});
     let calls = 0;
     vi.stubGlobal(
@@ -182,12 +184,39 @@ describe("refresh: a second caller while one is in flight", () => {
     const syncRun = infisical.refresh("manual");
     const [timerStatus, syncStatus] = await Promise.all([timerRun, syncRun]);
 
-    // One login and one list between them: the sync rode the run in flight.
-    expect(calls).toBe(2);
-    // And it reported what that run actually found.
+    // Two logins and two lists: the sync got a read that started after it did.
+    expect(calls).toBe(4);
     expect(syncStatus.appliedFields).toEqual(["composio.apiKey"]);
-    expect(syncStatus.lastSyncAt).toBe(timerStatus.lastSyncAt);
+    expect(timerStatus.lastSyncAt).toBeTruthy();
     expect(syncStatus.lastSyncAt).toBeTruthy();
+    // Strictly later, never the same stamp the first run wrote.
+    expect(Date.parse(syncStatus.lastSyncAt!)).toBeGreaterThanOrEqual(Date.parse(timerStatus.lastSyncAt!));
+    expect(syncStatus.lastSyncAt).not.toBe(timerStatus.lastSyncAt);
+  });
+
+  it("gives three overlapping callers one shared follow-up, not three", async () => {
+    // The follow-up is a queue of exactly one: every caller that arrives
+    // during the same read shares it, so an operator hammering Sync Now
+    // costs one extra round trip in total rather than one each.
+    withSettings({});
+    let calls = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        calls += 1;
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        return new Response(JSON.stringify({ secrets: [] }), { status: 200 });
+      }),
+    );
+
+    const first = infisical.refresh("timer");
+    const second = infisical.refresh("manual");
+    const third = infisical.refresh("settings");
+    const [, secondStatus, thirdStatus] = await Promise.all([first, second, third]);
+
+    expect(calls).toBe(4);
+    expect(secondStatus.lastSyncAt).toBe(thirdStatus.lastSyncAt);
   });
 });
 
@@ -386,6 +415,50 @@ describe("writeSecret", () => {
 
     expect(methods).toContain("PATCH");
     expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("new-value");
+  });
+
+  it("does not settle on a read that started before the upsert", async () => {
+    // The overlap that made this a real defect: a timer or late boot read is
+    // still in flight when a write-through save runs.  That read listed the
+    // store BEFORE the upsert, so joining it publishes the pre-write value as
+    // the post-write snapshot -- and the harness then tombstones the local
+    // copy and answers 200, leaving every bot on the old credential until the
+    // next timer.  The write has to be followed by a read that started after
+    // it.
+    withSettings({ writeThrough: true });
+    let listCalls = 0;
+    let upserted = false;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        if (init?.method === "PATCH") {
+          upserted = true;
+          return new Response("{}", { status: 200 });
+        }
+        listCalls += 1;
+        // The FIRST list is the slow one already in flight when the save
+        // lands, and it answers with the pre-write value.  Anything after the
+        // upsert answers with what was written.
+        const first = listCalls === 1;
+        if (first) await new Promise((resolve) => setTimeout(resolve, 40));
+        const secretValue = upserted && !first ? "written-value" : "pre-write-value";
+        return new Response(
+          JSON.stringify({ secrets: [{ secretKey: "COMPOSIO_API_KEY", secretValue }] }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    // A timer read is under way; the save arrives while it is still listing.
+    const slow = infisical.refresh("timer");
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await infisical.writeSecret("COMPOSIO_API_KEY", "written-value");
+
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("written-value");
+    await slow;
+    // And the slow read landing first did not overwrite it on the way out.
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("written-value");
   });
 });
 

@@ -83,25 +83,34 @@ export async function listSecretsRaw({ siteUrl, token, projectId, environment, s
   return values;
 }
 
-/** Registers the whole value AND each of its lines as its own mask.
+/** Registers each LINE of the value as its own mask, and never the joined
+ * value.
  *
  * `::add-mask::` is a workflow command the runner parses one LINE at a
  * time: it registers only the text up to the first newline, then echoes the
  * remaining lines of that same write to the job log as ordinary, unmasked
- * output.  A wrapped base64 blob -- which is exactly what `base64 < x.p12`
- * produces on both macOS and GNU coreutils unless given `-b 0` / `-w 0` --
- * would therefore print every line but the first straight into a public
- * log.  GitHub's own `secrets.*` machinery registers each line of a
- * multi-line secret as a separate mask; this does the same, so a signing
- * certificate or an ASC key routed through this action is scrubbed as
- * thoroughly as it was when the workflow read it from `secrets.*`.
+ * output.  So a command carrying a whole multi-line value is not merely
+ * useless -- emitting it FIRST is the leak itself: the runner registers line
+ * one and prints every line after it into a public log, before the per-line
+ * commands that would have hidden them have run.  A wrapped base64 blob --
+ * which is exactly what `base64` produces on both macOS and GNU coreutils
+ * unless given `-b 0` / `-w 0` -- is the everyday shape of such a value.
  *
- * The `Set` collapses the single-line case back to one command, and the
- * `trim()` guard keeps a blank trailing line from registering the empty
- * string (which would mask nothing and warn on some runner versions). */
+ * GitHub's own `secrets.*` machinery registers each line of a multi-line
+ * secret as a separate mask; this does the same, so a signing certificate or
+ * an ASC key routed through this action is scrubbed as thoroughly as it was
+ * when the workflow read it from `secrets.*`.  A single-line value is its own
+ * only line, so it still costs exactly one command.
+ *
+ * The `seen` set collapses a value whose lines repeat, and the `trim()`
+ * guard keeps a blank trailing line from registering the empty string (which
+ * would mask nothing and warn on some runner versions). */
 export function maskValue(value, log) {
-  for (const line of new Set([value, ...String(value).split(/\r?\n/)])) {
-    if (line.trim()) log(`::add-mask::${line}`);
+  const seen = new Set();
+  for (const line of String(value).split(/\r?\n/)) {
+    if (!line.trim() || seen.has(line)) continue;
+    seen.add(line);
+    log(`::add-mask::${line}`);
   }
 }
 

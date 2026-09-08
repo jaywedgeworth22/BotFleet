@@ -245,13 +245,25 @@ test("every line of a multi-line value gets its own ::add-mask:: and is never pr
     assert.ok(lines.includes(`::add-mask::${SENTINEL_LINE_1}`), "first line was not masked on its own");
     assert.ok(lines.includes(`::add-mask::${SENTINEL_LINE_2}`), "second line was not masked on its own");
 
+    // ORDER is the finding this test exists for.  A `::add-mask::<whole
+    // value>` command emitted ahead of the per-line ones registers only line
+    // one and echoes every later line into the public log on the way past --
+    // so the per-line masks must come FIRST, and no command may carry a
+    // newline at all.
+    const masks = lines.filter((line) => line.startsWith("::add-mask::"));
+    assert.equal(masks[0], `::add-mask::${SENTINEL_LINE_1}`);
+    assert.equal(masks[1], `::add-mask::${SENTINEL_LINE_2}`);
+    for (const line of lines) assert.doesNotMatch(line, /[\r\n]/);
+
     // And no line of the value may appear anywhere except as the payload of
-    // a mask command -- that is the whole leak this guards.
-    for (const line of lines) {
-      if (line.startsWith("::add-mask::")) continue;
-      assert.doesNotMatch(line, new RegExp(SENTINEL_LINE_1));
-      assert.doesNotMatch(line, new RegExp(SENTINEL_LINE_2));
-    }
+    // a mask command -- that is the whole leak this guards.  Lines two
+    // onward are checked against every command, mask commands included:
+    // only their own carrier line may name them.
+    lines.forEach((line, index) => {
+      if (line === `::add-mask::${SENTINEL_LINE_1}` || line === `::add-mask::${SENTINEL_LINE_2}`) return;
+      assert.doesNotMatch(line, new RegExp(SENTINEL_LINE_1), `line ${index} leaked the first line`);
+      assert.doesNotMatch(line, new RegExp(SENTINEL_LINE_2), `line ${index} leaked the second line`);
+    });
 
     // The value still round-trips whole into GITHUB_ENV, newline included.
     const written = readFileSync(path, "utf8");
@@ -261,14 +273,23 @@ test("every line of a multi-line value gets its own ::add-mask:: and is never pr
   }
 });
 
-test("maskValue emits one command for a single-line value and skips blank lines", () => {
+test("maskValue emits one command per line, in order, and never the joined value", () => {
   const single = [];
   maskValue("one-line-value", (l) => single.push(l));
   assert.deepEqual(single, ["::add-mask::one-line-value"]);
 
   const wrapped = [];
   maskValue("aaa\r\nbbb\n\n", (l) => wrapped.push(l));
-  assert.deepEqual(wrapped, ["::add-mask::aaa\r\nbbb\n\n", "::add-mask::aaa", "::add-mask::bbb"]);
+  // Per line, in reading order, and the joined value is absent: a command
+  // carrying it would register only `aaa` and print `bbb` on the way past.
+  // The blank trailing line is skipped rather than masking the empty string.
+  assert.deepEqual(wrapped, ["::add-mask::aaa", "::add-mask::bbb"]);
+  for (const line of wrapped) assert.doesNotMatch(line, /[\r\n]/);
+
+  // A value whose lines repeat still costs one command per distinct line.
+  const repeated = [];
+  maskValue("same\nsame\nother", (l) => repeated.push(l));
+  assert.deepEqual(repeated, ["::add-mask::same", "::add-mask::other"]);
 });
 
 test("writeGithubEnvValue is a no-op with no GITHUB_ENV path", () => {

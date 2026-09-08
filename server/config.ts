@@ -862,10 +862,25 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "DEEPSEEK_URL",
   // The secret store's machine identity.  It reads every name in the project,
   // so of everything on this list it is the one that must never ride into a
-  // spawned engine CLI.  `electron/diagnostics.mjs` mirrors these two in this
-  // exact order.
+  // spawned engine CLI.  `electron/diagnostics.mjs` mirrors these four in
+  // this exact order.
+  //
+  // Both spellings, because `resolveSecretFields` above accepts the
+  // universal-auth aliases as equals: a headless install that exports only
+  // the alias pair — the pair the iOS ship workflow already uses, which is
+  // why the aliases exist — is authenticated exactly as strongly, so
+  // stripping the canonical names alone would hand every bot CLI a machine
+  // identity that can read the whole project.
+  //
+  // Deliberately NOT extended to the pointer names (project id, site URL,
+  // domain, environment, secret path): those are not credentials, they carry
+  // nothing an engine could authenticate with, and once both identity pairs
+  // are gone they unlock nothing.  This list is what a child must never
+  // inherit, not everything the store happens to read.
   "INFISICAL_CLIENT_ID",
   "INFISICAL_CLIENT_SECRET",
+  "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+  "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
 ] as const;
 
 /** Drop every workspace credential from a child-process env (in place). */

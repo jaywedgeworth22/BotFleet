@@ -10,7 +10,12 @@ import { api, fetchSecrets, useStore, type ConfigStatus, type InfisicalStatusPay
 import { cn } from "@/lib/cn";
 import { Card } from "./SettingsPrimitives";
 import { SecretSourceBadge } from "./SecretSourceBadge";
-import { buildInfisicalConfigPatch, infisicalStatusLabel, infisicalSwitchDefault } from "@/lib/secret-source";
+import {
+  buildInfisicalConfigPatch,
+  infisicalStatusLabel,
+  infisicalSwitchDefault,
+  splitInfisicalPatch,
+} from "@/lib/secret-source";
 
 const secretsInputClass =
   "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none disabled:cursor-not-allowed disabled:opacity-60";
@@ -118,10 +123,25 @@ export function SecretsSection() {
     setSaveError(null);
     setSaveOk(false);
     try {
-      const config: ConfigStatus = await api("/api/config", {
+      // The client secret takes the same road every other credential in this
+      // app takes on the desktop: `window.ogb.setCredential` commits it to
+      // the OS-encrypted store first and only then makes it live, and the
+      // PATCH below carries the plain settings.  Sent in the PATCH body
+      // instead, it would land in plaintext `~/.botfleet/config.json` (the
+      // request has no `?secretStorage=external`) and only migrate into
+      // `credentials.bin` on a later launch — for the one credential that can
+      // read every name in the project.  See `splitInfisicalPatch`.
+      const { configPatch, bridgeSecret } = splitInfisicalPatch(built.patch, Boolean(window.ogb?.setCredential));
+      // Settings first, so the server's re-login — which the bridge save
+      // triggers — runs against the project and environment being saved.
+      let config: ConfigStatus = await api("/api/config", {
         method: "PATCH",
-        body: JSON.stringify({ infisical: built.patch }),
+        body: JSON.stringify({ infisical: configPatch }),
       });
+      // Non-null only where the split found a bridge to hand it to.
+      if (bridgeSecret) {
+        config = await window.ogb!.setCredential!("infisicalClientSecret", bridgeSecret);
+      }
       dispatch({ type: "configStatus", config });
       if (built.patch.clientId) setClientId("");
       if (built.patch.clientSecret) setClientSecret("");

@@ -7891,6 +7891,21 @@ const server = createServer(async (req, res) => {
           const landed = writtenToVault.length
             ? `\u00A0 Already written to Infisical: ${writtenToVault.join(", ")}.\u00A0 Nothing was saved on this computer.`
             : "\u00A0 Nothing was saved.";
+          // The earlier writes are in the vault, and each one refreshed the
+          // snapshot on its way out — so the store and this process now
+          // disagree, and nothing below this early return would reconcile
+          // them.  Left alone the fleet runs the pre-write credential until
+          // the next timer tick lands, up to a full refresh interval later.
+          // The vault is canonical for the names it holds, so apply what it
+          // now says before answering: the response still reports the
+          // failure and still says nothing was saved on this computer.
+          if (writtenToVault.length > 0) {
+            await applyResolvedSecrets("settings").catch((applyError) => {
+              console.error(
+                `[infisical] apply after a partial write-through failed: ${applyError instanceof Error ? applyError.message : String(applyError)}`,
+              );
+            });
+          }
           return json(res, failure, {
             error: `${reason}${landed}`,
             field: spec.id,
@@ -7976,7 +7991,18 @@ const server = createServer(async (req, res) => {
           key !== "terminologyCustom" &&
           key !== "conversationMode",
       );
-      if (reloadKeys.length > 0) await reloadProviders();
+      if (reloadKeys.length > 0) {
+        await reloadProviders();
+        // The fleet has just been rebuilt on whatever `cfg` resolves to right
+        // now, which includes every value a timer refresh quietly applied
+        // since the last rebuild.  So a `pendingProviderReload` still set from
+        // that refresh is already satisfied, and leaving it on strands the
+        // card's "Changed keys apply after Sync Now." line on a fleet that has
+        // no changes left to apply — and invites a Sync Now that kills live
+        // turns for nothing.  A save that reloads is the deliberate,
+        // user-initiated rebuild the flag was waiting for.
+        infisical.setPendingProviderReload(false);
+      }
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);

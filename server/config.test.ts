@@ -1049,4 +1049,49 @@ describe("the secret-store section", () => {
     stripWorkspaceCredentialEnv(env);
     expect(env).toEqual({ PATH: "/usr/bin" });
   });
+
+  it("strips the universal-auth aliases too, so an engine never inherits either spelling", () => {
+    // loadConfig accepts INFISICAL_UNIVERSAL_AUTH_CLIENT_ID / _SECRET as
+    // equals of the canonical pair — that is how a headless install and the
+    // iOS ship workflow authenticate — so a strip list that named only the
+    // canonical spelling would leave a fully usable, project-wide identity
+    // riding into every spawned bot CLI through `...process.env`.
+    expect(WORKSPACE_CREDENTIAL_ENV).toContain("INFISICAL_UNIVERSAL_AUTH_CLIENT_ID");
+    expect(WORKSPACE_CREDENTIAL_ENV).toContain("INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET");
+    const env = {
+      PATH: "/usr/bin",
+      INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: "alias-id",
+      INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: SENTINEL_CLIENT_SECRET,
+      // Pointers, not credentials: they authenticate nothing on their own and
+      // stay, so a bot that legitimately talks to the same project can still
+      // be told which one it is.
+      INFISICAL_PROJECT_ID: "proj-1",
+      INFISICAL_SITE_URL: "https://app.infisical.example",
+    };
+    stripWorkspaceCredentialEnv(env);
+    expect(env).toEqual({
+      PATH: "/usr/bin",
+      INFISICAL_PROJECT_ID: "proj-1",
+      INFISICAL_SITE_URL: "https://app.infisical.example",
+    });
+    expect(JSON.stringify(env)).not.toContain(SENTINEL_CLIENT_SECRET);
+  });
+
+  it("resolves the identity from the alias pair alone, which is why both spellings are stripped", () => {
+    // The load side of the same fact: with only the aliases exported, the
+    // store is fully configured.  If this ever stops being true the strip
+    // entries above are dead weight; while it is true they are load-bearing.
+    delete process.env.INFISICAL_CLIENT_ID;
+    delete process.env.INFISICAL_CLIENT_SECRET;
+    process.env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID = "alias-id";
+    process.env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET = SENTINEL_CLIENT_SECRET;
+    try {
+      const cfg = loadConfig();
+      expect(cfg.infisical?.clientId).toBe("alias-id");
+      expect(cfg.infisical?.clientSecret).toBe(SENTINEL_CLIENT_SECRET);
+    } finally {
+      delete process.env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID;
+      delete process.env.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET;
+    }
+  });
 });

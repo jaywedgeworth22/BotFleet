@@ -164,3 +164,40 @@ export function buildInfisicalConfigPatch(input: {
   if (clientSecret) patch.clientSecret = clientSecret;
   return { ok: true, patch };
 }
+
+export interface InfisicalPatchSplit {
+  /** Everything that travels in the `PATCH /api/config` body.  Carries the
+   * client secret only when there is no desktop bridge to carry it instead. */
+  configPatch: InfisicalConfigPatch;
+  /** The client secret to hand to `window.ogb.setCredential`, or `null` when
+   * this save has no secret in it or there is no bridge. */
+  bridgeSecret: string | null;
+}
+
+/** Split a built patch into the part that goes over plain HTTP and the part
+ * that goes through Electron's OS-encrypted credential store.
+ *
+ * Every other credential card in this app already does this — `ApiKeys.tsx`
+ * and `BotProfileAvatarCard.tsx` call `window.ogb.setCredential` when the
+ * bridge exists and fall back to `/api/config` only outside the desktop
+ * shell.  The Secret Store card sending its client secret straight to
+ * `/api/config` was the odd one out, and the request carries no
+ * `?secretStorage=external`, so the server's normal branch writes
+ * `infisical.clientSecret` into plaintext `~/.botfleet/config.json` and only
+ * migrates it into `credentials.bin` on some later launch.  The machine
+ * identity is the one credential that can read every name in the project, so
+ * it is the last one that should be sitting in a plaintext file.
+ *
+ * The non-secret half still goes over PATCH: site URL, project id,
+ * environment, secret path, client id, the two switches and the cadence are
+ * plain settings, and `credential:set` only knows how to carry one field.
+ * Order matters at the call site — the PATCH lands first so the bridge's own
+ * save, which is what triggers the server's re-login, runs with the new
+ * project and environment already in place. */
+export function splitInfisicalPatch(patch: InfisicalConfigPatch, hasBridge: boolean): InfisicalPatchSplit {
+  if (!hasBridge || !patch.clientSecret) {
+    return { configPatch: patch, bridgeSecret: null };
+  }
+  const { clientSecret, ...rest } = patch;
+  return { configPatch: rest, bridgeSecret: clientSecret };
+}

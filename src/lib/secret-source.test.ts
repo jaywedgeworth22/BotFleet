@@ -9,6 +9,8 @@ import {
   infisicalSwitchDefault,
   secretSourceLabel,
   secretSourceTone,
+  splitInfisicalPatch,
+  type InfisicalConfigPatch,
 } from "./secret-source";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -207,6 +209,78 @@ describe("buildInfisicalConfigPatch", () => {
       ["clientId", "clientSecret", "enabled", "environment", "projectId", "refreshMinutes", "secretPath", "siteUrl", "writeThrough"].sort(),
     );
     expect(serialized).toContain(SENTINEL_SECRET);
+  });
+});
+
+describe("splitInfisicalPatch", () => {
+  const built = (): InfisicalConfigPatch => {
+    const result = buildInfisicalConfigPatch({
+      enabled: true,
+      writeThrough: false,
+      siteUrl: "https://app.infisical.com",
+      projectId: "proj-1",
+      environment: "prod",
+      secretPath: "/",
+      clientId: "client-1",
+      clientSecret: SENTINEL_SECRET,
+      refreshMinutes: 15,
+    });
+    if (!result.ok) throw new Error(result.error);
+    return result.patch;
+  };
+
+  it("sends the client secret through the bridge and everything else over PATCH", () => {
+    const { configPatch, bridgeSecret } = splitInfisicalPatch(built(), true);
+
+    // The whole point: the one value that can read every name in the project
+    // never rides in a plain HTTP body that the server would write into
+    // plaintext config.json.
+    expect(bridgeSecret).toBe(SENTINEL_SECRET);
+    expect(JSON.stringify(configPatch)).not.toContain(SENTINEL_SECRET);
+    expect("clientSecret" in configPatch).toBe(false);
+    // And nothing else is lost on the way — the client id is a plain
+    // identifier and stays in the PATCH, exactly as it does on disk.
+    expect(Object.keys(configPatch).sort()).toEqual(
+      ["clientId", "enabled", "environment", "projectId", "refreshMinutes", "secretPath", "siteUrl", "writeThrough"].sort(),
+    );
+    expect(configPatch.clientId).toBe("client-1");
+  });
+
+  it("keeps the secret in the PATCH body when there is no desktop bridge", () => {
+    // A browser against the loopback harness has no OS credential store to
+    // reach, so the server's own file is the only place the identity can go.
+    const { configPatch, bridgeSecret } = splitInfisicalPatch(built(), false);
+
+    expect(bridgeSecret).toBeNull();
+    expect(configPatch.clientSecret).toBe(SENTINEL_SECRET);
+  });
+
+  it("takes the plain PATCH path when the save carries no secret at all", () => {
+    const result = buildInfisicalConfigPatch({
+      enabled: true,
+      writeThrough: true,
+      siteUrl: "https://app.infisical.com",
+      projectId: "proj-1",
+      environment: "prod",
+      secretPath: "/",
+      clientId: "",
+      clientSecret: "",
+      refreshMinutes: 30,
+    });
+    if (!result.ok) throw new Error(result.error);
+
+    const { configPatch, bridgeSecret } = splitInfisicalPatch(result.patch, true);
+
+    // Changing Refresh Minutes on its own must not call the bridge with an
+    // empty string — `credential:set` reads that as "delete this credential".
+    expect(bridgeSecret).toBeNull();
+    expect(configPatch).toEqual(result.patch);
+  });
+
+  it("leaves the built patch untouched", () => {
+    const patch = built();
+    splitInfisicalPatch(patch, true);
+    expect(patch.clientSecret).toBe(SENTINEL_SECRET);
   });
 });
 

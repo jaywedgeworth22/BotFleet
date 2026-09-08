@@ -133,10 +133,14 @@ class InfisicalManager {
    * a re-arm at a NEW interval from a no-op re-arm at the same one. */
   private timerMinutes: number | null = null;
   /** The refresh currently talking to Infisical, if any.  A second caller
-   * awaits this one rather than being handed a stale snapshot and told it
-   * synced: Sync Now that lands during a slow timer refresh has to report
-   * what that refresh finds, not what the last one found. */
+   * never gets handed a stale snapshot and told it synced: Sync Now that
+   * lands during a slow timer refresh has to report a read that started
+   * after the click, not what the last one found. */
   private inFlightRefresh: Promise<InfisicalStatusView> | null = null;
+  /** The one follow-up run queued behind `inFlightRefresh`.  Callers that
+   * arrive while a read is in flight share it, so N overlapping callers cost
+   * one extra round trip between them, never N. */
+  private queuedRefresh: Promise<InfisicalStatusView> | null = null;
 
   private lastSyncAt: string | null = null;
   private lastAttemptAt: string | null = null;
@@ -190,18 +194,51 @@ class InfisicalManager {
       return this.getStatus();
     }
 
-    // Coalesce onto the run already in flight instead of returning the
-    // PREVIOUS snapshot as though this call had synced.  A timer refresh
-    // holds this for two HTTP calls (up to 16 s on the default budget), and
-    // `preload()`'s losing refresh can still be running well after boot — a
-    // Sync Now landing in either window used to answer 200 with an untouched
-    // `lastSyncAt`, which reads to the operator as a broken button.
-    if (this.inFlightRefresh) return this.inFlightRefresh;
-    const run = this.runRefresh(reason);
-    this.inFlightRefresh = run.finally(() => {
-      this.inFlightRefresh = null;
+    // Queue a fresh run BEHIND the one in flight rather than joining it.
+    //
+    // Two reasons this cannot be a plain coalesce.  Returning the PREVIOUS
+    // snapshot would answer 200 with an untouched `lastSyncAt` — a timer
+    // refresh holds the manager for two HTTP calls (up to 16 s on the default
+    // budget) and `preload()`'s losing refresh can still be running well
+    // after boot, so a Sync Now landing in either window read to the operator
+    // as a broken button.  But handing that caller the in-flight run is
+    // wrong in a worse way: that run listed the store BEFORE this caller had
+    // a reason to ask.  `writeSecret()` is the sharp case — it upserts and
+    // then refreshes, and an in-flight read started a moment earlier still
+    // carries the pre-write value, so the save would tombstone the local copy
+    // and apply the old vault snapshot on top of it, reporting success.
+    // Changing the project or the identity mid-read has the same shape.
+    //
+    // So a caller that arrives mid-read waits for that read to finish and
+    // then gets its own, which is the first read that can possibly reflect
+    // what it just did.  One follow-up is enough for any number of them:
+    // they all share it, and it starts after every write that preceded it.
+    if (this.inFlightRefresh) {
+      if (!this.queuedRefresh) {
+        const queued: Promise<InfisicalStatusView> = this.inFlightRefresh
+          // Never rejects, so a failed read in front cannot poison the
+          // follow-up — `runRefresh` records the failure and resolves.
+          .catch(() => undefined)
+          .then(() => {
+            if (this.queuedRefresh === queued) this.queuedRefresh = null;
+            return this.startRefresh(reason);
+          });
+        this.queuedRefresh = queued;
+      }
+      return this.queuedRefresh;
+    }
+    return this.startRefresh(reason);
+  }
+
+  /** Start a run and publish it as the one in flight.  Split out so the
+   * queued follow-up above installs itself the same way the first caller
+   * does, and so the slot is only ever cleared by the run that owns it. */
+  private startRefresh(reason: RefreshReason): Promise<InfisicalStatusView> {
+    const tracked: Promise<InfisicalStatusView> = this.runRefresh(reason).finally(() => {
+      if (this.inFlightRefresh === tracked) this.inFlightRefresh = null;
     });
-    return this.inFlightRefresh;
+    this.inFlightRefresh = tracked;
+    return tracked;
   }
 
   /** The actual login-and-list, with `refresh()` owning the single-flight

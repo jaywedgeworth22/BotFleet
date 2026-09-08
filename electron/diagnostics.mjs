@@ -23,6 +23,12 @@ export const CREDENTIAL_ENV_NAMES = [
   "DEEPSEEK_URL",
   "INFISICAL_CLIENT_ID",
   "INFISICAL_CLIENT_SECRET",
+  // Both spellings of the machine identity: server/config.ts accepts the
+  // universal-auth aliases as equals, so a bundle collected on a headless
+  // install that exports only those would otherwise carry the pair in the
+  // clear.
+  "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+  "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
 ];
 
 // Credential-shaped tokens (server/redact.ts parity): unmistakable formats
