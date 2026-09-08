@@ -7843,14 +7843,15 @@ const server = createServer(async (req, res) => {
       // mistake the test for "leaves a bot's own choice alone" guards
       // against.  Skip the patch loop when the filter empties the apply.
       if (next.length > 0) {
+        // Every rule the per-bot PATCH enforces, enforced here too.  This
+        // route used to patch straight through, so "Set all bots to default"
+        // with "This Computer" in the default handed host control plus
+        // auto-approve to every unattended bot in the workspace without the
+        // acknowledgement the per-bot picker demands — and took host control
+        // AWAY from a bot mid-turn without interrupting it.  A guard only one
+        // of two callers honors is not a guard.
+        const targets: typeof store.bots = [];
         for (const bot of store.bots) {
-          // Every rule the per-bot PATCH enforces, enforced here too.  This
-          // route used to patch straight through, so "Set all bots to
-          // default" with "This Computer" in the default handed host control
-          // plus auto-approve to every unattended bot in the workspace
-          // without the acknowledgement the per-bot picker demands — and
-          // took host control AWAY from a bot mid-turn without interrupting
-          // it.  A guard only one of two callers honors is not a guard.
           const refusal = localAutoAcknowledgementError(
             bot,
             next,
@@ -7861,7 +7862,13 @@ const server = createServer(async (req, res) => {
             skipped.push({ id: bot.id, name: bot.name, reason: refusal });
             continue;
           }
-          await interruptIfHostRevoked(bot, next);
+          targets.push(bot);
+        }
+        // Concurrently: this is one operator action over a whole fleet, and a
+        // driver that takes a second to answer a cancel would otherwise add
+        // that second once per bot to a single click.
+        await Promise.allSettled(targets.map((bot) => interruptIfHostRevoked(bot, next)));
+        for (const bot of targets) {
           const patched = store.patchBot(bot.id, { computers: next });
           if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
         }

@@ -4280,7 +4280,10 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     });
     expect(restore.status).toBe(200);
     expect(restore.body.computers).toEqual(["cloud", "vm"]);
-  });
+    // Four fleet-wide applies, two of which revoke host control from every
+    // bot and so wait on each driver's cancel.  The default 20s is not enough
+    // headroom for that on a loaded machine.
+  }, 90_000);
 });
 
 describe("POST /api/bots/apply-model-defaults (set all bots to default models)", () => {
