@@ -776,6 +776,15 @@ export function loadConfig(): AppConfig {
   if (process.env.BOX_TOKEN !== undefined) cfg.box.token = process.env.BOX_TOKEN;
   cfg.opencodeGo = { ...cfg.opencodeGo };
   if (process.env.OPENCODE_API_KEY !== undefined) cfg.opencodeGo.apiKey = process.env.OPENCODE_API_KEY;
+  // Mirrors openaiCompat above: the desktop shell moves the key into
+  // credentials.bin and hands it back as DEEPSEEK_API_KEY at spawn, so this
+  // is the one place a packaged-app save becomes visible again. Without it
+  // the file value the tombstone leaves behind ("") was final: nothing ever
+  // read the env var back, so configStatus.deepseek.configured stayed false
+  // forever after a save.
+  cfg.deepseek = { ...cfg.deepseek };
+  if (process.env.DEEPSEEK_API_KEY !== undefined) cfg.deepseek.key = process.env.DEEPSEEK_API_KEY;
+  if (process.env.DEEPSEEK_URL !== undefined) cfg.deepseek.url = process.env.DEEPSEEK_URL;
   cfg.tts = { ...cfg.tts };
   if (process.env.OMB_TTS_KEY !== undefined) cfg.tts.key = process.env.OMB_TTS_KEY;
   cfg.imageGen = { ...cfg.imageGen };
@@ -821,6 +830,11 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
     [patch.composio?.apiKey, "COMPOSIO_API_KEY"],
     [patch.box?.token, "BOX_TOKEN"],
     [patch.opencodeGo?.apiKey, "OPENCODE_API_KEY"],
+    // Keeps the running process in step with a packaged-app save the same
+    // way every sibling credential above does — loadConfig() prefers env,
+    // so without this entry the key just saved to credentials.bin would
+    // stay invisible to this process until the next launch.
+    [patch.deepseek?.key, "DEEPSEEK_API_KEY"],
     [patch.tts?.key, "OMB_TTS_KEY"],
     [patch.imageGen?.key, "OMB_OPENAI_IMAGE_KEY"],
     // Without this, an identity injected by a plist or a shell export would
@@ -836,6 +850,10 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
   if (patch.openaiCompat?.url !== undefined) {
     if (patch.openaiCompat.url) process.env["OPENAI_COMPAT_URL"] = patch.openaiCompat.url;
     else delete process.env["OPENAI_COMPAT_URL"];
+  }
+  if (patch.deepseek?.url !== undefined) {
+    if (patch.deepseek.url) process.env["DEEPSEEK_URL"] = patch.deepseek.url;
+    else delete process.env["DEEPSEEK_URL"];
   }
   if (patch.infisical?.clientId !== undefined) {
     if (patch.infisical.clientId) process.env["INFISICAL_CLIENT_ID"] = patch.infisical.clientId;

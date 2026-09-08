@@ -25,6 +25,10 @@ export type DeepSeekBalanceSnapshot = {
 
 const CACHE_TTL_MS = 5 * 60_000;
 const DEEPSEEK_DEFAULT_URL = "https://api.deepseek.com";
+// /api/quotas awaits this snapshot on every poll of the Usage card, so an
+// unresponsive api.deepseek.com must not stall cooldowns, windows, and
+// Antigravity data along with it. Bounded regardless of what the network does.
+const FETCH_TIMEOUT_MS = 4_000;
 
 type CacheEntry = {
   key: string;
@@ -144,7 +148,20 @@ export async function getDeepSeekBalance(key: string | undefined, url: string | 
   }
   const inflight = (async () => {
     const ac = new AbortController();
-    const value = await fetchOnce(safeKey, safeUrl, ac.signal);
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      ac.abort();
+    }, FETCH_TIMEOUT_MS);
+    let value: DeepSeekBalanceSnapshot;
+    try {
+      value = await fetchOnce(safeKey, safeUrl, ac.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+    // Normalize whatever fetch's abort exception says (it varies by
+    // runtime) to one deterministic reason the UI and tests can rely on.
+    if (timedOut) value = { ...value, error: "timeout" };
     if (entry && entry.key === safeKey && entry.url === safeUrl) {
       entry.inflight = null;
       entry.expiresAt = Date.now() + CACHE_TTL_MS;

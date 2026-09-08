@@ -88,4 +88,31 @@ describe("getDeepSeekBalance", () => {
     expect(result.availability).toBe("unknown");
     expect(result.balanceUsd).toBeNull();
   });
+
+  it("times out a hanging fetch instead of blocking /api/quotas forever", async () => {
+    vi.useFakeTimers();
+    try {
+      // Simulates an unresponsive api.deepseek.com: the promise never
+      // settles on its own, only when the module's own AbortController
+      // fires — proving the 4s timeout, not the mock, ends the call.
+      fetchMock.mockImplementationOnce(
+        (_input, init) =>
+          new Promise<FetchResponse>((_resolve, reject) => {
+            init?.signal?.addEventListener("abort", () => {
+              const err = new Error("This operation was aborted");
+              err.name = "AbortError";
+              reject(err);
+            });
+          }),
+      );
+      const mod = await loadModule();
+      const pending = mod.getDeepSeekBalance("sk-test", "https://api.deepseek.com");
+      await vi.advanceTimersByTimeAsync(4_000);
+      const result = await pending;
+      expect(result.error).toBe("timeout");
+      expect(result.balanceUsd).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
