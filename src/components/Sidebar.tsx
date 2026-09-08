@@ -74,6 +74,8 @@ import {
   saveCollapsedRooms,
   saveSidebarDensity,
   saveSidebarThreadCount,
+  BOT_CHATS_SECTION,
+  partitionSidebarGroups,
   type SidebarDensity,
 } from "@/lib/sidebar-preferences";
 import { phoneSettingsAction, SidebarPhoneButton } from "./SidebarPhoneButton";
@@ -131,7 +133,9 @@ function UpdateButton() {
               ? "Checking for updates…"
               : upToDate
                 ? "You're up to date"
-                : "Check for Updates";
+                : status === "error" && s?.canLocalUpdate
+                  ? "Update From This Mac"
+                  : "Check for Updates";
 
   return (
     <button
@@ -143,6 +147,10 @@ function UpdateButton() {
         if (status === "available") {
           setPending(true);
           return void updater.download();
+        }
+        if (status === "error" && s?.canLocalUpdate && updater.local) {
+          setPending(true);
+          return void updater.local();
         }
         setCheckedAt(Date.now());
         void updater.check();
@@ -2092,8 +2100,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const conversationMode = getConversationMode(state.config);
   const showExtraThreads = allowsMultipleBotThreads(conversationMode);
   const primary = rosterPrimaryLabel(conversationMode);
-  const sectionedGroups = visibleGroups.filter((g) => g.section);
-  const unsectionedGroups = visibleGroups.filter((g) => !g.section);
+  const { botChats, sectionedRooms: sectionedGroups, unsectionedRooms: unsectionedGroups } =
+    partitionSidebarGroups(visibleGroups);
   // sections keep first-appearance order within the current list; a section
   // whose members all moved away (or fell out of the filter) simply vanishes
   const sectionNames: string[] = [];
@@ -2350,6 +2358,27 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               key={g.id}
               owner={{ kind: "group", id: g.id, name: g.name, threadId: g.threadId }}
               tasks={showExtraThreads ? (g.tasks ?? []) : []}
+              density={density}
+              threadCount={threadCount}
+              collapsed={collapsedRooms.has(g.id)}
+              onToggle={() => toggleRoom(g.id)}
+            >
+              <GroupListItem group={g} density={density} onMenu={setRoomMenu} />
+            </ThreadTree>
+          ))}
+          {botChats.length > 0 && density !== "icons" && (
+            <SectionDivider
+              name={BOT_CHATS_SECTION}
+              count={botChats.length}
+              collapsed={!sectionOpen(BOT_CHATS_SECTION)}
+              onToggle={() => toggleSection(BOT_CHATS_SECTION)}
+            />
+          )}
+          {(density === "icons" || sectionOpen(BOT_CHATS_SECTION)) && botChats.map((g) => (
+            <ThreadTree
+              key={g.id}
+              owner={{ kind: "group", id: g.id, name: g.name, threadId: g.threadId }}
+              tasks={[]}
               density={density}
               threadCount={threadCount}
               collapsed={collapsedRooms.has(g.id)}

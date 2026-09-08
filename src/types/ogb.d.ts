@@ -242,6 +242,8 @@ type SkillRecordingPayload = {
         download(): Promise<void>;
         /** quit-and-install the downloaded update */
         install(): Promise<void>;
+        /** Mac-only: run ~/apps/update-botfleet.sh when GitHub has no latest-mac.yml. */
+        local?(): Promise<void>;
         setEnabled?(enabled: boolean): Promise<void>;
         onState(cb: (s: UpdaterState) => void): () => void;
       };
@@ -277,6 +279,8 @@ export interface UpdaterState {
   version?: string;
   percent?: number;
   message?: string;
+  /** True when this Mac has ~/apps/update-botfleet.sh (owner local rebuild). */
+  canLocalUpdate?: boolean;
 }
 
 export interface CompanionAccountState {

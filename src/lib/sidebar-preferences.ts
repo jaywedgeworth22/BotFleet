@@ -141,3 +141,19 @@ export function saveCollapsedSections(
     // See above.
   }
 }
+
+/** Bot-to-bot DMs are not user rooms.  They stay in this named dropdown
+ * even if an older write left a leftover Apps/Work section on the record. */
+export const BOT_CHATS_SECTION = "Bot Chats";
+
+export function partitionSidebarGroups<T extends { dm?: boolean; section?: string }>(
+  groups: T[],
+): { botChats: T[]; sectionedRooms: T[]; unsectionedRooms: T[] } {
+  const botChats = groups.filter((group) => group.dm);
+  const rooms = groups.filter((group) => !group.dm);
+  return {
+    botChats,
+    sectionedRooms: rooms.filter((group) => Boolean(group.section)),
+    unsectionedRooms: rooms.filter((group) => !group.section),
+  };
+}
