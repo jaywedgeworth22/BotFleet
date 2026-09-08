@@ -319,13 +319,31 @@ export function UsageSection() {
               ? agGroups.map((group) => {
                   const value = group.remainingPercent == null
                     ? "not reported"
-                    : `${group.remainingPercent}%`;
-                  return `${group.label} ${value}`;
+                    : `${group.remainingPercent}% available`;
+                  return `${group.label}: ${value}`;
                 })
-              : headlines.map((headline) => {
+              : [
+                  // The wildcard cooldown (Cursor's monthly cap, an exhausted
+                  // anonymous bucket from a custom driver, etc.) is a real
+                  // signal the user needs to read in the headline strip —
+                  // without it the chip says "At Usage Cap" with no source.
+                  // Skip when Usage Monitor already produced a Monthly row.
+                  ...(wildcardCap && !headlines.some((headline) => headline.display === "Monthly")
+                    ? [{
+                        display: "Monthly",
+                        remainingPercent: 0,
+                        resetAtMs: typeof quotaCooldown?.resetsAt === "number"
+                          ? quotaCooldown.resetsAt
+                          : typeof quotaCooldown?.resetsAt === "string"
+                            ? Date.parse(quotaCooldown.resetsAt) || null
+                            : null,
+                      }]
+                    : []),
+                  ...headlines,
+                ].map((headline) => {
                   const value = headline.remainingPercent == null
                     ? "not reported"
-                    : `${headline.remainingPercent}%`;
+                    : `${headline.remainingPercent}% available`;
                   const reset = formatResetCountdown(headline.resetAtMs);
                   return reset ? `${headline.display} ${value} · resets in ${reset}` : `${headline.display} ${value}`;
                 });
