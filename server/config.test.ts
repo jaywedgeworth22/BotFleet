@@ -392,6 +392,8 @@ describe("credential env preference", () => {
     "OMB_TTS_KEY",
     "OMB_OPENAI_IMAGE_KEY",
     "COMPOSIO_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "DEEPSEEK_URL",
   ] as const;
   let saved: Record<string, string | undefined>;
 
@@ -428,23 +430,32 @@ describe("credential env preference", () => {
     process.env.OPENCODE_API_KEY = "env-ocg";
     process.env.OMB_TTS_KEY = "env-tts";
     process.env.OMB_OPENAI_IMAGE_KEY = "env-image";
+    process.env.DEEPSEEK_API_KEY = "env-deepseek";
+    process.env.DEEPSEEK_URL = "https://env.example.test";
     const cfg = loadConfig();
     expect(cfg.xai).toEqual({ key: "env-xai", url: "https://api.example.test/v1" });
     expect(cfg.box).toEqual({ token: "env-box" });
     expect(cfg.opencodeGo).toEqual({ apiKey: "env-ocg" });
     expect(cfg.tts).toEqual({ key: "env-tts", voice: "narrator" });
     expect(cfg.imageGen).toEqual({ key: "env-image" });
+    expect(cfg.deepseek).toEqual({ key: "env-deepseek", url: "https://env.example.test" });
   });
 
   it("falls back to the config file when the env var is unset (dev mode)", () => {
     writeFileSync(
       join(DATA_DIR, "config.json"),
-      JSON.stringify({ xai: { key: "file-xai" }, tts: { key: "file-tts" }, imageGen: { key: "file-image" } }),
+      JSON.stringify({
+        xai: { key: "file-xai" },
+        tts: { key: "file-tts" },
+        imageGen: { key: "file-image" },
+        deepseek: { key: "file-deepseek" },
+      }),
     );
     const cfg = loadConfig();
     expect(cfg.xai?.key).toBe("file-xai");
     expect(cfg.tts?.key).toBe("file-tts");
     expect(cfg.imageGen?.key).toBe("file-image");
+    expect(cfg.deepseek?.key).toBe("file-deepseek");
   });
 
   it("treats a blanked file field as absent when env supplies the secret", () => {
@@ -455,14 +466,27 @@ describe("credential env preference", () => {
     expect(loadConfig().xai?.key).toBe("env-xai");
   });
 
+  it("round-trips a DeepSeek key through the packaged app's external-secret tombstone", () => {
+    // Mirrors the exact index.ts externalSecretStorage flow: the desktop
+    // shell commits the key to credentials.bin, config.json gets the empty
+    // tombstone, and syncCredentialEnv is the only thing standing between
+    // that "" and configStatus.deepseek.configured reading false forever.
+    process.env.DEEPSEEK_API_KEY = "boot-injected";
+    writeFileSync(join(DATA_DIR, "config.json"), JSON.stringify({ deepseek: { key: "" } }));
+    syncCredentialEnv({ deepseek: { key: "just-saved" } });
+    expect(loadConfig().deepseek?.key).toBe("just-saved");
+  });
+
   it("syncCredentialEnv keeps process.env in step with a credential save", () => {
     process.env.XAI_API_KEY = "boot-injected";
     process.env.BOX_TOKEN = "boot-injected";
     process.env.COMPOSIO_API_KEY = "boot-injected";
+    process.env.DEEPSEEK_API_KEY = "boot-injected";
     syncCredentialEnv({
       xai: { key: "just-saved" },
       composio: { apiKey: "ak_just_saved" },
       box: { token: "" },
+      deepseek: { key: "ds-just-saved" },
       profile: { name: "Ada" },
     });
     // a saved value replaces the boot-time one; a cleared value drops it;
@@ -471,6 +495,15 @@ describe("credential env preference", () => {
     expect(process.env.COMPOSIO_API_KEY).toBe("ak_just_saved");
     expect(process.env.BOX_TOKEN).toBeUndefined();
     expect(process.env.OMB_TTS_KEY).toBeUndefined();
+    expect(process.env.DEEPSEEK_API_KEY).toBe("ds-just-saved");
+  });
+
+  it("syncCredentialEnv keeps the DeepSeek URL in step, clearing it on an explicit blank", () => {
+    process.env.DEEPSEEK_URL = "https://boot.example.test";
+    syncCredentialEnv({ deepseek: { url: "https://just-saved.example.test" } });
+    expect(process.env.DEEPSEEK_URL).toBe("https://just-saved.example.test");
+    syncCredentialEnv({ deepseek: { url: "" } });
+    expect(process.env.DEEPSEEK_URL).toBeUndefined();
   });
 });
 

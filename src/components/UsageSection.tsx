@@ -321,11 +321,16 @@ export function UsageSection() {
             const deepseekRow = instance.driverKind === "deepseekAgent" || instance.driverKind === "deepseek"
               ? deepseekBalance
               : null;
-            const deepseekLine = deepseekRow
-              ? deepseekRow.error
-                ? `DeepSeek balance unavailable · ${deepseekRow.error}`
-                : formatUsdBalance(deepseekRow.balanceUsd)
-              : null;            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
+            // deepseek-balance.ts's own contract: "Set when the key is
+            // missing, the request failed, or the response was not
+            // parseable. The UI hides the chip when this is set." — so the
+            // line is shown only when there is an actual balance to report,
+            // never as a substitute for the engine's real state (capped,
+            // disabled, unavailable) below.
+            const deepseekLine = deepseekRow && !deepseekRow.error && deepseekRow.balanceUsd != null
+              ? formatUsdBalance(deepseekRow.balanceUsd)
+              : null;
+            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
             const detailLines = agLines.length > 0 ? agLines : windowLines;
@@ -374,19 +379,27 @@ export function UsageSection() {
             const allHeadlineLines = deepseekLine
               ? [...headlineLines, deepseekLine]
               : headlineLines;
-            const statusLine = allHeadlineLines.length > 0
-              ? allHeadlineLines.join("  ·  ")
-              : fullSummary
-              ? fullSummary
-              : isCapped
+            // The engine's real state — capped, partially capped, disabled,
+            // or otherwise unavailable — must win over a headline percentage
+            // line, not the other way around: a stale "70% available" (or a
+            // DeepSeek balance chip) sitting where "At Usage Cap" or
+            // "Disabled in settings" belongs is what let the DeepSeek row
+            // read "balance unavailable" forever instead of its real status.
+            // The headline/fullSummary lines are shown only for the healthy,
+            // uncapped path they were designed for.
+            const statusLine = isCapped
               ? `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
               : isPartial
               ? `${quotaCooldown?.error ?? "Some models are at a usage cap"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
               : isDisabled
               ? "Disabled in settings · subscription inactive"
-              : isAvailable
-              ? instance.snapshot.version ? `v${instance.snapshot.version} · Ready` : "Active and ready for turns"
-              : instance.snapshot.reason ?? "Unavailable";
+              : !isAvailable
+              ? instance.snapshot.reason ?? "Unavailable"
+              : allHeadlineLines.length > 0
+              ? allHeadlineLines.join("  ·  ")
+              : fullSummary
+              ? fullSummary
+              : instance.snapshot.version ? `v${instance.snapshot.version} · Ready` : "Active and ready for turns";
             const open = expandedQuota === instance.instanceId;
 
             return (
