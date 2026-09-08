@@ -267,14 +267,45 @@ describe("operator allowlist", () => {
     });
   });
 
-  it("keeps an unconfigured bot auto when every default destination is blocked", () => {
-    // The allowlist is narrower than the workspace default.  The bot still
-    // has not picked a destination of its own, so it should fall through to
-    // its historical auto behavior instead of being silently granted nothing
-    // and never even learning a desktop is unavailable.
+  it("grants an unconfigured bot NOTHING when every default destination is blocked", () => {
+    // The allowlist is narrower than the workspace default, so the
+    // intersection is empty — and an empty intersection is an empty grant.
+    // The bot being unconfigured changes nothing: the caller mounts whatever
+    // is in `granted` and falls back to the host when `auto` is set, so the
+    // old answer (the UNFILTERED default, auto: true) handed the host to the
+    // one workspace whose operator had just disabled it.
     expect(resolveGrants(undefined, undefined, ["local", "vm"], ["cloud"])).toEqual({
-      granted: ["local", "vm"],
+      granted: [],
+      auto: false,
+    });
+  });
+
+  it("keeps auto for an unconfigured bot while the auto path is still allowed", () => {
+    // Nothing to intersect here: no bot choice and no workspace default, so
+    // the historical auto discovery survives — but only because the cloud
+    // computer, which auto can mount, is still allowed.
+    expect(resolveGrants(undefined, undefined, undefined, ["cloud"])).toEqual({
+      granted: [],
       auto: true,
+    });
+    expect(resolveGrants(undefined, undefined, undefined, ["cloud", "vm", "local"])).toEqual({
+      granted: [],
+      auto: true,
+    });
+  });
+
+  it("drops auto when the allowlist blocks everything auto could mount", () => {
+    // Auto mounts a cloud box/VPS or host control, never the Local VM.  An
+    // allowlist of just the Local VM therefore leaves auto with nothing it is
+    // permitted to reach, and letting it run anyway is the same bypass in a
+    // different costume.
+    expect(resolveGrants(undefined, undefined, undefined, ["vm"])).toEqual({
+      granted: [],
+      auto: false,
+    });
+    expect(resolveGrants(undefined, undefined, undefined, [])).toEqual({
+      granted: [],
+      auto: false,
     });
   });
 
@@ -292,14 +323,13 @@ describe("operator allowlist", () => {
       granted: [],
       auto: false,
     });
-    // …but a never-configured bot still goes through the auto path, so the
-    // runtime can react to "no desktop at all" instead of the absence of a
-    // grant the operator can also undo.  The original granted set is
-    // returned alongside the auto flag, so the runtime can still see what
-    // the workspace default was trying to offer.
+    // …and a never-configured bot gets the same answer.  "The operator
+    // allowed nothing" is a decision, not a gap for the auto path to fill:
+    // returning the workspace default here would have mounted the very
+    // destinations the empty allowlist exists to refuse.
     expect(resolveGrants(undefined, undefined, ["cloud", "local"], [])).toEqual({
-      granted: ["cloud", "local"],
-      auto: true,
+      granted: [],
+      auto: false,
     });
   });
 });

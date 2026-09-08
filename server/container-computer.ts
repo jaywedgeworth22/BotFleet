@@ -92,6 +92,19 @@ export const SHARED_LOCAL_VM_TARGET: LocalVmTarget = {
   label: "shared",
 };
 
+/** Every Local VM target a workspace could have created, given the bots it
+ * has.  The `shared` / `per-bot` mode decides which target a bot's turn
+ * ADDRESSES, so a mode switch has to reckon with both sets at once: whatever
+ * the outgoing mode left running is otherwise stranded — still holding its
+ * ports, memory and durable workspace — with nothing left in the app that can
+ * name it, and a lease held on any of them is a live turn clicking inside a
+ * desktop the switch is about to remove.  Deduplicated by key, because a bot
+ * can map onto the shared target. */
+export function localVmModeSwitchTargets(botIds: readonly string[]): LocalVmTarget[] {
+  const all = [SHARED_LOCAL_VM_TARGET, ...botIds.map((botId) => perBotLocalVmTarget(botId))];
+  return all.filter((target, i) => all.findIndex((other) => other.key === target.key) === i);
+}
+
 /** Derive filesystem/container identities from a digest, never from a bot's
  * display name or caller-controlled path fragment. */
 export function perBotLocalVmTarget(botId: string): LocalVmTarget {

@@ -25,6 +25,8 @@ import {
   containerRuntimeStatus,
   containerRunArgs,
   managedImageDockerfile,
+  SHARED_LOCAL_VM_TARGET,
+  localVmModeSwitchTargets,
   perBotLocalVmTarget,
   podmanSecurityIsHardened,
   setupCommands,
@@ -781,5 +783,29 @@ describe("setupCommands", () => {
 
   it("offers the supported Podman Desktop installer on Windows", () => {
     expect(setupCommands(null, "win32").install).toBe("winget install -e --id RedHat.Podman-Desktop");
+  });
+});
+
+describe("Local VM mode switch targets", () => {
+  it("covers the shared target and every bot's own, without duplicates", () => {
+    // A mode switch removes containers and refuses on a held lease.  Looking
+    // only at the shared target meant switching to per-bot orphaned the
+    // shared container and switching back orphaned one per bot, and a per-bot
+    // lease held mid-turn never blocked the switch at all.
+    const targets = localVmModeSwitchTargets(["bot-a", "bot-b", "bot-a"]);
+    expect(targets[0]).toBe(SHARED_LOCAL_VM_TARGET);
+    expect(targets.map((target) => target.key)).toEqual([
+      SHARED_LOCAL_VM_TARGET.key,
+      perBotLocalVmTarget("bot-a").key,
+      perBotLocalVmTarget("bot-b").key,
+    ]);
+    // Distinct container names and workspaces, so "remove them all" removes
+    // three different things rather than the same one three times.
+    expect(new Set(targets.map((target) => target.containerName)).size).toBe(3);
+    expect(new Set(targets.map((target) => target.workspaceDir)).size).toBe(3);
+  });
+
+  it("is just the shared target when the workspace has no bots", () => {
+    expect(localVmModeSwitchTargets([])).toEqual([SHARED_LOCAL_VM_TARGET]);
   });
 });

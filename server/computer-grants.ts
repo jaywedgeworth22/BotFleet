@@ -198,6 +198,13 @@ export function hostToolPrefix(mounts: ComputerMount[]): string | null {
 }
 
 
+/** What the `auto` path can actually mount when nobody named a destination:
+ * the cloud computer (a hosted box or the operator's own VPS) and host
+ * control.  Never the Local VM — auto has never created one.  Keeping this
+ * list next to the rule that reads it is what lets the allowlist gate `auto`
+ * as precisely as it gates a named grant. */
+const AUTO_DESTINATIONS: readonly ComputerDestination[] = ["cloud", "local"];
+
 /** What a bot's stored `computers` setting actually asks for.
  *
  * The setting has three states, and two of them look identical if you reach
@@ -214,13 +221,13 @@ export function hostToolPrefix(mounts: ComputerMount[]): string | null {
  *
  * The result is filtered through `allowed` — the operator-level allowlist —
  * so disabling "This Computer" once at the top of settings keeps any bot from
- * running on the host.  An empty intersection falls back to `auto: true` so
- * a bot that was never configured still gets the chance to discover no
- * desktop is available, rather than a silently-empty grant that no driver
- * would treat as a permission.  A bot that was explicitly configured gets
- * exactly the intersection, even if that is empty — turning Off should still
- * be Off, and a misconfigured allowlist is the operator's to repair, not the
- * bot's to silently route around. */
+ * running on the host.  The allowlist is a boundary, not a preference: every
+ * destination that comes back is in it, and an intersection that narrows to
+ * empty is an empty grant.  That holds for a bot that was never configured
+ * too, because the caller reads BOTH halves of this result — `granted` for
+ * what to mount, `auto` for whether to go looking — so handing back the
+ * unfiltered set with `auto: true` mounted the host on exactly the install
+ * whose operator had just turned the host off. */
 export function resolveGrants(
   botComputers: ComputerDestination[] | undefined,
   runOn?: string,
@@ -249,21 +256,19 @@ export function resolveGrants(
   }
   if (allowed === null) return { granted, auto };
   const allowedSet = new Set(allowed);
+  // Nothing outside the allowlist is ever handed back, whoever asked for it
+  // and however the bot came by it.  An empty intersection is an empty grant:
+  // "the operator disabled every destination this bot wanted" and "the bot
+  // asked for nothing" want the same answer from the runtime, which is no
+  // computer — not a quiet substitution of a destination the operator just
+  // turned off.
   const filtered = granted.filter((entry) => allowedSet.has(entry));
-  // The bot never chose a destination of its own.  The allowlist is a
-  // workspace-level concern, not a per-bot one, so an intersection that
-  // narrows to empty should fall back to "auto" — let the runtime
-  // rediscover what's actually available.  The original granted set is
-  // returned alongside the auto flag so the runtime can still see what
-  // the workspace default was trying to offer.  A bot that picked its own
-  // destinations gets the truth, even if that truth is empty: turning Off
-  // should still be Off, and a misconfigured allowlist is the operator's to
-  // repair, not the bot's to silently route around.
-  if (originallyAuto) {
-    if (filtered.length === 0) return { granted, auto: true };
-    return { granted: filtered, auto: false };
-  }
-  return { granted: filtered, auto: false };
+  // The auto fallback has to clear the same bar, because it is a grant too:
+  // it mounts a cloud box or VPS, or the host, without anyone naming them.
+  // Leaving `auto` set while the allowlist blocks both is how an unconfigured
+  // bot ended up clicking on a Mac whose operator had disabled This Computer.
+  const autoReachable = auto && AUTO_DESTINATIONS.some((entry) => allowedSet.has(entry));
+  return { granted: filtered, auto: autoReachable };
 }
 
 

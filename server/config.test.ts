@@ -640,6 +640,37 @@ describe("operator-level computer allowlist", () => {
       "botDefaults.allowedComputers",
     );
   });
+
+  it("accepts null as the not-narrowed allowlist, which every fresh install sends", () => {
+    // The settings panel carries the whole botDefaults block on every save,
+    // so an install that has never narrowed the allowlist sent null with each
+    // unrelated change — and the schema answered 400, which made changing the
+    // New Bots default or the cloud backend impossible on a fresh install.
+    expect(parseConfigPatch({ botDefaults: { allowedComputers: null } })).toEqual({
+      botDefaults: { allowedComputers: null },
+    });
+    expect(allowedBotComputers({ botDefaults: { allowedComputers: null } })).toBeNull();
+  });
+
+  it("clears a stored allowlist on null instead of merging it forward", () => {
+    // Omitting the key would not do this: the section merge keeps whatever is
+    // on disk, so re-enabling the last destination would appear to work and
+    // come back narrowed on the next load.
+    mkdirSync(DATA_DIR, { recursive: true });
+    rmSync(join(DATA_DIR, "config.json"), { force: true });
+    try {
+      saveConfig({ botDefaults: { computers: ["cloud"], allowedComputers: ["cloud"] } });
+      expect(allowedBotComputers(loadConfig())).toEqual(["cloud"]);
+
+      saveConfig({ botDefaults: { allowedComputers: null } });
+      const after = loadConfig();
+      expect(allowedBotComputers(after)).toBeNull();
+      // and only the allowlist is cleared — the workspace default stands.
+      expect(after.botDefaults?.computers).toEqual(["cloud"]);
+    } finally {
+      rmSync(join(DATA_DIR, "config.json"), { force: true });
+    }
+  });
 });
 
 describe("autoUpdate throttle", () => {

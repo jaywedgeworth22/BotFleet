@@ -4200,8 +4200,86 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     expect(after.computers).toEqual(["local"]);
 
     await api("DELETE", `/api/bots/${eira.id}`);
-    // restore the open allowlist for the next describe block
-    await api("PUT", "/api/config", { botDefaults: { allowedComputers: null } });
+    // restore the open allowlist for the next describe block.  This used to
+    // 400 silently — the schema rejected null — which left the allowlist
+    // narrowed to ["cloud"] for every test after it.
+    const reopen = await api("PUT", "/api/config", { botDefaults: { allowedComputers: null } });
+    expect(reopen.status).toBe(200);
+    expect(reopen.body.botDefaults.allowedComputers ?? null).toBeNull();
+  });
+
+  it("persists the operator's default unfiltered, and applies the filtered set", async () => {
+    // Two different questions with two different answers.  The stored default
+    // is what the operator asked for; the applied set is that intersected
+    // with the allowlist.  Folding the intersection back into the stored
+    // default means re-enabling a destination later cannot bring it back,
+    // because the default it would come from was overwritten on the way in.
+    expect((await api("PUT", "/api/config", { botDefaults: { allowedComputers: ["cloud"] } })).status).toBe(200);
+    const apply = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["cloud", "vm"] },
+    });
+    expect(apply.status).toBe(200);
+    expect(apply.body.computers).toEqual(["cloud"]);
+    expect(apply.body.config.botDefaults.computers).toEqual(["cloud", "vm"]);
+
+    // Widening the allowlist afterwards brings the Local VM back with no
+    // second trip through the picker.
+    expect((await api("PUT", "/api/config", { botDefaults: { allowedComputers: null } })).status).toBe(200);
+    const again = await api("POST", "/api/bots/apply-defaults", {});
+    expect(again.status).toBe(200);
+    expect(again.body.computers).toEqual(["cloud", "vm"]);
+  });
+
+  it("skips a bot that would gain unacknowledged auto host control, and names it", async () => {
+    // The per-bot PATCH refuses "This Computer" plus auto-approve without a
+    // confirmed warning.  Applying a workspace default used to go straight to
+    // the store and hand that same pair to every unattended bot at once —
+    // the guard existed, but only one of the two callers ran it.
+    expect((await api("PUT", "/api/config", { botDefaults: { allowedComputers: null } })).status).toBe(200);
+    const auto = (await api("POST", "/api/bots", { name: "Nia Unattended" })).body.bot;
+    expect((await api("PATCH", `/api/bots/${auto.id}`, { autoApprove: true })).status).toBe(200);
+
+    const apply = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["local"] },
+    });
+    expect(apply.status).toBe(200);
+    expect(apply.body.skipped.map((entry: { id: string }) => entry.id)).toContain(auto.id);
+
+    const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === auto.id);
+    // Untouched: no host grant, and no half-applied state.
+    expect(after.computers ?? []).toEqual([]);
+    expect(after.autoApprove).toBe(true);
+
+    // The guard is about one specific pair, not about unattended bots in
+    // general: the same bot takes a default that does not include the host.
+    const cloudOnly = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["cloud"] },
+    });
+    expect(cloudOnly.status).toBe(200);
+    expect(cloudOnly.body.skipped).toEqual([]);
+    const granted = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === auto.id);
+    expect(granted.computers).toEqual(["cloud"]);
+
+    // And with the acknowledgement the host grant goes through, which is
+    // what keeps this a confirmation rather than a permanent block.
+    const acked = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["local"] },
+      acknowledgeLocalAuto: true,
+    });
+    expect(acked.status).toBe(200);
+    expect(acked.body.skipped).toEqual([]);
+    const host = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === auto.id);
+    expect(host.computers).toEqual(["local"]);
+
+    await api("DELETE", `/api/bots/${auto.id}`);
+    // Put every bot back on the default the earlier case in this block left
+    // them on — an apply is fleet-wide, so this test has to clean up after
+    // itself or it hands host control to the rest of the suite.
+    const restore = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["cloud", "vm"] },
+    });
+    expect(restore.status).toBe(200);
+    expect(restore.body.computers).toEqual(["cloud", "vm"]);
   });
 });
 
@@ -4235,6 +4313,49 @@ describe("POST /api/bots/apply-model-defaults (set all bots to default models)",
       slots: { primary: { instanceId: "fake" } },
     });
     expect(missing.status).toBe(400);
+  });
+
+  it("leaves a bot that is mid-turn on its own model, and names it in the response", async () => {
+    // The per-bot PATCH answers 409 here.  This route validated each slot
+    // once with no bot in hand, and checkedModelSelection only raises the
+    // busy gate when it is given a CURRENT selection to compare against — so
+    // the gate never fired and a fleet apply swapped the engine out from
+    // under a running turn.
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
+    expect(claude.snapshot.state).toBe("available");
+    const bot = (await api("POST", "/api/bots", { name: "Ida Busy" })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: claude.models.default },
+      })).status).toBe(200);
+      // the fixture CLI hangs, so this turn stays live until it is stopped
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hang forever" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(true);
+
+      const apply = await api("POST", "/api/bots/apply-model-defaults", {
+        slots: { primary: { instanceId: "fake", model: "swapped" } },
+      });
+      // The request still succeeds — the operator asked for the fleet, and
+      // one busy bot is not a reason to refuse the other bots their change.
+      expect(apply.status).toBe(200);
+      expect(apply.body.skipped.map((entry: { id: string }) => entry.id)).toContain(bot.id);
+      expect(apply.body.skipped[0].reason).toMatch(/working/);
+
+      const after = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(after.modelSelection.instanceId).toBe("claude");
+      expect(after.modelSelection.model).toBe(claude.models.default);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
   });
 });
 

@@ -24,10 +24,13 @@ const DESTINATION_LABEL: Record<Destination, string> = {
   local: "This Computer",
 };
 
-/** The allowlist is persisted as either null (every destination is allowed,
- * the shipped default) or an array of destinations.  We translate to/from
- * that wire shape on the way to `api()`. */
-function allowedToArray(value: Destination[] | null | undefined): Destination[] | null {
+/** The allowlist is persisted as either absent (every destination is allowed,
+ * the shipped default) or an array of destinations.  On the wire we say the
+ * first state as an explicit `null`, and the server drops the stored key when
+ * it sees one — omitting the field instead would merge into whatever is
+ * already on disk, so turning the last destination back on would appear to
+ * work and then come back narrowed on the next reload. */
+function allowedForWire(value: Destination[] | null | undefined): Destination[] | null {
   if (value === null || value === undefined) return null;
   return value;
 }
@@ -41,6 +44,7 @@ export function BotComputerDefaults() {
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [skipped, setSkipped] = useState<string[]>([]);
   const vpsConfigured = Boolean(state.config?.vps?.configured);
 
   useEffect(() => {
@@ -66,7 +70,7 @@ export function BotComputerDefaults() {
         botDefaults: {
           computers: nextComputers,
           cloudBackend: nextBackend,
-          allowedComputers: allowedToArray(nextAllowed),
+          allowedComputers: allowedForWire(nextAllowed),
         },
       }),
     })
@@ -78,12 +82,18 @@ export function BotComputerDefaults() {
   const applyDefaults = () => {
     setApplying(true);
     setError(null);
+    setSkipped([]);
     api("/api/bots/apply-defaults", {
       method: "POST",
       body: JSON.stringify({ botDefaults: { computers, cloudBackend: backend } }),
     })
-      .then((response: { applied: number; config: ConfigStatus }) => {
+      .then((response: { applied: number; skipped?: { name: string }[]; config: ConfigStatus }) => {
         dispatch({ type: "configStatus", config: response.config });
+        // A bot the apply refused is worth naming.  Granting "This Computer"
+        // to a bot that already runs unattended needs the same acknowledged
+        // warning the per-bot picker asks for, so those bots keep their own
+        // settings — silently, unless we say which ones.
+        setSkipped((response.skipped ?? []).map((bot) => bot.name));
       })
       .catch((e) => setError(e.message))
       .finally(() => setApplying(false));
@@ -222,6 +232,11 @@ export function BotComputerDefaults() {
           </span>
         </div>
       </Card>
+      {skipped.length > 0 && (
+        <div className="mt-2 text-[11.5px] text-ink-secondary">
+          {`Left unchanged, because granting This Computer to a bot that runs unattended needs the warning confirmed on that bot: ${skipped.join(", ")}.`}
+        </div>
+      )}
       {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}
     </>
   );

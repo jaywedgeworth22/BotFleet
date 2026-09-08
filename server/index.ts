@@ -81,6 +81,7 @@ import {
   
   
   SHARED_LOCAL_VM_TARGET,
+  localVmModeSwitchTargets,
   perBotLocalVmTarget,
   setupCommands,
   type LocalVmTarget,
@@ -635,6 +636,79 @@ function checkedModelSelection(
     return { ok: false, status: 400, error: `effort "${selection.effort}" is not offered by this bot's engine` };
   }
   return { ok: true, selection };
+}
+
+/** A bot as the two computer-grant rules below need to see it.  Deliberately
+ * structural: the per-bot PATCH runs these against a half-built patch and an
+ * `existingBot` that may be undefined, while "Set all bots to default" runs
+ * them against a stored record. */
+type ComputerGrantSubject = {
+  computers?: Array<"cloud" | "vm" | "local">;
+  /** The pre-array spelling some stored bots still carry. */
+  computer?: unknown;
+  autoApprove?: boolean;
+};
+
+/** The destinations a bot holds right now, in either spelling. */
+function currentComputerGrants(bot: ComputerGrantSubject | null | undefined): Array<"cloud" | "vm" | "local"> {
+  if (bot?.computers) return bot.computers;
+  const legacy = bot?.computer;
+  if (typeof legacy !== "string" || legacy === "off") return [];
+  // SAFETY: `computer` is the retired single-destination field, written only
+  // by versions that could store "cloud" | "vm" | "local" | "off", and "off"
+  // is excluded above.  A value from outside that set could only reach here
+  // through a hand-edited bots.json, where it drops out of every comparison
+  // below rather than granting anything.
+  return [legacy as "cloud" | "vm" | "local"];
+}
+
+const LOCAL_AUTO_ACK_ERROR =
+  "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)";
+
+/** "Auto on this Mac" hands a bot the user's real desktop session with no
+ * per-tool approval, so creating that combination has to prove a human saw
+ * the warning.  The desktop dialog is the only caller that sends
+ * acknowledgeLocalAuto; without it a request that would create the pair — a
+ * bot curling the loopback API from a tool call, a script, a stale client,
+ * or a fleet-wide "Set all bots to default" — is refused.  The renderer
+ * dialog alone is not a boundary; this is, which is why it lives in one
+ * function that EVERY route granting `computers` calls rather than inline in
+ * the one route that happened to be written first.
+ *
+ * Returns the refusal, or null when the change may proceed. */
+function localAutoAcknowledgementError(
+  existing: ComputerGrantSubject | null | undefined,
+  nextComputers: Array<"cloud" | "vm" | "local">,
+  nextAutoApprove: boolean,
+  acknowledged: boolean,
+): string | null {
+  // A bot that ALREADY holds the pair keeps it: the warning was answered
+  // once, and re-saving an unrelated field must not demand it again.
+  const alreadyGranted =
+    currentComputerGrants(existing).includes("local") && existing?.autoApprove === true;
+  if (nextComputers.includes("local") && nextAutoApprove && !alreadyGranted && !acknowledged) {
+    return LOCAL_AUTO_ACK_ERROR;
+  }
+  return null;
+}
+
+/** Host control taken away from a bot that may be mid-turn.  Interrupt it, or
+ * the agent keeps driving a desktop the settings say it no longer holds until
+ * the turn happens to end.  Same reasoning as the guard above: it belongs to
+ * the change, not to one route that makes the change. */
+async function interruptIfHostRevoked(
+  existing:
+    | { computers?: Array<"cloud" | "vm" | "local">; modelSelection: ModelSelection; threadId: string }
+    | null
+    | undefined,
+  nextComputers: Array<"cloud" | "vm" | "local">,
+): Promise<void> {
+  if (!existing?.computers?.includes("local")) return;
+  if (nextComputers.includes("local")) return;
+  await registry
+    .get(existing.modelSelection.instanceId)
+    ?.adapter.interruptTurn(existing.threadId)
+    .catch(() => {});
 }
 
 function checkedGroupResponder(value: unknown, memberIds: string[]): GroupDefaultResponder | null {
@@ -6391,25 +6465,20 @@ const server = createServer(async (req, res) => {
         }
         patch.autoReview = body.autoReview;
       }
-      // "Auto on this Mac" hands a bot the user's real session, so the grant
-      // must prove a human saw the warning. The desktop dialog is the only
-      // caller that sends acknowledgeLocalAuto; without it a PATCH that would
-      // create the combination — a bot curling the loopback API from a tool
-      // call, a script, a stale client — is refused. The renderer dialog
-      // alone is not a boundary; this check is.
-      const existingComputers = existingBot?.computers ?? ((existingBot as any)?.computer && (existingBot as any).computer !== "off" ? [(existingBot as any).computer] : []);
+      // The shared guard, not a copy of it — see localAutoAcknowledgementError.
       const wantsComputers = body.computers !== undefined
         ? body.computers
         : body.computer !== undefined
           ? (body.computer === "off" ? [] : [body.computer])
-          : existingComputers;
+          : currentComputerGrants(existingBot);
       const wantsAuto = body.autoApprove !== undefined ? body.autoApprove : existingBot?.autoApprove === true;
-      const alreadyGranted = existingComputers.includes("local") && existingBot?.autoApprove === true;
-      if (wantsComputers.includes("local") && wantsAuto === true && !alreadyGranted && body.acknowledgeLocalAuto !== true) {
-        return json(res, 400, {
-          error: "Auto mode on this computer requires confirming the warning first (acknowledgeLocalAuto)",
-        });
-      }
+      const ackError = localAutoAcknowledgementError(
+        existingBot,
+        wantsComputers,
+        wantsAuto === true,
+        body.acknowledgeLocalAuto === true,
+      );
+      if (ackError) return json(res, 400, { error: ackError });
       if (body.approvePeerComms !== undefined) {
         if (typeof body.approvePeerComms !== "boolean") {
           return json(res, 400, { error: "approvePeerComms must be true or false" });
@@ -6432,11 +6501,8 @@ const server = createServer(async (req, res) => {
         }
         patch.alwaysAllow = requested.filter((key) => !isCoarseApprovalKey(key)).slice(0, 200);
       }
-      if (existingBot?.computers?.includes("local") && body.computers !== undefined && !body.computers.includes("local")) {
-        await registry
-          .get(existingBot.modelSelection.instanceId)
-          ?.adapter.interruptTurn(existingBot.threadId)
-          .catch(() => {});
+      if (existingBot && body.computers !== undefined) {
+        await interruptIfHostRevoked(existingBot, body.computers);
       }
       const chiefMovedSections =
         Boolean(existingBot?.chiefOfStaff) &&
@@ -7147,15 +7213,29 @@ const server = createServer(async (req, res) => {
       if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.size > 0) {
         return json(res, 409, { error: "another Local VM setup action is still running" });
       }
-      const owner = localVmLeaseFor(SHARED_LOCAL_VM_TARGET).current(localVmOwnerBusy);
-      if (owner) {
-        return json(res, 409, { error: "the Local VM is being used by a bot — stop that turn first" });
+      // Every target this workspace could have created, not just the shared
+      // one.  The mode decides which target a bot's turn ADDRESSES, so
+      // flipping it strands whatever the other mode left running: switching
+      // to per-bot orphaned the shared container, and switching back orphaned
+      // one container per bot, each holding its ports, its memory and its
+      // durable workspace with nothing left in the app that can name it.  A
+      // per-bot lease is a reason to refuse for exactly the same reason the
+      // shared one is: there is a live turn clicking inside that desktop.
+      const affectedTargets = localVmModeSwitchTargets(store.bots.map((bot) => bot.id));
+      const leased = affectedTargets.find((target) => localVmLeaseFor(target).current(localVmOwnerBusy));
+      if (leased) {
+        return json(res, 409, { error: "a Local VM is being used by a bot — stop that turn first" });
       }
       localVmModeChangeBusy = true;
       try {
-        const sharedStatus = await containerComputerStatus(undefined, undefined, SHARED_LOCAL_VM_TARGET).catch(() => null);
-        if (sharedStatus?.container === "running" || sharedStatus?.container === "stopped") {
-          await containerComputerAction("remove", undefined, undefined, SHARED_LOCAL_VM_TARGET);
+        for (const target of affectedTargets) {
+          const status = await containerComputerStatus(undefined, undefined, target).catch(() => null);
+          if (status?.container === "running" || status?.container === "stopped") {
+            await containerComputerAction("remove", undefined, undefined, target);
+          }
+          // The idle backstop is keyed by target too; leaving it armed on a
+          // container that no longer exists wakes it up to inspect nothing.
+          localVmIdleFor(target).cancel();
         }
         cfg.localVm = { ...(cfg.localVm ?? {}), mode: requested };
         // Only the section this route owns.  Handing `saveConfig` the LIVE
@@ -7750,6 +7830,12 @@ const server = createServer(async (req, res) => {
         ? (requested ?? cfg.botDefaults?.computers ?? [])
         : (requested ?? cfg.botDefaults?.computers ?? []).filter((entry) => allowed.includes(entry));
       const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
+      // A bot this apply may not touch, and why.  Reported rather than
+      // silently dropped: an operator who presses "Set all bots to default"
+      // and gets "applied: 4" out of five bots deserves to know which one
+      // kept its own settings.
+      const skipped: { id: string; name: string; reason: string }[] = [];
+      const acknowledged = body.acknowledgeLocalAuto === true;
       // An empty filtered set is NOT a permission to clear every bot.  The
       // operator who narrowed the allowlist already has each bot on its
       // own choice; the apply would silently strip that choice and leave
@@ -7758,11 +7844,34 @@ const server = createServer(async (req, res) => {
       // against.  Skip the patch loop when the filter empties the apply.
       if (next.length > 0) {
         for (const bot of store.bots) {
+          // Every rule the per-bot PATCH enforces, enforced here too.  This
+          // route used to patch straight through, so "Set all bots to
+          // default" with "This Computer" in the default handed host control
+          // plus auto-approve to every unattended bot in the workspace
+          // without the acknowledgement the per-bot picker demands — and
+          // took host control AWAY from a bot mid-turn without interrupting
+          // it.  A guard only one of two callers honors is not a guard.
+          const refusal = localAutoAcknowledgementError(
+            bot,
+            next,
+            bot.autoApprove === true,
+            acknowledged,
+          );
+          if (refusal) {
+            skipped.push({ id: bot.id, name: bot.name, reason: refusal });
+            continue;
+          }
+          await interruptIfHostRevoked(bot, next);
           const patched = store.patchBot(bot.id, { computers: next });
           if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
         }
       }
-      cfg.botDefaults = { ...(cfg.botDefaults ?? {}), ...incoming, computers: next };
+      // Persist what the operator ASKED for, not what survived the allowlist.
+      // The allowlist is a separate, independently editable setting; folding
+      // its current value into the stored default means re-enabling a
+      // destination later silently fails to bring it back, because the
+      // default it would have come from was overwritten on the way in.
+      cfg.botDefaults = { ...(cfg.botDefaults ?? {}), ...incoming };
       saveConfig({ botDefaults: cfg.botDefaults });
       const status = configStatus();
       broadcast({ kind: "config", ...status });
@@ -7771,6 +7880,7 @@ const server = createServer(async (req, res) => {
         ok: true,
         applied: updated.length,
         computers: next,
+        skipped,
         config: status,
       });
     }
@@ -7813,16 +7923,21 @@ const server = createServer(async (req, res) => {
         const status = (error as { status?: number }).status ?? 400;
         return json(res, status, { error: (error as Error).message });
       }
-      // Validate every supplied selection against the available engines,
-      // reusing the same gate the PATCH /api/bots/:id endpoint runs.
-      const check = (selection: ModelSelection) =>
-        checkedModelSelection(selection, undefined, false);
+      // Shape and engine validation, once, with no bot in hand: these are
+      // request-level errors and the whole apply should fail on them.
       for (const selection of [primary, secondary, fallback1, fallback2]) {
         if (selection === null) continue;
-        const checked = check(selection);
+        const checked = checkedModelSelection(selection, undefined, false);
         if (!checked.ok) return json(res, checked.status, { error: checked.error });
       }
       const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
+      // Bots this apply left alone, and why.  checkedModelSelection only
+      // raises the 409 busy gate when it is given the bot's CURRENT selection
+      // to compare against, so calling it once with `undefined` — as this
+      // route did — meant the gate never fired here at all, and a fleet-wide
+      // apply swapped the engine out from under a running turn that the
+      // per-bot PATCH would have refused with a 409.
+      const skipped: { id: string; name: string; reason: string }[] = [];
       for (const bot of store.bots) {
         const next: ModelSelection = { ...bot.modelSelection };
         const existingFallbacks = next.fallbacks ?? [];
@@ -7853,11 +7968,27 @@ const server = createServer(async (req, res) => {
             JSON.stringify(bot.modelSelection.fallbacks ?? []) === JSON.stringify(next.fallbacks ?? [])) {
           continue;
         }
+        // The per-bot gate, now given the bot it is about.  One refused bot
+        // must not fail the whole request the way the per-bot route's 409
+        // does — the operator asked for the fleet — so that bot keeps exactly
+        // what it had and is named in the response.  A non-409 here can only
+        // come from the bot's OWN stored selection, since the operator's
+        // slots were validated above, and is not something this request could
+        // repair by failing.
+        const gate = checkedModelSelection(
+          next,
+          { selection: bot.modelSelection, busy: Boolean(bot.busy) },
+          false,
+        );
+        if (!gate.ok) {
+          skipped.push({ id: bot.id, name: bot.name, reason: gate.error });
+          continue;
+        }
         const patched = store.patchBot(bot.id, { modelSelection: next });
         if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
       }
       for (const { bot } of updated) broadcast({ kind: "bot", bot });
-      return json(res, 200, { ok: true, applied: updated.length });
+      return json(res, 200, { ok: true, applied: updated.length, skipped });
     }
     if ((method === "PUT" || method === "PATCH") && path === "/api/config") {
       const body = await readBody(req);
