@@ -642,7 +642,7 @@ export function TeamLibraryPanel({
                   )}
                   {!catalogLoading && catalog && catalog.configured === false && (
                     <div className="rounded-xl bg-raised/70 p-4 text-[13px] text-ink-secondary">
-                      <p>Team library is not configured for this build.&nbsp; Import a team from a Markdown playbook file or a public GitHub link instead.</p>
+                      <p>Team library is not configured for this build.  Import a team from a Markdown playbook file or a public GitHub link instead.</p>
                       <button
                         onClick={() => setTab("import")}
                         className="mt-3 rounded-full bg-raised px-3.5 py-2 text-ink hover:bg-raised-hover"
