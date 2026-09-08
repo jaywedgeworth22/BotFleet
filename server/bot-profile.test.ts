@@ -64,9 +64,10 @@ describe("parseBotProfilePatch (both modes)", () => {
   });
 
   it("only stored-attachment avatar URLs pass; clears normalize to undefined", () => {
-    for (const bad of ["https://example.com/a.png", "data:image/png;base64,AAAA", "/api/attachments/../config.json", "/api/attachments/a.svg"]) {
+    for (const bad of ["https://example.com/a.png", "data:image/png;base64,AAAA", "/api/attachments/../config.json", "/api/attachments/a.exe"]) {
       expect(parseBotProfilePatch({ avatarUrl: bad } as never, true).ok, bad).toBe(false);
     }
+    expect(parseBotProfilePatch({ avatarUrl: "/api/attachments/a.svg" } as never, true).ok).toBe(true);
     const cleared = parseBotProfilePatch({ avatarUrl: "" }, true);
     expect(cleared).toEqual({ ok: true, patch: { avatarUrl: undefined } });
     const nulled = parseBotProfilePatch({ avatarUrl: null }, true);

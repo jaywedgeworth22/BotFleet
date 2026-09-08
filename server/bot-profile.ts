@@ -46,7 +46,7 @@ const profilePatchSchema = z.object({
   notifications: z.boolean({ error: "notifications must be true or false" }).optional(),
   avatarUrl: z
     .union([botAvatarUrlSchema, z.literal(""), z.null()], {
-      error: "avatarUrl must be a stored PNG, JPEG, GIF, or WebP attachment",
+      error: "avatarUrl must be a stored image attachment",
     })
     .optional(),
   avatarCrop: botAvatarCropSchema.optional(),
