@@ -140,6 +140,7 @@ describe("BoxAgentDriver turns (fake API)", () => {
       "item.started",
       "content.delta",
       "item.completed", // after — must not be sliced to ""
+      "item.completed", // the tool step settles with the turn, not after it
       "turn.completed",
     ]);
     const texts = recorder.events
@@ -200,5 +201,66 @@ describe("BoxAgentDriver turns (fake API)", () => {
       .filter((e) => e.type === "item.completed" && (e as { itemType: string }).itemType === "assistant_text")
       .map((e) => (e as { text: string }).text);
     expect(texts).toEqual(["half"]);
+  });
+  it("settles every tool step it opened, with the same item id", async () => {
+    restoreFetch = installFakeBox([
+      {
+        events: [{ id: "e1", type: "tool", title: "run ls" }],
+        status: { promptRun: { status: "running" } },
+      },
+      {
+        events: [
+          { id: "e1", type: "tool", title: "run ls" },
+          { id: "e2", type: "tool", title: "browse docs" },
+        ],
+        status: { promptRun: { status: "running" } },
+      },
+      {
+        events: [
+          { id: "e1", type: "tool", title: "run ls" },
+          { id: "e2", type: "tool", title: "browse docs" },
+        ],
+        status: { promptRun: { status: "finished", result: "done" } },
+      },
+    ]);
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-tools", text: "go", integrations: { computer } });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+
+    const toolRows = recorder.events.filter(
+      (e) => (e.type === "item.started" || e.type === "item.completed") && e.itemType === "tool",
+    );
+    expect(toolRows.map((e) => `${e.type}:${e.itemId}`)).toEqual([
+      "item.started:e1",
+      "item.completed:e1",
+      "item.started:e2",
+      "item.completed:e2",
+    ]);
+    for (const row of toolRows) {
+      if (row.type === "item.completed" && row.itemType === "tool") expect(row.ok).toBe(true);
+      // Every step settles before the turn does, so no span runs to turn end.
+      expect(recorder.events.indexOf(row)).toBeLessThan(recorder.events.indexOf(done));
+    }
+  });
+
+  it("settles an open tool step as failed when the run fails", async () => {
+    restoreFetch = installFakeBox([
+      {
+        events: [{ id: "e1", type: "tool", title: "run ls" }],
+        status: { promptRun: { status: "running" } },
+      },
+      {
+        events: [{ id: "e1", type: "tool", title: "run ls" }],
+        status: { promptRun: { status: "failed" } },
+      },
+    ]);
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-toolfail", text: "go", integrations: { computer } });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "failed" });
+    const settled = recorder.events.find(
+      (e) => e.type === "item.completed" && e.itemType === "tool",
+    );
+    expect(settled).toMatchObject({ itemId: "e1", ok: false });
   });
 });

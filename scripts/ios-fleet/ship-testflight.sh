@@ -997,7 +997,10 @@ if [[ -n "${SENTRY_DSN:-}" ]]; then
   SENTRY_DSN_FLAGS+=(SENTRY_DSN="$SENTRY_DSN")
   log "SENTRY_DSN present for archive (length ${#SENTRY_DSN})"
 else
-  log "SENTRY_DSN unset; Cocoa no-ops when the plist value is empty"
+  log "warning: SENTRY_DSN unset; Cocoa no-ops when the plist value is empty"
+  if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+    echo "::warning::SENTRY_DSN unset; this TestFlight build ships with Sentry Cocoa inert."
+  fi
 fi
 
 xcodebuild archive \

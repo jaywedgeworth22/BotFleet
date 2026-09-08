@@ -3,7 +3,7 @@
 // is the stuff shared by every bot: who you are, your keys, and the
 // machine your bots can borrow.
 import { useEffect, useRef, useState } from "react";
-import { Coins, Globe, KeyRound, Layers, Monitor, Search, Smartphone, Terminal, User, X } from "lucide-react";
+import { Activity, Coins, Globe, KeyRound, Layers, Monitor, Search, Smartphone, Terminal, User, X } from "lucide-react";
 import { api, useStore, type AppSettingsSection, type ConfigStatus } from "@/state/store";
 import {
   DEFAULT_ROOM_TERMINOLOGY,
@@ -32,6 +32,7 @@ import { CompanionSection } from "./CompanionSection";
 import { RemoteAccessSection } from "./RemoteAccessSection";
 import { Card } from "./SettingsPrimitives";
 import { UsageSection } from "./UsageSection";
+import { ObservabilitySection } from "./ObservabilitySection";
 import { SkinPicker } from "./SkinPicker";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
 import { TranscriptionSettings } from "./TranscriptionSettings";
@@ -53,6 +54,7 @@ const SECTIONS: Array<{
   { id: "companion", label: "Phone", icon: Smartphone, keywords: ["companion", "phone", "pair", "mobile", "gateway", "sidecar"] },
   { id: "computers", label: "Local VM", icon: Monitor, keywords: ["vm", "virtual", "desktop"] },
   { id: "usage", label: "Usage", icon: Coins, keywords: ["tokens", "cost", "billing"] },
+  { id: "observability", label: "Observability", icon: Activity, keywords: ["sentry", "errors", "crashes", "traces", "logs", "diagnostics"] },
 ];
 
 function sectionMatches(section: (typeof SECTIONS)[number], query: string): boolean {
@@ -1047,6 +1049,8 @@ export function SettingsModal() {
             )}
 
             {section === "usage" && <UsageSection />}
+
+            {section === "observability" && <ObservabilitySection />}
           </div>
         </div>
       </div>
