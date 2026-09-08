@@ -154,6 +154,9 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     /// Client-only: this row is still waiting in the in-memory steer-queue
     /// and has not been appended to the transcript yet.
     public var queued: Bool? = nil
+    /// User line that landed inside a running turn (server `steered: true`).
+    /// Shown as the "Sent mid-turn" chip; distinct from the pending queue.
+    public var steered: Bool? = nil
 
     public var date: Date { Date(timeIntervalSince1970: at / 1000) }
 }
