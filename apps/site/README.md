@@ -27,7 +27,7 @@ Edit `features.json`, run `node build.mjs`, commit `index.html` too, push to `ma
 
 - Feature statuses: every BotFleet add-on is **In Testing**.  Do not add an Established section unless the owner asks.  The builder still hides any section with zero features.
 - `node sync-status.mjs` after PRs merge; it updates PR states in `features.json` and prints merged PRs that have no card yet.  Adding a card stays a judgment call.  Do not promote cards out of testing.
-- Owner copy rules apply: two spaces between sentences (`&nbsp; ` in HTML strings so the gap survives rendering), Title Case headings, light theme.
+- Owner copy rules apply: two spaces between sentences (a real U+00A0 plus a space in HTML strings — never the `&nbsp;` entity, which can leak as literal text), Title Case headings, light theme.
 - No internal agent seat names on the public site.
 - The bot roster is an example fleet, not a product claim — keep it framed that way.
 
