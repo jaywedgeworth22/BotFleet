@@ -382,6 +382,16 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(paired.endpoints?.map(\.kind), [.hosted, .lan])
     }
 
+    func testNotFoundStatusIsDistinctFromUnauthorized() {
+        let missing = APIError.status(code: 404, message: "no such queued message")
+        let noRoute = APIError.status(code: 404, message: "no route: DELETE /api/bots/x/queue/y")
+        XCTAssertTrue(missing.isNotFound)
+        XCTAssertTrue(noRoute.isNotFound)
+        XCTAssertFalse(missing.isUnauthorized)
+        XCTAssertEqual(missing.errorDescription, "no such queued message")
+        XCTAssertTrue(noRoute.errorDescription?.contains("no route") == true)
+    }
+
     func testDecodesTheHarnessErrorBodies() throws {
         // These are captured server contracts. Keep them verbatim until the
         // desktop changes in lockstep; the client passes them through.

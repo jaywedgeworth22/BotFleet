@@ -36,8 +36,18 @@ struct GroupProfileView: View {
         r.extraCwds = extraCwdsText.isEmpty ? nil : extraCwdsText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty })
         // Server vocabulary (server/index.ts checkedGroupResponder): everyone | mentions | member+botId.
         r.defaultResponder = GroupResponder(kind: responderKind, botId: responderKind == "member" ? (leadBotId.isEmpty ? nil : leadBotId) : nil)
-        r.memberIds = Array(memberIds)
+        r.memberIds = liveMemberIds
         return r
+    }
+
+    /// Live bots only, original order then newly checked.  Ghost ids from a
+    /// deleted bot stay in `room.memberIds` on the wire until a save; the
+    /// Members toggles never show them, so they must not go back in the PATCH.
+    private var liveMemberIds: [String] {
+        let known = Set(availableBots.map(\.id))
+        let kept = room.memberIds.filter { memberIds.contains($0) && known.contains($0) }
+        let added = availableBots.map(\.id).filter { memberIds.contains($0) && !kept.contains($0) }
+        return kept + added
     }
 
     var body: some View {
@@ -163,8 +173,7 @@ struct GroupProfileView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Save") {
                         Task {
-                            await save()
-                            dismiss()
+                            if await save() { dismiss() }
                         }
                     }
                     .fontWeight(.semibold)
@@ -183,9 +192,16 @@ struct GroupProfileView: View {
                 avatarCrop = room.avatarCrop ?? .rounded
                 cwd = room.cwd ?? ""
                 extraCwdsText = room.extraCwds?.joined(separator: "\n") ?? ""
+                let known = Set(availableBots.map(\.id))
+                memberIds = Set(room.memberIds.filter { known.contains($0) })
                 responderKind = room.defaultResponder.kind
-                leadBotId = room.defaultResponder.botId ?? ""
-                memberIds = Set(room.memberIds)
+                let lead = room.defaultResponder.botId ?? ""
+                if memberIds.contains(lead) {
+                    leadBotId = lead
+                } else {
+                    leadBotId = memberIds.first ?? ""
+                    if responderKind == "member" && leadBotId.isEmpty { responderKind = "everyone" }
+                }
             }
             .onChange(of: photo) { _, item in
                 guard let item else { return }
@@ -194,10 +210,10 @@ struct GroupProfileView: View {
         }
     }
 
-    private func save() async {
+    private func save() async -> Bool {
         busy = true
         defer { busy = false }
-        await session.updateRoom(
+        return await session.updateRoom(
             id: room.id,
             name: name,
             bulletin: bulletin,
@@ -206,7 +222,7 @@ struct GroupProfileView: View {
             extraCwds: currentRoom.extraCwds,
             // Direct-message rooms cannot change members or responder (server 400s).
             defaultResponder: room.dm == true ? nil : currentRoom.defaultResponder,
-            memberIds: room.dm == true ? nil : currentRoom.memberIds
+            memberIds: room.dm == true ? nil : liveMemberIds
         )
     }
 

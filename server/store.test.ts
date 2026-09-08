@@ -8,7 +8,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { DATA_DIR } from "./config.ts";
 import type { ModelSelection } from "./contracts.ts";
 import { peerAllowKey } from "./peer-approval-key.ts";
-import { Store, type BotRecord } from "./store.ts";
+import { resolveRoomMemberIds, Store, type BotRecord } from "./store.ts";
 
 const selection = (): ModelSelection => ({ instanceId: "claude", model: "claude-sonnet-5" });
 
@@ -429,6 +429,42 @@ describe("Store", () => {
     expect(empty?.memberIds).toEqual([]);
     expect(empty?.defaultResponder).toEqual({ kind: "mentions" });
   });
+
+  it("resolveRoomMemberIds drops roster ghosts and refuses newly invented ids", () => {
+    const exists = (id: string) => id === "live";
+    expect(resolveRoomMemberIds(["live", "ghost"], ["live", "ghost"], exists)).toEqual({
+      ok: true,
+      memberIds: ["live"],
+    });
+    expect(resolveRoomMemberIds(["live", "invented"], ["live"], exists)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/unknown channel member: invented/),
+    });
+    expect(resolveRoomMemberIds(["ghost"], ["ghost"], exists)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/at least one bot/),
+    });
+    expect(resolveRoomMemberIds(["invented"], undefined, exists)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/unknown channel member: invented/),
+    });
+    expect(resolveRoomMemberIds("nope", undefined, exists)).toMatchObject({
+      ok: false,
+      error: expect.stringMatching(/list of bot IDs/),
+    });
+  });
+
+  it("reloads drop deleted-bot ids left on a room roster", () => {
+    const store = new Store(selection);
+    const bot = store.createBot({ name: "Keeper" });
+    const room = store.createGroup("Ops", [bot.id]);
+    store.patchGroup(room.id, { memberIds: [bot.id, "ghost-from-before-deleteBot"] });
+    expect(store.group(room.id)?.memberIds).toEqual([bot.id, "ghost-from-before-deleteBot"]);
+
+    const reloaded = new Store(selection);
+    expect(reloaded.group(room.id)?.memberIds).toEqual([bot.id]);
+  });
+
   it("migrates a pre-branching flat transcript file", () => {
     const store = new Store(selection);
     // seedMessages:false — a legacy-era thread has its history ONLY in the

@@ -511,6 +511,28 @@ export function mentionedBots<T extends { name: string; hidden?: boolean }>(text
   return found;
 }
 
+/** Keep live bot ids.  Deleted-bot ghosts that were already on the roster are
+ * dropped so a phone save of name/bulletin/folder is not blocked by an id the
+ * Members toggles cannot show.  A newly added unknown id is still an error. */
+export function resolveRoomMemberIds(
+  value: unknown,
+  existingIds: readonly string[] | undefined,
+  botExists: (id: string) => boolean,
+): { ok: true; memberIds: string[] } | { ok: false; error: string } {
+  if (!Array.isArray(value)) return { ok: false, error: "memberIds must be a list of bot IDs" };
+  const existing = new Set(existingIds ?? []);
+  for (const id of value) {
+    if (typeof id !== "string" || !id.trim()) {
+      return { ok: false, error: `unknown channel member: ${String(id)}` };
+    }
+    if (botExists(id) || existing.has(id)) continue;
+    return { ok: false, error: `unknown channel member: ${id}` };
+  }
+  const memberIds = [...new Set(value.filter((id): id is string => typeof id === "string" && botExists(id)))];
+  if (!memberIds.length) return { ok: false, error: "a channel needs at least one bot" };
+  return { ok: true, memberIds };
+}
+
 /** Normalize persisted or API-provided routing. Old rooms did not have this
  * field; giving them their first member as lead fixes the old silent-send
  * behavior without making every prompt fan out to every model. */
@@ -658,6 +680,11 @@ export class Store {
     }
     for (const g of this.groups) {
       g.busyBotId = null;
+      const liveMembers = g.memberIds.filter((id) => this.bot(id));
+      if (liveMembers.length !== g.memberIds.length) {
+        g.memberIds = liveMembers;
+        groupsMigrated = true;
+      }
       const normalized = normalizeGroupDefaultResponder(g.defaultResponder, g.memberIds, Boolean(g.dm));
       if (JSON.stringify(normalized) !== JSON.stringify(g.defaultResponder)) groupsMigrated = true;
       g.defaultResponder = normalized;
