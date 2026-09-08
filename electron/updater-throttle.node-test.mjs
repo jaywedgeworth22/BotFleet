@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -317,66 +317,69 @@ test("nextAutoUpdateRecord omits the fingerprint on a non-darwin host", () => {
 });
 
 // `recordAutomaticCheck` is the read-modify-write updater.mjs's
-// `recordSuccessfulAutoCheck` delegates to.  Before this fix that function
-// ended in `appendFileSync(path, "")` -- a no-op touch of an existing file
-// that never wrote the updated `disk` object back, so `lastCheckMs` never
-// reached config.json and the 6-hour throttle never actually engaged
-// (`shouldRunAutomaticCheck` always saw `lastCheckMs: undefined` and kept
-// returning "first run, check now"). These exercise it against a real temp
-// file so the regression -- the throttle silently never engaging -- cannot
-// come back unnoticed.
+// recordSuccessfulAutoCheck() delegates to.  It used to stop at
+// `appendFileSync(path, "")` -- a no-op touch -- so lastCheckMs never
+// reached disk and the 6-hour throttle never engaged.  It now goes through
+// the cross-process config lock (config-file-lock.mjs, which has its own
+// race coverage) and writes only the check record: `enabled` belongs to
+// the harness, which persists the Settings toggle through PUT /api/config.
 test("recordAutomaticCheck persists lastCheckMs to a fresh config file", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omb-updater-throttle-"));
+  const dir = mkdtempSync(join(tmpdir(), "botfleet-throttle-"));
   const configPath = join(dir, "config.json");
+  const before = Date.now();
   try {
-    const before = Date.now();
-    recordAutomaticCheck(configPath, { enabled: true, fingerprint: "202609041230:abcdef123456" });
+    recordAutomaticCheck(configPath, { fingerprint: "202609041230:abcdef123456" });
     const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
     assert.equal(typeof onDisk.autoUpdate.lastCheckMs, "number");
     assert.ok(onDisk.autoUpdate.lastCheckMs >= before);
     assert.equal(onDisk.autoUpdate.lastAppFingerprint, "202609041230:abcdef123456");
-    assert.equal(onDisk.autoUpdate.enabled, true);
-    // readAutoUpdateConfig (the harness's own reader) agrees with what was
-    // just written -- the whole point of persisting is that the next tick
-    // and the next launch see the same thing.
-    assert.deepEqual(readAutoUpdateConfig(configPath), onDisk.autoUpdate);
+    assert.equal("enabled" in onDisk.autoUpdate, false, "the toggle is the harness's to write");
+    assert.equal(readAutoUpdateConfig(configPath).lastCheckMs, onDisk.autoUpdate.lastCheckMs);
+    assert.equal(existsSync(`${configPath}.lock`), false, "lock released");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("recordAutomaticCheck merges into an existing config without disturbing other sections", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omb-updater-throttle-"));
+test("recordAutomaticCheck merges into an existing config without disturbing other sections or the toggle", () => {
+  const dir = mkdtempSync(join(tmpdir(), "botfleet-throttle-"));
   const configPath = join(dir, "config.json");
   try {
     writeFileSync(
       configPath,
       JSON.stringify({
-        profile: { name: "Operator" },
+        ingress: { publicUrl: "https://example.test/hook" },
         autoUpdate: { enabled: false, lastCheckMs: 1_600_000_000_000, lastAppFingerprint: "old" },
       }),
     );
-    recordAutomaticCheck(configPath, { enabled: true, fingerprint: "new-fingerprint" });
+    recordAutomaticCheck(configPath, { fingerprint: "new-fingerprint" });
     const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
-    assert.deepEqual(onDisk.profile, { name: "Operator" });
-    assert.equal(onDisk.autoUpdate.enabled, true);
-    assert.equal(onDisk.autoUpdate.lastAppFingerprint, "new-fingerprint");
+    assert.deepEqual(onDisk.ingress, { publicUrl: "https://example.test/hook" });
+    // Before this fix Electron wrote its own in-memory `enabled` here, so a
+    // toggle the user had just switched off could flip back on.
+    assert.equal(onDisk.autoUpdate.enabled, false);
     assert.ok(onDisk.autoUpdate.lastCheckMs > 1_600_000_000_000);
+    assert.equal(onDisk.autoUpdate.lastAppFingerprint, "new-fingerprint");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
 test("recordAutomaticCheck starts fresh when the config file is missing or unreadable", () => {
-  const dir = mkdtempSync(join(tmpdir(), "omb-updater-throttle-"));
+  const dir = mkdtempSync(join(tmpdir(), "botfleet-throttle-"));
   // A nested, not-yet-created directory -- recordAutomaticCheck must create
-  // it (mkdirSync recursive) rather than throwing.
-  const configPath = join(dir, "nested", "config.json");
+  // it rather than fail on a first launch that raced ahead of the harness.
+  const configPath = join(dir, "nested", "deeper", "config.json");
   try {
-    recordAutomaticCheck(configPath, { enabled: true, fingerprint: null });
+    recordAutomaticCheck(configPath, { fingerprint: null });
     const onDisk = JSON.parse(readFileSync(configPath, "utf8"));
     assert.equal(typeof onDisk.autoUpdate.lastCheckMs, "number");
-    assert.equal(onDisk.autoUpdate.enabled, true);
+    assert.equal("lastAppFingerprint" in onDisk.autoUpdate, false);
+
+    writeFileSync(configPath, "{ this is not json");
+    recordAutomaticCheck(configPath, { fingerprint: "after-garbage" });
+    const recovered = JSON.parse(readFileSync(configPath, "utf8"));
+    assert.equal(recovered.autoUpdate.lastAppFingerprint, "after-garbage");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

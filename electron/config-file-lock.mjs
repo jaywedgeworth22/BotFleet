@@ -1,0 +1,276 @@
+// One writer at a time for ~/.botfleet/config.json, across processes.
+//
+// Two OS processes write that file: the harness server (server/config.ts's
+// saveConfig) and the packaged Electron main process (the auto-updater's
+// recordAutomaticCheck and the boot-time credential migrations in main.mjs).
+// A second harness can appear too -- the packaged app forks its own when it
+// cannot attach to the always-on one -- and it inherits the same data dir.
+// Every one of them does a whole-file read-modify-write.  Temp-file-then-
+// rename already makes each write atomic, so a reader sees the old file or
+// the new one and never a torn one, but it does nothing for the lost-update
+// race: a Settings save that lands between another writer's read and its
+// rename is replaced by that writer's stale snapshot and silently reverts.
+// (PR #251 review, board a2a3a586.)
+//
+// This module is the one door every writer goes through.  `updateConfigFile`
+// takes an advisory lock, reads the file, hands the parsed object to the
+// caller's `mutate`, writes the result atomically, and releases.  The lock is
+// a sibling `config.json.lock` created with O_EXCL -- atomic on macOS, Linux
+// and Windows -- holding the owner's pid so a lock left behind by a crashed
+// process is recognised as stale and reclaimed instead of wedging every
+// later save.  Readers never need the lock: the rename keeps reads
+// consistent on their own.
+//
+// It lives under electron/ rather than shared/ because the packaged app
+// ships only electron/** (electron-builder.yml `files`); the server imports
+// it from here and its esbuild bundle inlines it.  Dependency-free on
+// purpose: the packaged app carries no node_modules, so `proper-lockfile`
+// and friends are not an option on the Electron side.  The server's
+// TypeScript sees it through config-file-lock.d.mts.
+import { randomUUID } from "node:crypto";
+import {
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname } from "node:path";
+
+/** A lock older than this is reclaimed even when its owner pid still
+ * answers.  A healthy read-modify-write holds the lock for milliseconds,
+ * and pids get reused, so an old lock with a live pid is a crashed writer
+ * whose number came back around -- not a writer still at work. */
+export const CONFIG_LOCK_STALE_MS = 30_000;
+
+/** How long a writer waits for the lock before giving up with an error.
+ * The wait is synchronous (the writers are), so this bounds how long a
+ * stuck peer can stall the caller's event loop.  Well above any healthy
+ * hold; the caller reports the failure instead of writing a stale
+ * snapshot over whatever the holder is doing. */
+export const CONFIG_LOCK_TIMEOUT_MS = 5_000;
+
+const MAX_BACKOFF_MS = 50;
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+
+/** The lock file that guards `configPath`. */
+export function lockPathFor(configPath) {
+  return `${configPath}.lock`;
+}
+
+function sleepSync(ms) {
+  try {
+    Atomics.wait(sleepCell, 0, 0, ms);
+    return;
+  } catch {
+    /* Atomics.wait is refused on this thread -- fall back to a short spin */
+  }
+  const until = Date.now() + ms;
+  while (Date.now() < until) {
+    /* spin */
+  }
+}
+
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function readLockRecord(lockPath) {
+  try {
+    const parsed = JSON.parse(readFileSync(lockPath, "utf8"));
+    if (isPlainObject(parsed) && Number.isInteger(parsed.pid) && Number.isFinite(parsed.at)) {
+      return parsed;
+    }
+  } catch {
+    /* missing, mid-write, or garbage -- handled by the caller */
+  }
+  return null;
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: exists, but not ours to signal.  Only ESRCH means gone.
+    return error?.code !== "ESRCH";
+  }
+}
+
+/** True when the lock at `lockPath` belongs to nobody who could still
+ * release it.  A record with a dead pid is stale at once; a record (or an
+ * unreadable file) older than `staleMs` is stale regardless. */
+function isStaleLock(lockPath, record, nowMs, staleMs) {
+  if (record) {
+    if (nowMs - record.at > staleMs) return true;
+    return !processAlive(record.pid);
+  }
+  try {
+    return nowMs - statSync(lockPath).mtimeMs > staleMs;
+  } catch {
+    return false; // gone already -- the next create attempt will tell
+  }
+}
+
+/** Take a stale lock out of the way.  rename(2) is atomic, so when two
+ * waiters both decide the same lock is stale only one of them gets it;
+ * the other sees ENOENT and simply tries the create again. */
+function reclaimStaleLock(lockPath) {
+  const parked = `${lockPath}.stale.${process.pid}.${randomUUID()}`;
+  try {
+    renameSync(lockPath, parked);
+  } catch {
+    return;
+  }
+  try {
+    unlinkSync(parked);
+  } catch {
+    /* best-effort cleanup; a leftover parked file guards nothing */
+  }
+}
+
+/** Acquire the advisory lock for `configPath`.  Returns the release
+ * function.  Synchronous, like the writers that use it: waits with short
+ * sleeps until the lock is free, reclaims a stale one, and throws after
+ * `timeoutMs` so a wedged peer surfaces as an error instead of a silent
+ * overwrite.  Re-entering from the process that already holds the lock is
+ * a bug, not a wait, and throws immediately. */
+export function acquireConfigFileLock(configPath, options = {}) {
+  const lockPath = lockPathFor(configPath);
+  const staleMs = options.staleMs ?? CONFIG_LOCK_STALE_MS;
+  const timeoutMs = options.timeoutMs ?? CONFIG_LOCK_TIMEOUT_MS;
+  mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
+  const startedAt = Date.now();
+  let backoffMs = 2;
+  for (;;) {
+    const ours = { pid: process.pid, at: Date.now() };
+    let fd = null;
+    try {
+      fd = openSync(lockPath, "wx", 0o600);
+      writeFileSync(fd, JSON.stringify(ours));
+      closeSync(fd);
+      fd = null;
+      let released = false;
+      return function release() {
+        if (released) return;
+        released = true;
+        // Only remove what is still ours.  If we overran the stale window a
+        // peer has reclaimed this lock and written its own; deleting that
+        // would hand the file to a third writer mid-update.
+        const current = readLockRecord(lockPath);
+        if (current && (current.pid !== ours.pid || current.at !== ours.at)) return;
+        try {
+          unlinkSync(lockPath);
+        } catch {
+          /* already reclaimed -- nothing left to release */
+        }
+      };
+    } catch (error) {
+      if (fd !== null) {
+        try {
+          closeSync(fd);
+        } catch {
+          /* best-effort */
+        }
+      }
+      if (error?.code !== "EEXIST") throw error;
+    }
+    const now = Date.now();
+    const holder = readLockRecord(lockPath);
+    if (holder && holder.pid === process.pid && now - holder.at <= staleMs) {
+      throw new Error(`config lock re-entered by this process: ${lockPath}`);
+    }
+    if (isStaleLock(lockPath, holder, now, staleMs)) {
+      reclaimStaleLock(lockPath);
+      continue;
+    }
+    if (now - startedAt >= timeoutMs) {
+      const who = holder ? `pid ${holder.pid}` : "an unknown writer";
+      throw new Error(`config lock held by ${who} for more than ${timeoutMs} ms: ${lockPath}`);
+    }
+    sleepSync(backoffMs);
+    backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+  }
+}
+
+/** Run `fn` while holding the lock for `configPath`. */
+export function withConfigFileLock(configPath, fn, options = {}) {
+  const release = acquireConfigFileLock(configPath, options);
+  try {
+    return fn();
+  } finally {
+    release();
+  }
+}
+
+/** The parsed config object on disk, or `{}` when the file is missing or
+ * not a JSON object -- the state of a fresh install, not an error.  Every
+ * writer treats that the same way, so it lives here once. */
+export function readConfigFile(configPath) {
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8"));
+    return isPlainObject(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+/** Durable, atomic file replace: write a sibling temp file, fsync it, rename
+ * it over the target.  Mirrors server/atomic.ts, which the packaged Electron
+ * process cannot import (only electron/** ships). */
+export function writeFileAtomic(path, data, options = {}) {
+  const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
+  let fd = null;
+  try {
+    fd = openSync(temporary, "w", options.mode);
+    writeFileSync(fd, data);
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    renameSync(temporary, path);
+  } catch (error) {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
+    try {
+      unlinkSync(temporary);
+    } catch {
+      /* best-effort cleanup */
+    }
+    throw error;
+  }
+}
+
+/** The locked read-modify-write every config.json writer must use.
+ *
+ * Under the lock: read the file (`{}` when absent), call `mutate(disk)`,
+ * and write what it returns.  `mutate` may edit `disk` in place and return
+ * nothing, return a replacement object, or return `null` to say the file is
+ * already right and must not be rewritten.  It must be synchronous: the
+ * lock is held for the duration of this call and released on the way out,
+ * success or throw.  Returns the object now on disk. */
+export function updateConfigFile(configPath, mutate, options = {}) {
+  return withConfigFileLock(
+    configPath,
+    () => {
+      const disk = readConfigFile(configPath);
+      const next = mutate(disk);
+      if (next && typeof next.then === "function") {
+        throw new TypeError("updateConfigFile: mutate must be synchronous");
+      }
+      if (next === null) return disk;
+      const toWrite = next === undefined ? disk : next;
+      writeFileAtomic(configPath, JSON.stringify(toWrite, null, 2), { mode: options.mode ?? 0o600 });
+      return toWrite;
+    },
+    options,
+  );
+}
