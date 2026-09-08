@@ -161,8 +161,39 @@ export function attachmentLabel(file: { name?: string; type?: string }): string 
   return name || mime || "untitled";
 }
 
+/**
+ * Clipboard / drop shape we read files from.
+ *
+ * Structural on purpose: this module is imported from server tests under a
+ * Node-only tsconfig (no DOM lib). Naming the DOM `DataTransfer` there picks
+ * up a stub without `files`/`items`. The browser `DataTransfer` still
+ * satisfies this shape at the call site.
+ */
+export type ClipboardFileSource = {
+  files?: ArrayLike<File> | null;
+  items?: ArrayLike<{
+    kind: string;
+    type: string;
+    getAsFile: () => File | null;
+  }> | null;
+};
+
+type BitmapLike = { width: number; height: number; close: () => void };
+type Canvas2DLike = { drawImage(image: BitmapLike, dx: number, dy: number): void };
+type CanvasLike = {
+  width: number;
+  height: number;
+  getContext(contextId: "2d"): Canvas2DLike | null;
+  toBlob(callback: (blob: Blob | null) => void, type?: string, quality?: number): void;
+};
+
+type ImageTranscodeGlobals = {
+  createImageBitmap?: (image: Blob) => Promise<BitmapLike>;
+  document?: { createElement(tagName: "canvas"): CanvasLike };
+};
+
 /** Cmd-V of a screenshot often puts the bitmap on `items`, not `files`. */
-export function filesFromClipboard(data: DataTransfer | null | undefined): File[] {
+export function filesFromClipboard(data: ClipboardFileSource | null | undefined): File[] {
   if (!data) return [];
   const out: File[] = [];
   const seen = new Set<string>();
@@ -192,11 +223,14 @@ export async function previewableImageFile(file: {
   if (PREVIEWABLE_IMAGE_MIMES.has(mime) || mime === "image/svg+xml") {
     return { name: file.name || attachmentLabel(file), size: file.size, type: mime || file.type, arrayBuffer: () => file.arrayBuffer() };
   }
-  if (typeof createImageBitmap !== "function") return file;
+  const globals = globalThis as typeof globalThis & ImageTranscodeGlobals;
+  const createBitmap = globals.createImageBitmap;
+  const doc = globals.document;
+  if (typeof createBitmap !== "function" || !doc) return file;
   try {
     const blob = new Blob([await file.arrayBuffer()], { type: mime || "application/octet-stream" });
-    const bitmap = await createImageBitmap(blob);
-    const canvas = document.createElement("canvas");
+    const bitmap = await createBitmap(blob);
+    const canvas = doc.createElement("canvas");
     canvas.width = bitmap.width;
     canvas.height = bitmap.height;
     const ctx = canvas.getContext("2d");
@@ -204,7 +238,7 @@ export async function previewableImageFile(file: {
     ctx.drawImage(bitmap, 0, 0);
     bitmap.close();
     const jpeg = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("encode failed"))), "image/jpeg", 0.92);
+      canvas.toBlob((encoded: Blob | null) => (encoded ? resolve(encoded) : reject(new Error("encode failed"))), "image/jpeg", 0.92);
     });
     const buffer = await jpeg.arrayBuffer();
     const base = attachmentLabel(file).replace(/\.[^.]+$/, "") || "Pasted Screenshot";

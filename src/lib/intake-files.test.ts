@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { attachmentLabel, filesFromClipboard, intakeFiles, isImageFile, type Attachment } from "./composer-attachments";
+import { attachmentLabel, filesFromClipboard, intakeFiles, isImageFile, type Attachment, type ClipboardFileSource } from "./composer-attachments";
 
 type Fake = { name: string; size: number; type: string; text: () => Promise<string> };
 const file = (name: string, type: string, size = 10): Fake => ({
@@ -62,7 +62,7 @@ describe("intakeFiles", () => {
     const data = {
       files: [] as File[],
       items: [{ kind: "file", type: "image/png", getAsFile: () => blob }],
-    } as unknown as DataTransfer;
+    } as unknown as ClipboardFileSource;
     expect(filesFromClipboard(data)).toHaveLength(1);
   });
 
