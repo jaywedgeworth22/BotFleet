@@ -188,7 +188,10 @@ export function ModelPicker({
       model,
     };
     if (sameInstance && selection.effort) nextSelection.effort = selection.effort;
-    
+    // Fleet Models passes onChange for the primary pill.  Keep that bot's
+    // fallbacks so picking a new primary does not wipe the chain.
+    if (selection.fallbacks?.length) nextSelection.fallbacks = selection.fallbacks;
+
     if (onChange) {
        onChange(nextSelection);
     } else {
@@ -245,7 +248,10 @@ export function ModelPicker({
       aria-expanded={open}
       aria-haspopup="dialog"
       className={cn(
-        "flex items-center gap-1.5 rounded-full border border-hairline/40 bg-control/60 py-1 pl-2 pr-2.5 text-[13px] text-ink hover:bg-raised-hover",
+        "flex max-w-full items-center gap-1.5 rounded-full border border-hairline/40 bg-control/60 py-1 pl-2 pr-2.5 text-[13px] text-ink hover:bg-raised-hover",
+        // Settings Models chips (no side label) fill their wrap column so
+        // long names truncate inside the pill instead of overlapping the next.
+        contained && !label && "w-full min-w-0 justify-between",
         // in a narrow chat header fold to a rounded square with just the
         // provider mark; the model name rides the tooltip (a bot with no
         // resolved engine keeps its label — the mark is what would hide it)
@@ -254,7 +260,7 @@ export function ModelPicker({
       title={active ? `${active.displayName} · ${modelLabel(active, selection.model)}` : selection.model}
     >
       {active && <ProviderMark driverKind={active.driverKind} size={14} />}
-      <span className={cn("max-w-[160px] truncate", !contained && active && "@max-4xl/chathead:hidden")}>
+      <span className={cn("min-w-0 truncate", !contained && "max-w-[160px]", !contained && active && "@max-4xl/chathead:hidden")}>
         {modelLabel(active, selection.model)}
       </span>
       <ChevronDown

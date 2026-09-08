@@ -140,103 +140,88 @@ struct AgentProfileView: View {
                     Toggle("Agent notifications", isOn: $notifications)
                 }
 
-                Section("Model & Fallbacks") {
-                    if instances.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(instancesLoaded
-                                 ? "No engines to choose from.  Your computer did not report any."
-                                 : "Loading models\u{2026}")
-                                .foregroundStyle(.secondary)
-                            if instancesLoaded {
-                                Button("Try Again") { Task { await reloadInstances() } }
+                if instances.isEmpty {
+                    Section("Models") {
+                        Text(instancesLoaded
+                             ? "No models to choose from.  Your computer did not report any."
+                             : "Loading models\u{2026}")
+                            .foregroundStyle(.secondary)
+                        if instancesLoaded {
+                            Button("Try Again") { Task { await reloadInstances() } }
+                        }
+                    }
+                } else {
+                    Section("Primary Model") {
+                        Picker("Provider", selection: $instanceId) {
+                            ForEach(availableInstances) { instance in
+                                Text(instance.displayName ?? instance.instanceId).tag(instance.id)
                             }
                         }
-                    } else {
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Primary Model")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            
-                            Picker("Provider", selection: $instanceId) {
-                                ForEach(availableInstances) { instance in
+                        .pickerStyle(.navigationLink)
+                        .onChange(of: instanceId) { _, newInstanceId in
+                            if let instance = instances.first(where: { $0.id == newInstanceId }) {
+                                if !instance.models.options.contains(where: { $0.id == modelId }) {
+                                    modelId = instance.models.default
+                                }
+                            }
+                        }
+
+                        if let selectedInstance = instances.first(where: { $0.id == instanceId }) {
+                            Picker("Model", selection: $modelId) {
+                                ForEach(selectedInstance.models.options) { option in
+                                    Text(option.label).tag(option.id)
+                                }
+                            }
+                            .pickerStyle(.navigationLink)
+                        }
+                    }
+
+                    ForEach(fallbacks.indices, id: \.self) { index in
+                        Section("Fallback \(index + 1)") {
+                            Picker("Provider", selection: Binding(
+                                get: { fallbacks[index].instanceId },
+                                set: { newInstanceId in
+                                    fallbacks[index].instanceId = newInstanceId
+                                    if let inst = instances.first(where: { $0.id == newInstanceId }) {
+                                        if !inst.models.options.contains(where: { $0.id == fallbacks[index].model }) {
+                                            fallbacks[index].model = inst.models.default
+                                        }
+                                    }
+                                }
+                            )) {
+                                ForEach(fallbackAvailableInstances(for: fallbacks[index].instanceId)) { instance in
                                     Text(instance.displayName ?? instance.instanceId).tag(instance.id)
                                 }
                             }
-                            .onChange(of: instanceId) { _, newInstanceId in
-                                if let instance = instances.first(where: { $0.id == newInstanceId }) {
-                                    if !instance.models.options.contains(where: { $0.id == modelId }) {
-                                        modelId = instance.models.default
-                                    }
-                                }
-                            }
+                            .pickerStyle(.navigationLink)
 
-                            if let selectedInstance = instances.first(where: { $0.id == instanceId }) {
-                                Picker("Model", selection: $modelId) {
-                                    ForEach(selectedInstance.models.options) { option in
+                            if let fallbackInstance = instances.first(where: { $0.id == fallbacks[index].instanceId }) {
+                                Picker("Model", selection: Binding(
+                                    get: { fallbacks[index].model },
+                                    set: { newModel in
+                                        fallbacks[index].model = newModel
+                                    }
+                                )) {
+                                    ForEach(fallbackInstance.models.options) { option in
                                         Text(option.label).tag(option.id)
                                     }
                                 }
+                                .pickerStyle(.navigationLink)
+                            }
+
+                            Button("Remove Fallback", role: .destructive) {
+                                fallbacks.remove(at: index)
                             }
                         }
-                        
-                        ForEach(fallbacks.indices, id: \.self) { index in
-                            VStack(alignment: .leading, spacing: 4) {
-                                HStack {
-                                    Text("Fallback \(index + 1)")
-                                        .font(.subheadline)
-                                        .foregroundStyle(.secondary)
-                                    Spacer()
-                                    Button(role: .destructive) {
-                                        fallbacks.remove(at: index)
-                                    } label: {
-                                        Image(systemName: "trash")
-                                            .font(.caption)
-                                            .foregroundStyle(.red)
-                                    }
-                                    .buttonStyle(.borderless)
-                                }
-                                .padding(.top, 4)
+                    }
 
-                                Picker("Provider", selection: Binding(
-                                    get: { fallbacks[index].instanceId },
-                                    set: { newInstanceId in
-                                        fallbacks[index].instanceId = newInstanceId
-                                        if let inst = instances.first(where: { $0.id == newInstanceId }) {
-                                            if !inst.models.options.contains(where: { $0.id == fallbacks[index].model }) {
-                                                fallbacks[index].model = inst.models.default
-                                            }
-                                        }
-                                    }
-                                )) {
-                                    ForEach(fallbackAvailableInstances(for: fallbacks[index].instanceId)) { instance in
-                                        Text(instance.displayName ?? instance.instanceId).tag(instance.id)
-                                    }
-                                }
-
-                                if let fallbackInstance = instances.first(where: { $0.id == fallbacks[index].instanceId }) {
-                                    Picker("Model", selection: Binding(
-                                        get: { fallbacks[index].model },
-                                        set: { newModel in
-                                            fallbacks[index].model = newModel
-                                        }
-                                    )) {
-                                        ForEach(fallbackInstance.models.options) { option in
-                                            Text(option.label).tag(option.id)
-                                        }
-                                    }
-                                }
-                            }
-                            .padding(.vertical, 4)
-                        }
-                        
-                        if fallbacks.count < 2 {
-                            Button {
+                    if fallbacks.count < 2 {
+                        Section {
+                            Button("Add Fallback", systemImage: "plus.circle") {
                                 let firstInst = instances.first
                                 let instId = firstInst?.id ?? instanceId
                                 let mdl = firstInst?.models.default ?? modelId
                                 fallbacks.append(ModelSelection(instanceId: instId, model: mdl))
-                            } label: {
-                                Label("Add fallback model", systemImage: "plus.circle")
                             }
                         }
                     }
