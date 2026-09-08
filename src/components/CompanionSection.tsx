@@ -18,6 +18,7 @@ import {
 } from "./PhoneSetupFlow";
 import { companionPairingMode } from "../lib/phone-setup";
 import { ConnectionDetail } from "./ConnectionDetail";
+import { CompanionGatewayCard } from "./RemoteAccessSection";
 import { Card } from "./SettingsPrimitives";
 
 export {
@@ -123,6 +124,8 @@ export function CompanionSection({ profileEmail = "" }: { profileEmail?: string 
         )}
         <PhoneSetupFlowView controller={c} variant="settings" />
       </Card>
+
+      <CompanionGatewayCard />
 
       <Card
         title="Paired Phones"

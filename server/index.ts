@@ -2887,6 +2887,10 @@ const webhooks = new WebhookManager({
     const bot = store.bot(botId);
     return !bot ? "missing" : bot.busy ? "busy" : "ready";
   },
+  findBotIdByName: (name) => {
+    const needle = name.trim().toLowerCase();
+    return store.bots.find((bot) => bot.name.trim().toLowerCase() === needle)?.id;
+  },
   enqueue: (input) => routines!.enqueueWebhook(input),
   cancelQueued: (webhookId, message) => routines!.cancelQueuedWebhook(webhookId, message),
   pendingRuns: (webhookId) => routines!.activeWebhookRunCount(webhookId),

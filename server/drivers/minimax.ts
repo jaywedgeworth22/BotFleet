@@ -230,14 +230,16 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     };
 
     const sendTurn = async (turn: SendTurnInput) => {
-      const openAiTools = (turn as any).tools ? (turn as any).tools.map((t: any) => ({
-        type: "function",
-        function: {
-          name: t.name,
-          description: t.description,
-          parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
-        },
-      })) : undefined;
+      const openAiTools = turn.tools && turn.tools.length > 0
+        ? turn.tools.map((t) => ({
+            type: "function",
+            function: {
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters ?? { type: "object", properties: {}, required: [] },
+            },
+          }))
+        : undefined;
       const { threadId } = turn;
       if (!apiKey) throw new Error(`no MiniMax key — set ${API_KEY_ENV} or run mmx auth login --api-key …`);
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");

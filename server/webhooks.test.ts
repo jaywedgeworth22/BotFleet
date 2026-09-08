@@ -134,6 +134,65 @@ describe("WebhookManager", () => {
     expect(h.queued[0]?.prompt).toContain("[UNTRUSTED WEBHOOK EVENT DATA]");
   });
 
+  it("sends fleet-infra Sentry issues to Plumber and keeps other projects on the assigned bot", () => {
+    const h = harness();
+    h.options.findBotIdByName = (name) => (name === "Plumber" ? "maus-plumber" : undefined);
+    const { webhook, secret } = h.manager.create({
+      name: "Sentry",
+      prompt: "You are BF-Fixer. A Sentry webhook fired.",
+      botId: "maus-fixer",
+    });
+
+    h.manager.receive(webhook.endpointId, secret, {
+      payload: {
+        action: "unresolved",
+        data: { issue: { title: "Cron failure: ci-effort-issues-sync", project: { slug: "fleet-infra" } } },
+      },
+      eventName: "issue",
+    });
+    expect(h.queued[0]).toMatchObject({ botId: "maus-plumber" });
+    expect(h.queued[0]?.prompt).toContain("[DEFAULT WEBHOOK INSTRUCTIONS]");
+    expect(h.queued[0]?.prompt).not.toContain("You are BF-Fixer");
+
+    h.manager.receive(webhook.endpointId, secret, {
+      payload: {
+        action: "created",
+        data: { issue: { title: "TypeError in chat", project: { slug: "socratic-trade" } } },
+      },
+      eventName: "issue",
+      deliveryId: "st-1",
+    });
+    expect(h.queued[1]).toMatchObject({ botId: "maus-fixer" });
+    expect(h.queued[1]?.prompt).toContain("You are BF-Fixer");
+  });
+
+  it("does not reroute a non-Sentry webhook whose payload mentions fleet-infra", () => {
+    const h = harness();
+    h.options.findBotIdByName = (name) => (name === "Plumber" ? "maus-plumber" : undefined);
+    const { webhook, secret } = h.manager.create({
+      name: "UptimeRobot Outage",
+      prompt: "You are Monitor.",
+      botId: "maus-monitor",
+    });
+    h.manager.receive(webhook.endpointId, secret, {
+      payload: { data: { issue: { project: { slug: "fleet-infra" } } } },
+    });
+    expect(h.queued[0]).toMatchObject({ botId: "maus-monitor" });
+    expect(h.queued[0]?.prompt).toContain("You are Monitor.");
+  });
+
+  it("stays on the assigned bot when Plumber is missing", () => {
+    const h = harness();
+    h.options.findBotIdByName = () => "maus-plumber";
+    h.options.botState = (id) => (id === "maus-plumber" ? "missing" : "ready");
+    const { webhook, secret } = h.manager.create({ name: "Sentry", prompt: "Fixer prompt", botId: "maus-fixer" });
+    h.manager.receive(webhook.endpointId, secret, {
+      payload: { data: { issue: { project: { slug: "fleet-infra" } } } },
+    });
+    expect(h.queued[0]).toMatchObject({ botId: "maus-fixer" });
+    expect(h.queued[0]?.prompt).toContain("Fixer prompt");
+  });
+
   it("captures the first real request for verification without starting a task", () => {
     const h = harness();
     const { webhook, secret } = h.manager.create({

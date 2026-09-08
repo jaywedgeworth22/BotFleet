@@ -45,6 +45,7 @@ function userFacingStrings(text: string): string[] {
 /** Where "agent" is still the accurate word: it is not the app's concept. */
 const AGENT_ALLOWED = [
   "agents.botfleet.app", // a host name the user types back in
+  "agents.jays.services", // Cloudflare Access host named in Remote Access copy
   "agent-memory", // an example Qdrant collection id, not a label
   "SSH config and agent", // ssh-agent, a thing the operating system runs
 ];
@@ -79,6 +80,7 @@ describe("Title Case for controls and headings", () => {
     ["components/RoutinesPage.tsx", "Tasks &amp; routines", "Tasks &amp; Routines"],
     ["components/Sidebar.tsx", ">Archived bots<", ">Archived Bots<"],
     ["components/SettingsModal.tsx", 'title="Usage analytics"', 'title="Usage Analytics"'],
+    ["components/SettingsModal.tsx", 'label: "Remote access"', 'label: "Remote Access"'],
     ["components/UsageSection.tsx", "Test connection", "Test Connection"],
   ];
 

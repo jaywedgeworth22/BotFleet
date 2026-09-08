@@ -182,6 +182,19 @@ export interface SendTurnInput {
   transcript?: Array<{ role: "user" | "assistant"; text: string }>;
   /** Bot persona (name/title/description) as a system prompt. */
   system?: string;
+  /** Tool definitions the agent may call this turn, in OpenAI function-calling
+   * shape.  An HTTP driver (MiniMax, OpenAI-compatible) hands these to the
+   * model verbatim; a CLI driver that mounts MCP servers is free to ignore
+   * the field and discover tools from the running server instead.  The
+   * transcript-replay layer threads tool results back in via the
+   * `toolResults` field on the prior assistant turn. */
+  tools?: Array<{
+    name: string;
+    description?: string;
+    /** JSON Schema for the tool's arguments, in the form the OpenAI Chat
+     * Completions API expects.  Default is an empty object schema. */
+    parameters?: { type: "object"; properties?: Record<string, unknown>; required?: string[] };
+  }>;
   /** Per-bot integrations the driver may hand to the agent as tools. */
   integrations?: {
     /** A local stdio bridge owns the remote Composio transport. Keeping the

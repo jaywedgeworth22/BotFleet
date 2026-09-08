@@ -22,7 +22,6 @@ import {
   RefreshCw,
   Search,
   Square,
-  Webhook,
   X,
 } from "lucide-react";
 import { formatTokens, formatUsd } from "@/lib/usage";
@@ -68,6 +67,7 @@ import { groupActivityRuns } from "@/lib/activity-runs";
 import { ActivityRun } from "./ActivityRun";
 import { ToolLine } from "./ToolLine";
 import { webhookMessageView } from "@/lib/webhook-message";
+import { WebhookCard } from "./WebhookCard";
 import { splitAttachedImages } from "@/lib/composer-attachments";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
 import {
@@ -262,13 +262,12 @@ function Bubble({
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const text = message.text ?? "";
-  const webhookView = humanTyped ? webhookMessageView(text) : null;
-  const attachedImages = humanTyped && !webhookView ? splitAttachedImages(text) : null;
-  const visibleText = webhookView?.task ?? attachedImages?.display ?? text;
+  const attachedImages = humanTyped ? splitAttachedImages(text) : null;
+  const visibleText = attachedImages?.display ?? text;
   const copyContent = humanTyped ? visibleText : text;
   const requestId = message.card?.requestId;
   const collapsible =
-    humanTyped && !webhookView && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
+    humanTyped && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
 
   const handleBubbleClick = (e: React.MouseEvent) => {
     const selection = window.getSelection()?.toString();
@@ -286,7 +285,7 @@ function Bubble({
   // bubble, the inline editor, the hover chrome
   const row = bubbleRow(alignRight ? "user" : "bot");
 
-  if (humanTyped && editing && !webhookView) {
+  if (humanTyped && editing) {
     return (
       // the editor stands exactly where the bubble stood: same row, same
       // reserved gutter, same cap, so opening one never moves the message
@@ -415,7 +414,7 @@ function Bubble({
                   reply to or react to your own message today, so row 3 is
                   simply empty. */}
               <div className="flex items-center gap-1.5">
-                {message.kind === "text" && !webhookView && !bot.busy && (
+                {message.kind === "text" && !bot.busy && (
                   <button
                     onClick={onStartEdit}
                     aria-label="Edit Message"
@@ -467,11 +466,7 @@ function Bubble({
           className={cn(
             BUBBLE_WIDTH,
             "rounded-2xl text-[15px] leading-relaxed cursor-pointer select-text relative",
-            humanTyped && webhookView
-              ? "overflow-hidden border border-accent/25 bg-card text-ink shadow-[0_10px_30px_rgba(0,0,0,0.18)]"
-              : humanTyped
-                ? "bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink"
-                : "bg-card px-4 py-2.5 text-ink",
+            humanTyped ? "bg-bubble-user px-4 py-2.5 whitespace-pre-wrap text-ink" : "bg-card px-4 py-2.5 text-ink",
           )}
 
         >
@@ -487,21 +482,7 @@ function Bubble({
               />
             </div>
           )}
-          {humanTyped && webhookView ? (
-            <div className="min-w-[300px] max-w-[520px]">
-              <div className="flex items-center gap-2 border-b border-accent/15 bg-accent/[0.055] px-4 py-2.5 text-[11.5px] font-medium text-accent">
-                <Webhook size={13} />
-                <span>Webhook Task</span>
-              </div>
-              <div className="px-4 py-3 whitespace-pre-wrap">{webhookView.task}</div>
-              {webhookView.payload && (
-                <details className="border-t border-hairline/30 bg-inset/25 px-4 py-2.5 text-[11.5px] text-ink-secondary">
-                  <summary className="cursor-pointer select-none hover:text-ink">View Event Payload</summary>
-                  <pre className="mt-2 max-h-48 overflow-auto rounded-lg border border-hairline/25 bg-black/25 p-3 font-mono text-[10.5px] leading-relaxed whitespace-pre-wrap text-ink-secondary">{webhookView.payload}</pre>
-                </details>
-              )}
-            </div>
-          ) : humanTyped ? (
+          {humanTyped ? (
             <>
               {attachedImages && attachedImages.images.length > 0 && (
                 <AttachedImageGallery paths={attachedImages.images} />
@@ -791,7 +772,13 @@ const MessagesList = memo(function MessagesList({
               const src = screenFrameSrc(m, bot.threadId);
               return src ? <ScreenFrame src={src} /> : null;
             }
-            default:
+            default: {
+              // Webhook turns are stored as role=user so the model sees them
+              // as the prompt.  They are not something the owner typed — keep
+              // them off the blue bubble and on a collapsible work card.
+              const webhookView =
+                m.role === "user" && !m.from?.botId ? webhookMessageView(m.text ?? "") : null;
+              if (webhookView) return <WebhookCard view={webhookView} />;
               return (
                 <Bubble
                   bot={bot}
@@ -806,6 +793,7 @@ const MessagesList = memo(function MessagesList({
                   onReply={() => onReply(m)}
                 />
               );
+            }
           }
         })();
         if (!row) return null;
