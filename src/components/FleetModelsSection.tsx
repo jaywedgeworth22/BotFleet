@@ -265,7 +265,7 @@ function BotModelRow({ bot }: { bot: Bot }) {
             if (!isNext) return null;
             return (
               <div key={index} className={CHIP}>
-                <ChipLabel>Fallback {index + 1}</ChipLabel>
+                <ChipLabel>{`Fallback ${index + 1}`}</ChipLabel>
                 <button
                   type="button"
                   onClick={addFallback}
@@ -279,7 +279,7 @@ function BotModelRow({ bot }: { bot: Bot }) {
           }
           return (
             <div key={index} className={CHIP}>
-              <ChipLabel>Fallback {index + 1}</ChipLabel>
+              <ChipLabel>{`Fallback ${index + 1}`}</ChipLabel>
               <div className="flex min-w-0 items-start gap-1">
                 <div className="min-w-0 flex-1">
                   <ModelPicker
