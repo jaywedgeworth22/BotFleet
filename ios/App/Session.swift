@@ -468,6 +468,9 @@ final class Session: ObservableObject {
                         // their explicit security priority next launch.
                         rememberWorkingRoute()
                         refreshConnectionMetadata(using: client)
+                        // Refresh provider marks after reconnect — instances
+                        // may have changed while the phone was backgrounded.
+                        Task { await self.warmInstanceDriverKinds() }
                         continue
                     }
                     state.apply(frame)
