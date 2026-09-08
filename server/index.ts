@@ -7325,7 +7325,7 @@ const server = createServer(async (req, res) => {
               collection: stats.collection || collection || null,
               error: stats.error
                 ? `Local recall CLI reached Qdrant and it said: ${String(stats.error)}`
-                : "Local recall CLI could not reach the fleet-agents collection.",
+                : "Local recall CLI could not reach the configured collection.",
             });
           }
           return json(res, 200, {

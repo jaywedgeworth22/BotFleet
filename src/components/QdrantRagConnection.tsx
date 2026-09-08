@@ -145,7 +145,7 @@ export function QdrantRagConnection() {
           <div>
             <div className="text-[14.5px] font-medium text-ink">Bot RAG &amp; Shared Memory</div>
             <div className="text-[12.5px] text-ink-secondary">
-              Connect your bots to fleet recall (collection <code>fleet-agents</code>) for semantic retrieval, runbooks, and lessons.  Leave the URL blank to use this Mac's <code>recall</code> CLI.
+              Connect your bots to a shared vector memory service for semantic retrieval, runbooks, and lessons.  Leave the URL blank to use this Mac's <code>recall</code> CLI, or to keep this off.
             </div>
           </div>
         </div>
@@ -218,7 +218,7 @@ export function QdrantRagConnection() {
                 value={collection}
                 onChange={(e) => setCollection(e.target.value)}
                 onBlur={() => void save({ collection })}
-                placeholder={collectionLocked ? "Managed by Infisical." : "fleet-agents"}
+                placeholder={collectionLocked ? "Managed by Infisical." : "agent-memory"}
                 disabled={collectionLocked}
                 className={cn(inputClass, collectionLocked && "cursor-not-allowed opacity-60")}
               />
