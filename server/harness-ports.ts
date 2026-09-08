@@ -25,3 +25,9 @@ export function formatListenInUse(port: number, role: "harness" | "webhook"): st
 export function isListenInUse(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && (error as NodeJS.ErrnoException).code === "EADDRINUSE");
 }
+
+/** EADDRINUSE is a named bind collision, not a Sentry uncaught fatal.
+ * Any other listen error still needs capture + flush before exit. */
+export function listenErrorDisposition(error: unknown): "named-exit" | "capture-and-exit" {
+  return isListenInUse(error) ? "named-exit" : "capture-and-exit";
+}

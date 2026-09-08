@@ -143,7 +143,8 @@ import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage } from 
 import { cancelRoomRounds, drainRoomRounds, queueRoomRound } from "./room-queue.ts";
 import { EventBus } from "./harness/bus.ts";
 import { observability, observabilityBootLine } from "./observability.ts";
-import { formatListenInUse, isListenInUse } from "./harness-ports.ts";
+import { formatListenInUse, isListenInUse, listenErrorDisposition } from "./harness-ports.ts";
+import { getSentry, isSentryActive } from "./sentry.ts";
 import { configureTurnIdentity, observeRuntimeEvent } from "./sentry-ai.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
@@ -7968,11 +7969,17 @@ if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
 }
 
 server.on("error", (error: NodeJS.ErrnoException) => {
-  if (isListenInUse(error)) {
+  if (listenErrorDisposition(error) === "named-exit") {
     console.error(formatListenInUse(PORT, "harness"));
     process.exit(1);
   }
   console.error(error);
+  const sentry = isSentryActive() ? getSentry() : null;
+  if (sentry) {
+    sentry.captureException(error, { tags: { component: "harness-listen" } });
+    void sentry.flush(2000).finally(() => process.exit(1));
+    return;
+  }
   process.exit(1);
 });
 

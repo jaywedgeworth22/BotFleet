@@ -5,6 +5,7 @@ import {
   foreignLoopbackOwner,
   formatListenInUse,
   isListenInUse,
+  listenErrorDisposition,
 } from "./harness-ports.ts";
 
 describe("foreign loopback ports", () => {
@@ -29,5 +30,11 @@ describe("foreign loopback ports", () => {
     expect(isListenInUse({ code: "EADDRINUSE" })).toBe(true);
     expect(isListenInUse(new Error("listen EADDRINUSE"))).toBe(false);
     expect(isListenInUse(null)).toBe(false);
+  });
+
+  it("captures unexpected listen errors instead of dropping them", () => {
+    expect(listenErrorDisposition({ code: "EADDRINUSE" })).toBe("named-exit");
+    expect(listenErrorDisposition({ code: "EACCES" })).toBe("capture-and-exit");
+    expect(listenErrorDisposition({ code: "EMFILE" })).toBe("capture-and-exit");
   });
 });
