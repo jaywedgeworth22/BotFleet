@@ -355,11 +355,12 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
       )}
       {["minimax"].includes(instance.driverKind) && (
         <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
-          <strong className="text-ink">Native HTTP API.</strong>&nbsp; Optimized for fast, low-cost text turns
-          with up to a 1M-token context window.&nbsp; Streams token-level responses, supports the OpenAI
-          function-calling shape, and accepts a <code>turn.tools</code> array the harness can populate
-          for any tools the agent should be able to call.&nbsp; For tool-using agents that need to read
-          files, run shell, or drive a browser, pick an ACP engine (Claude, Codex, DSH, Droid) instead —
+          <strong className="text-ink">Native HTTP API.</strong>
+          {"  "}Optimized for fast, low-cost text turns with up to a 1M-token context window.
+          {"  "}Streams token-level responses and supports the OpenAI function-calling shape.
+          {"  "}The harness gives it two tools today — <code>list_bots</code> and{" "}
+          <code>ask_bot</code>, run through the HTTP tool loop — and no file, shell, or browser tools.
+          {"  "}For bots that need those, pick an ACP engine (Claude, Codex, DSH, Droid) instead —
           they spawn MCP servers natively and execute the calls.
         </div>
       )}
