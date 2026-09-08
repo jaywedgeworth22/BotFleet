@@ -4242,13 +4242,20 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     const apply = await api("POST", "/api/bots/apply-defaults", {
       botDefaults: { computers: ["local"] },
     });
-    expect(apply.status).toBe(200);
-    expect(apply.body.skipped.map((entry: { id: string }) => entry.id)).toContain(auto.id);
+    // All or nothing.  Applying to the other bots and "skipping" this one
+    // would still persist ["local"] as the workspace default, and a bot whose
+    // own computers are unset reads that default on its next turn — so the
+    // skip would have granted exactly the pair it claimed to refuse.
+    expect(apply.status).toBe(400);
+    expect(apply.body.needsAcknowledgement.map((entry: { id: string }) => entry.id)).toContain(auto.id);
 
     const after = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === auto.id);
     // Untouched: no host grant, and no half-applied state.
     expect(after.computers ?? []).toEqual([]);
     expect(after.autoApprove).toBe(true);
+    // …and the default itself was not written either, so nothing can inherit it.
+    const cfg = (await api("GET", "/api/config")).body;
+    expect(cfg.botDefaults?.computers ?? []).not.toContain("local");
 
     // The guard is about one specific pair, not about unattended bots in
     // general: the same bot takes a default that does not include the host.
@@ -4256,7 +4263,6 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
       botDefaults: { computers: ["cloud"] },
     });
     expect(cloudOnly.status).toBe(200);
-    expect(cloudOnly.body.skipped).toEqual([]);
     const granted = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === auto.id);
     expect(granted.computers).toEqual(["cloud"]);
 
@@ -4267,7 +4273,6 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
       acknowledgeLocalAuto: true,
     });
     expect(acked.status).toBe(200);
-    expect(acked.body.skipped).toEqual([]);
     const host = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === auto.id);
     expect(host.computers).toEqual(["local"]);
 

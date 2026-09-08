@@ -205,6 +205,22 @@ export function hostToolPrefix(mounts: ComputerMount[]): string | null {
  * as precisely as it gates a named grant. */
 const AUTO_DESTINATIONS: readonly ComputerDestination[] = ["cloud", "local"];
 
+/** Which of the auto path's own destinations the operator still permits.
+ *
+ * `auto` is one flag, but the auto path mounts more than one thing — it
+ * reuses or starts a cloud box or VPS, and it falls back to host control —
+ * so a single boolean cannot say "discover a cloud computer, but never take
+ * the desktop".  Reducing the allowlist to "is auto meaningful at all" let
+ * `allowed: ["local"]` mount an existing Box, and `allowed: ["cloud"]` fall
+ * through to CUA on the host when no cloud computer turned up.  Callers gate
+ * each auto mount on this list, so the rule stays in one file. */
+export function autoDestinations(
+  allowed: ComputerDestination[] | null,
+): ComputerDestination[] {
+  if (allowed === null) return [...AUTO_DESTINATIONS];
+  return AUTO_DESTINATIONS.filter((entry) => allowed.includes(entry));
+}
+
 /** What a bot's stored `computers` setting actually asks for.
  *
  * The setting has three states, and two of them look identical if you reach
@@ -267,7 +283,13 @@ export function resolveGrants(
   // it mounts a cloud box or VPS, or the host, without anyone naming them.
   // Leaving `auto` set while the allowlist blocks both is how an unconfigured
   // bot ended up clicking on a Mac whose operator had disabled This Computer.
-  const autoReachable = auto && AUTO_DESTINATIONS.some((entry) => allowedSet.has(entry));
+  //
+  // This flag only says whether auto has anywhere left to go.  WHICH of its
+  // destinations survive is `autoDestinations`, and the caller gates each
+  // auto mount on that — a single boolean cannot distinguish "discover a
+  // cloud computer" from "take the desktop", and treating it as if it could
+  // is how an allowlist of just one of the two still mounted the other.
+  const autoReachable = auto && autoDestinations(allowed).length > 0;
   return { granted: filtered, auto: autoReachable };
 }
 

@@ -105,7 +105,7 @@ function DefaultModelBlock() {
   const [fallback2, setFallback2] = useState<DefaultSlot>(null);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [skipped, setSkipped] = useState<string[]>([]);
+  const [skipped, setSkipped] = useState<{ name: string; reason: string }[]>([]);
   // The ModelPicker needs a `bot` to drive its instance list and quota
   // display.  The default is independent of any one bot, so we use the
   // first non-hidden bot as a stand-in for the engine catalog.  The
@@ -132,12 +132,15 @@ function DefaultModelBlock() {
         },
       }),
     })
-      .then((response: { applied: number; skipped?: { name: string }[]; config?: ConfigStatus }) => {
+      .then((response: { applied: number; skipped?: { name: string; reason: string }[]; config?: ConfigStatus }) => {
         if (response.config) dispatch({ type: "configStatus", config: response.config });
         // A bot that was mid-turn keeps its model — swapping an engine out
         // from under a running turn is what the per-bot picker refuses with a
-        // 409, and a fleet-wide apply has no business doing it quietly.
-        setSkipped((response.skipped ?? []).map((bot) => bot.name));
+        // 409, and a fleet-wide apply has no business doing it quietly.  Each
+        // reason is printed as the server gave it: not every refusal is
+        // "busy", and telling someone to stop a turn that is not running
+        // sends them looking for something that does not exist.
+        setSkipped(response.skipped ?? []);
         // Clear the form on success: the next operator action should
         // start from a clean "no default set" state.
         setPrimary(null);
@@ -206,7 +209,8 @@ function DefaultModelBlock() {
       </div>
       {skipped.length > 0 && (
         <div className="mt-2 text-[11.5px] text-ink-secondary">
-          {`Still on their own model, because they were working when you applied: ${skipped.join(", ")}.  Stop those turns and apply again.`}
+          Still on their own model:{" "}
+          {skipped.map((bot) => `${bot.name} (${bot.reason})`).join(", ")}.
         </div>
       )}
       {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}

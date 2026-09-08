@@ -87,6 +87,7 @@ import {
   type LocalVmTarget,
 } from "./container-computer.ts";
 import {
+  autoDestinations,
   computerLabel,
   computerSystemPrompt,
   nameMounts,
@@ -698,12 +699,17 @@ function localAutoAcknowledgementError(
  * the change, not to one route that makes the change. */
 async function interruptIfHostRevoked(
   existing:
-    | { computers?: Array<"cloud" | "vm" | "local">; modelSelection: ModelSelection; threadId: string }
+    | (ComputerGrantSubject & { modelSelection: ModelSelection; threadId: string })
     | null
     | undefined,
   nextComputers: Array<"cloud" | "vm" | "local">,
 ): Promise<void> {
-  if (!existing?.computers?.includes("local")) return;
+  // Through the same accessor the guard uses.  Reading `computers` directly
+  // missed a bot still on the retired singular `computer` field: its host
+  // grant was revoked in settings while its turn kept clicking on the desktop
+  // until it happened to end.
+  if (!existing) return;
+  if (!currentComputerGrants(existing).includes("local")) return;
   if (nextComputers.includes("local")) return;
   await registry
     .get(existing.modelSelection.instanceId)
@@ -2563,15 +2569,23 @@ async function startTurn(
       // is a capability, not a preference: each one is resolved on its own
       // terms below and mounted with its own tools, so the agent chooses per
       // task. Granting only the VM therefore means only the VM.
+      const allowedDestinations = allowedBotComputers(cfg);
       const { granted, auto } = resolveGrants(
         bot.computers,
         opts?.runOn,
         cfg.botDefaults?.computers,
-        allowedBotComputers(cfg),
+        allowedDestinations,
       );
       const wantsCloud = granted.includes("cloud");
       const wantsVm = granted.includes("vm");
       const wantsLocal = granted.includes("local");
+      // `auto` says the bot never chose; these say where auto is still
+      // allowed to look.  They are separate because the auto path mounts two
+      // different things — a cloud computer and, failing that, the host — and
+      // an operator who disabled only one of them meant only one of them.
+      const autoAllows = new Set(autoDestinations(allowedDestinations));
+      const autoCloud = auto && autoAllows.has("cloud");
+      const autoHost = auto && autoAllows.has("local");
       // Cloud routines always use Box/BoxAgent. The per-bot backend applies
       // only to ordinary turns that mount a computer into the local agent.
       // Same rule as the destinations: the workspace default stands in only
@@ -2657,10 +2671,10 @@ async function startTurn(
       // A VPS is a local-agent computer mount, never a remote agent runner.
       // Explicit Cloud may prepare/start it. Auto remains read-only unless
       // the person explicitly opted this bot into remote lifecycle actions.
-      if ((wantsCloud || auto) && cloudBackend === "vps") {
+      if ((wantsCloud || autoCloud) && cloudBackend === "vps") {
         const unsupported = vps.vpsDriverError(instance.driverKind, mountsComputerMcp);
         if (unsupported && wantsCloud) throw new Error(unsupported);
-        if (unsupported && auto) autoVpsProblem = unsupported;
+        if (unsupported && autoCloud) autoVpsProblem = unsupported;
         if (!unsupported) {
           activeVpsThreads.set(bot.id, threadId);
           const remote = wantsCloud || bot.autoStartVps
@@ -2692,7 +2706,7 @@ async function startTurn(
 
       // Cloud is also strict when explicitly selected. Auto (unset) reuses an
       // existing cloud box, then falls back to host CUA without provisioning.
-      if ((wantsCloud || auto) && cloudBackend === "box" && box.boxConfigured(cfg)) {
+      if ((wantsCloud || autoCloud) && cloudBackend === "box" && box.boxConfigured(cfg)) {
         if (!mountsCloudComputer && wantsCloud) {
           throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
         }
@@ -2740,7 +2754,7 @@ async function startTurn(
       // the harness only reads its already-running connection descriptor.
       if (
         mounts.length === 0 &&
-        auto &&
+        autoHost &&
         shouldMountLocalComputer({
           requested: undefined,
           hostPlatform: process.platform,
@@ -2757,7 +2771,7 @@ async function startTurn(
           });
         }
       }
-      if (auto && cloudBackend === "vps" && mounts.length === 0 && autoVpsProblem) {
+      if (autoCloud && cloudBackend === "vps" && mounts.length === 0 && autoVpsProblem) {
         const hint = bot.autoStartVps
           ? "Check the VPS connection in App Settings → Connections."
           : "Open Computer and enable Start VPS automatically, or choose Cloud to start it manually.";
@@ -6550,6 +6564,17 @@ const server = createServer(async (req, res) => {
       cancelPeerApprovalsFor(bot.id);
       discardDelegations(commsBus, bot.threadId);
       computerControl.forget(bot.id);
+      // Its per-bot Local VM goes with it.  Nothing else can name that
+      // container once the store record is gone — the name is derived from
+      // the bot id — so a later shared/per-bot mode switch cannot clean it
+      // up either, and it sits holding its ports, memory and workspace
+      // forever.  Addressed by its own target rather than
+      // `localVmTargetForBot`, which answers "shared" in shared mode and
+      // would take the shared desktop out from under every other bot.
+      // Best-effort: no container runtime, or no such container, is the
+      // ordinary case and must not fail the delete.
+      await containerComputerAction("remove", undefined, undefined, perBotLocalVmTarget(bot.id))
+        .catch(() => {});
             store.deleteBot(bot.id);
       for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
         try {
@@ -7830,11 +7855,6 @@ const server = createServer(async (req, res) => {
         ? (requested ?? cfg.botDefaults?.computers ?? [])
         : (requested ?? cfg.botDefaults?.computers ?? []).filter((entry) => allowed.includes(entry));
       const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
-      // A bot this apply may not touch, and why.  Reported rather than
-      // silently dropped: an operator who presses "Set all bots to default"
-      // and gets "applied: 4" out of five bots deserves to know which one
-      // kept its own settings.
-      const skipped: { id: string; name: string; reason: string }[] = [];
       const acknowledged = body.acknowledgeLocalAuto === true;
       // An empty filtered set is NOT a permission to clear every bot.  The
       // operator who narrowed the allowlist already has each bot on its
@@ -7842,33 +7862,39 @@ const server = createServer(async (req, res) => {
       // the bot with an empty "Off" computers list, which is the exact
       // mistake the test for "leaves a bot's own choice alone" guards
       // against.  Skip the patch loop when the filter empties the apply.
+      // Every rule the per-bot PATCH enforces, enforced here too.  This route
+      // used to patch straight through, so "Set all bots to default" with
+      // "This Computer" in the default handed host control plus auto-approve
+      // to every unattended bot in the workspace without the acknowledgement
+      // the per-bot picker demands — and took host control AWAY from a bot
+      // mid-turn without interrupting it.  A guard only one of two callers
+      // honors is not a guard.
+      //
+      // All or nothing, and BEFORE anything is written.  Skipping the refused
+      // bots and applying to the rest looked kinder and was not: the default
+      // still landed in config, and `resolveGrants` hands the workspace
+      // default to any bot whose own `computers` is unset — so a "skipped"
+      // unattended bot picked up host control on its very next turn, which is
+      // the exact pair the acknowledgement exists to gate.  Refusing the
+      // whole call is the only answer that leaves nothing half-granted.
+      const needsAcknowledgement = store.bots
+        .filter(
+          (bot) =>
+            localAutoAcknowledgementError(bot, next, bot.autoApprove === true, acknowledged) !== null,
+        )
+        .map((bot) => ({ id: bot.id, name: bot.name }));
+      if (next.length > 0 && needsAcknowledgement.length > 0) {
+        return json(res, 400, {
+          error: LOCAL_AUTO_ACK_ERROR,
+          needsAcknowledgement,
+        });
+      }
       if (next.length > 0) {
-        // Every rule the per-bot PATCH enforces, enforced here too.  This
-        // route used to patch straight through, so "Set all bots to default"
-        // with "This Computer" in the default handed host control plus
-        // auto-approve to every unattended bot in the workspace without the
-        // acknowledgement the per-bot picker demands — and took host control
-        // AWAY from a bot mid-turn without interrupting it.  A guard only one
-        // of two callers honors is not a guard.
-        const targets: typeof store.bots = [];
-        for (const bot of store.bots) {
-          const refusal = localAutoAcknowledgementError(
-            bot,
-            next,
-            bot.autoApprove === true,
-            acknowledged,
-          );
-          if (refusal) {
-            skipped.push({ id: bot.id, name: bot.name, reason: refusal });
-            continue;
-          }
-          targets.push(bot);
-        }
         // Concurrently: this is one operator action over a whole fleet, and a
         // driver that takes a second to answer a cancel would otherwise add
         // that second once per bot to a single click.
-        await Promise.allSettled(targets.map((bot) => interruptIfHostRevoked(bot, next)));
-        for (const bot of targets) {
+        await Promise.allSettled(store.bots.map((bot) => interruptIfHostRevoked(bot, next)));
+        for (const bot of store.bots) {
           const patched = store.patchBot(bot.id, { computers: next });
           if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
         }
@@ -7887,7 +7913,6 @@ const server = createServer(async (req, res) => {
         ok: true,
         applied: updated.length,
         computers: next,
-        skipped,
         config: status,
       });
     }
@@ -7944,6 +7969,11 @@ const server = createServer(async (req, res) => {
       // route did — meant the gate never fired here at all, and a fleet-wide
       // apply swapped the engine out from under a running turn that the
       // per-bot PATCH would have refused with a 409.
+      //
+      // Each entry carries its own reason, because they are not all "busy":
+      // a bot can also be refused by its own stored selection, and telling
+      // the operator it was working when it was idle sends them to stop a
+      // turn that does not exist.
       const skipped: { id: string; name: string; reason: string }[] = [];
       for (const bot of store.bots) {
         const next: ModelSelection = { ...bot.modelSelection };
@@ -7975,13 +8005,20 @@ const server = createServer(async (req, res) => {
             JSON.stringify(bot.modelSelection.fallbacks ?? []) === JSON.stringify(next.fallbacks ?? [])) {
           continue;
         }
+        // An effort level belongs to the engine that offers it.  Carrying the
+        // old one onto a new primary makes the validator reject a perfectly
+        // good change — and the bot would then be reported as "skipped" for a
+        // reason that has nothing to do with what the operator asked for.
+        // Moving engines drops an effort the new one does not offer.
+        if (primary && bot.modelSelection.instanceId !== next.instanceId && next.effort !== undefined) {
+          const target = registry.get(next.instanceId);
+          const offered: readonly string[] = target?.adapter.capabilities.effortLevels ?? [];
+          if (target && !offered.includes(next.effort)) delete next.effort;
+        }
         // The per-bot gate, now given the bot it is about.  One refused bot
         // must not fail the whole request the way the per-bot route's 409
         // does — the operator asked for the fleet — so that bot keeps exactly
-        // what it had and is named in the response.  A non-409 here can only
-        // come from the bot's OWN stored selection, since the operator's
-        // slots were validated above, and is not something this request could
-        // repair by failing.
+        // what it had and is named, with its real reason, in the response.
         const gate = checkedModelSelection(
           next,
           { selection: bot.modelSelection, busy: Boolean(bot.busy) },

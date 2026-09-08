@@ -44,7 +44,6 @@ export function BotComputerDefaults() {
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [skipped, setSkipped] = useState<string[]>([]);
   const vpsConfigured = Boolean(state.config?.vps?.configured);
 
   useEffect(() => {
@@ -82,19 +81,17 @@ export function BotComputerDefaults() {
   const applyDefaults = () => {
     setApplying(true);
     setError(null);
-    setSkipped([]);
     api("/api/bots/apply-defaults", {
       method: "POST",
       body: JSON.stringify({ botDefaults: { computers, cloudBackend: backend } }),
     })
-      .then((response: { applied: number; skipped?: { name: string }[]; config: ConfigStatus }) => {
+      .then((response: { applied: number; config: ConfigStatus }) => {
         dispatch({ type: "configStatus", config: response.config });
-        // A bot the apply refused is worth naming.  Granting "This Computer"
-        // to a bot that already runs unattended needs the same acknowledged
-        // warning the per-bot picker asks for, so those bots keep their own
-        // settings — silently, unless we say which ones.
-        setSkipped((response.skipped ?? []).map((bot) => bot.name));
       })
+      // The apply is all or nothing.  Handing "This Computer" to a bot that
+      // already runs unattended needs the same acknowledged warning the
+      // per-bot picker asks for, and the server refuses the whole call until
+      // it has one — so the message names the bots and nothing is half-done.
       .catch((e) => setError(e.message))
       .finally(() => setApplying(false));
   };
@@ -232,11 +229,6 @@ export function BotComputerDefaults() {
           </span>
         </div>
       </Card>
-      {skipped.length > 0 && (
-        <div className="mt-2 text-[11.5px] text-ink-secondary">
-          {`Left unchanged, because granting This Computer to a bot that runs unattended needs the warning confirmed on that bot: ${skipped.join(", ")}.`}
-        </div>
-      )}
       {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}
     </>
   );

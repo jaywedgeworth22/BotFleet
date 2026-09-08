@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computerLabel,
   resolveCloudBackend,
+  autoDestinations,
   resolveGrants,
   computerSystemPrompt,
   hostToolPrefix,
@@ -292,6 +293,20 @@ describe("operator allowlist", () => {
       granted: [],
       auto: true,
     });
+  });
+
+  it("names the auto destinations individually, so a caller can gate each mount", () => {
+    // `auto` is one flag over two different mounts — a cloud computer, and
+    // host control as the fallback.  Collapsing the allowlist into that
+    // boolean let an allowlist of ["local"] mount an existing Box, and one of
+    // ["cloud"] fall through to the host when no cloud computer turned up.
+    expect(autoDestinations(null)).toEqual(["cloud", "local"]);
+    expect(autoDestinations(["local"])).toEqual(["local"]);
+    expect(autoDestinations(["cloud"])).toEqual(["cloud"]);
+    // The Local VM is not an auto destination at all: auto has never made one.
+    expect(autoDestinations(["vm"])).toEqual([]);
+    expect(autoDestinations(["cloud", "vm", "local"])).toEqual(["cloud", "local"]);
+    expect(autoDestinations([])).toEqual([]);
   });
 
   it("drops auto when the allowlist blocks everything auto could mount", () => {
