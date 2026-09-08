@@ -76,7 +76,7 @@ export function mirrorExchange(
 }
 
 /** Mirror `target`'s reply into the channel so the channel stays the
- * single authoritative record of the exchange. The 1:1 threads already
+ * single authoritative record of the exchange.  The 1:1 threads already
  * carry their own chips from `mirrorExchange`. */
 export function mirrorReply(
   bus: CommsBus,

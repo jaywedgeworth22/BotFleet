@@ -134,7 +134,7 @@ function UpdateButton() {
               : upToDate
                 ? "You're up to date"
                 : status === "error" && s?.canLocalUpdate
-                  ? "Update from This Mac"
+                  ? "Update From This Mac"
                   : "Check for Updates";
 
   return (

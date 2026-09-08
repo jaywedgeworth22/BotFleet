@@ -200,7 +200,7 @@ export function UpdateBanner() {
                   <Loader2 size={13} className="animate-spin" /> Checking…
                 </>
               ) : s.canLocalUpdate ? (
-                "Update from this Mac"
+                "Update From This Mac"
               ) : (
                 "Try Again"
               )}
