@@ -83,7 +83,8 @@ final class ChatAttachmentTests: XCTestCase {
             "/api/attachments/abc-123.png"
         )
         XCTAssertNil(ChatAttachments.fetchPath(forDiskPath: "/tmp/notes.txt"))
-        XCTAssertNil(ChatAttachments.fetchPath(forDiskPath: "/tmp/avatar.svg"))
+        XCTAssertEqual(ChatAttachments.fetchPath(forDiskPath: "/tmp/avatar.svg"), "/api/attachments/avatar.svg")
+        XCTAssertNil(ChatAttachments.fetchPath(forDiskPath: "/tmp/avatar.html"))
         XCTAssertNil(ChatAttachments.fetchPath(forDiskPath: "C:\\\\data\\\\attachments\\\\abc.png.exe"))
     }
 
@@ -93,6 +94,9 @@ final class ChatAttachmentTests: XCTestCase {
         XCTAssertEqual(ChatAttachments.sniffImageMIME(png), "image/png")
 
         XCTAssertEqual(ChatAttachments.sniffImageMIME(Data([0xff, 0xd8, 0xff, 0xe0])), "image/jpeg")
+        XCTAssertEqual(ChatAttachments.sniffImageMIME(Data("GIF89a".utf8)), "image/gif")
+        XCTAssertEqual(ChatAttachments.sniffImageMIME(Data([0x42, 0x4d, 0, 0])), "image/bmp")
+        XCTAssertEqual(ChatAttachments.sniffImageMIME(Data("<svg xmlns='http://www.w3.org/2000/svg'></svg>".utf8)), "image/svg+xml")
         XCTAssertNil(ChatAttachments.sniffImageMIME(Data("not an image".utf8)))
     }
 

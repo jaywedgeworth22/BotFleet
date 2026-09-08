@@ -32,15 +32,14 @@ export function remainingPercentLabel(model: QuotaDisplayModel): string {
 }
 
 /** The two-line Antigravity chip the user actually reads: "Gemini" vs
- *  "Third Party". A four-name slice was misleading — all the third-party
- *  models share the same monthly % and Gemini sits alone, so two averages
- *  are the honest summary. The full per-model list still lives in the
- *  detail panel (`antigravityQuotaLines` → `quotaLinesSummary`).
+ *  "Third-Party". Those two buckets each share one remaining-percent
+ *  number, so per-model rows are noise. Hover and the expanded panel
+ *  use the same two lines (`antigravityQuotaLines`).
  *
- *  Models with no reported remaining percentage are treated as exhausted
- *  (the local antigravity-usage CLI reports N/A for models it has not yet
- *  sampled). One exhausted model pulls its group to exhausted — the
- *  cap-on-the-plan rule the user is reading this chip for. */
+ *  Models with no reported remaining percentage are treated as unsampled
+ *  (the local antigravity-usage CLI reports N/A until it has seen them).
+ *  The group number is the most restrictive reported remaining in that
+ *  bucket. The group is exhausted only when every model in it is. */
 export type AntigravityGroupSummary = {
   group: "gemini" | "external";
   label: string;
@@ -57,15 +56,19 @@ export function antigravityGroupSummary(models: QuotaDisplayModel[]): Antigravit
   const out: AntigravityGroupSummary[] = [];
   for (const [group, list] of Object.entries(groups) as Array<["gemini" | "external", QuotaDisplayModel[]]>) {
     if (list.length === 0) continue;
-    const reported = list.filter((m) => typeof m.remainingPercentage === "number" && !isQuotaModelExhausted(m));
-    const avg = reported.length > 0
-      ? reported.reduce((sum, m) => sum + (m.remainingPercentage as number), 0) / reported.length
-      : null;
+    const reported = list
+      .map((m) => m.remainingPercentage)
+      .filter((value): value is number => typeof value === "number");
     const exhausted = list.every(isQuotaModelExhausted);
+    const remainingPercent = exhausted
+      ? 0
+      : reported.length > 0
+        ? Math.round(Math.min(...reported) * 100)
+        : null;
     out.push({
       group,
-      label: group === "gemini" ? "Gemini" : "Third Party",
-      remainingPercent: exhausted ? 0 : avg != null ? Math.round(avg * 100) : null,
+      label: group === "gemini" ? "Gemini" : "Third-Party",
+      remainingPercent,
       exhausted,
     });
   }
@@ -75,22 +78,16 @@ export function antigravityGroupSummary(models: QuotaDisplayModel[]): Antigravit
 }
 
 export function antigravityQuotaLines(models: QuotaDisplayModel[]): QuotaDisplayLine[] {
-  const lines = models
-    .filter((model) => !model.isAutocompleteOnly)
-    .map((model) => {
-      const exhausted = isQuotaModelExhausted(model);
-      return {
-        label: model.label,
-        value: remainingPercentLabel(model),
-        exhausted,
-        group: isGeminiQuotaModel(model) ? "gemini" : "external",
-      } as const;
-    });
-  return lines.sort((a, b) => {
-    if (a.group !== b.group) return a.group === "gemini" ? -1 : 1;
-    if (a.exhausted !== b.exhausted) return a.exhausted ? -1 : 1;
-    return a.label.localeCompare(b.label);
-  });
+  return antigravityGroupSummary(models).map((group) => ({
+    label: group.label,
+    value: group.exhausted
+      ? "exhausted"
+      : group.remainingPercent == null
+        ? "not reported"
+        : `${group.remainingPercent}%`,
+    exhausted: group.exhausted,
+    group: group.group,
+  }));
 }
 
 export function quotaLinesSummary(lines: QuotaDisplayLine[]): string {

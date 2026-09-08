@@ -100,17 +100,25 @@ describe("attachmentBasename", () => {
     );
     expect(attachmentImageUrl("C:\\a\\b\\photo.webp")).toBe("/api/attachments/photo.webp");
     expect(attachmentImageUrl("https://attacker.example/tracker.png?cookie=1")).toBeNull();
-    expect(attachmentImageUrl("/a/b/payload.svg")).toBeNull();
+    expect(attachmentImageUrl("/a/b/payload.html")).toBeNull();
+    expect(attachmentImageUrl("/a/b/123e4567-e89b-12d3-a456-426614174000.svg")).toBe(
+      "/api/attachments/123e4567-e89b-12d3-a456-426614174000.svg",
+    );
     expect(attachmentImageUrl("/a/b/not%2Fan-image.png")).toBeNull();
   });
 });
 
 describe("isImageFile", () => {
-  it("accepts the served image mimes and rejects others", () => {
+  it("accepts the served image mimes, including HEIC, BMP, and SVG", () => {
     expect(isImageFile({ type: "image/png", size: 10 })).toBe(true);
     expect(isImageFile({ type: "image/jpeg", size: 10 })).toBe(true);
     expect(isImageFile({ type: "image/webp", size: 10 })).toBe(true);
-    expect(isImageFile({ type: "image/svg+xml", size: 10 })).toBe(false);
+    expect(isImageFile({ type: "image/gif", size: 10 })).toBe(true);
+    expect(isImageFile({ type: "image/heic", size: 10, name: "face.heic" })).toBe(true);
+    expect(isImageFile({ type: "image/bmp", size: 10 })).toBe(true);
+    expect(isImageFile({ type: "image/svg+xml", size: 10 })).toBe(true);
+    expect(isImageFile({ type: "", size: 10, name: "spin.gif" })).toBe(true);
+    expect(isImageFile({ type: "", size: 10, name: "mark.svg" })).toBe(true);
     expect(isImageFile({ type: "text/plain", size: 10 })).toBe(false);
   });
 });

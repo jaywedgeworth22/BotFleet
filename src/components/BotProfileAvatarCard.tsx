@@ -1,8 +1,8 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type DragEvent } from "react";
 import { Check, ImagePlus, Loader2, Sparkles, Trash2 } from "lucide-react";
 
 import { api, useStore, type Bot, type ConfigStatus } from "@/state/store";
-import { imageAttachmentFromFile } from "@/lib/composer-attachments";
+import { guessImageMime, imageAttachmentFromFile } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
 import {
   PICKABLE_STATES,
@@ -47,6 +47,7 @@ export function BotProfileAvatarCard({
   const [savingKey, setSavingKey] = useState(false);
   const [direction, setDirection] = useState("");
   const [generating, setGenerating] = useState(false);
+  const [dragOver, setDragOver] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const crop = bot.avatarCrop ?? "mascot";
   const cropRef = useRef(crop);
@@ -58,8 +59,14 @@ export function BotProfileAvatarCard({
     setUploading(true);
     setError(null);
     try {
-      const saved = await imageAttachmentFromFile(file);
-      if (!saved) throw new Error("Choose a PNG, JPEG, GIF, or WebP image");
+      const mime = guessImageMime(file);
+      const saved = await imageAttachmentFromFile({
+        name: file.name,
+        size: file.size,
+        type: mime ?? file.type,
+        arrayBuffer: () => file.arrayBuffer(),
+      });
+      if (!saved) throw new Error("Drop a PNG, JPEG, GIF, WebP, HEIC, BMP, or SVG image");
       const avatarUrl = botAvatarUrlFromStoredPath(saved.path);
       if (!avatarUrl) throw new Error("The uploaded image could not be used as an avatar");
       const latestCrop = cropRef.current;
@@ -139,7 +146,41 @@ export function BotProfileAvatarCard({
       </div>
 
       <div className="p-3">
-        <div className="flex justify-center py-3">
+        <div
+          role="button"
+          tabIndex={0}
+          aria-label="Bot avatar. Drop an image here to change it."
+          className={cn(
+            "flex justify-center rounded-xl py-3 transition-colors",
+            dragOver ? "bg-accent/10 ring-2 ring-accent-border" : "bg-transparent",
+          )}
+          onClick={() => fileRef.current?.click()}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" || event.key === " ") {
+              event.preventDefault();
+              fileRef.current?.click();
+            }
+          }}
+          onDragEnter={(event: DragEvent) => {
+            event.preventDefault();
+            setDragOver(true);
+          }}
+          onDragOver={(event: DragEvent) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            setDragOver(true);
+          }}
+          onDragLeave={(event: DragEvent) => {
+            if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+            setDragOver(false);
+          }}
+          onDrop={(event: DragEvent) => {
+            event.preventDefault();
+            setDragOver(false);
+            const file = event.dataTransfer.files.item(0) ?? undefined;
+            void upload(file);
+          }}
+        >
           <BotAvatar
             bot={bot}
             state={activeState}
@@ -153,7 +194,7 @@ export function BotProfileAvatarCard({
           <input
             ref={fileRef}
             type="file"
-            accept="image/png,image/jpeg,image/gif,image/webp,image/heic,image/heif,image/avif"
+            accept="image/png,image/jpeg,image/gif,image/webp,image/heic,image/heif,image/avif,image/bmp,image/svg+xml,.heic,.heif,.bmp,.svg,.gif"
             className="sr-only"
             onChange={(event) => void upload(event.target.files?.[0])}
           />
@@ -179,7 +220,7 @@ export function BotProfileAvatarCard({
             </button>
           )}
         </div>
-        <div className="mt-1.5 text-[11.5px] text-ink-secondary">PNG, JPEG, GIF, or WebP · up to 10 MB</div>
+        <div className="mt-1.5 text-[11.5px] text-ink-secondary">Drop an image onto the avatar.  PNG, JPEG, GIF, WebP, HEIC, BMP, or SVG · up to 10 MB</div>
 
         <div className="mb-2 mt-4 text-[12px] font-medium uppercase tracking-[0.08em] text-ink-secondary">
           Shape

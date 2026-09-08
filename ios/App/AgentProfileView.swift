@@ -499,7 +499,7 @@ struct AgentProfileView: View {
         guard let data = try? await item.loadTransferable(type: Data.self),
               let mime = Self.imageMIME(data)
         else {
-            session.actionError = "Choose a PNG, JPEG, GIF, or WebP image."
+            session.actionError = "Choose a PNG, JPEG, GIF, WebP, HEIC, BMP, or SVG image."
             return
         }
         if data.count > 10 * 1_024 * 1_024 {
@@ -560,14 +560,7 @@ struct AgentProfileView: View {
     }
 
     private static func imageMIME(_ data: Data) -> String? {
-        let bytes = [UInt8](data.prefix(12))
-        if bytes.starts(with: [0x89, 0x50, 0x4e, 0x47]) { return "image/png" }
-        if bytes.starts(with: [0xff, 0xd8, 0xff]) { return "image/jpeg" }
-        if bytes.starts(with: Array("GIF8".utf8)) { return "image/gif" }
-        if bytes.count >= 12,
-           String(bytes: bytes[0..<4], encoding: .ascii) == "RIFF",
-           String(bytes: bytes[8..<12], encoding: .ascii) == "WEBP" { return "image/webp" }
-        return nil
+        ChatAttachments.sniffImageMIME(data)
     }
 
     private var availableInstances: [Instance] {

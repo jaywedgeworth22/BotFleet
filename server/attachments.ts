@@ -14,7 +14,9 @@ export const FILE_MAX_BYTES = 25 * 1024 * 1024;
 
 /** Mimes the endpoint accepts, mapped to the extension stored on disk.
  * Sniffing is not attempted — a lie here only changes the filename.
- * HTML/SVG/JS are refused so the serve route cannot become an XSS host. */
+ * HTML/JS are refused so the serve route cannot become an XSS host.
+ * SVG is allowed as an image (avatars and chat previews use <img>), and
+ * GET serves it with nosniff plus a sandbox CSP. */
 const ATTACHMENT_MIMES: Record<string, string> = {
   "image/png": ".png",
   "image/jpeg": ".jpg",
@@ -23,6 +25,9 @@ const ATTACHMENT_MIMES: Record<string, string> = {
   "image/heic": ".heic",
   "image/heif": ".heif",
   "image/avif": ".avif",
+  "image/bmp": ".bmp",
+  "image/x-ms-bmp": ".bmp",
+  "image/svg+xml": ".svg",
   "application/pdf": ".pdf",
   "text/plain": ".txt",
   "text/markdown": ".md",
@@ -47,7 +52,17 @@ export function extensionForMime(mime: string | undefined): string | null {
 
 export function isImageMime(mime: string | undefined): boolean {
   const ext = extensionForMime(mime);
-  return ext === ".png" || ext === ".jpg" || ext === ".gif" || ext === ".webp" || ext === ".heic" || ext === ".heif" || ext === ".avif";
+  return (
+    ext === ".png" ||
+    ext === ".jpg" ||
+    ext === ".gif" ||
+    ext === ".webp" ||
+    ext === ".heic" ||
+    ext === ".heif" ||
+    ext === ".avif" ||
+    ext === ".bmp" ||
+    ext === ".svg"
+  );
 }
 
 export function ensureAttachmentsDir(): void {

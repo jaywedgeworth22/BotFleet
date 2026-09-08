@@ -66,6 +66,7 @@ public enum ChatAttachments {
     public static let allowedMIME: Set<String> = [
         "image/png", "image/jpeg", "image/gif", "image/webp",
         "image/heic", "image/heif", "image/avif",
+        "image/bmp", "image/svg+xml",
         "application/pdf", "text/plain", "text/markdown", "text/csv",
         "application/json", "application/zip", "application/gzip",
         "audio/mpeg", "audio/wav", "video/mp4",
@@ -113,6 +114,11 @@ public enum ChatAttachments {
             if brand.hasPrefix("hei") || brand == "mif1" { return "image/heic" }
             if brand.hasPrefix("avif") { return "image/avif" }
         }
+        if bytes.starts(with: [0x42, 0x4d]) { return "image/bmp" }
+        if let prefix = String(data: data.prefix(256), encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           prefix.hasPrefix("<svg") || prefix.hasPrefix("<?xml") {
+            return "image/svg+xml"
+        }
         return nil
     }
 
@@ -125,6 +131,8 @@ public enum ChatAttachments {
         case "heic": return "image/heic"
         case "heif": return "image/heif"
         case "avif": return "image/avif"
+        case "bmp": return "image/bmp"
+        case "svg": return "image/svg+xml"
         case "pdf": return "application/pdf"
         case "txt": return "text/plain"
         case "md", "markdown": return "text/markdown"
@@ -230,7 +238,7 @@ public enum ChatAttachments {
             (48...57).contains($0) || (65...90).contains($0) ||
                 (97...122).contains($0) || $0 == 45
         }) else { return false }
-        return ["png", "jpg", "jpeg", "gif", "webp"].contains(ext)
+        return ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "avif", "bmp", "svg"].contains(ext)
     }
 
     public static func formatSize(_ bytes: Int) -> String {

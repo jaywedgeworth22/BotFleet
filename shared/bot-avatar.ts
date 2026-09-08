@@ -8,14 +8,15 @@ export type BotAvatarCrop = z.infer<typeof botAvatarCropSchema>;
 /**
  * Custom avatars are deliberately limited to this app's attachment server.
  * Besides making persisted profiles portable across desktop/browser clients,
- * this prevents a bot profile from becoming an external tracking pixel or a
- * script-capable SVG.
+ * this prevents a bot profile from becoming an external tracking pixel.
+ * Stored SVG/GIF/HEIC/BMP attachments are app-owned filenames, served
+ * with nosniff (SVG also gets a sandbox CSP).
  */
 export const botAvatarUrlSchema = z
   .string()
   .regex(
-    /^\/api\/attachments\/[A-Za-z0-9-]+\.(?:png|jpg|gif|webp)$/,
-    "must be a stored PNG, JPEG, GIF, or WebP attachment",
+    /^\/api\/attachments\/[A-Za-z0-9-]+\.(?:png|jpg|gif|webp|heic|heif|avif|bmp|svg)$/,
+    "must be a stored image attachment",
   );
 
 export function botAvatarUrlFromStoredPath(path: string): string | null {

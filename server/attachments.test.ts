@@ -18,6 +18,9 @@ describe("extensionForMime", () => {
     expect(extensionForMime("image/jpeg")).toBe(".jpg");
     expect(extensionForMime("image/gif")).toBe(".gif");
     expect(extensionForMime("image/webp")).toBe(".webp");
+    expect(extensionForMime("image/bmp")).toBe(".bmp");
+    expect(extensionForMime("image/svg+xml")).toBe(".svg");
+    expect(extensionForMime("image/heic")).toBe(".heic");
   });
 
   it("tolerates parameters and casing", () => {
@@ -25,8 +28,7 @@ describe("extensionForMime", () => {
     expect(extensionForMime("  image/webp  ")).toBe(".webp");
   });
 
-  it("refuses html/svg/js, which execute in a browser", () => {
-    expect(extensionForMime("image/svg+xml")).toBeNull();
+  it("refuses html/js, which execute in a browser", () => {
     expect(extensionForMime("text/html")).toBeNull();
     expect(extensionForMime("application/javascript")).toBeNull();
     expect(extensionForMime(undefined)).toBeNull();
@@ -75,7 +77,8 @@ describe("saveImage", () => {
   });
 
   it("rejects unsupported mimes, empty bodies, and oversize bodies", () => {
-    expect(() => saveImage(Buffer.from("x"), "image/svg+xml")).toThrow(/unsupported file type/);
+    expect(() => saveImage(Buffer.from("x"), "text/html")).toThrow(/unsupported file type/);
+    expect(saveImage(Buffer.from("<svg/>"), "image/svg+xml").path.endsWith(".svg")).toBe(true);
     expect(() => saveImage(Buffer.alloc(0), "image/png")).toThrow(/empty/);
     expect(() => saveImage(Buffer.alloc(IMAGE_MAX_BYTES + 1), "image/png")).toThrow(/exceeds/);
   });
