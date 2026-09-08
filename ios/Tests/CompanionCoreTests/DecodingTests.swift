@@ -104,6 +104,15 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(message.text, "later")
     }
 
+    func testSteeredUserLineKeepsMidTurnFlag() throws {
+        let message = try JSONDecoder().decode(
+            Message.self,
+            from: Data(#"{"id":"m2","role":"user","kind":"text","at":2,"text":"and also","steered":true}"#.utf8)
+        )
+        XCTAssertEqual(message.steered, true)
+        XCTAssertEqual(message.text, "and also")
+    }
+
     func testFutureRoutineScheduleKindRemainsVisibleAsUnknown() throws {
         let schedule = try JSONDecoder().decode(
             RoutineSchedule.self,

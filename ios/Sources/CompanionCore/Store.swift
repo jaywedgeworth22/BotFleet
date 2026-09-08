@@ -82,21 +82,51 @@ public struct CompanionState: Sendable {
             var message = Message(id: entry.queueId, role: .user, kind: .text, at: now)
             message.text = entry.text
             message.queueId = entry.queueId
-            message.queued = true
+            message.queued = entry.queued ? true : nil
             return message
         }
         return branch + queued
     }
 
     public mutating func rememberPendingQueued(threadId: String, queueId: String, text: String) {
+        rememberPendingSend(threadId: threadId, id: queueId, text: text, queued: true)
+    }
+
+    /// Show the user's own line immediately.  Idle sends stay until the
+    /// matching user `message` frame lands; busy 202s stay until drain.
+    public mutating func rememberPendingSend(threadId: String, id: String, text: String, queued: Bool) {
+        if queued, consumedQueueIds.contains(id) {
+            consumedQueueIds.remove(id)
+            return
+        }
+        var list = pendingQueued[threadId] ?? []
+        if list.contains(where: { $0.queueId == id }) { return }
+        list.append(QueuedSend(queueId: id, text: text, queued: queued))
+        pendingQueued[threadId] = list
+    }
+
+    /// Swap a local pending id for the 202 `queueId` so drain can retire it.
+    public mutating func promotePendingSend(threadId: String, from localId: String, to queueId: String) {
         if consumedQueueIds.contains(queueId) {
+            cancelPendingQueued(threadId: threadId, queueId: localId)
             consumedQueueIds.remove(queueId)
             return
         }
         var list = pendingQueued[threadId] ?? []
-        if list.contains(where: { $0.queueId == queueId }) { return }
-        list.append(QueuedSend(queueId: queueId, text: text))
-        pendingQueued[threadId] = list
+        if let index = list.firstIndex(where: { $0.queueId == localId }) {
+            list[index].queueId = queueId
+            list[index].queued = true
+            pendingQueued[threadId] = list
+        }
+    }
+
+    public mutating func consumePendingMatchingText(threadId: String, text: String) {
+        let prev = pendingQueued[threadId] ?? []
+        guard let index = prev.firstIndex(where: { $0.text == text && !$0.queued }) else { return }
+        var rest = prev
+        rest.remove(at: index)
+        if rest.isEmpty { pendingQueued.removeValue(forKey: threadId) }
+        else { pendingQueued[threadId] = rest }
     }
 
     public mutating func consumePendingQueued(threadId: String, queueId: String) {
@@ -163,11 +193,13 @@ public struct CompanionState: Sendable {
             messages[room.threadId] = room.messages ?? []
             hasMore[room.threadId] = room.hasMore ?? false
         }
-        // Drain may have landed while we were disconnected. Retire chips
-        // whose queueId is now a real transcript row.
+        // Drain or an idle send may have landed while we were disconnected.
+        // Retire chips whose queueId or text is now a real transcript row.
         for (threadId, entries) in pendingQueued {
-            let landed = Set((messages[threadId] ?? []).compactMap(\.queueId))
-            for entry in entries where landed.contains(entry.queueId) {
+            let thread = messages[threadId] ?? []
+            let landedIds = Set(thread.compactMap(\.queueId))
+            let landedTexts = Set(thread.filter { $0.role == .user }.compactMap(\.text))
+            for entry in entries where landedIds.contains(entry.queueId) || landedTexts.contains(entry.text) {
                 consumePendingQueued(threadId: threadId, queueId: entry.queueId)
             }
         }
@@ -216,9 +248,13 @@ public struct CompanionState: Sendable {
             break
 
         case let .message(threadId, message):
-            append(message, to: threadId)
-            if let queueId = message.queueId, !queueId.isEmpty {
-                consumePendingQueued(threadId: threadId, queueId: queueId)
+            let inserted = append(message, to: threadId)
+            if message.role == .user {
+                if let queueId = message.queueId, !queueId.isEmpty {
+                    consumePendingQueued(threadId: threadId, queueId: queueId)
+                } else if inserted, let text = message.text {
+                    consumePendingMatchingText(threadId: threadId, text: text)
+                }
             }
             if let index = bots.firstIndex(where: { $0.threadId == threadId }) {
                 bots[index].activeLeafId = message.id
@@ -382,14 +418,17 @@ public struct CompanionState: Sendable {
     /// legitimately deliver a message twice — the cursor is the last frame
     /// *received*, and a frame in flight when the socket dropped arrives
     /// again on reconnect.
-    private mutating func append(_ message: Message, to threadId: String) {
+    @discardableResult
+    private mutating func append(_ message: Message, to threadId: String) -> Bool {
         var thread = messages[threadId] ?? []
         if let index = thread.firstIndex(where: { $0.id == message.id }) {
             thread[index] = message
-        } else {
-            thread.append(message)
+            messages[threadId] = thread
+            return false
         }
+        thread.append(message)
         messages[threadId] = thread
+        return true
     }
 }
 

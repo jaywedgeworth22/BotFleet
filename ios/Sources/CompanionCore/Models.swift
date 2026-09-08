@@ -154,18 +154,27 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     /// Client-only: this row is still waiting in the in-memory steer-queue
     /// and has not been appended to the transcript yet.
     public var queued: Bool? = nil
+    /// User line that landed inside a running turn (server `steered: true`).
+    /// Shown as the "Sent mid-turn" chip; distinct from the pending queue.
+    public var steered: Bool? = nil
 
     public var date: Date { Date(timeIntervalSince1970: at / 1000) }
 }
 
-/// One mid-turn send the phone is holding until drain appends it.
+/// One send the phone is holding until the stream appends it.
+///
+/// Busy-bot 202 rows use `queued == true` and keep the clock chip.
+/// Ordinary sends use `queued == false` so the user's own bubble is on
+/// screen the moment they tap send, without claiming the steer-queue.
 public struct QueuedSend: Hashable, Sendable {
     public var queueId: String
     public var text: String
+    public var queued: Bool
 
-    public init(queueId: String, text: String) {
+    public init(queueId: String, text: String, queued: Bool = true) {
         self.queueId = queueId
         self.text = text
+        self.queued = queued
     }
 }
 

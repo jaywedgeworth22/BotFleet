@@ -621,9 +621,10 @@ final class Session: ObservableObject {
     // MARK: - Actions
     //
     // Each of these does the thing and lets the event stream deliver the
-    // result. Nothing here writes to `state` optimistically: the harness is
-    // the source of truth, and a phone that draws its own version of events
-    // is a phone that disagrees with the laptop.
+    // result. The one exception is the user's own send: the draft clears
+    // immediately, so a pending row stands in until the matching `message`
+    // frame (or 202 queueId) lands. Everything else still waits on the
+    // harness so the phone does not invent a second fold.
 
     @discardableResult
     func send(_ text: String, to chat: Chat, attachments: [PendingChatAttachment] = []) async -> Bool {
@@ -644,19 +645,33 @@ final class Session: ObservableObject {
                 prompt = ChatAttachments.composeMessage(text: text, attachments: uploaded)
             }
             guard !prompt.isEmpty else { return false }
+            let threadId: String
             switch chat {
-            case let .bot(bot):
-                let result = try await client.send(text: prompt, toBot: bot.id)
-                if result.queued == true, let queueId = result.queueId, !queueId.isEmpty {
-                    state.rememberPendingQueued(
-                        threadId: result.threadId ?? bot.threadId,
-                        queueId: queueId,
-                        text: prompt
-                    )
-                }
-            case let .room(room): try await client.send(text: prompt, toRoom: room.id)
+            case let .bot(bot): threadId = bot.threadId
+            case let .room(room): threadId = room.threadId
             }
-            return true
+            let localId = UUID().uuidString
+            state.rememberPendingSend(threadId: threadId, id: localId, text: prompt, queued: false)
+            do {
+                switch chat {
+                case let .bot(bot):
+                    let result = try await client.send(text: prompt, toBot: bot.id)
+                    if result.queued == true, let queueId = result.queueId, !queueId.isEmpty {
+                        let dest = result.threadId ?? bot.threadId
+                        if dest != threadId {
+                            state.cancelPendingQueued(threadId: threadId, queueId: localId)
+                            state.rememberPendingQueued(threadId: dest, queueId: queueId, text: prompt)
+                        } else {
+                            state.promotePendingSend(threadId: dest, from: localId, to: queueId)
+                        }
+                    }
+                case let .room(room): try await client.send(text: prompt, toRoom: room.id)
+                }
+                return true
+            } catch {
+                state.cancelPendingQueued(threadId: threadId, queueId: localId)
+                throw error
+            }
         } catch let error as APIError where error.isUnauthorized {
             status = .unauthorized
             return false
