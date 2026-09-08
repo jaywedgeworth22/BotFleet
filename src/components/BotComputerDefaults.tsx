@@ -11,8 +11,9 @@
 // leaves it unset (every destination is allowed), matching the shipped
 // behavior exactly.
 import { useEffect, useState } from "react";
-import { api, useStore, type ConfigStatus } from "@/state/store";
+import { ApiError, api, useStore, type ConfigStatus } from "@/state/store";
 import { Card } from "./SettingsPrimitives";
+import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { cn } from "@/lib/cn";
 
 type Destination = "cloud" | "vm" | "local";
@@ -44,6 +45,11 @@ export function BotComputerDefaults() {
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when the server refuses an apply with `needsAcknowledgement` — the
+  // named bots would gain This Computer + Auto with nobody having seen the
+  // warning.  Non-null shows the shared confirm dialog; confirming resubmits
+  // the SAME apply with `acknowledgeLocalAuto: true`.
+  const [pendingAck, setPendingAck] = useState<{ id: string; name: string }[] | null>(null);
   const vpsConfigured = Boolean(state.config?.vps?.configured);
 
   useEffect(() => {
@@ -78,21 +84,33 @@ export function BotComputerDefaults() {
       .finally(() => setSaving(false));
   };
 
-  const applyDefaults = () => {
+  const applyDefaults = (opts: { acknowledge?: boolean } = {}) => {
     setApplying(true);
     setError(null);
     api("/api/bots/apply-defaults", {
       method: "POST",
-      body: JSON.stringify({ botDefaults: { computers, cloudBackend: backend } }),
+      body: JSON.stringify({
+        botDefaults: { computers, cloudBackend: backend },
+        ...(opts.acknowledge ? { acknowledgeLocalAuto: true } : {}),
+      }),
     })
       .then((response: { applied: number; config: ConfigStatus }) => {
+        setPendingAck(null);
         dispatch({ type: "configStatus", config: response.config });
       })
       // The apply is all or nothing.  Handing "This Computer" to a bot that
       // already runs unattended needs the same acknowledged warning the
       // per-bot picker asks for, and the server refuses the whole call until
-      // it has one — so the message names the bots and nothing is half-done.
-      .catch((e) => setError(e.message))
+      // it has one, naming the bots in `needsAcknowledgement` — open the
+      // same confirm dialog the picker uses rather than dead-ending on a
+      // plain error nothing on this page could ever act on.
+      .catch((e) => {
+        if (e instanceof ApiError && Array.isArray(e.body?.needsAcknowledgement) && e.body.needsAcknowledgement.length > 0) {
+          setPendingAck(e.body.needsAcknowledgement);
+        } else {
+          setError(e.message);
+        }
+      })
       .finally(() => setApplying(false));
   };
 
@@ -230,6 +248,11 @@ export function BotComputerDefaults() {
         </div>
       </Card>
       {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}
+      <LocalComputerAutoWarning
+        open={pendingAck !== null}
+        onCancel={() => setPendingAck(null)}
+        onConfirm={() => applyDefaults({ acknowledge: true })}
+      />
     </>
   );
 }

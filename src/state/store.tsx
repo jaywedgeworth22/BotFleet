@@ -1671,6 +1671,19 @@ export const initialState: AppState = {
 };
 
 // ── API client ─────────────────────────────────────────────────────────
+/** Thrown by `api()` on a non-2xx response.  Carries the parsed JSON body
+ * alongside `.message`, so a caller that needs more than the error string —
+ * apply-defaults' `needsAcknowledgement` list is the first one — does not
+ * have to re-fetch or duplicate this function's request/parse logic. */
+export class ApiError extends Error {
+  readonly body: any;
+  constructor(message: string, body: any) {
+    super(message);
+    this.name = "ApiError";
+    this.body = body;
+  }
+}
+
 export async function api(path: string, init?: RequestInit): Promise<any> {
   const method = (init?.method ?? "GET").toUpperCase();
   const retryable = method === "GET" || method === "HEAD";
@@ -1683,7 +1696,7 @@ export async function api(path: string, init?: RequestInit): Promise<any> {
     });
     const body = await res.json().catch(() => ({}));
     if (res.ok) return body;
-    lastError = new Error(body.error ?? `${res.status} ${res.statusText}`);
+    lastError = new ApiError(body.error ?? `${res.status} ${res.statusText}`, body);
     if (res.status !== 502) break;
   }
   throw lastError ?? new Error("request failed");

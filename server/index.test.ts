@@ -4230,6 +4230,57 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     expect(again.body.computers).toEqual(["cloud", "vm"]);
   });
 
+  it("still requires the acknowledgement for an unattended autoApprove bot even when the allowlist blocks the destination right now", async () => {
+    // The allowlist narrows what applies IMMEDIATELY; what gets PERSISTED as
+    // the workspace default is unfiltered, and `resolveGrants` re-applies
+    // whatever allowlist is CURRENT every time it reads that stored default.
+    // A default blocked today can go live the moment the operator widens the
+    // allowlist again, with no request ever having supplied
+    // acknowledgeLocalAuto in between — so the gate has to look at what is
+    // about to be persisted, not at the empty set the allowlist narrows it
+    // to for this one call.
+    expect((await api("PUT", "/api/config", { botDefaults: { allowedComputers: ["cloud"] } })).status).toBe(200);
+    const auto = (await api("POST", "/api/bots", { name: "Priya Unattended" })).body.bot;
+    expect((await api("PATCH", `/api/bots/${auto.id}`, { autoApprove: true })).status).toBe(200);
+
+    // "local" is blocked by the CURRENT allowlist, so the immediately
+    // applied set is empty — that must not read as "nothing to acknowledge."
+    const blocked = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["local"] },
+    });
+    expect(blocked.status).toBe(400);
+    expect(blocked.body.needsAcknowledgement.map((entry: { id: string }) => entry.id)).toContain(auto.id);
+
+    // And the blocked default was not persisted either — nothing for a
+    // later, wider allowlist to suddenly bring to life.
+    const cfgBlocked = (await api("GET", "/api/config")).body;
+    expect(cfgBlocked.botDefaults?.computers ?? []).not.toContain("local");
+
+    // With the acknowledgement, the default is allowed to persist — still
+    // filtered to nothing right now, because the allowlist still says so.
+    const acked = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["local"] },
+      acknowledgeLocalAuto: true,
+    });
+    expect(acked.status).toBe(200);
+    expect(acked.body.computers).toEqual([]);
+    expect(acked.body.config.botDefaults.computers).toEqual(["local"]);
+
+    // The bot itself never received "local" this whole time — the allowlist
+    // still blocks it in practice.
+    const stillOff = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === auto.id);
+    expect(stillOff.computers ?? []).toEqual([]);
+
+    await api("DELETE", `/api/bots/${auto.id}`);
+    // Restore a harmless, already-acknowledged-free default for the tests
+    // that follow, the same way the sibling test above does.
+    expect((await api("PUT", "/api/config", { botDefaults: { allowedComputers: null } })).status).toBe(200);
+    const restore = await api("POST", "/api/bots/apply-defaults", {
+      botDefaults: { computers: ["cloud"] },
+    });
+    expect(restore.status).toBe(200);
+  });
+
   it("skips a bot that would gain unacknowledged auto host control, and names it", async () => {
     // The per-bot PATCH refuses "This Computer" plus auto-approve without a
     // confirmed warning.  Applying a workspace default used to go straight to

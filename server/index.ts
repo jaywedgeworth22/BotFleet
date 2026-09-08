@@ -6551,31 +6551,49 @@ const server = createServer(async (req, res) => {
     if (m && method === "DELETE") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
-      // a running turn dies with its bot
-      await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
-      stopScreenPoller(bot.id);
-      activeVpsThreads.delete(bot.id);
-      routines!.disableForBot(bot.id);
-      webhooks.disableForBot(bot.id);
-      resourceTriggers.disableForBot(bot.id);
-      lastReply.delete(bot.threadId);
-      // a peer approval naming this bot can never be meaningfully answered
-      // now, and its caller would otherwise wait out the 15-minute timeout
-      cancelPeerApprovalsFor(bot.id);
-      discardDelegations(commsBus, bot.threadId);
-      computerControl.forget(bot.id);
-      // Its per-bot Local VM goes with it.  Nothing else can name that
-      // container once the store record is gone — the name is derived from
-      // the bot id — so a later shared/per-bot mode switch cannot clean it
-      // up either, and it sits holding its ports, memory and workspace
-      // forever.  Addressed by its own target rather than
-      // `localVmTargetForBot`, which answers "shared" in shared mode and
-      // would take the shared desktop out from under every other bot.
-      // Best-effort: no container runtime, or no such container, is the
-      // ordinary case and must not fail the delete.
-      await containerComputerAction("remove", undefined, undefined, perBotLocalVmTarget(bot.id))
-        .catch(() => {});
-            store.deleteBot(bot.id);
+      // Fenced against the SAME lock `/local-computer/run|stop|remove`
+      // claims on this bot's target — the only mode that route can act in
+      // is per-bot (it refuses a shared target outright), so its fence key
+      // always matches `perBotLocalVmTarget(bot.id).key` when it matters.
+      // Without this, a `run` mid-create can finish AFTER this route's
+      // best-effort remove already found nothing there, and after
+      // `store.deleteBot` below removes the only id able to name that
+      // container — orphaning it forever.  Claimed before the first await,
+      // exactly like that route claims it, so two requests cannot both
+      // pass the check.
+      const localVmTarget = perBotLocalVmTarget(bot.id);
+      if (localVmLifecycleBusy.has(localVmTarget.key)) {
+        return json(res, 409, { error: "this bot's Local VM setup action is still running — retry the delete after it finishes" });
+      }
+      localVmLifecycleBusy.add(localVmTarget.key);
+      try {
+        // a running turn dies with its bot
+        await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
+        stopScreenPoller(bot.id);
+        activeVpsThreads.delete(bot.id);
+        routines!.disableForBot(bot.id);
+        webhooks.disableForBot(bot.id);
+        resourceTriggers.disableForBot(bot.id);
+        lastReply.delete(bot.threadId);
+        // a peer approval naming this bot can never be meaningfully answered
+        // now, and its caller would otherwise wait out the 15-minute timeout
+        cancelPeerApprovalsFor(bot.id);
+        discardDelegations(commsBus, bot.threadId);
+        computerControl.forget(bot.id);
+        // Its per-bot Local VM goes with it.  Nothing else can name that
+        // container once the store record is gone — the name is derived from
+        // the bot id — so a later shared/per-bot mode switch cannot clean it
+        // up either, and it sits holding its ports, memory and workspace
+        // forever.  Addressed by its own target rather than
+        // `localVmTargetForBot`, which answers "shared" in shared mode and
+        // would take the shared desktop out from under every other bot.
+        // Best-effort: no container runtime, or no such container, is the
+        // ordinary case and must not fail the delete.
+        await containerComputerAction("remove", undefined, undefined, localVmTarget).catch(() => {});
+        store.deleteBot(bot.id);
+      } finally {
+        localVmLifecycleBusy.delete(localVmTarget.key);
+      }
       for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
         try {
           unlinkSync(join(dir, `${bot.threadId}.ndjson`));
@@ -7851,9 +7869,12 @@ const server = createServer(async (req, res) => {
       // smuggle a destination the operator already disabled at the top of
       // the settings page.  The allowlist wins, every time.
       const allowed = allowedBotComputers(cfg);
-      const next = allowed === null
-        ? (requested ?? cfg.botDefaults?.computers ?? [])
-        : (requested ?? cfg.botDefaults?.computers ?? []).filter((entry) => allowed.includes(entry));
+      // What the operator ASKED to persist, before the allowlist narrows it
+      // for immediate application below.  This is also exactly what lands
+      // in `cfg.botDefaults.computers` a few lines down — see the "persist
+      // what the operator asked for" comment there.
+      const persisted = requested ?? cfg.botDefaults?.computers ?? [];
+      const next = allowed === null ? persisted : persisted.filter((entry) => allowed.includes(entry));
       const updated: { id: string; bot: ReturnType<typeof wireBot> }[] = [];
       const acknowledged = body.acknowledgeLocalAuto === true;
       // An empty filtered set is NOT a permission to clear every bot.  The
@@ -7877,13 +7898,23 @@ const server = createServer(async (req, res) => {
       // unattended bot picked up host control on its very next turn, which is
       // the exact pair the acknowledgement exists to gate.  Refusing the
       // whole call is the only answer that leaves nothing half-granted.
+      //
+      // Gated on `persisted`, NOT the allowlist-narrowed `next`: the
+      // allowlist is a separate, independently editable setting, and
+      // whatever is about to be written to `cfg.botDefaults.computers` is
+      // `persisted`, unfiltered.  An allowlist of `["cloud"]` at apply time
+      // used to let a `["local"]` default sail through unacknowledged
+      // because `next` (its filtered form) came back empty — and then
+      // `resolveGrants` handed an already-unattended, already-autoApprove
+      // bot host control the moment the operator later loosened the
+      // allowlist again, with no acknowledgement ever having been asked.
       const needsAcknowledgement = store.bots
         .filter(
           (bot) =>
-            localAutoAcknowledgementError(bot, next, bot.autoApprove === true, acknowledged) !== null,
+            localAutoAcknowledgementError(bot, persisted, bot.autoApprove === true, acknowledged) !== null,
         )
         .map((bot) => ({ id: bot.id, name: bot.name }));
-      if (next.length > 0 && needsAcknowledgement.length > 0) {
+      if (persisted.length > 0 && needsAcknowledgement.length > 0) {
         return json(res, 400, {
           error: LOCAL_AUTO_ACK_ERROR,
           needsAcknowledgement,
