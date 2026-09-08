@@ -321,7 +321,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           }
           return res;
         }),
-        { role: "user", content: turn.text },
+        ...(turn.text ? [{ role: "user", content: turn.text }] : []),
       ];
       appendNative(threadId, {
         dir: "out",
@@ -414,6 +414,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
               itemType: "tool",
               itemId: call.id,
               ok: true,
+              arguments: call.function?.arguments,
             });
           }
           const replyText = text.trim() ? text : reasoning;
@@ -433,11 +434,12 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
             });
           }
           active.delete(threadId);
+          const toolCallNames = toolNames.join(", ");
           emit({
             ...base(threadId, turnId),
             type: "turn.completed",
             ok: true,
-            stopReason: null,
+            stopReason: toolCallNames ? `tool_calls: ${toolCallNames}` : null,
             cost: null,
             ...(usage ? { usage } : {}),
           });

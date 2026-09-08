@@ -124,7 +124,7 @@ import {
   type RuntimeEvent,
 } from "./contracts.ts";
 import { buildTurnTools } from "./turn-tools.ts";
-import { sendTurnWithToolLoop } from "./tool-executor.ts";
+import { isToolCallsStopReason, sendTurnWithToolLoop } from "./tool-executor.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -475,6 +475,7 @@ export function askBotAndWait(targetBotId: string, message: string, depth: numbe
       if (e.type === "item.completed" && e.itemType === "assistant_text") {
         text += (text ? "\n" : "") + e.text;
       } else if (e.type === "turn.completed") {
+        if (isToolCallsStopReason(e.stopReason)) return;
         finish(text || "(the bot finished without a text reply)");
       }
     });
@@ -1213,7 +1214,9 @@ async function reviewPermissionCard(args: {
 bus.subscribe((event: RuntimeEvent) => {
   if (event.type === "request.opened") watchdog.setWaitingOnHuman(event.threadId, true);
   else if (event.type === "request.resolved") watchdog.setWaitingOnHuman(event.threadId, false);
-  else if (event.type === "turn.completed") watchdog.settle(event.threadId);
+  else if (event.type === "turn.completed") {
+    if (!isToolCallsStopReason(event.stopReason)) watchdog.settle(event.threadId);
+  }
   else watchdog.touch(event.threadId);
 });
 
@@ -1654,6 +1657,7 @@ bus.subscribe((event: RuntimeEvent) => {
       turnUsage.set(event.threadId, { input: event.input, output: event.output, cachedInput: event.cachedInput });
       break;
     case "turn.completed": {
+      if (isToolCallsStopReason(event.stopReason)) break;
       const reply = lastReply.get(event.threadId) ?? "";
       lastReply.delete(event.threadId);
       const lastReported = turnUsage.get(event.threadId);
@@ -1952,6 +1956,7 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, text,
 
 bus.subscribe((event: RuntimeEvent) => {
   if (event.type !== "turn.completed") return;
+  if (isToolCallsStopReason(event.stopReason)) return;
   // A turn that failed or was interrupted drops its queue rather than
   // firing it later: the user who hit Stop does not expect the delegations
   // that turn queued to run anyway, minutes later, on an unrelated turn.
@@ -1972,6 +1977,7 @@ bus.subscribe((event: RuntimeEvent) => {
 // drains too.
 bus.subscribe((event: RuntimeEvent) => {
   if (event.type !== "turn.completed") return;
+  if (isToolCallsStopReason(event.stopReason)) return;
   drainQueuedSends();
   drainRoomQueue();
 });
@@ -3114,6 +3120,69 @@ const commsBus: CommsBus = { store, broadcast };
 // can call resolvePeerComms without holding a reference back to here.
 const approvalBus: ApprovalBus = { store, broadcast };
 
+/** Guarded ask_bot path used by MCP proxy and the HTTP tool executor.
+ * Section, hidden, approval, mirroring, and depth all live here so a
+ * driver that guessed an id cannot skip the gate. */
+export async function executeAskBotRequest(input: {
+  fromBotId: string;
+  toBotId: string;
+  message: string;
+  depth: number;
+  fromThreadId?: string;
+}): Promise<{ status: number; body: Record<string, unknown> }> {
+  const fromBotId = input.fromBotId;
+  const toBotId = input.toBotId;
+  const message = input.message;
+  const depth = input.depth;
+  if (!toBotId || !message) return { status: 400, body: { error: "toBotId and message required" } };
+  if (toBotId === fromBotId) return { status: 400, body: { error: "a bot cannot message itself" } };
+  if (depth >= MAX_COMMS_DEPTH) return { status: 200, body: { error: "message chains are limited to one hop" } };
+  const target = store.bot(toBotId);
+  if (!target) return { status: 404, body: { error: "no such bot" } };
+  if (target.hidden) return { status: 403, body: { error: "that bot is hidden" } };
+  if (target.busy) return { status: 200, body: { busy: true } };
+  const from = store.bot(fromBotId);
+  if (!from) return { status: 403, body: { error: "unknown sender" } };
+  if (sectionKey(from.section) !== sectionKey(target.section)) {
+    return { status: 403, body: { error: "that bot belongs to a different section" } };
+  }
+  const fromThreadId = String(input.fromThreadId ?? from.threadId);
+  if (!store.taskByThread(from.id, fromThreadId)) {
+    return { status: 403, body: { error: "source thread does not belong to sender" } };
+  }
+  let currentFrom = from;
+  let currentTarget = target;
+  if (from.approvePeerComms) {
+    const verdict = await requestPeerApproval(
+      approvalBus,
+      from,
+      target,
+      message,
+      "ask_bot",
+      fromThreadId,
+    );
+    if (verdict !== "allow") return { status: 200, body: { error: "denied by user" } };
+    const freshFrom = store.bot(fromBotId);
+    const freshTarget = store.bot(toBotId);
+    if (!freshFrom || !freshTarget) return { status: 404, body: { error: "no such bot" } };
+    if (sectionKey(freshFrom.section) !== sectionKey(freshTarget.section)) {
+      return { status: 200, body: { error: "that bot moved to a different section" } };
+    }
+    if (!store.taskByThread(freshFrom.id, fromThreadId)) {
+      return { status: 404, body: { error: "source task no longer exists" } };
+    }
+    if (freshTarget.busy) return { status: 200, body: { busy: true } };
+    currentFrom = freshFrom;
+    currentTarget = freshTarget;
+  }
+  const channel = getOrCreateChannel(store, currentFrom, currentTarget);
+  mirrorExchange(commsBus, currentFrom, currentTarget, message, channel, fromThreadId);
+  const prefixed = `[Message from @${currentFrom.name}, another bot in this BotFleet workspace. Reply to them.]\n\n${message}`;
+  const reply = await askBotAndWait(toBotId, prefixed, depth, fromBotId);
+  mirrorReply(commsBus, currentTarget, reply, channel);
+  return { status: 200, body: { botName: currentTarget.name, text: reply } };
+}
+
 // Approvals live only in memory, so any peer card still open on disk is one
 // whose resolver died with the previous process. Left alone it can never be
 // answered, and the composer stays disabled behind it — settle them at boot.
@@ -4247,74 +4316,14 @@ const server = createServer(async (req, res) => {
       }
       if (method === "POST" && path === "/api/internal/ask-bot") {
         const body = await readBody(req);
-        const fromBotId = String(body.fromBotId ?? "");
-        const toBotId = String(body.toBotId ?? "");
-        const message = String(body.message ?? "").trim();
-        const depth = Number(body.depth ?? 0) || 0;
-        if (!toBotId || !message) return json(res, 400, { error: "toBotId and message required" });
-        if (toBotId === fromBotId) return json(res, 400, { error: "a bot cannot message itself" });
-        if (depth >= MAX_COMMS_DEPTH) return json(res, 200, { error: "message chains are limited to one hop" });
-        const target = store.bot(toBotId);
-        if (!target) return json(res, 404, { error: "no such bot" });
-        if (target.busy) return json(res, 200, { busy: true });
-        // An unknown sender used to fall through: no mirroring AND no
-        // approval, while still running the peer turn. That made an
-        // unresolvable id the cheapest way past the gate, so it is now a
-        // hard refusal — every peer turn has an accountable sender.
-        const from = store.bot(fromBotId);
-        if (!from) return json(res, 403, { error: "unknown sender" });
-        if (sectionKey(from.section) !== sectionKey(target.section)) {
-          return json(res, 403, { error: "that bot belongs to a different section" });
-        }
-        const fromThreadId = String(body.fromThreadId ?? from.threadId);
-        if (!store.taskByThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source thread does not belong to sender" });
-        }
-        let currentFrom = from;
-        let currentTarget = target;
-
-        // the exchange is mirrored into a bot⇄bot channel: it shows up in
-        // the sidebar like any room, keeps the pair's full history, and the
-        // user can open it and chip in. Both 1:1 threads get a clickable
-        // chip that opens the channel, so bot-to-bot turns are never
-        // invisible (they cost the user tokens).
-        //
-        // per-bot approval gate: a chief-of-staff bot without this on is
-        // free to coordinate; one with it on must wait for a human card
-        // (15-min timeout → deny) before its peer turn starts. The channel
-        // and the chips are created only AFTER the verdict, so a denied
-        // contact leaves no trace of an exchange that never happened.
-        if (from.approvePeerComms) {
-          const verdict = await requestPeerApproval(
-            approvalBus,
-            from,
-            target,
-            message,
-            "ask_bot",
-            fromThreadId,
-          );
-          if (verdict !== "allow") return json(res, 200, { error: "denied by user" });
-          // The card may have been open for minutes. Re-read both records so
-          // deleted bots cannot recreate transcripts through stale objects.
-          const freshFrom = store.bot(fromBotId);
-          const freshTarget = store.bot(toBotId);
-          if (!freshFrom || !freshTarget) return json(res, 404, { error: "no such bot" });
-          if (sectionKey(freshFrom.section) !== sectionKey(freshTarget.section)) {
-            return json(res, 200, { error: "that bot moved to a different section" });
-          }
-          if (!store.taskByThread(freshFrom.id, fromThreadId)) {
-            return json(res, 404, { error: "source task no longer exists" });
-          }
-          if (freshTarget.busy) return json(res, 200, { busy: true });
-          currentFrom = freshFrom;
-          currentTarget = freshTarget;
-        }
-        const channel = getOrCreateChannel(store, currentFrom, currentTarget);
-        mirrorExchange(commsBus, currentFrom, currentTarget, message, channel, fromThreadId);
-        const prefixed = `[Message from @${currentFrom.name}, another bot in this BotFleet workspace. Reply to them.]\n\n${message}`;
-        const reply = await askBotAndWait(toBotId, prefixed, depth, fromBotId);
-        mirrorReply(commsBus, currentTarget, reply, channel);
-        return json(res, 200, { botName: currentTarget.name, text: reply });
+        const result = await executeAskBotRequest({
+          fromBotId: String(body.fromBotId ?? ""),
+          toBotId: String(body.toBotId ?? ""),
+          message: String(body.message ?? "").trim(),
+          depth: Number(body.depth ?? 0) || 0,
+          fromThreadId: typeof body.fromThreadId === "string" ? body.fromThreadId : undefined,
+        });
+        return json(res, result.status, result.body);
       }
       // Async handoff: the source bot queues a task for a peer and goes
       // back to the user; the peer turn runs after the source's

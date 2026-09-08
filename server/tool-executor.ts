@@ -34,7 +34,7 @@ import type {
   RuntimeEvent,
   SendTurnInput,
 } from "./contracts.ts";
-import { askBotAndWait, bus, store } from "./index.ts";
+import { bus, executeAskBotRequest, store } from "./index.ts";
 
 export type HttpLaneToolCall = {
   id: string;
@@ -51,6 +51,13 @@ export type HttpLaneToolResult = {
 
 const MAX_TOOL_ROUNDS = 5;
 const TOOL_TIMEOUT_MS = 60_000;
+
+/** Inner HTTP tool rounds emit `turn.completed` with this prefix so the
+ * executor can continue while the outer fold, watchdog, and queue drains
+ * leave the bot busy. */
+export function isToolCallsStopReason(reason: string | null | undefined): boolean {
+  return typeof reason === "string" && reason.startsWith("tool_calls:");
+}
 
 /** A single turn's events.  The caller hands a `bus.subscribe` closure
  *  that records into this shape; the helper reads the same fields after
@@ -128,15 +135,21 @@ async function runOneTurn(
         }
         case "item.completed": {
           if (event.itemId && event.itemType === "tool") {
-            const partial = partialById.get(event.itemId);
-            if (partial) {
-              captured.toolCalls.push({
-                id: partial.id,
-                name: partial.name,
-                arguments: partial.arguments,
-              });
-              partialById.delete(event.itemId);
-            }
+            const partial = partialById.get(event.itemId) ?? {
+              id: event.itemId,
+              name: "tool",
+              arguments: {},
+            };
+            const settled =
+              "arguments" in event && event.arguments != null
+                ? parseToolArguments(partial.name, event.arguments)
+                : partial.arguments;
+            captured.toolCalls.push({
+              id: partial.id,
+              name: partial.name,
+              arguments: settled,
+            });
+            partialById.delete(event.itemId);
           } else if (event.itemType === "assistant_text") {
             captured.assistantText = captured.assistantText
               ? `${captured.assistantText}\n${event.text}`
@@ -228,7 +241,19 @@ export async function runHttpLaneTool(
     }
     const peer = store.bots.find((b) => b.id === target || `@${b.name}` === target);
     if (!peer) return JSON.stringify({ error: `no bot matches ${target}` });
-    return await askBotAndWait(peer.id, task, ctx.commsDepth + 1, fromBotId);
+    const fromThreadId = ctx.threadId;
+    const result = await executeAskBotRequest({
+      fromBotId: fromBotId ?? "",
+      toBotId: peer.id,
+      message: task,
+      depth: ctx.commsDepth,
+      fromThreadId,
+    });
+    if (result.body.busy) return JSON.stringify({ error: "That bot is busy right now — try again after it finishes." });
+    if (result.body.error) return JSON.stringify({ error: String(result.body.error) });
+    const text = typeof result.body.text === "string" ? result.body.text : "";
+    const name = typeof result.body.botName === "string" ? result.body.botName : peer.name;
+    return text ? `${name} replied:\n${text}` : JSON.stringify({ error: "no reply" });
   }
 
   if (call.name === "COMPOSIO_SEARCH_TOOLS"
@@ -281,26 +306,42 @@ export async function sendTurnWithToolLoop(
       const result = await runHttpLaneTool(call, ctx);
       results.push({ id: call.id, result });
     }
-    currentInput = {
-      ...currentInput,
-      transcript: [
-        ...(currentInput.transcript ?? []),
-        {
-          role: "assistant",
-          text: "",
-          toolCalls: turn.toolCalls.map((c) => ({
-            id: c.id,
-            name: c.name,
-            arguments: JSON.stringify(c.arguments),
-          })),
-        },
-        {
-          role: "user",
-          text: "",
-          toolResults: results,
-        },
-      ],
-    };
+    currentInput = buildToolContinuation(currentInput, turn.toolCalls, results);
   }
-  return { text: totalText, ok: true, rounds: MAX_TOOL_ROUNDS };
+  return { text: totalText, ok: false, rounds: MAX_TOOL_ROUNDS };
+}
+
+/** Continuation input after a tool round: original user text is in the
+ * transcript before the assistant call, never repeated after the results. */
+export function buildToolContinuation(
+  input: SendTurnInput,
+  toolCalls: HttpLaneToolCall[],
+  results: HttpLaneToolResult[],
+): SendTurnInput {
+  const prior = input.transcript ?? [];
+  const userTurn = input.text
+    ? [{ role: "user" as const, text: input.text }]
+    : [];
+  return {
+    ...input,
+    text: "",
+    transcript: [
+      ...prior,
+      ...userTurn,
+      {
+        role: "assistant",
+        text: "",
+        toolCalls: toolCalls.map((c) => ({
+          id: c.id,
+          name: c.name,
+          arguments: JSON.stringify(c.arguments),
+        })),
+      },
+      {
+        role: "user",
+        text: "",
+        toolResults: results,
+      },
+    ],
+  };
 }

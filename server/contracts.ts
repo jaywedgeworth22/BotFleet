@@ -141,6 +141,9 @@ export type RuntimeEvent = RuntimeEventBase &
         /** One line of what came back — rows read, the failure's message.
          * A failure's detail is the whole reason the row is worth reading. */
         detail?: string;
+        /** Settled JSON-encoded arguments.  Streamed `item.started` may
+         * only have held the first fragment; the executor reads this. */
+        arguments?: string;
       }
     | { type: "item.completed"; itemType: "assistant_text"; text: string }
     | { type: "content.delta"; streamKind: "assistant_text" | "reasoning_text"; delta: string }

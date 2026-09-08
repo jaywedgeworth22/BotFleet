@@ -46,7 +46,10 @@ vi.mock("./index.ts", () => {
     bus: {
       subscribe: () => () => undefined,
     },
-    askBotAndWait: vi.fn(async (_id: string, task: string) => `(peer reply to: ${task})`),
+    executeAskBotRequest: vi.fn(async (input: { toBotId: string; message: string }) => ({
+      status: 200,
+      body: { botName: "peer", text: `(peer reply to: ${input.message})` },
+    })),
     store: {
       bot: (id: string) => bots.find((b) => b.id === id),
       bots: bots,
@@ -54,7 +57,12 @@ vi.mock("./index.ts", () => {
   };
 });
 
-import { parseToolArguments, runHttpLaneTool } from "./tool-executor.ts";
+import {
+  buildToolContinuation,
+  isToolCallsStopReason,
+  parseToolArguments,
+  runHttpLaneTool,
+} from "./tool-executor.ts";
 
 describe("parseToolArguments", () => {
   it("returns an empty object for null or undefined", () => {
@@ -101,12 +109,12 @@ describe("runHttpLaneTool", () => {
     expect(ids).not.toContain("bot-other-section");
   });
 
-  it("ask_bot forwards to askBotAndWait and returns its reply", async () => {
+  it("ask_bot forwards through the guarded internal path and returns its reply", async () => {
     const result = await runHttpLaneTool(
       { id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "summarize this" } },
       { threadId: "t", fromBotId: "bot-self", commsDepth: 0 },
     );
-    expect(result).toBe("(peer reply to: summarize this)");
+    expect(result).toBe("peer replied:\n(peer reply to: summarize this)");
   });
 
   it("ask_bot requires both bot_id and task", async () => {
@@ -147,5 +155,28 @@ describe("runHttpLaneTool", () => {
       { threadId: "t", fromBotId: "bot-self", commsDepth: 0 },
     );
     expect(result).toMatch(/not implemented/);
+  });
+});
+
+describe("isToolCallsStopReason", () => {
+  it("matches the inner-round prefix and ignores other settles", () => {
+    expect(isToolCallsStopReason("tool_calls: ask_bot")).toBe(true);
+    expect(isToolCallsStopReason("error")).toBe(false);
+    expect(isToolCallsStopReason(null)).toBe(false);
+  });
+});
+
+describe("buildToolContinuation", () => {
+  it("puts the original user text before the tool call, not after the results", () => {
+    const next = buildToolContinuation(
+      { threadId: "t", text: "ping the peer", transcript: [] },
+      [{ id: "c1", name: "ask_bot", arguments: { bot_id: "bot-peer", task: "hi" } }],
+      [{ id: "c1", result: "ok" }],
+    );
+    expect(next.text).toBe("");
+    expect(next.transcript?.map((m) => m.role)).toEqual(["user", "assistant", "user"]);
+    expect(next.transcript?.[0]?.text).toBe("ping the peer");
+    expect(next.transcript?.[1]?.toolCalls?.[0]?.id).toBe("c1");
+    expect(next.transcript?.[2]?.toolResults?.[0]?.result).toBe("ok");
   });
 });

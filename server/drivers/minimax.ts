@@ -272,7 +272,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
           }
           return res;
         }),
-        { role: "user", content: turn.text },
+        ...(turn.text ? [{ role: "user", content: turn.text }] : []),
       ];
 
       appendNative(threadId, {
@@ -342,6 +342,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
                   itemType: "tool",
                   itemId: tc.id,
                   ok: true,
+                  arguments: tc.function.arguments,
                 });
               }
             }
