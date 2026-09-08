@@ -91,8 +91,9 @@ struct ChatListView: View {
         .task { _ = await session.configStatus() }
         // Warms `session.instanceDriverKinds` before any chat is opened, so
         // the chat header's provider mark resolves synchronously instead of
-        // firing a network call per render.
-        .task { _ = await session.instances() }
+        // firing a network call per render. Quiet path — offline/cancel must
+        // not surface as the global action-error alert.
+        .task { await session.warmInstanceDriverKinds() }
         .sheet(isPresented: $showingUpdates) {
             UpdatesSheet { chat in
                 showingUpdates = false

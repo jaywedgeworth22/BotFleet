@@ -85,6 +85,16 @@ struct ChatView: View {
         return session.instanceDriverKinds[selection.instanceId]
     }
 
+    /// VoiceOver for the header identity button. The explicit button label
+    /// replaces child accessibility content, so the provider mark must be
+    /// named here or it would become silent chrome.
+    private var headerProfileAccessibilityLabel: String {
+        if let currentDriverKind {
+            return "Open \(current.name) profile, \(ProviderMarkView.displayName(for: currentDriverKind))"
+        }
+        return "Open \(current.name) profile"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             transcriptColumn
@@ -386,7 +396,7 @@ struct ChatView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Open \(current.name) profile")
+                .accessibilityLabel(headerProfileAccessibilityLabel)
 
                 Spacer(minLength: 4)
 

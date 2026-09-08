@@ -1108,6 +1108,23 @@ final class Session: ObservableObject {
         }
     }
 
+    /// Background warm of `instanceDriverKinds` for the chat-header provider
+    /// mark. Failures stay silent so merely opening the chat list does not
+    /// pop the global action-error alert when the paired computer is offline
+    /// or the task is cancelled.
+    func warmInstanceDriverKinds() async {
+        guard let client else { return }
+        do {
+            let fetched = try await client.instances()
+            instanceDriverKinds = Dictionary(
+                fetched.map { ($0.instanceId, $0.driverKind) },
+                uniquingKeysWith: { _, latest in latest }
+            )
+        } catch {
+            // Quiet: connectivity / cancel while the roster is open.
+        }
+    }
+
     // MARK: - Routines
 
     func loadRoutines() async -> (routines: [Routine], runs: [RoutineRun]) {

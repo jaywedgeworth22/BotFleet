@@ -58,7 +58,12 @@ struct ProviderMarkView: View {
 
     /// Human-readable provider name for VoiceOver — this mark is identity,
     /// not decoration, so it must never read as silent chrome.
-    private var displayName: String {
+    private var displayName: String { Self.displayName(for: driverKind) }
+
+    /// Shared so the chat-header profile button can fold the provider into
+    /// its own accessibility label (SwiftUI replaces child labels on a
+    /// Button with an explicit `.accessibilityLabel`).
+    static func displayName(for driverKind: String) -> String {
         switch driverKind {
         case "claude", "claudeAgent": return "Claude"
         case "grok", "grokAgent": return "Grok"
