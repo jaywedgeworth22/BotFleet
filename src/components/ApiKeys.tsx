@@ -3,10 +3,20 @@
 // either way — GET /api/config returns configured flags, never values.
 import { useEffect, useId, useRef, useState } from "react";
 import { Check, CircleHelp, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
-import { api, useStore, type ConfigStatus } from "@/state/store";
+import { api, useSecretSources, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { SecretSourceBadge } from "./SecretSourceBadge";
 
 export type ConfigSection = "composio" | "box" | "opencodeGo" | "deepseek";
+
+/** `server/secret-map.ts`'s `SecretFieldSpec.id` for each key this panel
+ * saves — the join key `useSecretSources()` returns rows by. */
+const SECRET_FIELD_ID: Record<ConfigSection, string> = {
+  composio: "composio.apiKey",
+  box: "box.token",
+  opencodeGo: "opencodeGo.apiKey",
+  deepseek: "deepseek.key",
+};
 
 const SECTIONS: Record<
   ConfigSection,
@@ -170,8 +180,20 @@ export function ApiKeyRow({
   const clearing = !value.trim() && configured;
   const credential = CREDENTIALS[section];
 
+  const secretSources = useSecretSources();
+  const provenance = secretSources.get(SECRET_FIELD_ID[section]);
+  const managed = provenance?.managed ?? false;
+  const infisicalConfigured = Boolean(state.config?.infisical?.configured);
+  const writeThrough = Boolean(state.config?.infisical?.writeThrough);
+  // A 409 the operator cannot explain is the failure this prevents: with
+  // Write Through off, Infisical is the only place this key can change, so
+  // the field disables outright rather than letting a save fail silently
+  // confusing.  With Write Through on the field stays editable — a save
+  // there writes the vault first, then tombstones the local copy.
+  const locked = managed && !writeThrough;
+
   const save = () => {
-    if (saving || (!value.trim() && !configured)) return;
+    if (locked || saving || (!value.trim() && !configured)) return;
     setSaving(true);
     setError(null);
     const request = window.ogb?.setCredential
@@ -201,6 +223,7 @@ export function ApiKeyRow({
           </span>
         )}
         {configured && <span className="text-[11px] text-success">Connected</span>}
+        <SecretSourceBadge source={provenance?.source} infisicalConfigured={infisicalConfigured} />
         <CredentialHelp section={section} />
       </div>
       <div className="flex gap-2">
@@ -209,14 +232,15 @@ export function ApiKeyRow({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && save()}
-          placeholder={configured ? "••••••••  (paste to replace)" : credential.placeholder}
+          placeholder={locked ? "Managed by Infisical." : configured ? "••••••••  (paste to replace)" : credential.placeholder}
           aria-label={credential.label}
           autoComplete="off"
-          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
+          disabled={locked}
+          className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none disabled:cursor-not-allowed disabled:opacity-60"
         />
         <button
           onClick={save}
-          disabled={saving || (!value.trim() && !configured)}
+          disabled={locked || saving || (!value.trim() && !configured)}
           className={cn(
             "flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg py-2 text-[13px]",
             clearing
@@ -224,11 +248,12 @@ export function ApiKeyRow({
               : "bg-control text-ink hover:bg-raised-hover",
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}
-          title={clearing ? "Remove the Saved Key" : "Save"}
+          title={locked ? "Managed by Infisical." : clearing ? "Remove the Saved Key" : "Save"}
         >
           {saving ? <Loader2 size={13} className="animate-spin" /> : clearing ? "Clear" : <><Check size={13} />Save</>}
         </button>
       </div>
+      {locked && <div className="mt-1 text-[12px] text-ink-secondary">Managed by Infisical.</div>}
       {error && <div className="mt-1 text-[12px] text-danger">{error}</div>}
     </div>
   );

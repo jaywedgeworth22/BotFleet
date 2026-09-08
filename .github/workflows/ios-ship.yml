@@ -5,14 +5,17 @@ name: iOS TestFlight ship (GitHub-hosted macOS)
 # the primary path). Unsigned compile stays in ci.yml. Fork PRs never run
 # here. The wrapper is invoked with no extra flags.
 #
-# Signing + ASC keys come from Infisical prod (BotFleet project, type=shared).
-# Identity stays on GitHub only:
+# Signing + ASC keys come from Infisical prod (BotFleet project, type=shared)
+# through .github/actions/infisical-secrets (scripts/infisical-fetch.mjs --
+# no CLI install, no dependency). Identity stays on GitHub only:
 #   INFISICAL_PROJECT_ID, INFISICAL_UNIVERSAL_AUTH_CLIENT_ID/SECRET
 #   (fallback INFISICAL_CLIENT_ID/SECRET).
 # After should_ship=1 the job loads into GITHUB_ENV (masked):
 #   APPLE_API_KEY_ID, APPLE_API_ISSUER_ID, APPLE_API_KEY_P8_BASE64,
-#   IOS_CERT_P12_BASE64, IOS_CERT_PASSWORD
-# scripts/ios-appstore-gm-prepare.sh maps those onto
+#   IOS_CERT_P12_BASE64, IOS_CERT_PASSWORD (all required -- the ship fails
+#   without them), plus SENTRY_DSN and SENTRY_AUTH_TOKEN (best-effort, with
+#   a synced GitHub secret as GH_FALLBACK_*; an inert Sentry beats a red ship).
+# scripts/ios-appstore-gm-prepare.sh maps the five signing names onto
 # ~/.secrets/appstore-connect.env and imports the Distribution identity.
 # Values are never printed. Do not mint a new key. Do not create a new
 # provisioning profile (fleet automatic signing + -allowProvisioningUpdates).
@@ -67,7 +70,6 @@ jobs:
     timeout-minutes: 90
     env:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
-      SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
     steps:
       # fetch-depth: 0 is load-bearing, not hygiene. The default depth-1
       # checkout leaves the runner workspace with exactly ONE commit, so
@@ -134,97 +136,29 @@ jobs:
           fi
 
 
-      # Identity stays on GitHub.  Apple/iOS signing material comes from Infisical prod.
+      # Identity stays on GitHub.  Apple/iOS signing material and the Cocoa
+      # Sentry DSN come from Infisical prod, through the one composite
+      # action every packaging/ship workflow now shares (scripts/infisical-fetch.mjs
+      # -- no CLI install, no dependency, runs identically on every OS).
+      # SENTRY_DSN and SENTRY_AUTH_TOKEN are best-effort: an inert Sentry
+      # beats a red TestFlight ship.  The five signing names are required --
+      # there is nothing sane to fall back to for those.
       - name: Load Infisical signing secrets
         if: steps.gate.outputs.should_ship == '1'
+        uses: ./.github/actions/infisical-secrets
+        with:
+          names: >-
+            APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8_BASE64
+            IOS_CERT_P12_BASE64 IOS_CERT_PASSWORD SENTRY_DSN SENTRY_AUTH_TOKEN
+          required: >-
+            APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8_BASE64
+            IOS_CERT_P12_BASE64 IOS_CERT_PASSWORD
+          project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
+          client-id: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET || secrets.INFISICAL_CLIENT_SECRET }}
         env:
-          INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_PROJECT_ID }}
-          INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID }}
-          INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET }}
-          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
-          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
           GH_FALLBACK_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-        run: |
-          set +o xtrace
-          set -euo pipefail
-          export INFISICAL_DISABLE_UPDATE_CHECK=true
-
-          if ! command -v infisical >/dev/null 2>&1; then
-            NONINTERACTIVE=1 HOMEBREW_NO_AUTO_UPDATE=1 brew install infisical/get-cli/infisical
-          fi
-          command -v infisical >/dev/null 2>&1 || {
-            echo "::error::Infisical CLI is not installed."
-            exit 1
-          }
-
-          if [ -z "${INFISICAL_PROJECT_ID:-}" ]; then
-            echo "::error::Missing INFISICAL_PROJECT_ID GitHub secret."
-            exit 1
-          fi
-          CLIENT_ID="${INFISICAL_UNIVERSAL_AUTH_CLIENT_ID:-${INFISICAL_CLIENT_ID:-}}"
-          CLIENT_SECRET="${INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET:-${INFISICAL_CLIENT_SECRET:-}}"
-          if [ -z "$CLIENT_ID" ] || [ -z "$CLIENT_SECRET" ]; then
-            echo "::error::Missing Infisical machine identity.  Set INFISICAL_UNIVERSAL_AUTH_CLIENT_ID/SECRET (fallback INFISICAL_CLIENT_ID/SECRET) on the repo."
-            exit 1
-          fi
-
-          TOKEN="$(
-            env -u INFISICAL_CLIENT_ID -u INFISICAL_CLIENT_SECRET -u INFISICAL_TOKEN \
-              INFISICAL_UNIVERSAL_AUTH_CLIENT_ID="$CLIENT_ID" \
-              INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET="$CLIENT_SECRET" \
-              infisical login --method=universal-auth --silent --plain --telemetry=false 2>/dev/null || true
-          )"
-          if [ -z "$TOKEN" ]; then
-            echo "::error::Infisical universal-auth login failed."
-            exit 1
-          fi
-          echo "::add-mask::$TOKEN"
-
-          for name in APPLE_API_KEY_ID APPLE_API_ISSUER_ID APPLE_API_KEY_P8_BASE64 \
-                      IOS_CERT_P12_BASE64 IOS_CERT_PASSWORD; do
-            val="$(
-              INFISICAL_TOKEN="$TOKEN" infisical secrets get "$name" \
-                --plain --silent --telemetry=false --expand=false \
-                --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/ \
-                2>/dev/null || true
-            )"
-            if [ -z "$val" ]; then
-              continue
-            fi
-            echo "::add-mask::$val"
-            {
-              echo "${name}<<INFISICAL_EOF"
-              printf '%s\n' "$val"
-              echo "INFISICAL_EOF"
-            } >> "$GITHUB_ENV"
-          done
-
-          # Sentry Cocoa DSN: Infisical prod is canonical; the GitHub secret
-          # (loaded into GH_FALLBACK_SENTRY_DSN above, never referenced in an
-          # `if:`) is a synced fallback.  Empty means the archive ships with
-          # Sentry Cocoa inert -- warn loudly, never fail the ship over it.
-          SENTRY_DSN_VAL="$(
-            INFISICAL_TOKEN="$TOKEN" infisical secrets get "SENTRY_DSN" \
-              --plain --silent --telemetry=false --expand=false \
-              --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/ \
-              2>/dev/null || true
-          )"
-          if [ -z "$SENTRY_DSN_VAL" ]; then
-            SENTRY_DSN_VAL="${GH_FALLBACK_SENTRY_DSN:-}"
-          fi
-          if [ -n "$SENTRY_DSN_VAL" ]; then
-            echo "::add-mask::$SENTRY_DSN_VAL"
-            {
-              echo "SENTRY_DSN<<INFISICAL_EOF"
-              printf '%s\n' "$SENTRY_DSN_VAL"
-              echo "INFISICAL_EOF"
-            } >> "$GITHUB_ENV"
-          else
-            echo "::warning::SENTRY_DSN is empty after the Infisical prod export and the GitHub secret fallback.  This TestFlight build ships with Sentry Cocoa inert."
-          fi
-          unset SENTRY_DSN_VAL
-
-          unset TOKEN CLIENT_ID CLIENT_SECRET val
+          GH_FALLBACK_SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
       # Do not use `secrets.*` in `if:` -- GitHub's dispatch parser rejects
       # that named-value (HTTP 422: Unrecognized named-value: 'secrets') and

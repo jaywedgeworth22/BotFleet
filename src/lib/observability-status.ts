@@ -5,7 +5,11 @@ export type ObservabilityStatusView = {
   enabled?: boolean;
   /** A DSN is on file, whether or not diagnostics are currently enabled. */
   configured?: boolean;
-  source?: "env" | "config" | "none";
+  /** `"infisical"` is the fourth answer the Sentry lane never had: the SDK
+   * itself only ever sees `env`/`config`/`none` (`server/observability.ts`),
+   * but a store-held DSN reports this instead so the card names the vault
+   * rather than calling it "Settings". */
+  source?: "env" | "config" | "none" | "infisical";
   host?: string | null;
   projectId?: string | null;
   environment?: string;

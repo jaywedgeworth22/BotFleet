@@ -6,6 +6,10 @@ name: Sentry Deploy
 # currently mark production deploys. Does NOT call `releases new`.
 #
 # Soft-fail: sentry-cli errors warn and exit 0 so this never blocks merges.
+#
+# SENTRY_AUTH_TOKEN comes from Infisical prod through the shared composite
+# action (.github/actions/infisical-secrets), with the synced GitHub secret
+# as a fallback during the cutover.
 
 on:
   workflow_run:
@@ -29,9 +33,28 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # Deliberately no `ref:` override -- actions/checkout defaults
+      # workflow_run events to the repo's default branch (main), not the
+      # head ref of the triggering run, so this always runs the trusted,
+      # merged copy of the composite action and its script.
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # SENTRY_AUTH_TOKEN is a non-identity name behind Infisical, with the
+      # synced GitHub secret as a GH_FALLBACK_ during the cutover.  Not
+      # `required` -- this workflow is soft-fail by design (see header).
+      - name: Load the Sentry auth token
+        uses: ./.github/actions/infisical-secrets
+        with:
+          names: SENTRY_AUTH_TOKEN
+          project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
+          client-id: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET || secrets.INFISICAL_CLIENT_SECRET }}
+        env:
+          GH_FALLBACK_SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
       - name: Attach Sentry production deploy
         env:
-          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_AUTH_TOKEN: ${{ env.SENTRY_AUTH_TOKEN }}
           SENTRY_ORG: jays-services
           SENTRY_PROJECT: botfleet
           VERSION: ${{ github.event.workflow_run.head_sha }}

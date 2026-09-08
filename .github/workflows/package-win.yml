@@ -42,94 +42,36 @@ jobs:
         shell: bash
         run: rm -rf dist dist-server release
       - name: Resolve the Sentry DSN
+        uses: ./.github/actions/infisical-secrets
+        with:
+          names: SENTRY_DSN VITE_SENTRY_DSN
+          project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
+          client-id: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET || secrets.INFISICAL_CLIENT_SECRET }}
+        env:
+          GH_FALLBACK_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+
+      # Vite inlines VITE_SENTRY_DSN at build time, so it must be in the
+      # environment before the package step runs.  Infisical/GitHub hold no
+      # separate VITE_SENTRY_DSN today, so the Cocoa/Electron DSN doubles as
+      # the web one -- the behavior this replaces, preserved here.  Never
+      # fail the build over a missing DSN -- an inert Sentry beats a red
+      # release.
+      - name: Default VITE_SENTRY_DSN to SENTRY_DSN when unset
+        if: env.VITE_SENTRY_DSN == ''
         shell: bash
         env:
-          INFISICAL_PROJECT_ID: ${{ secrets.INFISICAL_PROJECT_ID }}
-          INFISICAL_UNIVERSAL_AUTH_CLIENT_ID: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID }}
-          INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET }}
-          INFISICAL_CLIENT_ID: ${{ secrets.INFISICAL_CLIENT_ID }}
-          INFISICAL_CLIENT_SECRET: ${{ secrets.INFISICAL_CLIENT_SECRET }}
-          GH_FALLBACK_SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
+          SENTRY_DSN: ${{ env.SENTRY_DSN }}
         run: |
-          set +o xtrace
-          set -uo pipefail
-          export INFISICAL_DISABLE_UPDATE_CHECK=true
-
-          # Vite inlines VITE_SENTRY_DSN at build time, so both names must be
-          # in the environment before the package step runs.  Never fail the
-          # build over a missing DSN -- an inert Sentry beats a red release.
-          SENTRY_DSN_VAL=""
-          VITE_SENTRY_DSN_VAL=""
-          CLIENT_ID="${INFISICAL_UNIVERSAL_AUTH_CLIENT_ID:-${INFISICAL_CLIENT_ID:-}}"
-          CLIENT_SECRET="${INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET:-${INFISICAL_CLIENT_SECRET:-}}"
-
-          if [ -n "${INFISICAL_PROJECT_ID:-}" ] && [ -n "$CLIENT_ID" ] && [ -n "$CLIENT_SECRET" ]; then
-            if ! command -v infisical >/dev/null 2>&1; then
-              case "${RUNNER_OS:-}" in
-                macOS)
-                  NONINTERACTIVE=1 HOMEBREW_NO_AUTO_UPDATE=1 brew install infisical/get-cli/infisical >/dev/null 2>&1 || true
-                  ;;
-                Linux)
-                  (curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | sudo -E bash) >/dev/null 2>&1 \
-                    && sudo apt-get install -y infisical >/dev/null 2>&1 || true
-                  ;;
-                Windows)
-                  choco install infisical -y >/dev/null 2>&1 || true
-                  ;;
-              esac
-            fi
-            if command -v infisical >/dev/null 2>&1; then
-              TOKEN="$(
-                env -u INFISICAL_CLIENT_ID -u INFISICAL_CLIENT_SECRET -u INFISICAL_TOKEN \
-                  INFISICAL_UNIVERSAL_AUTH_CLIENT_ID="$CLIENT_ID" \
-                  INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET="$CLIENT_SECRET" \
-                  infisical login --method=universal-auth --silent --plain --telemetry=false 2>/dev/null || true
-              )"
-              if [ -n "$TOKEN" ]; then
-                echo "::add-mask::$TOKEN"
-                SENTRY_DSN_VAL="$(
-                  INFISICAL_TOKEN="$TOKEN" infisical secrets get "SENTRY_DSN" \
-                    --plain --silent --telemetry=false --expand=false \
-                    --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/ \
-                    2>/dev/null || true
-                )"
-                VITE_SENTRY_DSN_VAL="$(
-                  INFISICAL_TOKEN="$TOKEN" infisical secrets get "VITE_SENTRY_DSN" \
-                    --plain --silent --telemetry=false --expand=false \
-                    --projectId="$INFISICAL_PROJECT_ID" --env=prod --path=/ \
-                    2>/dev/null || true
-                )"
-              fi
-              unset TOKEN
-            fi
-          fi
-          unset CLIENT_ID CLIENT_SECRET
-
-          if [ -z "$SENTRY_DSN_VAL" ]; then
-            SENTRY_DSN_VAL="${GH_FALLBACK_SENTRY_DSN:-}"
-          fi
-          if [ -z "$VITE_SENTRY_DSN_VAL" ]; then
-            VITE_SENTRY_DSN_VAL="$SENTRY_DSN_VAL"
-          fi
-
-          if [ -n "$SENTRY_DSN_VAL" ]; then
-            echo "::add-mask::$SENTRY_DSN_VAL"
-          fi
-          if [ -n "$VITE_SENTRY_DSN_VAL" ]; then
-            echo "::add-mask::$VITE_SENTRY_DSN_VAL"
-          fi
-
-          {
-            echo "SENTRY_DSN<<SENTRY_DSN_EOF"
-            printf '%s\n' "$SENTRY_DSN_VAL"
-            echo "SENTRY_DSN_EOF"
-            echo "VITE_SENTRY_DSN<<VITE_SENTRY_DSN_EOF"
-            printf '%s\n' "$VITE_SENTRY_DSN_VAL"
-            echo "VITE_SENTRY_DSN_EOF"
-          } >> "$GITHUB_ENV"
-
-          if [ -z "$SENTRY_DSN_VAL" ] && [ -z "$VITE_SENTRY_DSN_VAL" ]; then
-            echo "::warning::SENTRY_DSN is empty after the Infisical prod export and the GitHub secret fallback.  This build packages with Sentry inert."
+          if [ -n "${SENTRY_DSN:-}" ]; then
+            echo "::add-mask::$SENTRY_DSN"
+            {
+              echo "VITE_SENTRY_DSN<<VITE_SENTRY_DSN_EOF"
+              printf '%s\n' "$SENTRY_DSN"
+              echo "VITE_SENTRY_DSN_EOF"
+            } >> "$GITHUB_ENV"
+          else
+            echo "::warning::SENTRY_DSN and VITE_SENTRY_DSN are both empty after the Infisical prod export and the GitHub secret fallback.  This build packages with Sentry inert."
           fi
       - run: pnpm package:win
       - name: report what was built

@@ -28,26 +28,24 @@ test("ios-ship.yml targets botfleet / ios on GitHub-hosted macos-latest", () => 
   assert.match(yml, /bash scripts\/ios-ship-testflight\.sh/);
   assert.doesNotMatch(yml, /--force-ship/);
   assert.match(yml, /ios-appstore-gm-prepare\.sh/);
-  // Signing material comes from Infisical prod; identity stays on GitHub.
+  // Signing material comes from Infisical prod, through the shared
+  // composite action; identity stays on GitHub.
   assert.match(yml, /Load Infisical signing secrets/);
   assert.match(yml, /secrets\.INFISICAL_PROJECT_ID/);
   assert.match(yml, /secrets\.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID/);
   assert.match(yml, /secrets\.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET/);
-  assert.match(yml, /infisical login --method=universal-auth/);
-  assert.match(yml, /infisical secrets get/);
+  assert.match(yml, /uses:\s*\.\/\.github\/actions\/infisical-secrets/);
   assert.match(yml, /APPLE_API_KEY_ID/);
   assert.match(yml, /IOS_CERT_P12_BASE64/);
-  // SENTRY_DSN comes from Infisical prod at ship time, with the GitHub
-  // secret as a synced fallback read from step env -- never a job-level
-  // `secrets.SENTRY_DSN`, which is re-applied per step and would fight the
-  // later GITHUB_ENV write.
-  assert.match(yml, /infisical secrets get "SENTRY_DSN"/);
+  // SENTRY_DSN and SENTRY_AUTH_TOKEN come from Infisical prod at ship time,
+  // with the GitHub secret as a synced fallback read from step env -- never
+  // a job-level `secrets.SENTRY_DSN`, which is re-applied per step and
+  // would fight the later GITHUB_ENV write. The actual warning text now
+  // lives in scripts/infisical-fetch.mjs (asserted below), not the yml.
   assert.match(yml, /GH_FALLBACK_SENTRY_DSN/);
-  assert.match(
-    yml,
-    /SENTRY_DSN is empty after the Infisical prod export and the GitHub secret fallback/
-  );
+  assert.match(yml, /GH_FALLBACK_SENTRY_AUTH_TOKEN/);
   assert.doesNotMatch(yml, /^\s*SENTRY_DSN:\s*\$\{\{\s*secrets\.SENTRY_DSN\s*\}\}\s*$/m);
+  assert.doesNotMatch(yml, /^\s*SENTRY_AUTH_TOKEN:\s*\$\{\{\s*secrets\.SENTRY_AUTH_TOKEN\s*\}\}\s*$/m);
   assert.doesNotMatch(yml, /secrets\.APPLE_API_KEY_ID/);
   assert.doesNotMatch(yml, /secrets\.APPLE_API_ISSUER_ID/);
   assert.doesNotMatch(yml, /secrets\.APPLE_API_KEY_P8_BASE64/);
@@ -90,6 +88,29 @@ test("ios-ship.yml targets botfleet / ios on GitHub-hosted macos-latest", () => 
   assert.doesNotMatch(prepare, /echo "\$APPLE_API_KEY_P8/);
   assert.doesNotMatch(prepare, /echo "\$IOS_DIST_P12/);
   assert.doesNotMatch(prepare, /echo "\$IOS_CERT_P12/);
+});
+
+test("the shared Infisical action masks every value, warns rather than fails on a non-required empty name, and never prints one", () => {
+  const action = read(".github/actions/infisical-secrets/action.yml");
+  const fetcher = read("scripts/infisical-fetch.mjs");
+
+  assert.match(action, /Fetch named secrets from Infisical/);
+  assert.match(action, /run:\s*node "\$GITHUB_ACTION_PATH\/\.\.\/\.\.\/\.\.\/scripts\/infisical-fetch\.mjs"/);
+
+  // Every resolved value (Infisical or GH_FALLBACK_<NAME>) is masked before
+  // anything else touches it.
+  assert.match(fetcher, /::add-mask::\$\{line\}/);
+  // A name missing everywhere warns by default -- required is the only
+  // path that fails the job, and it fails by throwing (a non-zero exit at
+  // the CLI entry point), never a silent skip.
+  assert.match(fetcher, /::warning::\$\{message\}/);
+  assert.match(fetcher, /::error::\$\{message\}/);
+  assert.match(fetcher, /is empty after the Infisical \$\{environment\} export and the GitHub secret fallback/);
+  assert.match(fetcher, /required\.has\(name\)/);
+  assert.match(fetcher, /Missing required Infisical name\(s\)/);
+  // Never string-interpolate the login body -- a client secret containing
+  // a quote must not be able to reshape the request.
+  assert.match(fetcher, /JSON\.stringify\(\{\s*clientId,\s*clientSecret\s*\}\)/);
 });
 
 test("retired ios-testflight.yml is gone so hosted ships do not double-upload", () => {
