@@ -104,10 +104,12 @@ export function macAppFingerprint(options = {}) {
     join(options.home ?? process.env.HOME ?? "", "Applications", "BotFleet.app"),
   ];
   let infoPlist = null;
+  let matchedBundle = null;
   for (const candidate of candidates) {
     const path = join(candidate, "Contents", "Info.plist");
     if (existsSyncFn(path)) {
       infoPlist = path;
+      matchedBundle = candidate;
       break;
     }
   }
@@ -120,7 +122,13 @@ export function macAppFingerprint(options = {}) {
   }
   const plistText = infoPlistBytes.toString("utf8");
   const version = readVersion(plistText) ?? "unknown";
-  const execPath = options.execPath ?? join("/Applications/BotFleet.app", "Contents", "MacOS", "BotFleet");
+  // Hash the executable from the SAME bundle Info.plist was just read from
+  // -- not a hardcoded `/Applications/BotFleet.app`. A user-local install
+  // (`~/Applications/BotFleet.app`, which `candidates` already supports)
+  // would otherwise always hash a nonexistent or unrelated system-wide
+  // binary, so a local rebuild that keeps the same CFBundleVersion could
+  // never be told apart from the previous run for that install.
+  const execPath = options.execPath ?? join(matchedBundle, "Contents", "MacOS", "BotFleet");
   let size = 0;
   let mtime = 0;
   if (existsSyncFn(execPath)) {
