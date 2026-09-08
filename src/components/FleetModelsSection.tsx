@@ -1,17 +1,20 @@
-// Every bot's engine choices on one screen.
+// Every bot's model choices on one screen.
 //
 // Each bot's own profile can already change its models, but one at a time
 // and behind a click, which makes the only question that matters hard to
 // answer: what is everything else set to?  Choosing where a bot should run
-// is a comparison — you want two on the expensive engine and the rest
+// is a comparison — you want two on the expensive model and the rest
 // somewhere cheaper, or you want to move a whole tier off a provider that
 // is rate-limiting you.  This is that comparison, and it edits in place.
 //
-// Above the per-bot table sits a "Default" block with the same four Model
-// pickers.  The "Set all bots to default" button applies those defaults to
-// every bot in one call.  An empty picker is a deliberate "leave this slot
-// alone" — important because users frequently want to standardize the
-// primary engine without flattening their hand-curated fallback chain.
+// Above the per-bot list sits a Default block with the same Primary plus
+// fallback pickers.  Set All Bots To Default applies those values in one
+// call.  An empty picker is a deliberate "leave this model alone" —
+// important because users frequently want to standardize the primary
+// without flattening their hand-curated fallback chain.
+//
+// Pills wrap instead of sharing a four-column grid, so Primary, fallbacks,
+// and Add Fallback never overlap when names are long.
 import { useState } from "react";
 import { Plus, X } from "lucide-react";
 
@@ -23,86 +26,73 @@ import { ModelPicker } from "./ModelPicker";
 /** The most fallbacks a bot may carry, matching the per-bot profile. */
 const MAX_FALLBACKS = 2;
 
+/** Shared width so Primary, fallbacks, and Add Fallback wrap as siblings. */
+const CHIP = "flex min-w-[16rem] max-w-full flex-[1_1_16rem] flex-col gap-1";
+
 /** A default-model slot is either a real selection (so the server can
  * PATCH the bot's own value to match) or empty (so the server should leave
- * the bot's existing value at that slot alone). */
+ * the bot's existing value at that place alone). */
 type DefaultSlot = ModelSelection | null;
 
 function pickEmptyBot(bots: Bot[]): Bot | null {
   return bots.find((bot) => !bot.hidden) ?? null;
 }
 
-/** One default-slot: either an open picker or a "Set default" pill.  The
- * picker keeps its own internal state, so when the user has not picked a
- * model yet we show a button that opens a fresh picker.  Clearing the
- * slot returns it to the empty pill.  This is how the apply endpoint can
- * see a null and skip the slot for every bot. */
+function ChipLabel({ children }: { children: string }) {
+  return <div className="text-[12px] font-medium text-ink-secondary">{children}</div>;
+}
+
+/** One default slot: a Set Default pill, or a picker with a clear control.
+ * Tapping Set Default seeds from the stand-in bot so the picker opens on a
+ * real model instead of an empty control. */
 function DefaultSlot({
   bot,
   value,
+  label,
   onChange,
   onClear,
 }: {
   bot: Bot;
   value: DefaultSlot;
+  label: string;
   onChange: (next: ModelSelection) => void;
   onClear: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  if (!value) {
-    return (
-      <button
-        type="button"
-        onClick={() => setOpen(true)}
-        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-hairline/60 px-2.5 py-1.5 text-[13px] text-ink-secondary hover:border-hairline hover:text-ink"
-      >
-        <Plus size={13} />
-        Set default
-      </button>
-    );
-  }
-  if (!open) {
-    return (
-      <div className="flex items-start gap-1">
-        <div className="min-w-0 flex-1">
-          <ModelPicker
-            bot={bot}
-            contained
-            selection={value}
-            onChange={onChange}
-          />
-        </div>
+  return (
+    <div className={CHIP}>
+      <ChipLabel>{label}</ChipLabel>
+      {!value ? (
         <button
           type="button"
-          onClick={onClear}
-          aria-label="Clear this default"
-          title="Clear this default"
-          className="mt-1 shrink-0 rounded-md p-1 text-ink-secondary hover:bg-raised/70 hover:text-ink"
+          onClick={() =>
+            onChange({ instanceId: bot.modelSelection.instanceId, model: bot.modelSelection.model })
+          }
+          className="flex w-full items-center justify-center gap-1.5 rounded-full border border-dashed border-hairline/60 px-2.5 py-1 text-[13px] text-ink-secondary hover:border-hairline hover:text-ink"
         >
-          <X size={13} />
+          <Plus size={13} />
+          Set Default
         </button>
-      </div>
-    );
-  }
-  return (
-    <div className="flex items-start gap-1">
-      <div className="min-w-0 flex-1">
-        <ModelPicker
-          bot={bot}
-          contained
-          selection={value}
-          onChange={onChange}
-        />
-      </div>
-      <button
-        type="button"
-        onClick={onClear}
-        aria-label="Clear this default"
-        title="Clear this default"
-        className="mt-1 shrink-0 rounded-md p-1 text-ink-secondary hover:bg-raised/70 hover:text-ink"
-      >
-        <X size={13} />
-      </button>
+      ) : (
+        <div className="flex min-w-0 items-start gap-1">
+          <div className="min-w-0 flex-1">
+            <ModelPicker
+              bot={bot}
+              contained
+              selection={value}
+              onChange={onChange}
+            />
+          </div>
+          <button
+            type="button"
+            onClick={onClear}
+            aria-label={`Clear ${label}`}
+            title={`Clear ${label}`}
+            className="mt-1 shrink-0 rounded-md p-1 text-ink-secondary hover:bg-raised/70 hover:text-ink"
+          >
+            <X size={13} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -124,7 +114,7 @@ function DefaultModelBlock() {
 
   const apply = () => {
     if (!standIn) {
-      setError("Add a bot first so BotFleet has an engine to pick from.");
+      setError("Add a bot first so BotFleet has a model to pick from.");
       return;
     }
     setApplying(true);
@@ -156,51 +146,46 @@ function DefaultModelBlock() {
   if (!standIn) {
     return (
       <div className="rounded-xl border border-hairline/40 bg-card px-3 py-3 text-[13px] text-ink-secondary">
-        Add a bot to set a default engine.
+        Add a bot to set a default model.
       </div>
     );
   }
 
   return (
     <div className="rounded-xl border border-hairline/40 bg-card px-3 py-3">
-      <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-3 border-b border-hairline/40 pb-2 text-[12px] font-medium uppercase tracking-[0.06em] text-ink-secondary">
-        <div>Default</div>
-        <div>Primary</div>
-        <div>Secondary</div>
-        <div>Fallback</div>
-      </div>
-      <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-3 py-3">
-        <div className="flex min-w-0 items-center gap-2 text-[14px] font-medium text-ink-secondary">
-          Workspace default
-        </div>
+      <div className="text-[14px] font-medium text-ink">Workspace Default</div>
+      <div className="mt-3 flex flex-wrap items-start gap-2">
         <DefaultSlot
           bot={standIn}
+          label="Primary"
           value={primary}
           onChange={(selection) => setPrimary({ instanceId: selection.instanceId, model: selection.model })}
           onClear={() => setPrimary(null)}
         />
         <DefaultSlot
           bot={standIn}
+          label="Fallback 1"
           value={secondary}
           onChange={(selection) => setSecondary({ instanceId: selection.instanceId, model: selection.model })}
           onClear={() => setSecondary(null)}
         />
         <DefaultSlot
           bot={standIn}
+          label="Fallback 2"
           value={fallback1}
           onChange={(selection) => setFallback1({ instanceId: selection.instanceId, model: selection.model })}
           onClear={() => setFallback1(null)}
         />
       </div>
-      <div className="flex flex-wrap items-center gap-2 pt-1">
+      <div className="mt-3 flex flex-wrap items-center gap-2">
         <button
           type="button"
           disabled={applying || noneFilled}
           onClick={() => void apply()}
           title={
             noneFilled
-              ? "Pick at least one slot to apply."
-              : "Apply the current default to every bot, leaving any empty slot alone."
+              ? "Pick at least one model to apply."
+              : "Apply these defaults to every bot.  Empty fields keep each bot's current model."
           }
           className={cn(
             "rounded-lg bg-accent px-3 py-1.5 text-[12.5px] font-medium text-white hover:brightness-110",
@@ -210,7 +195,7 @@ function DefaultModelBlock() {
           {applying ? "Applying…" : "Set All Bots To Default"}
         </button>
         <span className="text-[11.5px] text-ink-secondary">
-          Empty fields leave the bot's existing value at that slot alone.
+          Empty fields keep each bot's current model.
         </span>
       </div>
       {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}
@@ -224,6 +209,12 @@ function BotModelRow({ bot }: { bot: Bot }) {
 
   const save = (selection: ModelSelection) =>
     dispatch({ type: "setModel", botId: bot.id, selection });
+
+  // The picker emits instance + model only.  Keep this bot's fallbacks
+  // (and any effort the picker preserved) so changing Primary does not
+  // wipe the rest of the chain.
+  const savePrimary = (selection: ModelSelection) =>
+    save({ ...selection, fallbacks: bot.modelSelection.fallbacks });
 
   const setFallback = (index: number, selection: ModelSelection) => {
     const next = [...fallbacks];
@@ -248,8 +239,8 @@ function BotModelRow({ bot }: { bot: Bot }) {
     });
 
   return (
-    <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-3 border-t border-hairline/40 py-3 first:border-t-0">
-      <div className="flex min-w-0 items-center gap-2">
+    <div className="flex flex-col gap-3 border-t border-hairline/40 py-3 first:border-t-0 sm:flex-row sm:items-start">
+      <div className="flex min-w-0 shrink-0 items-center gap-2 sm:w-44">
         <BotAvatar bot={bot} size={28} />
         <div className="min-w-0">
           <div className="truncate text-[14px] font-medium text-ink" title={bot.name}>{bot.name}</div>
@@ -259,53 +250,59 @@ function BotModelRow({ bot }: { bot: Bot }) {
         </div>
       </div>
 
-      <ModelPicker bot={bot} contained selection={bot.modelSelection} onChange={save} />
+      <div className="flex min-w-0 flex-1 flex-wrap items-start gap-2">
+        <div className={CHIP}>
+          <ChipLabel>Primary</ChipLabel>
+          <ModelPicker bot={bot} contained selection={bot.modelSelection} onChange={savePrimary} />
+        </div>
 
-      {Array.from({ length: MAX_FALLBACKS }, (_, index) => {
-        const fallback = fallbacks[index];
-        if (!fallback) {
-          // Only the next empty slot offers to fill itself, so the row does
-          // not sprout two identical buttons.
-          const isNext = index === fallbacks.length;
-          return (
-            <div key={index}>
-              {isNext ? (
+        {Array.from({ length: MAX_FALLBACKS }, (_, index) => {
+          const fallback = fallbacks[index];
+          if (!fallback) {
+            // Only the next empty place offers to fill itself, so the row does
+            // not sprout two identical buttons.
+            const isNext = index === fallbacks.length;
+            if (!isNext) return null;
+            return (
+              <div key={index} className={CHIP}>
+                <ChipLabel>Fallback {index + 1}</ChipLabel>
                 <button
                   type="button"
                   onClick={addFallback}
-                  className="flex w-full items-center gap-1.5 rounded-lg border border-dashed border-hairline/60 px-2.5 py-1.5 text-[13px] text-ink-secondary hover:border-hairline hover:text-ink"
+                  className="flex w-full items-center justify-center gap-1.5 rounded-full border border-dashed border-hairline/60 px-2.5 py-1 text-[13px] text-ink-secondary hover:border-hairline hover:text-ink"
                 >
                   <Plus size={13} />
                   Add Fallback
                 </button>
-              ) : (
-                <div className="px-2.5 py-1.5 text-[13px] text-ink-secondary/50">&mdash;</div>
-              )}
+              </div>
+            );
+          }
+          return (
+            <div key={index} className={CHIP}>
+              <ChipLabel>Fallback {index + 1}</ChipLabel>
+              <div className="flex min-w-0 items-start gap-1">
+                <div className="min-w-0 flex-1">
+                  <ModelPicker
+                    bot={bot}
+                    contained
+                    selection={fallback}
+                    onChange={(selection) => setFallback(index, selection)}
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => removeFallback(index)}
+                  aria-label={`Remove Fallback ${index + 1} from ${bot.name}`}
+                  title={`Remove Fallback ${index + 1}`}
+                  className="mt-1 shrink-0 rounded-md p-1 text-ink-secondary hover:bg-raised/70 hover:text-ink"
+                >
+                  <X size={13} />
+                </button>
+              </div>
             </div>
           );
-        }
-        return (
-          <div key={index} className="flex items-start gap-1">
-            <div className="min-w-0 flex-1">
-              <ModelPicker
-                bot={bot}
-                contained
-                selection={fallback}
-                onChange={(selection) => setFallback(index, selection)}
-              />
-            </div>
-            <button
-              type="button"
-              onClick={() => removeFallback(index)}
-              aria-label={`Remove fallback ${index + 1} from ${bot.name}`}
-              title={`Remove fallback ${index + 1}`}
-              className="mt-1 shrink-0 rounded-md p-1 text-ink-secondary hover:bg-raised/70 hover:text-ink"
-            >
-              <X size={13} />
-            </button>
-          </div>
-        );
-      })}
+        })}
+      </div>
     </div>
   );
 }
@@ -327,7 +324,7 @@ export function FleetModelsSection() {
         ),
     );
 
-  // How many bots sit on each engine, so the shape of the fleet is legible
+  // How many bots sit on each model, so the shape of the fleet is legible
   // without reading every row.
   const perInstance = new Map<string, number>();
   for (const bot of state.bots.filter((b) => !b.hidden)) {
@@ -341,8 +338,8 @@ export function FleetModelsSection() {
       <div>
         <h2 className="text-[15px] font-semibold text-ink">Models</h2>
         <p className="mt-1 text-[13px] text-ink-secondary">
-          Every bot's primary engine and its fallbacks, together.  A turn that fails
-          because a provider is capped moves down this list, so the fallbacks matter most
+          Every bot's primary model and its fallbacks, together.{"\u00A0 "}A turn that fails
+          because a model is out of capacity moves down this list, so the fallbacks matter most
           when a provider is having a bad day.
         </p>
       </div>
@@ -369,17 +366,11 @@ export function FleetModelsSection() {
         value={query}
         onChange={(event) => setQuery(event.target.value)}
         placeholder="Filter by bot or model"
-        aria-label="Filter bots by name or model"
+        aria-label="Filter Bots by Name or Model"
         className="w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[14px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none"
       />
 
       <div className="rounded-xl border border-hairline/40 bg-card px-3 py-1">
-        <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-3 border-b border-hairline/40 py-2 text-[12px] font-medium uppercase tracking-[0.06em] text-ink-secondary">
-          <div>Bot</div>
-          <div>Primary</div>
-          <div>Fallback 1</div>
-          <div>Fallback 2</div>
-        </div>
         {bots.length === 0 ? (
           <div className={cn("px-1 py-6 text-center text-[13px] text-ink-secondary")}>
             {needle ? `Nothing matches “${query}”` : "No bots yet"}
