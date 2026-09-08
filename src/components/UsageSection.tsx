@@ -327,7 +327,8 @@ export function UsageSection() {
                   // anonymous bucket from a custom driver, etc.) is a real
                   // signal the user needs to read in the headline strip —
                   // without it the chip says "At Usage Cap" with no source.
-                  ...(wildcardCap
+                  // Skip when Usage Monitor already produced a Monthly row.
+                  ...(wildcardCap && !headlines.some((headline) => headline.display === "Monthly")
                     ? [{
                         display: "Monthly",
                         remainingPercent: 0,
