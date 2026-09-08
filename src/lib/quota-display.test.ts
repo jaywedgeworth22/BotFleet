@@ -88,6 +88,16 @@ describe("antigravity group summary", () => {
     ]);
   });
 
+  it("does not show 0% when the group still has a usable model", () => {
+    const groups = antigravityGroupSummary([
+      { label: "Gemini 3.1 Pro", modelId: "gemini-3.1-pro-high", remainingPercentage: 0, isExhausted: false },
+      { label: "Gemini 3 Flash", modelId: "gemini-3-flash", remainingPercentage: 0.4, isExhausted: false },
+    ]);
+    expect(groups).toEqual([
+      { group: "gemini", label: "Gemini", remainingPercent: 40, exhausted: false },
+    ]);
+  });
+
   it("marks the whole group exhausted when every model is", () => {
     const groups = antigravityGroupSummary([
       { label: "Claude 4.6 Sonnet", modelId: "claude-sonnet-4-6", isExhausted: true },

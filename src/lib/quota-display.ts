@@ -57,6 +57,7 @@ export function antigravityGroupSummary(models: QuotaDisplayModel[]): Antigravit
   for (const [group, list] of Object.entries(groups) as Array<["gemini" | "external", QuotaDisplayModel[]]>) {
     if (list.length === 0) continue;
     const reported = list
+      .filter((m) => !isQuotaModelExhausted(m))
       .map((m) => m.remainingPercentage)
       .filter((value): value is number => typeof value === "number");
     const exhausted = list.every(isQuotaModelExhausted);
