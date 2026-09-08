@@ -82,8 +82,8 @@ See the [OpenMausBot repository](https://github.com/milind-soni/OpenMausBot) for
 
 | | Download | Install |
 |---|---|---|
-| **macOS** (Apple silicon) | [BotFleet-1.0.30-arm64.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-1.0.30-arm64.dmg) | Drag it to Applications, open it.  Signed with the BotFleet Developer ID. |
-| **macOS** (Intel) | [BotFleet-1.0.30-x64.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-1.0.30-x64.dmg) | Same app, built for Intel Macs. |
+| **macOS** (Apple silicon) | [BotFleet.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet.dmg) | Drag it to Applications, open it.  Signed with the BotFleet Developer ID. |
+| **macOS** (Intel) | [BotFleet-intel.dmg](https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-intel.dmg) | Same app, built for Intel Macs. |
 | **Windows** (x64) | Not published yet | The Windows installer is built by the release workflow but no Windows build has shipped.  Watch the [releases page](https://github.com/jaywedgeworth22/BotFleet/releases) or build from source below. |
 | **Ubuntu 24.04** (x64) | Not published yet | Ubuntu packages are built by the release workflow but no Ubuntu build has shipped.  See the [Ubuntu Desktop guide](docs/linux-desktop.md) to build one from source. |
 
