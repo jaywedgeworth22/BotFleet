@@ -92,7 +92,16 @@ describe("augmentedPath", () => {
       resetPathCacheForTests();
 
       augmentedPath();
-      await vi.waitFor(() => expect(augmentedPath().split(delimiter)).toContain(rcOnlyBin));
+      // The probe this waits on spawns a login+interactive shell under a
+      // 5s execFile budget (env-path.ts probeLoginShellPath), so vi.waitFor's
+      // 1s default is shorter than the operation it is waiting for — a cold
+      // process spawn alone can exceed a second on a busy machine.  Give the
+      // wait the probe's own budget plus margin, and poll faster so a normal
+      // spawn still resolves in milliseconds.
+      await vi.waitFor(() => expect(augmentedPath().split(delimiter)).toContain(rcOnlyBin), {
+        timeout: 8_000,
+        interval: 20,
+      });
 
       resetPathCache();
       expect(augmentedPath().split(delimiter)).toContain(rcOnlyBin);

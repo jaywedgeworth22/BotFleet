@@ -2394,6 +2394,72 @@ describe("harness HTTP API", () => {
     expect(String(afterClear.body.error)).toMatch(/token/i);
   });
 
+  // Diagnostics: the DSN is a write key.  /api/config is broadcast to every
+  // window and, with Remote Access on, travels the tunnel, so it may carry
+  // the ingest host and nothing more.  The renderer route is the one place
+  // the whole DSN is allowed out, and only over loopback.
+  it("keeps the Sentry DSN off the broadcast config frame and serves it on the renderer route", async () => {
+    // A deliberately fake DSN.  It is never captured against, so nothing on
+    // this path opens a socket to it.
+    const dsn = "https://abc123@o0.ingest.sentry.io/1";
+    try {
+      const before = await api("GET", "/api/observability");
+      expect(before.status).toBe(200);
+      expect(before.body).toMatchObject({ configured: false, enabled: false, source: "none", dsn: null });
+
+      const unconfigured = await api("POST", "/api/observability/test");
+      expect(unconfigured.status).toBe(200);
+      expect(unconfigured.body.ok).toBe(false);
+      expect(String(unconfigured.body.error)).toMatch(/dsn/i);
+
+      const saved = await api("PATCH", "/api/config", {
+        observability: { sentryDsn: dsn, environment: "staging", tracesSampleRate: 0 },
+      });
+      expect(saved.status).toBe(200);
+      expect(saved.body.observability).toMatchObject({
+        configured: true,
+        enabled: true,
+        hasDsn: true,
+        host: "o0.ingest.sentry.io",
+        source: "config",
+        environment: "staging",
+        // an explicit zero is a real choice, not a missing value that
+        // should fall back to the 0.2 default
+        tracesSampleRate: 0,
+        logsEnabled: true,
+      });
+      expect(saved.body.observability.dsn).toBeUndefined();
+      expect(JSON.stringify(saved.body)).not.toContain("abc123");
+
+      const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(disk.observability).toMatchObject({ sentryDsn: dsn, environment: "staging" });
+
+      // the renderer cannot start a browser SDK on a host and a project id
+      const runtime = await api("GET", "/api/observability");
+      expect(runtime.status).toBe(200);
+      expect(runtime.body).toMatchObject({ configured: true, enabled: true, source: "config", dsn });
+
+      // the kill switch is explicit and takes effect without a restart
+      const off = await api("PATCH", "/api/config", { observability: { enabled: false } });
+      expect(off.status).toBe(200);
+      expect(off.body.observability).toMatchObject({ configured: true, hasDsn: true, enabled: false });
+      const afterOff = await api("GET", "/api/observability");
+      expect(afterOff.body.enabled).toBe(false);
+      const refused = await api("POST", "/api/observability/test");
+      expect(refused.body.ok).toBe(false);
+      expect(String(refused.body.error)).toMatch(/turned off/i);
+
+      const invalid = await api("PATCH", "/api/config", { observability: { sentryDsn: "http://k@example.com/1" } });
+      expect(invalid.status).toBe(400);
+      expect(String(invalid.body.error)).toMatch(/DSN/);
+    } finally {
+      await api("PATCH", "/api/config", { observability: { sentryDsn: "", enabled: true, environment: "" } });
+    }
+
+    const cleared = await api("GET", "/api/observability");
+    expect(cleared.body).toMatchObject({ configured: false, enabled: false, dsn: null });
+  });
+
   it("persists autoUpdate and ingress without reloading providers", async () => {
     try {
       const saved = await api("PATCH", "/api/config", {

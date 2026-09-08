@@ -9,6 +9,7 @@ import { z } from "zod";
 import { writeFileAtomic } from "./atomic.ts";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
+import { describeDsn } from "./sentry.ts";
 import {
   parseConversationMode,
   STORED_CONVERSATION_MODES,
@@ -45,6 +46,28 @@ export function isAbsoluteHttpUrl(value: unknown): value is string {
     return false;
   }
 }
+
+/** A Sentry DSN, which is more than an https URL: the public key rides in
+ * the username and the project id is the last path segment.
+ * `isAbsoluteHttpUrl` accepts `http://` and rejects a username outright, so
+ * it cannot stand in here.  A DSN missing either half is silently inert
+ * inside the SDK, which is exactly the failure this rejects at the door.
+ *
+ * The rule itself lives in `describeDsn` rather than here, because the door
+ * check and the runtime check drifting apart is what lets a DSN the SDK
+ * refuses reach `Sentry.init`, where the SDK prints the whole thing —
+ * public key included — through its own `console.error`.  One grammar, one
+ * place, no drift. */
+export function isSentryDsn(value: string): boolean {
+  const raw = value.trim();
+  if (!raw) return false;
+  return describeDsn(raw) !== null;
+}
+
+/** Sentry truncates an environment past 80 characters, and so does the
+ * usage-telemetry v2 schema.  Reject rather than silently store a name the
+ * operator will never see again. */
+export const MAX_OBSERVABILITY_ENVIRONMENT_LENGTH = 80;
 
 /** Per-desktop budget on a VPS.  Unlike the Local VM — the only desktop on
  * the person's own workstation — a VPS runs one desktop per bot on a single
@@ -228,6 +251,16 @@ const appConfigSchema = z.object({
       .array(z.object({ slug: z.string(), match: z.array(z.string()).optional() }))
       .optional(),
   }).optional(),
+  // Error and performance reporting.  The kill switch is explicit: a DSN
+  // with no `enabled` flag reports.  Only a stored `false` stops it, so an
+  // upgraded install never goes quiet without saying why.
+  observability: z.object({
+    sentryDsn: optionalText,
+    enabled: z.boolean().optional(),
+    environment: optionalText,
+    tracesSampleRate: z.number().min(0).max(1).optional(),
+    logsEnabled: z.boolean().optional(),
+  }).optional(),
   features: featureConfigSchema.optional(),
   conversationMode: z.enum(STORED_CONVERSATION_MODES).optional(),
   terminology: z
@@ -295,6 +328,17 @@ export interface AppConfig {
     readToken?: string;
     projects?: Array<{ slug: string; match?: string[] }>;
   };
+  /** Error and performance reporting.  `sentryDsn` is the operator's own
+   * Sentry project — BotFleet ships none.  `enabled` is the explicit kill
+   * switch: absent means on, so a stored DSN reports until somebody turns
+   * it off on purpose. */
+  observability?: {
+    sentryDsn?: string;
+    enabled?: boolean;
+    environment?: string;
+    tracesSampleRate?: number;
+    logsEnabled?: boolean;
+  };
   /** Opt-in product experiments. Every flag defaults to disabled. */
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
   /** How the roster and threads are laid out.  Absent means simple. */
@@ -331,6 +375,24 @@ export function parseConfigPatch(value: JsonValue): ConfigPatch {
   const ingestUrl = rest.usage?.ingestUrl;
   if (ingestUrl !== undefined && ingestUrl.trim() && !isAbsoluteHttpUrl(ingestUrl)) {
     throw Object.assign(new Error("usage.ingestUrl must be an absolute http(s) URL"), { status: 400 });
+  }
+  // An empty or whitespace DSN is the documented "clear the stored key"
+  // path, so it passes; anything else has to be a real DSN.
+  const sentryDsn = rest.observability?.sentryDsn;
+  if (sentryDsn !== undefined && sentryDsn.trim() && !isSentryDsn(sentryDsn)) {
+    throw Object.assign(new Error("observability.sentryDsn must be a Sentry https:// DSN"), { status: 400 });
+  }
+  const sentryEnvironment = rest.observability?.environment;
+  if (
+    sentryEnvironment !== undefined &&
+    sentryEnvironment.trim().length > MAX_OBSERVABILITY_ENVIRONMENT_LENGTH
+  ) {
+    throw Object.assign(
+      new Error(
+        `observability.environment must be ${MAX_OBSERVABILITY_ENVIRONMENT_LENGTH} characters or fewer`,
+      ),
+      { status: 400 },
+    );
   }
   return rawMode === undefined
     ? rest
@@ -403,6 +465,61 @@ export function usageProjectRules(cfg: AppConfig): Array<{ slug: string; match: 
       match: (rule.match ?? []).map((term) => term.trim()).filter(Boolean),
     }))
     .filter((rule) => rule.slug.length > 0 && rule.match.length > 0);
+}
+
+/** Sentry's own default is 1.0, which is far too much traffic for a
+ * long-running harness.  A fifth of turns is enough to see a latency
+ * regression without paying for every span. */
+export const DEFAULT_SENTRY_TRACES_SAMPLE_RATE = 0.2;
+
+/** Everything the Sentry runtime reads out of app config, already
+ * defaulted.  `dsn` is null when nothing usable is stored — the operator's
+ * own project or nothing, because BotFleet ships no DSN. */
+export interface ObservabilitySettings {
+  dsn: string | null;
+  enabled: boolean;
+  environment: string;
+  tracesSampleRate: number;
+  logsEnabled: boolean;
+}
+
+/** The stored DSN, or null when it is absent or not a real DSN.  A stored
+ * value that fails the check is treated as absent rather than handed to the
+ * SDK, which would accept it and then quietly drop every event. */
+export function sentryDsnConfigured(cfg: AppConfig): string | null {
+  const raw = cfg.observability?.sentryDsn?.trim();
+  return raw && isSentryDsn(raw) ? raw : null;
+}
+
+/** The explicit kill switch.  Absent means on, matching `ingress.enabled`:
+ * an install that has never seen this setting keeps reporting, and only a
+ * stored `false` stops it. */
+export function observabilityEnabled(cfg: AppConfig): boolean {
+  return cfg.observability?.enabled !== false;
+}
+
+/** Resolve the stored settings against their defaults.  `environment` and
+ * `tracesSampleRate` fall back to the long-standing `SENTRY_ENV` and
+ * `SENTRY_TRACES_SAMPLE_RATE` env names so an operator who pinned those
+ * before this section existed keeps what they had; a value saved in
+ * Settings wins over both.  The DSN resolves the other way round — env
+ * beats config — and that ordering lives in the observability manager. */
+export function observabilitySettings(cfg: AppConfig): ObservabilitySettings {
+  const envRate = Number(process.env.SENTRY_TRACES_SAMPLE_RATE);
+  const rate =
+    cfg.observability?.tracesSampleRate ??
+    (Number.isFinite(envRate) ? envRate : DEFAULT_SENTRY_TRACES_SAMPLE_RATE);
+  const environment =
+    cfg.observability?.environment?.trim() ||
+    (process.env.SENTRY_ENV || process.env.NODE_ENV || "production").trim() ||
+    "production";
+  return {
+    dsn: sentryDsnConfigured(cfg),
+    enabled: observabilityEnabled(cfg),
+    environment: environment.slice(0, MAX_OBSERVABILITY_ENVIRONMENT_LENGTH),
+    tracesSampleRate: Math.min(Math.max(rate, 0), 1),
+    logsEnabled: cfg.observability?.logsEnabled !== false,
+  };
 }
 
 export function localVmMaxInstances(cfg: AppConfig): number {
@@ -595,12 +712,13 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     /* first write */
   }
   const checkedPatch = appConfigSchema.partial().parse(patch);
-  // usage and qdrant are operator-supplied endpoints (Usage Monitor telemetry,
-  // Bot RAG).  They must merge like the other sections: a URL-only patch must
-  // not wipe a stored token.  Omitting them from this list meant PATCH
-  // /api/config { usage } never wrote ~/.botfleet/config.json, so Settings
-  // reloaded empty fields.
-  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "botDefaults"] as const) {
+  // usage, qdrant and observability are operator-supplied endpoints (Usage
+  // Monitor telemetry, Bot RAG, Sentry).  They must merge like the other
+  // sections: a URL-only patch must not wipe a stored token, and a
+  // toggle-only patch must not wipe a stored DSN.  Omitting them from this
+  // list meant PATCH /api/config { usage } never wrote
+  // ~/.botfleet/config.json, so Settings reloaded empty fields.
+  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "observability", "botDefaults"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

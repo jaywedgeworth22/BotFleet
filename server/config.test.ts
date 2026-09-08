@@ -27,8 +27,19 @@ import {
   AUTO_UPDATE_THROTTLE_MS,
   publicIngressUrl,
   publicIngressUrlEffective,
+  isSentryDsn,
+  observabilityEnabled,
+  observabilitySettings,
+  sentryDsnConfigured,
+  DEFAULT_SENTRY_TRACES_SAMPLE_RATE,
+  MAX_OBSERVABILITY_ENVIRONMENT_LENGTH,
   type AppConfig,
 } from "./config.ts";
+import { isSentryDsn as isBrowserSentryDsn } from "../src/lib/observability-config.ts";
+
+// Obviously fake, and never sent anywhere: these exist so the assertions
+// below have a DSN-shaped string to work on.
+const SENTINEL_DSN = "https://abc123@o0.ingest.sentry.io/1";
 
 describe("configuration boundaries", () => {
   it("keeps supported stored settings and drops unrelated top-level data", () => {
@@ -495,6 +506,30 @@ describe("saveConfig section merge", () => {
       collection: "other",
     });
   });
+
+  it("persists the observability section, and a toggle-only patch keeps the DSN", () => {
+    saveConfig({ observability: { sentryDsn: SENTINEL_DSN, environment: "operator" } });
+    expect(loadConfig().observability).toMatchObject({
+      sentryDsn: SENTINEL_DSN,
+      environment: "operator",
+    });
+
+    // the kill switch and the sample rate are edited on their own in
+    // Settings; neither may wipe the stored key on the way through
+    saveConfig({ observability: { enabled: false, tracesSampleRate: 0 } });
+    expect(loadConfig().observability).toMatchObject({
+      sentryDsn: SENTINEL_DSN,
+      environment: "operator",
+      enabled: false,
+      tracesSampleRate: 0,
+    });
+    expect(sentryDsnConfigured(loadConfig())).toBe(SENTINEL_DSN);
+    expect(observabilityEnabled(loadConfig())).toBe(false);
+
+    // and clearing is explicit: an empty string is the documented remove path
+    saveConfig({ observability: { sentryDsn: "" } });
+    expect(sentryDsnConfigured(loadConfig())).toBeNull();
+  });
 });
 
 describe("workspace credential env strip", () => {
@@ -649,5 +684,152 @@ describe("public ingress URL", () => {
       publicIngressUrlEffective({ ingress: { publicUrl: "https://hooks.example.com" } }),
     ).toBe("https://hooks.example.com");
     expect(publicIngressUrlEffective({})).toBeNull();
+  });
+});
+
+describe("observability settings", () => {
+  let savedEnv: Record<string, string | undefined>;
+  const ENV_NAMES = ["SENTRY_ENV", "SENTRY_TRACES_SAMPLE_RATE", "NODE_ENV"] as const;
+
+  beforeEach(() => {
+    savedEnv = Object.fromEntries(ENV_NAMES.map((name) => [name, process.env[name]]));
+    for (const name of ENV_NAMES) delete process.env[name];
+  });
+  afterEach(() => {
+    for (const name of ENV_NAMES) {
+      if (savedEnv[name] === undefined) delete process.env[name];
+      else process.env[name] = savedEnv[name];
+    }
+  });
+
+  it("accepts a real DSN and rejects the shapes the SDK would silently ignore", () => {
+    expect(isSentryDsn(SENTINEL_DSN)).toBe(true);
+    // http, no public key, and no project id each leave the SDK inert
+    expect(isSentryDsn("http://abc123@o0.ingest.sentry.io/1")).toBe(false);
+    expect(isSentryDsn("https://o0.ingest.sentry.io/1")).toBe(false);
+    expect(isSentryDsn("https://abc123@o0.ingest.sentry.io")).toBe(false);
+    expect(isSentryDsn("")).toBe(false);
+    expect(isSentryDsn("not a url")).toBe(false);
+    expect(isSentryDsn("   ")).toBe(false);
+  });
+
+  // @sentry/core matches a DSN against its own `DSN_REGEX` — public key
+  // `\w+`, host `[\w.-]+` or a bracketed IPv6 literal — and answers a string
+  // that fails it by printing the WHOLE DSN, public key included, through
+  // `console.error` before returning nothing.  `Sentry.init` does not throw
+  // on that; it builds a client holding no DSN and captures nothing.  So a
+  // shape this check waves through is both a credential in the harness log
+  // on every boot and a fleet that reports itself watched while it is not.
+  it("rejects the shapes @sentry/core's own parser would print and then discard", () => {
+    // a UUID-shaped public key: hyphens fail `\w+`
+    expect(isSentryDsn("https://a1b2c3d4-e5f6-47a8-9b0c-1d2e3f4a5b6c@o123.ingest.sentry.io/456")).toBe(false);
+    // a dotted key fails it too
+    expect(isSentryDsn("https://abc.123@o0.ingest.sentry.io/1")).toBe(false);
+    // `validateDsn` insists the project id is all digits
+    expect(isSentryDsn("https://abc123@o0.ingest.sentry.io/not-a-project")).toBe(false);
+    // and the shapes that stay legal
+    expect(isSentryDsn("https://abc123@o0.ingest.sentry.io:9000/1")).toBe(true);
+    expect(isSentryDsn("https://abc123@sentry.example.com/sentry/42")).toBe(true);
+    expect(isSentryDsn("https://abc_123@o0.ingest.sentry.io/1")).toBe(true);
+  });
+
+  // The renderer cannot import a server module, so `src/lib/observability-config.ts`
+  // carries its own copy of the grammar.  Two copies that disagree put the
+  // Settings card and the harness on different rules, which is how a DSN the
+  // card accepted gets refused (or, worse, printed) at the other end.
+  it("keeps the browser copy of the rule byte-for-byte in agreement", () => {
+    const cases = [
+      SENTINEL_DSN,
+      "https://abc_123@o0.ingest.sentry.io/1",
+      "https://abc123@o0.ingest.sentry.io:9000/1",
+      "https://abc123@sentry.example.com/sentry/42",
+      "https://a1b2c3d4-e5f6-47a8-9b0c-1d2e3f4a5b6c@o123.ingest.sentry.io/456",
+      "https://abc.123@o0.ingest.sentry.io/1",
+      "https://abc123@o0.ingest.sentry.io/not-a-project",
+      "http://abc123@o0.ingest.sentry.io/1",
+      "https://o0.ingest.sentry.io/1",
+      "https://abc123@o0.ingest.sentry.io",
+      "not a url",
+      "",
+      "   ",
+    ];
+    for (const value of cases) {
+      expect([value, isBrowserSentryDsn(value)]).toEqual([value, isSentryDsn(value)]);
+    }
+  });
+
+  it("rejects a patch that is not a DSN and treats an empty one as a clear", () => {
+    expect(() => parseConfigPatch({ observability: { sentryDsn: "http://abc123@o0.ingest.sentry.io/1" } })).toThrow(
+      "observability.sentryDsn must be a Sentry https:// DSN",
+    );
+    expect(() => parseConfigPatch({ observability: { sentryDsn: "https://o0.ingest.sentry.io/1" } })).toThrow(
+      "observability.sentryDsn must be a Sentry https:// DSN",
+    );
+    expect(() => parseConfigPatch({ observability: { sentryDsn: "https://abc123@o0.ingest.sentry.io" } })).toThrow(
+      "observability.sentryDsn must be a Sentry https:// DSN",
+    );
+    expect(parseConfigPatch({ observability: { sentryDsn: "" } })).toEqual({
+      observability: { sentryDsn: "" },
+    });
+    expect(
+      parseConfigPatch({
+        observability: { sentryDsn: SENTINEL_DSN, enabled: false, tracesSampleRate: 0, logsEnabled: false },
+      }),
+    ).toEqual({
+      observability: { sentryDsn: SENTINEL_DSN, enabled: false, tracesSampleRate: 0, logsEnabled: false },
+    });
+  });
+
+  it("rejects an over-long environment name and a sample rate outside 0..1", () => {
+    const tooLong = "e".repeat(MAX_OBSERVABILITY_ENVIRONMENT_LENGTH + 1);
+    expect(() => parseConfigPatch({ observability: { environment: tooLong } })).toThrow(
+      `observability.environment must be ${MAX_OBSERVABILITY_ENVIRONMENT_LENGTH} characters or fewer`,
+    );
+    expect(
+      parseConfigPatch({ observability: { environment: "e".repeat(MAX_OBSERVABILITY_ENVIRONMENT_LENGTH) } }),
+    ).toEqual({ observability: { environment: "e".repeat(MAX_OBSERVABILITY_ENVIRONMENT_LENGTH) } });
+    expect(() => parseConfigPatch({ observability: { tracesSampleRate: 1.5 } })).toThrow(
+      "observability.tracesSampleRate",
+    );
+    expect(() => parseConfigPatch({ observability: { tracesSampleRate: -0.1 } })).toThrow(
+      "observability.tracesSampleRate",
+    );
+  });
+
+  it("keeps the kill switch explicit: absent means diagnostics are on", () => {
+    expect(observabilityEnabled({})).toBe(true);
+    expect(observabilityEnabled({ observability: {} })).toBe(true);
+    expect(observabilityEnabled({ observability: { enabled: true } })).toBe(true);
+    expect(observabilityEnabled({ observability: { enabled: false } })).toBe(false);
+  });
+
+  it("returns a stored DSN and drops one that is not a DSN at all", () => {
+    expect(sentryDsnConfigured({ observability: { sentryDsn: ` ${SENTINEL_DSN} ` } })).toBe(SENTINEL_DSN);
+    expect(sentryDsnConfigured({ observability: { sentryDsn: "https://o0.ingest.sentry.io/1" } })).toBeNull();
+    expect(sentryDsnConfigured({})).toBeNull();
+  });
+
+  it("defaults the environment, sample rate, and log forwarding", () => {
+    expect(observabilitySettings({})).toEqual({
+      dsn: null,
+      enabled: true,
+      environment: "production",
+      tracesSampleRate: DEFAULT_SENTRY_TRACES_SAMPLE_RATE,
+      logsEnabled: true,
+    });
+  });
+
+  it("prefers a saved value over the long-standing env names", () => {
+    process.env.SENTRY_ENV = "from-env";
+    process.env.SENTRY_TRACES_SAMPLE_RATE = "0.9";
+    expect(observabilitySettings({})).toMatchObject({ environment: "from-env", tracesSampleRate: 0.9 });
+    expect(
+      observabilitySettings({ observability: { environment: "operator", tracesSampleRate: 0.05 } }),
+    ).toMatchObject({ environment: "operator", tracesSampleRate: 0.05 });
+  });
+
+  it("keeps an explicit zero sample rate instead of defaulting it away", () => {
+    expect(observabilitySettings({ observability: { tracesSampleRate: 0 } }).tracesSampleRate).toBe(0);
+    expect(observabilitySettings({ observability: { logsEnabled: false } }).logsEnabled).toBe(false);
   });
 });

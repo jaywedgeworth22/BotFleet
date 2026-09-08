@@ -108,7 +108,12 @@ export type RuntimeEvent = RuntimeEventBase &
         /** THIS turn's token total, as the provider reports it at the end.
          * The one figure the harness accumulates — thread.token-usage.updated
          * is a live indicator whose meaning differs per driver (a per-call
-         * delta, a thread total, a per-step figure) and must never be summed. */
+         * delta, a thread total, a per-step figure) and must never be summed.
+         * Invariant: when `cachedInput` is present it is ALREADY INCLUDED in
+         * `input` (claude.ts sums cache reads into input; codex reports it
+         * that way natively).  Usage Monitor telemetry subtracts it back out
+         * to bill cache reads at their own rate, so a driver that reports
+         * input EXCLUDING cache must fold the cache figure in first. */
         usage?: { input: number; output: number; cachedInput?: number };
       }
     | {
@@ -164,6 +169,7 @@ export type RuntimeEvent = RuntimeEventBase &
         source: "user" | "auto" | "timeout" | "system" | "unavailable" | "peer";
         approvalScope?: "local-computer";
       }
+    // Same invariant as turn.completed.usage: `cachedInput` is a subset of `input`.
     | { type: "thread.token-usage.updated"; input: number; output: number; cachedInput?: number }
     // `setup: true` marks a failure the user fixes by installing or
     // configuring something, not by retrying — the UI offers setup instead.

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordEvents } from "../testing/events.ts";
-import { OpenAICompatDriver } from "./openai-compat.ts";
+import { OpenAICompatDriver, sentryProviderForUrl } from "./openai-compat.ts";
 
 describe("OpenAICompatDriver", () => {
   const savedUrl = process.env.OPENAI_COMPAT_URL;
@@ -326,5 +326,22 @@ describe("OpenAICompatDriver tool steps", () => {
     expect(inst.adapter.capabilities.localComputerMcp).toBeFalsy();
     expect(await inst.adapter.respondToRequest("t", "r", { behavior: "allow" })).toBe("unavailable");
     await inst.dispose();
+  });
+});
+
+describe("Sentry provider for an OpenAI-compatible endpoint", () => {
+  it("names the vendor actually answering, not the wire shape", () => {
+    expect(sentryProviderForUrl("https://openrouter.ai/api/v1")).toBe("openrouter");
+    expect(sentryProviderForUrl("https://api.groq.com/openai/v1")).toBe("groq");
+    expect(sentryProviderForUrl("https://api.openai.com/v1")).toBe("openai");
+  });
+
+  it("falls back to openai-compat for anything else, matching on host only", () => {
+    expect(sentryProviderForUrl("http://127.0.0.1:8080/v1")).toBe("openai-compat");
+    expect(sentryProviderForUrl("https://together.xyz/v1")).toBe("openai-compat");
+    // A look-alike host must not be read as the real one.
+    expect(sentryProviderForUrl("https://openrouter.ai.example.com/v1")).toBe("openai-compat");
+    expect(sentryProviderForUrl("https://notgroq.com/v1")).toBe("openai-compat");
+    expect(sentryProviderForUrl("not a url")).toBe("openai-compat");
   });
 });

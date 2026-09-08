@@ -16,6 +16,14 @@ export interface TelemetryTurnParams {
   costUsd?: number | null;
   latencyMs?: number;
   success?: boolean;
+  /** Set for a room turn, so Usage Monitor can tell shared-room spend from
+   * a 1:1 task turn.  Absent on 1:1 turns; never an empty string. */
+  roomId?: string;
+  roomName?: string;
+  /** The engine that ran the turn (`claudeAgent`, `codex`, `opencodeGo`, …).
+   * Preferred over the instance-id heuristics when it is known, because an
+   * instance id is operator-chosen and an engine id is not. */
+  driverKind?: string;
 }
 
 export interface TelemetryStatus {
@@ -42,6 +50,62 @@ export interface UsageSettings {
   ingestUrl?: string | null;
   ingestToken?: string | null;
   projects?: UsageProjectRule[];
+}
+
+/** The v2 metadata bag: a flat map of primitives, which is exactly what the
+ * shared schema's `z.record` accepts (and all it accepts — a nested object
+ * would be refused).  Values are clipped to 500 characters by the receiver. */
+export type TelemetryMetadata = Record<string, string | number | boolean | null>;
+
+/** One event exactly as it goes on the wire.  The v2 batch schema is
+ * `.strict()`, so a key that is not in this shape rejects the whole event —
+ * that is why the model id rides `producerKeyRef` and `metadata.model`
+ * rather than a top-level `model` field. */
+export interface TelemetryV2Event {
+  eventId: string;
+  environment: string;
+  provider: string;
+  service: string;
+  project: string;
+  label: string;
+  producerKeyRef?: string;
+  billingMode: "actual" | "estimated";
+  metricType: "usage";
+  quantity: number;
+  unit: "token";
+  requests: number;
+  costUsd?: number;
+  confidence: "actual" | "estimated";
+  occurredAt: string;
+  metadata: TelemetryMetadata;
+}
+
+/** One v2 batch exactly as it goes on the wire.  `producerId` is the fleet
+ * name Usage Monitor keys idempotency on, and `producerInstanceId` is this
+ * computer — together with each event id they make a resend a duplicate
+ * rather than a second charge. */
+interface TelemetryV2Batch {
+  schemaVersion: 2;
+  producerId: string;
+  producerInstanceId: string;
+  events: TelemetryV2Event[];
+}
+
+/** Usage Monitor's v2 ingest acknowledgement.  Counts only — the receiver
+ * reports how many events it kept, never why one was refused. */
+interface UsageIngestAck {
+  received?: number;
+  persisted?: number;
+  duplicates?: number;
+  pruned?: number;
+  rejected?: number;
+}
+
+/** Which Usage Monitor provider row a turn belongs to, and which model
+ * inside it.  `provider` is UM's canon; `service` is the model id. */
+export interface ProviderAndService {
+  provider: string;
+  service: string;
 }
 
 const INGEST_PATH = "/api/ingest/usage";
@@ -73,9 +137,74 @@ export function inferProject(
   return "general";
 }
 
-export function inferProviderAndService(instanceId: string, modelId?: string): { provider: string; service: string } {
+/** Engine id → Usage Monitor provider name.  These are UM's canon
+ * (`provider-identity.ts` alias table), NOT Sentry's `gen_ai.system`
+ * vocabulary in `sentry-ai.ts` — the two namespaces are deliberately
+ * separate and must not be unified.
+ *
+ * Keys are normalised: lower-cased, non-alphanumerics dropped, a trailing
+ * "agent" removed.  That makes one row cover the driver kind, the default
+ * instance id, and any casing of either (`claudeAgent`, `claude`, `Claude`). */
+const PROVIDER_BY_ENGINE = new Map<string, string>(Object.entries({
+  claude: "anthropic",
+  anthropic: "anthropic",
+  codex: "openai",
+  openai: "openai",
+  grok: "xai",
+  xai: "xai",
+  antigravity: "google-ai",
+  gemini: "google-ai",
+  google: "google-ai",
+  deepseek: "deepseek",
+  dsh: "dsh",
+  kimi: "moonshot",
+  moonshot: "moonshot",
+  cursor: "cursor",
+  minimax: "minimax",
+  box: "box",
+  // `computer` is the default instance id that rides the boxAgent driver.
+  computer: "box",
+  openrouter: "openrouter",
+  droid: "droid",
+  qwen: "qwen",
+  hermes: "hermes",
+  opencode: "opencode",
+  opencodego: "opencode",
+  pi: "pi",
+}));
+
+/** OpenAI-compatible is a shell over many providers, so the engine id alone
+ * does not name one.  It is resolved after the model heuristics have had a
+ * chance, and only then falls back to itself. */
+const AMBIGUOUS_ENGINE = "openai-compat";
+
+function normaliseEngine(value: string): string {
+  const token = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return token.endsWith("agent") ? token.slice(0, -"agent".length) : token;
+}
+
+/** The provider this engine always speaks to, or null when the engine does
+ * not settle the question by itself. */
+function providerForEngine(engine?: string): string | null {
+  if (!engine) return null;
+  const raw = engine.trim().toLowerCase();
+  if (raw === AMBIGUOUS_ENGINE || raw === "openaicompat") return null;
+  return PROVIDER_BY_ENGINE.get(normaliseEngine(engine)) ?? null;
+}
+
+export function inferProviderAndService(
+  instanceId: string,
+  modelId?: string,
+  driverKind?: string,
+): ProviderAndService {
   const inst = (instanceId || "").toLowerCase();
   const model = (modelId || "").toLowerCase();
+  const service = modelId || instanceId || "unknown";
+
+  // The engine wins when it names a provider on its own.  An instance id is
+  // operator-chosen text; an engine id is ours.
+  const fromEngine = providerForEngine(driverKind);
+  if (fromEngine) return { provider: fromEngine, service: modelId || "unknown" };
 
   if (inst.includes("deepseek") || model.includes("deepseek")) {
     return { provider: "deepseek", service: modelId || "unknown" };
@@ -99,7 +228,176 @@ export function inferProviderAndService(instanceId: string, modelId?: string): {
     return { provider: "moonshot", service: modelId || "unknown" };
   }
 
-  return { provider: instanceId || "custom", service: modelId || instanceId || "unknown" };
+  // Still nothing: an OpenAI-compatible instance reports itself honestly
+  // rather than claiming to be OpenAI.
+  const engineFallback = driverKind ? normaliseEngine(driverKind) : "";
+  if (driverKind && (driverKind.trim().toLowerCase() === AMBIGUOUS_ENGINE || engineFallback === "openaicompat")) {
+    return { provider: AMBIGUOUS_ENGINE, service };
+  }
+
+  // Anything else falls back to the instance id verbatim.  Deliberately not
+  // to `normaliseEngine(driverKind)`: an engine PROVIDER_BY_ENGINE does not
+  // know is not canonical either, and normalising it strips punctuation and
+  // a trailing "agent" — which would rename an operator's own instance
+  // (`local_llm` → `localllm`, `computer-2` → `computer2`) into a second
+  // Usage Monitor provider row and split that engine's spend history in two.
+  // A name this table does not recognise is left exactly as it was written.
+  return { provider: instanceId || "custom", service };
+}
+
+/** The v2 schema caps every string field, and it is `.strict()` about the
+ * result: one over-long value rejects the whole event, which on this path
+ * means a turn's spend silently never arrives.  Clipping at the source is
+ * cheaper than losing the row. */
+function clip(value: string, max: number): string {
+  return value.length > max ? value.slice(0, max) : value;
+}
+
+/** Which slice of a turn's tokens an event is reporting.  Usage Monitor's
+ * cost derivation reads exactly these strings out of `metadata.tokenType`;
+ * `unknown` is the honest answer for a turn that reported no usage at all. */
+type TokenType = "input" | "cacheRead" | "output" | "unknown";
+
+/** Exactly the metadata one turn stamps on every event it emits.  Named
+ * rather than the open `TelemetryMetadata` bag so the keys are a contract:
+ * the nine that have always ridden along, the four this split adds, and the
+ * two room fields a room turn adds on top. */
+type TurnMetadata = {
+  botName: string;
+  botId: string;
+  threadId: string;
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens: number;
+  cwd: string | null;
+  latencyMs: number;
+  success: boolean;
+  tokenType: TokenType;
+  model: string | null;
+  instanceId: string;
+  usageReported: boolean;
+  roomId?: string;
+  roomName?: string;
+};
+
+/** Turn one completed turn into the events that go on the wire.
+ *
+ * Three rules earn their keep here.
+ *
+ * No cache double count.  A driver's `input` figure already includes the
+ * cached tokens (`drivers/claude.ts` sums `input_tokens`,
+ * `cache_read_input_tokens`, and `cache_creation_input_tokens` into one
+ * number), so splitting naively would bill the cache twice.  The `input`
+ * event carries `inputTokens - cachedInputTokens`, the `cacheRead` event
+ * carries the cache, and the quantities still sum to what a single event
+ * reported before this split existed.
+ *
+ * Money lands once.  The turn's `costUsd` and its `requests: 1` go on the
+ * first event; the remaining slices carry `costUsd: 0`, not no cost at all.
+ * Usage Monitor sums producer `costUsd` into the pool that drives budget
+ * spend, so repeating the figure across the split would treble reported
+ * spend — but it also counts pricing coverage by how many events have a
+ * `costUsd` at all, so omitting the key would report a priced turn as
+ * partly unpriced.  An explicit zero satisfies both.
+ *
+ * An unreported turn says so.  A turn with no token figures at all emits one
+ * `quantity: 0` event flagged `usageReported: false`, rather than a phantom
+ * one-token row that reads as real usage. */
+export function buildTurnEvents(
+  params: TelemetryTurnParams,
+  opts: { projects?: UsageProjectRule[]; now?: number } = {},
+): TelemetryV2Event[] {
+  const inferred = inferProviderAndService(params.instanceId, params.modelId, params.driverKind);
+  const provider = clip(inferred.provider, 80);
+  const service = clip(inferred.service, 120);
+  const project = clip(inferProject(params.cwd, params.botName, params.taskTitle, opts.projects), 120);
+
+  const inTokens = Math.max(0, Math.round(params.inputTokens || 0));
+  const outTokens = Math.max(0, Math.round(params.outputTokens || 0));
+  const cachedTokens = Math.max(0, Math.round(params.cachedInputTokens || 0));
+  const inputBillable = Math.max(0, inTokens - cachedTokens);
+
+  const now = opts.now ?? Date.now();
+  const occurredAt = new Date(now).toISOString();
+  // `:cache` is the longest suffix, so reserving six characters keeps every
+  // id under the schema's 200-character cap.
+  const prefix = clip(`bf:${provider}:${params.botId}:${now}:${randomUUID().slice(0, 8)}`, 194);
+  const label = clip(params.taskTitle || params.botName || "turn", 160);
+  const environment = process.env.NODE_ENV === "production" ? "production" : "operator";
+  const keyRef = clip((params.modelId || "").trim(), 160);
+  const roomId = (params.roomId || "").trim();
+  const roomName = (params.roomName || "").trim();
+
+  // A cost that is not a finite, non-negative number is not a cost.  The
+  // schema refuses a negative `costUsd` and would take the whole event down
+  // with it, so an unusable figure is dropped rather than sent.
+  const cost =
+    params.costUsd != null && Number.isFinite(params.costUsd) && params.costUsd >= 0 ? params.costUsd : null;
+
+  const allSlices: Array<{ suffix: string; tokenType: TokenType; quantity: number }> = [
+    { suffix: "in", tokenType: "input", quantity: inputBillable },
+    { suffix: "cache", tokenType: "cacheRead", quantity: cachedTokens },
+    { suffix: "out", tokenType: "output", quantity: outTokens },
+  ];
+  const slices = allSlices.filter((slice) => slice.quantity > 0);
+
+  const usageReported = slices.length > 0;
+  const emitted: Array<{ suffix: string; tokenType: TokenType; quantity: number }> = usageReported
+    ? slices
+    : [{ suffix: "none", tokenType: "unknown", quantity: 0 }];
+
+  return emitted.map((slice, index) => {
+    // The producer priced this turn, so every event of it is priced: the
+    // money rides the first one and the rest carry an explicit zero.  Usage
+    // Monitor counts pricing coverage by non-null `costUsd` (`_count.costUsd`
+    // against `_count._all`), so leaving the other slices with the key absent
+    // would report every priced turn as "partial" coverage — a pricing gap
+    // that does not exist — and invite the monitor's own cost derivation to
+    // estimate a figure for two thirds of a turn whose real cost it already
+    // has.  Adding zeros changes no sum.
+    const priced = cost != null;
+
+    const metadata: TurnMetadata = {
+      botName: params.botName,
+      botId: params.botId,
+      threadId: params.threadId,
+      inputTokens: inTokens,
+      outputTokens: outTokens,
+      cachedInputTokens: cachedTokens,
+      cwd: params.cwd || null,
+      latencyMs: params.latencyMs || 0,
+      success: params.success !== false,
+      tokenType: slice.tokenType,
+      model: keyRef || null,
+      instanceId: params.instanceId,
+      usageReported,
+    };
+    if (roomId) {
+      metadata.roomId = roomId;
+      if (roomName) metadata.roomName = roomName;
+    }
+
+    const event: TelemetryV2Event = {
+      eventId: `${prefix}:${slice.suffix}`,
+      environment,
+      provider,
+      service,
+      project,
+      label,
+      billingMode: priced ? "actual" : "estimated",
+      metricType: "usage",
+      quantity: slice.quantity,
+      unit: "token",
+      // The turn is one request no matter how many slices report it.
+      requests: index === 0 ? 1 : 0,
+      confidence: priced ? "actual" : "estimated",
+      occurredAt,
+      metadata,
+    };
+    if (keyRef) event.producerKeyRef = keyRef;
+    if (cost != null) event.costUsd = index === 0 ? cost : 0;
+    return event;
+  });
 }
 
 class UsageTelemetryManager {
@@ -168,7 +466,7 @@ class UsageTelemetryManager {
     }
     const endpoint = `${config.baseUrl}${INGEST_PATH}`;
     const eventId = `bf:probe:${Date.now()}:${randomUUID().slice(0, 8)}`;
-    const batch = {
+    const batch: TelemetryV2Batch = {
       schemaVersion: 2,
       producerId: "botfleet",
       producerInstanceId: hostname(),
@@ -199,49 +497,14 @@ class UsageTelemetryManager {
     const config = this.getIngestConfig();
     if (!config) return;
 
-    const { provider, service } = inferProviderAndService(params.instanceId, params.modelId);
-    const project = inferProject(params.cwd, params.botName, params.taskTitle, this.settings().projects);
-    const inTokens = Math.max(0, Math.round(params.inputTokens || 0));
-    const outTokens = Math.max(0, Math.round(params.outputTokens || 0));
-    const cachedTokens = Math.max(0, Math.round(params.cachedInputTokens || 0));
-    const quantity = inTokens + outTokens;
+    const events = buildTurnEvents(params, { projects: this.settings().projects });
+    if (events.length === 0) return;
 
-    const eventId = `bf:${provider}:${params.botId}:${Date.now()}:${randomUUID().slice(0, 8)}`;
-    const label = (params.taskTitle || params.botName || "turn").slice(0, 160);
-
-    const event = {
-      eventId,
-      environment: process.env.NODE_ENV === "production" ? "production" : "operator",
-      provider,
-      service,
-      project,
-      label,
-      billingMode: params.costUsd != null ? "actual" : "estimated",
-      metricType: "usage",
-      quantity: quantity > 0 ? quantity : 1,
-      unit: "token",
-      requests: 1,
-      costUsd: params.costUsd != null && Number.isFinite(params.costUsd) ? params.costUsd : undefined,
-      confidence: params.costUsd != null ? "actual" : "estimated",
-      occurredAt: new Date().toISOString(),
-      metadata: {
-        botName: params.botName,
-        botId: params.botId,
-        threadId: params.threadId,
-        inputTokens: inTokens,
-        outputTokens: outTokens,
-        cachedInputTokens: cachedTokens,
-        cwd: params.cwd || null,
-        latencyMs: params.latencyMs || 0,
-        success: params.success !== false,
-      },
-    };
-
-    const batch = {
+    const batch: TelemetryV2Batch = {
       schemaVersion: 2,
       producerId: "botfleet",
       producerInstanceId: hostname(),
-      events: [event],
+      events,
     };
 
     void this.postBatch(`${config.baseUrl}${INGEST_PATH}`, config.token, batch);
@@ -250,7 +513,7 @@ class UsageTelemetryManager {
   private async postBatch(
     endpoint: string,
     token: string,
-    batch: unknown,
+    batch: TelemetryV2Batch,
   ): Promise<{ ok: boolean; error: string | null }> {
     try {
       const res = await fetch(endpoint, {
@@ -263,8 +526,25 @@ class UsageTelemetryManager {
         signal: AbortSignal.timeout(5000),
       });
       if (res.ok) {
-        this.totalSent += 1;
+        // A 200 is not the same as "kept".  Usage Monitor answers with per
+        // batch counts, and a batch it validated but refused comes back as
+        // 200 with `rejected` set — which used to be filed as a clean send.
+        // SAFETY: the parsed body is read only through ackCount(), which
+        // returns 0 for anything that is not a positive finite number, so a
+        // receiver that answers with a different shape degrades to "no
+        // counts reported" rather than corrupting the tallies.
+        const ack = (await res.json().catch(() => null)) as UsageIngestAck | null;
+        const rejected = ackCount(ack?.rejected);
+        const received = ackCount(ack?.received);
         this.lastAckAt = new Date().toISOString();
+        if (rejected > 0) {
+          const error = `Usage Monitor rejected ${rejected} of ${received || rejected} events`.slice(0, 200);
+          this.totalFailed += rejected;
+          this.lastError = error;
+          console.warn(`[telemetry] ingest rejected ${rejected} of ${received || rejected} events`);
+          return { ok: false, error };
+        }
+        this.totalSent += 1;
         this.lastError = null;
         return { ok: true, error: null };
       }
@@ -282,6 +562,14 @@ class UsageTelemetryManager {
       return { ok: false, error };
     }
   }
+}
+
+/** An ACK count, or 0 for anything that is not one.  The receiver is
+ * trusted to answer honestly, not to answer at all — a missing field, a
+ * negative, or a value that never was a number all read as "not reported". */
+function ackCount(value: number | undefined): number {
+  if (value === undefined || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
 }
 
 export const telemetry = new UsageTelemetryManager();

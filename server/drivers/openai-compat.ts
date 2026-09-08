@@ -43,6 +43,24 @@ export interface OpenAICompatConfig {
   key?: string;
 }
 
+// Sentry's gen_ai.provider.name for whoever is actually answering.  Every
+// endpoint here speaks the OpenAI wire shape, so the URL is the only thing
+// that says whether a span belongs to OpenAI, OpenRouter, or Groq — calling
+// them all "openai" put four vendors in one Sentry bucket.
+export function sentryProviderForUrl(url: string): string {
+  let host = "";
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return "openai-compat";
+  }
+  const hostMatches = (domain: string) => host === domain || host.endsWith(`.${domain}`);
+  if (hostMatches("openrouter.ai")) return "openrouter";
+  if (hostMatches("groq.com")) return "groq";
+  if (hostMatches("api.openai.com")) return "openai";
+  return "openai-compat";
+}
+
 function decodeConfig(raw: unknown): OpenAICompatConfig {
   const o = (raw ?? {}) as Record<string, unknown>;
   const envUrl = process.env.OPENAI_COMPAT_URL;
@@ -349,7 +367,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         try {
           const model = turn.model || catalog.default;
           const { text, reasoning, tool_calls, usage } = await withChatSpan(
-            { model, conversationId: threadId, provider: "openai" },
+            { model, conversationId: threadId, provider: sentryProviderForUrl(config.url) },
             () =>
               complete(messages, model, {
                 stream: true,
