@@ -98,11 +98,25 @@ WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 # alerting on them would just be pager noise.
 ALERT_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure"})
 
+# Sentry rejects a Crons monitor_slug over 50 characters with an HTTP 400 —
+# and send_envelope() deliberately treats any HTTP error as fail-open (a
+# ::warning:: only, never a red CI job; see its docstring), so an oversized
+# slug fails SILENTLY: no monitor is ever created and the missed-schedule
+# coverage it was meant to add simply never exists.  monitor_slug() below
+# truncates to this bound so a long workflow `name:` can never hit that path.
+MONITOR_SLUG_MAX_LEN = 50
+
 
 def slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     slug = re.sub(r"-+", "-", slug)
     return slug
+
+
+def monitor_slug(app: str, workflow_name: str) -> str:
+    """The Sentry Crons monitor slug for a workflow, guaranteed <= 50 chars."""
+    slug = f"ci-{app}-{slugify(workflow_name)}"
+    return slug[:MONITOR_SLUG_MAX_LEN].rstrip("-")
 
 
 def discover_workflow_names(workflows_dir: Path = WORKFLOWS_DIR) -> set[str] | None:
@@ -301,10 +315,10 @@ def main() -> int:
             )
         else:
             checkin_status = "ok" if conclusion == "success" else "error"
-            monitor_slug = f"ci-{APP}-{slugify(workflow_name)}"
+            slug = monitor_slug(APP, workflow_name)
             checkin_payload = {
                 "check_in_id": uuid.uuid4().hex,
-                "monitor_slug": monitor_slug,
+                "monitor_slug": slug,
                 "status": checkin_status,
                 "monitor_config": {
                     "schedule": {"type": "crontab", "value": cron_expr},
@@ -314,7 +328,7 @@ def main() -> int:
                 },
             }
             send_envelope(envelope_url, auth_header, "check_in", checkin_payload)
-            print(f"Sent Sentry Crons check-in '{checkin_status}' for monitor '{monitor_slug}' (workflow '{workflow_name}').")
+            print(f"Sent Sentry Crons check-in '{checkin_status}' for monitor '{slug}' (workflow '{workflow_name}').")
     else:
         print(f"Workflow '{workflow_name}' was triggered by '{event}' (not schedule); no cron check-in sent.")
 
