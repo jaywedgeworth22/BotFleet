@@ -10,6 +10,9 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
     /// Set by `Session`; kept as an id-only value so the notification layer
     /// does not know about SwiftUI navigation or mutable fleet state.
     var responseHandler: ((NotificationTarget) -> Void)?
+    /// Thread currently on screen.  Banners for this id stay off; the
+    /// bubble is already in the transcript.
+    var viewingThreadId: String?
 
     private override init() {
         super.init()
@@ -25,6 +28,10 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
     }
 
     func deliver(_ notification: NotificationFrame, sequence: Int?) {
+        guard NotificationFrame.shouldPresentBanner(
+            threadId: notification.threadId,
+            viewingThreadId: viewingThreadId
+        ) else { return }
         let content = UNMutableNotificationContent()
         content.title = notification.title
         content.body = notification.body
@@ -53,7 +60,12 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
-        completionHandler([.banner, .list, .sound, .badge])
+        let threadId = notification.request.content.threadIdentifier
+        if NotificationFrame.shouldPresentBanner(threadId: threadId, viewingThreadId: viewingThreadId) {
+            completionHandler([.banner, .list, .sound, .badge])
+        } else {
+            completionHandler([])
+        }
     }
 
     func userNotificationCenter(

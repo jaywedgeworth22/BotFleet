@@ -162,19 +162,19 @@ the host computer remain unreachable through the companion.
   `resumed: false`, which is the signal to hydrate. Lifecycle — not the parser —
   is the hard part of a phone client, which is why the stream is torn down
   deliberately on backgrounding rather than left for iOS to kill.
-- **No optimistic state.** Actions call the harness and let the event stream
-  deliver the result. A phone that draws its own version of what just happened
-  is a phone that disagrees with the laptop.
+- **Pending own-sends only.**  The draft clears on send, so a local user row
+  stands in until the matching `message` frame (or 202 queueId) lands.  Nothing
+  else is drawn ahead of the harness.
 - **Messaging-app shape, not settings-list shape.** Mascot faces at roster size,
   the bot's role as a chip beside its name, timestamps that say "Yesterday"
   rather than a date, and a gap-based separator in the transcript instead of a
   stamp on every message. The palette in `MausAvatar.swift` is copied verbatim
   from `src/lib/mascot.ts`: a bot the user knows as "the orange one" should be
   the same orange on both screens.
-- **Return sends, Shift+Return breaks the line**, via `.onKeyPress`. Returning
-  `.ignored` for the shifted case hands the keypress back to the text field,
-  which is the only thing that can insert the newline once Return is claimed.
-  Software keyboards have no Shift+Return, so there `.onSubmit` sends.
+- **Return inserts a newline.**  Send is the arrow button in the composer, not
+  the keyboard's bottom-right key, so that key stays a Return glyph rather than
+  the blue send arrow.  Slash commands and dictation live in the + menu so the
+  field stays wide; a Steer chip appears while the bot is working.
 - **Composer dictation is the mic.** Tap to talk, tap to stop, then edit or
   send. Recognition stays on-device when the phone supports it, and the mic
   remains visible so another spoken sentence can be appended. Search covers

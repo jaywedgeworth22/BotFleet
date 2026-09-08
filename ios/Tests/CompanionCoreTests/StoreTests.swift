@@ -125,6 +125,58 @@ final class StoreTests: XCTestCase {
         XCTAssertFalse(state.visibleTranscript(forThread: threadId).contains { $0.queueId == "q-1" })
     }
 
+    func testIdleSendShowsABubbleUntilTheRealRowLands() throws {
+        var state = try hydrated()
+        let threadId = try XCTUnwrap(state.bots.first).threadId
+        let before = state.visibleTranscript(forThread: threadId).count
+
+        state.rememberPendingSend(threadId: threadId, id: "local-1", text: "hello from me", queued: false)
+        let visible = state.visibleTranscript(forThread: threadId)
+        XCTAssertEqual(visible.count, before + 1)
+        XCTAssertEqual(visible.last?.text, "hello from me")
+        XCTAssertNotEqual(visible.last?.queued, true)
+
+        state.apply(.message(threadId: threadId, message: message("real-idle", text: "hello from me")))
+        XCTAssertNil(state.pendingQueued[threadId])
+        XCTAssertEqual(state.visibleTranscript(forThread: threadId).last?.id, "real-idle")
+    }
+
+    func testIdlePendingPromotesToQueuedChipOn202() throws {
+        var state = try hydrated()
+        let threadId = try XCTUnwrap(state.bots.first).threadId
+        state.rememberPendingSend(threadId: threadId, id: "local-2", text: "later", queued: false)
+        state.promotePendingSend(threadId: threadId, from: "local-2", to: "q-from-202")
+        let last = try XCTUnwrap(state.visibleTranscript(forThread: threadId).last)
+        XCTAssertEqual(last.queueId, "q-from-202")
+        XCTAssertEqual(last.queued, true)
+        XCTAssertEqual(last.text, "later")
+    }
+
+    func testReplayedUserMessageDoesNotEatALaterPendingSend() throws {
+        var state = try hydrated()
+        let threadId = try XCTUnwrap(state.bots.first).threadId
+        state.apply(.message(threadId: threadId, message: message("u1", text: "hello")))
+        state.rememberPendingSend(threadId: threadId, id: "local-3", text: "hello", queued: false)
+        state.apply(.message(threadId: threadId, message: message("u1", text: "hello")))
+        XCTAssertEqual(state.visibleTranscript(forThread: threadId).filter { $0.text == "hello" }.count, 2)
+    }
+
+    func testHydrateRetiresIdlePendingWhenTheRealRowIsAlreadyThere() throws {
+        var state = try hydrated()
+        let bot = try XCTUnwrap(state.bots.first)
+        state.rememberPendingSend(threadId: bot.threadId, id: "local-h", text: "already in", queued: false)
+        var snapshot = try fleet()
+        var hydratedBot = try XCTUnwrap(snapshot.bots.first { $0.id == bot.id })
+        hydratedBot.messages = (hydratedBot.messages ?? []) + [message("from-server", text: "already in")]
+        snapshot = Fleet(
+            bots: snapshot.bots.map { $0.id == bot.id ? hydratedBot : $0 },
+            groups: snapshot.groups
+        )
+        state.hydrate(snapshot)
+        XCTAssertFalse((state.pendingQueued[bot.threadId] ?? []).contains { $0.queueId == "local-h" })
+        XCTAssertTrue(state.transcript(forThread: bot.threadId).contains { $0.id == "from-server" })
+    }
+
     // MARK: - Bots
 
     func testABotFrameMergesRatherThanWipingTheTranscript() throws {
@@ -306,6 +358,12 @@ final class StoreTests: XCTestCase {
         }
         XCTAssertEqual(state.notifications.count, 100)
         XCTAssertEqual(state.notifications.first?.title, "Done 20")
+    }
+
+    func testForegroundBannerSkipsTheThreadAlreadyOnScreen() {
+        XCTAssertFalse(NotificationFrame.shouldPresentBanner(threadId: "t1", viewingThreadId: "t1"))
+        XCTAssertTrue(NotificationFrame.shouldPresentBanner(threadId: "t1", viewingThreadId: "t2"))
+        XCTAssertTrue(NotificationFrame.shouldPresentBanner(threadId: "t1", viewingThreadId: nil))
     }
 
     // MARK: - Frames with nothing to fold

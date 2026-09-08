@@ -19,6 +19,12 @@ public struct NotificationFrame: Codable, Hashable, Sendable {
 
     /// A bot blocked on you, as opposed to one reporting in.
     public var isBlocking: Bool { kind == "approval" || kind == "question" }
+
+    /// Foreground banners for the thread already on screen are noise.
+    /// The card or bubble is in the transcript; a banner on top of it is not.
+    public static func shouldPresentBanner(threadId: String, viewingThreadId: String?) -> Bool {
+        viewingThreadId != threadId
+    }
 }
 
 /// A canonical runtime event. The server has already folded these into

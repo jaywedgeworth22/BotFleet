@@ -33,6 +33,16 @@ extension View {
         modifier(GlassSurface(shape: Capsule(), interactive: interactive, tint: tint))
     }
 
+    /// A rounded field of glass.  Capsule radius tracks height, so a
+    /// multi-line composer becomes an oval; this keeps a fixed corner.
+    func glassRounded(cornerRadius: CGFloat = 18, interactive: Bool = true, tint: Color? = nil) -> some View {
+        modifier(GlassSurface(
+            shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous),
+            interactive: interactive,
+            tint: tint
+        ))
+    }
+
     /// A rounded sheet of glass.
     func glassSheet(cornerRadius: CGFloat = 28, tint: Color? = nil) -> some View {
         modifier(GlassSurface(
