@@ -391,23 +391,25 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
       // Latest usage this round's request reported, kept OUTSIDE the
       // `runRound` promise so a later rejection (timeout, mid-stream
       // provider error) does not take it down too — see the `onUsage`
-      // doc on `TurnLoopDeps`.
-      let roundUsage: TurnUsage | null = null;
+      // doc on `TurnLoopDeps`.  Boxed in an object: a bare `let` here reads
+      // back as `never` under strict mode because TS's flow analysis does
+      // not follow the reassignment happening inside the callback closure.
+      const roundState: { usage: TurnUsage | null } = { usage: null };
       try {
         result = await deps.runRound(messages, {
           signal: AbortSignal.any([turnSignal, wall.signal, request.signal]),
           round,
           onUsage: (usage) => {
-            roundUsage = usage;
+            roundState.usage = usage;
           },
         });
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
-        if (roundUsage) {
+        if (roundState.usage) {
           sawUsage = true;
-          totals.input += roundUsage.input;
-          totals.output += roundUsage.output;
-          const cached = roundUsage.cachedInput;
+          totals.input += roundState.usage.input;
+          totals.output += roundState.usage.output;
+          const cached = roundState.usage.cachedInput;
           if (cached !== undefined) totals.cachedInput = (totals.cachedInput ?? 0) + cached;
         }
         if (turnSignal.aborted) exit = "interrupted";
