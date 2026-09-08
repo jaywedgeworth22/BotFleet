@@ -142,7 +142,7 @@ import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage } from 
 import { cancelRoomRounds, drainRoomRounds, queueRoomRound } from "./room-queue.ts";
 import { EventBus } from "./harness/bus.ts";
 import { initSentry } from "./sentry.ts";
-import { assertHarnessListenPort, formatListenInUse } from "./harness-ports.ts";
+import { formatListenInUse, isListenInUse } from "./harness-ports.ts";
 import { observeRuntimeEvent } from "./sentry-ai.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
@@ -2940,11 +2940,14 @@ const webhooks = new WebhookManager({
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
 try {
-  assertHarnessListenPort(WEBHOOK_PORT, "webhook");
   webhookIngress = await listenWebhookIngress(webhooks, { port: WEBHOOK_PORT });
   console.log(`botfleet webhook receiver on ${webhookIngress.baseUrl}`);
 } catch (error) {
-  webhookIngressError = error instanceof Error ? error.message : String(error);
+  webhookIngressError = isListenInUse(error)
+    ? formatListenInUse(WEBHOOK_PORT, "webhook")
+    : error instanceof Error
+      ? error.message
+      : String(error);
   console.error(`botfleet webhook receiver unavailable: ${webhookIngressError}`);
 }
 
@@ -7870,15 +7873,8 @@ if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   startAntigravityQuotaPoller();
 }
 
-try {
-  assertHarnessListenPort(PORT, "harness");
-} catch (error) {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exit(1);
-}
-
 server.on("error", (error: NodeJS.ErrnoException) => {
-  if (error.code === "EADDRINUSE") {
+  if (isListenInUse(error)) {
     console.error(formatListenInUse(PORT, "harness"));
     process.exit(1);
   }
