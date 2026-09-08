@@ -124,6 +124,14 @@ export type RuntimeEvent = RuntimeEventBase &
         /** Coarse class of work, when the engine knows it better than the
          * tool name does (ACP reports one). */
         toolKind?: ToolKind;
+        /** Full JSON-encoded arguments the model passed to the tool, in
+         * OpenAI function-calling shape.  HTTP drivers emit this so the
+         * HTTP tool executor can replay the call on the harness side
+         * (the model gave the executor nothing; only the wire stream
+         * knew what arguments were passed).  CLI drivers omit it — they
+         * run the tool call themselves, the executor never sees the
+         * event for a CLI driver that stopped on tool calls. */
+        arguments?: string;
       }
     | { type: "item.updated"; itemType: "tool" | "reasoning"; tokens?: number | null }
     | {
@@ -133,6 +141,9 @@ export type RuntimeEvent = RuntimeEventBase &
         /** One line of what came back — rows read, the failure's message.
          * A failure's detail is the whole reason the row is worth reading. */
         detail?: string;
+        /** Settled JSON-encoded arguments.  Streamed `item.started` may
+         * only have held the first fragment; the executor reads this. */
+        arguments?: string;
       }
     | { type: "item.completed"; itemType: "assistant_text"; text: string }
     | { type: "content.delta"; streamKind: "assistant_text" | "reasoning_text"; delta: string }
@@ -178,8 +189,27 @@ export interface SendTurnInput {
   model?: string;
   effort?: EffortLevel;
   resumeCursor?: unknown;
-  /** Prior turns for transcript-replay providers (API-backed drivers). */
-  transcript?: Array<{ role: "user" | "assistant"; text: string }>;
+  /** Prior turns for transcript-replay providers (API-backed drivers).
+   *  Each entry may carry tool call and result metadata so the executor
+   *  can replay a multi-step turn that has already been settled: the
+   *  assistant entry's `toolCalls` re-hands the model the same calls it
+   *  made before, and the user entry's `toolResults` (with role "tool"
+   *  on the wire) is the result the harness produced.  A flat user/role
+   *  entry is still the dominant shape for plain text. */
+  transcript?: Array<{
+    role: "user" | "assistant";
+    text: string;
+    toolCalls?: Array<{
+      id: string;
+      name: string;
+      /** JSON-encoded arguments the model passed to the tool. */
+      arguments: string;
+    }>;
+    toolResults?: Array<{
+      id: string;
+      result: string;
+    }>;
+  }>;
   /** Bot persona (name/title/description) as a system prompt. */
   system?: string;
   /** Tool definitions the agent may call this turn, in OpenAI function-calling
