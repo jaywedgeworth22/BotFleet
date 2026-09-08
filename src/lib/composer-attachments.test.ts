@@ -86,6 +86,15 @@ describe("splitAttachedImages", () => {
     expect(display).toBe(stored);
     expect(images).toEqual([]);
   });
+
+  it("strips attached-file tags and previews image files as images", () => {
+    const stored =
+      'see this\n\n<attached-file path="/Users/j/.botfleet/attachments/123e4567-e89b-12d3-a456-426614174000.jpg" />\n\n<attached-file path="/Users/j/.botfleet/attachments/123e4567-e89b-12d3-a456-426614174001.pdf" />';
+    const { display, images, files } = splitAttachedImages(stored);
+    expect(display).toBe("see this");
+    expect(images).toEqual(["/Users/j/.botfleet/attachments/123e4567-e89b-12d3-a456-426614174000.jpg"]);
+    expect(files).toEqual(["/Users/j/.botfleet/attachments/123e4567-e89b-12d3-a456-426614174001.pdf"]);
+  });
 });
 
 describe("attachmentBasename", () => {

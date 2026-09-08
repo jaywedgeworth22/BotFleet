@@ -29,7 +29,7 @@ import { GroupThreadTabs } from "./ThreadTabs";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
 import { SecretRequestCard } from "./SecretRequestCard";
-import { AttachedImageGallery } from "./AttachmentPreview";
+import { AttachedFileChips, AttachedImageGallery } from "./AttachmentPreview";
 import { GroupCallButton, GroupCallOverlay } from "./GroupCallView";
 import { ReactionBar, ReactionChips } from "./Reactions";
 import { CopyButton } from "./CopyButton";
@@ -140,7 +140,7 @@ function GroupTextRow({
     const selection = window.getSelection()?.toString();
     if (selection && selection.trim().length > 0) return;
     const target = e.target as HTMLElement | null;
-    if (target?.closest("a, button, input, textarea, summary, pre, code")) return;
+    if (target?.closest("a, button, input, textarea, summary, pre, code, img")) return;
     if (!copyContent) return;
     void navigator.clipboard?.writeText(copyContent);
     setCopied(true);
@@ -206,6 +206,9 @@ function GroupTextRow({
             <>
               {attachedImages && attachedImages.images.length > 0 && (
                 <AttachedImageGallery paths={attachedImages.images} />
+              )}
+              {attachedImages && attachedImages.files.length > 0 && (
+                <AttachedFileChips paths={attachedImages.files} />
               )}
               {attachedImages?.display ?? m.text}
             </>
@@ -1530,6 +1533,7 @@ export function GroupView({ group }: { group: Group }) {
         )}
       </div>
 
+      <div className="absolute inset-x-0 bottom-0 z-[2] flex flex-col items-center">
       {!follow && (
         <button
           onClick={() => {
@@ -1544,13 +1548,12 @@ export function GroupView({ group }: { group: Group }) {
             });
           }}
           aria-label="Jump to Latest Messages"
-          className="animate-pop-in absolute bottom-24 left-1/2 z-10 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
+          className="animate-pop-in relative z-10 mb-2 flex items-center gap-1.5 rounded-full border border-hairline/40 bg-raised px-3 py-1.5 text-[12.5px] text-ink shadow-lg hover:bg-raised-hover"
         >
-          <ArrowDown size={13} /> Jump to latest
+          <ArrowDown size={13} /> Jump to Latest
         </button>
       )}
-
-      <div className="absolute inset-x-0 bottom-0 z-[2]">
+      <div className="w-full">
       <Composer
         key={group.threadId}
         group={group}
@@ -1559,6 +1562,7 @@ export function GroupView({ group }: { group: Group }) {
         replyTo={replyTo}
         onClearReply={() => setReplyTo(null)}
       />
+      </div>
       </div>
       </div>
     </main>

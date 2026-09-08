@@ -2,7 +2,9 @@
 // ~/.botfleet/attachments so every CLI engine can open them —
 // the app never ships file bytes through the prompt itself.
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { DATA_DIR } from "./config.ts";
 
@@ -25,6 +27,7 @@ const ATTACHMENT_MIMES: Record<string, string> = {
   "image/heic": ".heic",
   "image/heif": ".heif",
   "image/avif": ".avif",
+  "image/tiff": ".tiff",
   "image/bmp": ".bmp",
   "image/x-ms-bmp": ".bmp",
   "image/svg+xml": ".svg",
@@ -60,9 +63,33 @@ export function isImageMime(mime: string | undefined): boolean {
     ext === ".heic" ||
     ext === ".heif" ||
     ext === ".avif" ||
+    ext === ".tiff" ||
     ext === ".bmp" ||
     ext === ".svg"
   );
+}
+
+const TRANSCODE_TO_JPEG = new Set([".heic", ".heif", ".tiff", ".bmp", ".avif"]);
+
+/** Apple formats preview as JPEG so the chat bubble can show them.  macOS only. */
+function jpegFromAppleImage(bytes: Buffer): Buffer | null {
+  if (process.platform !== "darwin") return null;
+  const dir = mkdtempSync(join(tmpdir(), "botfleet-img-"));
+  try {
+    const input = join(dir, "in");
+    const output = join(dir, "out.jpg");
+    writeFileSync(input, bytes);
+    execFileSync("sips", ["-s", "format", "jpeg", input, "--out", output], {
+      timeout: 20_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const jpeg = readFileSync(output);
+    return jpeg.byteLength > 0 ? jpeg : null;
+  } catch {
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 export function ensureAttachmentsDir(): void {
@@ -84,18 +111,29 @@ export function saveImage(bytes: Buffer, mime: string): SavedAttachment {
 
 /** Persist a chat file (image or otherwise) under a generated name. */
 export function saveAttachment(bytes: Buffer, mime: string): SavedAttachment {
-  const ext = extensionForMime(mime);
+  const claimed = (mime || "").split(";")[0]!.trim().toLowerCase();
+  let ext = extensionForMime(claimed);
+  let body = bytes;
+  let storedMime = claimed;
+  if (ext && TRANSCODE_TO_JPEG.has(ext)) {
+    const jpeg = jpegFromAppleImage(bytes);
+    if (jpeg) {
+      body = jpeg;
+      ext = ".jpg";
+      storedMime = "image/jpeg";
+    }
+  }
   if (!ext) throw Object.assign(new Error("unsupported file type"), { status: 400 });
-  if (bytes.byteLength === 0) throw Object.assign(new Error("empty file"), { status: 400 });
-  const ceiling = isImageMime(mime) ? IMAGE_MAX_BYTES : FILE_MAX_BYTES;
-  if (bytes.byteLength > ceiling) {
+  if (body.byteLength === 0) throw Object.assign(new Error("empty file"), { status: 400 });
+  const ceiling = isImageMime(claimed) || storedMime === "image/jpeg" ? IMAGE_MAX_BYTES : FILE_MAX_BYTES;
+  if (body.byteLength > ceiling) {
     throw Object.assign(new Error(`file exceeds ${ceiling} bytes`), { status: 413 });
   }
   ensureAttachmentsDir();
   const name = `${randomUUID()}${ext}`;
   const path = join(ATTACHMENTS_DIR, name);
-  writeFileSync(path, bytes, { mode: 0o600, flag: "wx" });
-  return { path, mime: mime.split(";")[0]!.trim().toLowerCase(), bytes: bytes.byteLength };
+  writeFileSync(path, body, { mode: 0o600, flag: "wx" });
+  return { path, mime: storedMime, bytes: body.byteLength };
 }
 
 /** Existence check with the same name discipline as readAttachment, without

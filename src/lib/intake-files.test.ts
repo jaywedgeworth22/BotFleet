@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { intakeFiles, type Attachment } from "./composer-attachments";
+import { attachmentLabel, filesFromClipboard, intakeFiles, isImageFile, type Attachment, type ClipboardFileSource } from "./composer-attachments";
 
 type Fake = { name: string; size: number; type: string; text: () => Promise<string> };
 const file = (name: string, type: string, size = 10): Fake => ({
@@ -43,6 +43,27 @@ describe("intakeFiles", () => {
     });
     expect(out.attachments).toHaveLength(1);
     expect(out.attachments[0].kind).toBe("file");
+  });
+
+  it("treats HEIC, HEIF, and TIFF as images", () => {
+    expect(isImageFile({ type: "image/heic", name: "IMG_1234.HEIC" })).toBe(true);
+    expect(isImageFile({ type: "image/heif", name: "photo.heif" })).toBe(true);
+    expect(isImageFile({ type: "image/tiff", name: "" })).toBe(true);
+    expect(isImageFile({ type: "", name: "shot.heic" })).toBe(true);
+  });
+
+  it("labels a nameless Apple paste from its mime", () => {
+    expect(attachmentLabel({ name: "", type: "image/heic" })).toBe("Pasted Photo.heic");
+    expect(attachmentLabel({ name: "", type: "image/tiff" })).toBe("Pasted Screenshot.tiff");
+  });
+
+  it("reads screenshot pastes from clipboard items, not only files", () => {
+    const blob = new File([new Uint8Array([1, 2, 3])], "", { type: "image/png" });
+    const data = {
+      files: [] as File[],
+      items: [{ kind: "file", type: "image/png", getAsFile: () => blob }],
+    } as unknown as ClipboardFileSource;
+    expect(filesFromClipboard(data)).toHaveLength(1);
   });
 
   it("names the files it could not take, rather than dropping them in silence", async () => {

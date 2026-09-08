@@ -21,6 +21,8 @@ describe("extensionForMime", () => {
     expect(extensionForMime("image/bmp")).toBe(".bmp");
     expect(extensionForMime("image/svg+xml")).toBe(".svg");
     expect(extensionForMime("image/heic")).toBe(".heic");
+    expect(extensionForMime("image/heif")).toBe(".heif");
+    expect(extensionForMime("image/tiff")).toBe(".tiff");
   });
 
   it("tolerates parameters and casing", () => {

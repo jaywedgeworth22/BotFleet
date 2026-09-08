@@ -10,6 +10,7 @@ import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   appendPastedText,
   composeMessage,
+  filesFromClipboard,
   imageAttachmentFromFile,
   intakeFiles,
   isLongPaste,
@@ -437,15 +438,7 @@ export function Composer({
       ) {
         return;
       }
-      const files = Array.from(e.clipboardData?.files ?? []);
-      if (!files.length && e.clipboardData?.items) {
-        for (const item of Array.from(e.clipboardData.items)) {
-          if (item.kind === "file") {
-            const f = item.getAsFile();
-            if (f) files.push(f);
-          }
-        }
-      }
+      const files = filesFromClipboard(e.clipboardData);
       if (files.length > 0) {
         e.preventDefault();
         void (async () => {
@@ -465,14 +458,17 @@ export function Composer({
 
   return (
     <div className="pointer-events-none relative px-5 pb-3">
-      {/* No fill or hairline on this wrapper — those were the black frame
-          in the pill's top corners. The dock overlays the transcript. */}
+      <div
+        aria-hidden
+        className="pointer-events-none h-10 bg-gradient-to-t from-app to-transparent"
+      />
+      <div className="pointer-events-auto relative w-full overflow-hidden rounded-3xl border border-hairline/50 bg-raised shadow-[0_-10px_28px_rgba(20,24,32,0.08)]">
+      <div className="px-3 pb-2 pt-2">
       {speechError && (
-        <div className="pointer-events-auto mb-2 w-full rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
+        <div className="mb-2 w-full rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12px] text-warning">
           {speechError}
         </div>
       )}
-      <div className="pointer-events-auto relative w-full">
         {pendingChip && (
           <div className="mb-2 flex items-center gap-2 rounded-lg border border-hairline/40 bg-panel px-3 py-2 text-[12.5px] text-ink-secondary">
             <Clock size={13} className="shrink-0" />
@@ -568,14 +564,7 @@ export function Composer({
           notice={attachmentNotice}
           onNotice={setAttachmentNotice}
         />
-        <div className="relative">
-          {/* App-ground from the pill's bottom radius down, full-bleed.
-              Bubbles may tuck into the pill; they must not paint under it. */}
-          <div
-            aria-hidden
-            className="absolute -left-5 -right-5 top-[calc(100%-1.5rem)] h-[50vh] bg-app"
-          />
-        <div className="relative grid grid-cols-[auto_1fr_auto] items-center gap-x-2 rounded-3xl bg-raised px-3 pb-2 pt-1">
+        <div className="relative grid grid-cols-[auto_1fr_auto] items-center gap-x-2">
           <input
             ref={fileInput}
             type="file"
@@ -733,7 +722,7 @@ export function Composer({
           )}
           </div>
         </div>
-        </div>
+      </div>
       </div>
       <div className="pointer-events-auto">
       <LocalComputerAutoWarning

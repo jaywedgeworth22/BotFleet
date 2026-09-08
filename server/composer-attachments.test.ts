@@ -80,7 +80,7 @@ describe("composer paste attachments", () => {
       path: "/tmp/on-disk.md",
     });
     expect(result.attachments[1]).toMatchObject({ kind: "paste", text: "browser" });
-    expect(result.rejectedNames).toEqual(["image.png"]);
+    expect(result.rejectedNames).toEqual(["Pasted Screenshot.png"]);
   });
 
   it("uploads a pathless non-image drop so the prompt gets a disk path", async () => {
