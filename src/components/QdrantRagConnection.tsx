@@ -145,7 +145,7 @@ export function QdrantRagConnection() {
           <div>
             <div className="text-[14.5px] font-medium text-ink">Bot RAG &amp; Shared Memory</div>
             <div className="text-[12.5px] text-ink-secondary">
-              Connect your bots to a shared vector memory service for semantic retrieval, runbooks, and lessons.  Leave the URL blank to use a local <code>recall</code> CLI, or to keep this off.
+              Connect your bots to a shared vector memory service for semantic retrieval, runbooks, and lessons.  Leave the URL blank to use this Mac's <code>recall</code> CLI, or to keep this off.
             </div>
           </div>
         </div>
@@ -183,7 +183,7 @@ export function QdrantRagConnection() {
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onBlur={() => void save({ url })}
-              placeholder={urlLocked ? "Managed by Infisical." : "https://recall.example.com"}
+              placeholder={urlLocked ? "Managed by Infisical." : "Leave blank for this Mac's recall CLI"}
               disabled={urlLocked}
               className={cn(inputClass, urlLocked && "cursor-not-allowed opacity-60")}
             />

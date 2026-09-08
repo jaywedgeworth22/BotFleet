@@ -44,6 +44,7 @@ import {
 } from "@/lib/thread-drag";
 
 import { BotAvatar, InitialsAvatar } from "./Avatar";
+import { ProviderMark } from "./ProviderIcons";
 import { stateForBot } from "@/lib/mascot";
 import { useUpdaterState } from "@/lib/updater";
 import { cn } from "@/lib/cn";
@@ -66,7 +67,7 @@ import {
   MAX_SIDEBAR_THREAD_COUNT,
   MIN_SIDEBAR_THREAD_COUNT,
   loadCollapsedRooms,
-  loadCollapsedSections,
+  loadCollapsedSectionsWithBotChatsDefault,
   saveCollapsedSections,
   loadSidebarDensity,
   loadSidebarThreadCount,
@@ -74,7 +75,12 @@ import {
   saveCollapsedRooms,
   saveSidebarDensity,
   saveSidebarThreadCount,
+  loadSectionOrder,
+  saveSectionOrder,
+  orderSectionNames,
   BOT_CHATS_SECTION,
+  SECTION_DRAG_TYPE,
+  ROSTER_DRAG_TYPE,
   partitionSidebarGroups,
   type SidebarDensity,
 } from "@/lib/sidebar-preferences";
@@ -704,6 +710,12 @@ function GroupListItem({
         dispatch({ type: "select", id: group.id });
         window.dispatchEvent(new CustomEvent("focus-composer"));
       }}
+      draggable={!group.dm}
+      onDragStart={(event) => {
+        if (group.dm) return;
+        event.dataTransfer.setData(ROSTER_DRAG_TYPE, JSON.stringify({ kind: "group", id: group.id }));
+        event.dataTransfer.effectAllowed = "move";
+      }}
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
       onDragOver={onDragOver}
@@ -1171,12 +1183,18 @@ function SectionDivider({
   count,
   collapsed,
   onToggle,
+  reorderable,
+  onReorder,
+  onDropRoster,
 }: {
   name: string;
   /** rows inside, shown when the section is folded so the count is not lost */
   count?: number;
   collapsed?: boolean;
   onToggle?: () => void;
+  reorderable?: boolean;
+  onReorder?: (from: string, onto: string) => void;
+  onDropRoster?: (kind: "bot" | "group", id: string, section: string) => void;
 }) {
   const label = (
     <>
@@ -1201,6 +1219,36 @@ function SectionDivider({
       type="button"
       onClick={onToggle}
       aria-expanded={!collapsed}
+      draggable={reorderable}
+      onDragStart={(event) => {
+        if (!reorderable) return;
+        event.dataTransfer.setData(SECTION_DRAG_TYPE, name);
+        event.dataTransfer.effectAllowed = "move";
+      }}
+      onDragOver={(event) => {
+        const types = [...event.dataTransfer.types];
+        if (!types.includes(SECTION_DRAG_TYPE) && !types.includes(ROSTER_DRAG_TYPE)) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const from = event.dataTransfer.getData(SECTION_DRAG_TYPE);
+        if (from && from !== name) {
+          onReorder?.(from, name);
+          return;
+        }
+        const roster = event.dataTransfer.getData(ROSTER_DRAG_TYPE);
+        if (!roster) return;
+        try {
+          const parsed = JSON.parse(roster) as { kind?: string; id?: string };
+          if ((parsed.kind === "bot" || parsed.kind === "group") && parsed.id) {
+            onDropRoster?.(parsed.kind, parsed.id, name);
+          }
+        } catch {
+          // ignore malformed payloads
+        }
+      }}
       className="group/section flex w-full items-center gap-1.5 rounded-lg px-3 pb-1 pt-4 text-left first:pt-1 hover:bg-raised/40"
       data-section={name}
     >
@@ -1534,6 +1582,15 @@ function BotListItem({
               className="truncate"
               inputClassName="w-full rounded bg-inset px-1 py-0.5 text-[15px] font-semibold"
             />
+            {(() => {
+              const instance = state.instances.find((entry) => entry.instanceId === bot.modelSelection.instanceId);
+              if (!instance) return null;
+              return (
+                <span className="ml-2 shrink-0" title={instance.displayName || instance.driverKind}>
+                  <ProviderMark driverKind={instance.driverKind} size={14} />
+                </span>
+              );
+            })()}
           </span>
           {selected && activityAt > 0 && !renaming && (
             <span className="shrink-0 text-xs text-ink-secondary transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
@@ -1642,6 +1699,11 @@ function BotListItem({
 
   return (
     <div
+      draggable
+      onDragStart={(event) => {
+        event.dataTransfer.setData(ROSTER_DRAG_TYPE, JSON.stringify({ kind: "bot", id: bot.id }));
+        event.dataTransfer.effectAllowed = "move";
+      }}
       onDragEnter={onDragEnter}
       onDragLeave={onDragLeave}
       onDragOver={onDragOver}
@@ -1846,7 +1908,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     saveSidebarThreadCount(clamped);
   };
   const [collapsedRooms, setCollapsedRooms] = useState<Set<string>>(() => loadCollapsedRooms());
-  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => loadCollapsedSections());
+  const [collapsedSections, setCollapsedSections] = useState<Set<string>>(() => loadCollapsedSectionsWithBotChatsDefault());
+  const [sectionOrder, setSectionOrder] = useState<string[]>(() => loadSectionOrder());
   const toggleSection = (name: string) => {
     setCollapsedSections((current) => {
       const next = new Set(current);
@@ -2084,12 +2147,19 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     );
   const unsectionedChief = matchingBots.find((bot) => bot.chiefOfStaff && !bot.section);
   const sectionChiefs = matchingBots.filter((bot) => bot.chiefOfStaff && bot.section);
+  const byRecentBot = (a: Bot, b: Bot) => {
+    const pin = Number(b.pinned ?? false) - Number(a.pinned ?? false);
+    if (pin !== 0) return pin;
+    return latestChatActivity(b.tasks, undefined, 0) - latestChatActivity(a.tasks, undefined, 0);
+  };
+  const byRecentGroup = (a: Group, b: Group) =>
+    latestChatActivity(b.tasks, undefined, b.createdAt) - latestChatActivity(a.tasks, undefined, a.createdAt);
   const sectionedBots = matchingBots
     .filter((bot) => !bot.chiefOfStaff && bot.section)
-    .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
+    .sort(byRecentBot);
   const visibleBots = matchingBots
     .filter((bot) => !bot.chiefOfStaff && !bot.section)
-    .sort((a, b) => Number(b.pinned ?? false) - Number(a.pinned ?? false));
+    .sort(byRecentBot);
   const visibleGroups = state.groups.filter(
     (g) =>
       !q ||
@@ -2100,10 +2170,17 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const conversationMode = getConversationMode(state.config);
   const showExtraThreads = allowsMultipleBotThreads(conversationMode);
   const primary = rosterPrimaryLabel(conversationMode);
-  const { botChats, sectionedRooms: sectionedGroups, unsectionedRooms: unsectionedGroups } =
-    partitionSidebarGroups(visibleGroups);
-  // sections keep first-appearance order within the current list; a section
-  // whose members all moved away (or fell out of the filter) simply vanishes
+  const {
+    botChats: botChatsRaw,
+    sectionedRooms: sectionedGroupsRaw,
+    unsectionedRooms: unsectionedGroupsRaw,
+  } = partitionSidebarGroups(visibleGroups);
+  const botChats = [...botChatsRaw].sort(byRecentGroup);
+  const sectionedGroups = [...sectionedGroupsRaw].sort(byRecentGroup);
+  const unsectionedGroups = [...unsectionedGroupsRaw].sort(byRecentGroup);
+  // User contexts keep a stored order.  Bot Chats is not a user context and
+  // always sits at the bottom, collapsed until opened.  DMs stay out of Apps
+  // even when a leftover section tag remains on the record (#237).
   const sectionNames: string[] = [];
   for (const bot of sectionedBots) {
     if (!sectionNames.includes(bot.section!)) sectionNames.push(bot.section!);
@@ -2114,6 +2191,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   for (const group of sectionedGroups) {
     if (!sectionNames.includes(group.section!)) sectionNames.push(group.section!);
   }
+  const orderedSectionNames = orderSectionNames(sectionNames, sectionOrder);
   const activeBotCount = state.bots.filter((bot) => !bot.hidden).length;
   const archivedBots = state.bots.filter((bot) => bot.hidden);
   const pendingTeamUndo = teamFeedback?.undo;
@@ -2415,7 +2493,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               />
             </ThreadTree>
           ))}
-          {sectionNames.map((name) => {
+          {orderedSectionNames.map((name) => {
             const rows =
               sectionChiefs.filter((bot) => bot.section === name).length +
               sectionedGroups.filter((g) => g.section === name).length +
@@ -2429,6 +2507,26 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
                   count={rows}
                   collapsed={!open}
                   onToggle={() => toggleSection(name)}
+                  reorderable
+                  onReorder={(from, onto) => {
+                    const current = orderSectionNames(
+                      orderedSectionNames,
+                      orderedSectionNames.filter((n) => n !== from),
+                    );
+                    const without = current.filter((n) => n !== from);
+                    const at = without.indexOf(onto);
+                    const next = [...without.slice(0, Math.max(0, at)), from, ...without.slice(Math.max(0, at))];
+                    setSectionOrder(next);
+                    saveSectionOrder(next);
+                  }}
+                  onDropRoster={(kind, id, section) => {
+                    if (kind === "bot") dispatch({ type: "updateBot", botId: id, patch: { section } });
+                    else {
+                      const group = state.groups.find((entry) => entry.id === id);
+                      if (group?.dm) return;
+                      dispatch({ type: "patchGroup", groupId: id, patch: { section } });
+                    }
+                  }}
                 />
               )}
               {open && sectionChiefs
@@ -2493,6 +2591,28 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             </Fragment>
             );
           })}
+          {botChats.length > 0 && density !== "icons" && (
+            <SectionDivider
+              name={BOT_CHATS_SECTION}
+              count={botChats.length}
+              collapsed={!sectionOpen(BOT_CHATS_SECTION)}
+              onToggle={() => toggleSection(BOT_CHATS_SECTION)}
+            />
+          )}
+          {(density === "icons" || sectionOpen(BOT_CHATS_SECTION)) &&
+            botChats.map((g) => (
+              <ThreadTree
+                key={g.id}
+                owner={{ kind: "group", id: g.id, name: g.name, threadId: g.threadId }}
+                tasks={showExtraThreads ? (g.tasks ?? []) : []}
+                density={density}
+                threadCount={threadCount}
+                collapsed={collapsedRooms.has(g.id)}
+                onToggle={() => toggleRoom(g.id)}
+              >
+                <GroupListItem group={g} density={density} onMenu={setRoomMenu} />
+              </ThreadTree>
+            ))}
         </div>
       </div>
 

@@ -143,8 +143,13 @@ export function saveCollapsedSections(
 }
 
 /** Bot-to-bot DMs are not user rooms.  They stay in this named dropdown
- * even if an older write left a leftover Apps/Work section on the record. */
+ * even if an older write left a leftover Apps/Work section on the record.
+ * Default-collapsed until opened; user contexts keep a stored order. */
 export const BOT_CHATS_SECTION = "Bot Chats";
+export const SIDEBAR_BOT_CHATS_INIT_KEY = "botfleet.sidebarBotChatsInit";
+export const SIDEBAR_SECTION_ORDER_KEY = "botfleet.sidebarSectionOrder";
+export const SECTION_DRAG_TYPE = "application/x-botfleet-section";
+export const ROSTER_DRAG_TYPE = "application/x-botfleet-roster";
 
 export function partitionSidebarGroups<T extends { dm?: boolean; section?: string }>(
   groups: T[],
@@ -156,4 +161,50 @@ export function partitionSidebarGroups<T extends { dm?: boolean; section?: strin
     sectionedRooms: rooms.filter((group) => Boolean(group.section)),
     unsectionedRooms: rooms.filter((group) => !group.section),
   };
+}
+
+export function loadCollapsedSectionsWithBotChatsDefault(
+  storage?: (Pick<Storage, "getItem"> & Pick<Storage, "setItem">) | null,
+): Set<string> {
+  const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
+  const collapsed = loadCollapsedSections(target);
+  try {
+    if (target && target.getItem(SIDEBAR_BOT_CHATS_INIT_KEY) !== "1") {
+      collapsed.add(BOT_CHATS_SECTION);
+      target.setItem(SIDEBAR_BOT_CHATS_INIT_KEY, "1");
+      saveCollapsedSections(collapsed, target);
+    }
+  } catch {
+    collapsed.add(BOT_CHATS_SECTION);
+  }
+  return collapsed;
+}
+
+export function loadSectionOrder(storage?: Pick<Storage, "getItem"> | null): string[] {
+  try {
+    const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
+    const raw = target?.getItem(SIDEBAR_SECTION_ORDER_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((name): name is string => typeof name === "string" && name.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+export function saveSectionOrder(order: string[], storage?: Pick<Storage, "setItem"> | null): void {
+  try {
+    const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
+    target?.setItem(SIDEBAR_SECTION_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // Same private-browsing rule as the other sidebar prefs.
+  }
+}
+
+export function orderSectionNames(names: string[], stored: string[]): string[] {
+  const unique = [...new Set(names.filter((name) => name !== BOT_CHATS_SECTION))];
+  const head = stored.filter((name) => unique.includes(name));
+  const rest = unique.filter((name) => !head.includes(name));
+  return [...head, ...rest];
 }
