@@ -142,6 +142,7 @@ import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage } from 
 import { cancelRoomRounds, drainRoomRounds, queueRoomRound } from "./room-queue.ts";
 import { EventBus } from "./harness/bus.ts";
 import { initSentry } from "./sentry.ts";
+import { assertHarnessListenPort, formatListenInUse } from "./harness-ports.ts";
 import { observeRuntimeEvent } from "./sentry-ai.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
@@ -2939,6 +2940,7 @@ const webhooks = new WebhookManager({
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
 try {
+  assertHarnessListenPort(WEBHOOK_PORT, "webhook");
   webhookIngress = await listenWebhookIngress(webhooks, { port: WEBHOOK_PORT });
   console.log(`botfleet webhook receiver on ${webhookIngress.baseUrl}`);
 } catch (error) {
@@ -7867,6 +7869,22 @@ if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   enableQuotaCooldownPersist(join(DATA_DIR, "quota-cooldowns.json"));
   startAntigravityQuotaPoller();
 }
+
+try {
+  assertHarnessListenPort(PORT, "harness");
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error));
+  process.exit(1);
+}
+
+server.on("error", (error: NodeJS.ErrnoException) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(formatListenInUse(PORT, "harness"));
+    process.exit(1);
+  }
+  console.error(error);
+  process.exit(1);
+});
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
