@@ -118,7 +118,17 @@ struct ChatView: View {
             }
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { dictation.stop() }
+            if phase != .active {
+                dictation.stop()
+                // ChatView stays mounted while backgrounded, so onDisappear
+                // never clears this — without clearing, same-thread APNs/SSE
+                // banners are suppressed for the linger window.
+                if NotificationCoordinator.shared.viewingThreadId == threadId {
+                    NotificationCoordinator.shared.viewingThreadId = nil
+                }
+            } else {
+                NotificationCoordinator.shared.viewingThreadId = threadId
+            }
         }
         .onChange(of: showingComputer) { _, shown in
             if shown { dictation.stop() }
