@@ -213,6 +213,78 @@ test("macAppFingerprint hashes the executable from the SAME bundle Info.plist ma
   assert.equal(result, "202609041230:" + createHash("sha1").update("999:1700000000000").digest("hex").slice(0, 12));
 });
 
+// Round 2 of review on the fix above: fixing WHICH bundle's executable gets
+// hashed (the one Info.plist matched) still leaves a second bug when TWO
+// installs coexist on the same Mac -- a fresh drag-install into
+// ~/Applications alongside an old /Applications copy, say. The static
+// candidate order checks /Applications first, so it would fingerprint that
+// dormant copy even while the user is actually running the ~/Applications
+// one. This exercises the real default-candidates path (no `candidates`
+// override) with BOTH bundles present on disk, and only `processExecPath`
+// (the process.execPath override) pointing at the user-local one, to prove
+// the running bundle wins the race regardless of list order.
+test("macAppFingerprint prefers the bundle the process is actually running from over a static candidate order", () => {
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleVersion</key>
+  <string>202609041230</string>
+</dict>
+</plist>`;
+  const systemBundle = "/Applications/BotFleet.app";
+  const userBundle = "/Users/operator/Applications/BotFleet.app";
+  const systemInfoPlist = join(systemBundle, "Contents", "Info.plist");
+  const userInfoPlist = join(userBundle, "Contents", "Info.plist");
+  const userExecPath = join(userBundle, "Contents", "MacOS", "BotFleet");
+  const result = macAppFingerprint({
+    platform: "darwin",
+    home: "/Users/operator",
+    processExecPath: userExecPath,
+    readVersion: () => "202609041230",
+    readFileSync: () => Buffer.from(plist, "utf8"),
+    // both bundles are "installed" -- the static list alone would pick the
+    // system-wide one first
+    existsSync: (p) => p === systemInfoPlist || p === userInfoPlist || p === userExecPath,
+    statSync: (p) => {
+      assert.equal(
+        p,
+        userExecPath,
+        "must stat the executable under the RUNNING (user-local) bundle, not the system one that happens to come first",
+      );
+      return { size: 777, mtimeMs: 1700000000000 };
+    },
+  });
+  assert.ok(result);
+  assert.equal(result, "202609041230:" + createHash("sha1").update("777:1700000000000").digest("hex").slice(0, 12));
+});
+
+test("macAppFingerprint falls back to the static candidate list when process.execPath is not a recognizable app bundle", () => {
+  // A dev/unpackaged run (or any execPath that doesn't parse as
+  // .../Contents/MacOS/<name>) must not throw or silently misbehave --
+  // it just has nothing to prefer, so the static list still applies.
+  const plist = `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0">
+<dict>
+  <key>CFBundleVersion</key>
+  <string>202609041230</string>
+</dict>
+</plist>`;
+  const bundle = "/Applications/BotFleet.app";
+  const infoPlist = join(bundle, "Contents", "Info.plist");
+  const execPath = join(bundle, "Contents", "MacOS", "BotFleet");
+  const result = macAppFingerprint({
+    platform: "darwin",
+    home: "/Users/operator",
+    processExecPath: "/usr/local/bin/node",
+    readVersion: () => "202609041230",
+    readFileSync: () => Buffer.from(plist, "utf8"),
+    existsSync: (p) => p === infoPlist || p === execPath,
+    statSync: () => ({ size: 111, mtimeMs: 1700000000000 }),
+  });
+  assert.ok(result);
+  assert.equal(result, "202609041230:" + createHash("sha1").update("111:1700000000000").digest("hex").slice(0, 12));
+});
+
 test("nextAutoUpdateRecord stamps lastCheckMs and preserves enabled", () => {
   const now = 1_700_000_000_000;
   const next = nextAutoUpdateRecord({ enabled: true, lastAppFingerprint: "old" }, { nowMs: now, fingerprint: "new" });
