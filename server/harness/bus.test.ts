@@ -141,6 +141,53 @@ describe("EventBus", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it("drops a SECOND turn.completed for the same turn (one terminal event per turn)", async () => {
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { instance, emit } = await liveInstance();
+    const bus = new EventBus();
+    bus.attach([instance]);
+    const seen: RuntimeEvent[] = [];
+    bus.subscribe((e) => seen.push(e));
+
+    const terminal = testEvent({ type: "turn.completed", ok: true, turnId: "turn-1" });
+    emit(terminal);
+    emit({ ...terminal, eventId: "ev-2" });
+
+    // Every consumer of turn.completed — the watchdog, the routine receipt,
+    // the repeat detector, the usage fold — assumes it fires once.  A driver
+    // that emits it twice settles a turn twice with no error anywhere, so
+    // the bus says so instead of letting it through.
+    expect(seen.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(errors).toHaveBeenCalledWith(expect.stringContaining("second turn.completed"));
+    errors.mockRestore();
+  });
+
+  it("delivers a terminal event for a DIFFERENT turn on the same thread", async () => {
+    const { instance, emit } = await liveInstance();
+    const bus = new EventBus();
+    bus.attach([instance]);
+    const seen: RuntimeEvent[] = [];
+    bus.subscribe((e) => seen.push(e));
+
+    emit(testEvent({ type: "turn.completed", ok: true, turnId: "turn-1" }));
+    emit(testEvent({ eventId: "ev-2", type: "turn.completed", ok: true, turnId: "turn-2" }));
+
+    expect(seen.filter((e) => e.type === "turn.completed")).toHaveLength(2);
+  });
+
+  it("never guesses: a terminal event with no turnId is always delivered", async () => {
+    const { instance, emit } = await liveInstance();
+    const bus = new EventBus();
+    bus.attach([instance]);
+    const seen: RuntimeEvent[] = [];
+    bus.subscribe((e) => seen.push(e));
+
+    emit(testEvent({ type: "turn.completed", ok: true }));
+    emit(testEvent({ eventId: "ev-2", type: "turn.completed", ok: true }));
+
+    expect(seen.filter((e) => e.type === "turn.completed")).toHaveLength(2);
+  });
+
   it("unsubscribe and detachAll stop delivery", async () => {
     const { instance, emit } = await liveInstance();
     const bus = new EventBus();

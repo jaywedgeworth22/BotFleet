@@ -133,6 +133,7 @@ import {
 } from "./contracts.ts";
 import { buildTurnTools } from "./turn-tools.ts";
 import { isToolCallsStopReason, sendTurnWithToolLoop } from "./tool-executor.ts";
+import { createTurnToolHost } from "./tools/host.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -1158,9 +1159,30 @@ const repeats = new RepeatDetector({ thresholds: [5, 10, 20], maxKeysPerThread: 
 // touched, and turns parked on a human approval are exempt.
 const TURN_STALL_MS = Math.max(60_000, Number(process.env.OMB_TURN_STALL_MS) || 20 * 60_000);
 const roomStallCompletions = new RoomTurnStallRegistry();
+// Twice the driver-owned loop's whole-turn wall clock.  A loop that emits
+// its terminal event from a single finally can never strand a turn, so this
+// should never fire — which is exactly why it is worth six lines: if it ever
+// does, the log line is the bug report.
+const STUCK_TURN_SWEEP_MS = 1_800_000;
 const watchdog = new TurnWatchdog({
   stallMs: TURN_STALL_MS,
   checkMs: 60_000,
+  onSweep: () => {
+    for (const instance of registry.instances()) {
+      const sweep = instance.adapter.sweepStuckTurns;
+      if (!sweep) continue;
+      void sweep
+        .call(instance.adapter, STUCK_TURN_SWEEP_MS)
+        .then((threadIds) => {
+          for (const threadId of threadIds) {
+            console.error(
+              `watchdog: ${instance.instanceId} force-settled a turn stuck past ${STUCK_TURN_SWEEP_MS}ms on thread ${threadId}`,
+            );
+          }
+        })
+        .catch(() => {});
+    }
+  },
   onStall: (turn) => {
     repeats.settle(turn.threadId);
     const bot = store.bot(turn.botId);
@@ -2742,6 +2764,16 @@ async function startTurn(
       // their own loop and call `instance.adapter.sendTurn` directly.
       const isHttpDriver =
         instance.driverKind === "minimax" || instance.driverKind === "openai-compat";
+      // A driver that runs the loop itself is dispatched on the SAME line a
+      // CLI driver is: one sendTurn, one terminal event, the bus fold does
+      // the rest.  The harness-side re-feed below is what remains for the
+      // HTTP drivers that have not moved yet.
+      const usesDriverToolLoop = instance.adapter.capabilities.toolLoop === true;
+      // One catalog, used twice: what the model is told it has, and what the
+      // host will actually run.  Deriving both from the same call is what
+      // keeps a hallucinated tool from finding an executor that would run it
+      // for a bot whose comms are gated off this turn.
+      const turnTools = buildTurnTools(integrations);
       const turnInput = {
         threadId,
         text: turnText,
@@ -2755,7 +2787,24 @@ async function startTurn(
         // `buildTurnTools` only returns tool surfaces the harness can
         // actually execute: agents for HTTP today, more in a follow-up
         // (Composio + computer-use still need an MCP-spawning path).
-        tools: buildTurnTools(integrations),
+        tools: turnTools,
+        // The harness's executor for this turn, handed only to a driver that
+        // declares toolLoop.  Caller identity is baked in here, at dispatch,
+        // and never read from the model's arguments — this lane bypasses the
+        // loopback + COMMS_TOKEN hop the MCP lane uses, so there is no
+        // second place to check who is asking.
+        toolHost: usesDriverToolLoop && turnTools.length > 0
+          ? createTurnToolHost({
+              botId: bot.id,
+              threadId,
+              commsDepth,
+              deps: {
+                bot: (id: string) => store.bot(id),
+                bots: () => store.bots,
+                executeAskBotRequest,
+              },
+            })
+          : undefined,
         system:
           persona +
           computerSystemPrompt(granted_mounts, {
@@ -2789,7 +2838,7 @@ async function startTurn(
         integrations,
         cwd,
       };
-      if (isHttpDriver) {
+      if (isHttpDriver && !usesDriverToolLoop) {
         await sendTurnWithToolLoop(instance, turnInput, {
           threadId,
           fromBotId: bot.id,

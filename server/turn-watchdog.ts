@@ -22,6 +22,11 @@ export interface TurnWatchdogOptions {
   checkMs: number;
   /** Called once per stalled turn, after the entry is removed. */
   onStall: (turn: WatchedTurn) => void;
+  /** Called at the top of every sweep, before the stall scan.  The one
+   * periodic tick the harness already runs, lent to anything that needs a
+   * slow heartbeat — today, asking each driver whether it has stranded a
+   * turn.  Never throws out of the sweep. */
+  onSweep?: () => void;
   now?: () => number;
 }
 
@@ -96,6 +101,12 @@ export class TurnWatchdog {
 
   /** Visible for tests; the interval calls this. */
   sweep(): void {
+    try {
+      this.opts.onSweep?.();
+    } catch (e) {
+      // a heartbeat that throws must never stop the stall detector
+      console.error("watchdog: onSweep threw", e);
+    }
     const at = this.now();
     for (const turn of this.turns.values()) {
       if (turn.waitingOnHuman) continue;
