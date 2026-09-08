@@ -33,6 +33,7 @@ import { RemoteAccessSection } from "./RemoteAccessSection";
 import { Card } from "./SettingsPrimitives";
 import { UsageSection } from "./UsageSection";
 import { ObservabilitySection } from "./ObservabilitySection";
+import { SecretsSection } from "./SecretsSection";
 import { SkinPicker } from "./SkinPicker";
 import { RoomTurnTimeoutSettings } from "./RoomTurnTimeoutSettings";
 import { TranscriptionSettings } from "./TranscriptionSettings";
@@ -55,6 +56,7 @@ const SECTIONS: Array<{
   { id: "computers", label: "Local VM", icon: Monitor, keywords: ["vm", "virtual", "desktop"] },
   { id: "usage", label: "Usage", icon: Coins, keywords: ["tokens", "cost", "billing"] },
   { id: "observability", label: "Observability", icon: Activity, keywords: ["sentry", "errors", "crashes", "traces", "logs", "diagnostics"] },
+  { id: "secrets", label: "Secrets", icon: KeyRound, keywords: ["infisical", "vault", "credentials", "secret", "provenance"] },
 ];
 
 function sectionMatches(section: (typeof SECTIONS)[number], query: string): boolean {
@@ -1051,6 +1053,8 @@ export function SettingsModal() {
             {section === "usage" && <UsageSection />}
 
             {section === "observability" && <ObservabilitySection />}
+
+            {section === "secrets" && <SecretsSection />}
           </div>
         </div>
       </div>

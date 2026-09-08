@@ -1,11 +1,33 @@
 import { useEffect, useState } from "react";
 import { CheckCircle, Database, RefreshCw, XCircle } from "lucide-react";
-import { api, useStore, type ConfigStatus } from "@/state/store";
+import { api, useSecretSources, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { SecretSourceBadge } from "./SecretSourceBadge";
 
 export function QdrantRagConnection() {
   const { state, dispatch } = useStore();
   const qdrant = state.config?.qdrant;
+
+  const secretSources = useSecretSources();
+  const infisicalConfigured = Boolean(state.config?.infisical?.configured);
+  const writeThrough = Boolean(state.config?.infisical?.writeThrough);
+  const urlSource = secretSources.get("qdrant.url");
+  const apiKeySource = secretSources.get("qdrant.apiKey");
+  const collectionSource = secretSources.get("qdrant.collection");
+  const accessClientIdSource = secretSources.get("qdrant.accessClientId");
+  const accessClientSecretSource = secretSources.get("qdrant.accessClientSecret");
+  // A 409 the operator cannot explain is the failure this prevents: with
+  // Write Through off, Infisical is the only place a managed field can
+  // change, so each one disables outright and is stripped from every save
+  // this component makes — `save()` below fires on every field's onBlur
+  // carrying the other fields' *current* values along with it, so a locked
+  // field would otherwise ride along into an unrelated save and hit the
+  // refusal gate for no reason the operator asked for.
+  const urlLocked = (urlSource?.managed ?? false) && !writeThrough;
+  const apiKeyLocked = (apiKeySource?.managed ?? false) && !writeThrough;
+  const collectionLocked = (collectionSource?.managed ?? false) && !writeThrough;
+  const accessClientIdLocked = (accessClientIdSource?.managed ?? false) && !writeThrough;
+  const accessClientSecretLocked = (accessClientSecretSource?.managed ?? false) && !writeThrough;
 
   const [enabled, setEnabled] = useState(qdrant?.enabled ?? true);
   const [url, setUrl] = useState(qdrant?.url ?? "");
@@ -70,6 +92,16 @@ export function QdrantRagConnection() {
         (overrides.accessClientSecret !== undefined ? overrides.accessClientSecret : accessClientSecret).trim() ||
         undefined;
     }
+
+    // Every field above rides along into every save, whichever one blurred —
+    // see the lock computations near the top of this component.  Strip a
+    // locked field out here, at the one place all of them are assembled,
+    // rather than trying to catch it at each of the five onBlur call sites.
+    if (urlLocked) delete patchBody.qdrant.url;
+    if (collectionLocked) delete patchBody.qdrant.collection;
+    if (accessClientIdLocked) delete patchBody.qdrant.accessClientId;
+    if (apiKeyLocked) delete patchBody.qdrant.apiKey;
+    if (accessClientSecretLocked) delete patchBody.qdrant.accessClientSecret;
 
     try {
       const config: ConfigStatus = await api("/api/config", {
@@ -142,40 +174,55 @@ export function QdrantRagConnection() {
       {enabled && (
         <div className="mt-4 flex flex-col gap-3 border-t border-hairline/30 pt-3">
           <div className="flex flex-col gap-1">
-            <label className="text-[12px] font-medium text-ink-secondary">Service URL</label>
+            <div className="flex items-center gap-2">
+              <label className="text-[12px] font-medium text-ink-secondary">Service URL</label>
+              <SecretSourceBadge source={urlSource?.source} infisicalConfigured={infisicalConfigured} />
+            </div>
             <input
               type="url"
               value={url}
               onChange={(e) => setUrl(e.target.value)}
               onBlur={() => void save({ url })}
-              placeholder="https://recall.example.com"
-              className={inputClass}
+              placeholder={urlLocked ? "Managed by Infisical." : "https://recall.example.com"}
+              disabled={urlLocked}
+              className={cn(inputClass, urlLocked && "cursor-not-allowed opacity-60")}
             />
+            {urlLocked && <div className="text-[11px] text-ink-secondary">Managed by Infisical.</div>}
           </div>
 
           <div className="grid grid-cols-2 gap-3">
             <div className="flex flex-col gap-1">
-              <label className="text-[12px] font-medium text-ink-secondary">API Key / Bearer Token (Optional)</label>
+              <div className="flex items-center gap-2">
+                <label className="text-[12px] font-medium text-ink-secondary">API Key / Bearer Token (Optional)</label>
+                <SecretSourceBadge source={apiKeySource?.source} infisicalConfigured={infisicalConfigured} />
+              </div>
               <input
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
                 onBlur={() => void save({ apiKey })}
-                placeholder={qdrant?.hasApiKey ? "••••••••" : "Leave blank for mesh / local auth"}
-                className={inputClass}
+                placeholder={apiKeyLocked ? "Managed by Infisical." : qdrant?.hasApiKey ? "••••••••" : "Leave blank for mesh / local auth"}
+                disabled={apiKeyLocked}
+                className={cn(inputClass, apiKeyLocked && "cursor-not-allowed opacity-60")}
               />
+              {apiKeyLocked && <div className="text-[11px] text-ink-secondary">Managed by Infisical.</div>}
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-[12px] font-medium text-ink-secondary">Collection Name</label>
+              <div className="flex items-center gap-2">
+                <label className="text-[12px] font-medium text-ink-secondary">Collection Name</label>
+                <SecretSourceBadge source={collectionSource?.source} infisicalConfigured={infisicalConfigured} />
+              </div>
               <input
                 type="text"
                 value={collection}
                 onChange={(e) => setCollection(e.target.value)}
                 onBlur={() => void save({ collection })}
-                placeholder="agent-memory"
-                className={inputClass}
+                placeholder={collectionLocked ? "Managed by Infisical." : "agent-memory"}
+                disabled={collectionLocked}
+                className={cn(inputClass, collectionLocked && "cursor-not-allowed opacity-60")}
               />
+              {collectionLocked && <div className="text-[11px] text-ink-secondary">Managed by Infisical.</div>}
             </div>
           </div>
 
@@ -190,27 +237,43 @@ export function QdrantRagConnection() {
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1">
-                <label className="text-[12px] font-medium text-ink-secondary">Access Client Id</label>
+                <div className="flex items-center gap-2">
+                  <label className="text-[12px] font-medium text-ink-secondary">Access Client Id</label>
+                  <SecretSourceBadge source={accessClientIdSource?.source} infisicalConfigured={infisicalConfigured} />
+                </div>
                 <input
                   type="text"
                   value={accessClientId}
                   onChange={(e) => setAccessClientId(e.target.value)}
                   onBlur={() => void save({ accessClientId })}
-                  placeholder="xxxxxxxx.access"
-                  className={inputClass}
+                  placeholder={accessClientIdLocked ? "Managed by Infisical." : "xxxxxxxx.access"}
+                  disabled={accessClientIdLocked}
+                  className={cn(inputClass, accessClientIdLocked && "cursor-not-allowed opacity-60")}
                 />
+                {accessClientIdLocked && <div className="text-[11px] text-ink-secondary">Managed by Infisical.</div>}
               </div>
 
               <div className="flex flex-col gap-1">
-                <label className="text-[12px] font-medium text-ink-secondary">Access Client Secret</label>
+                <div className="flex items-center gap-2">
+                  <label className="text-[12px] font-medium text-ink-secondary">Access Client Secret</label>
+                  <SecretSourceBadge source={accessClientSecretSource?.source} infisicalConfigured={infisicalConfigured} />
+                </div>
                 <input
                   type="password"
                   value={accessClientSecret}
                   onChange={(e) => setAccessClientSecret(e.target.value)}
                   onBlur={() => void save({ accessClientSecret })}
-                  placeholder={qdrant?.hasAccessClientSecret ? "••••••••" : "Paste the service token secret"}
-                  className={inputClass}
+                  placeholder={
+                    accessClientSecretLocked
+                      ? "Managed by Infisical."
+                      : qdrant?.hasAccessClientSecret
+                        ? "••••••••"
+                        : "Paste the service token secret"
+                  }
+                  disabled={accessClientSecretLocked}
+                  className={cn(inputClass, accessClientSecretLocked && "cursor-not-allowed opacity-60")}
                 />
+                {accessClientSecretLocked && <div className="text-[11px] text-ink-secondary">Managed by Infisical.</div>}
               </div>
             </div>
           </div>

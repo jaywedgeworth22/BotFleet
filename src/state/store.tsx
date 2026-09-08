@@ -415,10 +415,29 @@ export interface ConfigStatus {
     enabled: boolean;
     hasDsn: boolean;
     host: string | null;
-    source: "env" | "config" | "none";
+    // "infisical" mirrors server/observability.ts's ObservabilityStatusView:
+    // the SDK itself only ever sees env/config/none, but a store-held DSN
+    // reports this instead so the card names the vault, not "Settings".
+    source: "env" | "config" | "none" | "infisical";
     environment: string;
     tracesSampleRate: number;
     logsEnabled: boolean;
+  };
+  /** Infisical secret-store status.  Booleans and counts only — the project
+   * id, site URL and the vault's own names live on the loopback
+   * `GET /api/infisical/status` route (see `fetchSecrets` below), which no
+   * window subscribes to. */
+  infisical?: {
+    configured: boolean;
+    enabled: boolean;
+    writeThrough: boolean;
+    environment: string;
+    hasClientSecret: boolean;
+    managedCount: number;
+    lastSyncAt: string | null;
+    stale: boolean;
+    hasError: boolean;
+    pendingProviderReload: boolean;
   };
 }
 
@@ -444,7 +463,7 @@ export function getConversationMode(config?: ConfigStatus | null): ConversationM
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability" | "infisical"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -469,6 +488,7 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     usage: frame.usage,
     features: frame.features,
     observability: frame.observability,
+    infisical: frame.infisical,
   };
 }
 
@@ -544,7 +564,8 @@ export type AppSettingsSection =
   | "companion"
   | "computers"
   | "usage"
-  | "observability";
+  | "observability"
+  | "secrets";
 
 export interface AppState {
   bots: Bot[];
@@ -1666,6 +1687,89 @@ export async function api(path: string, init?: RequestInit): Promise<any> {
     if (res.status !== 502) break;
   }
   throw lastError ?? new Error("request failed");
+}
+
+/** One row per mapped credential, as `GET /api/infisical/status` returns it
+ * (`server/index.ts`'s `secretFieldRows()`).  `value` is the plaintext only
+ * for the handful of fields that are identifiers rather than secrets — every
+ * `secret: true` row carries `null` here, in every state. */
+export interface SecretFieldRow {
+  id: string;
+  label: string;
+  section: string;
+  secret: boolean;
+  infisicalName: string;
+  inVault: boolean;
+  source: "infisical" | "env" | "file" | "none";
+  hasValue: boolean;
+  hasLocalCopy: boolean;
+  managed: boolean;
+  value: string | null;
+}
+
+/** Loopback-only: project id, site URL and the vault's own names — the
+ * fields `GET /api/config`'s `infisical` block deliberately omits — live
+ * only in this response. */
+export interface InfisicalStatusPayload {
+  infisical: {
+    configured: boolean;
+    enabled: boolean;
+    writeThrough: boolean;
+    source: "env" | "config" | "none";
+    siteUrl: string | null;
+    projectId: string | null;
+    environment: string;
+    secretPath: string;
+    hasClientId: boolean;
+    hasClientSecret: boolean;
+    refreshMinutes: number;
+    lastSyncAt: string | null;
+    lastAttemptAt: string | null;
+    lastSyncMs: number | null;
+    lastError: string | null;
+    stale: boolean;
+    pendingProviderReload: boolean;
+    vaultCount: number;
+    vaultNames: string[];
+    appliedCount: number;
+    appliedFields: string[];
+    unusedVaultNames: string[];
+  };
+  fields: SecretFieldRow[];
+}
+
+export function fetchSecrets(): Promise<InfisicalStatusPayload> {
+  return api("/api/infisical/status");
+}
+
+/** Where every mapped credential came from, as of the last fetch — the
+ * per-field badge next to a Composio key, a Usage Monitor token, or a Bot RAG
+ * connection reads this instead of each polling `/api/infisical/status` on
+ * its own. Empty until the first fetch resolves, which reads as "unknown"
+ * everywhere a caller checks the map rather than throwing. */
+export function useSecretSources(): Map<string, { source: SecretFieldRow["source"]; managed: boolean; infisicalName: string }> {
+  const [rows, setRows] = useState<SecretFieldRow[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchSecrets()
+      .then((data) => {
+        if (!cancelled && Array.isArray(data?.fields)) setRows(data.fields);
+      })
+      .catch(() => {
+        // A window without loopback access (or a very old harness) simply
+        // sees no badges — the same fail-quiet the rest of this file uses
+        // for every best-effort background fetch.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return useMemo(
+    () => new Map(rows.map((row) => [row.id, { source: row.source, managed: row.managed, infisicalName: row.infisicalName }])),
+    [rows],
+  );
 }
 
 /** Per-frame stream state lives in its OWN context: token frames update only

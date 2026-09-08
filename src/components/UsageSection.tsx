@@ -4,11 +4,12 @@
 // summed here; nothing is fetched.
 import * as React from "react";
 import { Check, CheckCircle, ChevronDown, Loader2, RefreshCw, XCircle } from "lucide-react";
-import { api, useStore, type ConfigStatus } from "@/state/store";
+import { api, useSecretSources, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { MausAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
 import { ProviderMark } from "./ProviderIcons";
+import { SecretSourceBadge } from "./SecretSourceBadge";
 import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
@@ -88,6 +89,18 @@ export function UsageSection() {
   }>>([]);
   const [expandedQuota, setExpandedQuota] = React.useState<string | null>(null);
   const usageConfig = state.config?.usage;
+  const secretSources = useSecretSources();
+  const infisicalConfigured = Boolean(state.config?.infisical?.configured);
+  const writeThrough = Boolean(state.config?.infisical?.writeThrough);
+  const ingestUrlSource = secretSources.get("usage.ingestUrl");
+  const ingestTokenSource = secretSources.get("usage.ingestToken");
+  const readTokenSource = secretSources.get("usage.readToken");
+  // A 409 the operator cannot explain is the failure this prevents: with
+  // Write Through off, Infisical is the only place a managed field can
+  // change, so it disables outright instead of failing a save silently.
+  const ingestUrlLocked = (ingestUrlSource?.managed ?? false) && !writeThrough;
+  const ingestTokenLocked = (ingestTokenSource?.managed ?? false) && !writeThrough;
+  const readTokenLocked = (readTokenSource?.managed ?? false) && !writeThrough;
   const [ingestUrl, setIngestUrl] = React.useState(usageConfig?.ingestUrl ?? "");
   const [ingestToken, setIngestToken] = React.useState("");
   const [readToken, setReadToken] = React.useState("");
@@ -155,9 +168,19 @@ export function UsageSection() {
     setSaveError(null);
     setSaveOk(false);
     try {
+      // ingestUrl is always present in the built patch (blank means "clear"),
+      // but the field disables outright when Infisical manages it and Write
+      // Through is off — it cannot have changed here, and resending its
+      // current value on every unrelated save would hit the 409 refusal gate
+      // just for saving the read token.  ingestToken/readToken need no such
+      // handling: their inputs are disabled the same way, and both are
+      // already omitted from the patch whenever the field reads blank.
+      const { ingestUrl: lockedIngestUrl, ...patchWithoutIngestUrl } = built.patch;
+      void lockedIngestUrl;
+      const usagePatch = ingestUrlLocked ? patchWithoutIngestUrl : built.patch;
       const config: ConfigStatus = await api("/api/config", {
         method: "PATCH",
-        body: JSON.stringify({ usage: built.patch }),
+        body: JSON.stringify({ usage: usagePatch }),
       });
       dispatch({ type: "configStatus", config });
       if (built.patch.ingestToken) setIngestToken("");
@@ -531,9 +554,12 @@ export function UsageSection() {
 
           <div className="flex flex-col gap-3 rounded-xl border border-hairline/30 bg-inset/20 p-3">
             <div className="flex flex-col gap-1">
-              <label className="text-[12px] font-medium text-ink-secondary" htmlFor="usage-ingest-url">
-                Usage Monitor URL
-              </label>
+              <div className="flex items-center gap-2">
+                <label className="text-[12px] font-medium text-ink-secondary" htmlFor="usage-ingest-url">
+                  Usage Monitor URL
+                </label>
+                <SecretSourceBadge source={ingestUrlSource?.source} infisicalConfigured={infisicalConfigured} />
+              </div>
               <input
                 id="usage-ingest-url"
                 type="url"
@@ -543,15 +569,20 @@ export function UsageSection() {
                   setSaveOk(false);
                 }}
                 onKeyDown={(e) => e.key === "Enter" && void saveUsage()}
-                placeholder="https://usage.example.com"
+                placeholder={ingestUrlLocked ? "Managed by Infisical." : "https://usage.example.com"}
                 autoComplete="off"
-                className={usageInputClass}
+                disabled={ingestUrlLocked}
+                className={cn(usageInputClass, ingestUrlLocked && "cursor-not-allowed opacity-60")}
               />
+              {ingestUrlLocked && <div className="text-[11.5px] text-ink-secondary">Managed by Infisical.</div>}
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-[12px] font-medium text-ink-secondary" htmlFor="usage-ingest-token">
-                Ingest Token
-              </label>
+              <div className="flex items-center gap-2">
+                <label className="text-[12px] font-medium text-ink-secondary" htmlFor="usage-ingest-token">
+                  Ingest Token
+                </label>
+                <SecretSourceBadge source={ingestTokenSource?.source} infisicalConfigured={infisicalConfigured} />
+              </div>
               <input
                 id="usage-ingest-token"
                 type="password"
@@ -561,15 +592,26 @@ export function UsageSection() {
                   setSaveOk(false);
                 }}
                 onKeyDown={(e) => e.key === "Enter" && void saveUsage()}
-                placeholder={usageConfig?.hasToken ? "••••••••  (paste to replace)" : "Leave blank to keep telemetry off"}
+                placeholder={
+                  ingestTokenLocked
+                    ? "Managed by Infisical."
+                    : usageConfig?.hasToken
+                      ? "••••••••  (paste to replace)"
+                      : "Leave blank to keep telemetry off"
+                }
                 autoComplete="off"
-                className={usageInputClass}
+                disabled={ingestTokenLocked}
+                className={cn(usageInputClass, ingestTokenLocked && "cursor-not-allowed opacity-60")}
               />
+              {ingestTokenLocked && <div className="text-[11.5px] text-ink-secondary">Managed by Infisical.</div>}
             </div>
             <div className="flex flex-col gap-1">
-              <label className="text-[12px] font-medium text-ink-secondary" htmlFor="usage-read-token">
-                Read Token
-              </label>
+              <div className="flex items-center gap-2">
+                <label className="text-[12px] font-medium text-ink-secondary" htmlFor="usage-read-token">
+                  Read Token
+                </label>
+                <SecretSourceBadge source={readTokenSource?.source} infisicalConfigured={infisicalConfigured} />
+              </div>
               <input
                 id="usage-read-token"
                 type="password"
@@ -579,10 +621,18 @@ export function UsageSection() {
                   setSaveOk(false);
                 }}
                 onKeyDown={(e) => e.key === "Enter" && void saveUsage()}
-                placeholder={usageConfig?.hasReadToken ? "••••••••  (paste to replace)" : "USAGE_READ_TOKEN from Usage Monitor"}
+                placeholder={
+                  readTokenLocked
+                    ? "Managed by Infisical."
+                    : usageConfig?.hasReadToken
+                      ? "••••••••  (paste to replace)"
+                      : "USAGE_READ_TOKEN from Usage Monitor"
+                }
                 autoComplete="off"
-                className={usageInputClass}
+                disabled={readTokenLocked}
+                className={cn(usageInputClass, readTokenLocked && "cursor-not-allowed opacity-60")}
               />
+              {readTokenLocked && <div className="text-[11.5px] text-ink-secondary">Managed by Infisical.</div>}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button
