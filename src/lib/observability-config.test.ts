@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { buildObservabilityConfigPatch, isSentryDsn } from "./observability-config";
+import { buildObservabilityConfigPatch, initialSendDiagnostics, isSentryDsn } from "./observability-config";
 
 describe("isSentryDsn", () => {
   it("accepts a well-formed https Sentry DSN", () => {
@@ -126,5 +126,24 @@ describe("buildObservabilityConfigPatch", () => {
       ok: true,
       patch: { enabled: false, tracesSampleRate: 0.2, logsEnabled: false },
     });
+  });
+});
+
+describe("initialSendDiagnostics", () => {
+  it("shows the switch on when no DSN is configured yet, so the first Save does not turn diagnostics off", () => {
+    expect(initialSendDiagnostics(undefined)).toBe(true);
+    expect(initialSendDiagnostics({ configured: false, enabled: false })).toBe(true);
+  });
+
+  it("follows the stored flag once a DSN is configured", () => {
+    expect(initialSendDiagnostics({ configured: true, enabled: false })).toBe(false);
+    expect(initialSendDiagnostics({ configured: true, enabled: true })).toBe(true);
+  });
+
+  it("keeps a freshly pasted DSN reporting: the patch from an untouched form does not carry enabled false", () => {
+    const enabled = initialSendDiagnostics({ configured: false, enabled: false });
+    const built = buildObservabilityConfigPatch({ sentryDsn: "https://abc123@o0.ingest.sentry.io/1", enabled, environment: "", tracesSampleRate: 0.2, logsEnabled: true });
+    expect(built.ok).toBe(true);
+    if (built.ok) expect(built.patch.enabled).toBe(true);
   });
 });

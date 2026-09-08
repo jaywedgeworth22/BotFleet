@@ -9,8 +9,9 @@ import { api, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { Card } from "./SettingsPrimitives";
 import { fetchObservabilityStatus, sendObservabilityTestEvent } from "@/lib/observability-client";
-import { buildObservabilityConfigPatch } from "@/lib/observability-config";
+import { buildObservabilityConfigPatch, initialSendDiagnostics } from "@/lib/observability-config";
 import { observabilityBadge, observabilityHost, type ObservabilityStatusView } from "@/lib/observability-status";
+import { refreshSentryFromRuntime } from "@/lib/sentry";
 
 const observabilityInputClass =
   "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none disabled:cursor-not-allowed disabled:opacity-60";
@@ -36,7 +37,7 @@ export function ObservabilitySection() {
   const [dsn, setDsn] = React.useState("");
   const [environment, setEnvironment] = React.useState(observabilityConfig?.environment ?? "");
   const [tracesSampleRate, setTracesSampleRate] = React.useState(observabilityConfig?.tracesSampleRate ?? 0.2);
-  const [enabled, setEnabled] = React.useState(observabilityConfig?.enabled ?? true);
+  const [enabled, setEnabled] = React.useState(initialSendDiagnostics(observabilityConfig));
   const [logsEnabled, setLogsEnabled] = React.useState(observabilityConfig?.logsEnabled ?? true);
 
   const [saving, setSaving] = React.useState(false);
@@ -55,8 +56,8 @@ export function ObservabilitySection() {
     if (observabilityConfig?.tracesSampleRate !== undefined) setTracesSampleRate(observabilityConfig.tracesSampleRate);
   }, [observabilityConfig?.tracesSampleRate]);
   React.useEffect(() => {
-    if (observabilityConfig?.enabled !== undefined) setEnabled(observabilityConfig.enabled);
-  }, [observabilityConfig?.enabled]);
+    setEnabled(initialSendDiagnostics(observabilityConfig));
+  }, [observabilityConfig?.configured, observabilityConfig?.enabled]);
   React.useEffect(() => {
     if (observabilityConfig?.logsEnabled !== undefined) setLogsEnabled(observabilityConfig.logsEnabled);
   }, [observabilityConfig?.logsEnabled]);
@@ -113,6 +114,10 @@ export function ObservabilitySection() {
       dispatch({ type: "configStatus", config });
       if (built.patch.sentryDsn) setDsn("");
       await refreshStatus();
+      // The harness reconfigured itself on the PATCH; this window has its own
+      // Sentry client and would otherwise keep reporting to the old DSN — or
+      // keep reporting at all after the kill switch went off — until reload.
+      await refreshSentryFromRuntime();
       setSaveOk(true);
       return true;
     } catch (caught) {
@@ -160,6 +165,9 @@ export function ObservabilitySection() {
       dispatch({ type: "configStatus", config });
       setDsn("");
       await refreshStatus();
+      // No DSN left to report to: close this window's client too, rather
+      // than leaving it pointed at the key the operator just removed.
+      await refreshSentryFromRuntime();
     } catch (caught) {
       setSaveError(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -171,7 +179,7 @@ export function ObservabilitySection() {
     <div className="flex flex-col gap-4">
       <Card
         title="Diagnostics & Error Reporting"
-        subtitle="An optional Sentry stream that reports failed bot turns, console warnings and errors, and performance traces so problems surface without you tailing a log.  Prompts, transcripts, and tool arguments are never sent."
+        subtitle={"An optional Sentry stream that reports failed bot turns, console warnings and errors, and performance traces so problems surface without you tailing a log.\u00A0 Prompts, transcripts, and tool arguments are never sent."}
       >
         <div className="flex flex-col gap-3 text-[13px]">
           <div className="flex items-center justify-between rounded-xl border border-hairline/30 bg-inset/40 px-3.5 py-2.5">

@@ -4,6 +4,7 @@
 // Settings takes effect without a restart.  The SDK is loaded only once a
 // DSN is present, so importing this module in vitest does not pay the Node
 // SDK tax.  Browser Replay/Feedback live in src/lib/sentry.ts.
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 
 type SentryNode = typeof import("@sentry/node");
@@ -53,9 +54,11 @@ let sentrySdk: SentryNode | null = null;
 /** Turned off on purpose, as opposed to never configured.  Kept apart so
  * the boot line and the Settings card can tell the operator which it is. */
 let killed = false;
-/** The option set the running client was initialised with — host, project
- * id and the knobs, never the public key.  A fingerprint is compared on
- * every apply and must not be able to carry the credential half of a DSN. */
+/** The option set the running client was initialised with, as a comparison
+ * key: host, project id, the knobs, and a one-way digest of the whole DSN.
+ * The digest is what makes a rotated key on the same host and project count
+ * as a different client; it is module-local, never reaches a status field,
+ * a log line or an error, and cannot be turned back into the DSN. */
 let activeFingerprint: string | null = null;
 let profilingWarned = false;
 let runtimeState: SentryRuntimeState = { ...DORMANT };
@@ -123,6 +126,18 @@ export function describeDsn(dsn: string): { host: string; projectId: string } | 
   const projectId = parsed.pathname.split("/").filter(Boolean).pop();
   if (!projectId || !DSN_PROJECT_ID.test(projectId)) return null;
   return { host: parsed.host, projectId };
+}
+
+/** A one-way digest of the complete DSN, public key included.  Host and
+ * project id alone cannot tell a rotated credential from the one it
+ * replaced, so a routine key rotation would leave the old — possibly
+ * revoked — client installed while the status view reported the new
+ * configuration as active.  Hashing keeps that distinction without ever
+ * holding the credential anywhere it could be printed: the digest is
+ * compared against the previous digest and discarded, and sha256 gives no
+ * way back to the DSN it was made from. */
+function dsnDigest(dsn: string): string {
+  return createHash("sha256").update(dsn.trim()).digest("hex");
 }
 
 export function sentryDsnFromEnv(
@@ -246,10 +261,14 @@ export function applySentryConfig(input: SentryRuntimeInput): SentryRuntimeState
   // Every option that changes what the client does belongs in the
   // fingerprint, not just the destination: a sample-rate change made in
   // Settings has to reach the SDK, and comparing only host and project id
-  // would leave the old rate running until the next restart.
+  // would leave the old rate running until the next restart.  The DSN
+  // digest is in here for the same reason — a rotated key keeps the host
+  // and the project id, so without it the old credential would stay
+  // installed while Settings reported the new one as active.
   const fingerprint = [
     parsed.host,
     parsed.projectId,
+    dsnDigest(input.dsn),
     input.environment,
     String(input.tracesSampleRate),
     input.logsEnabled ? "logs" : "nologs",

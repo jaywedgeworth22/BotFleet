@@ -143,6 +143,15 @@ the field leaves the stored value untouched).
    fallback that fetches `GET /api/observability` from the attached harness
    over the same `api()` helper the Settings UI uses, and initializes Sentry
    from the response when the harness reports one configured and enabled.
+   The runtime path stays in step with Settings: the Observability card
+   calls `refreshSentryFromRuntime()` after a successful Save and after
+   Remove Diagnostics Key, which closes the renderer's client and starts a
+   new one when the DSN, environment, or trace rate changed, closes it and
+   starts nothing when diagnostics are turned off or the key is removed, and
+   does nothing at all when the answer is unchanged.  A build-time
+   `VITE_SENTRY_DSN` wins and is never re-configured at runtime — a shipped
+   release reports to the DSN it was built with for the life of the window,
+   and Settings governs the harness rather than that client.
 3. **iOS TestFlight.**  `.github/workflows/ios-ship.yml`'s "Load Infisical
    signing secrets" step also resolves `SENTRY_DSN`: Infisical prod first,
    then the GitHub Actions secret (`GH_FALLBACK_SENTRY_DSN`, read from step
@@ -181,9 +190,12 @@ the field leaves the stored value untouched).
    three-tier resolution — already-exported environment, Infisical (only if
    already logged in; this script never calls `infisical login`), then the
    handoff file `~/.secrets/botfleet-sentry.env` via
-   `grep -m1 '^NAME=' | cut -d= -f2-` — and exports both `SENTRY_DSN` and
-   `VITE_SENTRY_DSN` before executing the wrapped command.  It never prints a
-   resolved value.  Usage:
+   an `awk` read that produces only the value after the first `NAME=`, never
+   the whole `NAME=value` row — and exports both `SENTRY_DSN` and
+   `VITE_SENTRY_DSN` before executing the wrapped command.  It turns xtrace
+   off before it reads anything, so neither `bash -x` nor an inherited
+   `SHELLOPTS` can echo a resolved value, and it never prints one in any
+   branch.  Usage:
 
    ```bash
    scripts/with-sentry-dsn.sh pnpm package:mac:local

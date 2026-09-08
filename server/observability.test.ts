@@ -8,13 +8,16 @@ import { isSentryActive, resetSentryForTests, setSentryLoaderForTests } from "./
 // and the key halves below are what the leak assertions search for.
 const CONFIG_DSN = "https://config0key@o0.ingest.sentry.io/1";
 const ENV_DSN = "https://env0key@o9.ingest.sentry.io/2";
+/** Same ingest host, same project id, rotated public key — the shape a
+ * host-and-project comparison cannot tell apart from CONFIG_DSN. */
+const ROTATED_DSN = "https://rotated0key@o0.ingest.sentry.io/1";
 /** Passes a "non-empty username, non-empty last segment" check and fails
  * @sentry/core's own `DSN_REGEX`, whose public key is `\w+` — no hyphens.
  * The SDK answers a DSN it cannot parse by printing the whole string,
  * public key included, through `console.error`, so this shape has to be
  * refused before it ever reaches `Sentry.init`. */
 const UUID_KEY_DSN = "https://a1b2c3d4-e5f6-47a8-9b0c-1d2e3f4a5b6c@o123.ingest.sentry.io/456";
-const KEY_FRAGMENTS = ["config0key", "env0key", "a1b2c3d4-e5f6-47a8-9b0c-1d2e3f4a5b6c"];
+const KEY_FRAGMENTS = ["config0key", "env0key", "rotated0key", "a1b2c3d4-e5f6-47a8-9b0c-1d2e3f4a5b6c"];
 
 type SentryNode = typeof import("@sentry/node");
 type SentryInitOptions = Parameters<SentryNode["init"]>[0];
@@ -202,6 +205,34 @@ describe("observability kill switch", () => {
     observability.apply();
     expect(record.inits).toHaveLength(2);
     expect(record.closes).toBe(1);
+  });
+
+  // A credential rotation keeps the ingest host and the project id, so a
+  // fingerprint built from those alone reports the new configuration as
+  // active while the harness quietly goes on using the revoked key.
+  it("re-initialises when only the public key changes", () => {
+    const { record, loader } = fakeSentry();
+    setSentryLoaderForTests(loader);
+    const cfg: AppConfig = { observability: { sentryDsn: CONFIG_DSN } };
+    useConfig(cfg);
+
+    observability.apply();
+    expect(record.inits).toHaveLength(1);
+    expect(record.inits[0]).toMatchObject({ dsn: CONFIG_DSN });
+
+    cfg.observability = { sentryDsn: ROTATED_DSN };
+    const status = observability.apply();
+    expect(record.closes).toBe(1);
+    expect(record.inits).toHaveLength(2);
+    expect(record.inits[1]).toMatchObject({ dsn: ROTATED_DSN });
+    expect(isSentryActive()).toBe(true);
+
+    // The host and the project id are unchanged, which is exactly why the
+    // digest had to carry the difference — and neither key may surface.
+    expect(status.host).toBe("o0.ingest.sentry.io");
+    expect(status.projectId).toBe("1");
+    const serialized = JSON.stringify(status);
+    for (const fragment of KEY_FRAGMENTS) expect(serialized).not.toContain(fragment);
   });
 
   it("reaches the SDK when only the sample rate changes", () => {
