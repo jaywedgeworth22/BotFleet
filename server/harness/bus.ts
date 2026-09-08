@@ -14,10 +14,18 @@ import { newId, type ProviderInstance, type RuntimeEvent, type RuntimeEventListe
 const INCOMPLETE_LOG_MESSAGE =
   "Canonical event history is incomplete: BotFleet could not write one or more events to disk. Live updates will continue.";
 
+/** How many settled turns the duplicate-terminal detector remembers.  A
+ * bound, not a lifetime: the check exists to catch a driver bug within the
+ * same conversation, not to keep a ledger. */
+const SETTLED_TURN_MEMORY = 512;
+
 export class EventBus {
   private listeners = new Set<RuntimeEventListener>();
   private unsubscribes: Array<() => void> = [];
   private pendingLogWarnings = new Map<string, RuntimeEvent>();
+  /** `threadId:turnId` of every turn that has already produced a terminal
+   * event.  Insertion-ordered, so the oldest entry is the one evicted. */
+  private settledTurns = new Set<string>();
   private readonly appendLog: typeof appendFileSync;
 
   constructor(appendLog: typeof appendFileSync = appendFileSync) {
@@ -33,10 +41,39 @@ export class EventBus {
           console.error(`bus: dropped cross-driver event from ${instance.instanceId}`);
           return;
         }
+        // Second hard invariant: exactly one terminal event per turn.  Every
+        // consumer of turn.completed — the watchdog, the Sentry span closer,
+        // the routine receipt, the repeat detector, the room waiter, the
+        // usage fold, the queue drains — assumes it fires once, and a driver
+        // that emits it twice settles a turn twice with no error anywhere.
+        // This is a DETECTOR, not a gate: it drops the duplicate and says
+        // so, so a driver bug shows up as a log line instead of a double
+        // receipt.  It buys coverage for consumers nobody has written yet.
+        if (this.isDuplicateTerminal(event)) {
+          console.error(
+            `bus: dropped a second turn.completed for ${event.threadId}:${event.turnId} from ${instance.instanceId} — a driver emitted two terminal events for one turn (harness bug)`,
+          );
+          return;
+        }
         this.publish({ ...event, providerInstanceId: instance.instanceId });
       });
       this.unsubscribes.push(unsub);
     }
+  }
+
+  /** True when this turn has already settled.  A terminal event with no
+   * turnId cannot be correlated, so it is always let through — the check
+   * never guesses. */
+  private isDuplicateTerminal(event: RuntimeEvent): boolean {
+    if (event.type !== "turn.completed" || !event.turnId) return false;
+    const key = `${event.threadId}:${event.turnId}`;
+    if (this.settledTurns.has(key)) return true;
+    this.settledTurns.add(key);
+    if (this.settledTurns.size > SETTLED_TURN_MEMORY) {
+      const oldest = this.settledTurns.values().next();
+      if (!oldest.done) this.settledTurns.delete(oldest.value);
+    }
+    return false;
   }
 
   publish(event: RuntimeEvent) {

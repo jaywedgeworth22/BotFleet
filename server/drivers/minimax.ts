@@ -22,7 +22,8 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
-import { parseToolArguments, toolFields } from "../tool-fields.ts";
+import { toolFields } from "../tool-fields.ts";
+import { runTurnLoop, type ChatMessage, type TurnLoopDeps } from "./chat-completions/loop.ts";
 
 const DRIVER_KIND = "minimax";
 const API_KEY_ENV = "MINIMAX_API_KEY";
@@ -126,7 +127,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       : MODELS;
 
     const listeners = new Set<RuntimeEventListener>();
-    const active = new Map<string, { abort: AbortController; turnId: string }>();
+    // Held for the WHOLE turn — every round and every tool call — and dropped
+    // only by the loop's finally.  That is what makes Stop work between
+    // rounds and mid-tool, where it used to be a silent no-op.
+    const active = new Map<string, { abort: AbortController; turnId: string; startedAt: number }>();
 
     const emit = (event: RuntimeEvent) => {
       for (const l of listeners) l(event);
@@ -145,8 +149,13 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       model: string,
       opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
     ): Promise<{ text: string; tool_calls?: any[]; usage: { input: number; output: number } | null }> => {
-      const timeout = AbortSignal.timeout(180_000);
-      const signal = opts.signal ? AbortSignal.any([opts.signal, timeout]) : timeout;
+      // When the caller supplies a signal it already carries the request
+      // deadline (the turn loop arms one per round).  A second timer here
+      // would race it and make a timeout indistinguishable from a provider
+      // error at the point where the loop has to name the exit.  Callers
+      // with no signal — generateText for titles and summaries — keep the
+      // driver's own 180s ceiling.
+      const signal = opts.signal ?? AbortSignal.timeout(180_000);
       const body = {
         model,
         messages,
@@ -241,22 +250,30 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
           }))
         : undefined;
       const { threadId } = turn;
+      // Validation throws SYNCHRONOUSLY out of sendTurn, before the loop
+      // exists, so startTurn's catch runs in milliseconds exactly as it does
+      // for a CLI driver — error chip, watchdog settled, bot idle, all three
+      // queue drains.  A rejection here must never become a resolved turn
+      // that nothing ever settles.
       if (!apiKey) throw new Error(`no MiniMax key — set ${API_KEY_ENV} or run mmx auth login --api-key …`);
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
 
       const turnId = newId();
       const abort = new AbortController();
-      active.set(threadId, { abort, turnId });
-      const messages: any[] = [
-        ...(turn.system ? [{ role: "system", content: turn.system }] : []),
-        ...(turn.transcript ?? []).flatMap((m: any) => {
-          const res = [];
+      active.set(threadId, { abort, turnId, startedAt: Date.now() });
+      const model = turn.model || models.default;
+      // Round 1's prefix.  The loop owns this array from here and only ever
+      // APPENDS to it, so rounds 2..N re-send a byte-identical prefix.
+      const messages: ChatMessage[] = [
+        ...(turn.system ? [{ role: "system" as const, content: turn.system }] : []),
+        ...(turn.transcript ?? []).flatMap((m): ChatMessage[] => {
+          const res: ChatMessage[] = [];
           if (m.role === "assistant") {
-            const assistantMsg: any = { role: "assistant", content: m.text || "" };
+            const assistantMsg: ChatMessage = { role: "assistant", content: m.text || "" };
             if (m.toolCalls && m.toolCalls.length > 0) {
-              assistantMsg.tool_calls = m.toolCalls.map((tc: any) => ({
+              assistantMsg.tool_calls = m.toolCalls.map((tc) => ({
                 id: tc.id,
-                type: "function",
+                type: "function" as const,
                 function: { name: tc.name, arguments: tc.arguments },
               }));
             }
@@ -272,112 +289,67 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
           }
           return res;
         }),
-        ...(turn.text ? [{ role: "user", content: turn.text }] : []),
+        ...(turn.text ? [{ role: "user" as const, content: turn.text }] : []),
       ];
 
-      appendNative(threadId, {
-        dir: "out",
-        source: "minimax.chat.completions",
-        msg: { model: turn.model ?? models.default, messageCount: messages.length },
-      });
-
       emit({ ...base(threadId, turnId), type: "turn.started" });
-      emit({ ...base(threadId, turnId), type: "session.started", sessionId: null, model: turn.model ?? models.default });
+      emit({ ...base(threadId, turnId), type: "session.started", sessionId: null, model });
 
       // Tool ids this turn has already opened a step for.  The stream
       // announces a call once and then keeps sending argument fragments for
       // it, and the settled reply repeats every call — without this a single
-      // tool would open a dozen rows.
+      // tool would open a dozen rows.  Shared with the loop so a call the
+      // stream announced is not announced again when the round settles.
       const started = new Set<string>();
 
-      (async () => {
-        try {
-          const { text, usage, tool_calls } = await complete(messages, turn.model || models.default, {
-            stream: true,
-            tools: openAiTools,
-            signal: abort.signal,
-            onDelta: (delta) =>
-              emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
-            onToolCallDelta: (_index, id, name, args) => {
-              if (!id || started.has(id)) return;
-              started.add(id);
-              emit({
-                ...base(threadId, turnId),
-                type: "item.started",
-                itemType: "tool",
-                itemId: id,
-                title: name || "tool",
-                ...toolFields(name, undefined),
-                arguments: args,
-              });
-            },
-          });
+      const runRound: TurnLoopDeps["runRound"] = async (roundMessages, opts) => {
+        appendNative(threadId, {
+          dir: "out",
+          source: "minimax.chat.completions",
+          msg: { model, messageCount: roundMessages.length, round: opts.round },
+        });
+        const { text, usage, tool_calls } = await complete(roundMessages, model, {
+          stream: true,
+          tools: openAiTools,
+          signal: opts.signal,
+          onDelta: (delta) =>
+            emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
+          onToolCallDelta: (_index, id, name, args) => {
+            if (!id || started.has(id)) return;
+            started.add(id);
+            emit({
+              ...base(threadId, turnId),
+              type: "item.started",
+              itemType: "tool",
+              itemId: id,
+              title: name || "tool",
+              ...toolFields(name, undefined),
+              arguments: args,
+            });
+          },
+        });
+        appendNative(threadId, {
+          dir: "in",
+          source: "minimax.chat.completions",
+          msg: { textLength: text.length, usage, round: opts.round, toolCalls: tool_calls?.length ?? 0 },
+        });
+        return { text, usage, toolCalls: tool_calls };
+      };
 
-          appendNative(threadId, {
-            dir: "in",
-            source: "minimax.chat.completions",
-            msg: { textLength: text.length, usage },
-          });
-
-          if (text.trim()) {
-              emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
-            }
-            if (tool_calls && tool_calls.length > 0) {
-              for (const tc of tool_calls) {
-                if (tc.id && !started.has(tc.id)) {
-                  started.add(tc.id);
-                  emit({
-                    ...base(threadId, turnId),
-                    type: "item.started",
-                    itemType: "tool",
-                    itemId: tc.id,
-                    title: tc.function.name,
-                    ...toolFields(tc.function.name, parseToolArguments(tc.function.arguments)),
-                    arguments: tc.function.arguments,
-                  });
-                }
-                emit({
-                  ...base(threadId, turnId),
-                  type: "item.completed",
-                  itemType: "tool",
-                  itemId: tc.id,
-                  ok: true,
-                  arguments: tc.function.arguments,
-                });
-              }
-            }
-          if (usage) {
-            emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
-          }
-          active.delete(threadId);
-          const toolNames = ((tool_calls as any[] | undefined) ?? [])
-            .map((tc: any) => tc?.function?.name)
-            .filter(Boolean)
-            .join(", ");
-          const completed: RuntimeEvent = {
-            ...base(threadId, turnId),
-            type: "turn.completed",
-            ok: true,
-            stopReason: toolNames ? `tool_calls: ${toolNames}` : null,
-            cost: null,
-          };
-          emit(usage ? { ...completed, usage } : completed);
-        } catch (e) {
-          active.delete(threadId);
-          const error = e instanceof Error ? e : new Error(String(e));
-          const aborted = error.name === "AbortError";
-          if (!aborted) {
-            emit({ ...base(threadId, turnId), type: "runtime.error", message: error.message });
-          }
-          emit({
-            ...base(threadId, turnId),
-            type: "turn.completed",
-            ok: false,
-            stopReason: aborted ? "interrupted" : "error",
-            cost: null,
-          });
-        }
-      })();
+      // Detached, exactly as every CLI driver runs its turn: sendTurn
+      // resolves at DISPATCH so markTaskDispatched and the rewind clear are
+      // not deferred to the end of the loop.  runTurnLoop never rejects — it
+      // emits one turn.completed on every exit and resolves with which one.
+      void runTurnLoop({
+        base: () => base(threadId, turnId),
+        emit,
+        runRound,
+        messages,
+        toolHost: turn.toolHost,
+        signal: abort.signal,
+        startedToolIds: started,
+        onSettled: () => active.delete(threadId),
+      });
 
       return { turnId };
     };
@@ -403,9 +375,27 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         provider: DRIVER_KIND,
         // no MCP server is mounted in this file and respondToRequest answers
         // "unavailable": localComputerMcp would be a knob nothing can turn
-        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true },
+        // toolLoop: this driver runs the harness tool loop inside sendTurn and
+        // emits exactly one turn.started / turn.completed pair per user turn,
+        // the way every CLI driver does — so the harness hands it a toolHost
+        // and dispatches it on the same one line it uses for Claude.
+        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true, toolLoop: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
+        // Insurance the single try/finally should make unreachable: if this
+        // ever returns a thread, the loop leaked one, and that is worth
+        // knowing.  Aborting settles the turn through the same finally, so
+        // even the sweep produces exactly one terminal event.
+        sweepStuckTurns: async (olderThanMs: number) => {
+          const cutoff = Date.now() - olderThanMs;
+          const stuck: string[] = [];
+          for (const [threadId, entry] of active) {
+            if (entry.startedAt > cutoff) continue;
+            stuck.push(threadId);
+            entry.abort.abort();
+          }
+          return stuck;
+        },
         respondToRequest: async (): Promise<"unavailable"> => "unavailable",
         hasSession: (threadId) => active.has(threadId),
         stopAll: async () => { for (const { abort } of active.values()) abort.abort(); },

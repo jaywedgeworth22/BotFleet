@@ -278,7 +278,62 @@ export interface SendTurnInput {
      * computer keeps working. */
     computers?: ComputerMount[];
   };
+  /** The harness's tool executor for THIS turn, handed only to a driver that
+   *  declares `capabilities.toolLoop`.  Everything else on this contract is
+   *  plain data; this one field is a service the harness lends the driver for
+   *  the life of the turn, which is safe because `SendTurnInput` is never
+   *  serialized or persisted (only `RuntimeEvent` reaches the NDJSON tee).
+   *  A CLI driver never receives it. */
+  toolHost?: TurnToolHost;
   cwd?: string;
+}
+
+/** One tool call the model asked for, decoded.  `arguments` is always an
+ *  object — every entry on the catalog is declared as a JSON-shape tool. */
+export interface TurnToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+/** What the host made of a tool call.  The three variants are the only
+ *  three things that can happen, and each one has a defined effect on the
+ *  driver's loop, so a host cannot leave a turn in an undefined state. */
+export type TurnToolOutcome =
+  /** Feed `content` back to the model as a tool result and keep looping. */
+  | { kind: "result"; content: string; detail?: string }
+  /** Same, but the transcript chip renders red.  Never ends the turn — a
+   *  failing tool is information the model gets to act on. */
+  | { kind: "error"; content: string; detail?: string }
+  /** The tool put a card in front of a person.  The turn MUST end here; the
+   *  existing secret/connector resume drains a fresh turn when the card is
+   *  answered, exactly as a CLI agent's end-of-turn does. */
+  | { kind: "suspend"; content: string; detail?: string; stopReason: string };
+
+/** Harness services lent to a tool for the life of one call. */
+export interface TurnToolRuntime {
+  /** Aborted when the turn is interrupted, swept, or torn down.  A tool that
+   *  makes a network call must pass this through so Stop reaches it. */
+  signal: AbortSignal;
+  /** Ask a person.  Resolves `"unavailable"` when no broker is mounted —
+   *  fail-closed, and the caller treats it as a deny.  The real broker
+   *  arrives with the permission work; until then every host stubs it. */
+  requestApproval(ask: { tool: string; summary: string }): Promise<RequestOutcome>;
+}
+
+/** The harness side of a driver-owned tool loop.  A driver that declares
+ *  `capabilities.toolLoop` runs model-to-tool rounds inside `sendTurn` and
+ *  calls this for each tool the model asks for.
+ *
+ *  `execute` NEVER throws: a thrown error is normalised to
+ *  `{ kind: "error" }` by the host itself, so the driver's loop has exactly
+ *  one shape to handle.  The host owns approval cards, per-turn counters and
+ *  caller identity; the driver knows none of that. */
+export interface TurnToolHost {
+  execute(call: TurnToolCall, runtime: TurnToolRuntime): Promise<TurnToolOutcome>;
+  /** Hard ceiling on model-to-tool rounds for this turn.  Absent = the
+   *  driver's own default. */
+  maxRounds?: number;
 }
 
 export interface TurnStartResult {
@@ -327,6 +382,12 @@ export interface ProviderAdapter {
      * and pi drivers); an engine with no approval channel at all must leave
      * this false. */
     localComputerMcp?: boolean;
+    /** True when the driver runs the harness tool loop INSIDE sendTurn and
+     * emits exactly one turn.started / turn.completed pair per user turn,
+     * the way every CLI driver already does.  The harness hands
+     * `SendTurnInput.toolHost` only to such a driver, and dispatches it on
+     * the same one-line path it uses for a CLI engine. */
+    toolLoop?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
@@ -346,6 +407,12 @@ export interface ProviderAdapter {
   steer?(threadId: ThreadId, text: string): Promise<boolean>;
   hasSession(threadId: ThreadId): boolean;
   stopAll(): Promise<void>;
+  /** Force-settle any turn whose loop has outlived `olderThanMs`, and report
+   * which threads were settled.  Insurance only: a driver whose loop emits
+   * its terminal event from a single `finally` can never strand a turn, so a
+   * correct implementation always returns `[]` — a non-empty return is a bug
+   * report, which is exactly why it is worth the six lines. */
+  sweepStuckTurns?(olderThanMs: number): Promise<ThreadId[]>;
   onEvent(listener: RuntimeEventListener): () => void;
 }
 

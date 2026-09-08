@@ -4,8 +4,26 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { TurnToolHost } from "../contracts.ts";
 import { recordEvents } from "../testing/events.ts";
 import { decodeMinimaxConfig, loadLocalMiniMaxConfig, MinimaxDriver } from "./minimax.ts";
+
+/** One scripted SSE response, [DONE]-terminated. */
+const sse = (...frames: string[]) =>
+  new Response(frames.map((f) => `data: ${f}\n`).join("") + "data: [DONE]\n", {
+    status: 200,
+    headers: { "content-type": "text/event-stream" },
+  });
+
+const TOOL_CALL_ROUND = [
+  '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_bots","arguments":"{}"}}]}}]}',
+  '{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_2","function":{"name":"ask_bot","arguments":"{\\"bot_id\\":\\"@peer\\",\\"task\\":\\"hi\\"}"}}]}}]}',
+  '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}',
+];
+
+const answeringHost: TurnToolHost = {
+  execute: async (call) => ({ kind: "result", content: `${call.name} ok` }),
+};
 
 describe("MinimaxDriver", () => {
   const saved = {
@@ -221,13 +239,20 @@ describe("MinimaxDriver", () => {
   });
 
   it("streams tool_call deltas as item.started so steps render in the transcript", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response(
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_bots","arguments":""}}]}}]}\n' +
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"section\\":\\"ops\\"}"}}]}}]}\n' +
-      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":""}}]}}]}\n' +
-      'data: [DONE]\n',
-      { status: 200, headers: { "content-type": "text/event-stream" } },
-    )));
+    // Round 1 asks for a tool, round 2 answers.  The old driver settled the
+    // TURN on round 1 with a `tool_calls: …` stop reason and left the bot
+    // busy behind it; the loop keeps one turn open across both rounds.
+    let round = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      round += 1;
+      return round === 1
+        ? sse(
+            '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_bots","arguments":""}}]}}]}',
+            '{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"section\\":\\"ops\\"}"}}]}}]}',
+            '{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":""}}]}}]}',
+          )
+        : sse('{"choices":[{"delta":{"content":"two bots"}}]}');
+    }));
     const instance = await MinimaxDriver.create({
       instanceId: "minimax-tool-stream",
       displayName: "MiniMax",
@@ -241,6 +266,7 @@ describe("MinimaxDriver", () => {
       threadId: "thread",
       text: "list ops bots",
       tools: [{ name: "list_bots" }],
+      toolHost: answeringHost,
     });
     const started = await recorder.until((event) => event.type === "item.started" && event.itemType === "tool");
     const completed = await recorder.until((event) => event.type === "turn.completed");
@@ -249,8 +275,150 @@ describe("MinimaxDriver", () => {
       itemId: "call_1",
       title: "list_bots",
     });
-    expect(completed).toMatchObject({ ok: true });
+    expect(completed).toMatchObject({ ok: true, stopReason: "end_turn" });
+    // the row the streamed chip opened is closed by the host's real outcome,
+    // never by the driver asserting ok for work it did not do
+    expect(recorder.events.filter((e) => e.type === "item.started")).toHaveLength(1);
     recorder.stop();
+    await instance.dispose();
+  });
+
+  it("runs the tool loop inside sendTurn: one terminal event, summed usage, results in call order", async () => {
+    const bodies: any[] = [];
+    let round = 0;
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      round += 1;
+      return round === 1
+        ? sse(...TOOL_CALL_ROUND)
+        : sse(
+            '{"choices":[{"delta":{"content":"here you go"}}]}',
+            '{"choices":[],"usage":{"prompt_tokens":7,"completion_tokens":3}}',
+          );
+    }));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-loop",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({
+      threadId: "thread",
+      text: "who is around?",
+      tools: [{ name: "list_bots" }, { name: "ask_bot" }],
+      toolHost: answeringHost,
+    });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    // ONE terminal event for the whole user turn, with the whole turn's cost
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(completed).toMatchObject({ ok: true, stopReason: "end_turn", usage: { input: 17, output: 8 } });
+    // and nothing on the bus carries the old inner-round convention
+    expect(
+      recorder.events.filter(
+        (e) => e.type === "turn.completed" && String(e.stopReason ?? "").startsWith("tool_calls:"),
+      ),
+    ).toHaveLength(0);
+
+    // round 2 re-sends round 1's prefix byte for byte and appends the
+    // assistant call plus one tool message per call, in CALL order
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1].messages.slice(0, bodies[0].messages.length)).toEqual(bodies[0].messages);
+    expect(bodies[1].messages.slice(-3)).toEqual([
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { id: "call_1", type: "function", function: { name: "list_bots", arguments: "{}" } },
+          {
+            id: "call_2",
+            type: "function",
+            function: { name: "ask_bot", arguments: '{"bot_id":"@peer","task":"hi"}' },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "list_bots ok" },
+      { role: "tool", tool_call_id: "call_2", content: "ask_bot ok" },
+    ]);
+
+    const toolRows = recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "tool");
+    expect(toolRows).toHaveLength(2);
+    expect(toolRows.every((e) => (e as { ok: boolean }).ok)).toBe(true);
+    expect(instance.adapter.hasSession("thread")).toBe(false);
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("Stop settles a turn that is sitting inside a tool call", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => sse(...TOOL_CALL_ROUND)));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-stop",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+    let running: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => {
+      running = resolve;
+    });
+
+    await instance.adapter.sendTurn({
+      threadId: "thread",
+      text: "ask the peer",
+      tools: [{ name: "ask_bot" }],
+      // a tool that never returns — the window where Stop used to be a
+      // silent no-op
+      toolHost: { execute: async () => (running(), new Promise(() => undefined)) },
+    });
+    await started;
+    await instance.adapter.interruptTurn("thread");
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({ ok: false, stopReason: "interrupted" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    // an interrupt is a decision, not a failure — no red chip
+    expect(recorder.events.filter((e) => e.type === "runtime.error")).toHaveLength(0);
+    expect(instance.adapter.hasSession("thread")).toBe(false);
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("rejects a bad dispatch synchronously, so startTurn's own recovery runs in milliseconds", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (_input: string | URL | Request, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), {
+          once: true,
+        });
+      }),
+    ));
+    const keyless = await MinimaxDriver.create({
+      instanceId: "minimax-nokey",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: {},
+    });
+    await expect(keyless.adapter.sendTurn({ threadId: "thread", text: "hi" })).rejects.toThrow(/no MiniMax key/);
+    await keyless.dispose();
+
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-busy",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    // sendTurn resolves at DISPATCH — the loop runs detached, the way every
+    // CLI driver's turn does
+    await instance.adapter.sendTurn({ threadId: "thread", text: "first" });
+    await expect(instance.adapter.sendTurn({ threadId: "thread", text: "second" })).rejects.toThrow(
+      /already running/,
+    );
     await instance.dispose();
   });
 });
