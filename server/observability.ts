@@ -10,6 +10,7 @@
 // DSN never reaches a log line, a status field, or a broadcast frame; only
 // the ingest host and the project id do.
 import { observabilitySettings, type ObservabilitySettings } from "./config.ts";
+import { secretSource } from "./secret-map.ts";
 import {
   applySentryConfig,
   describeDsn,
@@ -27,7 +28,10 @@ export interface ObservabilityStatusView {
    * kill switch is on.  The Settings pill reads straight off this. */
   enabled: boolean;
   configured: boolean;
-  source: SentrySource;
+  /** `"infisical"` is the fourth answer the Sentry lane never had: the
+   * secret store holds the DSN, so neither the environment nor this
+   * computer decided it.  The other three keep their meanings. */
+  source: SentrySource | "infisical";
   host: string | null;
   projectId: string | null;
   environment: string;
@@ -59,14 +63,30 @@ class ObservabilityManager {
     }
   }
 
-  /** Env, then config, then nothing.  Env wins so a CI runner or the
-   * LaunchAgent can pin a DSN; Settings then shows "Environment" as the
-   * source and disables the field rather than pretending it is editable. */
+  /** True when the secret store is what put the stored DSN there.
+   *
+   * `sentryDsn` is the one mapped field this module resolves env-first, so
+   * without this an environment DSN would beat a rotated stored value forever
+   * and the card would call a stored DSN "Settings". */
+  private dsnFromVault(): boolean {
+    return secretSource("observability.sentryDsn") === "infisical" && Boolean(this.settings().dsn);
+  }
+
+  /** The secret store, then env, then config, then nothing.  Env wins over
+   * the config file so a CI runner or the LaunchAgent can pin a DSN; Settings
+   * then shows "Environment" as the source and disables the field rather than
+   * pretending it is editable.  The store outranks both for the one name it
+   * can hold, because a rotated value there is the whole point of putting it
+   * there. */
   private resolve(): SentryRuntimeInput {
     const settings = this.settings();
     const envDsn = sentryDsnFromEnv();
-    const dsn = envDsn ?? settings.dsn;
-    const source: SentrySource = envDsn ? "env" : settings.dsn ? "config" : "none";
+    const fromVault = this.dsnFromVault();
+    const dsn = fromVault ? settings.dsn : (envDsn ?? settings.dsn);
+    // The SDK only ever sees the three original sources; a vault DSN travels
+    // as "config" because that is where `loadConfig()` put it.  `getStatus()`
+    // is where the operator-facing fourth answer is told apart.
+    const source: SentrySource = fromVault ? "config" : envDsn ? "env" : settings.dsn ? "config" : "none";
     return {
       dsn: dsn ?? null,
       enabled: settings.enabled,
@@ -97,7 +117,7 @@ class ObservabilityManager {
     return {
       enabled: input.enabled && input.dsn !== null && !malformed,
       configured: input.dsn !== null,
-      source: input.source,
+      source: this.dsnFromVault() ? "infisical" : input.source,
       host: parsed?.host ?? null,
       projectId: parsed?.projectId ?? null,
       environment: input.environment,

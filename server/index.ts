@@ -99,6 +99,7 @@ import {
   loadConfig,
   localVmMaxInstances,
   allowedBotComputers,
+  infisicalSettings,
   observabilitySettings,
   parseConfigPatch,
   publicIngressUrlEffective,
@@ -145,6 +146,9 @@ import { EventBus } from "./harness/bus.ts";
 import { observability, observabilityBootLine } from "./observability.ts";
 import { formatListenInUse, isListenInUse, listenErrorDisposition } from "./harness-ports.ts";
 import { getSentry, isSentryActive } from "./sentry.ts";
+import { infisical, type RefreshReason } from "./infisical.ts";
+import { InfisicalError } from "./infisical-client.ts";
+import { credentialFingerprint, SECRET_FIELDS, secretProvenance, secretSource, vaultNames, type SecretFieldSpec } from "./secret-map.ts";
 import { configureTurnIdentity, observeRuntimeEvent } from "./sentry-ai.ts";
 import { ProviderRegistry } from "./harness/registry.ts";
 import { cancelPeerApprovalsFor, cancelPeerApprovalsForThread, dismissStalePeerCards, requestPeerApproval, resolvePeerComms, type ApprovalBus } from "./peer-approval.ts";
@@ -235,6 +239,32 @@ const MIME: Record<string, string> = {
 
 ensureDirs();
 const cfg = loadConfig();
+// Flipped once, at the end of this file, when everything a secret change
+// might rebuild or re-point exists.  A snapshot that lands before then is
+// applied to `cfg` and nothing more.
+let bootComplete = false;
+// The secret store resolves before anything reads `cfg`.  `loadConfig()` above
+// ran while the snapshot was still empty, so the whole config is read again
+// once the preload lands — that second read is what puts a stored value in
+// front of the provider registry, the telemetry getter and Sentry, none of
+// which have been built yet.  Boot is bounded and always resolves: an
+// unreachable store means this computer starts on its environment and file
+// values with the reason on the boot line, never a hang.
+infisical.configure(
+  () => infisicalSettings(cfg),
+  // Fire and forget by necessity — the manager's refresh does not await this
+  // — but never unhandled: without the catch a failed apply becomes an
+  // unhandled rejection, and there is no process-level handler in server/ to
+  // stop that terminating the harness.
+  (reason) => {
+    void applyResolvedSecrets(reason).catch((error) => {
+      console.error(`[infisical] apply failed (${reason}): ${error instanceof Error ? error.message : String(error)}`);
+    });
+  },
+);
+await infisical.preload();
+Object.assign(cfg, loadConfig());
+console.log(infisical.bootLine());
 // Telemetry reads settings live (cfg is mutated in place on save), so a new
 // ingest URL or project rule takes effect without a restart.
 telemetry.configure(() => ({
@@ -244,6 +274,14 @@ telemetry.configure(() => ({
 }));
 const registry = new ProviderRegistry(BUILT_IN_DRIVERS);
 await registry.load(instanceConfigs(cfg));
+// The credential fingerprint the provider fleet was actually BUILT with, kept
+// in step with every `registry.load` from here on.  `applyResolvedSecrets`
+// compares against this rather than against `cfg` at the top of its own call:
+// `cfg` has usually already been moved by an earlier timer apply, so a
+// per-call baseline makes every later comparison equal and the rebuild
+// unreachable — the fingerprint rule inverted into a guarantee that nothing
+// can ever act on a rotation.
+let loadedCredentialFingerprint = credentialFingerprint(cfg);
 // Warm the engine probe in the background.  The first describe() costs tens
 // of seconds on a machine with many CLIs installed; doing it now means the
 // first client to ask — often the phone, which waits 20 s and no longer —
@@ -294,6 +332,9 @@ bus.attach(registry.instances());
 // DSN itself never reaches a log file.
 observability.configure(() => observabilitySettings(cfg));
 console.log(observabilityBootLine(observability.apply()));
+// Only now, with the first sync already applied: the timer is the slow path
+// that keeps a rotated credential current, not the one boot depends on.
+infisical.start();
 bus.subscribe((event: RuntimeEvent) => observeRuntimeEvent(event));
 
 // ── peer-agent comms wiring ────────────────────────────────────────────
@@ -4038,8 +4079,71 @@ async function localVmPayload(target: LocalVmTarget) {
 
 
 
+/** Read one mapped credential out of a config-shaped object.
+ *
+ * `secret-map.ts` owns the section and path; this is the reader the
+ * provenance rows and the refusal gate need, and it works the same over a
+ * whole `AppConfig` and over a patch carrying only the sections being saved. */
+function readSecretField(source: object | undefined, spec: SecretFieldSpec): string | undefined {
+  if (!source) return undefined;
+  // SAFETY: `spec.section` and `spec.path` come from the SECRET_FIELDS table,
+  // so this walks declared config sections and nothing else.
+  let node: unknown = (source as Record<string, unknown>)[spec.section];
+  for (const key of spec.path) {
+    if (!node || typeof node !== "object") return undefined;
+    // SAFETY: guarded on the line above — `node` is a non-null object here.
+    node = (node as Record<string, unknown>)[key];
+  }
+  return typeof node === "string" ? node : undefined;
+}
+
+/** Tombstone one mapped credential in a patch on its way to disk.  Called
+ * only after the value reached the store: the store keeps it, this computer
+ * keeps an empty string, and the next resolution reads the store. */
+function blankSecretField(target: object, spec: SecretFieldSpec): void {
+  // SAFETY: as above — a table-driven section and path over a parsed patch.
+  let node: unknown = (target as Record<string, unknown>)[spec.section];
+  for (const key of spec.path.slice(0, -1)) {
+    if (!node || typeof node !== "object") return;
+    // SAFETY: guarded on the line above.
+    node = (node as Record<string, unknown>)[key];
+  }
+  if (!node || typeof node !== "object") return;
+  // SAFETY: guarded on the line above; the final path segment is a literal
+  // from the table.
+  (node as Record<string, unknown>)[spec.path[spec.path.length - 1]] = "";
+}
+
+/** One row per mapped credential for the Secrets card: where the value came
+ * from, whether the store holds that name, and — for the handful of fields
+ * that are identifiers rather than secrets — the value itself, exactly as
+ * `/api/config` already returns the Access client id.  A field marked secret
+ * always reports `null`, on every route, in every state. */
+function secretFieldRows() {
+  const provenance = secretProvenance();
+  const inVault = new Set(vaultNames());
+  return SECRET_FIELDS.map((spec) => {
+    const row = provenance.find((entry) => entry.id === spec.id);
+    const source = row?.source ?? "none";
+    return {
+      id: spec.id,
+      label: spec.label,
+      section: spec.section,
+      secret: spec.secret,
+      infisicalName: spec.infisicalName,
+      inVault: inVault.has(spec.infisicalName),
+      source,
+      hasValue: row?.hasValue ?? false,
+      hasLocalCopy: row?.hasLocalCopy ?? false,
+      managed: source === "infisical",
+      value: spec.secret ? null : (readSecretField(cfg, spec) ?? ""),
+    };
+  });
+}
+
 function configStatus() {
   const diagnostics = observability.getStatus();
+  const vault = infisical.getStatus();
   return {
     xai: { configured: Boolean(cfg.xai?.key) },
     composio: {
@@ -4121,6 +4225,21 @@ function configStatus() {
       tracesSampleRate: diagnostics.tracesSampleRate,
       logsEnabled: diagnostics.logsEnabled,
     },
+    // Same rule as the block above, for the same reason: booleans and counts
+    // only.  The project id, the site URL and the vault's own names live on
+    // the loopback /api/infisical/status route, which no window subscribes to.
+    infisical: {
+      configured: vault.configured,
+      enabled: vault.enabled,
+      writeThrough: vault.writeThrough,
+      environment: vault.environment,
+      hasClientSecret: vault.hasClientSecret,
+      managedCount: vault.appliedCount,
+      lastSyncAt: vault.lastSyncAt,
+      stale: vault.stale,
+      hasError: Boolean(vault.lastError),
+      pendingProviderReload: vault.pendingProviderReload,
+    },
     autoUpdate: {
       enabled: cfg.autoUpdate?.enabled ?? false,
       lastCheckMs: cfg.autoUpdate?.lastCheckMs ?? null,
@@ -4143,9 +4262,33 @@ function configStatus() {
   };
 }
 
+/** The rebuild currently running, if any.  Every caller queues behind it.
+ *
+ * The sequence below is `detachAll` -> `disposeAll` -> `load` -> `attach`, and
+ * two of those overlapping is the worst outcome available: one run's `load`
+ * repopulates the registry while the other's `disposeAll` empties it, leaving
+ * instances registered but disposed, or the bus attached to a torn-down fleet.
+ * `providerConfigBusy` fences the two Settings routes, but not the secret
+ * paths — `POST /api/infisical/sync` and a late `onApplied` both reach here on
+ * their own — so the guarantee lives here, where the sequence does.
+ *
+ * Queued, not coalesced: a caller that arrives mid-run gets its OWN rebuild
+ * afterwards.  Handing it the run already in flight would be cheaper and
+ * wrong — that run read `cfg` before this caller changed it. */
+let providerReloadChain: Promise<void> = Promise.resolve();
+
 /** Rebuild the provider fleet after a config change so new keys take
- * effect without a server restart (kills any in-flight turns). */
-async function reloadProviders() {
+ * effect without a server restart (kills any in-flight turns).  Serialized:
+ * see `providerReloadChain`. */
+function reloadProviders(): Promise<void> {
+  const run = providerReloadChain.then(runProviderReload, runProviderReload);
+  // The chain itself must never reject, or every later caller inherits the
+  // failure; the run each caller awaits still rejects normally.
+  providerReloadChain = run.catch(() => {});
+  return run;
+}
+
+async function runProviderReload() {
   const RELOAD_REASON = "The turn was interrupted — provider settings changed";
   bus.detachAll();
   await registry.disposeAll();
@@ -4154,6 +4297,10 @@ async function reloadProviders() {
   // later, and settle each one's routine receipt the way the stall path does.
   const killedTurns = watchdog.settleAll();
   await registry.load(instanceConfigs(cfg));
+  // The fleet now exists on exactly these credentials — record that, so the
+  // next comparison is against what was built rather than against whatever
+  // `cfg` happened to hold when the comparison ran.
+  loadedCredentialFingerprint = credentialFingerprint(cfg);
   bus.attach(registry.instances());
   for (const turn of killedTurns) routines?.failThread(turn.threadId, RELOAD_REASON);
   // A killed turn's terminal events can die with the old fleet (dispose is
@@ -4188,6 +4335,62 @@ async function reloadProviders() {
   drainQueuedSends();
   drainConnectorResumes();
   drainSecretResumes();
+}
+
+/** Bring `cfg` in line with a fresh secret-store snapshot, and decide whether
+ * the fleet has to be rebuilt on it.
+ *
+ * The snapshot is already published when this runs, so re-reading the config
+ * is what actually applies it: every per-call `cfg.x || process.env.Y` reader
+ * sees the new value on its next call.  Only credentials a driver reads when
+ * it is constructed need more than that, and those are exactly the ones
+ * `credentialFingerprint` covers.
+ *
+ * A refresh on the timer never rebuilds the fleet.  Killing an in-flight turn
+ * on a clock is not something an operator can predict or undo, so the change
+ * is recorded and named instead, and Sync Now or a Settings save — both
+ * deliberate — is what rebuilds.
+ *
+ * During boot it stops at the config refresh: the registry load that follows
+ * `preload()` reads what this just wrote, so there is nothing to rebuild, and
+ * half the machinery a rebuild touches does not exist yet.  A preload that
+ * lost the race to the cap can still land AFTER that load, though, so the
+ * `bootComplete = true` site at the end of this file compares the fingerprint
+ * once more and rebuilds if this swallowed a change.
+ *
+ * Field ids and reasons only.  No value reaches a log line here. */
+async function applyResolvedSecrets(reason: RefreshReason): Promise<void> {
+  Object.assign(cfg, loadConfig());
+  if (!bootComplete) return;
+  // Outside the fingerprint check on purpose: a rotated DSN takes effect
+  // without a restart, and it is deliberately not a field that rebuilds the
+  // fleet, so the fingerprint never moves for it.
+  observability.apply();
+  // Against the fingerprint the REGISTRY was built with, never against `cfg`
+  // at the top of this call.  The timer path writes the rotated value into
+  // `cfg` and only records the change, so by the time Sync Now runs, a
+  // per-call baseline already equals the value it is meant to differ from —
+  // and the reload below becomes unreachable for the rest of the process.
+  //
+  // Belt and braces on top of that: a `pendingProviderReload` that is somehow
+  // still set when the fingerprints already agree is drained by the next
+  // user-initiated apply, so the flag — and the banner it drives — can never
+  // strand itself on.
+  const stuck = infisical.getStatus().pendingProviderReload;
+  if (credentialFingerprint(cfg) === loadedCredentialFingerprint && !(stuck && reason !== "timer")) return;
+  const changed = SECRET_FIELDS.filter(
+    (spec) => spec.reloadProviders && secretSource(spec.id) === "infisical",
+  )
+    .map((spec) => spec.id)
+    .join(",");
+  if (reason === "timer") {
+    infisical.setPendingProviderReload(true);
+    console.log(`[infisical] credentials changed (timer): ${changed} — Sync Now or save Settings to rebuild bots`);
+    return;
+  }
+  await reloadProviders();
+  infisical.setPendingProviderReload(false);
+  console.log(`[infisical] credentials changed (${reason}); reloaded providers`);
 }
 
 // Config writes rebuild the whole provider registry. Keep the read-modify-write
@@ -6882,7 +7085,12 @@ const server = createServer(async (req, res) => {
           await containerComputerAction("remove", undefined, undefined, SHARED_LOCAL_VM_TARGET);
         }
         cfg.localVm = { ...(cfg.localVm ?? {}), mode: requested };
-        saveConfig(cfg);
+        // Only the section this route owns.  Handing `saveConfig` the LIVE
+        // config writes every resolved credential in it to disk in cleartext
+        // -- vault values, the injected environment, and the Infisical client
+        // secret the tombstone at the /api/config handler exists to keep OUT
+        // of config.json.  Nothing on this route needs any of that.
+        saveConfig({ localVm: cfg.localVm });
         const status = configStatus();
         broadcast({ kind: "config", ...status });
         return json(res, 200, { mode: requested, maxInstances: localVmMaxInstances(cfg), config: status });
@@ -6977,6 +7185,37 @@ const server = createServer(async (req, res) => {
     // in their own project instead of trusting a green pill.
     if (method === "POST" && path === "/api/observability/test") {
       return json(res, 200, await observability.probe());
+    }
+    // Secret provenance, on the same loopback block as the two routes above.
+    // This is the one place the store's own site URL, project id and vault
+    // names are readable — /api/config carries counts only, because that
+    // frame reaches every window and the Remote Access tunnel.  No value
+    // marked secret is on this payload in any state.
+    if (method === "GET" && path === "/api/infisical/status") {
+      return json(res, 200, { infisical: infisical.getStatus(), fields: secretFieldRows() });
+    }
+    // Sync Now: the one refresh that is allowed to rebuild the fleet, because
+    // a person asked for it and is watching.
+    if (method === "POST" && path === "/api/infisical/sync") {
+      // Takes the same fence the two Settings routes take: this is the one
+      // refresh allowed to rebuild the fleet, so it must not interleave with
+      // a config save's read-modify-write.  (`reloadProviders` is serialized
+      // on its own, but the fence is what keeps two callers from dropping
+      // each other's config changes around it.)
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        await infisical.refresh("manual");
+        await applyResolvedSecrets("manual");
+      } finally {
+        providerConfigBusy = false;
+      }
+      return json(res, 200, { infisical: infisical.getStatus(), fields: secretFieldRows() });
+    }
+    // Test Connection: proves the identity works without changing what any
+    // bot resolves to mid-session — it never reads a value, only names.
+    if (method === "POST" && path === "/api/infisical/test") {
+      return json(res, 200, await infisical.probe());
     }
     // ── ingress test: confirm the configured webhook URL answers and
     // describes the tunnel/reverse-proxy that fronts it.  Body shape matches
@@ -7366,7 +7605,11 @@ const server = createServer(async (req, res) => {
       }
       if (patch.terminology !== undefined) cfg.terminology = patch.terminology;
       if (patch.terminologyCustom !== undefined) cfg.terminologyCustom = patch.terminologyCustom;
-      saveConfig(cfg);
+      // Section-scoped for the reason above, and doubly so here: this is one
+      // of the three routes deliberately open to the paired phone, so a
+      // rename typed on a phone must never be what writes this computer's
+      // credentials to disk.
+      saveConfig({ terminology: cfg.terminology, terminologyCustom: cfg.terminologyCustom });
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
@@ -7380,7 +7623,7 @@ const server = createServer(async (req, res) => {
         return json(res, 400, { error: "nothing to save" });
       }
       cfg.conversationMode = parseConversationMode(patch.conversationMode);
-      saveConfig(cfg);
+      saveConfig({ conversationMode: cfg.conversationMode });
       const mergeThreads = body.mergeThreads === true && cfg.conversationMode === "simple";
       if (mergeThreads) store.mergeAllExtraThreads();
       const status = configStatus();
@@ -7435,7 +7678,7 @@ const server = createServer(async (req, res) => {
         }
       }
       cfg.botDefaults = { ...(cfg.botDefaults ?? {}), ...incoming, computers: next };
-      saveConfig(cfg);
+      saveConfig({ botDefaults: cfg.botDefaults });
       const status = configStatus();
       broadcast({ kind: "config", ...status });
       for (const { bot } of updated) broadcast({ kind: "bot", bot });
@@ -7576,6 +7819,88 @@ const server = createServer(async (req, res) => {
         const check = await tts.verifyKey(newTts.key.trim());
         if (!check.ok) return json(res, 400, { error: check.message });
       }
+      // The secret store is canonical for the names it holds, so a save of one
+      // of those names is never quietly accepted and then reverted by the next
+      // resolution.  With Write Through off the request is refused whole and
+      // nothing is written; with it on the value goes to the store first and
+      // only then is the local copy tombstoned, so a failed write leaves both
+      // sides exactly as they were.  Clearing is refused either way — an empty
+      // string here would be read straight back out of the store.
+      //
+      // Keyed on "the store CLAIMS this name", not on "the store won the last
+      // resolution".  Provenance only says `infisical` once a snapshot has
+      // actually landed, so a boot with the store unreachable resolves every
+      // mapped field from env or file and turns the gate off for all of them
+      // — the save is accepted, written to disk in cleartext, and then
+      // silently reverted by the next successful refresh, which is exactly
+      // the accepted-then-reverted outcome this gate exists to prevent.  The
+      // vault's name list survives a failed refresh, so it is the honest
+      // signal; when there is no list at all because the store has never
+      // answered, the request is refused rather than guessed at.
+      const vaultForSave = infisical.getStatus();
+      const vaultKnownNames = new Set(vaultNames());
+      // Enabled, an error on the record, and no successful sync ever: the
+      // manager cannot say what it manages.
+      const vaultUnreachable =
+        vaultForSave.enabled && vaultForSave.lastSyncAt === null && vaultForSave.lastError !== null;
+      const managedBySave = (spec: SecretFieldSpec): boolean =>
+        vaultForSave.enabled && (secretSource(spec.id) === "infisical" || vaultKnownNames.has(spec.infisicalName));
+
+      const managedInPatch: { spec: SecretFieldSpec; requested: string }[] = [];
+      for (const spec of SECRET_FIELDS) {
+        const requested = readSecretField(patch, spec);
+        if (requested === undefined) continue;
+        if (vaultUnreachable) {
+          return json(res, 503, {
+            error: `Infisical is unreachable, so BotFleet cannot tell whether it manages ${spec.label}.\u00A0 Try again once it answers, or turn Use Infisical off.`,
+            field: spec.id,
+            infisicalName: spec.infisicalName,
+          });
+        }
+        if (!managedBySave(spec)) continue;
+        if (!vaultForSave.writeThrough) {
+          return json(res, 409, {
+            // NBSP + space, not two ASCII spaces: this string is rendered
+            // inline in a plain <div> by every card that can hit it, and HTML
+            // collapses a run of ordinary whitespace to one visible space.
+            error: `${spec.label} is managed by Infisical (${vaultForSave.environment}).\u00A0 Change it in Infisical, or turn on Write Through in Settings > Secrets.`,
+            field: spec.id,
+            infisicalName: spec.infisicalName,
+          });
+        }
+        managedInPatch.push({ spec, requested });
+      }
+      // Collected first, then written, so a failure part-way through can name
+      // what already landed.  One PATCH can carry several managed fields (the
+      // Bot RAG card sends its API key and its Access client secret together),
+      // and each write is a separate upsert: the local config is untouched on
+      // failure, but every earlier write is already in the vault and every
+      // bot resolves the mixed pair on its next call.  Saying so is the only
+      // way the operator can put it right.
+      const writtenToVault: string[] = [];
+      for (const { spec, requested } of managedInPatch) {
+        try {
+          await infisical.writeSecret(spec.infisicalName, requested);
+          writtenToVault.push(spec.id);
+        } catch (error) {
+          // A policy refusal from the manager stays a 409; anything else is
+          // the store failing to answer, which is a 502 with a redacted
+          // reason.  Nothing has been saved on this computer in either case.
+          const failure = error instanceof InfisicalError && error.statusCode === 409 ? 409 : 502;
+          const reason = redactSecretsInText(error instanceof Error ? error.message : String(error));
+          const landed = writtenToVault.length
+            ? `\u00A0 Already written to Infisical: ${writtenToVault.join(", ")}.\u00A0 Nothing was saved on this computer.`
+            : "\u00A0 Nothing was saved.";
+          return json(res, failure, {
+            error: `${reason}${landed}`,
+            field: spec.id,
+            infisicalName: spec.infisicalName,
+            written: writtenToVault,
+            failed: managedInPatch.slice(writtenToVault.length).map((entry) => entry.spec.id),
+          });
+        }
+      }
+      for (const { spec } of managedInPatch) blankSecretField(patch, spec);
       const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
       if (externalSecretStorage) {
         // The packaged Electron caller commits supplied credentials to the
@@ -7591,6 +7916,10 @@ const server = createServer(async (req, res) => {
         if (persisted.deepseek?.key !== undefined) persisted.deepseek.key = "";
         if (persisted.tts?.key !== undefined) persisted.tts.key = "";
         if (persisted.imageGen?.key !== undefined) persisted.imageGen.key = "";
+        // The one credential the store can never hold for us: its own client
+        // secret.  The client id is a plain identifier and stays readable,
+        // the way the Access client id does.
+        if (persisted.infisical?.clientSecret !== undefined) persisted.infisical.clientSecret = "";
         saveConfig(persisted);
         syncCredentialEnv(patch);
         Object.assign(cfg, loadConfig());
@@ -7601,6 +7930,23 @@ const server = createServer(async (req, res) => {
         // shadow the new key until the next launch
         syncCredentialEnv(patch);
         Object.assign(cfg, loadConfig());
+      }
+      // A new machine identity, or a flipped kill switch, takes effect on this
+      // request too: turning the store off clears the snapshot so the next
+      // resolution falls back to the environment and this computer, and
+      // turning it on syncs before the response is written.  This runs after
+      // both `Object.assign(cfg, loadConfig())` sites above and before the
+      // diagnostics re-apply below, so a DSN the store holds is already in
+      // `cfg` when Sentry is reconfigured.
+      if (patch.infisical !== undefined) {
+        await infisical.refresh("settings");
+        await applyResolvedSecrets("settings");
+        // Re-arm the poller: `start()` reads Refresh Minutes when it creates
+        // the interval, so without this a narrowed cadence would be echoed
+        // back by the status route and the card while the old one kept
+        // running until the next restart.  Idempotent when it has not moved.
+        infisical.start();
+        console.log(infisical.bootLine());
       }
       // A new DSN, or a flipped kill switch, takes effect on this request:
       // the Sentry client is closed and re-opened in place.  Nothing waits for
@@ -7624,6 +7970,7 @@ const server = createServer(async (req, res) => {
           key !== "ingress" &&
           key !== "usage" &&
           key !== "observability" &&
+          key !== "infisical" &&
           key !== "features" &&
           key !== "terminology" &&
           key !== "terminologyCustom" &&
@@ -7982,6 +8329,27 @@ server.on("error", (error: NodeJS.ErrnoException) => {
   }
   process.exit(1);
 });
+// Everything a secret change might rebuild or re-point now exists, so a
+// snapshot arriving from here on is acted on rather than only recorded.
+bootComplete = true;
+// A boot preload that lost the race to the 12 s cap keeps running, and the
+// window where it can land AFTER `registry.load` but BEFORE the line above
+// spans the whole rest of module init.  In that window `applyResolvedSecrets`
+// wrote the store's values into `cfg` and returned at the `bootComplete`
+// gate, so the fleet is still built on the values this computer had before
+// the sync — permanently, since every later comparison now finds `cfg`
+// already carrying them.  Two 8 s call budgets against a 12 s cap make this
+// the ordinary shape of a slow-network boot, not a corner case, so the gate
+// has to remember what it swallowed.
+if (credentialFingerprint(cfg) !== loadedCredentialFingerprint) {
+  console.log("[infisical] boot sync landed after the fleet was built; rebuilding bots on the stored values");
+  await reloadProviders().catch((error) => {
+    // Leave the flag set rather than the fleet silently wrong: Sync Now and
+    // the next Settings save both drain it.
+    infisical.setPendingProviderReload(true);
+    console.error(`[infisical] boot rebuild failed: ${error instanceof Error ? error.message : String(error)}`);
+  });
+}
 
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
@@ -7995,6 +8363,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     routines?.stop();
     stopAntigravityQuotaPoller();
     usageQuotaPoller.stop();
+    infisical.stop();
     webhookIngress?.server.close();
     void registry.disposeAll().finally(() => process.exit(0));
   });

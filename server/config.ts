@@ -9,6 +9,7 @@ import { z } from "zod";
 import { writeFileAtomic } from "./atomic.ts";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
+import { infisicalSnapshot, resolveSecretFields, stripVaultManagedValues } from "./secret-map.ts";
 import { describeDsn } from "./sentry.ts";
 import {
   parseConversationMode,
@@ -46,6 +47,23 @@ export function isAbsoluteHttpUrl(value: unknown): value is string {
     return false;
   }
 }
+
+/** A secret store is reached over TLS or not at all: the machine identity's
+ * client secret rides in the request body on every login, so `http://` is not
+ * a lesser configuration, it is a leak. */
+export function isHttpsUrl(value: unknown): value is string {
+  if (typeof value !== "string" || !value.trim()) return false;
+  try {
+    const parsed = new URL(value.trim());
+    return parsed.protocol === "https:" && !parsed.username && !parsed.password;
+  } catch {
+    return false;
+  }
+}
+
+/** Both of these land in the query string of every secret-store call. */
+const INFISICAL_ENVIRONMENT_PATTERN = /^[a-z0-9-]{1,64}$/;
+const INFISICAL_PROJECT_ID_PATTERN = /^[A-Za-z0-9-]{1,64}$/;
 
 /** A Sentry DSN, which is more than an https URL: the public key rides in
  * the username and the project id is the last path segment.
@@ -261,6 +279,21 @@ const appConfigSchema = z.object({
     tracesSampleRate: z.number().min(0).max(1).optional(),
     logsEnabled: z.boolean().optional(),
   }).optional(),
+  // An optional external secret store.  Unconfigured is inert: with no
+  // project id and machine identity, BotFleet resolves exactly as it always
+  // has.  The kill switch is explicit the same way `ingress` and
+  // `observability` are — absent means on once it is configured.
+  infisical: z.object({
+    enabled: z.boolean().optional(),
+    writeThrough: z.boolean().optional(),
+    siteUrl: optionalText,
+    projectId: optionalText,
+    environment: optionalText,
+    secretPath: optionalText,
+    clientId: optionalText,
+    clientSecret: optionalText,
+    refreshMinutes: z.number().int().min(5).max(1440).optional(),
+  }).optional(),
   features: featureConfigSchema.optional(),
   conversationMode: z.enum(STORED_CONVERSATION_MODES).optional(),
   terminology: z
@@ -339,6 +372,26 @@ export interface AppConfig {
     tracesSampleRate?: number;
     logsEnabled?: boolean;
   };
+  /** The optional external secret store.  When it holds one of the names in
+   * `server/secret-map.ts`, that value wins over both the environment and
+   * this file; every other field keeps the ordering it always had.
+   *
+   * `clientId` and `clientSecret` are the machine identity that unlocks the
+   * store, so they are the one pair of credentials in this file that never
+   * resolves through the vault — a lock cannot hold its own key.  They are
+   * read from this section or from `INFISICAL_CLIENT_ID` /
+   * `INFISICAL_CLIENT_SECRET`, and nowhere else. */
+  infisical?: {
+    enabled?: boolean;
+    writeThrough?: boolean;
+    siteUrl?: string;
+    projectId?: string;
+    environment?: string;
+    secretPath?: string;
+    clientId?: string;
+    clientSecret?: string;
+    refreshMinutes?: number;
+  };
   /** Opt-in product experiments. Every flag defaults to disabled. */
   features?: { skillRecorder?: boolean; showToolCalls?: boolean; summarizeToolCalls?: boolean };
   /** How the roster and threads are laid out.  Absent means simple. */
@@ -391,6 +444,36 @@ export function parseConfigPatch(value: JsonValue): ConfigPatch {
       new Error(
         `observability.environment must be ${MAX_OBSERVABILITY_ENVIRONMENT_LENGTH} characters or fewer`,
       ),
+      { status: 400 },
+    );
+  }
+  // The site URL, the project id, the environment and the secret path all end
+  // up in the URL of every call to the secret store, so they are validated at
+  // the door rather than escaped at each use.  An empty string is the
+  // documented "clear this field" path for all four.
+  const siteUrl = rest.infisical?.siteUrl;
+  if (siteUrl !== undefined && siteUrl.trim() && !isHttpsUrl(siteUrl)) {
+    throw Object.assign(new Error("infisical.siteUrl must be an absolute https:// URL"), { status: 400 });
+  }
+  const secretPath = rest.infisical?.secretPath;
+  if (secretPath !== undefined && secretPath.trim() && !secretPath.trim().startsWith("/")) {
+    throw Object.assign(new Error("infisical.secretPath must start with /"), { status: 400 });
+  }
+  const infisicalEnvironment = rest.infisical?.environment;
+  if (
+    infisicalEnvironment !== undefined &&
+    infisicalEnvironment.trim() &&
+    !INFISICAL_ENVIRONMENT_PATTERN.test(infisicalEnvironment.trim())
+  ) {
+    throw Object.assign(
+      new Error("infisical.environment must be 1 to 64 lowercase letters, numbers, or dashes"),
+      { status: 400 },
+    );
+  }
+  const projectId = rest.infisical?.projectId;
+  if (projectId !== undefined && projectId.trim() && !INFISICAL_PROJECT_ID_PATTERN.test(projectId.trim())) {
+    throw Object.assign(
+      new Error("infisical.projectId must be 1 to 64 letters, numbers, or dashes"),
       { status: 400 },
     );
   }
@@ -522,6 +605,70 @@ export function observabilitySettings(cfg: AppConfig): ObservabilitySettings {
   };
 }
 
+/** Infisical's own hosted site, the environment BotFleet's fleet uses, and a
+ * cadence low enough that a rotated key is picked up within a coffee break
+ * without the store seeing meaningful traffic. */
+export const DEFAULT_INFISICAL_SITE_URL = "https://app.infisical.com";
+export const DEFAULT_INFISICAL_ENVIRONMENT = "prod";
+export const DEFAULT_INFISICAL_SECRET_PATH = "/";
+export const DEFAULT_INFISICAL_REFRESH_MINUTES = 15;
+
+/** Everything the secret-store runtime reads out of app config, already
+ * defaulted.  Values are used, never rendered: the only fields here a status
+ * view may repeat are the site URL, the project id, the environment and the
+ * path. */
+export interface InfisicalSettings {
+  enabled: boolean;
+  writeThrough: boolean;
+  siteUrl: string;
+  projectId: string;
+  environment: string;
+  secretPath: string;
+  clientId: string;
+  clientSecret: string;
+  refreshMinutes: number;
+}
+
+/** True when this install has actually been pointed at a secret store.  All
+ * three parts are required: a project with no identity cannot be read, and an
+ * identity with no project has nothing to read.  Unconfigured is inert — no
+ * request is ever made, and nothing about resolution changes. */
+export function infisicalConfigured(cfg: AppConfig): boolean {
+  return Boolean(
+    cfg.infisical?.projectId?.trim() && cfg.infisical?.clientId?.trim() && cfg.infisical?.clientSecret?.trim(),
+  );
+}
+
+/** The explicit kill switch.  Absent means on once configured, matching
+ * `ingress.enabled` and `observability.enabled`: connecting a store is the
+ * deliberate act, and only a stored `false` undoes it. */
+export function infisicalEnabled(cfg: AppConfig): boolean {
+  return cfg.infisical?.enabled !== false;
+}
+
+/** Resolve the stored settings against their defaults.  Write-through
+ * defaults to off: with it off a Settings save of a name the store manages is
+ * refused outright, which is honest, rather than accepted and then reverted by
+ * the next refresh, which is not. */
+export function infisicalSettings(cfg: AppConfig): InfisicalSettings {
+  const stored = cfg.infisical ?? {};
+  const refresh = stored.refreshMinutes;
+  return {
+    enabled: infisicalEnabled(cfg),
+    writeThrough: stored.writeThrough === true,
+    siteUrl: (stored.siteUrl?.trim() || DEFAULT_INFISICAL_SITE_URL).replace(/\/+$/, ""),
+    projectId: stored.projectId?.trim() ?? "",
+    environment: stored.environment?.trim() || DEFAULT_INFISICAL_ENVIRONMENT,
+    secretPath: stored.secretPath?.trim() || DEFAULT_INFISICAL_SECRET_PATH,
+    clientId: stored.clientId?.trim() ?? "",
+    clientSecret: stored.clientSecret ?? "",
+    refreshMinutes:
+      refresh !== undefined && Number.isFinite(refresh)
+        ? Math.min(Math.max(Math.trunc(refresh), 5), 1440)
+        : DEFAULT_INFISICAL_REFRESH_MINUTES,
+  };
+}
+
 export function localVmMaxInstances(cfg: AppConfig): number {
   return cfg.localVm?.maxInstances ?? DEFAULT_LOCAL_VM_MAX_INSTANCES;
 }
@@ -612,6 +759,12 @@ export function loadConfig(): AppConfig {
   // Anything that saves a credential mid-session must keep process.env in
   // step (syncCredentialEnv below), or the value injected at boot would
   // shadow the save until the next launch.
+  //
+  // This overlay is unchanged, and deliberately so.  `server/secret-map.ts`
+  // sits ABOVE it rather than replacing it: for the names an external secret
+  // store holds, the store wins; for every other name the ordering below —
+  // env over file here, file over env in the per-call readers — is exactly
+  // what it has always been.
   cfg.xai = { ...cfg.xai };
   if (process.env.XAI_API_KEY !== undefined) cfg.xai.key = process.env.XAI_API_KEY;
   cfg.openaiCompat = { ...cfg.openaiCompat };
@@ -626,7 +779,32 @@ export function loadConfig(): AppConfig {
   cfg.tts = { ...cfg.tts };
   if (process.env.OMB_TTS_KEY !== undefined) cfg.tts.key = process.env.OMB_TTS_KEY;
   cfg.imageGen = { ...cfg.imageGen };
-  if (process.env.OMB_OPENAI_IMAGE_KEY !== undefined) cfg.imageGen.key = process.env.OMB_OPENAI_IMAGE_KEY;  return cfg;
+  if (process.env.OMB_OPENAI_IMAGE_KEY !== undefined) cfg.imageGen.key = process.env.OMB_OPENAI_IMAGE_KEY;
+  // The secret store's own machine identity, which is the one credential pair
+  // that cannot come out of the store.  The alias names mirror the pair the
+  // iOS ship workflow already uses, so a single identity works in CI, on a
+  // headless machine, and in Settings without being renamed on the way.
+  // First defined wins, and env beats the file here for the same reason it
+  // does above: the desktop shell injects it at spawn.
+  cfg.infisical = { ...cfg.infisical };
+  const identity: Array<[field: "clientId" | "clientSecret" | "projectId" | "siteUrl" | "environment" | "secretPath", names: string[]]> = [
+    ["clientId", ["INFISICAL_CLIENT_ID", "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID"]],
+    ["clientSecret", ["INFISICAL_CLIENT_SECRET", "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET"]],
+    ["projectId", ["INFISICAL_PROJECT_ID"]],
+    ["siteUrl", ["INFISICAL_SITE_URL", "INFISICAL_DOMAIN"]],
+    ["environment", ["INFISICAL_ENVIRONMENT"]],
+    ["secretPath", ["INFISICAL_SECRET_PATH"]],
+  ];
+  for (const [field, names] of identity) {
+    const name = names.find((candidate) => process.env[candidate] !== undefined);
+    if (name !== undefined) cfg.infisical[field] = process.env[name];
+  }
+  // One resolution point, last: whatever the store holds for a mapped name
+  // overwrites what env and file just agreed on, and the provenance of every
+  // mapped field is recorded for the Secrets card.  With no store configured
+  // the snapshot is null and this is a no-op.
+  resolveSecretFields(cfg, process.env, infisicalSnapshot());
+  return cfg;
 }
 
 /** After saveConfig() writes a credential, the running process's env must
@@ -645,6 +823,10 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
     [patch.opencodeGo?.apiKey, "OPENCODE_API_KEY"],
     [patch.tts?.key, "OMB_TTS_KEY"],
     [patch.imageGen?.key, "OMB_OPENAI_IMAGE_KEY"],
+    // Without this, an identity injected by a plist or a shell export would
+    // keep shadowing the one just saved in Settings, and the card would report
+    // a store the operator has already replaced.
+    [patch.infisical?.clientSecret, "INFISICAL_CLIENT_SECRET"],
   ];
   for (const [value, name] of secrets) {
     if (value === undefined) continue;
@@ -654,6 +836,10 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
   if (patch.openaiCompat?.url !== undefined) {
     if (patch.openaiCompat.url) process.env["OPENAI_COMPAT_URL"] = patch.openaiCompat.url;
     else delete process.env["OPENAI_COMPAT_URL"];
+  }
+  if (patch.infisical?.clientId !== undefined) {
+    if (patch.infisical.clientId) process.env["INFISICAL_CLIENT_ID"] = patch.infisical.clientId;
+    else delete process.env["INFISICAL_CLIENT_ID"];
   }
 }
 
@@ -674,6 +860,12 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "OMB_COMPOSIO_BROKER_TOKEN",
   "DEEPSEEK_API_KEY",
   "DEEPSEEK_URL",
+  // The secret store's machine identity.  It reads every name in the project,
+  // so of everything on this list it is the one that must never ride into a
+  // spawned engine CLI.  `electron/diagnostics.mjs` mirrors these two in this
+  // exact order.
+  "INFISICAL_CLIENT_ID",
+  "INFISICAL_CLIENT_SECRET",
 ] as const;
 
 /** Drop every workspace credential from a child-process env (in place). */
@@ -712,13 +904,35 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     /* first write */
   }
   const checkedPatch = appConfigSchema.partial().parse(patch);
+  // Last line of defence, on the parsed COPY so a caller's own object is
+  // never mutated: whatever the store is currently canonical for does not go
+  // to disk in cleartext.  A route that hands us the live config object --
+  // instead of the section it owns -- is handing us every value
+  // `resolveSecretFields` just wrote into it, and persisting those would put
+  // the vault's contents in `~/.botfleet/config.json` for anything running as
+  // this user, Time Machine, and every backup to read.  An empty string is
+  // left alone: that is the write-through path's deliberate tombstone.
+  // SAFETY: `checkedPatch` is `appConfigSchema.partial()`'s output — the same
+  // sections `AppConfig` declares, differing only in zod's wider literal
+  // unions, which the section-and-path walk below never reads.
+  const strippedFromDisk = stripVaultManagedValues(checkedPatch as Partial<AppConfig>);
+  if (strippedFromDisk.length > 0) {
+    // Field ids only, never values -- and worth saying out loud, because it
+    // means a caller tried to persist something the store owns.
+    console.warn(`[secrets] not persisting vault-managed values: ${strippedFromDisk.join(", ")}`);
+  }
   // usage, qdrant and observability are operator-supplied endpoints (Usage
   // Monitor telemetry, Bot RAG, Sentry).  They must merge like the other
   // sections: a URL-only patch must not wipe a stored token, and a
   // toggle-only patch must not wipe a stored DSN.  Omitting them from this
   // list meant PATCH /api/config { usage } never wrote
   // ~/.botfleet/config.json, so Settings reloaded empty fields.
-  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "observability", "botDefaults"] as const) {
+  //
+  // `deepseek` was missing for the same reason and had the same bug: the key
+  // is in the schema, in the API Keys panel and in the tombstone list, but a
+  // save of it never reached disk.  `infisical` is here from the start so the
+  // machine identity does not repeat it a third time.
+  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "deepseek", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "observability", "infisical", "botDefaults"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);

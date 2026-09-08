@@ -33,6 +33,14 @@ import {
   sentryDsnConfigured,
   DEFAULT_SENTRY_TRACES_SAMPLE_RATE,
   MAX_OBSERVABILITY_ENVIRONMENT_LENGTH,
+  DEFAULT_INFISICAL_ENVIRONMENT,
+  DEFAULT_INFISICAL_REFRESH_MINUTES,
+  DEFAULT_INFISICAL_SECRET_PATH,
+  DEFAULT_INFISICAL_SITE_URL,
+  infisicalConfigured,
+  infisicalEnabled,
+  infisicalSettings,
+  isHttpsUrl,
   type AppConfig,
 } from "./config.ts";
 import { isSentryDsn as isBrowserSentryDsn } from "../src/lib/observability-config.ts";
@@ -831,5 +839,214 @@ describe("observability settings", () => {
   it("keeps an explicit zero sample rate instead of defaulting it away", () => {
     expect(observabilitySettings({ observability: { tracesSampleRate: 0 } }).tracesSampleRate).toBe(0);
     expect(observabilitySettings({ observability: { logsEnabled: false } }).logsEnabled).toBe(false);
+  });
+});
+
+describe("the secret-store section", () => {
+  // Obviously fake, and never sent anywhere.
+  const SENTINEL_CLIENT_SECRET = "sentinel-client-secret-not-real";
+  // A fixture id, not a real workspace: the shape is all these tests need,
+  // and a real project id in a public repo is fleet infrastructure disclosure.
+  const PROJECT_ID = "test-project-0000";
+  const VARS = [
+    "INFISICAL_CLIENT_ID",
+    "INFISICAL_UNIVERSAL_AUTH_CLIENT_ID",
+    "INFISICAL_CLIENT_SECRET",
+    "INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET",
+    "INFISICAL_PROJECT_ID",
+    "INFISICAL_SITE_URL",
+    "INFISICAL_DOMAIN",
+    "INFISICAL_ENVIRONMENT",
+    "INFISICAL_SECRET_PATH",
+  ] as const;
+  let saved: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    saved = Object.fromEntries(VARS.map((name) => [name, process.env[name]]));
+    for (const name of VARS) delete process.env[name];
+    mkdirSync(DATA_DIR, { recursive: true });
+    rmSync(join(DATA_DIR, "config.json"), { force: true });
+  });
+  afterEach(() => {
+    for (const name of VARS) {
+      if (saved[name] === undefined) delete process.env[name];
+      else process.env[name] = saved[name];
+    }
+    rmSync(join(DATA_DIR, "config.json"), { force: true });
+  });
+
+  it("persists the section, and a toggle-only patch keeps the identity", () => {
+    saveConfig({
+      infisical: {
+        projectId: PROJECT_ID,
+        clientId: "sentinel-client-id",
+        clientSecret: SENTINEL_CLIENT_SECRET,
+        environment: "prod",
+      },
+    });
+    expect(loadConfig().infisical).toMatchObject({
+      projectId: PROJECT_ID,
+      clientId: "sentinel-client-id",
+      environment: "prod",
+    });
+
+    saveConfig({ infisical: { enabled: false, writeThrough: true } });
+    expect(loadConfig().infisical).toMatchObject({
+      projectId: PROJECT_ID,
+      clientId: "sentinel-client-id",
+      enabled: false,
+      writeThrough: true,
+    });
+    expect(infisicalEnabled(loadConfig())).toBe(false);
+  });
+
+  it("persists a DeepSeek key, which the allowlist used to drop on the floor", () => {
+    // The key is in the schema, in the API Keys panel and in the tombstone
+    // list, so a save reported success while nothing reached disk.
+    saveConfig({ deepseek: { key: "sentinel-deepseek-key" } });
+    expect(loadConfig().deepseek).toMatchObject({ key: "sentinel-deepseek-key" });
+
+    saveConfig({ deepseek: { url: "https://api.deepseek.example" } });
+    expect(loadConfig().deepseek).toMatchObject({
+      key: "sentinel-deepseek-key",
+      url: "https://api.deepseek.example",
+    });
+  });
+
+  it("reads the machine identity from the environment, first alias wins", () => {
+    process.env.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID = "from-alias";
+    process.env.INFISICAL_CLIENT_ID = "from-primary";
+    process.env.INFISICAL_CLIENT_SECRET = SENTINEL_CLIENT_SECRET;
+    process.env.INFISICAL_PROJECT_ID = PROJECT_ID;
+    process.env.INFISICAL_SECRET_PATH = "/botfleet";
+    const cfg = loadConfig();
+    expect(cfg.infisical).toMatchObject({
+      clientId: "from-primary",
+      projectId: PROJECT_ID,
+      secretPath: "/botfleet",
+    });
+    expect(infisicalConfigured(cfg)).toBe(true);
+
+    delete process.env.INFISICAL_CLIENT_ID;
+    expect(loadConfig().infisical?.clientId).toBe("from-alias");
+  });
+
+  it("stays inert with no project id and no identity", () => {
+    expect(infisicalConfigured(loadConfig())).toBe(false);
+    expect(infisicalConfigured({ infisical: { projectId: PROJECT_ID } })).toBe(false);
+    expect(infisicalConfigured({ infisical: { projectId: PROJECT_ID, clientId: "id" } })).toBe(false);
+  });
+
+  it("keeps the kill switch explicit: absent means on once it is configured", () => {
+    expect(infisicalEnabled({})).toBe(true);
+    expect(infisicalEnabled({ infisical: {} })).toBe(true);
+    expect(infisicalEnabled({ infisical: { enabled: true } })).toBe(true);
+    expect(infisicalEnabled({ infisical: { enabled: false } })).toBe(false);
+  });
+
+  it("defaults the site, environment, path, cadence, and write-through", () => {
+    expect(infisicalSettings({})).toEqual({
+      enabled: true,
+      writeThrough: false,
+      siteUrl: DEFAULT_INFISICAL_SITE_URL,
+      projectId: "",
+      environment: DEFAULT_INFISICAL_ENVIRONMENT,
+      secretPath: DEFAULT_INFISICAL_SECRET_PATH,
+      clientId: "",
+      clientSecret: "",
+      refreshMinutes: DEFAULT_INFISICAL_REFRESH_MINUTES,
+    });
+    expect(
+      infisicalSettings({ infisical: { siteUrl: " https://vault.example.test/ ", refreshMinutes: 60 } }),
+    ).toMatchObject({ siteUrl: "https://vault.example.test", refreshMinutes: 60 });
+    // Out-of-range cadences are clamped rather than obeyed: a one-minute
+    // refresh would hammer the store, and a stored zero would never fire.
+    expect(infisicalSettings({ infisical: { refreshMinutes: 0 } }).refreshMinutes).toBe(5);
+    expect(infisicalSettings({ infisical: { refreshMinutes: 99_999 } }).refreshMinutes).toBe(1440);
+    expect(infisicalSettings({ infisical: { writeThrough: true } }).writeThrough).toBe(true);
+  });
+
+  it("rejects a site URL, path, environment, or project id that cannot be trusted in a query", () => {
+    expect(() => parseConfigPatch({ infisical: { siteUrl: "http://vault.example.test" } })).toThrow(
+      "infisical.siteUrl must be an absolute https:// URL",
+    );
+    expect(() => parseConfigPatch({ infisical: { siteUrl: "vault.example.test" } })).toThrow(
+      "infisical.siteUrl",
+    );
+    expect(() => parseConfigPatch({ infisical: { secretPath: "botfleet" } })).toThrow(
+      "infisical.secretPath must start with /",
+    );
+    expect(() => parseConfigPatch({ infisical: { environment: "e".repeat(80) } })).toThrow(
+      "infisical.environment",
+    );
+    expect(() => parseConfigPatch({ infisical: { environment: "Prod" } })).toThrow("infisical.environment");
+    expect(() => parseConfigPatch({ infisical: { projectId: "test-project/../other" } })).toThrow(
+      "infisical.projectId",
+    );
+    expect(() => parseConfigPatch({ infisical: { refreshMinutes: 1 } })).toThrow("infisical.refreshMinutes");
+  });
+
+  it("accepts a valid patch, and an empty string as the documented clear", () => {
+    expect(
+      parseConfigPatch({
+        infisical: {
+          enabled: true,
+          writeThrough: false,
+          siteUrl: "https://app.infisical.com",
+          projectId: PROJECT_ID,
+          environment: "prod",
+          secretPath: "/",
+          refreshMinutes: 15,
+        },
+      }),
+    ).toEqual({
+      infisical: {
+        enabled: true,
+        writeThrough: false,
+        siteUrl: "https://app.infisical.com",
+        projectId: PROJECT_ID,
+        environment: "prod",
+        secretPath: "/",
+        refreshMinutes: 15,
+      },
+    });
+    expect(
+      parseConfigPatch({ infisical: { siteUrl: "", projectId: "", environment: "", secretPath: "" } }),
+    ).toEqual({ infisical: { siteUrl: "", projectId: "", environment: "", secretPath: "" } });
+  });
+
+  it("holds the store to TLS", () => {
+    expect(isHttpsUrl("https://app.infisical.com")).toBe(true);
+    expect(isHttpsUrl("http://app.infisical.com")).toBe(false);
+    expect(isHttpsUrl("https://user:pass@app.infisical.com")).toBe(false);
+    expect(isHttpsUrl("app.infisical.com")).toBe(false);
+    expect(isHttpsUrl("")).toBe(false);
+    expect(isHttpsUrl(undefined)).toBe(false);
+  });
+
+  it("keeps a saved identity from being shadowed by an injected one", () => {
+    process.env.INFISICAL_CLIENT_ID = "boot-injected";
+    process.env.INFISICAL_CLIENT_SECRET = "boot-injected";
+    syncCredentialEnv({ infisical: { clientId: "just-saved", clientSecret: SENTINEL_CLIENT_SECRET } });
+    expect(process.env.INFISICAL_CLIENT_ID).toBe("just-saved");
+    expect(process.env.INFISICAL_CLIENT_SECRET).toBe(SENTINEL_CLIENT_SECRET);
+
+    syncCredentialEnv({ infisical: { clientId: "", clientSecret: "" } });
+    expect(process.env.INFISICAL_CLIENT_ID).toBeUndefined();
+    expect(process.env.INFISICAL_CLIENT_SECRET).toBeUndefined();
+  });
+
+  it("strips the machine identity from a child environment", () => {
+    // It can read every name in the project, so of everything on the strip
+    // list this is the pair that must never reach a spawned engine CLI.
+    expect(WORKSPACE_CREDENTIAL_ENV).toContain("INFISICAL_CLIENT_ID");
+    expect(WORKSPACE_CREDENTIAL_ENV).toContain("INFISICAL_CLIENT_SECRET");
+    const env = {
+      PATH: "/usr/bin",
+      INFISICAL_CLIENT_ID: "id",
+      INFISICAL_CLIENT_SECRET: SENTINEL_CLIENT_SECRET,
+    };
+    stripWorkspaceCredentialEnv(env);
+    expect(env).toEqual({ PATH: "/usr/bin" });
   });
 });

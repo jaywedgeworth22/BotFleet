@@ -21,6 +21,8 @@ export const CREDENTIAL_ENV_NAMES = [
   "OMB_COMPOSIO_BROKER_TOKEN",
   "DEEPSEEK_API_KEY",
   "DEEPSEEK_URL",
+  "INFISICAL_CLIENT_ID",
+  "INFISICAL_CLIENT_SECRET",
 ];
 
 // Credential-shaped tokens (server/redact.ts parity): unmistakable formats

@@ -21,9 +21,10 @@ const cnSwitch = (on: boolean) =>
 const cnKnob = (on: boolean) =>
   `absolute top-[3px] h-[18px] w-[18px] rounded-full bg-white transition-all ${on ? "left-[21px]" : "left-[3px]"}`;
 
-function sourceLabel(source: "env" | "config" | "none" | undefined): string {
+function sourceLabel(source: "env" | "config" | "none" | "infisical" | undefined): string {
   if (source === "env") return "Environment";
   if (source === "config") return "Settings";
+  if (source === "infisical") return "Infisical";
   return "None";
 }
 

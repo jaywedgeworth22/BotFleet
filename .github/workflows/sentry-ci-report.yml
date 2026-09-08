@@ -48,11 +48,12 @@ name: Sentry CI Report
 # monitor:
 #   (none — no observed workflow defines schedule:)
 #
-# Secret: repo (or org) Actions secret `SENTRY_FLEET_DSN` must be set to the
-# fleet-infra project DSN.  Name only — never commit or print the value.
-# Already provisioned on this repo (do not reset).  The reporter exits 0 with
-# a warning when the secret is absent, so CI itself is never red-X'd by a
-# missing DSN.
+# Secret: `SENTRY_FLEET_DSN` (the fleet-infra project DSN) comes from
+# Infisical prod through the shared composite action
+# (.github/actions/infisical-secrets), with the repo's Actions secret of the
+# same name as a synced GH_FALLBACK_ during the cutover.  Name only — never
+# commit or print the value.  The reporter exits 0 with a warning when it is
+# absent everywhere, so CI itself is never red-X'd by a missing DSN.
 #
 # Gold copy: Usage-Monitor origin/main (PR #1394).  Adapted for BotFleet.
 
@@ -101,10 +102,24 @@ jobs:
         # without re-reviewing the security implications.
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      # SENTRY_FLEET_DSN is a non-identity name behind Infisical, with the
+      # synced GitHub secret as a GH_FALLBACK_ during the cutover.  Not
+      # `required` -- the reporter itself already warns and exits 0 on a
+      # missing DSN (see the file header) so CI is never red-X'd over it.
+      - name: Load the fleet-infra Sentry DSN
+        uses: ./.github/actions/infisical-secrets
+        with:
+          names: SENTRY_FLEET_DSN
+          project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
+          client-id: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
+          client-secret: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET || secrets.INFISICAL_CLIENT_SECRET }}
+        env:
+          GH_FALLBACK_SENTRY_FLEET_DSN: ${{ secrets.SENTRY_FLEET_DSN }}
+
       - name: Report failure + cron check-in to Sentry fleet-infra
         shell: bash
         env:
-          SENTRY_FLEET_DSN: ${{ secrets.SENTRY_FLEET_DSN }}
+          SENTRY_FLEET_DSN: ${{ env.SENTRY_FLEET_DSN }}
           WORKFLOW_NAME: ${{ github.event.workflow_run.name }}
           WORKFLOW_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           WORKFLOW_EVENT: ${{ github.event.workflow_run.event }}
