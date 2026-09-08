@@ -192,7 +192,7 @@ export function SecretsSection() {
     <div className="flex flex-col gap-4">
       <Card
         title="Secret Store"
-        subtitle="Point BotFleet at an Infisical project and it becomes the source of truth for every credential it holds — before the environment, before the value saved on this computer.  Leave this unset and nothing changes."
+        subtitle={"Point BotFleet at an Infisical project and it becomes the source of truth for every credential it holds — before the environment, before the value saved on this computer.\u00A0 Leave this unset and nothing changes."}
       >
         <div className="flex flex-col gap-3 text-[13px]">
           <div className="flex items-center justify-between rounded-xl border border-hairline/30 bg-inset/40 px-3.5 py-2.5">
@@ -490,7 +490,7 @@ export function SecretsSection() {
 
       <Card
         title="Where Each Credential Comes From"
-        subtitle="Every credential BotFleet knows how to consume, and which source is winning for it right now.  Values are never shown — names and counts only."
+        subtitle={"Every credential BotFleet knows how to consume, and which source is winning for it right now.\u00A0 Values are never shown — names and counts only."}
       >
         <div className="overflow-x-auto">
           <table className="w-full text-[12.5px]">
