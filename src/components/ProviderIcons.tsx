@@ -24,13 +24,10 @@ export function GrokMark({ size = 16, className }: IconProps) {
   );
 }
 
-/** Official DeepSeek mark (the whale glyph, no background plate).  The viewBox
- * crops the empty space the upstream path leaves on the left and bottom so
- * the whale actually fills the rendered square at small sizes — without the
- * crop a 14-18px render shows just a blue dot. */
+/** Official DeepSeek mark (the whale glyph, no background plate). */
 export function DeepSeekMark({ size = 16, className }: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="-90 0 600 510" preserveAspectRatio="xMidYMid meet" className={className} aria-hidden>
+    <svg width={size} height={size} viewBox="0 0 512 509.64" className={className} aria-hidden>
       <path
         fill="#4D6BFE"
         fillRule="nonzero"
