@@ -242,16 +242,16 @@ private struct RoutineEditorView: View {
                     Picker("Run location", selection: $runOn) {
                         Label("This computer", systemImage: "laptopcomputer")
                             .tag(RoutineRunLocation.maus)
-                        Label("Cloud VM", systemImage: "cloud")
+                        Label("Cloud desktop", systemImage: "cloud")
                             .tag(RoutineRunLocation.cloud)
                             .selectionDisabled(!cloudSelectable)
                     }
                     .pickerStyle(.inline)
 
                     if !availabilityLoaded {
-                        ProgressView("Checking Cloud VM availability…")
+                        ProgressView("Checking Cloud desktop availability…")
                     } else if runAvailability == nil {
-                        Label("Cloud VM status is unavailable", systemImage: "exclamationmark.triangle")
+                        Label("Cloud desktop status is unavailable", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.secondary)
                     }
                 } header: {
@@ -262,7 +262,7 @@ private struct RoutineEditorView: View {
                     } else if runAvailability?.cloudReady == true {
                         Text("Runs the agent and its tools inside its Box virtual machine. The VM wakes automatically for each run; keep BotFleet running so its scheduler can launch the job.")
                     } else {
-                        Text("This existing Cloud VM choice is preserved, but it cannot run until the paired computer has a configured Box API key and an available Box agent.")
+                        Text("This existing Cloud desktop choice is preserved, but it cannot run until the paired computer has a configured Box API key and an available Box agent.")
                     }
                 }
 
@@ -357,7 +357,7 @@ private extension RoutineRunLocation {
     var label: String {
         switch self {
         case .maus: "This computer"
-        case .cloud: "Cloud VM"
+        case .cloud: "Cloud desktop"
         }
     }
 }

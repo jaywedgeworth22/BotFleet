@@ -244,34 +244,56 @@ struct AgentProfileView: View {
 
                 Section("Computers & Environment") {
                     ForEach(["local", "cloud", "vm"], id: \.self) { comp in
-                        let label = comp == "local" ? "This computer" : comp == "vm" ? "VPS" : "Cloud VM"
-                        Toggle(label, isOn: Binding(
-                            get: { computers.contains(comp) },
-                            set: { isOn in
-                                if isOn {
-                                    computers.insert(comp)
-                                } else {
-                                    computers.remove(comp)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Toggle(destinationLabel(comp), isOn: Binding(
+                                get: { computers.contains(comp) },
+                                set: { isOn in
+                                    if isOn {
+                                        computers.insert(comp)
+                                    } else {
+                                        computers.remove(comp)
+                                    }
                                 }
-                            }
-                        ))
+                            ))
+                            Text(destinationCaption(comp))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
 
-                    Picker("Cloud backend", selection: $cloudBackend) {
-                        Text("Box VM").tag("box")
-                        Text("VPS").tag("vps")
+                    // Unset `bot.computers` is Auto mode: the harness still
+                    // reads `cloudBackend` / `autoStartVps` to inspect and
+                    // provision a VPS.  Hide these only when Cloud is
+                    // explicitly off.
+                    if computers.contains("cloud") || computers.isEmpty {
+                        Picker("Cloud provider", selection: $cloudBackend) {
+                            Text("ASCII.dev Box").tag("box")
+                            Text("My VPS").tag("vps")
+                        }
+
+                        if cloudBackend == "vps" {
+                            Toggle("Start VPS automatically", isOn: $autoStartVps)
+                        }
                     }
 
-                    Toggle("Start VPS automatically", isOn: $autoStartVps)
+                    VStack(alignment: .leading, spacing: 2) {
+                        TextField("Working directory (cwd)", text: $cwd)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                        Text("Where this bot's shell and file tools run, on the machine hosting BotFleet.  Remote desktops always use their own workspace folder.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
 
-                    TextField("Working directory (cwd)", text: $cwd)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-
-                    TextField("Additional repos (one per line)", text: $extraCwdsText, axis: .vertical)
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .lineLimit(2...5)
+                    VStack(alignment: .leading, spacing: 2) {
+                        TextField("Additional repos (one per line)", text: $extraCwdsText, axis: .vertical)
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .lineLimit(2...5)
+                        Text("Extra folders on the same BotFleet host machine this bot can also work in, alongside the working directory above.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
 
                 Section {
@@ -553,6 +575,30 @@ struct AgentProfileView: View {
             (inst.snapshot.state == "available" || inst.id == instanceId) &&
             inst.snapshot.reason != "Disabled in settings" &&
             (inst.id != "kimi" || (inst.snapshot.state == "available" && inst.snapshot.authenticated != false))
+        }
+    }
+
+    /// Label for a computer destination toggle.  A named function instead of
+    /// a nested ternary so the "vm" / "cloud" mapping can't be silently
+    /// re-inverted again the way it was until this fix: the toggle labelled
+    /// "VPS" was granting `vm` (the Local VM, on this Mac) while the toggle
+    /// labelled "Cloud VM" granted `cloud` (the real remote desktop).
+    private func destinationLabel(_ id: String) -> String {
+        switch id {
+        case "local": return "This Mac"
+        case "cloud": return "Cloud desktop"
+        case "vm": return "Local VM"
+        default: return id
+        }
+    }
+
+    /// Short explanation shown under each destination toggle above.
+    private func destinationCaption(_ id: String) -> String {
+        switch id {
+        case "local": return "Your Mac, full access"
+        case "cloud": return "A remote Linux desktop \u{2014} see Cloud provider below"
+        case "vm": return "An isolated sandbox container on this Mac"
+        default: return ""
         }
     }
 

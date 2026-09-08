@@ -110,7 +110,7 @@ describe("computerSystemPrompt", () => {
     expect(prompt).toContain("You have 2 computers");
     expect(prompt).toContain("mcp__computer_shared_vm__");
     expect(prompt).toContain("mcp__computer_host__");
-    expect(prompt).toContain("Shared VM");
+    expect(prompt).toContain("My VPS");
     expect(prompt).toContain("This Mac");
   });
 
@@ -118,7 +118,7 @@ describe("computerSystemPrompt", () => {
     const prompt = computerSystemPrompt(nameMounts([mount("vps"), mount("local")]), {
       hostPlatform: "darwin",
     });
-    expect(prompt).toContain("Default to Shared VM for everything");
+    expect(prompt).toContain("Default to My VPS for everything");
     expect(prompt).toContain("Xcode");
     expect(prompt).toContain("twice as fast");
     expect(prompt).toContain("five minutes");
