@@ -4,7 +4,7 @@
     "repo": "https://github.com/jaywedgeworth22/BotFleet",
     "upstream": "https://github.com/milind-soni/OpenMausBot",
     "releases": "https://github.com/jaywedgeworth22/BotFleet/releases",
-    "macDownload": "https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet-1.0.30-arm64.dmg"
+    "macDownload": "https://github.com/jaywedgeworth22/BotFleet/releases/latest/download/BotFleet.dmg"
   },
   "exampleFleet": ["Builder", "Reviewer", "Scout"],
   "sections": [
