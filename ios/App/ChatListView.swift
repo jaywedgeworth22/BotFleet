@@ -36,6 +36,13 @@ struct ChatListView: View {
     /// (phone, Slide Over) keeps the existing stack so phone layout is unchanged.
     private var usesSplitView: Bool { sizeClass == .regular }
 
+    /// True while the SSE stream is live — keys the instance-map warm so a
+    /// reconnect after backgrounding refreshes newly added providers.
+    private var sessionIsLive: Bool {
+        if case .live = session.status { return true }
+        return false
+    }
+
     var body: some View {
         Group {
             if usesSplitView {
@@ -89,6 +96,15 @@ struct ChatListView: View {
         }
 #endif
         .task { _ = await session.configStatus() }
+        // Warms `session.instanceDriverKinds` before any chat is opened, so
+        // the chat header's provider mark resolves synchronously instead of
+        // firing a network call per render. Quiet path — offline/cancel must
+        // not surface as the global action-error alert. Keyed on live so a
+        // foreground reconnect refreshes the map after providers change.
+        .task(id: sessionIsLive) {
+            guard sessionIsLive else { return }
+            await session.warmInstanceDriverKinds()
+        }
         .sheet(isPresented: $showingUpdates) {
             UpdatesSheet { chat in
                 showingUpdates = false

@@ -45,6 +45,13 @@ final class Session: ObservableObject {
     @Published private(set) var pairingInvite: PairingInvite?
     @Published var config: ConfigStatus?
 
+    /// instanceId -> driverKind, cached from the last `instances()` fetch so
+    /// the chat header can resolve a bot's current-model provider mark
+    /// synchronously instead of firing a network call per render.  Never
+    /// parse `instanceId` for this — it is operator-named (e.g.
+    /// "claude-bypass", "agy-test") and not reliably prefixed by driver kind.
+    @Published private(set) var instanceDriverKinds: [String: String] = [:]
+
     /// A notification response that should be pushed by the roster's
     /// NavigationStack after the exact detached task has been activated.
     @Published private(set) var notificationChat: Chat?
@@ -66,6 +73,9 @@ final class Session: ObservableObject {
     /// can finish after its replacement starts; its cleanup must not clear
     /// the replacement's handle.
     private var streamGeneration = 0
+    /// Bumped on pair / restore / sign-out so an in-flight instances warm
+    /// cannot write the previous computer's provider map onto a new pairing.
+    private var pairingGeneration = 0
     private var reconnectDelay: UInt64 = 0
     /// How many computer panels are open. A count rather than a flag: the
     /// panel can be pushed twice in a navigation stack, and the last one to
@@ -109,6 +119,10 @@ final class Session: ObservableObject {
            let fleet = try? JSONDecoder().decode(Fleet.self, from: data) {
             connection = Connection(name: "Preview Mac", host: "preview.tailnet.ts.net", port: 8810)
             state.hydrate(fleet)
+            // StorePreview bots all select instanceId "preview"; seed the
+            // driver map so the chat-header provider mark appears in the
+            // screenshot harness (no live client to warm from).
+            instanceDriverKinds = ["preview": "claude"]
             status = .live
             return
         }
@@ -159,6 +173,7 @@ final class Session: ObservableObject {
         rotation = CandidateRotation(endpoints: saved.orderedEndpoints)
         let first = rotation.currentEndpoint.map(saved.dialing) ?? saved
         client = CompanionClient(connection: first, token: stored)
+        pairingGeneration += 1
         status = .connecting
     }
 
@@ -234,7 +249,9 @@ final class Session: ObservableObject {
             connection: winner.map(stored.dialing) ?? stored,
             token: paired.token
         )
+        pairingGeneration += 1
         self.state = CompanionState()
+        instanceDriverKinds = [:]
         // A fresh pairing settles any restore that was still waiting on the
         // keychain — the token is in hand, so there is nothing left to retry.
         restorePending = false
@@ -295,6 +312,8 @@ final class Session: ObservableObject {
         token = nil
         rotation = CandidateRotation(hosts: [])
         state = CompanionState()
+        instanceDriverKinds = [:]
+        pairingGeneration += 1
         resetAvatarCache()
         NotificationCoordinator.shared.setBadge(0)
         status = .unpaired
@@ -461,6 +480,9 @@ final class Session: ObservableObject {
                         // their explicit security priority next launch.
                         rememberWorkingRoute()
                         refreshConnectionMetadata(using: client)
+                        // Refresh provider marks after reconnect — instances
+                        // may have changed while the phone was backgrounded.
+                        Task { await self.warmInstanceDriverKinds() }
                         continue
                     }
                     state.apply(frame)
@@ -1088,8 +1110,39 @@ final class Session: ObservableObject {
 
     func instances() async -> [Instance] {
         guard let client else { return [] }
-        do { return try await client.instances() }
-        catch { actionError = error.localizedDescription; return [] }
+        let generation = pairingGeneration
+        do {
+            let fetched = try await client.instances()
+            guard pairingGeneration == generation else { return fetched }
+            instanceDriverKinds = Dictionary(
+                fetched.map { ($0.instanceId, $0.driverKind) },
+                uniquingKeysWith: { _, latest in latest }
+            )
+            return fetched
+        } catch {
+            actionError = error.localizedDescription
+            return []
+        }
+    }
+
+    /// Background warm of `instanceDriverKinds` for the chat-header provider
+    /// mark. Failures stay silent so merely opening the chat list does not
+    /// pop the global action-error alert when the paired computer is offline
+    /// or the task is cancelled. Results are dropped if pairing changed
+    /// mid-flight so a signed-out warm cannot poison the next computer.
+    func warmInstanceDriverKinds() async {
+        guard let client else { return }
+        let generation = pairingGeneration
+        do {
+            let fetched = try await client.instances()
+            guard pairingGeneration == generation else { return }
+            instanceDriverKinds = Dictionary(
+                fetched.map { ($0.instanceId, $0.driverKind) },
+                uniquingKeysWith: { _, latest in latest }
+            )
+        } catch {
+            // Quiet: connectivity / cancel while the roster is open.
+        }
     }
 
     // MARK: - Routines
