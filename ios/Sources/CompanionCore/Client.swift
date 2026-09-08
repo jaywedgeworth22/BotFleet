@@ -658,15 +658,29 @@ public struct CompanionClient: Sendable {
     /// Rooms are renamed through their own route.  /api/config carries API
     /// keys and the sidecar refuses every write to it, which is why the old
     /// call could never succeed from a phone.
-    public func updateConversationMode(_ conversationMode: String) async throws -> ConfigStatus {
+    public func updateConversationMode(_ conversationMode: String, mergeThreads: Bool = false) async throws -> ConfigStatus {
         struct ConversationModePatch: Encodable {
             let conversationMode: String
+            let mergeThreads: Bool
+
+            enum CodingKeys: String, CodingKey {
+                case conversationMode
+                case mergeThreads
+            }
+
+            func encode(to encoder: Encoder) throws {
+                var container = encoder.container(keyedBy: CodingKeys.self)
+                try container.encode(conversationMode, forKey: .conversationMode)
+                if mergeThreads {
+                    try container.encode(true, forKey: .mergeThreads)
+                }
+            }
         }
         return try await send(
             try makeRequest(
                 "PATCH",
                 "/api/conversation-mode",
-                encodedBody: ConversationModePatch(conversationMode: conversationMode)
+                encodedBody: ConversationModePatch(conversationMode: conversationMode, mergeThreads: mergeThreads)
             ),
             as: ConfigStatus.self
         )

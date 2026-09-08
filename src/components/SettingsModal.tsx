@@ -417,19 +417,29 @@ function ConversationModeRow() {
   const { state, dispatch } = useStore();
   const current = parseConversationMode(state.config?.conversationMode);
   const [saving, setSaving] = useState(false);
-  const choose = async (conversationMode: ConversationMode) => {
-    if (saving || conversationMode === current) return;
+  const [pendingSimple, setPendingSimple] = useState(false);
+  const save = async (conversationMode: ConversationMode, mergeThreads = false) => {
+    if (saving) return;
     setSaving(true);
+    setPendingSimple(false);
     try {
       const config: ConfigStatus = await api("/api/conversation-mode", {
         method: "PATCH",
-        body: JSON.stringify({ conversationMode }),
+        body: JSON.stringify({ conversationMode, ...(mergeThreads ? { mergeThreads: true } : {}) }),
       });
       dispatch({ type: "configStatus", config });
     } catch {
     } finally {
       setSaving(false);
     }
+  };
+  const choose = (conversationMode: ConversationMode) => {
+    if (saving || conversationMode === current) return;
+    if (conversationMode === "simple" && current === "projects") {
+      setPendingSimple(true);
+      return;
+    }
+    void save(conversationMode);
   };
   return (
     <Card
@@ -457,6 +467,40 @@ function ConversationModeRow() {
             </button>
           );
         })}
+        {pendingSimple && (
+          <div className="rounded-lg border border-hairline/40 bg-raised/40 px-3 py-2.5">
+            <div className="text-[14px] font-medium text-ink">Merge Extra Threads?</div>
+            <div className="mt-0.5 text-[12px] leading-relaxed text-ink-secondary">
+              Simple is one conversation per bot.{"\u00A0"} Merge extra threads into that conversation, or keep them saved but hidden.
+            </div>
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void save("simple", true)}
+                className="rounded-lg border border-accent bg-accent/10 px-3 py-1.5 text-[13px] font-medium text-ink"
+              >
+                Merge All Threads
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => void save("simple")}
+                className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] font-medium text-ink hover:bg-raised/60"
+              >
+                Keep Extra Threads Hidden
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setPendingSimple(false)}
+                className="rounded-lg px-3 py-1.5 text-[13px] text-ink-secondary hover:text-ink"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </Card>
   );

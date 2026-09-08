@@ -15,6 +15,7 @@ import {
   MoreHorizontal,
   Coins,
   SlidersHorizontal,
+  MessageCircle,
   MessageSquareReply,
   Pencil,
   Pin,
@@ -68,6 +69,7 @@ import { ActivityRun } from "./ActivityRun";
 import { ToolLine } from "./ToolLine";
 import { webhookMessageView } from "@/lib/webhook-message";
 import { WebhookCard } from "./WebhookCard";
+import { imessageMessageView, stripToImessagePrefix } from "../../shared/imessage-message";
 import { splitAttachedImages } from "@/lib/composer-attachments";
 import { BOTTOM_FOLLOW_THRESHOLD, shouldResumeBottomFollow } from "@/lib/bottom-follow";
 import {
@@ -262,9 +264,10 @@ function Bubble({
   const [expanded, setExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
   const text = message.text ?? "";
+  const toImessageBody = !humanTyped && message.role === "bot" ? stripToImessagePrefix(text) : null;
   const attachedImages = humanTyped ? splitAttachedImages(text) : null;
   const visibleText = attachedImages?.display ?? text;
-  const copyContent = humanTyped ? visibleText : text;
+  const copyContent = humanTyped ? visibleText : (toImessageBody ?? text);
   const requestId = message.card?.requestId;
   const collapsible =
     humanTyped && !expanded && (visibleText.length > USER_COLLAPSE_CHARS || visibleText.split("\n").length > USER_COLLAPSE_LINES);
@@ -509,8 +512,11 @@ function Bubble({
               )}
             </>
           ) : (
-            <MessageBoundary fallbackText={text}>
-              <ChatMarkdown text={text} />
+            <MessageBoundary fallbackText={toImessageBody ?? text}>
+              {toImessageBody !== null && (
+                <div className="mb-1 text-[11px] font-medium text-accent">To iMessage</div>
+              )}
+              <ChatMarkdown text={toImessageBody ?? text} />
             </MessageBoundary>
           )}
         </div>
@@ -779,6 +785,17 @@ const MessagesList = memo(function MessagesList({
               const webhookView =
                 m.role === "user" && !m.from?.botId ? webhookMessageView(m.text ?? "") : null;
               if (webhookView) return <WebhookCard view={webhookView} />;
+              const imessageView =
+                m.role === "user" && !m.from?.botId ? imessageMessageView(m.text ?? "") : null;
+              if (imessageView) {
+                return (
+                  <WebhookCard
+                    view={imessageView}
+                    icon={<MessageCircle size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />}
+                    detailsNoun="Message"
+                  />
+                );
+              }
               return (
                 <Bubble
                   bot={bot}

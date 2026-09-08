@@ -131,6 +131,28 @@ describe("tasks", () => {
     expect(texts).toContain("side note");
   });
 
+  it("merges every extra bot thread into the active conversation", async () => {
+    const { store } = await freshStore();
+    const bot = store.createBot();
+    const first = bot.threadId;
+    store.appendMessage(first, { role: "user", kind: "text", text: "inbox" });
+    const second = store.createTask(bot.id, "Side work")!;
+    store.appendMessage(second.threadId, { role: "user", kind: "text", text: "side note" });
+    store.switchTask(bot.id, first);
+    const third = store.createTask(bot.id, "Later work")!;
+    store.appendMessage(third.threadId, { role: "user", kind: "text", text: "later note" });
+    store.switchTask(bot.id, first);
+
+    const stats = store.mergeAllExtraThreads();
+    expect(stats).toEqual({ bots: 1, groups: 0, threads: 2 });
+    expect(store.tasks(bot.id)).toHaveLength(1);
+    expect(store.bot(bot.id)!.threadId).toBe(first);
+    const texts = store.messagesFor(first).map((message) => message.text);
+    expect(texts).toContain("inbox");
+    expect(texts).toContain("side note");
+    expect(texts).toContain("later note");
+  });
+
   it("adopts a pre-tasks bot's endless thread as its first task", async () => {
     const { store, UNTITLED_TASK } = await freshStore();
     const bot = store.createBot();

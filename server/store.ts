@@ -1006,6 +1006,65 @@ export class Store {
     return this.deleteTask(botId, fromThreadId);
   }
 
+  /** Fold one of a room's conversations into another.  Direct-message
+   * channels stay single-threaded and cannot merge. */
+  mergeGroupTasks(groupId: string, fromThreadId: string, intoThreadId: string): GroupRecord | null {
+    if (fromThreadId === intoThreadId) return null;
+    const group = this.group(groupId);
+    if (!group || group.dm || !group.tasks || group.tasks.length < 2) return null;
+    const from = group.tasks.find((entry) => entry.threadId === fromThreadId);
+    const into = group.tasks.find((entry) => entry.threadId === intoThreadId);
+    if (!from || !into) return null;
+
+    const incoming = this.messagesFor(fromThreadId);
+    if (incoming.length > 0) {
+      const label = from.title?.trim() || "Merged thread";
+      this.appendMessage(intoThreadId, {
+        role: "user",
+        kind: "text",
+        text: `Merged “${label}” into this thread.`,
+      });
+      for (const message of incoming) {
+        const { id: _id, parentId: _parent, ...rest } = message;
+        this.appendMessage(intoThreadId, rest);
+      }
+    }
+
+    return this.deleteGroupTask(groupId, fromThreadId);
+  }
+
+  /** Fold every extra bot and room conversation into the active thread.
+   * Used when switching the workspace to Simple with merge opted in. */
+  mergeAllExtraThreads(): { bots: number; groups: number; threads: number } {
+    let bots = 0;
+    let groups = 0;
+    let threads = 0;
+    for (const bot of this.bots) {
+      const into = bot.threadId;
+      const extras = [...(bot.tasks ?? [])]
+        .filter((task) => task.threadId !== into)
+        .sort((a, b) => a.createdAt - b.createdAt);
+      if (extras.length === 0) continue;
+      bots += 1;
+      for (const extra of extras) {
+        if (this.mergeBotTasks(bot.id, extra.threadId, into)) threads += 1;
+      }
+    }
+    for (const group of this.groups) {
+      if (group.dm) continue;
+      const into = group.threadId;
+      const extras = [...(group.tasks ?? [])]
+        .filter((task) => task.threadId !== into)
+        .sort((a, b) => a.createdAt - b.createdAt);
+      if (extras.length === 0) continue;
+      groups += 1;
+      for (const extra of extras) {
+        if (this.mergeGroupTasks(group.id, extra.threadId, into)) threads += 1;
+      }
+    }
+    return { bots, groups, threads };
+  }
+
   /** Move one of a bot's conversations into a channel, where the channel's
    * members answer it from then on. */
   moveTaskToGroup(fromBotId: string, threadId: string, groupId: string): {
