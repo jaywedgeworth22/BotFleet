@@ -70,15 +70,19 @@ struct ChatView: View {
         return max(0, session.state.unreadCount - mine)
     }
 
-    /// The provider driving this bot's current model, for the header's
+    /// The provider driving this chat's current model, for the header's
     /// logo badge.  Rooms have many bots and no single current model, so
     /// this is `nil` (and the badge renders nothing) for anything but a
-    /// single bot chat.  Joins through the cached instanceId -> driverKind
-    /// map on `Session` rather than parsing `instanceId`, which is
-    /// operator-named and not reliably prefixed by driver kind.
+    /// single bot chat.  Prefers the active task's override when present —
+    /// matching `task.modelSelection ?? bot.modelSelection` on the server —
+    /// then joins through the cached instanceId -> driverKind map on
+    /// `Session` rather than parsing `instanceId`, which is operator-named
+    /// and not reliably prefixed by driver kind.
     private var currentDriverKind: String? {
         guard case let .bot(bot) = current else { return nil }
-        return session.instanceDriverKinds[bot.modelSelection.instanceId]
+        let selection = bot.tasks?.first(where: { $0.threadId == bot.threadId })?.modelSelection
+            ?? bot.modelSelection
+        return session.instanceDriverKinds[selection.instanceId]
     }
 
     var body: some View {
