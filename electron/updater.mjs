@@ -85,12 +85,14 @@ function recordSuccessfulAutoCheck() {
   // updater-throttle.mjs's `recordAutomaticCheck` so it can be unit-tested
   // against a real temp file without an `electron` runtime (this module
   // imports `electron` at the top, which plain `node --test` can't load).
+  // It takes the cross-process config lock and leaves `enabled` to the
+  // harness, which owns the toggle; only the check record is written.
   //
   // Previously this stopped at `appendFileSync(path, "")` — a no-op touch
   // that never wrote `disk` back, so `lastCheckMs` never reached disk and
   // the 6-hour throttle never actually engaged.
   try {
-    recordAutomaticCheck(configPath(), { enabled: autoUpdateEnabled, fingerprint: macAppFingerprint() });
+    recordAutomaticCheck(configPath(), { fingerprint: macAppFingerprint() });
   } catch {
     /* never let the check fail because we could not persist */
   }

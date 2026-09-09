@@ -17,6 +17,7 @@ import {
 } from "./skill-recorder.mjs";
 import { openBlankTerminal } from "./terminal-launch.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
+import { readConfigFile, updateConfigFile } from "./config-file-lock.mjs";
 import { buildDiagnosticsReport, decodeLogTail, diagnosticsFileName } from "./diagnostics.mjs";
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
 import { activateExistingWindow } from "./single-instance.mjs";
@@ -270,37 +271,52 @@ async function saveSecureCredentials(credentials) {
 async function secureComposioConfig() {
   const configPath = desktopConfigPath();
   try {
-    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    if (!config?.composio || typeof config.composio !== "object") return;
-    let changed = false;
-    const apiKey = config?.composio?.apiKey;
-    if (typeof apiKey === "string" && apiKey.trim().startsWith("ak_")) {
-      if (!secureCredentials.composioApiKey) {
-        secureCredentials.composioApiKey = apiKey.trim();
-        await saveSecureCredentials(secureCredentials);
-      }
-      config.composio.apiKey = "";
-      changed = true;
-    } else if (typeof apiKey === "string" && apiKey.trim()) {
-      config.composio.apiKey = "";
-      changed = true;
+    // The credential store first, outside the lock -- it is async and may
+    // take a moment.  Then the file, under the lock every other config.json
+    // writer takes (config-file-lock.mjs), so a save by a harness that is
+    // already running against this data dir is never overwritten with the
+    // snapshot read here.
+    const apiKey = readConfigFile(configPath)?.composio?.apiKey;
+    const diskKey = typeof apiKey === "string" ? apiKey.trim() : "";
+    if (diskKey.startsWith("ak_") && diskKey !== secureCredentials.composioApiKey) {
+      secureCredentials.composioApiKey = diskKey;
+      await saveSecureCredentials(secureCredentials);
     }
-    // These were the old Connect credential and endpoint. They are no longer
-    // read; remove them during the upgrade so an unused secret is not left in
-    // plaintext indefinitely.
-    for (const field of ["key", "url"]) {
-      if (Object.hasOwn(config.composio, field)) {
-        delete config.composio[field];
-        changed = true;
-      }
-    }
-    if (!changed) return;
-    const temporary = `${configPath}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(config, null, 2), { mode: 0o600 });
-    fs.renameSync(temporary, configPath);
+    updateConfigFile(configPath, (config) =>
+      stripLegacyComposioFields(config, secureCredentials.composioApiKey) ? config : null,
+    );
   } catch (error) {
     if (error?.code !== "ENOENT") slog(`credential migration failed: ${error?.message ?? error}`);
   }
+}
+
+/** Blank the plaintext Composio key and drop the retired Connect credential
+ * and endpoint (`key`, `url`) in place.  They are no longer read; removing
+ * them during the upgrade keeps an unused secret from sitting in plaintext
+ * indefinitely.  Returns true when anything changed.
+ *
+ * Runs under the config lock on the copy read there, so it re-evaluates the
+ * key it finds rather than trusting the earlier unlocked read: a real key
+ * is blanked only once `storedApiKey` (the encrypted store) holds that
+ * exact value.  One that arrived from another process in between has not
+ * been copied anywhere yet; blanking it would lose the only copy, so it
+ * stays for the next launch to migrate.  A value that is not a Composio key
+ * at all is legacy residue and is cleared as before. */
+function stripLegacyComposioFields(config, storedApiKey) {
+  if (!config?.composio || typeof config.composio !== "object") return false;
+  let changed = false;
+  const apiKey = typeof config.composio.apiKey === "string" ? config.composio.apiKey.trim() : "";
+  if (apiKey && (!apiKey.startsWith("ak_") || storedApiKey === apiKey)) {
+    config.composio.apiKey = "";
+    changed = true;
+  }
+  for (const field of ["key", "url"]) {
+    if (Object.hasOwn(config.composio, field)) {
+      delete config.composio[field];
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 // The remaining workspace credentials (xai/box/voice/OpenCode keys) get
@@ -309,20 +325,25 @@ async function secureComposioConfig() {
 // migrates plaintext left by older versions or direct development clients.
 // See workspace-credentials.mjs for the exact rules.
 async function secureWorkspaceConfig() {
-  const dataDir = process.env.OMB_DATA_DIR || path.join(app.getPath("home"), ".botfleet");
-  const configPath = path.join(dataDir, "config.json");
+  const configPath = desktopConfigPath();
   try {
-    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    const migrated = migrateWorkspaceCredentials(config, secureCredentials);
-    // credentials.bin first: if the OS store cannot take the secrets, the
-    // plaintext stays put and the next boot retries — losing the only copy
-    // is the one unacceptable outcome
+    // credentials.bin first, outside the lock: if the OS store cannot take
+    // the secrets, the plaintext stays put and the next boot retries --
+    // losing the only copy is the one unacceptable outcome.
+    const migrated = migrateWorkspaceCredentials(readConfigFile(configPath), secureCredentials);
     if (migrated.credentialsChanged) await saveSecureCredentials(migrated.credentials);
     secureCredentials = migrated.credentials;
     if (!migrated.configChanged) return;
-    const temporary = `${configPath}.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(migrated.config, null, 2), { mode: 0o600 });
-    fs.renameSync(temporary, configPath);
+    // Then strip the file under the cross-process lock (config-file-lock.mjs),
+    // re-running the migration on the copy read there rather than writing the
+    // snapshot from above: a harness already running against this data dir
+    // may have saved in between.  Should that copy carry a secret the store
+    // does not have yet, leave the file alone and let the next boot retry.
+    updateConfigFile(configPath, (config) => {
+      const again = migrateWorkspaceCredentials(config, secureCredentials);
+      if (again.credentialsChanged || !again.configChanged) return null;
+      return again.config;
+    });
   } catch (error) {
     if (error?.code !== "ENOENT") slog(`credential migration failed: ${error?.message ?? error}`);
   }

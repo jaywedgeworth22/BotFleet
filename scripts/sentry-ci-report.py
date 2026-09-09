@@ -61,9 +61,35 @@ from pathlib import Path
 # one Sentry issue.
 APP = "botfleet"
 
-# No observed workflow in this repo defines a `schedule:` trigger, so the
-# Crons check-in map is empty.  Failure events still fire for ALERT_CONCLUSIONS.
-CRON_SCHEDULES = {}
+# Keyed by the workflow's DISPLAY NAME (its `name:`), mirroring each
+# schedule-triggered workflow's own `schedule:` block so a missed check-in
+# raises a Sentry Crons alert instead of going unnoticed.  `ios-ship.yml`
+# ("iOS TestFlight ship (GitHub-hosted macOS)") is the only workflow in this
+# repo that defines `schedule:` (`'18,48 * * * *'`); it replaced the deleted
+# `ios-testflight.yml` ("iOS TestFlight Release") on 2026-09-04, which is why
+# FLEET-INFRA-CM's old key for that name is stale.
+CRON_SCHEDULES = {
+    "iOS TestFlight ship (GitHub-hosted macOS)": "18,48 * * * *",
+}
+
+# checkin_margin (minutes): how long after the scheduled trigger time Sentry
+# waits before flagging a missed check-in.  This reporter only ever reports
+# on workflow_run COMPLETION -- it never sends an "in_progress" check-in when
+# the observed workflow starts -- so the margin must cover that workflow's
+# own worst-case run time (its job's `timeout-minutes:`) plus GH Actions
+# queueing delay and this reporter job's own overhead, or a legitimately
+# slow-but-successful run reads as a missed check-in before Sentry ever
+# hears from it.  15 is a safe default for a workflow that normally finishes
+# in a couple of minutes; override per-workflow below for anything slower.
+DEFAULT_CHECKIN_MARGIN_MINUTES = 15
+CRON_CHECKIN_MARGIN_OVERRIDES = {
+    # ios-ship.yml's job sets `timeout-minutes: 90`; +15 for queueing and
+    # this reporter's own dispatch/run time.
+    "iOS TestFlight ship (GitHub-hosted macOS)": 105,
+}
+_CRON_CHECKIN_MARGIN_FOLDED = {
+    name.casefold(): margin for name, margin in CRON_CHECKIN_MARGIN_OVERRIDES.items()
+}
 
 # This map is keyed by a workflow's DISPLAY NAME, which is exactly the kind of
 # string that drifts out from under you: shared-package-pin-check.yml was
@@ -91,11 +117,25 @@ WORKFLOWS_DIR = Path(__file__).resolve().parent.parent / ".github" / "workflows"
 # alerting on them would just be pager noise.
 ALERT_CONCLUSIONS = frozenset({"failure", "timed_out", "startup_failure"})
 
+# Sentry rejects a Crons monitor_slug over 50 characters with an HTTP 400 —
+# and send_envelope() deliberately treats any HTTP error as fail-open (a
+# ::warning:: only, never a red CI job; see its docstring), so an oversized
+# slug fails SILENTLY: no monitor is ever created and the missed-schedule
+# coverage it was meant to add simply never exists.  monitor_slug() below
+# truncates to this bound so a long workflow `name:` can never hit that path.
+MONITOR_SLUG_MAX_LEN = 50
+
 
 def slugify(name: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
     slug = re.sub(r"-+", "-", slug)
     return slug
+
+
+def monitor_slug(app: str, workflow_name: str) -> str:
+    """The Sentry Crons monitor slug for a workflow, guaranteed <= 50 chars."""
+    slug = f"ci-{app}-{slugify(workflow_name)}"
+    return slug[:MONITOR_SLUG_MAX_LEN].rstrip("-")
 
 
 def discover_workflow_names(workflows_dir: Path = WORKFLOWS_DIR) -> set[str] | None:
@@ -294,20 +334,23 @@ def main() -> int:
             )
         else:
             checkin_status = "ok" if conclusion == "success" else "error"
-            monitor_slug = f"ci-{APP}-{slugify(workflow_name)}"
+            slug = monitor_slug(APP, workflow_name)
+            checkin_margin = _CRON_CHECKIN_MARGIN_FOLDED.get(
+                workflow_name.casefold(), DEFAULT_CHECKIN_MARGIN_MINUTES
+            )
             checkin_payload = {
                 "check_in_id": uuid.uuid4().hex,
-                "monitor_slug": monitor_slug,
+                "monitor_slug": slug,
                 "status": checkin_status,
                 "monitor_config": {
                     "schedule": {"type": "crontab", "value": cron_expr},
-                    "checkin_margin": 15,
+                    "checkin_margin": checkin_margin,
                     "max_runtime": 60,
                     "timezone": "UTC",
                 },
             }
             send_envelope(envelope_url, auth_header, "check_in", checkin_payload)
-            print(f"Sent Sentry Crons check-in '{checkin_status}' for monitor '{monitor_slug}' (workflow '{workflow_name}').")
+            print(f"Sent Sentry Crons check-in '{checkin_status}' for monitor '{slug}' (workflow '{workflow_name}').")
     else:
         print(f"Workflow '{workflow_name}' was triggered by '{event}' (not schedule); no cron check-in sent.")
 

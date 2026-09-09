@@ -30,13 +30,23 @@ name: Sentry CI Report
 # Raw Sentry envelope HTTP via python3 — no action marketplace dependency, no
 # new job permissions beyond what's needed to read the triggering run.
 #
-# workflows observed (from `ls .github/workflows/` at authoring time — see
-# the `name:` header of each file):
+# workflows observed (from `ls .github/workflows/` — see the `name:` header
+# of each file; re-verify this list whenever a workflow is added, renamed, or
+# removed, since a stale entry here silently disables alerting for that
+# pipeline):
 #   CI,
-#   iOS TestFlight Release,
+#   iOS TestFlight ship (GitHub-hosted macOS),
 #   Package Ubuntu,
 #   Package Windows,
-#   Release
+#   Release,
+#   Sentry Deploy
+#
+# `iOS TestFlight Release` (`ios-testflight.yml`) was the entry here through
+# 2026-09-04; that workflow was deleted the same day and replaced by
+# `ios-ship.yml` ("iOS TestFlight ship (GitHub-hosted macOS)"), which is what
+# this list now names.  FLEET-INFRA-CM ("no CRON_SCHEDULES entry for
+# scheduled workflow 'iOS TestFlight Release'") is stale for the same
+# reason — that workflow name matches nothing on `main` any more.
 #
 # DELIBERATELY NOT observed:
 #   - Sentry CI Report (this file) — would recurse.
@@ -46,7 +56,7 @@ name: Sentry CI Report
 # The reporter validates these keys against the real workflow names on every
 # run and raises a Sentry issue on drift, so a rename cannot silently kill a
 # monitor:
-#   (none — no observed workflow defines schedule:)
+#   iOS TestFlight ship (GitHub-hosted macOS) -> "18,48 * * * *" (ios-ship.yml)
 #
 # Secret: `SENTRY_FLEET_DSN` (the fleet-infra project DSN) comes from
 # Infisical prod through the shared composite action
@@ -63,7 +73,7 @@ on:
       # Names must match the `name:` field of workflow files exactly —
       # a stale entry here silently disables alerting for that pipeline.
       - CI
-      - iOS TestFlight Release
+      - iOS TestFlight ship (GitHub-hosted macOS)
       - Package Ubuntu
       - Package Windows
       - Release
