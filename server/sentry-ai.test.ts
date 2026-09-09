@@ -362,6 +362,31 @@ describe("approval, retry, and session lifecycle", () => {
     expect(JSON.stringify(spans)).not.toMatch(/sk-|password|BEGIN /);
   });
 
+  it("redacts a secret in a failed tool's detail before it reaches the span", () => {
+    // event.detail is real provider output (stdout/stderr/error text a
+    // driver read back from the tool call, not a synthetic message), so a
+    // failed command that echoed a credential must not reach Sentry intact.
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(
+      base({ type: "item.started", itemType: "tool", itemId: "tool-1", title: "bash curl" }),
+      sink,
+    );
+    observeRuntimeEvent(
+      base({
+        type: "item.completed",
+        itemType: "tool",
+        itemId: "tool-1",
+        ok: false,
+        detail: 'curl failed: {"api_key": "abcd1234efgh5678"}',
+      }),
+      sink,
+    );
+    const detail = String(spans[1].attributes["gen_ai.tool.result.detail"]);
+    expect(detail).not.toContain("abcd1234efgh5678");
+    expect(detail).toContain("«redacted 16 chars»");
+  });
+
   it("leaves a successful tool without a result detail", () => {
     const { sink, spans } = recordingSink();
     observeRuntimeEvent(base({ type: "turn.started" }), sink);
