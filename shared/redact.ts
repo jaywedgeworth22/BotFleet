@@ -137,60 +137,64 @@ const AUTH_HEADER_QUOTED =
  * line is.
  *
  * Which quotes on that line belong to the value is decided the same way —
- * by context, not by pairing them off.  A quoted parameter of an auth scheme
- * is always introduced by an `=` (RFC 7235 auth-param: `response="…"`,
- * `oauth_signature="…"`, and BWS is allowed either side of that `=`), so
- * only a quote behind an `=` opens one.  Every other quote is somebody
- * else's — the wrapper of a `-H "…"` argument, most often — and ends the
- * value there, wrapper intact.  Pairing quotes off instead makes the value
- * swallow whatever separates a header argument from the next quoted argument
- * on the command line, which with no length cap is the rest of the command.
+ * by context, and the context is not on the header line at all.  A quote in
+ * a header value is just a character; the only quote that must survive is
+ * the one WRAPPING the header, `curl -H "…"`, and that quote announced
+ * itself before the header name.  So the value runs to the end of its line
+ * and is then cut at the wrapper's closing quote if a wrapper was open —
+ * see `wrapperQuoteAt` — and at nothing else.
  *
- * A parameter also has to CLOSE like one.  Its closing quote is followed by
- * a delimiter — a comma, a space, the end of the value, the wrapper quote —
- * never by more argument text.  Without that check a `Basic` credential is
- * enough to reopen the same hole, because base64 padding ends the credential
- * in `=` and the wrapper quote right behind it then looks like a parameter
- * opening: `-H "…: Basic <b64>=" <url> -d "<body>"` would pair that wrapper
- * with the body's quote and eat the command in between.
+ * That is the third answer this pattern has had, and the first that is a
+ * rule rather than a guess.  Reading the value's own quotes to find its end
+ * cannot work, because nothing on the line distinguishes a parameter's quote
+ * from a wrapper's: `oauth_signature="…"` and a `Basic` credential whose
+ * base64 padding leaves an `=` in front of the wrapper look identical, `\"`
+ * is the parameter's delimiter inside a shell argument and an escape inside
+ * it on a raw line, and a clipped parameter and a terminal wrapper both end
+ * the text.  Every one of those was a real leak or a real over-mask found
+ * against a version of this pattern that tried to tell them apart locally.
+ * Asking who opened the quote answers all of them at once, and asking it
+ * OUTSIDE the value is what makes the answer available. */
+const AUTH_HEADER_BARE = /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?([^\r\n]+)/gi;
+
+/** The quote wrapping the header, if the header sits inside one — the `"` of
+ * a `curl -H "…"` argument, the `'` of its single-quoted twin.
  *
- * `\"` is genuinely ambiguous — the parameter's own delimiter inside a shell
- * argument (`oauth_signature=\"…\"` within a `-H "…"`), an escaped quote
- * INSIDE the parameter on a raw header line (`realm="a\"b"`) — and what
- * settles it is how the parameter OPENED.  A parameter closes the way it was
- * opened: one opened with `\"` closes at the next `\"` and holds no bare
- * quote, one opened with a bare `"` closes at the next unescaped `"` and
- * steps over `\"` inside itself.  That is a rule rather than a preference,
- * so neither reading has to be tried first and neither can steal the other's
- * text: guessing by which reading closes soonest lets `realm="a\",b"` end at
- * the escaped quote, because a comma follows it and the guess looks right.
- *
- * The last alternative is the truncated parameter: a quote behind an `=`,
- * with no partner anywhere ahead of it on the line, at END OF TEXT, and
- * with a non-blank character directly behind it.  Every one of those is
- * load-bearing.  End of text is the only place a quote that never closes can
- * legitimately come from — something cut the string, and the credential is
- * what follows; a quote merely unbalanced in the middle of live text is
- * somebody else's.  And the non-blank character is what tells a cut
- * parameter from the LAST shell wrapper on a line: a credential does not
- * begin with a space, so `-H "…: Basic <b64>=" <url>` — padding, wrapper,
- * then a space — is a wrapper, and only the credential in front of it is
- * masked.
- *
- * The `(?!\s*["'])` after the `=` or `:` is what keeps this pattern off a
- * value the quoted one above owns, so the two never compete for one header.
- * Where it sits is the whole trick.  It has to be BEFORE the separator's
- * trailing whitespace and has to skip that whitespace ITSELF: a check placed
- * after a trailing `\s*` is defeated by the `\s*` simply giving the space
- * back, so that the check looks at the space instead of the quote behind it —
- * and `{"authorization": "…"}`, already redacted correctly by the quoted
- * pattern, gets reclaimed here and its siblings deleted after all.  Asserting
- * across the whitespace leaves nothing to give back, and asserting across
- * ALL of it — newlines included — is what lets the separator keep crossing a
- * fold, so `<header>:` on one line and `Basic <credential>` on the next is
- * still one header value. */
-const AUTH_HEADER_BARE =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|(?<==[ \t]*\\)"(?:[^"\\\r\n]|\\[^"])*\\"(?=[\s,;"'\\)\]}]|$)|(?<==[ \t]*\\)'(?:[^'\\\r\n]|\\[^'])*\\'(?=[\s,;"'\\)\]}]|$)|(?<==[ \t]*)"(?:\\.|[^"\\\r\n])*"(?=[\s,;"'\\)\]}]|$)|(?<==[ \t]*)'(?:\\.|[^'\\\r\n])*'(?=[\s,;"'\\)\]}]|$)|(?<==[ \t]*\\?)["'](?![^"'\r\n]*["'])[^\s\r\n][^\r\n]*$)+)/gi;
+ * Looks only BEFORE the header name, on its own line, because that is where a
+ * wrapper announces itself and it is the one thing the value cannot tell you
+ * about itself.  An unbalanced quote there is open at the header, so the
+ * first unescaped one after it closes the argument and ends the value.  A
+ * balanced run before the header (`echo "hi" && curl -H …`) leaves nothing
+ * open and the value simply runs to the end of its line. */
+function wrapperQuoteAt(text: string, index: number): string | undefined {
+  let open: string | undefined;
+  for (let i = text.lastIndexOf("\n", index - 1) + 1; i < index; i++) {
+    const ch = text[i];
+    if (ch === "\\") {
+      i += 1; // an escaped character is content, whichever quote we are in
+      continue;
+    }
+    if (ch !== '"' && ch !== "'") continue;
+    if (open === undefined) open = ch;
+    else if (open === ch) open = undefined;
+  }
+  return open;
+}
+
+/** How much of a bare header value is the credential: everything up to the
+ * wrapper's closing quote, or all of it when nothing wrapped the header. */
+function bareValueEnd(value: string, wrapper: string | undefined): number {
+  if (!wrapper) return value.length;
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === "\\") {
+      i += 1;
+      continue;
+    }
+    if (value[i] === wrapper) return i;
+  }
+  return value.length;
+}
+
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
  * The value must be a single token of some length; prose after a colon
@@ -268,8 +272,13 @@ export function redactSecretsInText(text: string): string {
   );
   out = out.replace(
     AUTH_HEADER_BARE,
-    (m, key: string, sep: string, scheme: string | undefined, value: string) =>
-      value.length < 8 || WHOLLY_MASKED.test(value) ? m : `${key}${sep}${scheme ?? ""}${mask(value)}`,
+    (m, key: string, sep: string, scheme: string | undefined, value: string, offset: number, whole: string) => {
+      // trailing blanks are the line's, not the credential's, so they stay
+      // outside the mask and out of the length it reports
+      const credential = value.slice(0, bareValueEnd(value, wrapperQuoteAt(whole, offset))).replace(/[^\S\r\n]+$/, "");
+      if (credential.length < 8 || WHOLLY_MASKED.test(credential)) return m;
+      return `${key}${sep}${scheme ?? ""}${mask(credential)}${value.slice(credential.length)}`;
+    },
   );
   for (const re of KEY_PREFIXES) out = out.replace(re, (m) => mask(m));
   out = out.replace(BEARER, (_m, lead: string, tok: string) => `${lead}${mask(tok)}`);

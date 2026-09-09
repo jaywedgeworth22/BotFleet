@@ -491,36 +491,45 @@ describe("redactSecretsInText", () => {
       const terminalOut = redactSecretsInText(terminal);
       expect(terminalOut, b64.slice(-4)).not.toContain(b64);
       expect(terminalOut, b64.slice(-4)).toContain(url);
+
+      // and when the NEXT argument opens with a delimiter of its own
+      const delimLed = `curl -H "${HEADER}: Basic ${b64}" https://x -d ",foo"`;
+      const delimLedOut = redactSecretsInText(delimLed);
+      expect(delimLedOut, b64.slice(-4)).not.toContain(b64);
+      expect(delimLedOut, b64.slice(-4)).toContain(' https://x -d ",foo"');
     }
   });
 
-  it("closes a bare quoted parameter the way it was opened", () => {
-    // `\"` is ambiguous — the parameter's own delimiter inside a shell
-    // argument, an escaped quote inside the parameter on a raw header line —
-    // and how the parameter OPENED settles it.  Guessing by which reading
-    // closes soonest gets `realm="a\",b"` wrong, because a comma follows the
-    // escaped quote and the guess looks right; the signature behind it then
-    // walks out.  BWS either side of the `=` is legal too (RFC 7235).
+  it("treats every quote in a bare value as content, wrapper excepted", () => {
+    // Nothing on the header line tells a parameter's quote from a wrapper's,
+    // which is why reading the value's own quotes to find its end kept
+    // getting one shape or another wrong: `\"` is the parameter's delimiter
+    // inside a shell argument and an escape inside it on a raw line, and a
+    // delimiter behind an escaped quote makes the wrong reading look right.
+    // The wrapper is the only quote that has to survive, and it announced
+    // itself before the header name.
     const HEADER = "Auth" + "orization";
     const sig = `FAKESIG${"0123456789".repeat(20)}`;
     const url = " https://api.example.com/v1/long/path";
     const cases: Array<[string, string]> = [
-      // raw line, escaped quote inside the parameter
       [`${HEADER}: OAuth realm="a\\"b", oauth_signature="${sig}"`, ""],
-      // the same, with a delimiter right behind the escaped quote
       [`${HEADER}: OAuth realm="a\\",b", oauth_signature="${sig}"`, ""],
-      // shell argument, where `\"` really is the delimiter
-      [`curl -H "${HEADER}: OAuth a=\\"1\\", oauth_signature=\\"${sig}\\""${url}`, url],
-      // whitespace around the `=`, both spellings
       [`${HEADER}: OAuth oauth_signature = "${sig}"`, ""],
+      // clipped mid-parameter, with an escaped quote already inside it
+      [`${HEADER}: OAuth oauth_signature="prefix\\"${sig}`, ""],
+      // and the same shapes wrapped in a shell argument, tail intact
+      [`curl -H "${HEADER}: OAuth a=\\"1\\", oauth_signature=\\"${sig}\\""${url}`, url],
       [`curl -H "${HEADER}: OAuth oauth_signature = \\"${sig}\\""${url}`, url],
+      [`curl -H '${HEADER}: OAuth oauth_signature=${sig}'${url}`, url],
+      // a balanced quoted run before the header leaves no wrapper open
+      [`echo "hi" && curl -H "${HEADER}: OAuth oauth_signature=\\"${sig}\\""${url}`, url],
     ];
     for (const [input, keep] of cases) {
       const out = redactSecretsInText(input);
-      expect(out, input.slice(0, 44)).not.toContain(sig);
-      expect(out, input.slice(0, 44)).toMatch(/«redacted \d+ chars»/);
-      if (keep) expect(out, input.slice(0, 44)).toContain(keep);
-      expect(out, input.slice(0, 44)).toBe(redactSecretsInText(out));
+      expect(out, input.slice(0, 46)).not.toContain(sig);
+      expect(out, input.slice(0, 46)).toMatch(/«redacted \d+ chars»/);
+      if (keep) expect(out, input.slice(0, 46)).toContain(keep);
+      expect(out, input.slice(0, 46)).toBe(redactSecretsInText(out));
     }
   });
 
