@@ -159,7 +159,15 @@ const vpsConfigSchema = z.object({
 const botDefaultsSchema = z.object({
   computers: z.array(z.enum(["cloud", "vm", "local"])).max(3).optional(),
   cloudBackend: z.enum(["box", "vps"]).optional(),
-  allowedComputers: z.array(z.enum(["cloud", "vm", "local"])).max(3).optional(),
+  // `null` is the wire spelling of "no allowlist — every destination is
+  // allowed", and it has to be accepted, not merely tolerated: the settings
+  // panel carries the whole botDefaults block on every save, so a fresh
+  // install (which has no allowlist) sent `null` with each unrelated change
+  // and got a 400 back for it.  Omitting the key is not a substitute, either
+  // -- the patch merges section by section, so an omitted key preserves
+  // whatever is on disk, and re-enabling the last destination would silently
+  // fail to clear the stored array.  null CLEARS; absent means "leave it".
+  allowedComputers: z.array(z.enum(["cloud", "vm", "local"])).max(3).nullable().optional(),
 });
 const roomConfigSchema = z.object({
   turnTimeoutMinutes: z
@@ -333,8 +341,10 @@ export interface AppConfig {
   botDefaults?: {
     computers?: Array<"cloud" | "vm" | "local">;
     cloudBackend?: "box" | "vps";
-    /** Operator-level allowlist; an absent entry means the destination is allowed. */
-    allowedComputers?: Array<"cloud" | "vm" | "local">;
+    /** Operator-level allowlist; an absent entry means the destination is
+     * allowed.  `null` is the same thing said out loud, and is what a client
+     * sends to clear a narrowed allowlist back to "everything". */
+    allowedComputers?: Array<"cloud" | "vm" | "local"> | null;
   };
   ingress?: { publicUrl?: string; enabled?: boolean };
   /** Shared preserves the historical singleton. Per-bot gives every bot a
@@ -679,7 +689,10 @@ export function localVmMaxInstances(cfg: AppConfig): number {
  * allowlist is a deliberate, persisted "no bot may run on any desktop here". */
 export function allowedBotComputers(cfg: AppConfig): Array<"cloud" | "vm" | "local"> | null {
   const list = cfg.botDefaults?.allowedComputers;
-  if (list === undefined) return null;
+  // Absent and null are the same answer — "the operator never narrowed
+  // anything" — and they must not diverge, because null reaches here from
+  // both the wire and any config.json written before the key was dropped.
+  if (list === undefined || list === null) return null;
   // De-duplicate while keeping the order the operator chose.
   return [...new Set(list)];
 }
@@ -972,6 +985,18 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     const merged: JsonObject = current.success ? { ...current.data } : {};
     Object.assign(merged, section);
     disk[key] = merged;
+  }
+  // `botDefaults.allowedComputers: null` means "clear the allowlist".  The
+  // section merge above cannot express that -- it assigns the null straight
+  // through -- so the key is removed here instead, which keeps config.json
+  // holding only the two states the reader has ever had to understand:
+  // the key is present and narrows, or it is absent and allows everything.
+  if (checkedPatch.botDefaults?.allowedComputers === null) {
+    const stored = jsonObjectSchema.safeParse(disk.botDefaults);
+    if (stored.success) {
+      const { allowedComputers: _cleared, ...rest } = stored.data;
+      disk.botDefaults = rest;
+    }
   }
   if (checkedPatch.vps !== undefined) disk.vps = normalizeVpsConfig(checkedPatch.vps);
   if (checkedPatch.conversationMode !== undefined) disk.conversationMode = checkedPatch.conversationMode;

@@ -87,8 +87,8 @@ describe("MinimaxDriver", () => {
     resetSentryAiForTests();
   });
 
-  it("sits on the Cloud rail as MiniMax CLI", () => {
-    expect(MinimaxDriver.metadata.displayName).toBe("MiniMax CLI");
+  it("sits on the Cloud rail as MiniMax, honestly — this driver spawns no CLI", () => {
+    expect(MinimaxDriver.metadata.displayName).toBe("MiniMax");
     expect(MinimaxDriver.metadata.access).toBeUndefined();
   });
 
@@ -315,6 +315,80 @@ describe("MinimaxDriver", () => {
     await instance.dispose();
   });
 
+  it("keeps the first id and name for a tool call instead of letting a later chunk overwrite it", async () => {
+    // openai-compat.ts's fix and comment: a provider that repeats the id
+    // and name on a later chunk for the same call must not clobber the
+    // value the first chunk already established, or a fragmented/corrupted
+    // resend truncates the name and breaks the match to the item.started
+    // step that already opened under the original id.
+    let round = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      round += 1;
+      return round === 1
+        ? new Response(
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"list_bots","arguments":"{\\"sec"}}]}}]}\n' +
+            'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_stale","function":{"name":"list_b","arguments":"tion\\":\\"ops\\"}"}}]}}]}\n' +
+            'data: [DONE]\n',
+            { status: 200, headers: { "content-type": "text/event-stream" } },
+          )
+        : sse('{"choices":[{"delta":{"content":"done"}}]}');
+    }));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-tool-first-write-wins",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({
+      threadId: "thread",
+      text: "list ops bots",
+      tools: [{ name: "list_bots" }],
+      toolHost: answeringHost,
+    });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    const started = recorder.events.filter((e) => e.type === "item.started" && e.itemType === "tool");
+    const completedSteps = recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "tool");
+    expect(started).toHaveLength(1);
+    expect(started[0]).toMatchObject({ itemId: "call_a", title: "list_bots" });
+    // the settled step must key on the SAME id the step opened under, or
+    // the transcript row it belongs to can never be found
+    expect(completedSteps).toHaveLength(1);
+    expect(completedSteps[0]).toMatchObject({ itemId: "call_a", ok: true, arguments: '{"section":"ops"}' });
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("flushes a final data: frame with no trailing newline instead of dropping it", async () => {
+    // The frame carrying usage (stream_options.include_usage) can arrive as
+    // the last thing the server writes before closing the connection, with
+    // no terminating newline after it — the buffer must still be flushed
+    // when the reader reports `done`, or this usage is silently lost.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      'data: {"choices":[{"delta":{"content":"hi"}}]}\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":4}}',
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-trailing-frame",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hi" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({ ok: true, usage: { input: 9, output: 4 } });
+    recorder.stop();
+    await instance.dispose();
+  });
+
   it("runs the tool loop inside sendTurn: one terminal event, summed usage, results in call order", async () => {
     const bodies: any[] = [];
     let round = 0;
@@ -454,6 +528,122 @@ describe("MinimaxDriver", () => {
     await instance.dispose();
   });
 
+  it("streams reasoning separately and completes only actual assistant text", async () => {
+    // MiniMax sends reasoning_split: true on every request; before this fix
+    // the driver read no reasoning field at all on any path.
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      'data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}\n' +
+      'data: {"choices":[{"delta":{"content":"answer"}}]}\n' +
+      "data: [DONE]\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-reasoning-stream",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "reasoning-thread", text: "question" });
+    await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "content.delta", streamKind: "reasoning_text", delta: "thinking" }),
+      expect.objectContaining({ type: "content.delta", streamKind: "assistant_text", delta: "answer" }),
+      expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: "answer" }),
+    ]));
+    expect(recorder.events).not.toContainEqual(
+      expect.objectContaining({ type: "item.completed", itemType: "assistant_text", text: "thinking" }),
+    );
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("falls back to reasoning_content when assistant text is empty, so an all-reasoning reply is not an empty turn", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(
+      'data: {"choices":[{"delta":{"reasoning_content":"thinking through the problem"}}]}\n' +
+      'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n' +
+      "data: [DONE]\n",
+      { status: 200, headers: { "content-type": "text/event-stream" } },
+    )));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-reasoning-fallback",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread-rf", text: "prompt" });
+    const item = await recorder.until((e) => e.type === "item.completed");
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+
+    expect(item).toMatchObject({
+      type: "item.completed",
+      itemType: "assistant_text",
+      text: "thinking through the problem",
+    });
+    expect(completed).toMatchObject({ ok: true, usage: { input: 10, output: 5 } });
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("uses reasoning as a generateText fallback when normal content is whitespace (non-stream path)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({
+      choices: [{ message: { content: "  ", reasoning_content: "usable result" } }],
+    }), { status: 200, headers: { "content-type": "application/json" } })));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-reasoning-nonstream",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+
+    await expect(instance.generateText?.("question")).resolves.toBe("usable result");
+    await instance.dispose();
+  });
+
+  it("reports usage the stream already showed even when the request fails mid-stream", async () => {
+    // A request timeout or upstream 5xx after several chunks previously
+    // reported zero usage on the failure path, hiding real spend on a long
+    // turn that happened to fail at the end.
+    let pullCount = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pullCount += 1;
+        if (pullCount === 1) {
+          controller.enqueue(
+            new TextEncoder().encode('data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":9}}\n'),
+          );
+          return;
+        }
+        controller.error(new Error("stream exploded"));
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    })));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-usage-on-failure",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread-fail", text: "hi" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({ ok: false, stopReason: "error", usage: { input: 20, output: 9 } });
+    recorder.stop();
+    await instance.dispose();
+  });
   it("has a real price row for every model in its own catalog", () => {
     for (const option of MinimaxDriver.models.options) {
       expect(Object.prototype.hasOwnProperty.call(MINIMAX_PRICE_PER_MILLION, option.id)).toBe(true);

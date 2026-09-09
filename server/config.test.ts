@@ -571,6 +571,33 @@ describe("saveConfig section merge", () => {
     saveConfig({ observability: { sentryDsn: "" } });
     expect(sentryDsnConfigured(loadConfig())).toBeNull();
   });
+
+  it("persists the ingress URL, and an explicit empty string clears it", () => {
+    saveConfig({ ingress: { publicUrl: "https://agents.example.com", enabled: true } });
+    expect(loadConfig().ingress).toMatchObject({
+      publicUrl: "https://agents.example.com",
+      enabled: true,
+    });
+
+    // toggling the switch on its own must not wipe the stored URL -- same
+    // rule as observability's kill switch above
+    saveConfig({ ingress: { enabled: false } });
+    expect(loadConfig().ingress).toMatchObject({
+      publicUrl: "https://agents.example.com",
+      enabled: false,
+    });
+    expect(publicIngressUrl(loadConfig())).toBe("https://agents.example.com");
+
+    // clearing is explicit: the client sends the trimmed field including ""
+    // (never `undefined`, which JSON.stringify drops from the request body
+    // entirely and saveConfig's `Object.assign(merged, section)` merge then
+    // reads as "field not present in this patch, leave the old value").
+    // Regression: the client used to send `publicUrl: trimmed || undefined`,
+    // so clearing the Settings input silently kept serving the old URL.
+    saveConfig({ ingress: { publicUrl: "", enabled: true } });
+    expect(loadConfig().ingress).toMatchObject({ publicUrl: "", enabled: true });
+    expect(publicIngressUrl(loadConfig())).toBeNull();
+  });
 });
 
 describe("workspace credential env strip", () => {
@@ -639,6 +666,37 @@ describe("operator-level computer allowlist", () => {
     expect(() => parseConfigPatch({ botDefaults: { allowedComputers: ["box"] } })).toThrow(
       "botDefaults.allowedComputers",
     );
+  });
+
+  it("accepts null as the not-narrowed allowlist, which every fresh install sends", () => {
+    // The settings panel carries the whole botDefaults block on every save,
+    // so an install that has never narrowed the allowlist sent null with each
+    // unrelated change — and the schema answered 400, which made changing the
+    // New Bots default or the cloud backend impossible on a fresh install.
+    expect(parseConfigPatch({ botDefaults: { allowedComputers: null } })).toEqual({
+      botDefaults: { allowedComputers: null },
+    });
+    expect(allowedBotComputers({ botDefaults: { allowedComputers: null } })).toBeNull();
+  });
+
+  it("clears a stored allowlist on null instead of merging it forward", () => {
+    // Omitting the key would not do this: the section merge keeps whatever is
+    // on disk, so re-enabling the last destination would appear to work and
+    // come back narrowed on the next load.
+    mkdirSync(DATA_DIR, { recursive: true });
+    rmSync(join(DATA_DIR, "config.json"), { force: true });
+    try {
+      saveConfig({ botDefaults: { computers: ["cloud"], allowedComputers: ["cloud"] } });
+      expect(allowedBotComputers(loadConfig())).toEqual(["cloud"]);
+
+      saveConfig({ botDefaults: { allowedComputers: null } });
+      const after = loadConfig();
+      expect(allowedBotComputers(after)).toBeNull();
+      // and only the allowlist is cleared — the workspace default stands.
+      expect(after.botDefaults?.computers).toEqual(["cloud"]);
+    } finally {
+      rmSync(join(DATA_DIR, "config.json"), { force: true });
+    }
   });
 });
 

@@ -114,6 +114,17 @@ function normalizedApiUrl(value: string): string {
   return root.endsWith("/v1") ? root : `${root}/v1`;
 }
 
+// Resolution order: instance env → process env → official mmx-cli config.
+// Empty higher-priority values are skipped instead of masking a real key.
+// One shared resolver so no future lane (snapshot probe, a shared
+// chat-completions base, …) can drift on which key is the MiniMax key.
+export function resolveMinimaxCredentials(
+  environment: Record<string, string>,
+  local: Pick<LocalMiniMaxConfig, "apiKey">,
+): string {
+  return environment[API_KEY_ENV]?.trim() || process.env[API_KEY_ENV]?.trim() || local.apiKey;
+}
+
 export function loadLocalMiniMaxConfig(home = homedir()): LocalMiniMaxConfig {
   try {
     const raw = localConfigSchema.parse(JSON.parse(readFileSync(join(home, ".mmx", "config.json"), "utf8")));
@@ -145,17 +156,24 @@ export function decodeMinimaxConfig(raw: unknown): MinimaxConfig {
 
 export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
   driverKind: DRIVER_KIND,
-  metadata: { displayName: "MiniMax CLI", supportsMultipleInstances: true },
+  // This driver spawns no CLI — the only thing it ever reads from mmx is
+  // ~/.mmx/config.json (loadLocalMiniMaxConfig above), and only as one of
+  // three key sources. "MiniMax CLI" told users to install and debug a
+  // binary that has no bearing on whether a turn works.
+  metadata: { displayName: "MiniMax", supportsMultipleInstances: true },
   models: MODELS,
   install: {
     docsUrl: "https://platform.minimax.io/docs/token-plan/minimax-cli",
+    // What this driver actually needs is a key, not a CLI install: set
+    // MINIMAX_API_KEY, or point it at ~/.mmx/config.json (written by
+    // `mmx auth login`, for anyone who already has that CLI for other
+    // reasons). Neither requires Node or npm on this machine.
+    signInCommand: `Set ${API_KEY_ENV} to a MiniMax API key, or run \`mmx auth login --api-key YOUR_MINIMAX_API_KEY\` to write one to ~/.mmx/config.json`,
     command: {
-      darwin: "npm install -g mmx-cli",
-      linux: "npm install -g mmx-cli",
-      win32: "npm install -g mmx-cli",
+      darwin: `Get a MiniMax API key at https://platform.minimax.io and set ${API_KEY_ENV} (or run \`mmx auth login\` if you already use the mmx CLI — this driver just reads the config file it writes)`,
+      linux: `Get a MiniMax API key at https://platform.minimax.io and set ${API_KEY_ENV} (or run \`mmx auth login\` if you already use the mmx CLI — this driver just reads the config file it writes)`,
+      win32: `Get a MiniMax API key at https://platform.minimax.io and set ${API_KEY_ENV} (or run \`mmx auth login\` if you already use the mmx CLI — this driver just reads the config file it writes)`,
     },
-    signInCommand: "mmx auth login --api-key YOUR_MINIMAX_API_KEY",
-    needsNode: true,
   },
   decodeConfig: decodeMinimaxConfig,
   defaultConfig: () => decodeMinimaxConfig({}),
@@ -164,12 +182,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     const { instanceId, config } = input;
 
     const local = loadLocalMiniMaxConfig();
-    // Resolution order: instance env → process env → official mmx-cli config.
-    // Empty higher-priority values are skipped instead of masking a real key.
-    const apiKey =
-      input.environment[API_KEY_ENV]?.trim() ||
-      process.env[API_KEY_ENV]?.trim() ||
-      local.apiKey;
+    const apiKey = resolveMinimaxCredentials(input.environment, local);
     const apiUrl = config.url === DEFAULT_URL && local.url !== DEFAULT_URL ? local.url : config.url;
     const models = local.defaultModel && MODELS.options.some((model) => model.id === local.defaultModel)
       ? { ...MODELS, default: local.defaultModel }
@@ -196,8 +209,15 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     const complete = async (
       messages: any[],
       model: string,
-      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
-    ): Promise<{ text: string; tool_calls?: any[]; usage: TurnUsage | null }> => {
+      opts: {
+        stream: boolean;
+        tools?: any[];
+        signal?: AbortSignal;
+        onDelta?: (d: string, streamKind?: "assistant_text" | "reasoning_text") => void;
+        onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void;
+        onUsage?: (usage: TurnUsage) => void;
+      },
+    ): Promise<{ text: string; reasoning: string; tool_calls?: any[]; usage: TurnUsage | null }> => {
       // When the caller supplies a signal it already carries the request
       // deadline (the turn loop arms one per round).  A second timer here
       // would race it and make a timeout indistinguishable from a provider
@@ -230,59 +250,106 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
 
       if (!opts.stream) {
         const json: any = await res.json();
+        const msg = json.choices?.[0]?.message;
         return {
-          text: json.choices?.[0]?.message?.content ?? "",
-          tool_calls: json.choices?.[0]?.message?.tool_calls,
+          text: typeof msg?.content === "string" ? msg.content : "",
+          reasoning: typeof msg?.reasoning_content === "string" ? msg.reasoning_content : "",
+          tool_calls: msg?.tool_calls,
           usage: json.usage ? toTurnUsage(json.usage) : null,
         };
       }
 
       // SSE streaming — identical to grok.ts pattern
       let text = "";
+      let reasoning = "";
       let usage: TurnUsage | null = null;
       const streamToolCalls: any[] = [];
       if (!res.body) throw new Error("MiniMax returned no response body");
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
+
+      // One line of an SSE frame. Assumes the caller already trimmed it —
+      // both call sites below do, including the final flush, so a trailing
+      // `data:` line with no terminating newline is parsed the same as one
+      // that had one instead of being silently dropped.
+      const takeSseLine = (line: string) => {
+        if (!line.startsWith("data:")) return;
+        const data = line.slice(5).trim();
+        if (data === "[DONE]" || !data) return;
+        let chunk: any;
+        try {
+          chunk = JSON.parse(data);
+        } catch {
+          return;
+        }
+        const delta = chunk.choices?.[0]?.delta;
+        const contentDelta = typeof delta?.content === "string" ? delta.content : undefined;
+        const reasoningDelta = typeof delta?.reasoning_content === "string" ? delta.reasoning_content : undefined;
+        const toolCallsDelta = Array.isArray(delta?.tool_calls) ? delta.tool_calls : undefined;
+
+        // MiniMax sends reasoning_split: true, which is why reasoning
+        // arrives as its own delta field — read it the way openai-compat
+        // does, or a reply that is entirely reasoning renders as an empty
+        // turn (no text, no reasoning, nothing for the model to show).
+        if (reasoningDelta) {
+          reasoning += reasoningDelta;
+          opts.onDelta?.(reasoningDelta, "reasoning_text");
+        }
+        if (contentDelta) {
+          text += contentDelta;
+          opts.onDelta?.(contentDelta, "assistant_text");
+        }
+        if (toolCallsDelta) {
+          for (const tc of toolCallsDelta) {
+            const index = tc.index ?? 0;
+            if (!streamToolCalls[index]) {
+              streamToolCalls[index] = { id: "", type: "function", function: { name: "", arguments: "" } };
+            }
+            // First-write-wins on id and name. Only the arguments stream in
+            // fragments — a provider that repeats the id and name on every
+            // chunk (MiniMax does) used to overwrite a partial name
+            // fragment with the next one instead of concatenating it,
+            // truncating a fragmented tool name; see the identical fix and
+            // comment in openai-compat.ts.
+            if (tc.id && !streamToolCalls[index].id) streamToolCalls[index].id = tc.id;
+            if (tc.function?.name && !streamToolCalls[index].function.name) {
+              streamToolCalls[index].function.name = tc.function.name;
+            }
+            if (tc.function?.arguments) streamToolCalls[index].function.arguments += tc.function.arguments;
+            opts.onToolCallDelta?.(index, streamToolCalls[index].id, tc.function?.name, tc.function?.arguments);
+          }
+        }
+        if (chunk.usage) {
+          usage = toTurnUsage(chunk.usage);
+          opts.onUsage?.(usage);
+        }
+      };
+
       try {
-        readLoop: for (;;) {
+        for (;;) {
           const { done, value } = await reader.read();
-          if (done) break;
+          if (done) {
+            // Flush whatever is left in the decoder and the line buffer.
+            // MiniMax's stream_options.include_usage frame — the one
+            // carrying usage — can arrive as the final line with no
+            // trailing newline; without this flush it was silently dropped.
+            buf += decoder.decode();
+            if (buf.trim()) takeSseLine(buf.trim());
+            break;
+          }
           buf += decoder.decode(value, { stream: true });
           let nl;
           while ((nl = buf.indexOf("\n")) !== -1) {
             const line = buf.slice(0, nl).trim();
             buf = buf.slice(nl + 1);
-            if (!line.startsWith("data:")) continue;
-            const data = line.slice(5).trim();
-            if (data === "[DONE]") break readLoop;
-            let chunk: any;
-            try { chunk = JSON.parse(data); } catch { continue; }
-            const delta = chunk.choices?.[0]?.delta?.content;
-            if (delta) { text += delta; opts.onDelta?.(delta); }
-            const toolCalls = chunk.choices?.[0]?.delta?.tool_calls;
-            if (toolCalls && Array.isArray(toolCalls)) {
-              for (const tc of toolCalls) {
-                const index = tc.index ?? 0;
-                if (!streamToolCalls[index]) {
-                  streamToolCalls[index] = { id: tc.id ?? "", type: "function", function: { name: tc.function?.name ?? "", arguments: "" } };
-                }
-                if (tc.id) streamToolCalls[index].id = tc.id;
-                if (tc.function?.name) streamToolCalls[index].function.name = tc.function.name;
-                if (tc.function?.arguments) streamToolCalls[index].function.arguments += tc.function.arguments;
-                opts.onToolCallDelta?.(index, streamToolCalls[index].id, tc.function?.name, tc.function?.arguments);
-              }
-            }
-            if (chunk.usage) {
-              usage = toTurnUsage(chunk.usage);
-            }
+            takeSseLine(line);
           }
         }
       } finally {
         await reader.cancel().catch(() => {});
       }
-      return { text, usage, tool_calls: streamToolCalls.length > 0 ? streamToolCalls : undefined };
+      return { text, reasoning, usage, tool_calls: streamToolCalls.length > 0 ? streamToolCalls : undefined };
     };
 
     const sendTurn = async (turn: SendTurnInput) => {
@@ -374,15 +441,15 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // those into execute_tool spans on their own.  recordExecutedTools
         // exists for a driver that does not emit item.started at all;
         // calling it here would double every tool span.
-        const { text, usage, tool_calls } = await withChatSpan(
+        const { text, reasoning, usage, tool_calls } = await withChatSpan(
           { model, conversationId: threadId, provider: genAiProvider(DRIVER_KIND) },
           () =>
             complete(roundMessages, model, {
               stream: true,
               tools: openAiTools,
               signal: opts.signal,
-              onDelta: (delta) =>
-                emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta }),
+              onDelta: (delta, streamKind = "assistant_text") =>
+                emit({ ...base(threadId, turnId), type: "content.delta", streamKind, delta }),
               onToolCallDelta: (_index, id, name, args) => {
                 if (!id || started.has(id)) return;
                 started.add(id);
@@ -396,14 +463,26 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
                   arguments: args,
                 });
               },
+              // Forwarded straight to the loop's own live channel — see the
+              // `onUsage` doc on `TurnLoopDeps.runRound` — so a round that
+              // errors mid-stream after several chunks still gets its usage
+              // folded into the terminal event instead of reporting zero.
+              onUsage: (u) => opts.onUsage?.(u),
             }),
         );
         appendNative(threadId, {
           dir: "in",
           source: "minimax.chat.completions",
-          msg: { textLength: text.length, usage, round: opts.round, toolCalls: tool_calls?.length ?? 0 },
+          msg: { textLength: text.length, reasoningLength: reasoning.length, usage, round: opts.round, toolCalls: tool_calls?.length ?? 0 },
         });
-        return { text, usage, toolCalls: tool_calls };
+        // A reply that is entirely reasoning (no assistant text) still
+        // needs to render as something — fall back to the reasoning text
+        // rather than settling a silently empty turn.  The loop is what
+        // turns a non-empty `text` into the `item.completed` event and
+        // into the next round's assistant-message prefix, so folding the
+        // fallback in here is what makes both of those honour it too.
+        const replyText = text.trim() ? text : reasoning;
+        return { text: replyText, usage, toolCalls: tool_calls };
       };
 
       // Detached, exactly as every CLI driver runs its turn: sendTurn
@@ -482,8 +561,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // Titles and summaries never need the flagship's 1M-token context —
         // see UTILITY_MODEL's own comment — and are fixed to it independent
         // of `models.default`, which local mmx-cli config can repoint.
-        const { text } = await complete([{ role: "user", content: prompt }], UTILITY_MODEL, { stream: false });
-        return text;
+        const { text, reasoning } = await complete([{ role: "user", content: prompt }], UTILITY_MODEL, {
+          stream: false,
+        });
+        return text.trim() ? text : reasoning;
       },
       dispose: async () => {
         for (const { abort } of active.values()) abort.abort();
