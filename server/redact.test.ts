@@ -432,6 +432,47 @@ describe("redactSecretsInText", () => {
     }
   });
 
+  it("masks a bare header that was clipped inside a quoted parameter", () => {
+    // The parameter's own closing quote went with the clip, so a pattern that
+    // only knows BALANCED parameters stops at the opening quote and masks
+    // `oauth_signature=` while the signature itself walks out behind it.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    for (const input of [
+      `${HEADER}: OAuth oauth_signature="${sig}`,
+      `curl -H "${HEADER}: OAuth oauth_signature=\\"${sig}`,
+    ]) {
+      const out = redactSecretsInText(input);
+      expect(out, input.slice(0, 24)).not.toContain(sig);
+      expect(out, input.slice(0, 24)).toMatch(/«redacted \d+ chars»/);
+      expect(out, input.slice(0, 24)).toBe(redactSecretsInText(out));
+    }
+  });
+
+  it("stops a bare header at its shell wrapper, keeping the rest of the command", () => {
+    // A quote only opens a parameter when an `=` introduces it (RFC 7235
+    // auth-param).  Pairing quotes off instead makes the value swallow
+    // everything between the wrapper's closing quote and the next quoted
+    // argument — with no length cap, the whole command tail, which the reader
+    // needs and which is not a credential.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const tail = ' https://api.example.com/v1/a/very/long/path?with=query&and=more -d "{ok:1}"';
+
+    const plain = `curl -H "${HEADER}: ${SCHEME} ${token}"${tail}`;
+    const plainOut = redactSecretsInText(plain);
+    expect(plainOut).not.toContain(token);
+    expect(plainOut).toContain(tail);
+
+    // and the same with real quoted parameters inside the wrapper
+    const withParams = `curl -H "${HEADER}: OAuth a=\\"1\\", oauth_signature=\\"${sig}\\""${tail}`;
+    const paramsOut = redactSecretsInText(withParams);
+    expect(paramsOut).not.toContain(sig);
+    expect(paramsOut).toContain(tail);
+  });
+
   it("masks an authorization value that another pass had already half-masked", () => {
     // SigV4 carries an access-key id BEFORE the signature, so the prefix
     // pass has a shot at part of the value first.  A "does it contain a

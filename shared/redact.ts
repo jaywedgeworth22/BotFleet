@@ -136,9 +136,21 @@ const AUTH_HEADER_QUOTED =
  * `Digest` and declining, and no later pattern knows what the continuation
  * line is.
  *
- * A quote with no partner on the line is not part of the value — it is the
- * wrapper of a `-H "…"` argument — so the value stops there and the wrapper
- * survives.
+ * Which quotes on that line belong to the value is decided the same way —
+ * by context, not by pairing them off.  A quoted parameter of an auth scheme
+ * is always introduced by an `=` (RFC 7235 auth-param: `response="…"`,
+ * `oauth_signature="…"`), possibly backslash-escaped inside a shell
+ * argument, so only a quote behind an `=` opens one.  Every other quote is
+ * somebody else's — the wrapper of a `-H "…"` argument, most often — and
+ * ends the value there, wrapper intact.  Pairing quotes off instead makes
+ * the value swallow whatever separates a header argument from the next
+ * quoted argument on the command line, which with no length cap is the rest
+ * of the command.
+ *
+ * The last alternative is the truncated parameter: a quote behind an `=`
+ * whose partner was clipped away opens a value that runs to the end of the
+ * line, because there is nothing else left to end it and the credential is
+ * what follows.
  *
  * The `(?!\s*["'])` after the `=` or `:` is what keeps this pattern off a
  * value the quoted one above owns, so the two never compete for one header.
@@ -153,7 +165,7 @@ const AUTH_HEADER_QUOTED =
  * fold, so `<header>:` on one line and `Basic <credential>` on the next is
  * still one header value. */
 const AUTH_HEADER_BARE =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|"[^"\r\n]*"|'[^'\r\n]*')+)/gi;
+  /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|(?<==\\?)"[^"\r\n]*"|(?<==\\?)'[^'\r\n]*'|(?<==\\?)["'][^\r\n]*)+)/gi;
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
  * The value must be a single token of some length; prose after a colon
