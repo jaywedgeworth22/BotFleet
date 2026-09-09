@@ -3670,8 +3670,17 @@ describe("instance CLI override API", () => {
     expect(found.displayName).toBe("Ollama Local");
     expect(found.driverKind).toBe("openai-compat");
     expect(found.isCustom).toBe(true);
-    expect(found.iconUrl).toBe("http://localhost:11434/icon.svg");
+    expect(found.snapshot.state).toBe("available");
+    expect(found.snapshot.authenticated).toBe(true);
     expect(found.models.options.map((m: any) => m.id)).toEqual(["llama3.3:70b", "mistral:latest"]);
+
+    const botRes = await api("POST", "/api/bots", {
+      name: "Local Bot",
+      modelSelection: { instanceId, model: "llama3.3:70b" },
+    });
+    expect(botRes.status).toBe(201);
+    const localBotId = botRes.body.bot.id;
+    expect(botRes.body.bot.modelSelection.instanceId).toBe(instanceId);
 
     expect((await api("DELETE", "/api/instances/claude")).status).toBe(400);
     expect((await api("DELETE", "/api/instances/openaiCompat")).status).toBe(400);
@@ -3679,6 +3688,11 @@ describe("instance CLI override API", () => {
     const deleted = await api("DELETE", `/api/instances/${instanceId}`);
     expect(deleted.status).toBe(200);
     expect(deleted.body.ok).toBe(true);
+
+    const botsAfter = await api("GET", "/api/bots");
+    const foundBot = botsAfter.body.bots.find((b: any) => b.id === localBotId);
+    expect(foundBot).toBeDefined();
+    expect(foundBot.modelSelection.instanceId).not.toBe(instanceId);
 
     const postDelete = await api("GET", "/api/instances");
     expect(postDelete.body.instances.find((i: any) => i.instanceId === instanceId)).toBeUndefined();

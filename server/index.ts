@@ -7916,6 +7916,36 @@ const server = createServer(async (req, res) => {
       try {
         const result = deleteInstanceConfig(cfg, instanceId);
         if (!result.ok) return json(res, 404, { error: `unknown instance "${instanceId}"` });
+
+        const affectedBots = store.bots.filter(
+          (b) =>
+            b.modelSelection?.instanceId === instanceId ||
+            b.modelSelection?.fallbacks?.some((f) => f.instanceId === instanceId),
+        );
+        if (affectedBots.some((b) => b.busy)) {
+          return json(res, 409, { error: "cannot delete engine while a bot using it is working" });
+        }
+        if (affectedBots.length > 0) {
+          const replacement = await defaultSelection();
+          for (const b of affectedBots) {
+            const nextSelection: ModelSelection = { ...b.modelSelection };
+            if (nextSelection.instanceId === instanceId) {
+              nextSelection.instanceId = replacement.instanceId;
+              nextSelection.model = replacement.model;
+            }
+            if (nextSelection.fallbacks) {
+              const nextFallbacks = nextSelection.fallbacks.filter((f) => f.instanceId !== instanceId);
+              if (nextFallbacks.length > 0) {
+                nextSelection.fallbacks = nextFallbacks;
+              } else {
+                delete nextSelection.fallbacks;
+              }
+            }
+            const patched = store.patchBot(b.id, { modelSelection: nextSelection });
+            if (patched) broadcast({ kind: "bot", bot: wireBot(patched) });
+          }
+        }
+
         saveConfig({ deleteInstance: instanceId });
         Object.assign(cfg, loadConfig());
         await reloadProviders();

@@ -133,6 +133,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       "";
     const listeners = new Set<RuntimeEventListener>();
     const active = new Map<string, { abort: AbortController; turnId: string }>();
+    const isCustomInstance = instanceId !== "openaiCompat";
     let catalog = DEFAULT_MODELS;
     if (config.models && config.models.length > 0) {
       const options: ModelCatalog["options"] = config.models.map((m) => {
@@ -174,12 +175,15 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       if (opts.tools && opts.tools.length > 0) {
         bodyPayload.tools = opts.tools;
       }
+      const headers: Record<string, string> = {
+        "content-type": "application/json",
+      };
+      if (apiKey) {
+        headers.authorization = `Bearer ${apiKey}`;
+      }
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
-        headers: {
-          authorization: `Bearer ${apiKey}`,
-          "content-type": "application/json",
-        },
+        headers,
         body: JSON.stringify(bodyPayload),
         signal: opts.signal
           ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
@@ -280,10 +284,13 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
     };
 
     const fetchModels = async (): Promise<void> => {
-      if (!apiKey || (config.models && config.models.length > 0)) return;
+      if (config.models && config.models.length > 0) return;
+      if (!apiKey && !isCustomInstance) return;
       try {
+        const headers: Record<string, string> = {};
+        if (apiKey) headers.authorization = `Bearer ${apiKey}`;
         const res = await fetch(`${config.url}/models`, {
-          headers: { authorization: `Bearer ${apiKey}` },
+          headers,
           signal: AbortSignal.timeout(8_000),
         });
         if (!res.ok) return;
@@ -312,11 +319,11 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         // keep DEFAULT_MODELS — never fail the instance on a catalog miss
       }
     };
-    if (apiKey) void fetchModels();
+    if (apiKey || isCustomInstance) void fetchModels();
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
-      if (!apiKey) {
+      if (!apiKey && !isCustomInstance) {
         throw new Error(
           `no API key — set ${config.apiKeyEnv} or add it to the instance config`,
         );
@@ -514,13 +521,18 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
     };
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
-      if (!apiKey) {
+      if (!apiKey && !isCustomInstance) {
         return {
           state: "unavailable",
           reason: `no API key — set ${config.apiKeyEnv} or add it to the instance config`,
         };
       }
-      return { state: "available", authenticated: true, version: null, billing: "metered" };
+      return {
+        state: "available",
+        authenticated: Boolean(apiKey || isCustomInstance),
+        version: null,
+        ...(apiKey ? { billing: "metered" as const } : {}),
+      };
     };
 
     return {
