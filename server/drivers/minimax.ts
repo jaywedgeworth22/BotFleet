@@ -422,25 +422,23 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
           source: "minimax.chat.completions",
           msg: { model, messageCount: roundMessages.length, round: opts.round },
         });
-        // One gen_ai.chat span per model round, correlated to the turn's
-        // gen_ai.invoke_agent span by the shared gen_ai.conversation.id
-        // (threadId) both carry — the same correlation execute_tool spans
-        // from item.started/item.completed already rely on generically
-        // (bus.subscribe → observeRuntimeEvent, driver-agnostic).  NOTE:
-        // neither this span nor those tool spans is a Sentry PARENT/CHILD
-        // of invoke_agent — observeRuntimeEvent stores that span from
-        // startInactiveSpan but never enters it as the active span via
-        // Sentry.withActiveSpan, so nothing created later threads through
-        // it as a trace-tree parent.  Fixing that is a shared, driver-
-        // agnostic change to sentry-ai.ts's observeRuntimeEvent/withChatSpan
-        // (every CLI driver's tool spans have the same gap), out of scope
-        // here — tracked separately.  Tool spans are NOT duplicated here
-        // with recordExecutedTools: the loop below already emits real
-        // item.started/item.completed for every call — with a real
-        // outcome, not an assumed ok:true — and observeRuntimeEvent turns
-        // those into execute_tool spans on their own.  recordExecutedTools
-        // exists for a driver that does not emit item.started at all;
-        // calling it here would double every tool span.
+        // One gen_ai.chat span per model round, nested under the
+        // gen_ai.invoke_agent span turn.started already opened generically
+        // (bus.subscribe → observeRuntimeEvent, driver-agnostic).  The
+        // nesting is real trace-tree parentage, not just the shared
+        // gen_ai.conversation.id both spans also carry: withChatSpan looks
+        // the open turn span up by thread id and passes it as parentSpan,
+        // because observeRuntimeEvent opens that span with
+        // startInactiveSpan and never enters it as the ACTIVE span, so a
+        // round started here would otherwise attach to whatever happened to
+        // be active — in this detached turn loop, nothing.  Tool spans are
+        // NOT duplicated here with recordExecutedTools: the loop below
+        // already emits real item.started/item.completed for every call —
+        // with a real outcome, not an assumed ok:true — and
+        // observeRuntimeEvent turns those into execute_tool spans on its
+        // own.  recordExecutedTools exists for a driver that does not emit
+        // item.started at all; calling it here would double every tool
+        // span.
         const { text, reasoning, usage, tool_calls } = await withChatSpan(
           { model, conversationId: threadId, provider: genAiProvider(DRIVER_KIND) },
           () =>
@@ -499,8 +497,13 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         startedToolIds: started,
         onSettled: () => active.delete(threadId),
         // Priced from the SAME `model` every round of this turn ran
-        // against — the loop calls this once, with the turn's final
-        // cumulative usage, on the success path and every error path alike.
+        // against, but ONE ROUND AT A TIME: the loop calls this once per
+        // round with that round's own usage and sums the answers, never
+        // once at the end with the turn's cumulative totals.  That is what
+        // MiniMax-M3's >512K-input tier needs — MiniMax bills each REQUEST
+        // against its own size, so a turn of several base-tier rounds must
+        // not be repriced as one doubled-tier request.  See computeCost's
+        // own doc on TurnLoopDeps.
         computeCost: (usage) => costUsd(usage, MINIMAX_PRICE_PER_MILLION, model),
       });
 

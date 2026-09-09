@@ -39,6 +39,12 @@ export type SentryAiSink = {
     op: string;
     name: string;
     attributes?: Record<string, string | number | boolean>;
+    /** Nest the new span under this one.  Omitted (never `null`) when there
+     *  is nothing to nest under: Sentry reads an explicit `null` as "this
+     *  span has NO parent", which would force a chat round into its own
+     *  trace root instead of letting it fall back to whatever span is
+     *  active. */
+    parentSpan?: SpanLike;
   }) => SpanLike;
   captureException: (error: Error, context?: SentryCaptureContext) => void;
   addBreadcrumb?: (crumb: SentryBreadcrumb) => void;
@@ -148,6 +154,14 @@ function turnKey(threadId: string, turnId?: string): string {
   return `${threadId}:${turnId ?? "_"}`;
 }
 
+/** The SDK's own start-span options, derived rather than imported:
+ *  @sentry/node is loaded lazily through a createRequire in sentry.ts
+ *  precisely so vitest never pays the Node SDK tax, and a top-level type
+ *  import of it here would undo that arrangement's tidiness for one field. */
+type SentryStartSpanOptions = Parameters<
+  NonNullable<ReturnType<typeof getSentry>>["startInactiveSpan"]
+>[0];
+
 function liveSink(): SentryAiSink | null {
   if (!isSentryActive()) return null;
   const Sentry = getSentry();
@@ -157,11 +171,19 @@ function liveSink(): SentryAiSink | null {
       Sentry.setConversationId(id);
     },
     startInactiveSpan: (opts) => {
-      const span = Sentry.startInactiveSpan({
+      const spanOptions: SentryStartSpanOptions = {
         op: opts.op,
         name: opts.name,
         attributes: opts.attributes,
-      });
+      };
+      if (opts.parentSpan) {
+        // SAFETY: the only SpanLike this sink is ever handed as a parent is
+        // one it produced itself from Sentry.startInactiveSpan below — the
+        // turn span, read back out of the `turns` map this same sink filled.
+        // A test that swaps in a fake sink swaps in BOTH ends together.
+        spanOptions.parentSpan = opts.parentSpan as SentryStartSpanOptions["parentSpan"];
+      }
+      const span = Sentry.startInactiveSpan(spanOptions);
       // SAFETY: Sentry v10 inactive spans expose setAttribute/end; setStatus is optional.
       return span as SpanLike;
     },
@@ -182,6 +204,27 @@ function liveSink(): SentryAiSink | null {
 
 function applyConversation(sink: SentryAiSink, threadId: string): void {
   sink.setConversationId?.(threadId);
+}
+
+/** The still-open `gen_ai.invoke_agent` span for a thread, so a span opened
+ *  later in the same turn can be nested under it.
+ *
+ *  The lookup is by THREAD, not by turn key: a driver calls withChatSpan
+ *  from inside its own round loop, where it knows the thread id it was
+ *  handed and never the turn id observeRuntimeEvent keyed the span under.
+ *  That is the same prefix scan `session.exited` already does.  A thread
+ *  runs at most one turn at a time — every driver rejects a second
+ *  concurrent sendTurn on a busy thread — so this matches at most one
+ *  entry; taking the LAST match means that if a leak ever did leave an
+ *  older turn open, the round is still nested under the newest one, which
+ *  is the turn it actually belongs to. */
+function openTurnSpan(threadId: string): SpanLike | undefined {
+  const prefix = `${threadId}:`;
+  let found: SpanLike | undefined;
+  for (const [key, turn] of turns) {
+    if (key.startsWith(prefix)) found = turn.span;
+  }
+  return found;
 }
 
 // Sentry's gen_ai.provider.name vocabulary, keyed by lowercased driver kind.
@@ -453,6 +496,17 @@ export async function withChatSpan<T extends { usage?: { input: number; output: 
   const span = sink.startInactiveSpan({
     op: "gen_ai.chat",
     name: `chat ${opts.model}`,
+    // A real trace-tree child of the turn, not merely a sibling that shares
+    // a gen_ai.conversation.id.  The turn's invoke_agent span is opened by
+    // observeRuntimeEvent with startInactiveSpan and never entered as the
+    // active span, so a span started here would otherwise attach to
+    // whatever happened to be active — in a detached turn loop, nothing —
+    // and Sentry's AI Agents view would show each round as its own root
+    // rather than as a step inside the turn.  Undefined when this thread
+    // has no open turn (generateText's title and summary rounds run
+    // outside any turn at all), which leaves Sentry's own default parenting
+    // in place instead of forcing a root.
+    parentSpan: openTurnSpan(opts.conversationId),
     attributes: {
       "gen_ai.operation.name": "chat",
       "gen_ai.request.model": opts.model,

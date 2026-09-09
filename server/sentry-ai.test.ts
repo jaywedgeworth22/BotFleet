@@ -8,6 +8,7 @@ import {
   type SentryAiSink,
   type SentryBreadcrumb,
   type SentryCaptureContext,
+  type SpanLike,
   withChatSpan,
 } from "./sentry-ai.ts";
 import type { RuntimeEvent } from "./contracts.ts";
@@ -32,6 +33,14 @@ function recordingSink() {
     attributes: Record<string, string | number | boolean>;
     ended: boolean;
     status?: { code: number; message?: string };
+    /** The handle this sink handed back, and the handle it was told to nest
+     *  under.  Identity, not a name — comparing these two is what proves a
+     *  real trace-tree parent/child rather than two spans that merely share
+     *  a gen_ai.conversation.id.  Neither survives JSON.stringify (a
+     *  SpanLike is all functions), so the "nothing sensitive on the wire"
+     *  assertions elsewhere in this file are unaffected. */
+    handle?: SpanLike;
+    parent?: SpanLike;
   }> = [];
   const exceptions: unknown[] = [];
   const contexts: Array<SentryCaptureContext | undefined> = [];
@@ -49,9 +58,10 @@ function recordingSink() {
         attributes: { ...opts.attributes },
         ended: false,
         status: emptyStatus,
+        handle: undefined as SpanLike | undefined,
+        parent: opts.parentSpan,
       };
-      spans.push(rec);
-      return {
+      const handle: SpanLike = {
         setAttribute: (key, value) => {
           rec.attributes[key] = value;
         },
@@ -62,6 +72,9 @@ function recordingSink() {
           rec.ended = true;
         },
       };
+      rec.handle = handle;
+      spans.push(rec);
+      return handle;
     },
     captureException: (error, context) => {
       exceptions.push(error);
@@ -129,6 +142,72 @@ describe("Sentry AI observability", () => {
     expect(chat?.attributes["gen_ai.usage.input_tokens"]).toBe(3);
     expect(chat?.attributes["gen_ai.conversation.id"]).toBe("thread-9");
     expect(JSON.stringify(spans)).not.toMatch(/prompt|messages|sk-/);
+  });
+
+  it("nests the chat span under the turn's invoke_agent span, not merely beside it", async () => {
+    // Sharing a gen_ai.conversation.id only CORRELATES two spans.  Sentry's
+    // AI Agents view reads the trace tree, so a chat round that is not an
+    // actual child of the turn shows up as its own root next to the turn
+    // instead of as a step inside it.
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    await withChatSpan(
+      { model: "MiniMax-M3", conversationId: "thread-1", provider: "minimax" },
+      async () => ({ text: "ok", usage: { input: 2, output: 1 } }),
+      sink,
+    );
+
+    const turn = spans.find((s) => s.op === "gen_ai.invoke_agent");
+    const chat = spans.find((s) => s.op === "gen_ai.chat");
+    expect(turn).toBeDefined();
+    expect(chat).toBeDefined();
+    expect(chat?.parent).toBe(turn?.handle);
+  });
+
+  it("nests every round of a multi-round turn under that same turn span", async () => {
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    for (const model of ["MiniMax-M3", "MiniMax-M3"]) {
+      await withChatSpan(
+        { model, conversationId: "thread-1", provider: "minimax" },
+        async () => ({ text: "ok", usage: { input: 1, output: 1 } }),
+        sink,
+      );
+    }
+
+    const turn = spans.find((s) => s.op === "gen_ai.invoke_agent");
+    const chats = spans.filter((s) => s.op === "gen_ai.chat");
+    expect(chats).toHaveLength(2);
+    expect(chats.every((s) => s.parent === turn?.handle)).toBe(true);
+  });
+
+  it("leaves the parent unset — never null — for a chat round with no open turn", async () => {
+    // generateText's title and summary rounds run outside any turn.  An
+    // explicit null parent would make each of them a trace ROOT; leaving it
+    // unset keeps Sentry's own default parenting.
+    const { sink, spans } = recordingSink();
+    await withChatSpan(
+      { model: "MiniMax-M2.7-highspeed", conversationId: "thread-with-no-turn", provider: "minimax" },
+      async () => ({ text: "a title", usage: null }),
+      sink,
+    );
+
+    const chat = spans.find((s) => s.op === "gen_ai.chat");
+    expect(chat).toBeDefined();
+    expect(chat?.parent).toBeUndefined();
+  });
+
+  it("stops nesting under a turn once that turn has ended", async () => {
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: true }), sink);
+    await withChatSpan(
+      { model: "MiniMax-M3", conversationId: "thread-1", provider: "minimax" },
+      async () => ({ text: "ok", usage: null }),
+      sink,
+    );
+
+    expect(spans.find((s) => s.op === "gen_ai.chat")?.parent).toBeUndefined();
   });
 });
 
