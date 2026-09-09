@@ -60,7 +60,22 @@ const KEY_PREFIXES: RegExp[] = [
   // complete three-segment token is exactly what lets a cut one through.
   /\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]*)?/g,
 ];
-const BEARER = /(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/g;
+/** `Bearer <token>` standing on its own, anywhere.  Case-insensitive: a
+ * lowercase spelling is just as much a credential, and the 12-character
+ * minimum is what keeps "Bearer tokens are sent in the …" out of it. */
+const BEARER = /(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/gi;
+/** The whole value of an authorization header, whatever scheme it names.
+ *
+ * `KEY_VALUE` cannot reach this one: a scheme-prefixed credential has a
+ * SPACE in it, and KEY_VALUE's value is deliberately space-free so that
+ * prose after a colon does not match.  Anchoring on the header NAME instead
+ * is what makes that space safe — and it is why the scheme words are not
+ * spelled out here.  A bare scheme word would be a false-positive machine
+ * ("Basic authentication requires…", "Token expired yesterday"); the same
+ * word behind this header name cannot be prose.  The scheme is kept, so the
+ * line still says what kind of credential went out. */
+const AUTH_HEADER =
+  /\b((?:proxy-)?authorization)(["']?\s*[=:]\s*)(["']?)([A-Za-z][A-Za-z0-9-]{2,}\s+)?([A-Za-z0-9._~+/=-]{8,})\3/gi;
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
  * The value must be a single token of some length; prose after a colon
@@ -93,6 +108,11 @@ export function redactSecretsInText(text: string): string {
   });
   for (const re of KEY_PREFIXES) out = out.replace(re, (m) => mask(m));
   out = out.replace(BEARER, (_m, lead: string, tok: string) => `${lead}${mask(tok)}`);
+  out = out.replace(
+    AUTH_HEADER,
+    (m, key: string, sep: string, quote: string, scheme: string | undefined, value: string) =>
+      value.includes(MASK_MARKER) ? m : `${key}${sep}${quote}${scheme ?? ""}${mask(value)}${quote}`,
+  );
   out = out.replace(KEY_VALUE, (_m, key: string, sep: string, quote: string, value: string) => `${key}${sep}${quote}${mask(value)}${quote}`);
   out = out.replace(KEY_VALUE_UNTERMINATED, (m, key: string, sep: string, quote: string, value: string) =>
     value.includes(MASK_MARKER) ? m : `${key}${sep}${quote}${mask(value)}`,

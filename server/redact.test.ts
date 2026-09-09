@@ -252,6 +252,42 @@ describe("redactSecretsInText", () => {
     expect(out).toBe(`{"api_key":"«redacted ${key.length} chars»`);
   });
 
+  it("masks the whole value of an authorization header, whatever the scheme", () => {
+    // `curl -v` prints these verbatim, and a scheme-prefixed credential has
+    // a space in it, which is exactly what KEY_VALUE refuses to cross.  The
+    // header name and the scheme survive; the credential does not.
+    const HEADER = "Auth" + "orization";
+    const value = `ZmFrZXVzZXI6${"FAKE".repeat(6)}`;
+    const cases = [
+      `> ${HEADER}: Basic ${value}`,
+      `${HEADER}: Token ${value}`,
+      `${HEADER.toLowerCase()}: bearer ${value}`,
+      `{"${HEADER.toLowerCase()}": "Basic ${value}"}`,
+      `Proxy-${HEADER}: Digest ${value}`,
+      `${HEADER.toLowerCase()}=Token ${value}`,
+      `${HEADER}: ${value}`, // no scheme at all
+    ];
+    for (const input of cases) {
+      const out = redactSecretsInText(input);
+      expect(out, input).not.toContain(value);
+      expect(out, input).toMatch(/«redacted \d+ chars»/);
+      // the shape a reader debugs with survives
+      expect(out.toLowerCase(), input).toContain(HEADER.toLowerCase());
+    }
+  });
+
+  it("does not treat a scheme word in prose as a credential", () => {
+    // the header NAME is what makes the space in a scheme-prefixed value
+    // safe to cross — a bare scheme word would be a false-positive machine
+    for (const s of [
+      "Basic authentication requires a username and a password",
+      "Token expired yesterday afternoon",
+      "The Authorization header must be present on every request",
+    ]) {
+      expect(redactSecretsInText(s), s).toBe(s);
+    }
+  });
+
   it("leaves a PEM footer intact when nothing was clipped", () => {
     const pem = `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_KEY_BODY}\n-----END RSA PRIVATE KEY-----`;
     const out = redactSecretsInText(pem);
