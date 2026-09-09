@@ -576,6 +576,17 @@ describe("redactSecretsInText", () => {
     const logged = redactSecretsInText(`sent header "${HEADER}: OAuth oauth_signature=\\"${sig}\\"" to upstream`);
     expect(logged).not.toContain(sig);
     expect(logged).toContain("to upstream");
+
+    // and it is what lets this not parse shell quoting, which cannot be got
+    // right from one line: whether the `'` in `echo "it's ready"` is a nested
+    // opener or a literal has no answer that also works for `bash -c '… "…"'`
+    const url = " https://api.example.com/v1/long/path";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    for (const before of ['echo "it\'s ready" && ', 'echo "say \\"hi\\"" && ', 'echo "hi" && ']) {
+      const out = redactSecretsInText(`${before}curl -H "${HEADER}: Digest ${token}"${url}`);
+      expect(out, before).not.toContain(token);
+      expect(out, before).toContain(url);
+    }
   });
 
   it("recognises a wrapper that starts mid-word, and a short credential inside one", () => {
