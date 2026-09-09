@@ -1,5 +1,5 @@
 // The native log must keep the shape of a session-setup message and lose the
-// credential values. These tests use the exact shapes the drivers actually
+// credential values.  These tests use the exact shapes the drivers actually
 // write — the ACP `env: [{name,value}]` wire form and the claude mcpServers
 // object form — so a change to either shape breaks the test, not the secret.
 import { describe, expect, it } from "vitest";
@@ -132,7 +132,7 @@ describe("redactSecrets", () => {
 });
 
 import { redactSecretsInText } from "./redact.ts";
-import { clip, DETAIL_LIMIT } from "../shared/tool-activity.ts";
+import { clip, describeResult, DETAIL_LIMIT } from "../shared/tool-activity.ts";
 
 // Obviously-fake credential material, assembled from pieces so no
 // token-shaped literal sits in the source (GitHub push protection rightly
@@ -145,7 +145,7 @@ const JWT_SIG = "RkFLRVNJRw"; // base64 of "FAKESIG"
 const OPAQUE = `FAKE${"0123456789".repeat(30)}`; // a 304-char opaque value
 
 // Content-shaped secrets: what a bot's own reply, a tool title, or a
-// permission card can carry. High precision on purpose — a false positive
+// permission card can carry.  High precision on purpose — a false positive
 // here rewrites real code in the transcript.
 describe("redactSecretsInText", () => {
   it("masks known key prefixes wherever they appear", () => {
@@ -294,6 +294,243 @@ describe("redactSecretsInText", () => {
     // went out — that is the diagnostic the mask is meant to leave behind
     expect(redactSecretsInText(sigv4)).toContain("AWS4-HMAC-SHA256");
     expect(redactSecretsInText(digest)).toContain("Digest");
+  });
+
+  // ── where the value ENDS ────────────────────────────────────────────
+  // Two shapes pull in opposite directions, which is why the value's end is
+  // decided by CONTEXT rather than by scanning for pairs of quotes: a BARE
+  // header line is ended by the line and so may cross a quoted parameter of
+  // any length, while a QUOTE-INTRODUCED value is ended by its own closing
+  // quote and must not cross one at all.
+
+  it("masks an OAuth signature far longer than any cap, on a bare header line", () => {
+    // `oauth_signature` is routinely a few hundred characters.  A cap on the
+    // quoted part of the value ended the match at that parameter, and the
+    // signature went on into the transcript and into Sentry in the clear.
+    const HEADER = "Auth" + "orization";
+    const sig = "FAKE".repeat(86); // 344 chars, well past any cap
+    expect(sig.length).toBe(344);
+    const oauth =
+      `${HEADER}: OAuth oauth_consumer_key="FAKECONSUMER", oauth_nonce="FAKENONCE0123",` +
+      ` oauth_signature="${sig}", oauth_signature_method="HMAC-SHA1", oauth_version="1.0"`;
+    const out = redactSecretsInText(oauth);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    // the scheme survives, so the line still says what went out
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toBe(redactSecretsInText(out));
+  });
+
+  it("ends a quote-introduced value at its closing quote, leaving the siblings", () => {
+    // A one-line serialized object carries `status` and `message` AFTER the
+    // header key.  The balanced-quote scan used to run past the end of the
+    // value and eat them, so they were permanently missing from stored bot
+    // text and from failure details.
+    //
+    // The spacing after the colon is part of the case, not decoration: the
+    // bare pattern must not be able to give back the separator's trailing
+    // whitespace and reclaim a value the quoted pattern already owns.
+    const HEADER = "auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`; // 94 chars
+    for (const q of ['"', "'"]) {
+      for (const gap of ["", " ", "  "]) {
+        const label = `${q}|${gap.length}`;
+        const input = `{${q}${HEADER}${q}:${gap}${q}${SCHEME} ${token}${q},${q}status${q}:${q}ok${q},${q}message${q}:${q}sent${q}}`;
+        const out = redactSecretsInText(input);
+        expect(out, label).not.toContain(token);
+        expect(out, label).toContain(`${SCHEME} «redacted ${token.length} chars»`);
+        expect(out, label).toContain(`${q}status${q}:${q}ok${q}`);
+        expect(out, label).toContain(`${q}message${q}:${q}sent${q}`);
+        // the closing syntax survives too — a reclaim would have eaten it
+        expect(out, label).toMatch(/}$/);
+        expect(out, label).toBe(redactSecretsInText(out));
+      }
+    }
+  });
+
+  it("steps over a backslash-escaped quote inside a quote-introduced value", () => {
+    // The escape is part of the value; the value ends at the first UNESCAPED
+    // quote, not at the escaped one.
+    const HEADER = "auth" + "orization";
+    const token = `FAKE\\"${"0123456789".repeat(6)}`; // an escaped quote, then 60 chars
+    const input = `{"${HEADER}":"Bearer ${token}","status":"ok"}`;
+    const out = redactSecretsInText(input);
+    expect(out).not.toContain("0123456789");
+    expect(out).toContain(`Bearer «redacted ${token.length} chars»`);
+    expect(out).toContain('"status":"ok"');
+  });
+
+  it("masks both header forms through describeResult's bounded window", () => {
+    // describeResult is where redaction actually runs on provider output, and
+    // it redacts a window and then clips to DETAIL_LIMIT.  Both shapes have to
+    // survive that path, not just a direct call.
+    const HEADER = "Auth" + "orization";
+    const sig = "FAKE".repeat(86);
+    const bare = `curl failed: ${HEADER}: OAuth oauth_token="FAKETOKEN01", oauth_signature="${sig}"`;
+    expect(bare.length).toBeGreaterThan(DETAIL_LIMIT);
+    const bareOut = describeResult(bare) ?? "";
+    expect(bareOut).not.toContain(sig.slice(0, 40));
+    expect(bareOut).toContain("«redacted");
+
+    const token = `FAKE${"0123456789".repeat(30)}`; // 304 chars
+    const json = `{"${HEADER.toLowerCase()}":"Bearer ${token}","status":"failed","message":"upstream said no"}`;
+    expect(json.length).toBeGreaterThan(DETAIL_LIMIT);
+    const jsonOut = describeResult(json) ?? "";
+    expect(jsonOut).not.toContain(token.slice(0, 40));
+    expect(jsonOut).toContain("«redacted");
+    // the siblings are the reason the detail is worth reading at all
+    expect(jsonOut).toContain('"status":"failed"');
+    expect(jsonOut).toContain('"message":"upstream said no"');
+  });
+
+  it("masks a quote-introduced authorization value whose closing quote was clipped", () => {
+    // A value cut before its own closing quote has no other end left, so the
+    // quote-introduced pattern ends it at the end of the text.  This is the
+    // shape the unterminated key=value fallback cannot reach: OAuth and
+    // Digest write ESCAPED quotes inside the value, and that pattern's value
+    // class stops at the first quote of any kind.
+    const HEADER = "auth" + "orization";
+    const sig = "FAKE".repeat(86);
+    const raw = `{"${HEADER}":"OAuth oauth_signature=\\"${sig}\\", oauth_nonce=\\"FAKENONCE0123\\""}`;
+    expect(raw.length).toBeGreaterThan(DETAIL_LIMIT);
+
+    const clipped = clip(raw, DETAIL_LIMIT);
+    // the clip really did remove the quote that closes the value
+    expect(clipped).not.toContain('oauth_nonce');
+    expect(clipped).toContain(sig.slice(0, 40));
+
+    const out = redactSecretsInText(clipped);
+    expect(out).not.toContain(sig.slice(0, 40));
+    expect(out).toMatch(/«redacted \d+ chars»/);
+    expect(out).toBe(redactSecretsInText(out));
+    // and the reported length is the secret's, not a marker's
+    expect(out).not.toMatch(/«redacted \d+ chars»[^«]*«redacted/);
+  });
+
+  it("masks a folded header whose credential sits on the continuation line", () => {
+    // RFC 7230 obs-fold, and what a pretty-printer produces: the break falls
+    // between the scheme and the credential.  "Runs to the end of the line"
+    // has to mean the line the credential is on, or the bare pattern sees a
+    // six-character `Digest`, declines it, and nothing else knows what the
+    // continuation line is.
+    const HEADER = "Auth" + "orization";
+    const secret = `FAKESECRET${"0123456789".repeat(4)}`;
+    // the fold can also fall right after the colon, before the scheme
+    const afterColon = `${HEADER}:\n  Basic ${secret}`;
+    expect(redactSecretsInText(afterColon)).not.toContain(secret);
+    expect(redactSecretsInText(afterColon)).toContain("Basic");
+    for (const fold of ["\n ", "\n\t", "\n  "]) {
+      const label = JSON.stringify(fold);
+      const input = `${HEADER}: Digest${fold}username="fakeuser", response="${secret}"`;
+      const out = redactSecretsInText(input);
+      expect(out, label).not.toContain(secret);
+      // the scheme still survives, on the line the reader is looking at
+      expect(out, label).toContain("Digest");
+      expect(out, label).toMatch(/«redacted \d+ chars»/);
+      expect(out, label).toBe(redactSecretsInText(out));
+    }
+  });
+
+  it("masks a bare header that was clipped inside a quoted parameter", () => {
+    // The parameter's own closing quote went with the clip, so a pattern that
+    // only knows BALANCED parameters stops at the opening quote and masks
+    // `oauth_signature=` while the signature itself walks out behind it.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    for (const input of [
+      `${HEADER}: OAuth oauth_signature="${sig}`,
+      `curl -H "${HEADER}: OAuth oauth_signature=\\"${sig}`,
+    ]) {
+      const out = redactSecretsInText(input);
+      expect(out, input.slice(0, 24)).not.toContain(sig);
+      expect(out, input.slice(0, 24)).toMatch(/«redacted \d+ chars»/);
+      expect(out, input.slice(0, 24)).toBe(redactSecretsInText(out));
+    }
+  });
+
+  it("stops a bare header at its shell wrapper, keeping the rest of the command", () => {
+    // A quote only opens a parameter when an `=` introduces it (RFC 7235
+    // auth-param).  Pairing quotes off instead makes the value swallow
+    // everything between the wrapper's closing quote and the next quoted
+    // argument — with no length cap, the whole command tail, which the reader
+    // needs and which is not a credential.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const tail = ' https://api.example.com/v1/a/very/long/path?with=query&and=more -d "{ok:1}"';
+
+    const plain = `curl -H "${HEADER}: ${SCHEME} ${token}"${tail}`;
+    const plainOut = redactSecretsInText(plain);
+    expect(plainOut).not.toContain(token);
+    expect(plainOut).toContain(tail);
+
+    // and the same with real quoted parameters inside the wrapper
+    const withParams = `curl -H "${HEADER}: OAuth a=\\"1\\", oauth_signature=\\"${sig}\\""${tail}`;
+    const paramsOut = redactSecretsInText(withParams);
+    expect(paramsOut).not.toContain(sig);
+    expect(paramsOut).toContain(tail);
+
+    // Basic is the sharp one: base64 padding ends the credential in `=`, so
+    // the wrapper quote sits directly behind an `=` and looks exactly like a
+    // parameter opening.  A parameter has to CLOSE like one too — its closing
+    // quote is followed by a delimiter, not by more argument text.
+    for (const b64 of ["ZmFrZXVzZXI6ZmFrZXBhc3N3b3JkMTIzNDU2Nzg=", "ZmFrZXVzZXI6ZmFrZXBhc3N3b3JkMTIzNDU2NzQ9PQ=="]) {
+      const basic = `curl -H "${HEADER}: Basic ${b64}"${tail}`;
+      const basicOut = redactSecretsInText(basic);
+      expect(basicOut, b64.slice(-4)).not.toContain(b64);
+      expect(basicOut, b64.slice(-4)).toContain(tail);
+      expect(basicOut, b64.slice(-4)).toContain(`Basic «redacted ${b64.length} chars»`);
+
+      // and when that wrapper is the LAST quote on the line there is no
+      // partner ahead of it either, so only a credential-shaped character
+      // behind the quote tells a cut parameter from a terminal wrapper
+      const url = " https://api.example.com/v1/long/path";
+      const terminal = `curl -H "${HEADER}: Basic ${b64}"${url}`;
+      const terminalOut = redactSecretsInText(terminal);
+      expect(terminalOut, b64.slice(-4)).not.toContain(b64);
+      expect(terminalOut, b64.slice(-4)).toContain(url);
+
+      // and when the NEXT argument opens with a delimiter of its own
+      const delimLed = `curl -H "${HEADER}: Basic ${b64}" https://x -d ",foo"`;
+      const delimLedOut = redactSecretsInText(delimLed);
+      expect(delimLedOut, b64.slice(-4)).not.toContain(b64);
+      expect(delimLedOut, b64.slice(-4)).toContain(' https://x -d ",foo"');
+    }
+  });
+
+  it("treats every quote in a bare value as content, wrapper excepted", () => {
+    // Nothing on the header line tells a parameter's quote from a wrapper's,
+    // which is why reading the value's own quotes to find its end kept
+    // getting one shape or another wrong: `\"` is the parameter's delimiter
+    // inside a shell argument and an escape inside it on a raw line, and a
+    // delimiter behind an escaped quote makes the wrong reading look right.
+    // The wrapper is the only quote that has to survive, and it announced
+    // itself before the header name.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://api.example.com/v1/long/path";
+    const cases: Array<[string, string]> = [
+      [`${HEADER}: OAuth realm="a\\"b", oauth_signature="${sig}"`, ""],
+      [`${HEADER}: OAuth realm="a\\",b", oauth_signature="${sig}"`, ""],
+      [`${HEADER}: OAuth oauth_signature = "${sig}"`, ""],
+      // clipped mid-parameter, with an escaped quote already inside it
+      [`${HEADER}: OAuth oauth_signature="prefix\\"${sig}`, ""],
+      // and the same shapes wrapped in a shell argument, tail intact
+      [`curl -H "${HEADER}: OAuth a=\\"1\\", oauth_signature=\\"${sig}\\""${url}`, url],
+      [`curl -H "${HEADER}: OAuth oauth_signature = \\"${sig}\\""${url}`, url],
+      [`curl -H '${HEADER}: OAuth oauth_signature=${sig}'${url}`, url],
+      // a balanced quoted run before the header leaves no wrapper open
+      [`echo "hi" && curl -H "${HEADER}: OAuth oauth_signature=\\"${sig}\\""${url}`, url],
+    ];
+    for (const [input, keep] of cases) {
+      const out = redactSecretsInText(input);
+      expect(out, input.slice(0, 46)).not.toContain(sig);
+      expect(out, input.slice(0, 46)).toMatch(/«redacted \d+ chars»/);
+      if (keep) expect(out, input.slice(0, 46)).toContain(keep);
+      expect(out, input.slice(0, 46)).toBe(redactSecretsInText(out));
+    }
   });
 
   it("masks an authorization value that another pass had already half-masked", () => {
