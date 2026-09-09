@@ -11,6 +11,7 @@ import {
   type SpanLike,
   withChatSpan,
 } from "./sentry-ai.ts";
+import { describeResult } from "../shared/tool-activity.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 
 function base(over: Partial<RuntimeEvent> & Pick<RuntimeEvent, "type">): RuntimeEvent {
@@ -385,6 +386,38 @@ describe("approval, retry, and session lifecycle", () => {
     const detail = String(spans[1].attributes["gen_ai.tool.result.detail"]);
     expect(detail).not.toContain("abcd1234efgh5678");
     expect(detail).toContain("«redacted 16 chars»");
+  });
+
+  it("redacts a PEM private key from failed tool output after describeResult truncates it", () => {
+    const rawPemOutput =
+      "-----BEGIN RSA PRIVATE KEY-----\n" +
+      "MIIEowIBAAKCAQEA0mN4l39v3B7q1X8Z2k5L6m9n1o3p5r7s9t1u3v5w7x9y1z3a5b7c9d1e3f5g" +
+      "7h9i1j3k5l7m9n1o3p5r7s9t1u3v5w7x9y1z3a5b7c9d1e3f5g7h9i1j3k5l7m9n1o3p5r7s9t1u3v" +
+      "5w7x9y1z3a5b7c9d1e3f5g7h9i1j3k5l7m9n1o3p5r7s9t1u3v5w7x9y1z3a5b7c9d1e3f5g7h9i1j" +
+      "\n-----END RSA PRIVATE KEY-----";
+    const clippedDetail = describeResult(rawPemOutput);
+    expect(clippedDetail).not.toContain("END RSA PRIVATE KEY");
+    expect(clippedDetail).toContain("MIIEowIBAAKCAQEA0");
+
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(
+      base({ type: "item.started", itemType: "tool", itemId: "tool-1", title: "bash cat key" }),
+      sink,
+    );
+    observeRuntimeEvent(
+      base({
+        type: "item.completed",
+        itemType: "tool",
+        itemId: "tool-1",
+        ok: false,
+        detail: clippedDetail,
+      }),
+      sink,
+    );
+    const detail = String(spans[1].attributes["gen_ai.tool.result.detail"]);
+    expect(detail).not.toContain("MIIEowIBAAKCAQEA0");
+    expect(detail).toMatch(/BEGIN RSA PRIVATE KEY[\s\S]*«redacted \d+ chars»/);
   });
 
   it("leaves a successful tool without a result detail", () => {
