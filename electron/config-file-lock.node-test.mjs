@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -17,7 +17,11 @@ import {
   readConfigFile,
   updateConfigFile,
   withConfigFileLock,
+  writeFileAtomic,
 } from "./config-file-lock.mjs";
+
+const sleepCell = new Int32Array(new SharedArrayBuffer(4));
+const sleepSync = (ms) => Atomics.wait(sleepCell, 0, 0, ms);
 
 const MODULE_URL = new URL("./config-file-lock.mjs", import.meta.url).href;
 
@@ -57,11 +61,11 @@ function runWorker(source, env, onLine) {
  * while writing a marker straight into the file, then releases. */
 const HOLDER_SOURCE = `
 const path = process.env.CFL_PATH;
-const release = mod.acquireConfigFileLock(path);
+const lock = mod.acquireConfigFileLock(path);
 console.log("locked");
 await new Promise((r) => setTimeout(r, Number(process.env.CFL_HOLD_MS)));
 mod.writeFileAtomic(path, JSON.stringify({ holder: "worker" }));
-release();
+lock.release();
 console.log("released");
 `;
 
@@ -211,6 +215,53 @@ test("a lock older than staleMs is reclaimed even when its pid is alive", () => 
   }
 });
 
+// The lease is what makes age-based reclaim safe.  A holder that was
+// suspended past the stale window (system sleep, a debugger, a filesystem
+// stall) must not land the snapshot it read before it was suspended.
+test("a holder whose lease ran out refuses to write rather than land a stale snapshot", () => {
+  const { dir, path } = tempConfig();
+  try {
+    writeFileSync(path, '{"fresh":true}');
+    assert.throws(
+      () =>
+        updateConfigFile(
+          path,
+          (disk) => {
+            sleepSync(120); // "suspended" inside the critical section
+            disk.stale = true;
+          },
+          { staleMs: 50, timeoutMs: 500 },
+        ),
+      /lease expired/,
+    );
+    assert.deepEqual(readConfigFile(path), { fresh: true }, "nothing was written");
+    assert.equal(existsSync(lockPathFor(path)), false, "its own lock is still released");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a suspended holder whose lock a peer reclaimed cannot write over the peer or drop its lock", () => {
+  const { dir, path } = tempConfig();
+  try {
+    const suspended = acquireConfigFileLock(path, { staleMs: 200 });
+    sleepSync(400); // past its lease; nobody has touched the lock yet
+    // A peer with the same stale window finds the lock past it and reclaims
+    // it.  The same process stands in for the peer here: the record's
+    // pid+at pair is what identifies a holder, and this is a fresh one.
+    const peer = acquireConfigFileLock(path, { staleMs: 200, timeoutMs: 1_000 });
+    writeFileAtomic(path, JSON.stringify({ holder: "peer" }));
+    assert.throws(() => suspended.assertHeld(), /lease expired|reclaimed by another writer/);
+    suspended.release();
+    assert.equal(existsSync(lockPathFor(path)), true, "the peer's lock survives the stale holder's release");
+    peer.release();
+    assert.equal(existsSync(lockPathFor(path)), false);
+    assert.deepEqual(readConfigFile(path), { holder: "peer" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("an unreadable lock file older than staleMs is reclaimed, a fresh one is waited on", () => {
   const { dir, path } = tempConfig();
   try {
@@ -220,10 +271,13 @@ test("an unreadable lock file older than staleMs is reclaimed, a fresh one is wa
       () => updateConfigFile(path, () => null, { staleMs: 10_000, timeoutMs: 150 }),
       /held by an unknown writer/,
     );
-    // The same garbage once it is old enough: reclaimed and written through.
+    // The same garbage once it is old enough (its mtime is all there is to
+    // judge by): reclaimed and written through.
+    const past = new Date(Date.now() - 10_000);
+    utimesSync(lockPathFor(path), past, past);
     updateConfigFile(path, (disk) => {
       disk.after = true;
-    }, { staleMs: 0, timeoutMs: 1_000 });
+    }, { staleMs: 1_000, timeoutMs: 1_000 });
     assert.deepEqual(readConfigFile(path), { after: true });
   } finally {
     rmSync(dir, { recursive: true, force: true });

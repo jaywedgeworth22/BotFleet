@@ -18,8 +18,9 @@
 // a sibling `config.json.lock` created with O_EXCL -- atomic on macOS, Linux
 // and Windows -- holding the owner's pid so a lock left behind by a crashed
 // process is recognised as stale and reclaimed instead of wedging every
-// later save.  Readers never need the lock: the rename keeps reads
-// consistent on their own.
+// later save, while a holder that outlives its lease is fenced: it cannot
+// write once the lock is no longer its own.  Readers never need the lock:
+// the rename keeps reads consistent on their own.
 //
 // It lives under electron/ rather than shared/ because the packaged app
 // ships only electron/** (electron-builder.yml `files`); the server imports
@@ -42,9 +43,13 @@ import {
 import { dirname } from "node:path";
 
 /** A lock older than this is reclaimed even when its owner pid still
- * answers.  A healthy read-modify-write holds the lock for milliseconds,
- * and pids get reused, so an old lock with a live pid is a crashed writer
- * whose number came back around -- not a writer still at work. */
+ * answers: a healthy read-modify-write holds it for milliseconds, and pids
+ * get reused, so an old lock with a live pid is usually a crashed writer
+ * whose number came back around.  The other way to get here is a holder
+ * suspended mid-update -- system sleep, a debugger pause, a filesystem
+ * stall.  That holder is fenced, not trusted: `assertHeld` refuses its
+ * write once the lease is past this age or the lock is someone else's, so
+ * reclaiming can never let two writers land snapshots on one file. */
 export const CONFIG_LOCK_STALE_MS = 30_000;
 
 /** How long a writer waits for the lock before giving up with an error.
@@ -62,17 +67,14 @@ export function lockPathFor(configPath) {
   return `${configPath}.lock`;
 }
 
+/** Park this thread for `ms` without burning CPU.  Atomics.wait is
+ * permitted on the main thread of every runtime this module runs in -- a
+ * Node process, and the Electron main process is a Node isolate too.  The
+ * writers are synchronous by design (the critical section is a
+ * millisecond-scale read-modify-write), so a wait happens only under
+ * contention and is capped by the acquire timeout. */
 function sleepSync(ms) {
-  try {
-    Atomics.wait(sleepCell, 0, 0, ms);
-    return;
-  } catch {
-    /* Atomics.wait is refused on this thread -- fall back to a short spin */
-  }
-  const until = Date.now() + ms;
-  while (Date.now() < until) {
-    /* spin */
-  }
+  Atomics.wait(sleepCell, 0, 0, ms);
 }
 
 function isPlainObject(value) {
@@ -133,12 +135,12 @@ function reclaimStaleLock(lockPath) {
   }
 }
 
-/** Acquire the advisory lock for `configPath`.  Returns the release
- * function.  Synchronous, like the writers that use it: waits with short
- * sleeps until the lock is free, reclaims a stale one, and throws after
- * `timeoutMs` so a wedged peer surfaces as an error instead of a silent
- * overwrite.  Re-entering from the process that already holds the lock is
- * a bug, not a wait, and throws immediately. */
+/** Acquire the advisory lock for `configPath`.  Returns a handle with
+ * `release()` and `assertHeld()`.  Synchronous, like the writers that use
+ * it: waits with short sleeps until the lock is free, reclaims a stale
+ * one, and throws after `timeoutMs` so a wedged peer surfaces as an error
+ * instead of a silent overwrite.  Re-entering from the process that
+ * already holds the lock is a bug, not a wait, and throws immediately. */
 export function acquireConfigFileLock(configPath, options = {}) {
   const lockPath = lockPathFor(configPath);
   const staleMs = options.staleMs ?? CONFIG_LOCK_STALE_MS;
@@ -155,19 +157,41 @@ export function acquireConfigFileLock(configPath, options = {}) {
       closeSync(fd);
       fd = null;
       let released = false;
-      return function release() {
-        if (released) return;
-        released = true;
-        // Only remove what is still ours.  If we overran the stale window a
-        // peer has reclaimed this lock and written its own; deleting that
-        // would hand the file to a third writer mid-update.
+      const stillOurs = () => {
         const current = readLockRecord(lockPath);
-        if (current && (current.pid !== ours.pid || current.at !== ours.at)) return;
-        try {
-          unlinkSync(lockPath);
-        } catch {
-          /* already reclaimed -- nothing left to release */
-        }
+        return Boolean(current && current.pid === ours.pid && current.at === ours.at);
+      };
+      return {
+        /** Throw unless this handle still owns the lock and its lease has
+         * not run out.  `updateConfigFile` calls it right before the rename,
+         * so a holder that was suspended past the stale window (system
+         * sleep, a debugger pause, a filesystem stall) and whose lock a peer
+         * has since reclaimed can never land its stale snapshot on top of
+         * the peer's write.  The lease is what makes reclaiming safe. */
+        assertHeld() {
+          if (released) throw new Error(`config lock already released: ${lockPath}`);
+          if (Date.now() - ours.at > staleMs) {
+            throw new Error(
+              `config lock lease expired after ${staleMs} ms; refusing to write a stale snapshot: ${lockPath}`,
+            );
+          }
+          if (!stillOurs()) {
+            throw new Error(`config lock was reclaimed by another writer; refusing to write a stale snapshot: ${lockPath}`);
+          }
+        },
+        release() {
+          if (released) return;
+          released = true;
+          // Only remove what is still ours.  If we overran the lease a peer
+          // has reclaimed this lock and written its own; deleting that would
+          // hand the file to a third writer mid-update.
+          if (!stillOurs()) return;
+          try {
+            unlinkSync(lockPath);
+          } catch {
+            /* already reclaimed -- nothing left to release */
+          }
+        },
       };
     } catch (error) {
       if (fd !== null) {
@@ -197,13 +221,13 @@ export function acquireConfigFileLock(configPath, options = {}) {
   }
 }
 
-/** Run `fn` while holding the lock for `configPath`. */
+/** Run `fn(lock)` while holding the lock for `configPath`. */
 export function withConfigFileLock(configPath, fn, options = {}) {
-  const release = acquireConfigFileLock(configPath, options);
+  const lock = acquireConfigFileLock(configPath, options);
   try {
-    return fn();
+    return fn(lock);
   } finally {
-    release();
+    lock.release();
   }
 }
 
@@ -256,11 +280,12 @@ export function writeFileAtomic(path, data, options = {}) {
  * nothing, return a replacement object, or return `null` to say the file is
  * already right and must not be rewritten.  It must be synchronous: the
  * lock is held for the duration of this call and released on the way out,
- * success or throw.  Returns the object now on disk. */
+ * success or throw.  Returns the object now on disk.  Throws without
+ * writing if the lease expired or a peer reclaimed the lock meanwhile. */
 export function updateConfigFile(configPath, mutate, options = {}) {
   return withConfigFileLock(
     configPath,
-    () => {
+    (lock) => {
       const disk = readConfigFile(configPath);
       const next = mutate(disk);
       if (next && typeof next.then === "function") {
@@ -268,6 +293,10 @@ export function updateConfigFile(configPath, mutate, options = {}) {
       }
       if (next === null) return disk;
       const toWrite = next === undefined ? disk : next;
+      // Fence: refuse to rename if this lease ran out or a peer reclaimed
+      // the lock while `mutate` ran.  Nothing was written yet, so the peer's
+      // file stays intact and the caller sees an error instead.
+      lock.assertHeld();
       writeFileAtomic(configPath, JSON.stringify(toWrite, null, 2), { mode: options.mode ?? 0o600 });
       return toWrite;
     },

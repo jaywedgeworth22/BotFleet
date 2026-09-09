@@ -19,9 +19,16 @@ export interface UpdateConfigFileOptions extends ConfigLockOptions {
 
 export type ConfigFileObject = Record<string, unknown>;
 
+export interface ConfigFileLock {
+  /** Release the lock; a no-op if a peer has since reclaimed it. */
+  release(): void;
+  /** Throw unless this handle still owns the lock and its lease has not expired. */
+  assertHeld(): void;
+}
+
 export function lockPathFor(configPath: string): string;
-export function acquireConfigFileLock(configPath: string, options?: ConfigLockOptions): () => void;
-export function withConfigFileLock<T>(configPath: string, fn: () => T, options?: ConfigLockOptions): T;
+export function acquireConfigFileLock(configPath: string, options?: ConfigLockOptions): ConfigFileLock;
+export function withConfigFileLock<T>(configPath: string, fn: (lock: ConfigFileLock) => T, options?: ConfigLockOptions): T;
 export function readConfigFile(configPath: string): ConfigFileObject;
 export function writeFileAtomic(path: string, data: string, options?: { mode?: number }): void;
 export function updateConfigFile(
