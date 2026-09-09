@@ -2444,27 +2444,6 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
               <GroupListItem group={g} density={density} onMenu={setRoomMenu} />
             </ThreadTree>
           ))}
-          {botChats.length > 0 && density !== "icons" && (
-            <SectionDivider
-              name={BOT_CHATS_SECTION}
-              count={botChats.length}
-              collapsed={!sectionOpen(BOT_CHATS_SECTION)}
-              onToggle={() => toggleSection(BOT_CHATS_SECTION)}
-            />
-          )}
-          {(density === "icons" || sectionOpen(BOT_CHATS_SECTION)) && botChats.map((g) => (
-            <ThreadTree
-              key={g.id}
-              owner={{ kind: "group", id: g.id, name: g.name, threadId: g.threadId }}
-              tasks={[]}
-              density={density}
-              threadCount={threadCount}
-              collapsed={collapsedRooms.has(g.id)}
-              onToggle={() => toggleRoom(g.id)}
-            >
-              <GroupListItem group={g} density={density} onMenu={setRoomMenu} />
-            </ThreadTree>
-          ))}
           {visibleBots.length > 0 && density !== "icons" && (
             <SectionDivider
               name={primary.plural}
