@@ -144,6 +144,42 @@ describe("Sentry AI observability", () => {
     expect(JSON.stringify(spans)).not.toMatch(/prompt|messages|sk-/);
   });
 
+  it("attaches cached input tokens to the chat span when present", async () => {
+    const { sink, spans } = recordingSink();
+    await withChatSpan(
+      { model: "MiniMax-M3", conversationId: "thread-cached", provider: "minimax" },
+      async () => ({ text: "ok", usage: { input: 100, output: 50, cachedInput: 40 } }),
+      sink,
+    );
+
+    const chat = spans.find((s) => s.op === "gen_ai.chat");
+    expect(chat?.attributes["gen_ai.usage.input_tokens"]).toBe(100);
+    expect(chat?.attributes["gen_ai.usage.output_tokens"]).toBe(50);
+    expect(chat?.attributes["gen_ai.usage.input_tokens.cached"]).toBe(40);
+  });
+
+  it("preserves streamed usage on the chat span when the round fails mid-stream", async () => {
+    const { sink, spans } = recordingSink();
+    await expect(
+      withChatSpan(
+        { model: "MiniMax-M3", conversationId: "thread-fail", provider: "minimax" },
+        async ({ recordUsage }) => {
+          recordUsage({ input: 80, output: 20, cachedInput: 15 });
+          throw new Error("stream disconnected abruptly");
+        },
+        sink,
+      ),
+    ).rejects.toThrow("stream disconnected abruptly");
+
+    const chat = spans.find((s) => s.op === "gen_ai.chat");
+    expect(chat).toBeDefined();
+    expect(chat?.attributes["gen_ai.usage.input_tokens"]).toBe(80);
+    expect(chat?.attributes["gen_ai.usage.output_tokens"]).toBe(20);
+    expect(chat?.attributes["gen_ai.usage.input_tokens.cached"]).toBe(15);
+    expect(chat?.status).toEqual({ code: 2, message: "internal_error" });
+    expect(chat?.ended).toBe(true);
+  });
+
   it("nests the chat span under the turn's invoke_agent span, not merely beside it", async () => {
     // Sharing a gen_ai.conversation.id only CORRELATES two spans.  Sentry's
     // AI Agents view reads the trace tree, so a chat round that is not an

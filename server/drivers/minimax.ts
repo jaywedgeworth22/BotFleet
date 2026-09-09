@@ -471,7 +471,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // span.
         const { text, reasoning, usage, tool_calls } = await withChatSpan(
           { model, conversationId: threadId, provider: genAiProvider(DRIVER_KIND) },
-          () =>
+          ({ recordUsage }) =>
             complete(roundMessages, model, {
               stream: true,
               tools: openAiTools,
@@ -492,10 +492,13 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
                 });
               },
               // Forwarded straight to the loop's own live channel — see the
-              // `onUsage` doc on `TurnLoopDeps.runRound` — so a round that
-              // errors mid-stream after several chunks still gets its usage
-              // folded into the terminal event instead of reporting zero.
-              onUsage: (u) => opts.onUsage?.(u),
+              // `onUsage` doc on `TurnLoopDeps.runRound` — and to the chat
+              // span so a round that errors mid-stream after several chunks
+              // still has its usage recorded on the gen_ai.chat span.
+              onUsage: (u) => {
+                recordUsage(u);
+                opts.onUsage?.(u);
+              },
             }),
         );
         appendNative(threadId, {

@@ -484,13 +484,38 @@ export function recordExecutedTools(
   }
 }
 
+export type ChatSpanUsage = {
+  input?: number;
+  output?: number;
+  cachedInput?: number;
+};
+
+export interface ChatSpanContext {
+  recordUsage: (usage: ChatSpanUsage) => void;
+  span: SpanLike;
+}
+
 /** Wrap one OpenAI-compatible chat completion.  Never attach messages. */
-export async function withChatSpan<T extends { usage?: { input: number; output: number } | null }>(
+export async function withChatSpan<T extends { usage?: ChatSpanUsage | null }>(
   opts: { model: string; conversationId: string; provider?: string },
-  fn: () => Promise<T>,
+  fn: (context: ChatSpanContext) => Promise<T>,
   sink: SentryAiSink | null = liveSink(),
 ): Promise<T> {
-  if (!sink) return fn();
+  const applyUsageToSpan = (spanTarget: SpanLike, u?: ChatSpanUsage | null) => {
+    if (!u) return;
+    if (u.input != null) spanTarget.setAttribute("gen_ai.usage.input_tokens", u.input);
+    if (u.output != null) spanTarget.setAttribute("gen_ai.usage.output_tokens", u.output);
+    if (u.cachedInput != null) spanTarget.setAttribute("gen_ai.usage.input_tokens.cached", u.cachedInput);
+  };
+
+  if (!sink) {
+    const dummySpan: SpanLike = {
+      setAttribute: () => {},
+      end: () => {},
+      setStatus: () => {},
+    };
+    return fn({ recordUsage: () => {}, span: dummySpan });
+  }
   const provider = opts.provider ?? "openai";
   const identityAttrs = identityWithAgentName(identityFor(opts.conversationId));
   const span = sink.startInactiveSpan({
@@ -517,10 +542,12 @@ export async function withChatSpan<T extends { usage?: { input: number; output: 
     },
   });
   try {
-    const result = await fn();
-    if (result.usage) {
-      span.setAttribute("gen_ai.usage.input_tokens", result.usage.input);
-      span.setAttribute("gen_ai.usage.output_tokens", result.usage.output);
+    const result = await fn({
+      recordUsage: (u) => applyUsageToSpan(span, u),
+      span,
+    });
+    if (result?.usage) {
+      applyUsageToSpan(span, result.usage);
     }
     return result;
   } catch (error) {
