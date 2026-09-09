@@ -281,7 +281,9 @@ async function secureComposioConfig() {
       secureCredentials.composioApiKey = apiKey.trim();
       await saveSecureCredentials(secureCredentials);
     }
-    updateConfigFile(configPath, (config) => (stripLegacyComposioFields(config) ? config : null));
+    updateConfigFile(configPath, (config) =>
+      stripLegacyComposioFields(config, secureCredentials.composioApiKey) ? config : null,
+    );
   } catch (error) {
     if (error?.code !== "ENOENT") slog(`credential migration failed: ${error?.message ?? error}`);
   }
@@ -290,12 +292,20 @@ async function secureComposioConfig() {
 /** Blank the plaintext Composio key and drop the retired Connect credential
  * and endpoint (`key`, `url`) in place.  They are no longer read; removing
  * them during the upgrade keeps an unused secret from sitting in plaintext
- * indefinitely.  Returns true when anything changed. */
-function stripLegacyComposioFields(config) {
+ * indefinitely.  Returns true when anything changed.
+ *
+ * Runs under the config lock on the copy read there, so it re-evaluates the
+ * key it finds rather than trusting the earlier unlocked read: a real key
+ * is blanked only once `storedApiKey` (the encrypted store) holds that
+ * exact value.  One that arrived from another process in between has not
+ * been copied anywhere yet; blanking it would lose the only copy, so it
+ * stays for the next launch to migrate.  A value that is not a Composio key
+ * at all is legacy residue and is cleared as before. */
+function stripLegacyComposioFields(config, storedApiKey) {
   if (!config?.composio || typeof config.composio !== "object") return false;
   let changed = false;
-  const apiKey = config.composio.apiKey;
-  if (typeof apiKey === "string" && apiKey.trim()) {
+  const apiKey = typeof config.composio.apiKey === "string" ? config.composio.apiKey.trim() : "";
+  if (apiKey && (!apiKey.startsWith("ak_") || storedApiKey === apiKey)) {
     config.composio.apiKey = "";
     changed = true;
   }

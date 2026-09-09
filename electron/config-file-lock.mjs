@@ -359,7 +359,14 @@ export function readConfigFile(configPath) {
 
 /** Durable, atomic file replace: write a sibling temp file, fsync it, rename
  * it over the target.  Mirrors server/atomic.ts, which the packaged Electron
- * process cannot import (only electron/** ships). */
+ * process cannot import (only electron/** ships).
+ *
+ * `options.beforeRename`, when given, runs after the temp file is staged
+ * and fsynced and immediately before the rename; if it throws, the temp
+ * file is removed and nothing replaces the target.  The lock fence uses it
+ * so the ownership check sits as close to the rename as a check can, with
+ * the serialisation, the write and the fsync (which can stall) all behind
+ * it rather than between it and the rename. */
 export function writeFileAtomic(path, data, options = {}) {
   const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
   let fd = null;
@@ -369,6 +376,7 @@ export function writeFileAtomic(path, data, options = {}) {
     fsyncSync(fd);
     closeSync(fd);
     fd = null;
+    options.beforeRename?.();
     renameSync(temporary, path);
   } catch (error) {
     if (fd !== null) {
@@ -395,7 +403,8 @@ export function writeFileAtomic(path, data, options = {}) {
  * already right and must not be rewritten.  It must be synchronous: the
  * lock is held for the duration of this call and released on the way out,
  * success or throw.  Returns the object now on disk.  Throws without
- * writing if the lease expired or a peer reclaimed the lock meanwhile. */
+ * replacing the file if the lease expired or a peer reclaimed the lock by
+ * the time the staged write is about to be renamed into place. */
 export function updateConfigFile(configPath, mutate, options = {}) {
   return withConfigFileLock(
     configPath,
@@ -407,11 +416,14 @@ export function updateConfigFile(configPath, mutate, options = {}) {
       }
       if (next === null) return disk;
       const toWrite = next === undefined ? disk : next;
-      // Fence: refuse to rename if this lease ran out or a peer reclaimed
-      // the lock while `mutate` ran.  Nothing was written yet, so the peer's
-      // file stays intact and the caller sees an error instead.
-      lock.assertHeld();
-      writeFileAtomic(configPath, JSON.stringify(toWrite, null, 2), { mode: options.mode ?? 0o600 });
+      // Fence, immediately before the rename: refuse to replace the file if
+      // this lease ran out or a peer reclaimed the lock while `mutate`, the
+      // temp-file write or the fsync ran.  The staged temp file is dropped,
+      // the peer's file stays intact, and the caller sees an error instead.
+      writeFileAtomic(configPath, JSON.stringify(toWrite, null, 2), {
+        mode: options.mode ?? 0o600,
+        beforeRename: () => lock.assertHeld(),
+      });
       return toWrite;
     },
     options,

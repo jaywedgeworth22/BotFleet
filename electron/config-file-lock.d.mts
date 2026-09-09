@@ -31,7 +31,11 @@ export function reclaimPathFor(configPath: string): string;
 export function acquireConfigFileLock(configPath: string, options?: ConfigLockOptions): ConfigFileLock;
 export function withConfigFileLock<T>(configPath: string, fn: (lock: ConfigFileLock) => T, options?: ConfigLockOptions): T;
 export function readConfigFile(configPath: string): ConfigFileObject;
-export function writeFileAtomic(path: string, data: string, options?: { mode?: number }): void;
+export function writeFileAtomic(
+  path: string,
+  data: string,
+  options?: { mode?: number; beforeRename?: () => void },
+): void;
 export function updateConfigFile(
   configPath: string,
   mutate: (disk: ConfigFileObject) => ConfigFileObject | null | undefined,

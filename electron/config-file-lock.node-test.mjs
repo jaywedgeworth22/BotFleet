@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -165,6 +165,34 @@ test("the lock is released after the update, including when mutate throws", () =
     );
     assert.equal(existsSync(lockPathFor(path)), false, "lock released after the throw");
     assert.deepEqual(readConfigFile(path), { ok: true }, "a throwing mutate writes nothing");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeFileAtomic runs beforeRename after staging and drops the staged file when it throws", () => {
+  const { dir, path } = tempConfig();
+  try {
+    writeFileSync(path, '{"before":true}');
+    let stagedSeen = false;
+    assert.throws(
+      () =>
+        writeFileAtomic(path, '{"after":true}', {
+          beforeRename: () => {
+            // The temp file is fully written and fsynced by now; the target
+            // is still the old contents.
+            stagedSeen = readdirSync(dir).some((name) => name.startsWith("config.json.") && name.endsWith(".tmp"));
+            assert.equal(readFileSync(path, "utf8"), '{"before":true}');
+            throw new Error("fence says no");
+          },
+        }),
+      /fence says no/,
+    );
+    assert.equal(stagedSeen, true, "the hook ran with the temp file staged");
+    assert.equal(readFileSync(path, "utf8"), '{"before":true}', "the target was not replaced");
+    assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp")), [], "the staged file was removed");
+    writeFileAtomic(path, '{"after":true}', { beforeRename: () => {} });
+    assert.equal(readFileSync(path, "utf8"), '{"after":true}');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
