@@ -439,7 +439,7 @@
       ],
       "issueNumber": 93,
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/93",
-      "boardId": "149843e8",
+      "boardId": "6ff6f3559eb242e5ada21d28e2143d7d",
       "boardUrl": "https://mac.jays.services/board"
     },
     {
@@ -458,7 +458,7 @@
       ],
       "issueNumber": 93,
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/93",
-      "boardId": "149843e8",
+      "boardId": "9af28de9bea9442db1ae0f1c01c78cca",
       "boardUrl": "https://mac.jays.services/board"
     },
     {
@@ -583,7 +583,7 @@
     },
     {
       "id": "BF-IOS-010",
-      "severity": "P2",
+      "severity": "P3",
       "title": "Live Activities are explicitly stale while the app is suspended",
       "description": "Live Activities use pushType nil and the implementation states updates are foreground-only.  Lock-screen and Dynamic Island state can remain stale after the bot changes until relaunch or system dismissal.",
       "fix": "Implement ActivityKit push-token updates/end events, or end activities on backgrounding and rely on normal APNs until remote activity updates exist.",
@@ -596,6 +596,137 @@
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/294",
       "boardId": "699ea1ae62564711992ff91ac5a75887",
       "boardUrl": "https://mac.jays.services/board"
+    },
+    {
+      "id": "R10",
+      "severity": "P2",
+      "title": "Remediate vulnerable Electron packaging dependencies and verify generated artifacts",
+      "description": "GitHub reports 11 open Dependabot alerts in pnpm-lock.yaml: eight high and three moderate.  All are tagged development scope and trace through Electron Builder 24.13.3/app-builder-lib: builder-util-runtime 9.2.4, tar 6.2.1 and xmldom 0.8.13.  The updater separately resolves fixed builder-util-runtime 9.7.0.  Development scope does not prove harmlessness: build/archive tooling runs with developer/CI privileges, and the app-builder-lib advisory affects generated Linux AppImage runtime search paths.  No exploit against this Mac or iOS app was established.",
+      "fix": "Upgrade the compatible Electron Builder toolchain and regenerate the lockfile to resolve all listed advisories, including app-builder-lib >=26.15.0, builder-util-runtime >=9.7.0, tar >=7.5.18, and xmldom >=0.8.15 as of this audit.  Run typecheck/tests and Mac/Linux/Windows package/update smoke checks; inspect the packaged dependency boundary and generated launcher scripts rather than assuming devDependencies cannot affect shipped artifacts.  Confirm Dependabot alerts are resolved before the next release.",
+      "confidence": "high for dependency graph/advisories; installed artifact exploitability not tested",
+      "evidence": [
+        "package.json:98-115",
+        "pnpm-lock.yaml:5845-5875,6022-6048,8117-8125,5770",
+        "electron-builder.yml:32-36",
+        "https://github.com/electron-userland/electron-builder/security/advisories/GHSA-7g7r-gx96-252g",
+        "https://github.com/electron-userland/electron-builder/security/advisories/GHSA-p2f4-r6v6-j797"
+      ],
+      "boardId": "2c27a6351b18472993007b0a9f86d24d",
+      "boardUrl": "https://mac.jays.services/board",
+      "issueNumber": 296,
+      "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/296"
+    }
+  ],
+  "dependencyAlerts": [
+    {
+      "alertid": 15,
+      "package": "@xmldom/xmldom",
+      "vulnerableRange": ">= 0.7.0, <= 0.8.14",
+      "fixedVersion": "0.8.15",
+      "severity": "moderate",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "xmldom: XML fragment injection via invalid EntityReference.nodeName during requireWellFormed serialization",
+      "advisoryURL": "https://github.com/xmldom/xmldom/security/advisories/GHSA-6gmq-8vp8-gcm6"
+    },
+    {
+      "alertid": 13,
+      "package": "builder-util-runtime",
+      "vulnerableRange": "< 9.7.0",
+      "fixedVersion": "9.7.0",
+      "severity": "high",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "electron-updater: Cross-origin redirect leaks PRIVATE-TOKEN and mixed-case Authorization credentials in builder-util-runtime",
+      "advisoryURL": "https://github.com/electron-userland/electron-builder/security/advisories/GHSA-p2f4-r6v6-j797"
+    },
+    {
+      "alertid": 12,
+      "package": "app-builder-lib",
+      "vulnerableRange": "< 26.15.0",
+      "fixedVersion": "26.15.0",
+      "severity": "high",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "electron-updater: Uncontrolled search path elements within AppImage built by app-builder-lib",
+      "advisoryURL": "https://github.com/electron-userland/electron-builder/security/advisories/GHSA-7g7r-gx96-252g"
+    },
+    {
+      "alertid": 11,
+      "package": "tar",
+      "vulnerableRange": "<= 7.5.17",
+      "fixedVersion": "7.5.18",
+      "severity": "moderate",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "node-tar: Process crash via PAX numeric path type confusion",
+      "advisoryURL": "https://github.com/isaacs/node-tar/security/advisories/GHSA-w8wr-v893-vjvp"
+    },
+    {
+      "alertid": 7,
+      "package": "tar",
+      "vulnerableRange": "<= 7.5.15",
+      "fixedVersion": "7.5.16",
+      "severity": "moderate",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "node-tar applies PAX size override to intermediary GNU long-name/long-link headers, causing tar parser interpretation differential",
+      "advisoryURL": "https://github.com/isaacs/node-tar/security/advisories/GHSA-vmf3-w455-68vh"
+    },
+    {
+      "alertid": 6,
+      "package": "tar",
+      "vulnerableRange": "<= 7.5.10",
+      "fixedVersion": "7.5.11",
+      "severity": "high",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "node-tar Symlink Path Traversal via Drive-Relative Linkpath",
+      "advisoryURL": "https://github.com/isaacs/node-tar/security/advisories/GHSA-9ppj-qmqm-q256"
+    },
+    {
+      "alertid": 5,
+      "package": "tar",
+      "vulnerableRange": "<= 7.5.9",
+      "fixedVersion": "7.5.10",
+      "severity": "high",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "tar has Hardlink Path Traversal via Drive-Relative Linkpath",
+      "advisoryURL": "https://github.com/isaacs/node-tar/security/advisories/GHSA-qffp-2rhf-9h96"
+    },
+    {
+      "alertid": 4,
+      "package": "tar",
+      "vulnerableRange": "< 7.5.8",
+      "fixedVersion": "7.5.8",
+      "severity": "high",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "node-tar: Arbitrary File Read/Write via Hardlink Target Escape Through Symlink Chain",
+      "advisoryURL": "https://github.com/isaacs/node-tar/security/advisories/GHSA-83g3-92jg-28cx"
+    },
+    {
+      "alertid": 3,
+      "package": "tar",
+      "vulnerableRange": "< 7.5.7",
+      "fixedVersion": "7.5.7",
+      "severity": "high",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "node-tar: Arbitrary File Creation/Overwrite via Hardlink Path Traversal",
+      "advisoryURL": "https://github.com/isaacs/node-tar/security/advisories/GHSA-34x7-hfp2-rc4v"
+    },
+    {
+      "alertid": 2,
+      "package": "tar",
+      "vulnerableRange": "<= 7.5.3",
+      "fixedVersion": "7.5.4",
+      "severity": "high",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "node-tar: Race Condition in Path Reservations via Unicode Ligature Collisions on macOS APFS",
+      "advisoryURL": "https://github.com/isaacs/node-tar/security/advisories/GHSA-r6q2-hw4h-h46w"
+    },
+    {
+      "alertid": 1,
+      "package": "tar",
+      "vulnerableRange": "<= 7.5.2",
+      "fixedVersion": "7.5.3",
+      "severity": "high",
+      "manifestPath": "pnpm-lock.yaml",
+      "summary": "node-tar: Arbitrary File Overwrite and Symlink Poisoning via Insufficient Path Sanitization",
+      "advisoryURL": "https://github.com/isaacs/node-tar/security/advisories/GHSA-8qq5-rm4j-mr97"
     }
   ]
 }

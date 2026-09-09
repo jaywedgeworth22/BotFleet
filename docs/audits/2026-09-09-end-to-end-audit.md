@@ -114,7 +114,7 @@ Recorded routine outcomes warrant an operational follow-up: the preceding 24 hou
 
 ## Prioritized Findings And Tracking
 
-The 34 findings map to 33 distinct GitHub issues: 31 newly created follow-up issues and two existing issues expanded with evidence (#93 and #188).  Every item below has a canonical Mac board reference and GitHub issue, or adds evidence to an already-owned issue.  New implementation items remain open; publishing this audit does not mark their remediation complete.  P1 indicates operational correctness, trust, or an important blocked integration; P2 indicates reliability/capability gaps; P3 indicates validation and polish.  Latent source defects and recommended validation are identified in their issue bodies.
+The 35 findings map to 34 distinct GitHub issues: 32 newly created follow-up issues and two existing issues expanded with evidence (#93 and #188).  Every item below has a canonical Mac board reference and GitHub issue, or adds evidence to an already-owned issue.  New implementation items remain open; publishing this audit does not mark their remediation complete.  P1 indicates operational correctness, trust, or an important blocked integration; P2 indicates reliability/capability gaps; P3 indicates validation and polish.  Latent source defects and recommended validation are identified in their issue bodies.
 
 | ID | Priority | Finding | GitHub | Mac Board |
 | --- | --- | --- | --- | --- |
@@ -142,8 +142,8 @@ The 34 findings map to 33 distinct GitHub issues: 31 newly created follow-up iss
 | R7 | P1 | Investigate routine failures and expose reliable execution outcomes | [#284](https://github.com/jaywedgeworth22/BotFleet/issues/284) | `c0f364ea` |
 | R8 | P2 | Restore a complete macOS updater feed and reconcile shipped build identities | [#285](https://github.com/jaywedgeworth22/BotFleet/issues/285) | `5a2b2e02` |
 | R9 | P2 | Reconcile duplicate and stale board effort rows without losing ownership | [#286](https://github.com/jaywedgeworth22/BotFleet/issues/286) | `66958de4` |
-| BF-IOS-001 | P1 | Paired profile PATCH crosses its documented trust boundary | [#93](https://github.com/jaywedgeworth22/BotFleet/issues/93) | `149843e8` |
-| BF-IOS-002 | P2 | Always Allow is offered by iOS but denied by the sidecar | [#93](https://github.com/jaywedgeworth22/BotFleet/issues/93) | `149843e8` |
+| BF-IOS-001 | P1 | Paired profile PATCH crosses its documented trust boundary | [#93](https://github.com/jaywedgeworth22/BotFleet/issues/93) | `6ff6f355` |
+| BF-IOS-002 | P2 | Always Allow is offered by iOS but denied by the sidecar | [#93](https://github.com/jaywedgeworth22/BotFleet/issues/93) | `9af28de9` |
 | BF-IOS-003 | P1 | Background APNs delivery navigates and can switch the Mac task without a tap | [#287](https://github.com/jaywedgeworth22/BotFleet/issues/287) | `39f7be5c` |
 | BF-IOS-004 | P2 | Background fetch reports completion before reconnect or hydration completes | [#288](https://github.com/jaywedgeworth22/BotFleet/issues/288) | `18341d8c` |
 | BF-IOS-005 | P1 | Send and Stop omit the server task-binding guard | [#289](https://github.com/jaywedgeworth22/BotFleet/issues/289) | `118caef5` |
@@ -151,7 +151,8 @@ The 34 findings map to 33 distinct GitHub issues: 31 newly created follow-up iss
 | BF-IOS-007 | P2 | Accepted image formats cannot be read through the companion route | [#291](https://github.com/jaywedgeworth22/BotFleet/issues/291) | `ced11b51` |
 | BF-IOS-008 | P2 | Editing an engine selection silently clears reasoning effort | [#292](https://github.com/jaywedgeworth22/BotFleet/issues/292) | `1e36bd92` |
 | BF-IOS-009 | P2 | Agent Settings dismisses after a failed save | [#293](https://github.com/jaywedgeworth22/BotFleet/issues/293) | `72c9545d` |
-| BF-IOS-010 | P2 | Live Activities are explicitly stale while the app is suspended | [#294](https://github.com/jaywedgeworth22/BotFleet/issues/294) | `699ea1ae` |
+| BF-IOS-010 | P3 | Live Activities are explicitly stale while the app is suspended | [#294](https://github.com/jaywedgeworth22/BotFleet/issues/294) | `699ea1ae` |
+| R10 | P2 | Remediate vulnerable Electron packaging dependencies and verify generated artifacts | [#296](https://github.com/jaywedgeworth22/BotFleet/issues/296) | `2c27a635` |
 
 The accompanying [structured finding ledger](2026-09-09-findings.json) contains descriptions, evidence, confidence, acceptance criteria, and crosslinks.  The ledger records the reviewed baseline, not an assurance that every issue remains unfixed after publication.
 
@@ -171,13 +172,19 @@ The accompanying [structured finding ledger](2026-09-09-findings.json) contains 
 | Hosted remote access, #226; hosted iOS build path, #185 | Keep current work; hosted-only routing already makes Tailscale optional |
 | Release recovery, board `5a2b2e02` | Added current asset/run evidence; original missing-Apple-key description is partly superseded by later board comments |
 
+## Dependency Security
+
+GitHub reports 11 open Dependabot alerts in the lockfile: eight high and three moderate.  They trace through the Electron packaging toolchain and are tagged development scope.  Vulnerable versions include `app-builder-lib` 24.13.3, `builder-util-runtime` 9.2.4, `tar` 6.2.1 and `@xmldom/xmldom` 0.8.13.  The updater separately resolves fixed `builder-util-runtime` 9.7.0.
+
+Upgrade the packaging chain and verify both the build environment and generated artifacts before the next release.  Development dependency classification does not establish that a shipped artifact is unaffected: the [AppImage advisory](https://github.com/electron-userland/electron-builder/security/advisories/GHSA-7g7r-gx96-252g) concerns generated Linux launcher behavior, while the [redirect advisory](https://github.com/electron-userland/electron-builder/security/advisories/GHSA-p2f4-r6v6-j797) concerns credential handling.  No exploit against the current Mac or iOS installation was established.  R10 tracks the grouped remediation; the structured ledger includes all 11 advisory references and fixed-version metadata.
+
 ## Recommended Work Order
 
 1. Establish one harness owner per data directory and expose its identity in Mac/phone diagnostics.  Recheck all configuration and health against that process; verify routines are scheduled once.
 2. Close the companion profile boundary, task-binding, idempotency, and background-navigation defects.  Use fake transports and sidecar integration tests before a physical-device acceptance pass.
 3. Restore PagerDuty ingress, Composio reachability and bounded RAG readiness.  Validate each layer independently and record last successful operation, not merely key presence.
 4. Correct active-turn provider ownership, fallback health, cancellation, resume replay, and billing semantics.  Complete the owned DSH/MiniMax/Antigravity lanes with one common capability contract.
-5. Finish the macOS release feed and verify a reproducible build identity across source, installed app, harness, iOS and Sentry.  Reconcile board state from merge and deployment evidence.
+5. Resolve the packaging dependency alerts, finish the macOS release feed and verify a reproducible build identity across source, installed app, harness, iOS and Sentry.  Reconcile board state from merge and deployment evidence.
 6. Validate VoiceOver, Dynamic Type, keyboard navigation, offline/reconnect recovery, image formats, settings retention, energy use and large-fleet scrolling.  Keep failures actionable and tied to the appropriate settings surface.
 
 Additional acceptance work belongs to R6 rather than a separate ticket for every speculative idea: a matrix covering text, tools, images, approvals, cancellation, quota fallback, resume, offline queueing and reconnect per engine; an opt-in budget for live probes; redacted diagnostics export; p50/p95 hydration/first-token/RAG latency; repeatable long-chat and large-fleet performance fixtures; and clear capability/cost labels.  Startup should distinguish disabled, missing binary, logged out, configured, reachable, and operation-verified states.  New-user light-theme, bot terminology, sentence spacing, timestamps, and platform control conventions should be checked during the visual pass.
@@ -190,6 +197,6 @@ Additional acceptance work belongs to R6 rather than a separate ticket for every
 - `swift test --scratch-path /tmp/botfleet-audit-swift`: 234 CompanionCore tests passed, zero failures, using Swift 6.3.3.  This does not exercise SwiftUI/UIKit, APNs, ActivityKit, or a physical phone.
 - Dependency setup used an isolated copy from a peer tree with an identical lockfile after network installation failed; the peer tree and shared integration checkout were not modified.
 
-- Unsigned Xcode builds were attempted for both generic iOS Simulator and generic iOS device destinations after successful XcodeGen and Swift package resolution.  Both exited 70 before compilation because Xcode reported the iOS 26.5 destination/platform as unavailable.  The SDK is listed, but no usable simulator runtime/device is installed.  No app artifact, launch, screenshot, or full app compilation was obtained; this environment gap is included in R6 acceptance tracking.
+- Unsigned Xcode builds were attempted for both generic iOS Simulator and generic iOS device destinations after successful XcodeGen and Swift package resolution.  Both exited 70 before compilation because Xcode reported the iOS 26.5 destination/platform as unavailable.  The SDK is listed, but no usable iOS Simulator runtime or generic iOS device destination platform is available.  No app artifact, launch, screenshot, or full app compilation was obtained; this environment gap is included in R6 acceptance tracking.
 
-No live inference, tool execution, paid connector call, destructive failure injection, production restart, TestFlight upload, or full physical-device acceptance was performed.  Authenticated metadata is weaker evidence than a completed bot turn.  The report intentionally leaves those acceptance gaps visible and tracked.
+No live inference, tool execution, paid connector call, destructive failure injection, production restart, TestFlight upload, or full physical-device acceptance was performed.  Authenticated metadata is weaker evidence than a completed bot turn.  Fresh provider acceptance should follow repair of the duplicate execution-state owners.  The report intentionally leaves those acceptance gaps visible and tracked.
