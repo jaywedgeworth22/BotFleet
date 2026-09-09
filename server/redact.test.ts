@@ -132,7 +132,7 @@ describe("redactSecrets", () => {
 });
 
 import { redactSecretsInText } from "./redact.ts";
-import { clip, DETAIL_LIMIT } from "../shared/tool-activity.ts";
+import { clip, describeResult, DETAIL_LIMIT } from "../shared/tool-activity.ts";
 
 // Obviously-fake credential material, assembled from pieces so no
 // token-shaped literal sits in the source (GitHub push protection rightly
@@ -294,6 +294,84 @@ describe("redactSecretsInText", () => {
     // went out — that is the diagnostic the mask is meant to leave behind
     expect(redactSecretsInText(sigv4)).toContain("AWS4-HMAC-SHA256");
     expect(redactSecretsInText(digest)).toContain("Digest");
+  });
+
+  // ── where the value ENDS ────────────────────────────────────────────
+  // Two shapes pull in opposite directions, which is why the value's end is
+  // decided by CONTEXT rather than by scanning for pairs of quotes: a BARE
+  // header line is ended by the line and so may cross a quoted parameter of
+  // any length, while a QUOTE-INTRODUCED value is ended by its own closing
+  // quote and must not cross one at all.
+
+  it("masks an OAuth signature far longer than any cap, on a bare header line", () => {
+    // `oauth_signature` is routinely a few hundred characters.  A cap on the
+    // quoted part of the value ended the match at that parameter, and the
+    // signature went on into the transcript and into Sentry in the clear.
+    const HEADER = "Auth" + "orization";
+    const sig = "FAKE".repeat(86); // 344 chars, well past any cap
+    expect(sig.length).toBe(344);
+    const oauth =
+      `${HEADER}: OAuth oauth_consumer_key="FAKECONSUMER", oauth_nonce="FAKENONCE0123",` +
+      ` oauth_signature="${sig}", oauth_signature_method="HMAC-SHA1", oauth_version="1.0"`;
+    const out = redactSecretsInText(oauth);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    // the scheme survives, so the line still says what went out
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toBe(redactSecretsInText(out));
+  });
+
+  it("ends a quote-introduced value at its closing quote, leaving the siblings", () => {
+    // A one-line serialized object carries `status` and `message` AFTER the
+    // header key.  The balanced-quote scan used to run past the end of the
+    // value and eat them, so they were permanently missing from stored bot
+    // text and from failure details.
+    const HEADER = "auth" + "orization";
+    const token = `FAKE${"0123456789".repeat(9)}`; // 94 chars
+    for (const q of ['"', "'"]) {
+      const input = `{${q}${HEADER}${q}:${q}Bearer ${token}${q},${q}status${q}:${q}ok${q},${q}message${q}:${q}sent${q}}`;
+      const out = redactSecretsInText(input);
+      expect(out, q).not.toContain(token);
+      expect(out, q).toContain(`Bearer «redacted ${token.length} chars»`);
+      expect(out, q).toContain(`${q}status${q}:${q}ok${q}`);
+      expect(out, q).toContain(`${q}message${q}:${q}sent${q}`);
+      expect(out, q).toBe(redactSecretsInText(out));
+    }
+  });
+
+  it("steps over a backslash-escaped quote inside a quote-introduced value", () => {
+    // The escape is part of the value; the value ends at the first UNESCAPED
+    // quote, not at the escaped one.
+    const HEADER = "auth" + "orization";
+    const token = `FAKE\\"${"0123456789".repeat(6)}`; // an escaped quote, then 60 chars
+    const input = `{"${HEADER}":"Bearer ${token}","status":"ok"}`;
+    const out = redactSecretsInText(input);
+    expect(out).not.toContain("0123456789");
+    expect(out).toContain(`Bearer «redacted ${token.length} chars»`);
+    expect(out).toContain('"status":"ok"');
+  });
+
+  it("masks both header forms through describeResult's bounded window", () => {
+    // describeResult is where redaction actually runs on provider output, and
+    // it redacts a window and then clips to DETAIL_LIMIT.  Both shapes have to
+    // survive that path, not just a direct call.
+    const HEADER = "Auth" + "orization";
+    const sig = "FAKE".repeat(86);
+    const bare = `curl failed: ${HEADER}: OAuth oauth_token="FAKETOKEN01", oauth_signature="${sig}"`;
+    expect(bare.length).toBeGreaterThan(DETAIL_LIMIT);
+    const bareOut = describeResult(bare) ?? "";
+    expect(bareOut).not.toContain(sig.slice(0, 40));
+    expect(bareOut).toContain("«redacted");
+
+    const token = `FAKE${"0123456789".repeat(30)}`; // 304 chars
+    const json = `{"${HEADER.toLowerCase()}":"Bearer ${token}","status":"failed","message":"upstream said no"}`;
+    expect(json.length).toBeGreaterThan(DETAIL_LIMIT);
+    const jsonOut = describeResult(json) ?? "";
+    expect(jsonOut).not.toContain(token.slice(0, 40));
+    expect(jsonOut).toContain("«redacted");
+    // the siblings are the reason the detail is worth reading at all
+    expect(jsonOut).toContain('"status":"failed"');
+    expect(jsonOut).toContain('"message":"upstream said no"');
   });
 
   it("masks an authorization value that another pass had already half-masked", () => {
