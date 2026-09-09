@@ -471,6 +471,18 @@ describe("redactSecretsInText", () => {
     const paramsOut = redactSecretsInText(withParams);
     expect(paramsOut).not.toContain(sig);
     expect(paramsOut).toContain(tail);
+
+    // Basic is the sharp one: base64 padding ends the credential in `=`, so
+    // the wrapper quote sits directly behind an `=` and looks exactly like a
+    // parameter opening.  A parameter has to CLOSE like one too — its closing
+    // quote is followed by a delimiter, not by more argument text.
+    for (const b64 of ["ZmFrZXVzZXI6ZmFrZXBhc3N3b3JkMTIzNDU2Nzg=", "ZmFrZXVzZXI6ZmFrZXBhc3N3b3JkMTIzNDU2NzQ9PQ=="]) {
+      const basic = `curl -H "${HEADER}: Basic ${b64}"${tail}`;
+      const basicOut = redactSecretsInText(basic);
+      expect(basicOut, b64.slice(-4)).not.toContain(b64);
+      expect(basicOut, b64.slice(-4)).toContain(tail);
+      expect(basicOut, b64.slice(-4)).toContain(`Basic «redacted ${b64.length} chars»`);
+    }
   });
 
   it("masks an authorization value that another pass had already half-masked", () => {

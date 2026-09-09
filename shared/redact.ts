@@ -147,10 +147,24 @@ const AUTH_HEADER_QUOTED =
  * quoted argument on the command line, which with no length cap is the rest
  * of the command.
  *
+ * A parameter also has to CLOSE like one.  Its closing quote is followed by
+ * a delimiter — a comma, a space, the end of the value, the wrapper quote —
+ * never by more argument text.  Without that check a `Basic` credential is
+ * enough to reopen the same hole, because base64 padding ends the credential
+ * in `=` and the wrapper quote right behind it then looks like a parameter
+ * opening: `-H "…: Basic <b64>=" <url> -d "<body>"` would pair that wrapper
+ * with the body's quote and eat the command in between.
+ *
  * The last alternative is the truncated parameter: a quote behind an `=`
- * whose partner was clipped away opens a value that runs to the end of the
- * line, because there is nothing else left to end it and the credential is
- * what follows.
+ * with no partner anywhere ahead of it on the line, anchored at END OF TEXT
+ * because that is the only place a quote that never closes can legitimately
+ * come from — something cut the string, and the credential is what follows.
+ * Both halves of that guard are load-bearing.  A quote that is merely
+ * unbalanced in the middle of live text is somebody else's, not a parameter
+ * of ours; and a `Basic` credential ending in base64 padding puts an `=`
+ * directly in front of the wrapper quote of a `-H "…"` argument, so without
+ * the "nothing ahead of it" half the wrapper would open a parameter here and
+ * the rest of the command line would go into the mask.
  *
  * The `(?!\s*["'])` after the `=` or `:` is what keeps this pattern off a
  * value the quoted one above owns, so the two never compete for one header.
@@ -165,7 +179,7 @@ const AUTH_HEADER_QUOTED =
  * fold, so `<header>:` on one line and `Basic <credential>` on the next is
  * still one header value. */
 const AUTH_HEADER_BARE =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|(?<==\\?)"[^"\r\n]*"|(?<==\\?)'[^'\r\n]*'|(?<==\\?)["'][^\r\n]*)+)/gi;
+  /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|(?<==\\?)"[^"\r\n]*"(?=[\s,;"'\\)\]}]|$)|(?<==\\?)'[^'\r\n]*'(?=[\s,;"'\\)\]}]|$)|(?<==\\?)["'](?![^"'\r\n]*["'])[^\r\n]*$)+)/gi;
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
  * The value must be a single token of some length; prose after a colon
