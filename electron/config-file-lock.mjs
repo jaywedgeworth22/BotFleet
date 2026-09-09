@@ -206,11 +206,13 @@ function isStaleLock(seen, nowMs, staleMs) {
 function reclaimStaleLock(lockPath, seen, nowMs, staleMs) {
   const marker = reclaimMarkerFor(lockPath);
   let fd = null;
+  let ourMarker = null;
   try {
     fd = openSync(marker, "wx", 0o600);
     writeFileSync(fd, JSON.stringify({ pid: process.pid, at: nowMs }));
     closeSync(fd);
     fd = null;
+    ourMarker = inspectLock(marker);
   } catch (error) {
     if (fd !== null) {
       try {
@@ -221,13 +223,17 @@ function reclaimStaleLock(lockPath, seen, nowMs, staleMs) {
     }
     if (error?.code !== "EEXIST" && !isTransient(error)) throw error;
     const other = inspectLock(marker);
-    if (other && isStaleLock(other, nowMs, staleMs)) unlinkWithRetry(marker);
+    if (other && isStaleLock(other, nowMs, staleMs)) {
+      if (sameLock(inspectLock(marker), other)) unlinkWithRetry(marker);
+    }
     return false;
   }
   try {
     if (sameLock(inspectLock(lockPath), seen)) unlinkWithRetry(lockPath);
   } finally {
-    unlinkWithRetry(marker);
+    if (ourMarker && sameLock(inspectLock(marker), ourMarker)) {
+      unlinkWithRetry(marker);
+    }
   }
   return true;
 }

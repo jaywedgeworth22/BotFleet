@@ -277,8 +277,9 @@ async function secureComposioConfig() {
     // already running against this data dir is never overwritten with the
     // snapshot read here.
     const apiKey = readConfigFile(configPath)?.composio?.apiKey;
-    if (typeof apiKey === "string" && apiKey.trim().startsWith("ak_") && !secureCredentials.composioApiKey) {
-      secureCredentials.composioApiKey = apiKey.trim();
+    const diskKey = typeof apiKey === "string" ? apiKey.trim() : "";
+    if (diskKey.startsWith("ak_") && diskKey !== secureCredentials.composioApiKey) {
+      secureCredentials.composioApiKey = diskKey;
       await saveSecureCredentials(secureCredentials);
     }
     updateConfigFile(configPath, (config) =>

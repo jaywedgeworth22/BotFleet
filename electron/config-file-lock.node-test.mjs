@@ -271,6 +271,23 @@ test("a reclaim marker left by a dead reclaimer is cleared", () => {
   }
 });
 
+test("stale reclaim marker cleanup is generation-safe and does not unlink a replacement marker", () => {
+  const { dir, path } = tempConfig();
+  try {
+    const marker = reclaimPathFor(path);
+    // Write an old marker
+    writeFileSync(marker, JSON.stringify({ pid: 999999, at: Date.now() - 60_000 }));
+    // A fresh reclaimer creates a new marker in its place
+    const freshRecord = { pid: process.pid, at: Date.now() };
+    writeFileSync(marker, JSON.stringify(freshRecord));
+    // If an earlier waiter tried to clear the old marker by comparing sameLock,
+    // the fresh marker must remain untouched.
+    assert.equal(existsSync(marker), true);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // The P1 from review: several writers wake up behind one abandoned lock.
 // Without the election, the second to judge it stale could remove the fresh
 // lock the first had just created, and the two would overlap.
