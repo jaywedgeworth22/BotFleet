@@ -203,6 +203,7 @@ const instanceConfigSchema = z.object({
 });
 const instanceConfigMapSchema = z.record(z.string(), instanceConfigSchema);
 const appConfigSchema = z.object({
+  deleteInstance: optionalText,
   xai: z.object({ key: optionalText, url: optionalText }).optional(),
   openaiCompat: z.object({ key: optionalText, url: optionalText }).optional(),
   /** Project key used for Sessions, catalog and agent tools. userId/sessionId
@@ -321,6 +322,7 @@ const appConfigPatchSchema = appConfigSchema.omit({ instances: true });
 const jsonObjectSchema = z.record(z.string(), z.json());
 
 export interface AppConfig {
+  deleteInstance?: string;
   xai?: { key?: string; url?: string };
   openaiCompat?: { key?: string; url?: string };
   composio?: { apiKey?: string; userId?: string; sessionId?: string; brokerUrl?: string };
@@ -1012,6 +1014,13 @@ function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedCon
   if (checkedPatch.conversationMode !== undefined) disk.conversationMode = checkedPatch.conversationMode;
   if (checkedPatch.terminology !== undefined) disk.terminology = checkedPatch.terminology;
   if (checkedPatch.terminologyCustom !== undefined) disk.terminologyCustom = checkedPatch.terminologyCustom;
+  if (checkedPatch.deleteInstance) {
+    const currentInstances = jsonObjectSchema.safeParse(disk.instances);
+    if (currentInstances.success && currentInstances.data) {
+      delete currentInstances.data[checkedPatch.deleteInstance];
+      disk.instances = currentInstances.data;
+    }
+  }
   if (checkedPatch.instances) {
     const currentInstances = jsonObjectSchema.safeParse(disk.instances);
     const diskInstances: JsonObject = currentInstances.success ? currentInstances.data : {};
@@ -1090,6 +1099,18 @@ export function patchInstanceConfig(
     }
     if (!Object.keys(e.environment).length) delete e.environment;
   }
+  next.instances = map;
+  return { ok: true, config: next };
+}
+
+export function deleteInstanceConfig(
+  cfg: AppConfig,
+  instanceId: string,
+): { ok: boolean; config: AppConfig } {
+  const next: AppConfig = structuredClone(cfg);
+  const map = instanceConfigs(next);
+  if (!Object.hasOwn(map, instanceId)) return { ok: false, config: cfg };
+  delete map[instanceId];
   next.instances = map;
   return { ok: true, config: next };
 }

@@ -36,6 +36,12 @@ export interface AntigravityUsageSnapshot {
   timestamp: string;
   method?: string;
   models: AntigravityUsageModel[];
+  promptCredits?: {
+    available?: number;
+    monthly?: number;
+    usedPercentage?: number;
+    remainingPercentage?: number;
+  };
 }
 
 export type AntigravityQuotaExec = (args: string[], refresh: boolean) => Promise<string>;
@@ -105,10 +111,20 @@ export function parseAntigravityUsageJson(raw: unknown): AntigravityUsageSnapsho
   if (models.length === 0) {
     throw new Error("antigravity-usage JSON contained zero model rows");
   }
+  const promptCredits = root.promptCredits && typeof root.promptCredits === "object"
+    ? {
+        available: firstFiniteNumber((root.promptCredits as Record<string, unknown>).available),
+        monthly: firstFiniteNumber((root.promptCredits as Record<string, unknown>).monthly),
+        usedPercentage: firstFiniteNumber((root.promptCredits as Record<string, unknown>).usedPercentage),
+        remainingPercentage: firstFiniteNumber((root.promptCredits as Record<string, unknown>).remainingPercentage),
+      }
+    : undefined;
+
   return {
     timestamp: firstString(root.timestamp) ?? new Date().toISOString(),
     method: firstString(root.method),
     models,
+    ...(promptCredits ? { promptCredits } : {}),
   };
 }
 

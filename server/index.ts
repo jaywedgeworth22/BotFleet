@@ -112,6 +112,8 @@ import {
   skillRecorderEnabled,
   syncCredentialEnv,
   patchInstanceConfig,
+  deleteInstanceConfig,
+  isAbsoluteHttpUrl,
   usageIngestUrl,
   usageProjectRules,
   vpsCpus,
@@ -7817,6 +7819,111 @@ const server = createServer(async (req, res) => {
         resetPathCache();
         const instances = await registry.describeWithFreshInstance(instanceId);
         return json(res, 200, { instances });
+      } finally {
+        providerConfigBusy = false;
+      }
+    }
+
+    // ── add custom OpenAI-compatible engine ──
+    // POST /api/instances {name: string, endpoint: string, key?: string, models: string[] | string, iconUrl?: string}
+    if (method === "POST" && path === "/api/instances") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      const body = await readBody(req);
+      const name = typeof body?.name === "string" ? body.name.trim() : "";
+      if (!name || name.length > 64) {
+        return json(res, 400, { error: "name is required and must be 1–64 characters" });
+      }
+      const endpoint = typeof body?.endpoint === "string" ? body.endpoint.trim() : "";
+      if (!endpoint || !isAbsoluteHttpUrl(endpoint)) {
+        return json(res, 400, { error: "endpoint must be a valid http:// or https:// URL" });
+      }
+      const rawKey = typeof body?.key === "string" ? body.key.trim() : undefined;
+      const rawIcon = typeof body?.iconUrl === "string" ? body.iconUrl.trim() : undefined;
+
+      let rawModels: string[] = [];
+      if (Array.isArray(body?.models)) {
+        rawModels = body.models.map((m: unknown) => (typeof m === "string" ? m.trim() : "")).filter(Boolean);
+      } else if (typeof body?.models === "string") {
+        rawModels = body.models.split(/[\n,]+/).map((s: string) => s.trim()).filter(Boolean);
+      }
+      if (rawModels.length === 0) {
+        return json(res, 400, { error: "at least one model ID is required" });
+      }
+      if (rawModels.length > 15) {
+        return json(res, 400, { error: "at most 15 models can be configured per engine" });
+      }
+
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        const currentFleet = instanceConfigs(cfg);
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "custom";
+        let instanceId = `custom-${slug}`;
+        let counter = 1;
+        while (Object.hasOwn(currentFleet, instanceId)) {
+          instanceId = `custom-${slug}-${counter++}`;
+        }
+
+        const customConfig: Record<string, unknown> = {
+          url: endpoint,
+          models: rawModels,
+        };
+        if (rawKey) customConfig.key = rawKey;
+        if (rawIcon) customConfig.iconUrl = rawIcon;
+
+        const newInstanceEntry = {
+          driver: "openai-compat",
+          displayName: name,
+          config: customConfig,
+        };
+
+        const nextInstances = {
+          ...(cfg.instances ?? currentFleet),
+          [instanceId]: newInstanceEntry,
+        };
+
+        saveConfig({ instances: nextInstances });
+        Object.assign(cfg, loadConfig());
+        await reloadProviders();
+        resetPathCache();
+        return json(res, 201, {
+          ok: true,
+          instanceId,
+          instances: await registry.describe(),
+        });
+      } finally {
+        providerConfigBusy = false;
+      }
+    }
+
+    // ── delete custom engine instance ──
+    // DELETE /api/instances/:id
+    const instanceDelete = /^\/api\/instances\/([\w.-]+)$/.exec(path);
+    if (method === "DELETE" && instanceDelete) {
+      const instanceId = instanceDelete[1];
+      const protectedEngines = new Set([
+        "grok", "dsh", "droid", "cursor", "claude", "codex", "antigravity",
+        "minimax", "opencodeGo", "computer", "openaiCompat", "qwen", "hermes", "pi",
+      ]);
+      if (protectedEngines.has(instanceId)) {
+        return json(res, 400, { error: `cannot delete default fleet engine "${instanceId}"` });
+      }
+
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        const result = deleteInstanceConfig(cfg, instanceId);
+        if (!result.ok) return json(res, 404, { error: `unknown instance "${instanceId}"` });
+        saveConfig({ deleteInstance: instanceId });
+        Object.assign(cfg, loadConfig());
+        await reloadProviders();
+        resetPathCache();
+        return json(res, 200, {
+          ok: true,
+          instances: await registry.describe(),
+        });
       } finally {
         providerConfigBusy = false;
       }

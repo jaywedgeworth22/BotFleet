@@ -40,6 +40,12 @@ interface AntigravityUsageSnapshot {
   timestamp: string;
   method?: string;
   models: AntigravityUsageModel[];
+  promptCredits?: {
+    available?: number;
+    monthly?: number;
+    usedPercentage?: number;
+    remainingPercentage?: number;
+  };
 }
 
 interface DeepSeekBalanceView {
@@ -295,15 +301,27 @@ export function UsageSection() {
         subtitle="Live quota tracking and session limits across fleet engines.  Hover or click a row for the full remaining breakdown."
       >
         <div className="flex flex-col divide-y divide-hairline/20">
-          {state.instances.map((instance) => {
+          {state.instances.filter((instance) => {
+            if (instance.enabled === false) return false;
+            const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
+            const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
+            const hasQuotaData =
+              Boolean(instance.snapshot.quota?.capped) ||
+              Boolean(instance.snapshot.quota?.models && Object.keys(instance.snapshot.quota.models).length > 0) ||
+              instanceCooldowns.length > 0 ||
+              instanceWindows.length > 0 ||
+              (instance.instanceId === "antigravity" && (antigravityQuota?.models?.length ?? 0) > 0) ||
+              ((instance.driverKind === "deepseekAgent" || instance.driverKind === "deepseek") && deepseekBalance?.balanceUsd != null);
+            return instance.snapshot.state === "available" || hasQuotaData;
+          }).map((instance) => {
             const wildcardCap = Boolean(instance.snapshot.quota?.capped);
             const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
             const quotaCooldown = instanceCooldowns.find((q) => q.model === "*") ?? instanceCooldowns[0];
             const agModels = instance.instanceId === "antigravity"
               ? (antigravityQuota?.models ?? []).filter((model) => !model.isAutocompleteOnly)
               : [];
-            const agGroups = antigravityGroupSummary(agModels);
-            const agLines = antigravityQuotaLines(agModels);
+            const agGroups = antigravityGroupSummary(agModels, antigravityQuota?.promptCredits);
+            const agLines = antigravityQuotaLines(agModels, antigravityQuota?.promptCredits);
             const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
             const headlines = windowHeadlines(instanceWindows);
             const windowLines = usageWindowLines(instanceWindows);
@@ -339,18 +357,22 @@ export function UsageSection() {
               ? quotaLinesSummary(detailLines)
               : null;
             // The "headline" lines sit directly under the engine name: for
-            // Antigravity, "Gemini %" and "Third-Party %" (the only two
-            // numbers the CLI reports); for
+            // Antigravity, "Gemini %" and "Third-Party %" (with 5h and monthly countdowns); for
             // every other engine, the most-restrictive window per bucket
             // with the time-until-reset next to it. The chip on the right
             // (Available / At Usage Cap / …) is the verdict; the headline
             // is the numbers behind it.
             const headlineLines = agGroups.length > 0
               ? agGroups.map((group) => {
+                  if (group.headline) return group.headline;
                   const value = group.remainingPercent == null
                     ? "not reported"
                     : `${group.remainingPercent}% available`;
-                  return `${group.label}: ${value}`;
+                  let line = `${group.label}: ${value} (5h window)`;
+                  if (group.group === "gemini") {
+                    line += "; monthly pool (resets on ~17th)";
+                  }
+                  return line;
                 })
               : [
                   // The wildcard cooldown (Cursor's monthly cap, an exhausted
@@ -414,7 +436,7 @@ export function UsageSection() {
                 >
                   <div className="flex items-center gap-2.5 min-w-0">
                     <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-control/60">
-                      <ProviderMark driverKind={instance.driverKind} size={16} />
+                      <ProviderMark driverKind={instance.driverKind} size={16} iconUrl={instance.iconUrl} />
                     </div>
                     <div className="flex flex-col min-w-0">
                       <span className="truncate font-medium text-ink">{instance.displayName}</span>
@@ -461,27 +483,14 @@ export function UsageSection() {
             );
           })}
         </div>
-        {quotaWindows.length > 0 ? (
-          <div className="mt-3 flex flex-col gap-1.5 rounded-lg border border-hairline/20 bg-inset/20 p-3">
-            <div className="text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">Remaining from Usage Monitor</div>
-            {quotaWindows.slice(0, 12).map((window) => (
-              <div key={window.id} className="flex items-center justify-between gap-3 text-[12.5px]">
-                <span className="min-w-0 truncate text-ink" title={window.label}>{window.label}</span>
-                <span className={`shrink-0 tabular-nums ${window.skip ? "text-amber-700 dark:text-amber-300" : "text-ink-secondary"}`}>
-                  {window.remainingPercent == null ? "not reported" : `${window.remainingPercent}%`}
-                </span>
-              </div>
-            ))}
-          </div>
-        ) : null}
         <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-          Antigravity remaining percent is read locally from the antigravity-usage CLI every minute and shown as "Gemini" and "Third-Party" only — those two buckets each share one number.  Other engines surface their weekly and 5-hour caps directly; the monthly plan limit (Cursor) is honored as a wildcard cap.  Exhausted models fail over to the saved chain before the next turn.
+          Antigravity remaining percent is read locally from the antigravity-usage CLI every minute and shown as "Gemini" and "Third-Party" only — with rolling 5-hour session windows and monthly pool resets.{'\u00A0'} Other engines surface their weekly and 5-hour caps directly.{'\u00A0'} Exhausted models fail over to the saved chain before the next turn.
         </div>
       </Card>
 
       <Card
         title="Model Rates & Pricing Breakdown"
-        subtitle="Standard per-token pricing comparison across supported fleet engines and models."
+        subtitle="Standard per-token pricing comparison across API-billed fleet engines and models."
       >
         <div className="flex flex-col">
           <div className="grid grid-cols-[1.5fr_1fr_1fr_1fr] gap-x-3 border-b border-hairline/40 pb-2 text-[11.5px] font-medium uppercase tracking-wide text-ink-secondary">
@@ -493,10 +502,6 @@ export function UsageSection() {
           {[
             ...deepSeekPriceRows(),
             ...minimaxPriceRows(),
-            { model: "Grok 3 (CLI)", provider: "xAI", input: "Subscription", cache: "Included", output: "Included", badge: "CLI" },
-            { model: "Claude 3.7 Sonnet (CLI)", provider: "Anthropic", input: "Subscription", cache: "Included", output: "Included", badge: "CLI" },
-            { model: "Codex / GPT-5.4 (CLI)", provider: "OpenAI", input: "Subscription", cache: "Included", output: "Included", badge: "CLI" },
-            { model: "Antigravity / Gemini", provider: "Google", input: "Free / Pro", cache: "Included", output: "Included", badge: "CLI" },
           ].map((row) => (
             <div key={row.model} className="grid grid-cols-[1.5fr_1fr_1fr_1fr] items-center gap-x-3 border-b border-hairline/20 py-2.5 text-[13px]">
               <div className="flex min-w-0 flex-col">
@@ -509,7 +514,7 @@ export function UsageSection() {
             </div>
           ))}
           <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-            Prices for API-billed engines (such as OpenRouter and MiniMax) are calculated directly from input and output token counts each turn.{'\u00A0'} MiniMax M3 turns whose prompt passes 512K input tokens bill at roughly double the listed rate, per MiniMax's own published tier.{'\u00A0'} CLI-authenticated engines run against your active subscription.
+            Prices for API-billed engines (such as DeepSeek and MiniMax) are calculated directly from input and output token counts each turn.{'\u00A0'} MiniMax M3 turns whose prompt passes 512K input tokens bill at roughly double the listed rate, per MiniMax's own published tier.
           </div>
         </div>
       </Card>

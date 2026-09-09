@@ -77,6 +77,8 @@ export interface DescribedInstance {
   cliDefault: string | undefined;
   cliCandidates: string[];
   fullAuto: boolean;
+  iconUrl?: string;
+  isCustom?: boolean;
 }
 
 export class ProviderRegistry {
@@ -254,6 +256,8 @@ export class ProviderRegistry {
         // case where the detected-path dropdown matters most
         cliCandidates: candidatesFor(driver),
         fullAuto: this.fullAutoByInstance.get(entry.instanceId) ?? false,
+        iconUrl: undefined,
+        isCustom: entry.shadow.driverKind === "openai-compat" && entry.instanceId !== "openaiCompat",
       };
     }
     const inst = entry.live!;
@@ -324,6 +328,8 @@ export class ProviderRegistry {
       // newly installed CLI shows up on the next refresh.
       cliCandidates: candidatesFor(driver),
       fullAuto: this.fullAutoByInstance.get(inst.instanceId) ?? false,
+      iconUrl: inst.iconUrl,
+      isCustom: inst.driverKind === "openai-compat" && inst.instanceId !== "openaiCompat",
     };
   }
 

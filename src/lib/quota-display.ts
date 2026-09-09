@@ -6,6 +6,8 @@ export type QuotaDisplayModel = {
   remainingPercentage?: number;
   isExhausted: boolean;
   isAutocompleteOnly?: boolean;
+  resetTime?: string;
+  timeUntilResetMs?: number;
 };
 
 export type QuotaDisplayLine = {
@@ -45,15 +47,21 @@ export type AntigravityGroupSummary = {
   label: string;
   remainingPercent: number | null;
   exhausted: boolean;
+  resetAtMs?: number | null;
+  headline?: string;
 };
 
-export function antigravityGroupSummary(models: QuotaDisplayModel[]): AntigravityGroupSummary[] {
+export function antigravityGroupSummary(
+  models: QuotaDisplayModel[],
+  promptCredits?: { remainingPercentage?: number } | null,
+): AntigravityGroupSummary[] {
   const groups: Record<"gemini" | "external", QuotaDisplayModel[]> = { gemini: [], external: [] };
   for (const model of models) {
     if (model.isAutocompleteOnly) continue;
     groups[isGeminiQuotaModel(model) ? "gemini" : "external"].push(model);
   }
   const out: AntigravityGroupSummary[] = [];
+  const now = Date.now();
   for (const [group, list] of Object.entries(groups) as Array<["gemini" | "external", QuotaDisplayModel[]]>) {
     if (list.length === 0) continue;
     const reported = list
@@ -66,20 +74,58 @@ export function antigravityGroupSummary(models: QuotaDisplayModel[]): Antigravit
       : reported.length > 0
         ? Math.round(Math.min(...reported) * 100)
         : null;
-    out.push({
+
+    let earliestResetMs: number | null = null;
+    for (const m of list) {
+      let rMs: number | null = null;
+      if (m.resetTime) {
+        const p = Date.parse(m.resetTime);
+        if (Number.isFinite(p)) rMs = p;
+      }
+      if (!rMs && typeof m.timeUntilResetMs === "number" && m.timeUntilResetMs > 0) {
+        rMs = now + m.timeUntilResetMs;
+      }
+      if (rMs) {
+        earliestResetMs = earliestResetMs ? Math.min(earliestResetMs, rMs) : rMs;
+      }
+    }
+
+    const resetCountdown = earliestResetMs ? formatResetCountdown(earliestResetMs) : null;
+    const groupName = group === "gemini" ? "Gemini" : "Third-Party";
+    const entry: AntigravityGroupSummary = {
       group,
-      label: group === "gemini" ? "Gemini" : "Third-Party",
+      label: groupName,
       remainingPercent,
       exhausted,
-    });
+    };
+    if (earliestResetMs != null) entry.resetAtMs = earliestResetMs;
+    if (earliestResetMs != null || promptCredits?.remainingPercentage != null) {
+      const pctStr = exhausted ? "0%" : remainingPercent != null ? `${remainingPercent}% available` : "not reported";
+      let headline = `${groupName}: ${pctStr}`;
+      if (resetCountdown) {
+        headline += ` (5h window, resets in ${resetCountdown})`;
+      } else {
+        headline += ` (5h window)`;
+      }
+      if (group === "gemini" && promptCredits?.remainingPercentage != null) {
+        const monthlyPct = Math.round(promptCredits.remainingPercentage * 100);
+        headline += `; ${monthlyPct}% available (monthly pool, resets on ~17th)`;
+      }
+      entry.headline = headline;
+    }
+
+    out.push(entry);
   }
   // Gemini first — the group with the model name in the engine brand.
   out.sort((a, b) => (a.group === "gemini" ? -1 : 1) - (b.group === "gemini" ? -1 : 1));
   return out;
 }
 
-export function antigravityQuotaLines(models: QuotaDisplayModel[]): QuotaDisplayLine[] {
-  return antigravityGroupSummary(models).map((group) => ({
+export function antigravityQuotaLines(
+  models: QuotaDisplayModel[],
+  promptCredits?: { remainingPercentage?: number } | null,
+): QuotaDisplayLine[] {
+  return antigravityGroupSummary(models, promptCredits).map((group) => ({
     label: group.label,
     value: group.exhausted
       ? "exhausted"

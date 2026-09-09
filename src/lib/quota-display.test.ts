@@ -113,6 +113,20 @@ describe("antigravity group summary", () => {
     ]);
     expect(groups).toEqual([]);
   });
+
+  it("surfaces rolling 5h window countdown and monthly pool reset in headline", () => {
+    const now = Date.now();
+    const resetTime = new Date(now + (3 * 3600 + 21 * 60 + 5) * 1000).toISOString();
+    const groups = antigravityGroupSummary(
+      [
+        { label: "Gemini 3.1 Pro", modelId: "gemini-3.1-pro-high", remainingPercentage: 0.9, isExhausted: false, resetTime },
+        { label: "Claude 4.6 Sonnet", modelId: "claude-sonnet-4-6", remainingPercentage: 0.46, isExhausted: false, resetTime },
+      ],
+      { remainingPercentage: 0.46 },
+    );
+    expect(groups[0].headline).toBe("Gemini: 90% available (5h window, resets in 3h 21m); 46% available (monthly pool, resets on ~17th)");
+    expect(groups[1].headline).toBe("Third-Party: 46% available (5h window, resets in 3h 21m)");
+  });
 });
 
 describe("windowHeadlines + formatResetCountdown", () => {

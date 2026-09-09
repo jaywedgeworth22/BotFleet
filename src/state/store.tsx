@@ -553,6 +553,10 @@ export interface InstanceInfo {
   cliCandidates?: string[];
   /** YOLO full access bypass permissions */
   fullAuto?: boolean;
+  /** Custom engine icon URL or data URL */
+  iconUrl?: string;
+  /** User-created custom engine instance */
+  isCustom?: boolean;
 }
 
 export type AppSettingsSection =

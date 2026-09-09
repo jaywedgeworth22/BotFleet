@@ -3647,6 +3647,42 @@ describe("instance CLI override API", () => {
     expect(overlapping.status).toBe(409);
     expect((await slowConfigWrite).status).toBe(200);
   });
+
+  it("creates, describes, and deletes a custom OpenAI-compatible engine", async () => {
+    expect((await api("POST", "/api/instances", { name: "" })).status).toBe(400);
+    expect((await api("POST", "/api/instances", { name: "Ollama", endpoint: "not-a-url" })).status).toBe(400);
+    expect((await api("POST", "/api/instances", { name: "Ollama", endpoint: "http://localhost:11434/v1", models: [] })).status).toBe(400);
+
+    const created = await api("POST", "/api/instances", {
+      name: "Ollama Local",
+      endpoint: "http://localhost:11434/v1",
+      models: ["llama3.3:70b", "mistral:latest"],
+      iconUrl: "http://localhost:11434/icon.svg",
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.ok).toBe(true);
+    const instanceId = created.body.instanceId;
+    expect(instanceId).toContain("custom-ollama-local");
+
+    const instancesRes = await api("GET", "/api/instances");
+    const found = instancesRes.body.instances.find((i: any) => i.instanceId === instanceId);
+    expect(found).toBeDefined();
+    expect(found.displayName).toBe("Ollama Local");
+    expect(found.driverKind).toBe("openai-compat");
+    expect(found.isCustom).toBe(true);
+    expect(found.iconUrl).toBe("http://localhost:11434/icon.svg");
+    expect(found.models.options.map((m: any) => m.id)).toEqual(["llama3.3:70b", "mistral:latest"]);
+
+    expect((await api("DELETE", "/api/instances/claude")).status).toBe(400);
+    expect((await api("DELETE", "/api/instances/openaiCompat")).status).toBe(400);
+
+    const deleted = await api("DELETE", `/api/instances/${instanceId}`);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.ok).toBe(true);
+
+    const postDelete = await api("GET", "/api/instances");
+    expect(postDelete.body.instances.find((i: any) => i.instanceId === instanceId)).toBeUndefined();
+  }, 30_000);
 });
 
 describe("computer control API (who is driving)", () => {

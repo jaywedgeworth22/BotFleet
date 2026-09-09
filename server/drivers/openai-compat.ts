@@ -41,6 +41,10 @@ export interface OpenAICompatConfig {
   apiKeyEnv: string;
   /** Direct API key if configured */
   key?: string;
+  /** Custom configured models list (IDs or objects) */
+  models?: Array<string | { id: string; label?: string }>;
+  /** Custom icon URL or data URL (SVG, PNG, etc.) */
+  iconUrl?: string;
 }
 
 // Sentry's gen_ai.provider.name for whoever is actually answering.  Every
@@ -64,6 +68,21 @@ export function sentryProviderForUrl(url: string): string {
 function decodeConfig(raw: unknown): OpenAICompatConfig {
   const o = (raw ?? {}) as Record<string, unknown>;
   const envUrl = process.env.OPENAI_COMPAT_URL;
+  const rawModels = Array.isArray(o.models) ? o.models : undefined;
+  const models: Array<string | { id: string; label?: string }> = [];
+  if (rawModels) {
+    for (const m of rawModels) {
+      if (typeof m === "string" && m.trim()) {
+        models.push(m.trim());
+      } else if (typeof m === "object" && m !== null && typeof (m as any).id === "string" && (m as any).id.trim()) {
+        const id = String((m as any).id).trim();
+        const label = typeof (m as any).label === "string" && (m as any).label.trim() ? String((m as any).label).trim() : undefined;
+        models.push(label ? { id, label } : { id });
+      }
+      if (models.length >= 15) break;
+    }
+  }
+
   return {
     url:
       typeof o.url === "string" && o.url
@@ -73,6 +92,8 @@ function decodeConfig(raw: unknown): OpenAICompatConfig {
           : "https://openrouter.ai/api/v1",
     apiKeyEnv: typeof o.apiKeyEnv === "string" && o.apiKeyEnv ? o.apiKeyEnv : "OPENAI_COMPAT_API_KEY",
     key: typeof o.key === "string" && o.key ? o.key : undefined,
+    models: models && models.length > 0 ? models : undefined,
+    iconUrl: typeof o.iconUrl === "string" && o.iconUrl.trim() ? o.iconUrl.trim() : undefined,
   };
 }
 
@@ -113,6 +134,14 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
     const listeners = new Set<RuntimeEventListener>();
     const active = new Map<string, { abort: AbortController; turnId: string }>();
     let catalog = DEFAULT_MODELS;
+    if (config.models && config.models.length > 0) {
+      const options: ModelCatalog["options"] = config.models.map((m) => {
+        const id = typeof m === "string" ? m : m.id;
+        const label = typeof m === "object" && m.label ? m.label : id;
+        return { id, label, custom: true };
+      });
+      catalog = { default: options[0].id, options };
+    }
 
     const emit = (event: RuntimeEvent) => {
       for (const l of [...listeners]) l(event);
@@ -251,7 +280,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
     };
 
     const fetchModels = async (): Promise<void> => {
-      if (!apiKey) return;
+      if (!apiKey || (config.models && config.models.length > 0)) return;
       try {
         const res = await fetch(`${config.url}/models`, {
           headers: { authorization: `Bearer ${apiKey}` },
@@ -499,6 +528,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       driverKind: DRIVER_KIND,
       displayName: input.displayName,
       enabled: input.enabled,
+      iconUrl: config.iconUrl,
       get models() {
         return catalog;
       },
