@@ -64,6 +64,46 @@ export const CONFIG_LOCK_TIMEOUT_MS = 5_000;
 const MAX_BACKOFF_MS = 50;
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 
+/** Windows reports a lock file that another process has just unlinked, or
+ * still holds open for reading, as EPERM or EACCES (delete is deferred until
+ * the last handle closes) rather than EEXIST or ENOENT, and an unlink can
+ * fail the same way for a few microseconds.  Those are "try again shortly",
+ * not permission problems; a real one persists past the acquire timeout
+ * and surfaces there. */
+const TRANSIENT_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
+
+function isTransient(error) {
+  return TRANSIENT_CODES.has(error?.code);
+}
+
+/** How much of the lease a holder leaves unused.  Past `staleMs - margin`
+ * a handle neither writes (assertHeld) nor unlinks (release): a peer may
+ * reclaim the lock only once the full `staleMs` is out, so during the
+ * margin nothing else can replace this generation, and a name-based
+ * check-then-unlink in release() still refers to it.  Proportional so
+ * tests with tiny leases keep a usable window. */
+function leaseMarginMs(staleMs) {
+  return Math.min(2_000, staleMs / 4);
+}
+
+/** unlinkSync with a few short retries for the Windows deferred-delete
+ * case.  Returns true when the file is gone (or was never there). */
+function unlinkWithRetry(path) {
+  let delay = 1;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      unlinkSync(path);
+      return true;
+    } catch (error) {
+      if (error?.code === "ENOENT") return true;
+      if (!isTransient(error)) return false;
+      sleepSync(delay);
+      delay = Math.min(delay * 2, 20);
+    }
+  }
+  return false;
+}
+
 /** The lock file that guards `configPath`. */
 export function lockPathFor(configPath) {
   return `${configPath}.lock`;
@@ -179,31 +219,15 @@ function reclaimStaleLock(lockPath, seen, nowMs, staleMs) {
         /* best-effort */
       }
     }
-    if (error?.code !== "EEXIST") throw error;
+    if (error?.code !== "EEXIST" && !isTransient(error)) throw error;
     const other = inspectLock(marker);
-    if (other && isStaleLock(other, nowMs, staleMs)) {
-      try {
-        unlinkSync(marker);
-      } catch {
-        /* the reclaimer finished or a peer cleared it first */
-      }
-    }
+    if (other && isStaleLock(other, nowMs, staleMs)) unlinkWithRetry(marker);
     return false;
   }
   try {
-    if (sameLock(inspectLock(lockPath), seen)) {
-      try {
-        unlinkSync(lockPath);
-      } catch {
-        /* gone already */
-      }
-    }
+    if (sameLock(inspectLock(lockPath), seen)) unlinkWithRetry(lockPath);
   } finally {
-    try {
-      unlinkSync(marker);
-    } catch {
-      /* best-effort */
-    }
+    unlinkWithRetry(marker);
   }
   return true;
 }
@@ -221,6 +245,7 @@ export function acquireConfigFileLock(configPath, options = {}) {
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   const startedAt = Date.now();
   let backoffMs = 2;
+  let lastTransient = null;
   for (;;) {
     const ours = { pid: process.pid, at: Date.now() };
     let fd = null;
@@ -235,15 +260,16 @@ export function acquireConfigFileLock(configPath, options = {}) {
         return Boolean(current && current.pid === ours.pid && current.at === ours.at);
       };
       return {
-        /** Throw unless this handle still owns the lock and its lease has
-         * not run out.  `updateConfigFile` calls it right before the rename,
-         * so a holder that was suspended past the stale window (system
-         * sleep, a debugger pause, a filesystem stall) and whose lock a peer
-         * has since reclaimed can never land its stale snapshot on top of
-         * the peer's write.  The lease is what makes reclaiming safe. */
+        /** Throw unless this handle still owns the lock and its usable
+         * lease (`staleMs` less the margin) has not run out.  `updateConfigFile`
+         * calls it right before the rename, so a holder that was suspended
+         * past the stale window (system sleep, a debugger pause, a
+         * filesystem stall) and whose lock a peer has since reclaimed can
+         * never land its stale snapshot on top of the peer's write.  The
+         * lease is what makes reclaiming safe. */
         assertHeld() {
           if (released) throw new Error(`config lock already released: ${lockPath}`);
-          if (Date.now() - ours.at > staleMs) {
+          if (Date.now() - ours.at > staleMs - leaseMarginMs(staleMs)) {
             throw new Error(
               `config lock lease expired after ${staleMs} ms; refusing to write a stale snapshot: ${lockPath}`,
             );
@@ -255,15 +281,15 @@ export function acquireConfigFileLock(configPath, options = {}) {
         release() {
           if (released) return;
           released = true;
-          // Only remove what is still ours.  If we overran the lease a peer
-          // has reclaimed this lock and written its own; deleting that would
-          // hand the file to a third writer mid-update.
+          // Past the usable lease this handle no longer touches the lock by
+          // name: a reclaimer may be replacing it at this very moment, and an
+          // unlink here could take the reclaimer's generation with it.  The
+          // lock is left for the reclaim election, which judges it stale by
+          // age within the margin.  Inside the lease the name cannot change
+          // under us (see leaseMarginMs), so check-then-unlink is safe.
+          if (Date.now() - ours.at > staleMs - leaseMarginMs(staleMs)) return;
           if (!stillOurs()) return;
-          try {
-            unlinkSync(lockPath);
-          } catch {
-            /* already reclaimed -- nothing left to release */
-          }
+          unlinkWithRetry(lockPath);
         },
       };
     } catch (error) {
@@ -274,11 +300,25 @@ export function acquireConfigFileLock(configPath, options = {}) {
           /* best-effort */
         }
       }
-      if (error?.code !== "EEXIST") throw error;
+      if (error?.code !== "EEXIST") {
+        if (!isTransient(error)) throw error;
+        lastTransient = error;
+      }
     }
     const now = Date.now();
     const seen = inspectLock(lockPath);
-    if (!seen) continue; // released between our attempt and this look
+    if (!seen) {
+      // Released between our attempt and this look -- or, on Windows, still
+      // pending deletion.  Either way the next create attempt decides; give
+      // a deferred delete a moment rather than spinning on EPERM.
+      if (lastTransient === null) continue;
+      if (now - startedAt >= timeoutMs) {
+        throw new Error(`config lock could not be created (${lastTransient.code}) within ${timeoutMs} ms: ${lockPath}`);
+      }
+      sleepSync(backoffMs);
+      backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
+      continue;
+    }
     const holder = seen.record;
     if (holder && holder.pid === process.pid && now - holder.at <= staleMs) {
       throw new Error(`config lock re-entered by this process: ${lockPath}`);

@@ -298,7 +298,37 @@ test("a holder whose lease ran out refuses to write rather than land a stale sna
       /lease expired/,
     );
     assert.deepEqual(readConfigFile(path), { fresh: true }, "nothing was written");
-    assert.equal(existsSync(lockPathFor(path)), false, "its own lock is still released");
+    // Past its lease the handle no longer unlinks by name (a reclaimer may
+    // be replacing the lock); the lock is left for the election instead.
+    assert.equal(existsSync(lockPathFor(path)), true, "the expired lock is left for the reclaim path");
+    updateConfigFile(path, (disk) => {
+      disk.later = true;
+    }, { staleMs: 50, timeoutMs: 1_000 });
+    assert.deepEqual(readConfigFile(path), { fresh: true, later: true });
+    assert.equal(existsSync(lockPathFor(path)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a release inside the lease unlinks; one past the usable lease leaves the lock to the election", () => {
+  const { dir, path } = tempConfig();
+  try {
+    acquireConfigFileLock(path, { staleMs: 400 }).release();
+    assert.equal(existsSync(lockPathFor(path)), false, "released inside the lease");
+    const late = acquireConfigFileLock(path, { staleMs: 400 });
+    sleepSync(330); // inside staleMs but past the 100 ms margin
+    late.release();
+    assert.equal(existsSync(lockPathFor(path)), true, "left in place rather than unlinked by name");
+    // Once the full lease is out the next writer reclaims it and proceeds.
+    // (Waited out here because a same-process acquire inside the lease reads
+    // as re-entry; another process would simply wait the margin out.)
+    sleepSync(120);
+    updateConfigFile(path, (disk) => {
+      disk.next = true;
+    }, { staleMs: 400, timeoutMs: 2_000 });
+    assert.deepEqual(readConfigFile(path), { next: true });
+    assert.equal(existsSync(lockPathFor(path)), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
