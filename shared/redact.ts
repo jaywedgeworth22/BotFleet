@@ -168,21 +168,21 @@ const AUTH_HEADER_BARE = /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s
  * wrapper announces itself and it is the one thing the value cannot tell you
  * about itself.  Three things make the answer trustworthy:
  *
- * A wrapper OPENS the way a shell argument opens — at the start of the line,
- * after whitespace, or after an `=`.  A quote in the middle of a token is
- * prose or data, not a delimiter: a log line reading `size=2"; <header>: …`
- * has an unbalanced quote in front of the header that delimits nothing, and
- * treating it as a wrapper cut the value short and let the credential
- * through.  The same test is what keeps an apostrophe (`it's`) from opening
- * one.
+ * A wrapper is ADJACENT to the header: the argument that wraps a header
+ * opens immediately in front of it, whitespace apart.  `-H "…`, `-H'…`,
+ * `-H"…` (shell quoting may start mid-word) and `\"…` all qualify; a quote
+ * with text between it and the header name wraps something else, or nothing
+ * at all.  That last case is the one that bites: `size=2"; <header>: …` and
+ * `he said "wat; <header>: …` carry an unbalanced quote that delimits
+ * nothing, and cutting the value there leaves a stub and hands the
+ * credential back in the clear.  Adjacency is also what lets an apostrophe
+ * in `it's` be harmless, without having to guess at what shell words look
+ * like.
  *
- * Quotes NEST, so this keeps a stack and answers with the INNERMOST still
- * open.  `bash -c 'curl -H "…"'` is wrapped by the `"`, not by the `'`: the
- * inner quote is what ends the header's own argument, and answering with the
- * outer one masks straight through it and takes the rest of the command.
- * Nesting is safe to honour here only because of the rule above — a quote
- * that does not open like an argument never gets onto the stack, so an
- * apostrophe inside a word cannot become the innermost wrapper.
+ * Quotes NEST, so this keeps a stack and considers the INNERMOST still open.
+ * `bash -c 'curl -H "…"'` is wrapped by the `"`, not by the `'`: the inner
+ * quote is what ends the header's own argument, and answering with the outer
+ * one masks straight through it and takes the rest of the command.
  *
  * And a wrapper carries its ESCAPING LEVEL, because the text may already be
  * quoted once over — a driver that hands us `curl -H \"<header>: …\" <url>`
@@ -197,7 +197,7 @@ interface Wrapper {
 
 function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
   const lineStart = text.lastIndexOf("\n", index - 1) + 1;
-  const open: Wrapper[] = [];
+  const open: Array<Wrapper & { after: number }> = [];
   for (let i = lineStart; i < index; i++) {
     let escaped = false;
     let at = i;
@@ -214,16 +214,19 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
     const quote = text[at];
     if (quote !== '"' && quote !== "'") continue;
     const top = open[open.length - 1];
-    if (top?.quote === quote && top.escaped === escaped) {
-      open.pop();
-      continue;
-    }
-    const beforeIndex = escaped ? at - 2 : at - 1;
-    const before = beforeIndex < lineStart ? undefined : text[beforeIndex];
-    // opens the way a shell argument opens, or not at all
-    if (before === undefined || before === "=" || /\s/.test(before)) open.push({ quote, escaped });
+    if (top?.quote === quote && top.escaped === escaped) open.pop();
+    else open.push({ quote, escaped, after: at + 1 });
   }
-  return open[open.length - 1];
+  const innermost = open[open.length - 1];
+  if (!innermost) return undefined;
+  // Adjacency is the whole test.  An argument that WRAPS this header opens
+  // immediately in front of it, whitespace apart — `-H "…`, `-H'…`, `-H"…`,
+  // `\"…`.  A quote with text between it and the header name wraps something
+  // else, or nothing: `size=2"; <header>: …` and `he said "wat; <header>: …`
+  // have an unbalanced quote in front of the header that delimits nothing,
+  // and cutting the value there hands back the credential.
+  if (!/^\s*$/.test(text.slice(innermost.after, index))) return undefined;
+  return { quote: innermost.quote, escaped: innermost.escaped };
 }
 
 /** How much of a bare header value is the credential: everything up to the
@@ -331,17 +334,10 @@ export function redactSecretsInText(text: string): string {
     (m, key: string, sep: string, scheme: string | undefined, value: string, offset: number, whole: string) => {
       // trailing blanks are the line's, not the credential's, so they stay
       // outside the mask and out of the length it reports
-      const wrapper = wrapperQuoteAt(whole, offset);
-      const trim = (text: string) => text.replace(/[^\S\r\n]+$/, "");
-      let credential = trim(value.slice(0, bareValueEnd(value, wrapper)));
-      // An unbalanced quote before the header is not proof of a wrapper — log
-      // text has stray quotes too, and one that opens like an argument and
-      // never closes is indistinguishable from the real thing.  So the cut is
-      // sanity-checked: if honouring it leaves less than a credential's worth,
-      // it was not the wrapper, and the value runs to the end of the line
-      // after all.  That errs towards over-masking a line's tail, which costs
-      // a reader context, over under-masking, which ships a secret.
-      if (wrapper && credential.length < 8) credential = trim(value);
+      const end = bareValueEnd(value, wrapperQuoteAt(whole, offset));
+      // trailing blanks are the line's, not the credential's, so they stay
+      // outside the mask and out of the length it reports
+      const credential = value.slice(0, end).replace(/[^\S\r\n]+$/, "");
       if (credential.length < minMaskable(scheme) || WHOLLY_MASKED.test(credential)) return m;
       return `${key}${sep}${scheme ?? ""}${mask(credential)}${value.slice(credential.length)}`;
     },

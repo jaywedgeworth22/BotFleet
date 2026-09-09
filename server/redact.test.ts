@@ -550,28 +550,56 @@ describe("redactSecretsInText", () => {
     );
   });
 
-  it("only treats a quote that opens like an argument as a wrapper", () => {
-    // An unbalanced quote in arbitrary log text delimits nothing.  Taking one
-    // for a wrapper cut the value short at the next quote, and the stub that
-    // was left fell under the floor, so the whole header came back unmasked
-    // with the signature in it.  A shell argument's quote follows the start
-    // of the line, whitespace, or an `=`; one in the middle of a token — a
-    // stray `2"`, an apostrophe in `it's` — is prose.
+  it("only treats a quote ADJACENT to the header as its wrapper", () => {
+    // An argument that wraps a header opens immediately in front of it.  A
+    // quote with text between it and the header name wraps something else,
+    // or nothing — and an unbalanced one in log text delimits nothing at all.
+    // Cutting the value there left a stub and handed the credential back.
     const HEADER = "Auth" + "orization";
     const sig = `FAKESIG${"0123456789".repeat(20)}`;
-    const prefixes: Array<[string, string]> = [
+    const strays: Array<[string, string]> = [
       ['size=2"; ', "size=2"],
       ["it's odd; ", "it's odd"],
-      // even one that opens like an argument: honouring a cut that leaves
-      // less than a credential's worth is not worth a leak
-      ['he said "wat; ', ""],
+      // one that opens the way a shell argument opens is still not adjacent
+      ['he said "wat; ', "he said"],
+      ["foo \"bar' ", "foo"],
     ];
-    for (const [prefix, keep] of prefixes) {
+    for (const [prefix, keep] of strays) {
       const out = redactSecretsInText(`${prefix}${HEADER}: OAuth realm="public", oauth_signature="${sig}"`);
       expect(out, prefix).not.toContain(sig);
       if (keep) expect(out, prefix).toContain(keep);
       expect(out, prefix).toBe(redactSecretsInText(out));
     }
+
+    // adjacency does not mean the header must be a `-H` argument: a log line
+    // that quoted the header is wrapped by that quote just the same
+    const logged = redactSecretsInText(`sent header "${HEADER}: OAuth oauth_signature=\\"${sig}\\"" to upstream`);
+    expect(logged).not.toContain(sig);
+    expect(logged).toContain("to upstream");
+  });
+
+  it("recognises a wrapper that starts mid-word, and a short credential inside one", () => {
+    // Shell quoting may begin in the middle of a word — `-H"…"` is one
+    // argument to bash — so a wrapper is not always preceded by whitespace.
+    // And once a scheme has anchored the match the credential may be short,
+    // so a length test cannot stand in for wrapper detection either: both
+    // used to run to the end of the line and take the URL with them.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const url = " https://api.example.com/v1/long/path";
+    for (const input of [
+      `curl -H"${HEADER}: ${SCHEME} ${token}"${url}`,
+      `curl -H'${HEADER}: ${SCHEME} ${token}'${url}`,
+    ]) {
+      const out = redactSecretsInText(input);
+      expect(out, input.slice(0, 24)).not.toContain(token);
+      expect(out, input.slice(0, 24)).toContain(url);
+    }
+    const short = redactSecretsInText(`curl -H "${HEADER}: Basic dTpw"${url}`);
+    expect(short).not.toContain("dTpw");
+    expect(short).toContain("Basic «redacted 4 chars»");
+    expect(short).toContain(url);
   });
 
   it("finds the wrapper through escaping and nesting", () => {
