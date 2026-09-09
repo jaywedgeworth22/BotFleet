@@ -155,16 +155,26 @@ const AUTH_HEADER_QUOTED =
  * opening: `-H "…: Basic <b64>=" <url> -d "<body>"` would pair that wrapper
  * with the body's quote and eat the command in between.
  *
- * The last alternative is the truncated parameter: a quote behind an `=`
- * with no partner anywhere ahead of it on the line, anchored at END OF TEXT
- * because that is the only place a quote that never closes can legitimately
- * come from — something cut the string, and the credential is what follows.
- * Both halves of that guard are load-bearing.  A quote that is merely
- * unbalanced in the middle of live text is somebody else's, not a parameter
- * of ours; and a `Basic` credential ending in base64 padding puts an `=`
- * directly in front of the wrapper quote of a `-H "…"` argument, so without
- * the "nothing ahead of it" half the wrapper would open a parameter here and
- * the rest of the command line would go into the mask.
+ * `\"` is genuinely ambiguous and both readings get a turn, cheapest first.
+ * In a shell argument it IS the parameter's delimiter (`oauth_signature=\"…\"`
+ * inside a `-H "…"`); in a raw header line it is an escaped quote INSIDE the
+ * parameter (`realm="a\"b"`).  The naive alternative reads it the first way;
+ * only when that fails to close before a delimiter does the escape-aware one
+ * read it the second way.  Trying the escape-aware reading first would make
+ * a shell-escaped header run its parameter through the wrapper and out the
+ * far side.
+ *
+ * The last alternative is the truncated parameter: a quote behind an `=`,
+ * with no partner anywhere ahead of it on the line, at END OF TEXT, and
+ * with a non-blank character directly behind it.  Every one of those is
+ * load-bearing.  End of text is the only place a quote that never closes can
+ * legitimately come from — something cut the string, and the credential is
+ * what follows; a quote merely unbalanced in the middle of live text is
+ * somebody else's.  And the non-blank character is what tells a cut
+ * parameter from the LAST shell wrapper on a line: a credential does not
+ * begin with a space, so `-H "…: Basic <b64>=" <url>` — padding, wrapper,
+ * then a space — is a wrapper, and only the credential in front of it is
+ * masked.
  *
  * The `(?!\s*["'])` after the `=` or `:` is what keeps this pattern off a
  * value the quoted one above owns, so the two never compete for one header.
@@ -179,7 +189,7 @@ const AUTH_HEADER_QUOTED =
  * fold, so `<header>:` on one line and `Basic <credential>` on the next is
  * still one header value. */
 const AUTH_HEADER_BARE =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|(?<==\\?)"[^"\r\n]*"(?=[\s,;"'\\)\]}]|$)|(?<==\\?)'[^'\r\n]*'(?=[\s,;"'\\)\]}]|$)|(?<==\\?)["'](?![^"'\r\n]*["'])[^\r\n]*$)+)/gi;
+  /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|(?<==\\?)"[^"\r\n]*"(?=[\s,;"'\\)\]}]|$)|(?<==\\?)'[^'\r\n]*'(?=[\s,;"'\\)\]}]|$)|(?<==\\?)"(?:\\.|[^"\\\r\n])*"(?=[\s,;"'\\)\]}]|$)|(?<==\\?)'(?:\\.|[^'\\\r\n])*'(?=[\s,;"'\\)\]}]|$)|(?<==\\?)["'](?![^"'\r\n]*["'])[^\s\r\n][^\r\n]*$)+)/gi;
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
  * The value must be a single token of some length; prose after a colon

@@ -482,7 +482,30 @@ describe("redactSecretsInText", () => {
       expect(basicOut, b64.slice(-4)).not.toContain(b64);
       expect(basicOut, b64.slice(-4)).toContain(tail);
       expect(basicOut, b64.slice(-4)).toContain(`Basic «redacted ${b64.length} chars»`);
+
+      // and when that wrapper is the LAST quote on the line there is no
+      // partner ahead of it either, so only a credential-shaped character
+      // behind the quote tells a cut parameter from a terminal wrapper
+      const url = " https://api.example.com/v1/long/path";
+      const terminal = `curl -H "${HEADER}: Basic ${b64}"${url}`;
+      const terminalOut = redactSecretsInText(terminal);
+      expect(terminalOut, b64.slice(-4)).not.toContain(b64);
+      expect(terminalOut, b64.slice(-4)).toContain(url);
     }
+  });
+
+  it("steps over an escaped quote inside a bare quoted parameter", () => {
+    // `\"` is ambiguous and both readings get a turn.  Inside a shell
+    // argument it IS the parameter's delimiter; on a raw header line it is an
+    // escaped quote inside the parameter, and reading it the first way there
+    // ends the value at `realm=` and lets the signature behind it walk out.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const input = `${HEADER}: OAuth realm="a\\"b", oauth_signature="${sig}"`;
+    const out = redactSecretsInText(input);
+    expect(out).not.toContain(sig);
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toBe(redactSecretsInText(out));
   });
 
   it("masks an authorization value that another pass had already half-masked", () => {
