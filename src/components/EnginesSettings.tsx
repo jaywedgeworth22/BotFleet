@@ -4,7 +4,7 @@
 // binary (`<cli> --version`, same PATH a real turn uses); a failed probe
 // asks before registering — the classic miss is a path the terminal sees
 // but this GUI app can't.
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Loader2, TriangleAlert } from "lucide-react";
 
 import { api, useStore, type InstanceInfo } from "@/state/store";
@@ -25,11 +25,18 @@ function isEngineEnabled(instance: InstanceInfo): boolean {
   return instance.enabled !== false;
 }
 
-function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
+function CustomPicker({
+  instance,
+  cliDefault,
+  isBusy,
+  onClose,
+  onSave,
+}: {
   instance: InstanceInfo;
   cliDefault?: string;
+  isBusy?: boolean;
   onClose: () => void;
-  onSaved: () => Promise<void>;
+  onSave: (cli: string) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const [candidates, setCandidates] = useState<string[] | null>(instance.cliCandidates ?? null);
   // `selected` starts EMPTY, never at instance.cli: a wrapper override
@@ -67,7 +74,7 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
 
   const value = manual.trim() || selected;
   const dirty = value !== (instance.cli ?? "");
-  const busy = probing || saving;
+  const busy = probing || saving || Boolean(isBusy);
 
   // Editing the path invalidates a previous probe result.
   useEffect(() => {
@@ -80,15 +87,14 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
     setError(null);
     const committed = value; // freeze: inputs disable during save, but the
     // closure must not see a later keystroke either
-    api(`/api/instances/${encodeURIComponent(instance.instanceId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ cli: committed }),
-    })
-      // onSaved (refreshInstances) failing must NOT read as "not saved" —
-      // the PATCH already returned 200. Close regardless; the global banner
-      // from refreshInstances already reports the refresh failure.
-      .then(() => Promise.resolve(onSaved()).catch(() => {}))
-      .then(onClose)
+    onSave(committed)
+      .then((res) => {
+        if (res.ok) {
+          onClose();
+        } else {
+          setError(res.error ?? "Failed to save CLI path");
+        }
+      })
       .catch((e) => setError(e.message))
       .finally(() => setSaving(false));
   };
@@ -204,10 +210,18 @@ function CustomPicker({ instance, cliDefault, onClose, onSaved }: {
   );
 }
 
-function EngineRow({ instance }: { instance: InstanceInfo }) {
-  const { refreshInstances } = useStore();
+function EngineRow({
+  instance,
+  busyInstanceId,
+  onPatch,
+}: {
+  instance: InstanceInfo;
+  busyInstanceId: string | null;
+  onPatch: (
+    patch: { cli?: string; fullAuto?: boolean; enabled?: boolean },
+  ) => Promise<{ ok: boolean; error?: string }>;
+}) {
   const [open, setOpen] = useState(false);
-  const [switching, setSwitching] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wasOpenFor = useRef<string | null>(null);
 
@@ -217,6 +231,8 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
   // because a separately-disabled wildcard cooldown on an otherwise available
   // engine is the wrong gate (we want settings, not quotas, to block the row).
   const enabled = isEngineEnabled(instance);
+  const isBusy = busyInstanceId !== null;
+  const isThisBusy = busyInstanceId === instance.instanceId;
 
   // Close the picker when this instance's override changes to anything else
   // — a save from this row, another tab, or the 5-min refresh. The picker
@@ -229,37 +245,23 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
     wasOpenFor.current = instance.cli ?? null;
   }, [instance.cli]);
 
-  const reset = () => {
-    if (switching || !enabled) return;
-    setSwitching(true);
+  const patchWithLocalError = async (patch: { cli?: string; fullAuto?: boolean; enabled?: boolean }) => {
     setError(null);
-    api(`/api/instances/${encodeURIComponent(instance.instanceId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ cli: "" }),
-    })
-      // The reset already succeeded once PATCH returns 200. A follow-up list
-      // refresh failure should not tell the user the reset itself failed.
-      // fresh: true — the describe() memo has no way to know this override
-      // just changed, and serving it stale would show the old cli for up
-      // to 15s right after the user cleared it.
-      .then(() => Promise.resolve(refreshInstances({ fresh: true })).catch(() => {}))
-      .catch((e) => setError(e.message))
-      .finally(() => setSwitching(false));
+    const res = await onPatch(patch);
+    if (!res.ok && res.error) {
+      setError(res.error);
+    }
+    return res;
+  };
+
+  const reset = () => {
+    if (isBusy || !enabled) return;
+    void patchWithLocalError({ cli: "" });
   };
 
   const toggleEnabled = (next: boolean) => {
-    if (switching) return;
-    setSwitching(true);
-    setError(null);
-    api(`/api/instances/${encodeURIComponent(instance.instanceId)}`, {
-      method: "PATCH",
-      body: JSON.stringify({ enabled: next }),
-    })
-      // fresh: true — same reason as the fullAuto toggle: the checkbox must
-      // reflect the value just saved, not a memoed one.
-      .then(() => Promise.resolve(refreshInstances({ fresh: true })).catch(() => {}))
-      .catch((e) => setError(e.message))
-      .finally(() => setSwitching(false));
+    if (isBusy) return;
+    void patchWithLocalError({ enabled: next });
   };
 
   return (
@@ -269,6 +271,7 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
           className={cn(
             "flex shrink-0 items-center gap-1.5 text-[11.5px] uppercase tracking-wide",
             enabled ? "text-ink-secondary cursor-pointer" : "text-ink-secondary/70 cursor-pointer",
+            isBusy && "cursor-not-allowed opacity-60",
           )}
           title={enabled ? "Disable this engine" : "Enable this engine"}
         >
@@ -277,14 +280,17 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
             aria-label={`${instance.displayName} enabled`}
             className="accent-accent"
             checked={enabled}
-            disabled={switching}
+            disabled={isBusy}
             onChange={(e) => toggleEnabled(e.target.checked)}
           />
           {enabled ? "On" : "Off"}
         </label>
         <span className={cn("size-1.5 shrink-0 rounded-full", instance.cli ? "bg-accent" : "bg-raised-hover")} />
         <ProviderMark driverKind={instance.driverKind} size={18} />
-        <span className={cn("shrink-0", enabled ? "text-ink" : "text-ink-secondary/70")}>{instance.displayName}</span>
+        <span className={cn("shrink-0 flex items-center gap-1.5", enabled ? "text-ink" : "text-ink-secondary/70")}>
+          {instance.displayName}
+          {isThisBusy && <Loader2 size={12} className="animate-spin text-accent" />}
+        </span>
         {instance.cli ? (
           <span className={cn("truncate font-mono text-[11.5px]", enabled ? "text-accent" : "text-ink-secondary/60")} title={instance.cli}>
             {instance.cli}
@@ -298,45 +304,32 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
         {instance.cli && (
           <button
             onClick={reset}
-            disabled={switching || !enabled}
+            disabled={isBusy || !enabled}
             className="shrink-0 text-[11.5px] text-ink-secondary hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
-            {switching ? "Resetting…" : "Reset"}
+            {isThisBusy ? "Resetting…" : "Reset"}
           </button>
         )}
         <label className={cn(
           "flex items-center gap-1.5 shrink-0 text-[12px] text-ink-secondary",
-          enabled && !switching ? "hover:text-ink cursor-pointer" : "cursor-not-allowed opacity-60",
+          enabled && !isBusy ? "hover:text-ink cursor-pointer" : "cursor-not-allowed opacity-60",
         )}>
           <input
             type="checkbox"
             className="accent-accent"
             checked={!!instance.fullAuto}
-            disabled={switching || !enabled}
-            onChange={(e) => {
-              const checked = e.target.checked;
-              setSwitching(true);
-              setError(null);
-              api(`/api/instances/${encodeURIComponent(instance.instanceId)}`, {
-                method: "PATCH",
-                body: JSON.stringify({ fullAuto: checked }),
-              })
-                // fresh: true — same reason as reset() above: the checkbox
-                // must reflect the value just saved, not a memoed one.
-                .then(() => Promise.resolve(refreshInstances({ fresh: true })).catch(() => {}))
-                .catch((e) => setError(e.message))
-                .finally(() => setSwitching(false));
-            }}
+            disabled={isBusy || !enabled}
+            onChange={(e) => void patchWithLocalError({ fullAuto: e.target.checked })}
           />
           Bypass permissions (autonomous mode)
         </label>
         <button
           onClick={() => setOpen((v) => !v)}
-          disabled={!enabled || switching}
+          disabled={!enabled || isBusy}
           aria-expanded={open}
           className={cn(
             "shrink-0 rounded-lg border border-hairline/40 px-3 py-1 text-[12px]",
-            !enabled || switching
+            !enabled || isBusy
               ? "cursor-not-allowed opacity-40"
               : open
                 ? "bg-accent/15 text-accent"
@@ -369,8 +362,9 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
         <CustomPicker
           instance={instance}
           cliDefault={instance.cliDefault}
+          isBusy={isBusy}
           onClose={() => setOpen(false)}
-          onSaved={() => refreshInstances({ fresh: true })}
+          onSave={(cli) => patchWithLocalError({ cli })}
         />
       )}
     </div>
@@ -378,7 +372,37 @@ function EngineRow({ instance }: { instance: InstanceInfo }) {
 }
 
 export function EnginesSettings() {
-  const { state } = useStore();
+  const { state, dispatch } = useStore();
+  const [busyInstanceId, setBusyInstanceId] = useState<string | null>(null);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+
+  const handlePatch = useCallback(
+    async (
+      instanceId: string,
+      patch: { cli?: string; fullAuto?: boolean; enabled?: boolean },
+    ): Promise<{ ok: boolean; error?: string }> => {
+      setBusyInstanceId(instanceId);
+      setGlobalError(null);
+      try {
+        const res = await api(`/api/instances/${encodeURIComponent(instanceId)}`, {
+          method: "PATCH",
+          body: JSON.stringify(patch),
+        });
+        if (res?.instances) {
+          dispatch({ type: "instances", instances: res.instances });
+        }
+        return { ok: true };
+      } catch (e: any) {
+        const message = e.message || "Failed to update engine settings";
+        setGlobalError(message);
+        return { ok: false, error: message };
+      } finally {
+        setBusyInstanceId(null);
+      }
+    },
+    [dispatch],
+  );
+
   // every KNOWN-driver instance has cliDefault; unknown-driver shadows have
   // neither unless an override was set. Including them keeps a Reset-able row
   // (and a Set CLI… path) for engines the running build doesn't recognize.
@@ -396,6 +420,18 @@ export function EnginesSettings() {
         <strong className="text-ink">Set CLI…</strong> points the engine at a specific binary — a versioned build, a wrapper script, or an absolute path.{" "}
         Saving any of these reloads providers and interrupts any running turns.
       </div>
+      {busyInstanceId && (
+        <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-[12px] text-accent">
+          <Loader2 size={13} className="animate-spin shrink-0" />
+          <span>Updating engine settings…</span>
+        </div>
+      )}
+      {globalError && (
+        <div role="alert" className="flex items-center gap-2 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">
+          <TriangleAlert size={13} className="shrink-0" />
+          <span>{globalError}</span>
+        </div>
+      )}
       {rows.length === 0 && (
         <div className="text-[13px] text-ink-secondary">No CLI engines detected yet.</div>
       )}
@@ -408,11 +444,21 @@ export function EnginesSettings() {
           <>
             {subscription.length > 0 && <EngineGroupLabel>Cloud</EngineGroupLabel>}
             {subscription.map((i) => (
-              <EngineRow key={i.instanceId} instance={i} />
+              <EngineRow
+                key={i.instanceId}
+                instance={i}
+                busyInstanceId={busyInstanceId}
+                onPatch={(patch) => handlePatch(i.instanceId, patch)}
+              />
             ))}
             {custom.length > 0 && <EngineGroupLabel className="pt-1">Local</EngineGroupLabel>}
             {custom.map((i) => (
-              <EngineRow key={i.instanceId} instance={i} />
+              <EngineRow
+                key={i.instanceId}
+                instance={i}
+                busyInstanceId={busyInstanceId}
+                onPatch={(patch) => handlePatch(i.instanceId, patch)}
+              />
             ))}
             {disabled.length > 0 && (
               <>
@@ -430,7 +476,12 @@ export function EnginesSettings() {
                 {showDisabled && (
                   <div className="flex flex-col gap-3 opacity-80">
                     {disabled.map((i) => (
-                      <EngineRow key={i.instanceId} instance={i} />
+                      <EngineRow
+                        key={i.instanceId}
+                        instance={i}
+                        busyInstanceId={busyInstanceId}
+                        onPatch={(patch) => handlePatch(i.instanceId, patch)}
+                      />
                     ))}
                   </div>
                 )}
