@@ -7775,19 +7775,30 @@ const server = createServer(async (req, res) => {
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
       providerConfigBusy = true;
       try {
-        const result = patchInstanceConfig(cfg, instancePatch[1], patchOptions);
-        if (!result.ok) return json(res, 404, { error: `unknown instance "${instancePatch[1]}"` });
+        const instanceId = instancePatch[1];
+        const result = patchInstanceConfig(cfg, instanceId, patchOptions);
+        if (!result.ok) return json(res, 404, { error: `unknown instance "${instanceId}"` });
         // persist the whole instances map this rebuild produced — a fresh
         // saveConfig({instances}) merge would re-derive defaults identically,
         // but writing the resolved map keeps disk and runtime in lockstep
         saveConfig({ instances: result.config.instances });
         Object.assign(cfg, loadConfig());
-        await reloadProviders();
+
+        const targetEntry = instanceConfigs(cfg)[instanceId];
+        const oldInstance = registry.get(instanceId);
+        if (oldInstance) {
+          await oldInstance.adapter.stopAll?.().catch(() => {});
+        }
+        bus.detach(instanceId);
+        const newLive = targetEntry ? await registry.reloadInstance(instanceId, targetEntry) : null;
+        if (newLive) bus.attach([newLive]);
+
         // rescan BEFORE describe(): the response's cliCandidates are computed
         // from the memoized PATH, so resetting after would answer this request
         // with the pre-reset cache
         resetPathCache();
-        return json(res, 200, { instances: await registry.describe() });
+        const instances = await registry.describeWithFreshInstance(instanceId);
+        return json(res, 200, { instances });
       } finally {
         providerConfigBusy = false;
       }

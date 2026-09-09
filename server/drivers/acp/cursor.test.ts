@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ensureDirs } from "../../config.ts";
 import { recordEvents } from "../../testing/events.ts";
@@ -17,11 +17,18 @@ import {
   decodeCursorModelText,
   STATIC_CURSOR_MODELS,
   resolveCursorAcpModelId,
+  resetCursorCache,
 } from "./cursor.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
 
 describe("decodeCursorAuthStatus", () => {
+  beforeEach(() => {
+    resetCursorCache();
+  });
+  afterEach(() => {
+    resetCursorCache();
+  });
   it("reads isAuthenticated from live CLI JSON", () => {
     expect(decodeCursorAuthStatus({ isAuthenticated: true })).toBe(true);
     expect(decodeCursorAuthStatus({ isAuthenticated: false })).toBe(false);

@@ -9,6 +9,7 @@ import { findCliCandidates } from "../env-path.ts";
 import { quotaCooldowns } from "../model-fallback.ts";
 import type {
   AnyProviderDriver,
+  InstanceConfig,
   InstanceConfigMap,
   InstanceId,
   ProviderInstance,
@@ -65,58 +66,76 @@ export class ProviderRegistry {
     this.driversByKind = new Map(drivers.map((d) => [d.driverKind, d]));
   }
 
+  private async loadEntry(instanceId: InstanceId, entry: InstanceConfig): Promise<ProviderInstance | null> {
+    const isFullAuto = fullAutoOfRaw(entry.config);
+    if (isFullAuto) this.fullAutoByInstance.set(instanceId, true);
+    else this.fullAutoByInstance.delete(instanceId);
+
+    const driver = this.driversByKind.get(entry.driver);
+    if (!driver) {
+      this.byId.set(instanceId, {
+        instanceId,
+        shadow: {
+          instanceId,
+          driverKind: entry.driver,
+          displayName: entry.displayName,
+          cli: cliOfRaw(entry.config),
+          shadow: true,
+          reason: `unknown driver "${entry.driver}" — kept as configured, unavailable here`,
+        },
+      });
+      return null;
+    }
+    try {
+      const config = entry.config === undefined ? driver.defaultConfig() : driver.decodeConfig(entry.config);
+      // Override detection is on the RAW config, never the decoded one:
+      // decodeConfig fills in the driver default ("claude", "codex", …),
+      // so reading `cli` there would flag every instance as overridden.
+      const rawCli = cliOfRaw(entry.config);
+      if (rawCli) this.cliByInstance.set(instanceId, rawCli);
+      else this.cliByInstance.delete(instanceId);
+      const enabled = entry.enabled !== false;
+      this.enabledByInstance.set(instanceId, enabled);
+      const live = await driver.create({
+        instanceId,
+        displayName: entry.displayName ?? driver.metadata.displayName,
+        environment: entry.environment ?? {},
+        enabled,
+        config,
+      });
+      this.byId.set(instanceId, { instanceId, live });
+      return live;
+    } catch (e) {
+      this.byId.set(instanceId, {
+        instanceId,
+        shadow: {
+          instanceId,
+          driverKind: entry.driver,
+          displayName: entry.displayName ?? driver.metadata.displayName,
+          cli: cliOfRaw(entry.config),
+          shadow: true,
+          reason: e instanceof Error ? e.message : String(e),
+        },
+      });
+      return null;
+    }
+  }
+
   async load(configs: InstanceConfigMap) {
     this.lastDescribe = null;
     for (const [instanceId, entry] of Object.entries(configs)) {
-      const isFullAuto = fullAutoOfRaw(entry.config);
-      if (isFullAuto) this.fullAutoByInstance.set(instanceId, true);
-
-      const driver = this.driversByKind.get(entry.driver);
-      if (!driver) {
-        this.byId.set(instanceId, {
-          instanceId,
-          shadow: {
-            instanceId,
-            driverKind: entry.driver,
-            displayName: entry.displayName,
-            cli: cliOfRaw(entry.config),
-            shadow: true,
-            reason: `unknown driver "${entry.driver}" — kept as configured, unavailable here`,
-          },
-        });
-        continue;
-      }
-      try {
-        const config = entry.config === undefined ? driver.defaultConfig() : driver.decodeConfig(entry.config);
-        // Override detection is on the RAW config, never the decoded one:
-        // decodeConfig fills in the driver default ("claude", "codex", …),
-        // so reading `cli` there would flag every instance as overridden.
-        const rawCli = cliOfRaw(entry.config);
-        if (rawCli) this.cliByInstance.set(instanceId, rawCli);
-        const enabled = entry.enabled !== false;
-        this.enabledByInstance.set(instanceId, enabled);
-        const live = await driver.create({
-          instanceId,
-          displayName: entry.displayName ?? driver.metadata.displayName,
-          environment: entry.environment ?? {},
-          enabled,
-          config,
-        });
-        this.byId.set(instanceId, { instanceId, live });
-      } catch (e) {
-        this.byId.set(instanceId, {
-          instanceId,
-          shadow: {
-            instanceId,
-            driverKind: entry.driver,
-            displayName: entry.displayName ?? driver.metadata.displayName,
-            cli: cliOfRaw(entry.config),
-            shadow: true,
-            reason: e instanceof Error ? e.message : String(e),
-          },
-        });
-      }
+      await this.loadEntry(instanceId, entry);
     }
+  }
+
+  /** Reload a single instance after an override/setting change without tearing
+   * down the whole fleet. */
+  async reloadInstance(instanceId: InstanceId, entry: InstanceConfig): Promise<ProviderInstance | null> {
+    const existing = this.byId.get(instanceId);
+    if (existing?.live) {
+      await existing.live.dispose().catch(() => {});
+    }
+    return this.loadEntry(instanceId, entry);
   }
 
   get(instanceId: InstanceId): ProviderInstance | null {
@@ -173,8 +192,18 @@ export class ProviderRegistry {
     // Multiple instances may share a driver. Scan each default binary once
     // per response instead of repeating filesystem work for every row.
     const candidatesByName = new Map<string, string[]>();
-    const candidatesFor = (driver: AnyProviderDriver | undefined): string[] => {
-      const name = cliDefaultOf(driver);
+    return Promise.all(
+      this.entries().map((entry) => this.describeEntry(entry, candidatesByName)),
+    );
+  }
+
+  private async describeEntry(
+    entry: RegistryEntry,
+    candidatesByName: Map<string, string[]>,
+  ) {
+    const driver = this.driversByKind.get(entry.shadow?.driverKind ?? entry.live!.driverKind);
+    const candidatesFor = (d: AnyProviderDriver | undefined): string[] => {
+      const name = cliDefaultOf(d);
       if (!name) return [];
       const cached = candidatesByName.get(name);
       if (cached) return cached;
@@ -182,99 +211,123 @@ export class ProviderRegistry {
       candidatesByName.set(name, found);
       return found;
     };
-    return Promise.all(
-      this.entries().map(async (entry) => {
-        const driver = this.driversByKind.get(entry.shadow?.driverKind ?? entry.live!.driverKind);
-        if (entry.shadow) {
-          return {
-            instanceId: entry.instanceId,
-            driverKind: entry.shadow.driverKind,
-            displayName: entry.shadow.displayName ?? entry.shadow.driverKind,
-            snapshot: { state: "unavailable", reason: entry.shadow.reason } satisfies ProviderSnapshot,
-            models: { default: "", options: [] },
-            capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
-            // an unknown driver has no driver record, hence no install path
-            access: driver?.metadata.access ?? "subscription",
-            install: driver?.install,
-            cli: entry.shadow.cli,
-            cliDefault: cliDefaultOf(driver),
-            // a shadow is exactly the "your CLI is broken, pick another"
-            // case where the detected-path dropdown matters most
-            cliCandidates: candidatesFor(driver),
-            fullAuto: this.fullAutoByInstance.get(entry.instanceId) ?? false,
+    if (entry.shadow) {
+      return {
+        instanceId: entry.instanceId,
+        driverKind: entry.shadow.driverKind,
+        displayName: entry.shadow.displayName ?? entry.shadow.driverKind,
+        snapshot: { state: "unavailable", reason: entry.shadow.reason } satisfies ProviderSnapshot,
+        models: { default: "", options: [] },
+        capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
+        // an unknown driver has no driver record, hence no install path
+        access: driver?.metadata.access ?? "subscription",
+        install: driver?.install,
+        cli: entry.shadow.cli,
+        cliDefault: cliDefaultOf(driver),
+        // a shadow is exactly the "your CLI is broken, pick another"
+        // case where the detected-path dropdown matters most
+        cliCandidates: candidatesFor(driver),
+        fullAuto: this.fullAutoByInstance.get(entry.instanceId) ?? false,
+      };
+    }
+    const inst = entry.live!;
+    const enabled = this.enabledByInstance.get(entry.instanceId) ?? true;
+    let snapshot: ProviderSnapshot;
+    if (!enabled || inst.enabled === false) {
+      snapshot = { state: "unavailable", reason: "Disabled in settings" };
+    } else {
+      try {
+        await inst.refreshModels?.();
+        snapshot = await inst.snapshot();
+        const wildcard = quotaCooldowns.get("*", inst.instanceId, "*")
+          ?? quotaCooldowns.list().find((cd) => cd.instanceId === inst.instanceId && cd.model === "*");
+        const perModel = quotaCooldowns.list().filter(
+          (cd) => cd.instanceId === inst.instanceId && cd.model !== "*",
+        );
+        const models: NonNullable<ProviderSnapshot["quota"]>["models"] = {};
+        for (const cd of perModel) {
+          models[cd.model] = {
+            capped: true,
+            remainingPercent: null,
+            resetsAt: cd.resetsAt,
+            error: cd.error,
           };
         }
-        const inst = entry.live;
-        const enabled = this.enabledByInstance.get(entry.instanceId) ?? true;
-        let snapshot: ProviderSnapshot;
-        if (!enabled || inst.enabled === false) {
-          snapshot = { state: "unavailable", reason: "Disabled in settings" };
-        } else {
-          try {
-            await inst.refreshModels?.();
-            snapshot = await inst.snapshot();
-            const wildcard = quotaCooldowns.get("*", inst.instanceId, "*")
-              ?? quotaCooldowns.list().find((cd) => cd.instanceId === inst.instanceId && cd.model === "*");
-            const perModel = quotaCooldowns.list().filter(
-              (cd) => cd.instanceId === inst.instanceId && cd.model !== "*",
-            );
-            const models: NonNullable<ProviderSnapshot["quota"]>["models"] = {};
-            for (const cd of perModel) {
-              models[cd.model] = {
-                capped: true,
-                remainingPercent: null,
-                resetsAt: cd.resetsAt,
-                error: cd.error,
-              };
-            }
-            if (inst.instanceId === "antigravity") {
-              Object.assign(models, quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot()));
-            }
-            const catalogIds = inst.models?.options?.map((option) => option.id) ?? [];
-            const allCatalogCapped =
-              catalogIds.length > 0 && catalogIds.every((id) => models[id]?.capped === true);
-            if (wildcard || Object.keys(models).length > 0) {
-              snapshot.quota = {
-                capped: Boolean(wildcard) || allCatalogCapped,
-                resetsAt: wildcard?.resetsAt,
-                error: wildcard?.error,
-                ...(Object.keys(models).length > 0 ? { models } : {}),
-              };
-            }
-          } catch (e) {
-            snapshot = { state: "unavailable", reason: e instanceof Error ? e.message : String(e) };
-          }
+        if (inst.instanceId === "antigravity") {
+          Object.assign(models, quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot()));
         }
-        return {
-          instanceId: inst.instanceId,
-          driverKind: inst.driverKind,
-          displayName: inst.displayName ?? inst.driverKind,
-          enabled,
-          snapshot,
-          models: inst.models,
-          capabilities: {
-            computerMcp: inst.adapter.capabilities.computerMcp === true,
-            agentsMcp: inst.adapter.capabilities.agentsMcp === true,
-            composioMcp: inst.adapter.capabilities.composioMcp === true,
-            phoneMcp: inst.adapter.capabilities.phoneMcp === true,
-            images: inst.adapter.capabilities.images === true,
-            effortLevels: inst.adapter.capabilities.effortLevels,
-            queueing: inst.adapter.capabilities.queueing === true,
-            localComputerMcp: inst.adapter.capabilities.localComputerMcp === true,
-            approvalReview: inst.reviewPermission !== undefined,
-          },
-          access: driver?.metadata.access ?? "subscription",
-          install: driver?.install,
-          cli: this.cliByInstance.get(inst.instanceId),
-          cliDefault: cliDefaultOf(driver),
-          // every copy of the driver's default binary on the augmented PATH —
-          // the dropdown's "detected" entries. Snapshotted per describe() so a
-          // newly installed CLI shows up on the next refresh.
-          cliCandidates: candidatesFor(driver),
-          fullAuto: this.fullAutoByInstance.get(inst.instanceId) ?? false,
-        };
-      }),
-    );
+        const catalogIds = inst.models?.options?.map((option) => option.id) ?? [];
+        const allCatalogCapped =
+          catalogIds.length > 0 && catalogIds.every((id) => models[id]?.capped === true);
+        if (wildcard || Object.keys(models).length > 0) {
+          snapshot.quota = {
+            capped: Boolean(wildcard) || allCatalogCapped,
+            resetsAt: wildcard?.resetsAt,
+            error: wildcard?.error,
+            ...(Object.keys(models).length > 0 ? { models } : {}),
+          };
+        }
+      } catch (e) {
+        snapshot = { state: "unavailable", reason: e instanceof Error ? e.message : String(e) };
+      }
+    }
+    return {
+      instanceId: inst.instanceId,
+      driverKind: inst.driverKind,
+      displayName: inst.displayName ?? inst.driverKind,
+      enabled,
+      snapshot,
+      models: inst.models,
+      capabilities: {
+        computerMcp: inst.adapter.capabilities.computerMcp === true,
+        agentsMcp: inst.adapter.capabilities.agentsMcp === true,
+        composioMcp: inst.adapter.capabilities.composioMcp === true,
+        phoneMcp: inst.adapter.capabilities.phoneMcp === true,
+        images: inst.adapter.capabilities.images === true,
+        effortLevels: inst.adapter.capabilities.effortLevels,
+        queueing: inst.adapter.capabilities.queueing === true,
+        localComputerMcp: inst.adapter.capabilities.localComputerMcp === true,
+        approvalReview: inst.reviewPermission !== undefined,
+      },
+      access: driver?.metadata.access ?? "subscription",
+      install: driver?.install,
+      cli: this.cliByInstance.get(inst.instanceId),
+      cliDefault: cliDefaultOf(driver),
+      // every copy of the driver's default binary on the augmented PATH —
+      // the dropdown's "detected" entries. Snapshotted per describe() so a
+      // newly installed CLI shows up on the next refresh.
+      cliCandidates: candidatesFor(driver),
+      fullAuto: this.fullAutoByInstance.get(inst.instanceId) ?? false,
+    };
+  }
+
+  /** Probes ONLY the modified instance and updates the cached describe
+   * snapshot in place, avoiding cold sweeps across all unrelated engines. */
+  async describeWithFreshInstance(instanceId: InstanceId): Promise<Awaited<ReturnType<ProviderRegistry["describeFresh"]>>> {
+    const entry = this.byId.get(instanceId);
+    if (!entry) return this.describe();
+
+    const candidatesByName = new Map<string, string[]>();
+    const freshInfo = await this.describeEntry(entry, candidatesByName);
+
+    if (this.lastDescribe) {
+      try {
+        const list = await this.lastDescribe.result;
+        const index = list.findIndex((item) => item.instanceId === instanceId);
+        const nextList = [...list];
+        if (index >= 0) {
+          nextList[index] = freshInfo;
+        } else {
+          nextList.push(freshInfo);
+        }
+        this.lastDescribe = { at: Date.now(), result: Promise.resolve(nextList) };
+        return nextList;
+      } catch {
+        // Fall back to full describe if cached promise errored
+      }
+    }
+
+    return this.refreshDescribe(Date.now());
   }
 
   async disposeAll() {

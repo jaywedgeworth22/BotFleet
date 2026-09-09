@@ -206,4 +206,29 @@ describe("EventBus", () => {
     emit(testEvent());
     expect(seenAfterDetach).toHaveLength(0);
   });
+
+  it("detach removes a single instance subscription without affecting others", async () => {
+    const inst1 = await liveInstance();
+    const fake2 = makeFakeDriver();
+    await fake2.driver.create({
+      instanceId: "inst-2",
+      displayName: undefined,
+      environment: {},
+      enabled: true,
+      config: {},
+    });
+    const inst2 = fake2.created.get("inst-2")!;
+
+    const bus = new EventBus();
+    bus.attach([inst1.instance, inst2.instance]);
+    const seen: RuntimeEvent[] = [];
+    bus.subscribe((e) => seen.push(e));
+
+    bus.detach("inst-1");
+    inst1.emit(testEvent());
+    inst2.emit(testEvent());
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0].providerInstanceId).toBe("inst-2");
+  });
 });
