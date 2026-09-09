@@ -175,13 +175,21 @@ export interface RoutineManagerOptions {
   /** The bot's one conversation.  Used in simple mode so automation does
    * not mint extra tasks. */
   defaultThread?: (botId: string) => string | undefined;
-  createTask: (botId: string, title: string, activate?: boolean) => { threadId: string } | null;
+  createTask: (
+    botId: string,
+    title: string,
+    activate?: boolean,
+    automationKey?: string,
+  ) => { threadId: string } | null;
   /** Switch the bot's live chat to this thread (webhook deliveries). */
   activateTask?: (botId: string, threadId: string) => void;
   /** True when this bot still has a task for `threadId`. Used so a later
    * scheduled run of the same routine can keep writing in the previous thread
    * instead of minting a new one every tick. */
   taskExists?: (botId: string, threadId: string) => boolean;
+  /** Durable lookup by `automationThreadKey`, independent of run history. */
+  taskForKey?: (botId: string, automationKey: string) => string | undefined;
+  stampKey?: (botId: string, threadId: string, automationKey: string) => void;
   startTurn: (
     botId: string,
     threadId: string,
@@ -778,18 +786,15 @@ export class RoutineManager {
         // tests and an older harness wiring expect).  The live server always
         // passes the workspace setting, whose default is Simple.
         const mode = parseConversationMode(this.options.conversationMode?.() ?? "projects");
-        let threadId: string | undefined;
-        if (!allowsMultipleBotThreads(mode)) {
-          threadId = this.options.defaultThread?.(run.botId);
-          if (!threadId) {
-            this.failRun(run, "Could not find this bot's conversation");
-            continue;
-          }
-        } else {
-          const key = automationThreadKey(run);
-          // The routine's own name, not the lane's: the person recognises
-          // "Fleet PR Health Sweep", not "Schedules".
-          const title = run.routineName?.trim() || automationLaneTitle(mode, run.triggerSource);
+        // The routine's own name, not the lane's: the person recognises
+        // "Fleet PR Health Sweep", not "Schedules".
+        const title = run.routineName?.trim() || automationLaneTitle(mode, run.triggerSource);
+        // Identity is the source (webhook / routine), not "whatever chat is
+        // open".  A keyed task wins even in Simple, so a re-fire cannot
+        // mint a sibling.  Run history is the fallback for tasks stamped
+        // before automationKey existed.
+        let threadId: string | undefined = this.options.taskForKey?.(run.botId, key);
+        if (!threadId) {
           const previous = [...this.runs].reverse().find(
             (candidate) =>
               candidate.botId === run.botId &&
@@ -799,22 +804,36 @@ export class RoutineManager {
               this.options.taskExists?.(run.botId, candidate.threadId!),
           );
           threadId = previous?.threadId;
-          if (!threadId) {
+          if (threadId) this.options.stampKey?.(run.botId, threadId, key);
+        }
+        if (!threadId) {
+          if (!allowsMultipleBotThreads(mode)) {
+            threadId = this.options.defaultThread?.(run.botId);
+            if (!threadId) {
+              this.failRun(run, "Could not find this bot's conversation");
+              continue;
+            }
+            this.options.stampKey?.(run.botId, threadId, key);
+          } else {
             const task = this.options.createTask(
               run.botId,
               title,
-              run.triggerSource === "webhook",
+              run.triggerSource === "webhook" || run.triggerSource === "resource",
+              key,
             );
             if (!task) {
               this.failRun(run, "Could not create a task for this run");
               continue;
             }
             threadId = task.threadId;
-          } else if (run.triggerSource === "webhook") {
-            this.options.activateTask?.(run.botId, threadId);
           }
+        } else if (run.triggerSource === "webhook" || run.triggerSource === "resource") {
+          this.options.activateTask?.(run.botId, threadId);
         }
-        if (run.triggerSource === "webhook" && !allowsMultipleBotThreads(mode)) {
+        if (
+          (run.triggerSource === "webhook" || run.triggerSource === "resource") &&
+          !allowsMultipleBotThreads(mode)
+        ) {
           this.options.activateTask?.(run.botId, threadId);
         }
         if (!threadId) {

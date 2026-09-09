@@ -84,7 +84,8 @@ export interface SecretRequestCardData {
 
 export interface Message {
   id: string;
-  role: "bot" | "user";
+  /** `system` is auto-delivered instructions (routine / webhook / resource). */
+  role: "bot" | "user" | "system";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
   card?: OptionCardData;
@@ -222,6 +223,8 @@ export interface Task {
   /** Optional engine for this conversation.  Absent means the bot's own
    * modelSelection.  Used in Projects mode so a thread is not a named bot. */
   modelSelection?: ModelSelection;
+  /** Stable webhook/routine identity so a re-fire appends here. */
+  automationKey?: string;
 }
 
 export interface TaskUsage {

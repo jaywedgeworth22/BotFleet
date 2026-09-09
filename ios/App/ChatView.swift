@@ -1165,7 +1165,23 @@ struct MessageRow: View {
     private var content: some View {
         switch message.kind {
         case .text:
-            if message.role == .user, let webhook = WebhookMessageView.parse(message.text) {
+            if message.role == .system {
+                if let webhook = WebhookMessageView.parse(message.text) {
+                    WebhookEventCard(view: webhook)
+                } else if let imessage = ImessageMessageView.parse(message.text) {
+                    ImessageEventCard(view: imessage)
+                } else {
+                    let body = message.text ?? ""
+                    let first = body.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Instructions"
+                    ChannelEventCard(
+                        headline: String(first.prefix(120)),
+                        subtitle: "Routine",
+                        payload: body.isEmpty ? nil : body,
+                        systemImage: "clock.arrow.2.circlepath",
+                        accessibilityName: "Routine"
+                    )
+                }
+            } else if message.role == .user, let webhook = WebhookMessageView.parse(message.text) {
                 WebhookEventCard(view: webhook)
             } else if message.role == .user, let imessage = ImessageMessageView.parse(message.text) {
                 ImessageEventCard(view: imessage)
@@ -1365,8 +1381,9 @@ struct TextBubble: View {
 }
 
 /// Incoming webhook as a collapsible work card, not a blue user bubble.
-/// The harness stores the trigger as role=user so the model still sees it
-/// as the turn prompt.  That does not mean a person typed it.
+/// Auto-delivered instructions are stored as role=system so the model still
+/// sees them as the turn prompt.  Older rows used role=user; the card still
+/// catches those.  That does not mean a person typed it.
 struct WebhookEventCard: View {
     let view: WebhookMessageView
 

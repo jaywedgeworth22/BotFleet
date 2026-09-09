@@ -2403,8 +2403,12 @@ async function startTurn(
   const task = store.taskByThread(bot.id, threadId);
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
   const commsDepth = opts?.commsDepth ?? 0;
-  // a task takes its name from the first thing you asked it to do
-  if (text.trim() && !opts?.cardContinuation) store.titleTaskFromFirstMessage(bot.id, text, threadId);
+  // a task takes its name from the first thing you asked it to do.
+  // Auto-delivered instructions are not that — they already named the task
+  // from the routine or webhook.
+  if (text.trim() && !opts?.cardContinuation && !opts?.automationSource) {
+    store.titleTaskFromFirstMessage(bot.id, text, threadId);
+  }
 
   const selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, task.modelSelection ?? bot.modelSelection).selection;
@@ -2442,12 +2446,16 @@ async function startTurn(
     );
   }
 
-  // an edit hands us its already-branched user message; a plain send appends
+  // an edit hands us its already-branched user message; a plain send appends.
+  // Auto-delivered instructions are stored as role=system so iOS/desktop
+  // never paint a blue user bubble.  The model still receives them as the
+  // turn prompt via transcriptPromptRole.
   let userMessage = opts?.userMessage;
   if (!userMessage) {
+    const storedRole = opts?.automationSource ? "system" : "user";
     userMessage = opts?.cardContinuation
       ? { id: `card-${randomUUID()}`, at: Date.now(), role: "user", kind: "text", text }
-      : store.appendMessage(threadId, { role: "user", kind: "text", text, replyToId: opts?.replyTo?.id });
+      : store.appendMessage(threadId, { role: storedRole, kind: "text", text, replyToId: opts?.replyTo?.id });
   }
 
   // transcript for API-backed drivers: settled text turns on the ACTIVE
@@ -2462,7 +2470,7 @@ async function startTurn(
     .filter((m) => m.kind === "text" && m.text && !skipTranscript.has(m.id))
     .slice(-40)
     .map((m) => ({
-      role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+      role: m.role === "user" || m.role === "system" ? ("user" as const) : ("assistant" as const),
       text: transcriptText(m, messagesById, cfg.profile?.name?.trim() || "User"),
     }));
 
@@ -2991,9 +2999,16 @@ routines = new RoutineManager({
     run.triggerSource === "webhook" && run.webhookId
       ? webhooks.list().find((hook) => hook.id === run.webhookId)?.minGapMinutes
       : undefined,
-  defaultThread: (botId) => store.bot(botId)?.threadId,
-  createTask: (botId, title, activate = false) => {
-    const task = store.createTask(botId, title, activate);
+  defaultThread: (botId) => {
+    const bot = store.bot(botId);
+    if (!bot) return undefined;
+    const tasks = bot.tasks ?? [];
+    if (tasks.length === 0) return bot.threadId;
+    const oldest = tasks.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
+    return oldest.threadId;
+  },
+  createTask: (botId, title, activate = false, automationKey) => {
+    const task = store.createTask(botId, title, activate, automationKey);
     const bot = store.bot(botId);
     if (task && bot) broadcast({ kind: "bot", bot: publicBot(bot) });
     return task;
@@ -3005,6 +3020,10 @@ routines = new RoutineManager({
     if (switched) broadcast({ kind: "bot", bot: publicBot(switched) });
   },
   taskExists: (botId, threadId) => Boolean(store.taskByThread(botId, threadId)),
+  taskForKey: (botId, automationKey) => store.taskByAutomationKey(botId, automationKey)?.threadId,
+  stampKey: (botId, threadId, automationKey) => {
+    store.stampAutomationKey(botId, threadId, automationKey);
+  },
   startTurn: (botId, threadId, prompt, runOn, triggerSource, onDispatchError) =>
     startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError }),
   interruptTurn: async (botId, threadId, runOn) => {
@@ -3358,7 +3377,7 @@ function serializeRoomContext(threadId: string, userName: string): string {
   return messages
     .filter((m) => m.kind === "text" && m.text)
     .slice(-GROUP_CONTEXT_MESSAGES)
-    .map((m) => `${m.role === "user" ? userName : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
+    .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Instructions" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
     .join("\n");
 }
 

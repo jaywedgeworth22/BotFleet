@@ -810,6 +810,25 @@ describe("Store task working folder", () => {
     expect(store.pinTaskCwd(bot.id, next.threadId)).toBe("/tmp/project-b");
   });
 
+  it("reuses a task stamped with the same automation key instead of minting another", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    const first = store.createTask(bot.id, "Morning brief", false, "routine:r1")!;
+    const again = store.createTask(bot.id, "Morning brief", false, "routine:r1")!;
+    expect(again.threadId).toBe(first.threadId);
+    expect(store.tasks(bot.id).filter((t) => t.automationKey === "routine:r1")).toHaveLength(1);
+    const other = store.createTask(bot.id, "Evening", false, "routine:r2")!;
+    expect(other.threadId).not.toBe(first.threadId);
+  });
+
+  it("stamps an automation key onto an existing thread", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    expect(store.stampAutomationKey(bot.id, bot.threadId, "webhook:wh_1")?.automationKey).toBe("webhook:wh_1");
+    expect(store.taskByAutomationKey(bot.id, "webhook:wh_1")?.threadId).toBe(bot.threadId);
+    expect(store.stampAutomationKey(bot.id, bot.threadId, "routine:other")?.automationKey).toBe("webhook:wh_1");
+  });
+
   it("pins the default (null) when the bot has no folder, so a later folder can't move a live session", () => {
     const store = new Store(selection);
     const bot = store.createBot();

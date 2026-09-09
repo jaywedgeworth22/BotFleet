@@ -2,7 +2,7 @@
  * structural avoids pulling the renderer's TSX store into server tests. */
 export interface TimelineMessage {
   id: string;
-  role: "bot" | "user";
+  role: "bot" | "user" | "system";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
   tool?: { name: string; ok?: boolean };
@@ -25,7 +25,7 @@ export function timelineEvents(messages: TimelineMessage[]): TimelineEvent[] {
   const events: TimelineEvent[] = [];
   let sawUserInput = false;
   for (const message of messages) {
-    if (message.kind === "text" && message.role === "user" && message.text?.trim()) {
+    if (message.kind === "text" && (message.role === "user" || message.role === "system") && message.text?.trim()) {
       events.push({
         id: message.id,
         at: message.at,

@@ -87,7 +87,9 @@ export interface SecretRequestCardData {
 
 export interface Message {
   id: string;
-  role: "bot" | "user";
+  /** `system` is auto-delivered instructions (routine, webhook, resource).
+   * Never a person typing — the model still sees it as the turn prompt. */
+  role: "bot" | "user" | "system";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
   card?: OptionCardData;
@@ -238,6 +240,10 @@ export interface TaskRecord {
   /** Optional engine for this conversation.  Absent means the bot's own
    * modelSelection.  Used in Projects mode so a thread is not a named bot. */
   modelSelection?: ModelSelection;
+  /** Stable identity for a webhook, resource trigger, or routine so a
+   * re-fire appends here instead of minting another task.  Shape is
+   * `webhook:<id>` or `routine:<id>` from `automationThreadKey`. */
+  automationKey?: string;
 }
 
 export interface TaskUsage {
@@ -1603,16 +1609,43 @@ export class Store {
     return this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
   }
 
+  taskByAutomationKey(botId: string, automationKey: string): TaskRecord | undefined {
+    if (!automationKey) return undefined;
+    return this.bot(botId)?.tasks?.find((t) => t.automationKey === automationKey);
+  }
+
+  stampAutomationKey(botId: string, threadId: string, automationKey: string): TaskRecord | null {
+    const task = this.taskByThread(botId, threadId);
+    if (!task || !automationKey) return null;
+    if (task.automationKey === automationKey) return task;
+    // Simple mode shares one conversation across sources.  The first key
+    // wins so a later routine cannot steal the lookup for an earlier one.
+    if (task.automationKey) return task;
+    task.automationKey = automationKey;
+    this.saveBots();
+    this.emit({ type: "bot", botId });
+    return task;
+  }
+
   /** A fresh context on the same bot: new thread, new session, same
-   * persona/tools/computer. Becomes the active task. */
-  createTask(botId: string, title?: string, activate = true): TaskRecord | null {
+   * persona/tools/computer. Becomes the active task.  A matching
+   * `automationKey` returns the existing task instead of minting another. */
+  createTask(botId: string, title?: string, activate = true, automationKey?: string): TaskRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
+    if (automationKey) {
+      const existing = this.taskByAutomationKey(botId, automationKey);
+      if (existing) {
+        if (activate && bot.threadId !== existing.threadId) this.switchTask(botId, existing.threadId);
+        return existing;
+      }
+    }
     const task: TaskRecord = {
       threadId: newId(),
       title: title?.trim() || UNTITLED_TASK,
       createdAt: Date.now(),
       resumeCursors: {},
+      ...(automationKey ? { automationKey } : {}),
     };
     bot.tasks = [task, ...(bot.tasks ?? [])];
     if (activate) {

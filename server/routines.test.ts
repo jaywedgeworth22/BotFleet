@@ -18,6 +18,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   let bot: "ready" | "busy" | "missing" = "ready";
   let task = 0;
   const threads = new Set<string>();
+  const keys = new Map<string, string>();
   const started: Array<{ botId: string; threadId: string; prompt: string }> = [];
   const runOns: string[] = [];
   const triggerSources: string[] = [];
@@ -32,12 +33,17 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     emit: (payload) => emitted.push(payload),
     botState: () => bot,
     turnLive: () => live,
-    createTask: (_botId, title, activate = false) => {
+    createTask: (_botId, title, activate = false, automationKey) => {
       taskActivations.push(activate);
       taskTitles.push(title);
       const threadId = `thread-${++task}`;
       threads.add(threadId);
+      if (automationKey) keys.set(automationKey, threadId);
       return { threadId };
+    },
+    taskForKey: (_botId, automationKey) => keys.get(automationKey),
+    stampKey: (_botId, threadId, automationKey) => {
+      keys.set(automationKey, threadId);
     },
     taskExists: (_botId, threadId) => threads.has(threadId),
     startTurn: async (botId, threadId, prompt, runOn, triggerSource) => {
@@ -494,6 +500,32 @@ describe("RoutineManager", () => {
     }
     expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1", "thread-1"]);
     expect(h.taskTitles).toEqual(["Morning brief"]);
+  });
+
+  it("reuses a stamped key even when a different chat is selected in simple mode", async () => {
+    const h = harness();
+    h.options.conversationMode = () => "simple";
+    h.options.defaultThread = () => "chat-thread";
+    const morning = h.manager.create({
+      name: "Morning brief",
+      prompt: "Morning",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    h.setNow(morning.nextRunAt!);
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "chat-thread",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    h.options.defaultThread = () => "some-other-new-chat";
+    h.setNow(h.manager.listRoutines().find((r) => r.id === morning.id)!.nextRunAt!);
+    await h.manager.tick();
+    expect(h.started.map((row) => row.threadId)).toEqual(["chat-thread", "chat-thread"]);
+    expect(h.taskTitles).toEqual([]);
   });
 
   it("gives two different routines two different threads", async () => {

@@ -117,6 +117,10 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
 
     public enum Role: String, Codable, Sendable {
         case bot, user
+        /// Auto-delivered instructions (routine, webhook, resource).  Never
+        /// a person typing.  Older phones that lack this case fall through
+        /// the decoder to `.bot`, which is left-aligned and not blue.
+        case system
 
         /// Same reasoning, and `bot` rather than a third case: an unplaceable
         /// message drawn as yours would be the phone claiming you said

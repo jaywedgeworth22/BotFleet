@@ -12,6 +12,10 @@ describe("reply display", () => {
     expect(replyAuthor(base, "Mochi")).toBe("Mochi");
   });
 
+  it("labels auto-delivered instructions, not You", () => {
+    expect(replyAuthor({ ...base, role: "system", text: "Morning brief" })).toBe("Instructions");
+  });
+
   it("doesn't call a peer bot's ask_bot reply 'You' just because it's role: user", () => {
     // ask_bot replies are mirrored in with role: "user" so they align right
     // like anything else the human sees on that side — but they still carry

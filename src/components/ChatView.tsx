@@ -258,7 +258,8 @@ function Bubble({
   // row a bubble sits on, versus whether it gets the human's purple
   // treatment. Any `role: "user"` message aligns right — including a peer
   // bot's `ask_bot` reply mirrored into this thread (`from.botId` set) —
-  // but purple is reserved for what the human actually typed.
+  // but purple is reserved for what the human actually typed.  Auto
+  // instructions are `role: "system"` and never sit on the human side.
   const alignRight = message.role === "user";
   const humanTyped = alignRight && !message.from?.botId;
   const [expanded, setExpanded] = useState(false);
@@ -782,20 +783,33 @@ const MessagesList = memo(function MessagesList({
               return src ? <ScreenFrame src={src} /> : null;
             }
             default: {
-              // Webhook turns are stored as role=user so the model sees them
-              // as the prompt.  They are not something the owner typed — keep
-              // them off the blue bubble and on a collapsible work card.
-              const webhookView =
-                m.role === "user" && !m.from?.botId ? webhookMessageView(m.text ?? "") : null;
+              // Auto-delivered instructions (routine / webhook / resource) are
+              // stored as role=system.  Older webhook rows still used
+              // role=user; keep those off the blue bubble too.
+              const autoDelivered = m.role === "system" || (m.role === "user" && !m.from?.botId);
+              const webhookView = autoDelivered ? webhookMessageView(m.text ?? "") : null;
               if (webhookView) return <WebhookCard view={webhookView} />;
-              const imessageView =
-                m.role === "user" && !m.from?.botId ? imessageMessageView(m.text ?? "") : null;
+              const imessageView = autoDelivered ? imessageMessageView(m.text ?? "") : null;
               if (imessageView) {
                 return (
                   <WebhookCard
                     view={imessageView}
                     icon={<MessageCircle size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />}
                     detailsNoun="Message"
+                  />
+                );
+              }
+              if (m.role === "system") {
+                const body = (m.text ?? "").trim();
+                const firstLine = body.split("\n").find((line) => line.trim()) ?? "Instructions";
+                return (
+                  <WebhookCard
+                    view={{
+                      headline: firstLine.slice(0, 120),
+                      subtitle: "Routine",
+                      payload: body || undefined,
+                    }}
+                    detailsNoun="Instructions"
                   />
                 );
               }
