@@ -16,42 +16,56 @@
 // takes an advisory lock, reads the file, hands the parsed object to the
 // caller's `mutate`, writes the result atomically, and releases.  The lock is
 // a sibling `config.json.lock` created with O_EXCL -- atomic on macOS, Linux
-// and Windows -- holding the owner's pid so a lock left behind by a crashed
-// process is recognised as stale and reclaimed instead of wedging every
-// later save.  Reclaiming goes through an elected single reclaimer so a
-// fresh lock is never removed by a waiter that judged its predecessor
-// stale, and a holder that outlives its lease is fenced: it cannot write
-// once the lock is no longer its own.  Readers never need the lock:
-// the rename keeps reads consistent on their own.
+// and Windows -- holding the owner's pid, a timestamp and a random token.
 //
-// It lives under electron/ rather than shared/ because the packaged app
+// Two rules keep it safe without anything POSIX does not offer:
+//
+//   1. No process ever removes or replaces another process's live lock.  A
+//      lock left behind by a crashed, released-but-stuck, or overrun holder
+//      is TAKEN OVER in place, and only by one waiter: taking over generation
+//      R means first winning `config.json.lock.takeover.<R>` with O_EXCL,
+//      then renaming a file holding the taker's own record over the lock.
+//      Only one waiter can win a given generation, and nothing but that
+//      winner can replace a stale R (its holder is dead, gave up, or is past
+//      its lease and by rule 2 no longer touches it), so the rename never
+//      lands on a fresh lock and nothing is ever deleted out from under one.
+//   2. A holder acts on its lock -- writes through it, or unlinks it on
+//      release -- only inside its usable lease, `staleMs` less a margin.  A
+//      peer may take the lock over only once the full `staleMs` is out, so
+//      inside the usable lease nothing else can replace the generation and
+//      the holder's own by-name unlink still refers to it.  Past the lease
+//      the holder leaves the lock alone and its fence refuses the write.
+//
+// Readers never need the lock: the rename keeps reads consistent on their
+// own.  It lives under electron/ rather than shared/ because the packaged app
 // ships only electron/** (electron-builder.yml `files`); the server imports
 // it from here and its esbuild bundle inlines it.  Dependency-free on
-// purpose: the packaged app carries no node_modules, so `proper-lockfile`
-// and friends are not an option on the Electron side.  The server's
-// TypeScript sees it through config-file-lock.d.mts.
+// purpose: the packaged app carries no node_modules, so `proper-lockfile` and
+// friends are not an option on the Electron side.  The server's TypeScript
+// sees it through config-file-lock.d.mts.
 import { randomUUID } from "node:crypto";
 import {
   closeSync,
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 
-/** A lock older than this is reclaimed even when its owner pid still
+/** A lock older than this is taken over even when its owner pid still
  * answers: a healthy read-modify-write holds it for milliseconds, and pids
  * get reused, so an old lock with a live pid is usually a crashed writer
  * whose number came back around.  The other way to get here is a holder
  * suspended mid-update -- system sleep, a debugger pause, a filesystem
  * stall.  That holder is fenced, not trusted: `assertHeld` refuses its
- * write once the lease is past this age or the lock is someone else's, so
- * reclaiming can never let two writers land snapshots on one file. */
+ * write once its usable lease is over, so a takeover can never let two
+ * writers land snapshots on one file. */
 export const CONFIG_LOCK_STALE_MS = 30_000;
 
 /** How long a writer waits for the lock before giving up with an error.
@@ -64,45 +78,25 @@ export const CONFIG_LOCK_TIMEOUT_MS = 5_000;
 const MAX_BACKOFF_MS = 50;
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 
+/** Takeover tickets are keyed to the generation they replaced and are never
+ * needed again once every waiter that judged that generation stale has
+ * moved on -- a judgment lives one acquire loop iteration, bounded by the
+ * acquire timeout.  A winner prunes tickets older than this on release. */
+const TAKEOVER_TICKET_TTL_MS = 10 * 60 * 1000;
+
 /** Windows reports a lock file that another process has just unlinked, or
  * still holds open for reading, as EPERM or EACCES (delete is deferred until
- * the last handle closes) rather than EEXIST or ENOENT, and an unlink can
- * fail the same way for a few microseconds.  Those are "try again shortly",
- * not permission problems; a real one persists past the acquire timeout
- * and surfaces there. */
+ * the last handle closes) rather than EEXIST or ENOENT, and an unlink or a
+ * rename can fail the same way for a few microseconds.  Those are "try
+ * again shortly", not permission problems; a real one persists past the
+ * acquire timeout and surfaces there. */
 const TRANSIENT_CODES = new Set(["EPERM", "EACCES", "EBUSY"]);
 
-function isTransient(error) {
-  return TRANSIENT_CODES.has(error?.code);
-}
-
-/** How much of the lease a holder leaves unused.  Past `staleMs - margin`
- * a handle neither writes (assertHeld) nor unlinks (release): a peer may
- * reclaim the lock only once the full `staleMs` is out, so during the
- * margin nothing else can replace this generation, and a name-based
- * check-then-unlink in release() still refers to it.  Proportional so
- * tests with tiny leases keep a usable window. */
-function leaseMarginMs(staleMs) {
-  return Math.min(2_000, staleMs / 4);
-}
-
-/** unlinkSync with a few short retries for the Windows deferred-delete
- * case.  Returns true when the file is gone (or was never there). */
-function unlinkWithRetry(path) {
-  let delay = 1;
-  for (let attempt = 0; attempt < 20; attempt += 1) {
-    try {
-      unlinkSync(path);
-      return true;
-    } catch (error) {
-      if (error?.code === "ENOENT") return true;
-      if (!isTransient(error)) return false;
-      sleepSync(delay);
-      delay = Math.min(delay * 2, 20);
-    }
-  }
-  return false;
-}
+/** Handles this process currently holds, by lock path.  Re-entry is judged
+ * here, not by the pid on disk: a record carrying this pid but no live
+ * handle is a leftover from a release whose unlink was refused, and is taken
+ * over like any other stale lock. */
+const heldLocks = new Map();
 
 /** The lock file that guards `configPath`. */
 export function lockPathFor(configPath) {
@@ -117,6 +111,16 @@ export function lockPathFor(configPath) {
  * contention and is capped by the acquire timeout. */
 function sleepSync(ms) {
   Atomics.wait(sleepCell, 0, 0, ms);
+}
+
+function isTransient(error) {
+  return TRANSIENT_CODES.has(error?.code);
+}
+
+/** How much of the lease a holder leaves unused (rule 2 above).
+ * Proportional so tests with tiny leases keep a usable window. */
+function leaseMarginMs(staleMs) {
+  return Math.min(2_000, staleMs / 4);
 }
 
 function isPlainObject(value) {
@@ -145,19 +149,8 @@ function processAlive(pid) {
   }
 }
 
-function reclaimMarkerFor(lockPath) {
-  return `${lockPath}.reclaim`;
-}
-
-/** The reclaim marker that guards `configPath`'s lock: waiters that judge
- * the lock stale elect one reclaimer through it (see reclaimStaleLock). */
-export function reclaimPathFor(configPath) {
-  return reclaimMarkerFor(lockPathFor(configPath));
-}
-
 /** What is at `lockPath` right now -- its parsed record (null when
- * unreadable) plus the inode and mtime that identify that exact file -- or
- * null when there is no lock at all. */
+ * unreadable) plus the file's mtime -- or null when there is no lock. */
 function inspectLock(lockPath) {
   let stat;
   try {
@@ -168,51 +161,66 @@ function inspectLock(lockPath) {
   return { record: readLockRecord(lockPath), ino: stat.ino, mtimeMs: stat.mtimeMs };
 }
 
-function sameLock(a, b) {
-  return (
-    Boolean(a && b) &&
-    a.ino === b.ino &&
-    a.mtimeMs === b.mtimeMs &&
-    JSON.stringify(a.record) === JSON.stringify(b.record)
-  );
+/** The O_EXCL ticket a waiter must win to take over the exact generation
+ * `seen`: its token when the record is readable, else the file's inode and
+ * mtime.  Unique per generation, so a ticket can never be re-created for
+ * a generation once it has been taken over. */
+function takeoverTicketFor(lockPath, seen) {
+  const identity = seen.record
+    ? (seen.record.token ?? `${seen.record.pid}-${Math.floor(seen.record.at)}`)
+    : `${seen.ino}-${Math.floor(seen.mtimeMs)}`;
+  return `${lockPath}.takeover.${String(identity).replace(/[^A-Za-z0-9_-]/g, "_")}`;
+}
+
+/** Remove takeover tickets beside `lockPath` that are past their TTL.
+ * Ticket names are unique per generation, so removing an old one cannot
+ * collide with anything a live waiter could still create. */
+function pruneTakeoverTickets(lockPath) {
+  const dir = dirname(lockPath);
+  const prefix = `${basename(lockPath)}.takeover.`;
+  let names;
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - TAKEOVER_TICKET_TTL_MS;
+  for (const name of names) {
+    if (!name.startsWith(prefix)) continue;
+    const ticket = join(dir, name);
+    try {
+      if (statSync(ticket).mtimeMs < cutoff) unlinkWithRetry(ticket);
+    } catch {
+      /* gone already */
+    }
+  }
 }
 
 /** True when the inspected lock belongs to nobody who could still release
- * it.  A record with a dead pid is stale at once; a record (or an
- * unreadable file) older than `staleMs` is stale regardless. */
+ * it: its holder marked it released, its lease is fully out, or its pid is
+ * dead.  An unreadable file is judged by its mtime. */
 function isStaleLock(seen, nowMs, staleMs) {
   if (seen.record) {
+    if (seen.record.released === true) return true;
     if (nowMs - seen.record.at > staleMs) return true;
     return !processAlive(seen.record.pid);
   }
   return nowMs - seen.mtimeMs > staleMs;
 }
 
-/** Remove the stale lock `seen` without ever removing a fresh one.
- *
- * Unlinking by name cannot be made conditional on POSIX, so if every waiter
- * that judged the lock stale simply removed it, the second could remove the
- * fresh lock the first had already created in its place and two writers
- * would overlap.  Instead the waiters elect one reclaimer: whoever creates
- * the `.reclaim` marker with O_EXCL.  The winner re-inspects the lock,
- * unlinks it only if it is still the exact file it judged (same inode,
- * mtime and record), and steps down.  A loser never touches the lock; it
- * keeps waiting, so a generation created meanwhile is safe from it.  A
- * marker left by a reclaimer that died mid-way is judged by the same
- * pid-and-age rule and cleared.
- *
- * Returns true when this process held the election (whether or not the
- * lock still needed removing), false when another reclaimer holds it. */
-function reclaimStaleLock(lockPath, seen, nowMs, staleMs) {
-  const marker = reclaimMarkerFor(lockPath);
+/** Write `record` into `lockPath` by renaming a sibling temp file over it
+ * (rule 1 above).  Returns false on a transient refusal so the caller can
+ * retry; throws on anything else. */
+function replaceLockRecord(lockPath, record) {
+  const temporary = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
   let fd = null;
-  let ourMarker = null;
   try {
-    fd = openSync(marker, "wx", 0o600);
-    writeFileSync(fd, JSON.stringify({ pid: process.pid, at: nowMs }));
+    fd = openSync(temporary, "w", 0o600);
+    writeFileSync(fd, JSON.stringify(record));
     closeSync(fd);
     fd = null;
-    ourMarker = inspectLock(marker);
+    renameSync(temporary, lockPath);
+    return true;
   } catch (error) {
     if (fd !== null) {
       try {
@@ -221,83 +229,146 @@ function reclaimStaleLock(lockPath, seen, nowMs, staleMs) {
         /* best-effort */
       }
     }
-    if (error?.code !== "EEXIST" && !isTransient(error)) throw error;
-    const other = inspectLock(marker);
-    if (other && isStaleLock(other, nowMs, staleMs)) {
-      if (sameLock(inspectLock(marker), other)) unlinkWithRetry(marker);
+    try {
+      unlinkSync(temporary);
+    } catch {
+      /* best-effort cleanup */
     }
-    return false;
+    if (isTransient(error) || error?.code === "ENOENT") return false;
+    throw error;
   }
+}
+
+/** unlinkSync with a few short retries for the Windows deferred-delete
+ * case.  Returns true when the file is gone (or was never there). */
+function unlinkWithRetry(path) {
+  let delay = 1;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      unlinkSync(path);
+      return true;
+    } catch (error) {
+      if (error?.code === "ENOENT") return true;
+      if (!isTransient(error)) return false;
+      sleepSync(delay);
+      delay = Math.min(delay * 2, 20);
+    }
+  }
+  return false;
+}
+
+/** Take over the stale generation `seen` (rule 1): win its ticket, then
+ * rename our record over the lock.  Returns the handle, or null when another
+ * waiter already holds this generation's ticket or the rename was refused
+ * transiently (the caller keeps waiting; the lock will be fresh or gone). */
+function takeOver(lockPath, seen, ours, staleMs) {
+  const ticket = takeoverTicketFor(lockPath, seen);
+  let fd = null;
   try {
-    if (sameLock(inspectLock(lockPath), seen)) unlinkWithRetry(lockPath);
-  } finally {
-    if (ourMarker && sameLock(inspectLock(marker), ourMarker)) {
-      unlinkWithRetry(marker);
+    fd = openSync(ticket, "wx", 0o600);
+    closeSync(fd);
+    fd = null;
+  } catch (error) {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* best-effort */
+      }
     }
+    if (error?.code === "EEXIST" || isTransient(error)) return null;
+    throw error;
   }
-  return true;
+  let delay = 1;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    ours.at = Date.now();
+    if (replaceLockRecord(lockPath, ours)) return makeHandle(lockPath, ours, staleMs, true);
+    sleepSync(delay);
+    delay = Math.min(delay * 2, 20);
+  }
+  // The rename kept being refused.  Give the ticket back (it is ours and
+  // unique, so removing it is safe) and let the caller keep waiting.
+  unlinkWithRetry(ticket);
+  return null;
+}
+
+function makeHandle(lockPath, ours, staleMs, tookOver = false) {
+  heldLocks.set(lockPath, ours);
+  let released = false;
+  const stillOurs = () => {
+    const current = readLockRecord(lockPath);
+    return Boolean(
+      current && current.pid === ours.pid && current.at === ours.at && current.token === ours.token,
+    );
+  };
+  const insideUsableLease = () => Date.now() - ours.at <= staleMs - leaseMarginMs(staleMs);
+  return {
+    /** Throw unless this handle still owns the lock and its usable lease
+     * (`staleMs` less the margin) has not run out.  `updateConfigFile` runs
+     * it immediately before the rename that replaces the config file, so a
+     * holder that was suspended past the stale window (system sleep, a
+     * debugger pause, a filesystem stall) and whose lock a peer has since
+     * taken over can never land its stale snapshot on top of the peer's
+     * write.  The lease is what makes taking over safe. */
+    assertHeld() {
+      if (released) throw new Error(`config lock already released: ${lockPath}`);
+      if (!insideUsableLease()) {
+        throw new Error(
+          `config lock lease expired after ${staleMs} ms; refusing to write a stale snapshot: ${lockPath}`,
+        );
+      }
+      if (!stillOurs()) {
+        throw new Error(`config lock was taken over by another writer; refusing to write a stale snapshot: ${lockPath}`);
+      }
+    },
+    release() {
+      if (released) return;
+      released = true;
+      heldLocks.delete(lockPath);
+      if (tookOver) pruneTakeoverTickets(lockPath);
+      // Past the usable lease this handle no longer touches the lock by
+      // name: a peer may be taking it over at this very moment.  It is left
+      // for that takeover, which judges it stale by age within the margin.
+      if (!insideUsableLease()) return;
+      if (!stillOurs()) return;
+      if (unlinkWithRetry(lockPath)) return;
+      // The unlink was refused even after retries (a scanner or a peer holds
+      // the file open on Windows).  Mark the record released -- a rename
+      // over our own live lock, safe inside the lease -- so peers take it
+      // over at once instead of waiting out the lease.  If even that is
+      // refused they wait out the lease; this process itself is not wedged
+      // either way, since re-entry is judged by live handles, not the pid.
+      replaceLockRecord(lockPath, { ...ours, released: true });
+    },
+  };
 }
 
 /** Acquire the advisory lock for `configPath`.  Returns a handle with
  * `release()` and `assertHeld()`.  Synchronous, like the writers that use
- * it: waits with short sleeps until the lock is free, reclaims a stale
+ * it: waits with short sleeps until the lock is free, takes over a stale
  * one, and throws after `timeoutMs` so a wedged peer surfaces as an error
- * instead of a silent overwrite.  Re-entering from the process that
- * already holds the lock is a bug, not a wait, and throws immediately. */
+ * instead of a silent overwrite.  Re-entering from a handle this process
+ * still holds is a bug, not a wait, and throws immediately. */
 export function acquireConfigFileLock(configPath, options = {}) {
   const lockPath = lockPathFor(configPath);
   const staleMs = options.staleMs ?? CONFIG_LOCK_STALE_MS;
   const timeoutMs = options.timeoutMs ?? CONFIG_LOCK_TIMEOUT_MS;
+  if (heldLocks.has(lockPath)) {
+    throw new Error(`config lock re-entered by this process: ${lockPath}`);
+  }
   mkdirSync(dirname(configPath), { recursive: true, mode: 0o700 });
   const startedAt = Date.now();
   let backoffMs = 2;
   let lastTransient = null;
   for (;;) {
-    const ours = { pid: process.pid, at: Date.now() };
+    const ours = { pid: process.pid, at: Date.now(), token: randomUUID() };
     let fd = null;
     try {
       fd = openSync(lockPath, "wx", 0o600);
       writeFileSync(fd, JSON.stringify(ours));
       closeSync(fd);
       fd = null;
-      let released = false;
-      const stillOurs = () => {
-        const current = readLockRecord(lockPath);
-        return Boolean(current && current.pid === ours.pid && current.at === ours.at);
-      };
-      return {
-        /** Throw unless this handle still owns the lock and its usable
-         * lease (`staleMs` less the margin) has not run out.  `updateConfigFile`
-         * calls it right before the rename, so a holder that was suspended
-         * past the stale window (system sleep, a debugger pause, a
-         * filesystem stall) and whose lock a peer has since reclaimed can
-         * never land its stale snapshot on top of the peer's write.  The
-         * lease is what makes reclaiming safe. */
-        assertHeld() {
-          if (released) throw new Error(`config lock already released: ${lockPath}`);
-          if (Date.now() - ours.at > staleMs - leaseMarginMs(staleMs)) {
-            throw new Error(
-              `config lock lease expired after ${staleMs} ms; refusing to write a stale snapshot: ${lockPath}`,
-            );
-          }
-          if (!stillOurs()) {
-            throw new Error(`config lock was reclaimed by another writer; refusing to write a stale snapshot: ${lockPath}`);
-          }
-        },
-        release() {
-          if (released) return;
-          released = true;
-          // Past the usable lease this handle no longer touches the lock by
-          // name: a reclaimer may be replacing it at this very moment, and an
-          // unlink here could take the reclaimer's generation with it.  The
-          // lock is left for the reclaim election, which judges it stale by
-          // age within the margin.  Inside the lease the name cannot change
-          // under us (see leaseMarginMs), so check-then-unlink is safe.
-          if (Date.now() - ours.at > staleMs - leaseMarginMs(staleMs)) return;
-          if (!stillOurs()) return;
-          unlinkWithRetry(lockPath);
-        },
-      };
+      return makeHandle(lockPath, ours, staleMs);
     } catch (error) {
       if (fd !== null) {
         try {
@@ -313,27 +384,18 @@ export function acquireConfigFileLock(configPath, options = {}) {
     }
     const now = Date.now();
     const seen = inspectLock(lockPath);
-    if (!seen) {
-      // Released between our attempt and this look -- or, on Windows, still
-      // pending deletion.  Either way the next create attempt decides; give
-      // a deferred delete a moment rather than spinning on EPERM.
-      if (lastTransient === null) continue;
-      if (now - startedAt >= timeoutMs) {
-        throw new Error(`config lock could not be created (${lastTransient.code}) within ${timeoutMs} ms: ${lockPath}`);
-      }
-      sleepSync(backoffMs);
-      backoffMs = Math.min(backoffMs * 2, MAX_BACKOFF_MS);
-      continue;
+    if (seen && isStaleLock(seen, now, staleMs)) {
+      const handle = takeOver(lockPath, seen, ours, staleMs);
+      if (handle) return handle;
     }
-    const holder = seen.record;
-    if (holder && holder.pid === process.pid && now - holder.at <= staleMs) {
-      throw new Error(`config lock re-entered by this process: ${lockPath}`);
-    }
-    if (isStaleLock(seen, now, staleMs) && reclaimStaleLock(lockPath, seen, now, staleMs)) {
-      continue; // we held the election: try the create again at once
-    }
+    if (!seen && lastTransient === null) continue; // released between our attempt and this look
     if (now - startedAt >= timeoutMs) {
-      const who = holder ? `pid ${holder.pid}` : "an unknown writer";
+      if (!seen) {
+        throw new Error(
+          `config lock could not be created (${lastTransient.code}) within ${timeoutMs} ms: ${lockPath}`,
+        );
+      }
+      const who = seen.record ? `pid ${seen.record.pid}` : "an unknown writer";
       throw new Error(`config lock held by ${who} for more than ${timeoutMs} ms: ${lockPath}`);
     }
     sleepSync(backoffMs);
@@ -409,7 +471,7 @@ export function writeFileAtomic(path, data, options = {}) {
  * already right and must not be rewritten.  It must be synchronous: the
  * lock is held for the duration of this call and released on the way out,
  * success or throw.  Returns the object now on disk.  Throws without
- * replacing the file if the lease expired or a peer reclaimed the lock by
+ * replacing the file if the lease expired or a peer took the lock over by
  * the time the staged write is about to be renamed into place. */
 export function updateConfigFile(configPath, mutate, options = {}) {
   return withConfigFileLock(
@@ -423,7 +485,7 @@ export function updateConfigFile(configPath, mutate, options = {}) {
       if (next === null) return disk;
       const toWrite = next === undefined ? disk : next;
       // Fence, immediately before the rename: refuse to replace the file if
-      // this lease ran out or a peer reclaimed the lock while `mutate`, the
+      // this lease ran out or a peer took the lock over while `mutate`, the
       // temp-file write or the fsync ran.  The staged temp file is dropped,
       // the peer's file stays intact, and the caller sees an error instead.
       writeFileAtomic(configPath, JSON.stringify(toWrite, null, 2), {

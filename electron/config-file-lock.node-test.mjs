@@ -15,20 +15,26 @@ import {
   acquireConfigFileLock,
   lockPathFor,
   readConfigFile,
-  reclaimPathFor,
   updateConfigFile,
   withConfigFileLock,
   writeFileAtomic,
 } from "./config-file-lock.mjs";
 
+const MODULE_URL = new URL("./config-file-lock.mjs", import.meta.url).href;
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 const sleepSync = (ms) => Atomics.wait(sleepCell, 0, 0, ms);
-
-const MODULE_URL = new URL("./config-file-lock.mjs", import.meta.url).href;
 
 function tempConfig() {
   const dir = mkdtempSync(join(tmpdir(), "botfleet-config-lock-"));
   return { dir, path: join(dir, "config.json") };
+}
+
+/** A pid that is certainly not alive: a child that has already exited.
+ * Pids are not recycled quickly enough for this to be anything else. */
+function deadPid() {
+  const gone = spawnSync(process.execPath, ["-e", "0"]);
+  assert.equal(gone.status, 0);
+  return gone.pid;
 }
 
 /** Run an ES-module body in a fresh Node process with the lock module bound
@@ -83,6 +89,18 @@ for (let i = 0; i < Number(process.env.CFL_N); i += 1) {
   }, options);
 }
 console.log("done");
+`;
+
+/** A worker that takes over a lock it judges stale under CFL_STALE_MS,
+ * writes a marker, announces it, holds for CFL_HOLD_MS, then releases. */
+const TAKEOVER_SOURCE = `
+const path = process.env.CFL_PATH;
+const lock = mod.acquireConfigFileLock(path, { staleMs: Number(process.env.CFL_STALE_MS), timeoutMs: 3000 });
+mod.writeFileAtomic(path, JSON.stringify({ holder: "peer" }));
+console.log("took");
+await new Promise((r) => setTimeout(r, Number(process.env.CFL_HOLD_MS)));
+lock.release();
+console.log("released");
 `;
 
 function waitForLine(wanted) {
@@ -198,7 +216,7 @@ test("writeFileAtomic runs beforeRename after staging and drops the staged file 
   }
 });
 
-test("re-entering the lock from the process that holds it throws instead of hanging", () => {
+test("re-entering the lock from a handle this process still holds throws instead of hanging", () => {
   const { dir, path } = tempConfig();
   try {
     assert.throws(
@@ -211,19 +229,33 @@ test("re-entering the lock from the process that holds it throws instead of hang
   }
 });
 
-test("a lock left behind by a dead process is reclaimed", () => {
+test("a record with this process's pid but no live handle is taken over, not refused as re-entry", () => {
   const { dir, path } = tempConfig();
   try {
-    // A child that has already exited: its pid is no longer alive, and pids
-    // are not recycled quickly enough for this to be anything else.
-    const gone = spawnSync(process.execPath, ["-e", "0"]);
-    assert.equal(gone.status, 0);
-    writeFileSync(lockPathFor(path), JSON.stringify({ pid: gone.pid, at: Date.now() }));
+    // The shape a release leaves behind when its unlink was refused: our
+    // own pid, fresh, but nothing in this process holds it.
+    writeFileSync(lockPathFor(path), JSON.stringify({ pid: process.pid, at: Date.now(), released: true }));
+    const started = Date.now();
+    updateConfigFile(path, (disk) => {
+      disk.recovered = true;
+    }, { timeoutMs: 2_000 });
+    assert.ok(Date.now() - started < 1_500, "taken over at once");
+    assert.deepEqual(readConfigFile(path), { recovered: true });
+    assert.equal(existsSync(lockPathFor(path)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a lock left behind by a dead process is taken over", () => {
+  const { dir, path } = tempConfig();
+  try {
+    writeFileSync(lockPathFor(path), JSON.stringify({ pid: deadPid(), at: Date.now() }));
     const started = Date.now();
     updateConfigFile(path, (disk) => {
       disk.reclaimed = true;
     }, { timeoutMs: 2_000 });
-    assert.ok(Date.now() - started < 1_500, "reclaimed without waiting out the timeout");
+    assert.ok(Date.now() - started < 1_500, "taken over without waiting out the timeout");
     assert.deepEqual(readConfigFile(path), { reclaimed: true });
     assert.equal(existsSync(lockPathFor(path)), false);
   } finally {
@@ -231,85 +263,7 @@ test("a lock left behind by a dead process is reclaimed", () => {
   }
 });
 
-test("a waiter that loses the reclaim election waits instead of touching the stale lock", () => {
-  const { dir, path } = tempConfig();
-  try {
-    const gone = spawnSync(process.execPath, ["-e", "0"]);
-    writeFileSync(lockPathFor(path), JSON.stringify({ pid: gone.pid, at: Date.now() }));
-    const before = readFileSync(lockPathFor(path), "utf8");
-    // A live reclaimer (this pid, fresh) already holds the election.
-    writeFileSync(reclaimPathFor(path), JSON.stringify({ pid: process.pid, at: Date.now() }));
-    assert.throws(() => acquireConfigFileLock(path, { timeoutMs: 150 }), /config lock held by pid \d+/);
-    assert.equal(readFileSync(lockPathFor(path), "utf8"), before, "the loser left the lock exactly as it was");
-    assert.equal(existsSync(reclaimPathFor(path)), true, "and did not clear a live reclaimer's marker");
-    // Once the reclaimer is gone the next waiter wins the election and proceeds.
-    rmSync(reclaimPathFor(path));
-    updateConfigFile(path, (disk) => {
-      disk.won = true;
-    }, { timeoutMs: 1_000 });
-    assert.deepEqual(readConfigFile(path), { won: true });
-    assert.equal(existsSync(reclaimPathFor(path)), false, "the marker is released after reclaiming");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a reclaim marker left by a dead reclaimer is cleared", () => {
-  const { dir, path } = tempConfig();
-  try {
-    const gone = spawnSync(process.execPath, ["-e", "0"]);
-    writeFileSync(lockPathFor(path), JSON.stringify({ pid: gone.pid, at: Date.now() }));
-    writeFileSync(reclaimPathFor(path), JSON.stringify({ pid: gone.pid, at: Date.now() }));
-    updateConfigFile(path, (disk) => {
-      disk.cleared = true;
-    }, { timeoutMs: 2_000 });
-    assert.deepEqual(readConfigFile(path), { cleared: true });
-    assert.equal(existsSync(lockPathFor(path)), false);
-    assert.equal(existsSync(reclaimPathFor(path)), false);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("stale reclaim marker cleanup is generation-safe and does not unlink a replacement marker", () => {
-  const { dir, path } = tempConfig();
-  try {
-    const marker = reclaimPathFor(path);
-    // Write an old marker
-    writeFileSync(marker, JSON.stringify({ pid: 999999, at: Date.now() - 60_000 }));
-    // A fresh reclaimer creates a new marker in its place
-    const freshRecord = { pid: process.pid, at: Date.now() };
-    writeFileSync(marker, JSON.stringify(freshRecord));
-    // If an earlier waiter tried to clear the old marker by comparing sameLock,
-    // the fresh marker must remain untouched.
-    assert.equal(existsSync(marker), true);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-// The P1 from review: several writers wake up behind one abandoned lock.
-// Without the election, the second to judge it stale could remove the fresh
-// lock the first had just created, and the two would overlap.
-test("several writers behind one dead-pid lock all get through without losing an update", async () => {
-  const { dir, path } = tempConfig();
-  const N = 20;
-  const sections = ["a", "b", "c", "d"];
-  try {
-    const gone = spawnSync(process.execPath, ["-e", "0"]);
-    writeFileSync(lockPathFor(path), JSON.stringify({ pid: gone.pid, at: Date.now() }));
-    const env = { CFL_PATH: path, CFL_N: String(N), CFL_TIMEOUT_MS: "30000" };
-    await Promise.all(sections.map((section) => runWorker(COUNTER_SOURCE, { ...env, CFL_SECTION: section })));
-    const final = readConfigFile(path);
-    assert.deepEqual(final, Object.fromEntries(sections.map((section) => [section, { count: N }])));
-    assert.equal(existsSync(lockPathFor(path)), false, "no lock left behind");
-    assert.equal(existsSync(reclaimPathFor(path)), false, "no reclaim marker left behind");
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a lock older than staleMs is reclaimed even when its pid is alive", () => {
+test("a lock older than staleMs is taken over even when its pid is alive", () => {
   const { dir, path } = tempConfig();
   try {
     assert.ok(CONFIG_LOCK_STALE_MS > 0);
@@ -323,84 +277,7 @@ test("a lock older than staleMs is reclaimed even when its pid is alive", () => 
   }
 });
 
-// The lease is what makes age-based reclaim safe.  A holder that was
-// suspended past the stale window (system sleep, a debugger, a filesystem
-// stall) must not land the snapshot it read before it was suspended.
-test("a holder whose lease ran out refuses to write rather than land a stale snapshot", () => {
-  const { dir, path } = tempConfig();
-  try {
-    writeFileSync(path, '{"fresh":true}');
-    assert.throws(
-      () =>
-        updateConfigFile(
-          path,
-          (disk) => {
-            sleepSync(120); // "suspended" inside the critical section
-            disk.stale = true;
-          },
-          { staleMs: 50, timeoutMs: 500 },
-        ),
-      /lease expired/,
-    );
-    assert.deepEqual(readConfigFile(path), { fresh: true }, "nothing was written");
-    // Past its lease the handle no longer unlinks by name (a reclaimer may
-    // be replacing the lock); the lock is left for the election instead.
-    assert.equal(existsSync(lockPathFor(path)), true, "the expired lock is left for the reclaim path");
-    updateConfigFile(path, (disk) => {
-      disk.later = true;
-    }, { staleMs: 50, timeoutMs: 1_000 });
-    assert.deepEqual(readConfigFile(path), { fresh: true, later: true });
-    assert.equal(existsSync(lockPathFor(path)), false);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a release inside the lease unlinks; one past the usable lease leaves the lock to the election", () => {
-  const { dir, path } = tempConfig();
-  try {
-    acquireConfigFileLock(path, { staleMs: 400 }).release();
-    assert.equal(existsSync(lockPathFor(path)), false, "released inside the lease");
-    const late = acquireConfigFileLock(path, { staleMs: 400 });
-    sleepSync(330); // inside staleMs but past the 100 ms margin
-    late.release();
-    assert.equal(existsSync(lockPathFor(path)), true, "left in place rather than unlinked by name");
-    // Once the full lease is out the next writer reclaims it and proceeds.
-    // (Waited out here because a same-process acquire inside the lease reads
-    // as re-entry; another process would simply wait the margin out.)
-    sleepSync(120);
-    updateConfigFile(path, (disk) => {
-      disk.next = true;
-    }, { staleMs: 400, timeoutMs: 2_000 });
-    assert.deepEqual(readConfigFile(path), { next: true });
-    assert.equal(existsSync(lockPathFor(path)), false);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("a suspended holder whose lock a peer reclaimed cannot write over the peer or drop its lock", () => {
-  const { dir, path } = tempConfig();
-  try {
-    const suspended = acquireConfigFileLock(path, { staleMs: 200 });
-    sleepSync(400); // past its lease; nobody has touched the lock yet
-    // A peer with the same stale window finds the lock past it and reclaims
-    // it.  The same process stands in for the peer here: the record's
-    // pid+at pair is what identifies a holder, and this is a fresh one.
-    const peer = acquireConfigFileLock(path, { staleMs: 200, timeoutMs: 1_000 });
-    writeFileAtomic(path, JSON.stringify({ holder: "peer" }));
-    assert.throws(() => suspended.assertHeld(), /lease expired|reclaimed by another writer/);
-    suspended.release();
-    assert.equal(existsSync(lockPathFor(path)), true, "the peer's lock survives the stale holder's release");
-    peer.release();
-    assert.equal(existsSync(lockPathFor(path)), false);
-    assert.deepEqual(readConfigFile(path), { holder: "peer" });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("an unreadable lock file older than staleMs is reclaimed, a fresh one is waited on", () => {
+test("an unreadable lock file older than staleMs is taken over, a fresh one is waited on", () => {
   const { dir, path } = tempConfig();
   try {
     writeFileSync(lockPathFor(path), "garbage");
@@ -410,7 +287,7 @@ test("an unreadable lock file older than staleMs is reclaimed, a fresh one is wa
       /held by an unknown writer/,
     );
     // The same garbage once it is old enough (its mtime is all there is to
-    // judge by): reclaimed and written through.
+    // judge by): taken over and written through.
     const past = new Date(Date.now() - 10_000);
     utimesSync(lockPathFor(path), past, past);
     updateConfigFile(path, (disk) => {
@@ -453,6 +330,112 @@ test("a writer gives up with a clear error after timeoutMs while a peer holds th
     );
     await holder;
     assert.deepEqual(readConfigFile(path), { holder: "worker" }, "the holder's write survived");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The lease is what makes taking over safe.  A holder that was suspended
+// past the stale window (system sleep, a debugger, a filesystem stall) must
+// not land the snapshot it read before it was suspended.
+test("a holder whose lease ran out refuses to write and leaves its lock for the takeover", () => {
+  const { dir, path } = tempConfig();
+  try {
+    writeFileSync(path, '{"fresh":true}');
+    assert.throws(
+      () =>
+        updateConfigFile(
+          path,
+          (disk) => {
+            sleepSync(120); // "suspended" inside the critical section
+            disk.stale = true;
+          },
+          { staleMs: 50, timeoutMs: 500 },
+        ),
+      /lease expired/,
+    );
+    assert.deepEqual(readConfigFile(path), { fresh: true }, "nothing was written");
+    // Past its lease the handle no longer unlinks by name (a peer may be
+    // taking the lock over); the lock is left for that takeover instead.
+    assert.equal(existsSync(lockPathFor(path)), true, "the expired lock is left in place");
+    updateConfigFile(path, (disk) => {
+      disk.later = true;
+    }, { staleMs: 50, timeoutMs: 1_000 });
+    assert.deepEqual(readConfigFile(path), { fresh: true, later: true });
+    assert.equal(existsSync(lockPathFor(path)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a release inside the lease unlinks; one past the usable lease leaves the lock to the takeover", () => {
+  const { dir, path } = tempConfig();
+  try {
+    acquireConfigFileLock(path, { staleMs: 400 }).release();
+    assert.equal(existsSync(lockPathFor(path)), false, "released inside the lease");
+    const late = acquireConfigFileLock(path, { staleMs: 400 });
+    sleepSync(330); // inside staleMs but past the 100 ms margin
+    late.release();
+    assert.equal(existsSync(lockPathFor(path)), true, "left in place rather than unlinked by name");
+    // The next writer waits out what is left of the lease, takes over, and
+    // proceeds.
+    updateConfigFile(path, (disk) => {
+      disk.next = true;
+    }, { staleMs: 400, timeoutMs: 2_000 });
+    assert.deepEqual(readConfigFile(path), { next: true });
+    assert.equal(existsSync(lockPathFor(path)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a suspended holder whose lock a peer took over cannot write over the peer or drop its lock", async () => {
+  const { dir, path } = tempConfig();
+  try {
+    const suspended = acquireConfigFileLock(path, { staleMs: 200 });
+    sleepSync(500); // past its lease; nobody has touched the lock yet
+    // A peer process finds the lock past its own stale window and takes it
+    // over in place, then holds it briefly (inside its usable lease, so its
+    // release unlinks) before letting go.
+    const took = waitForLine("took");
+    const peer = runWorker(
+      TAKEOVER_SOURCE,
+      { CFL_PATH: path, CFL_STALE_MS: "400", CFL_HOLD_MS: "150" },
+      took.onLine,
+    );
+    await took.seen;
+    assert.throws(() => suspended.assertHeld(), /lease expired|taken over by another writer/);
+    suspended.release();
+    assert.equal(existsSync(lockPathFor(path)), true, "the peer's lock survives the stale holder's release");
+    await peer;
+    assert.equal(existsSync(lockPathFor(path)), false, "the peer's own release removed it");
+    assert.deepEqual(readConfigFile(path), { holder: "peer" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// Several writers wake up behind one abandoned lock.  Only one of them can
+// win the O_EXCL ticket for that generation, and only the winner may
+// replace it, so a waiter can never remove or overwrite the lock a peer
+// just created; the rest see a fresh live lock and simply wait their turn.
+test("several writers behind one dead-pid lock all get through without losing an update", async () => {
+  const { dir, path } = tempConfig();
+  const N = 20;
+  const sections = ["a", "b", "c", "d"];
+  try {
+    writeFileSync(lockPathFor(path), JSON.stringify({ pid: deadPid(), at: Date.now() }));
+    const env = { CFL_PATH: path, CFL_N: String(N), CFL_TIMEOUT_MS: "30000" };
+    await Promise.all(sections.map((section) => runWorker(COUNTER_SOURCE, { ...env, CFL_SECTION: section })));
+    const final = readConfigFile(path);
+    assert.deepEqual(final, Object.fromEntries(sections.map((section) => [section, { count: N }])));
+    assert.equal(existsSync(lockPathFor(path)), false, "no lock left behind");
+    assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith(".tmp")), [], "no temp files left behind");
+    assert.equal(
+      readdirSync(dir).filter((name) => name.includes(".takeover.")).length,
+      1,
+      "exactly one takeover ticket, for the one generation that was taken over",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
