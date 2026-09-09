@@ -196,39 +196,42 @@ const AUTH_HEADER_BARE = /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s
  * `\"`; a bare one by a bare one. */
 interface Wrapper {
   quote: string;
-  /** the wrapper was written `\"`, so its partner is written `\"` as well */
-  escaped: boolean;
+  /** how many backslashes the wrapper was written behind — 0 for `"`, 1 for
+   * `\"` one escaping level up, and so on.  Its partner is written the same
+   * way, and a quote behind a DIFFERENT run belongs to a different level. */
+  backslashes: number;
 }
 
 function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
   const lineStart = text.lastIndexOf("\n", index - 1) + 1;
   let at = index - 1;
-  // SAFETY: `at` stays within [lineStart, index), both inside `text`, so every
-  // index read here is in range; the reads are written to be undefined-safe
-  // anyway, since `noUncheckedIndexedAccess` is not on for this project.
   while (at >= lineStart && /\s/.test(text.charAt(at))) at -= 1; // whitespace apart
   if (at < lineStart) return undefined;
   const quote = text.charAt(at);
   if (quote !== '"' && quote !== "'") return undefined;
-  // `\"` is a wrapper one escaping level up; `\\"` is a bare wrapper behind an
-  // escaped backslash, so it is the PARITY of the run that decides
   let backslashes = 0;
-  while (at - 1 - backslashes >= lineStart && text[at - 1 - backslashes] === "\\") backslashes += 1;
-  return { quote, escaped: backslashes % 2 === 1 };
+  while (at - 1 - backslashes >= lineStart && text.charAt(at - 1 - backslashes) === "\\") backslashes += 1;
+  return { quote, backslashes };
 }
 
 /** How much of a bare header value is the credential: everything up to the
- * wrapper's closing quote, written the way the wrapper's opening was, or all
- * of it when nothing wrapped the header. */
+ * wrapper's closing quote, or all of it when nothing wrapped the header.
+ *
+ * The closing quote is the one written at the wrapper's OWN escaping level,
+ * which is why the backslash run has to match exactly rather than merely be
+ * odd or even.  A command serialized one level up wraps with `\"` and writes
+ * its own quoted parameters `\\\"` — three backslashes, the next level in —
+ * and stopping at one of those masks through `oauth_signature=\\` and leaves
+ * the signature standing.  A quote behind a run of any other length belongs
+ * to some other level and is content here. */
 function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
   if (!wrapper) return value.length;
   for (let i = 0; i < value.length; i++) {
-    if (value[i] === "\\") {
-      if (wrapper.escaped && value[i + 1] === wrapper.quote) return i;
-      i += 1;
-      continue;
-    }
-    if (!wrapper.escaped && value[i] === wrapper.quote) return i;
+    if (value.charAt(i) !== wrapper.quote) continue;
+    let run = 0;
+    while (i - 1 - run >= 0 && value.charAt(i - 1 - run) === "\\") run += 1;
+    // the escaping backslashes belong to the delimiter, not to the credential
+    if (run === wrapper.backslashes) return i - run;
   }
   return value.length;
 }

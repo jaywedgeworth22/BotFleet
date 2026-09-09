@@ -611,6 +611,18 @@ describe("redactSecretsInText", () => {
     expect(short).not.toContain("dTpw");
     expect(short).toContain("Basic «redacted 4 chars»");
     expect(short).toContain(url);
+
+    // A command serialized one level up wraps with `\\"` and writes its own
+    // quoted parameters `\\\\\\"` — three backslashes, the next level in.  The
+    // closing quote is the one at the WRAPPER's level, so the backslash run
+    // has to match exactly; stopping at an inner one masks through
+    // `oauth_signature=\\\\` and leaves the signature standing.
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const nested = `curl -H \\"${HEADER}: OAuth oauth_signature=\\\\\\"${sig}\\\\\\"\\"${url}`;
+    const nestedOut = redactSecretsInText(nested);
+    expect(nestedOut).not.toContain(sig);
+    expect(nestedOut).toContain(url);
+    expect(nestedOut).toBe(redactSecretsInText(nestedOut));
   });
 
   it("finds the wrapper through escaping and nesting", () => {
