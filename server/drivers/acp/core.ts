@@ -123,7 +123,9 @@ export interface AcpSupport {
   /** Pick the ACP authenticate methodId from initialize's advertised
    * authMethods; return null to skip the authenticate step. */
   pickAuthMethod(authMethods: Array<{ id?: string }>): string | null;
-  /** "fail": abort the turn if auth is missing/errors (subscription CLIs).
+  /** "fail": abort the turn if snapshot auth is missing AND authenticate
+   *  is missing/errors (subscription CLIs). A signed-in CLI still proceeds
+   *  on its ambient login when initialize omits the expected method.
    *  "continue": proceed anyway (CLIs that work off an ambient login). */
   authFailure: "fail" | "continue";
   /** snapshot(): can this harness actually run a turn? (env already carries the
@@ -667,14 +669,17 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             const methods: Array<{ id?: string }> = Array.isArray(init?.authMethods) ? init.authMethods : [];
             const methodId = support.pickAuthMethod(methods);
             if (!skipSubscriptionAuthForLocalInject(turn.model)) {
+              const signedIn = await support.isAuthenticated(env, turnConfig);
               if (methodId) {
                 try {
                   await request("authenticate", { methodId }, INIT_TIMEOUT);
                 } catch {
-                  if (support.authFailure === "fail") throw new Error(support.loginNote);
-                  // else: proceed on an ambient login
+                  // Signed-in subscription CLIs (grok.com OIDC on disk) still
+                  // run off ambient login when authenticate rejects.  BOTFLEET-C
+                  // paged high for "not signed in" while auth.json was valid.
+                  if (support.authFailure === "fail" && !signedIn) throw new Error(support.loginNote);
                 }
-              } else if (support.authFailure === "fail") {
+              } else if (support.authFailure === "fail" && !signedIn) {
                 throw new Error(support.loginNote);
               }
             }

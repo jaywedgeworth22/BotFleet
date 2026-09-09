@@ -528,12 +528,39 @@ describe("ACP turns (fake CLI)", () => {
   });
 
   it("grok fails closed when the CLI advertises no cached_token (needs login)", async () => {
-    await create(GrokAgentDriver, "no-auth");
+    process.env.FAKE_ACP_MODE = "no-auth";
+    mkdirSync(join(scratch, ".grok"), { recursive: true });
+    instance = await GrokAgentDriver.create({
+      instanceId: "acp-test",
+      displayName: "ACP Test",
+      environment: { HOME: scratch, GROK_HOME: join(scratch, ".grok") },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    recorder = recordEvents(instance.adapter);
     await instance.adapter.sendTurn({ threadId: "t-auth", text: "go" });
     const done = await recorder.until((e) => e.type === "turn.completed");
     expect(done).toMatchObject({ ok: false, stopReason: "auth_required" });
     const err = recorder.events.find((e) => e.type === "runtime.error")!;
     expect(err.message).toMatch(/not signed in/);
+  });
+
+  it("grok proceeds on ambient login when auth.json exists even without cached_token", async () => {
+    process.env.FAKE_ACP_MODE = "no-auth";
+    mkdirSync(join(scratch, ".grok"), { recursive: true });
+    writeFileSync(join(scratch, ".grok", "auth.json"), "{}\n");
+    instance = await GrokAgentDriver.create({
+      instanceId: "acp-test",
+      displayName: "ACP Test",
+      environment: { HOME: scratch, GROK_HOME: join(scratch, ".grok") },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "t-auth-ambient", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
   });
 
   it("grok local inject does not require grok.com login", async () => {

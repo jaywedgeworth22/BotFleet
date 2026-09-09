@@ -250,6 +250,8 @@ const support: AcpSupport = {
 
   // Bind the grok.com subscription login. No API-key fallback by design —
   // an unauthenticated CLI is a user action, not something to paper over.
+  // OIDC disk login (auth.json) is still signed in when initialize omits
+  // cached_token; acp/core proceeds on ambient login in that case.
   pickAuthMethod: (methods) => (methods.some((m) => m.id === "cached_token") ? "cached_token" : null),
   authFailure: "fail",
   // this instance's HOME, not the server process's: an instance can carry

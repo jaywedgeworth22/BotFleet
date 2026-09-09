@@ -413,6 +413,16 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       break;
     }
     case "runtime.error": {
+      // setup:true is "run grok login", not an unexpected crash.  BOTFLEET-A
+      // was this message paged as an Issue while the CLI was signed in.
+      if (event.setup) {
+        sink.addBreadcrumb?.({
+          category: "botfleet.turn",
+          message: event.message.slice(0, 500),
+          level: "warning",
+        });
+        break;
+      }
       sink.captureException(new Error(event.message.slice(0, 500)));
       break;
     }
@@ -421,18 +431,27 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         // A failed turn is the thing an operator wants an Issue for.  Most
         // drivers report the failure only here — they never emit
         // runtime.error — so without this a broken engine was invisible.
-        const turn = turns.get(key);
-        const identity = turn?.identity ?? identityFor(event.threadId);
-        const tags: TurnFailureTags = {
-          "botfleet.provider": event.provider,
-          "botfleet.thread.id": event.threadId,
-          "gen_ai.provider.name": provider,
-          ...identityAttributes(identity),
-        };
-        const model = clean(turn?.model) ?? clean(identity?.model);
-        if (model) tags["gen_ai.request.model"] = model;
         const stopReason = clean(event.stopReason)?.slice(0, 200) ?? "unknown";
-        sink.captureException(new Error(`bot turn failed: ${stopReason}`), { tags });
+        if (stopReason === "auth_required" || stopReason === "cancelled") {
+          sink.addBreadcrumb?.({
+            category: "botfleet.turn",
+            message: `bot turn failed: ${stopReason}`,
+            level: "warning",
+            data: { provider: event.provider, threadId: event.threadId },
+          });
+        } else {
+          const turn = turns.get(key);
+          const identity = turn?.identity ?? identityFor(event.threadId);
+          const tags: TurnFailureTags = {
+            "botfleet.provider": event.provider,
+            "botfleet.thread.id": event.threadId,
+            "gen_ai.provider.name": provider,
+            ...identityAttributes(identity),
+          };
+          const model = clean(turn?.model) ?? clean(identity?.model);
+          if (model) tags["gen_ai.request.model"] = model;
+          sink.captureException(new Error(`bot turn failed: ${stopReason}`), { tags });
+        }
       }
       endTurn(key, event.ok, event.usage);
       break;
