@@ -142,7 +142,9 @@ const AUTH_HEADER_QUOTED =
  * the one WRAPPING the header, `curl -H "…"`, and that quote announced
  * itself before the header name.  So the value runs to the end of its line
  * and is then cut at the wrapper's closing quote if a wrapper was open —
- * see `wrapperQuoteAt` — and at nothing else.
+ * see `wrapperQuoteAt`, which asks how that quote OPENED to know a delimiter
+ * from prose, which nesting level it belongs to, and whether the text around
+ * it is escaped — and at nothing else.
  *
  * That is the third answer this pattern has had, and the first that is a
  * rule rather than a guess.  Reading the value's own quotes to find its end
@@ -158,42 +160,96 @@ const AUTH_HEADER_QUOTED =
 const AUTH_HEADER_BARE = /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?([^\r\n]+)/gi;
 
 /** The quote wrapping the header, if the header sits inside one — the `"` of
- * a `curl -H "…"` argument, the `'` of its single-quoted twin.
+ * a `curl -H "…"` argument, the `'` of its single-quoted twin, or either of
+ * those already backslash-escaped because the command reached us inside a
+ * string of somebody else's.
  *
  * Looks only BEFORE the header name, on its own line, because that is where a
  * wrapper announces itself and it is the one thing the value cannot tell you
- * about itself.  An unbalanced quote there is open at the header, so the
- * first unescaped one after it closes the argument and ends the value.  A
- * balanced run before the header (`echo "hi" && curl -H …`) leaves nothing
- * open and the value simply runs to the end of its line. */
-function wrapperQuoteAt(text: string, index: number): string | undefined {
-  let open: string | undefined;
-  for (let i = text.lastIndexOf("\n", index - 1) + 1; i < index; i++) {
-    const ch = text[i];
-    if (ch === "\\") {
-      i += 1; // an escaped character is content, whichever quote we are in
+ * about itself.  Three things make the answer trustworthy:
+ *
+ * A wrapper OPENS the way a shell argument opens — at the start of the line,
+ * after whitespace, or after an `=`.  A quote in the middle of a token is
+ * prose or data, not a delimiter: a log line reading `size=2"; <header>: …`
+ * has an unbalanced quote in front of the header that delimits nothing, and
+ * treating it as a wrapper cut the value short and let the credential
+ * through.  The same test is what keeps an apostrophe (`it's`) from opening
+ * one.
+ *
+ * Quotes NEST, so this keeps a stack and answers with the INNERMOST still
+ * open.  `bash -c 'curl -H "…"'` is wrapped by the `"`, not by the `'`: the
+ * inner quote is what ends the header's own argument, and answering with the
+ * outer one masks straight through it and takes the rest of the command.
+ * Nesting is safe to honour here only because of the rule above — a quote
+ * that does not open like an argument never gets onto the stack, so an
+ * apostrophe inside a word cannot become the innermost wrapper.
+ *
+ * And a wrapper carries its ESCAPING LEVEL, because the text may already be
+ * quoted once over — a driver that hands us `curl -H \"<header>: …\" <url>`
+ * has wrapper quotes spelled `\"`, and one closes the argument exactly where
+ * a bare `"` would in unescaped text.  A wrapper opened as `\"` is closed by
+ * `\"`; a bare one by a bare one. */
+interface Wrapper {
+  quote: string;
+  /** the wrapper was written `\"`, so its partner is written `\"` as well */
+  escaped: boolean;
+}
+
+function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
+  const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+  const open: Wrapper[] = [];
+  for (let i = lineStart; i < index; i++) {
+    let escaped = false;
+    let at = i;
+    if (text[i] === "\\") {
+      const next = text[i + 1];
+      if (next !== '"' && next !== "'") {
+        i += 1; // an ordinary escape: the character behind it is content
+        continue;
+      }
+      escaped = true;
+      at = i + 1;
+      i += 1;
+    }
+    const quote = text[at];
+    if (quote !== '"' && quote !== "'") continue;
+    const top = open[open.length - 1];
+    if (top?.quote === quote && top.escaped === escaped) {
+      open.pop();
       continue;
     }
-    if (ch !== '"' && ch !== "'") continue;
-    if (open === undefined) open = ch;
-    else if (open === ch) open = undefined;
+    const beforeIndex = escaped ? at - 2 : at - 1;
+    const before = beforeIndex < lineStart ? undefined : text[beforeIndex];
+    // opens the way a shell argument opens, or not at all
+    if (before === undefined || before === "=" || /\s/.test(before)) open.push({ quote, escaped });
   }
-  return open;
+  return open[open.length - 1];
 }
 
 /** How much of a bare header value is the credential: everything up to the
- * wrapper's closing quote, or all of it when nothing wrapped the header. */
-function bareValueEnd(value: string, wrapper: string | undefined): number {
+ * wrapper's closing quote, written the way the wrapper's opening was, or all
+ * of it when nothing wrapped the header. */
+function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
   if (!wrapper) return value.length;
   for (let i = 0; i < value.length; i++) {
     if (value[i] === "\\") {
+      if (wrapper.escaped && value[i + 1] === wrapper.quote) return i;
       i += 1;
       continue;
     }
-    if (value[i] === wrapper) return i;
+    if (!wrapper.escaped && value[i] === wrapper.quote) return i;
   }
   return value.length;
 }
+
+/** How long a value has to be before it is worth masking.
+ *
+ * The eight-character floor is there to keep prose after a colon out of the
+ * mask, and a RECOGNISED SCHEME retires that worry: `Basic`, `Digest` or
+ * `OAuth` standing behind the header name cannot be prose, so whatever
+ * follows one is a credential however short.  `Basic dTpw` is `u:p`, and
+ * measuring the floor against `dTpw` alone left it in the clear. */
+const minMaskable = (scheme: string | undefined) => (scheme ? 1 : 8);
 
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
@@ -265,7 +321,7 @@ export function redactSecretsInText(text: string): string {
       // secret's.  Masking scheme and value together reproduces, byte for
       // byte, what that pass produced before this one could reach the shape.
       const body = close ? value : `${scheme ?? ""}${value}`;
-      if (body.length < 8 || WHOLLY_MASKED.test(body)) return m;
+      if (body.length < minMaskable(scheme) || WHOLLY_MASKED.test(body)) return m;
       const kept = close ? (scheme ?? "") : "";
       return `${key}${sep}${quote}${kept}${mask(body)}${close}`;
     },
@@ -275,8 +331,18 @@ export function redactSecretsInText(text: string): string {
     (m, key: string, sep: string, scheme: string | undefined, value: string, offset: number, whole: string) => {
       // trailing blanks are the line's, not the credential's, so they stay
       // outside the mask and out of the length it reports
-      const credential = value.slice(0, bareValueEnd(value, wrapperQuoteAt(whole, offset))).replace(/[^\S\r\n]+$/, "");
-      if (credential.length < 8 || WHOLLY_MASKED.test(credential)) return m;
+      const wrapper = wrapperQuoteAt(whole, offset);
+      const trim = (text: string) => text.replace(/[^\S\r\n]+$/, "");
+      let credential = trim(value.slice(0, bareValueEnd(value, wrapper)));
+      // An unbalanced quote before the header is not proof of a wrapper — log
+      // text has stray quotes too, and one that opens like an argument and
+      // never closes is indistinguishable from the real thing.  So the cut is
+      // sanity-checked: if honouring it leaves less than a credential's worth,
+      // it was not the wrapper, and the value runs to the end of the line
+      // after all.  That errs towards over-masking a line's tail, which costs
+      // a reader context, over under-masking, which ships a secret.
+      if (wrapper && credential.length < 8) credential = trim(value);
+      if (credential.length < minMaskable(scheme) || WHOLLY_MASKED.test(credential)) return m;
       return `${key}${sep}${scheme ?? ""}${mask(credential)}${value.slice(credential.length)}`;
     },
   );

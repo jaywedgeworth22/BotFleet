@@ -533,6 +533,70 @@ describe("redactSecretsInText", () => {
     }
   });
 
+  it("masks a short credential when a scheme has already anchored the match", () => {
+    // The eight-character floor is there to keep prose after a colon out of
+    // the mask, and a recognised scheme retires that worry: `Basic` standing
+    // behind the header name cannot be prose, so what follows it is a
+    // credential however short.  `dTpw` is base64 for `u:p`.
+    const HEADER = "Auth" + "orization";
+    for (const input of [`${HEADER.toLowerCase()}="Basic dTpw"`, `${HEADER}: Basic dTpw`, `${HEADER}: Basic dTpw\n`]) {
+      const out = redactSecretsInText(input);
+      expect(out, input).not.toContain("dTpw");
+      expect(out, input).toContain("Basic «redacted 4 chars»");
+    }
+    // without a scheme the floor still stands, so prose after a colon is safe
+    expect(redactSecretsInText("password: (leave blank to keep the current one)")).toBe(
+      "password: (leave blank to keep the current one)",
+    );
+  });
+
+  it("only treats a quote that opens like an argument as a wrapper", () => {
+    // An unbalanced quote in arbitrary log text delimits nothing.  Taking one
+    // for a wrapper cut the value short at the next quote, and the stub that
+    // was left fell under the floor, so the whole header came back unmasked
+    // with the signature in it.  A shell argument's quote follows the start
+    // of the line, whitespace, or an `=`; one in the middle of a token — a
+    // stray `2"`, an apostrophe in `it's` — is prose.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const prefixes: Array<[string, string]> = [
+      ['size=2"; ', "size=2"],
+      ["it's odd; ", "it's odd"],
+      // even one that opens like an argument: honouring a cut that leaves
+      // less than a credential's worth is not worth a leak
+      ['he said "wat; ', ""],
+    ];
+    for (const [prefix, keep] of prefixes) {
+      const out = redactSecretsInText(`${prefix}${HEADER}: OAuth realm="public", oauth_signature="${sig}"`);
+      expect(out, prefix).not.toContain(sig);
+      if (keep) expect(out, prefix).toContain(keep);
+      expect(out, prefix).toBe(redactSecretsInText(out));
+    }
+  });
+
+  it("finds the wrapper through escaping and nesting", () => {
+    // A driver often hands us the command already inside a string, so the
+    // wrapper arrives spelled `\"` and closes the same way; and quotes nest,
+    // so the header's own argument ends at the INNERMOST open quote, not the
+    // outermost.  Getting either wrong puts the rest of the command line in
+    // the mask instead of the credential alone.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const url = " https://api.example.com/v1/long/path";
+    for (const input of [
+      `curl -H \\"${HEADER}: ${SCHEME} ${token}\\"${url}`,
+      `bash -c 'curl -H "${HEADER}: ${SCHEME} ${token}"${url}'`,
+      `bash -c "curl -H '${HEADER}: ${SCHEME} ${token}'${url}"`,
+    ]) {
+      const out = redactSecretsInText(input);
+      expect(out, input.slice(0, 24)).not.toContain(token);
+      expect(out, input.slice(0, 24)).toContain(`${SCHEME} «redacted ${token.length} chars»`);
+      expect(out, input.slice(0, 24)).toContain(url);
+      expect(out, input.slice(0, 24)).toBe(redactSecretsInText(out));
+    }
+  });
+
   it("masks an authorization value that another pass had already half-masked", () => {
     // SigV4 carries an access-key id BEFORE the signature, so the prefix
     // pass has a shot at part of the value first.  A "does it contain a
