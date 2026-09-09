@@ -144,10 +144,18 @@ export interface TurnLoopDeps {
   base: () => RuntimeEventBase;
   emit: (event: RuntimeEvent) => void;
   /** One model request.  MUST honour `signal` and MUST reject on an HTTP or
-   *  stream failure; the loop classifies the rejection. */
+   *  stream failure; the loop classifies the rejection.
+   *
+   *  `onUsage`, if the driver's request shape can report it, is a LIVE
+   *  channel separate from the resolved `TurnRoundResult.usage`: it fires as
+   *  soon as the provider's response names a usage figure, even if the
+   *  round goes on to reject (a request timeout or a provider error after
+   *  several streamed chunks).  The loop folds whichever arrived last into
+   *  the terminal usage total on that failure path, so a turn that spent
+   *  real tokens before failing is never billed as zero. */
   runRound: (
     messages: ChatMessage[],
-    opts: { signal: AbortSignal; round: number },
+    opts: { signal: AbortSignal; round: number; onUsage?: (usage: TurnUsage) => void },
   ) => Promise<TurnRoundResult>;
   /** Round 1's messages.  The loop appends to this array in place. */
   messages: ChatMessage[];
@@ -380,13 +388,30 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
       }, budget.requestTimeoutMs);
       unrefTimer(requestTimer);
       let result: TurnRoundResult;
+      // Latest usage this round's request reported, kept OUTSIDE the
+      // `runRound` promise so a later rejection (timeout, mid-stream
+      // provider error) does not take it down too — see the `onUsage`
+      // doc on `TurnLoopDeps`.  Boxed in an object: a bare `let` here reads
+      // back as `never` under strict mode because TS's flow analysis does
+      // not follow the reassignment happening inside the callback closure.
+      const roundState: { usage: TurnUsage | null } = { usage: null };
       try {
         result = await deps.runRound(messages, {
           signal: AbortSignal.any([turnSignal, wall.signal, request.signal]),
           round,
+          onUsage: (usage) => {
+            roundState.usage = usage;
+          },
         });
       } catch (e) {
         const error = e instanceof Error ? e : new Error(String(e));
+        if (roundState.usage) {
+          sawUsage = true;
+          totals.input += roundState.usage.input;
+          totals.output += roundState.usage.output;
+          const cached = roundState.usage.cachedInput;
+          if (cached !== undefined) totals.cachedInput = (totals.cachedInput ?? 0) + cached;
+        }
         if (turnSignal.aborted) exit = "interrupted";
         else if (wallHit) {
           exit = "wall_clock";

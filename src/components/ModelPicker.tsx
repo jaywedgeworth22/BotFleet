@@ -380,8 +380,9 @@ export function ModelPicker({
                   )}
                   {["minimax"].includes(railInstance.driverKind) && (
                     <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
-                      <strong>Limited functionality:</strong> This native HTTP driver does not support BotFleet tools. 
-                      For full tool support, use the Pi Engine's OpenAI compat, or the DeepSeek Harness (<code>dsh</code>) instead.
+                      <strong>Limited tool support:</strong> This engine has two harness tools today —{" "}
+                      <code>list_bots</code> and <code>ask_bot</code> — and no file, shell, or browser tools.
+                      {"  "}For full tool support, use an ACP engine (Claude, Codex, DSH, Droid) instead.
                     </div>
                   )}
                 </div>

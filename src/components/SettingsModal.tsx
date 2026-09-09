@@ -304,11 +304,17 @@ function CustomIngressFields() {
         >
           {test?.kind === "running" ? "Testing…" : "Test Setup"}
         </button>
+        {/* Independent, not mutually exclusive: Save and Test Setup can now
+            overlap (Test Setup does not check `saving`), so a Save that
+            fails AFTER a Test Setup result already rendered must not hide
+            that result behind the save error — the two actions carry their
+            own outcome and both are shown when both have one. */}
         {saveError ? (
           <span role="alert" data-testid="ingress-save-error" className="text-[12px] leading-relaxed text-danger">
             {saveError}
           </span>
-        ) : test && test.kind !== "running" ? (
+        ) : null}
+        {test && test.kind !== "running" ? (
           <span
             role={test.kind === "ok" ? "status" : "alert"}
             data-testid="ingress-test-result"

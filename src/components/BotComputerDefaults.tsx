@@ -11,8 +11,9 @@
 // leaves it unset (every destination is allowed), matching the shipped
 // behavior exactly.
 import { useEffect, useState } from "react";
-import { api, useStore, type ConfigStatus } from "@/state/store";
+import { ApiError, api, useStore, type ConfigStatus } from "@/state/store";
 import { Card } from "./SettingsPrimitives";
+import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { cn } from "@/lib/cn";
 
 type Destination = "cloud" | "vm" | "local";
@@ -24,10 +25,13 @@ const DESTINATION_LABEL: Record<Destination, string> = {
   local: "This Computer",
 };
 
-/** The allowlist is persisted as either null (every destination is allowed,
- * the shipped default) or an array of destinations.  We translate to/from
- * that wire shape on the way to `api()`. */
-function allowedToArray(value: Destination[] | null | undefined): Destination[] | null {
+/** The allowlist is persisted as either absent (every destination is allowed,
+ * the shipped default) or an array of destinations.  On the wire we say the
+ * first state as an explicit `null`, and the server drops the stored key when
+ * it sees one — omitting the field instead would merge into whatever is
+ * already on disk, so turning the last destination back on would appear to
+ * work and then come back narrowed on the next reload. */
+function allowedForWire(value: Destination[] | null | undefined): Destination[] | null {
   if (value === null || value === undefined) return null;
   return value;
 }
@@ -41,6 +45,11 @@ export function BotComputerDefaults() {
   const [saving, setSaving] = useState(false);
   const [applying, setApplying] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Set when the server refuses an apply with `needsAcknowledgement` — the
+  // named bots would gain This Computer + Auto with nobody having seen the
+  // warning.  Non-null shows the shared confirm dialog; confirming resubmits
+  // the SAME apply with `acknowledgeLocalAuto: true`.
+  const [pendingAck, setPendingAck] = useState<{ id: string; name: string }[] | null>(null);
   const vpsConfigured = Boolean(state.config?.vps?.configured);
 
   useEffect(() => {
@@ -66,7 +75,7 @@ export function BotComputerDefaults() {
         botDefaults: {
           computers: nextComputers,
           cloudBackend: nextBackend,
-          allowedComputers: allowedToArray(nextAllowed),
+          allowedComputers: allowedForWire(nextAllowed),
         },
       }),
     })
@@ -75,17 +84,33 @@ export function BotComputerDefaults() {
       .finally(() => setSaving(false));
   };
 
-  const applyDefaults = () => {
+  const applyDefaults = (opts: { acknowledge?: boolean } = {}) => {
     setApplying(true);
     setError(null);
     api("/api/bots/apply-defaults", {
       method: "POST",
-      body: JSON.stringify({ botDefaults: { computers, cloudBackend: backend } }),
+      body: JSON.stringify({
+        botDefaults: { computers, cloudBackend: backend },
+        ...(opts.acknowledge ? { acknowledgeLocalAuto: true } : {}),
+      }),
     })
       .then((response: { applied: number; config: ConfigStatus }) => {
+        setPendingAck(null);
         dispatch({ type: "configStatus", config: response.config });
       })
-      .catch((e) => setError(e.message))
+      // The apply is all or nothing.  Handing "This Computer" to a bot that
+      // already runs unattended needs the same acknowledged warning the
+      // per-bot picker asks for, and the server refuses the whole call until
+      // it has one, naming the bots in `needsAcknowledgement` — open the
+      // same confirm dialog the picker uses rather than dead-ending on a
+      // plain error nothing on this page could ever act on.
+      .catch((e) => {
+        if (e instanceof ApiError && Array.isArray(e.body?.needsAcknowledgement) && e.body.needsAcknowledgement.length > 0) {
+          setPendingAck(e.body.needsAcknowledgement);
+        } else {
+          setError(e.message);
+        }
+      })
       .finally(() => setApplying(false));
   };
 
@@ -223,6 +248,11 @@ export function BotComputerDefaults() {
         </div>
       </Card>
       {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}
+      <LocalComputerAutoWarning
+        open={pendingAck !== null}
+        onCancel={() => setPendingAck(null)}
+        onConfirm={() => applyDefaults({ acknowledge: true })}
+      />
     </>
   );
 }

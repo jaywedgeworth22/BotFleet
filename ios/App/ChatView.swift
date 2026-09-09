@@ -70,6 +70,31 @@ struct ChatView: View {
         return max(0, session.state.unreadCount - mine)
     }
 
+    /// The provider driving this chat's current model, for the header's
+    /// logo badge.  Rooms have many bots and no single current model, so
+    /// this is `nil` (and the badge renders nothing) for anything but a
+    /// single bot chat.  Prefers the active task's override when present —
+    /// matching `task.modelSelection ?? bot.modelSelection` on the server —
+    /// then joins through the cached instanceId -> driverKind map on
+    /// `Session` rather than parsing `instanceId`, which is operator-named
+    /// and not reliably prefixed by driver kind.
+    private var currentDriverKind: String? {
+        guard case let .bot(bot) = current else { return nil }
+        let selection = bot.tasks?.first(where: { $0.threadId == bot.threadId })?.modelSelection
+            ?? bot.modelSelection
+        return session.instanceDriverKinds[selection.instanceId]
+    }
+
+    /// VoiceOver for the header identity button. The explicit button label
+    /// replaces child accessibility content, so the provider mark must be
+    /// named here or it would become silent chrome.
+    private var headerProfileAccessibilityLabel: String {
+        if let currentDriverKind {
+            return "Open \(current.name) profile, \(ProviderMarkView.displayName(for: currentDriverKind))"
+        }
+        return "Open \(current.name) profile"
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             transcriptColumn
@@ -349,6 +374,12 @@ struct ChatView: View {
                             state: MausState.forChat(current, in: session.state),
                             animated: MausState.forChat(current, in: session.state).showsActivity
                         )
+                        .overlay(alignment: .bottomTrailing) {
+                            if let currentDriverKind {
+                                ProviderMarkView(driverKind: currentDriverKind, size: 15)
+                                    .offset(x: 2, y: 2)
+                            }
+                        }
                         VStack(alignment: .leading, spacing: 1) {
                             Text(current.name)
                                 .font(.system(size: 15, weight: .semibold))
@@ -365,7 +396,7 @@ struct ChatView: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .accessibilityLabel("Open \(current.name) profile")
+                .accessibilityLabel(headerProfileAccessibilityLabel)
 
                 Spacer(minLength: 4)
 
