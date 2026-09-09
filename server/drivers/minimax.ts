@@ -69,6 +69,32 @@ export const MINIMAX_PRICE_PER_MILLION: ChatCompletionsPriceTable = {
   "MiniMax-M2.7-highspeed": [{ input: 0.6, output: 2.4, cachedInput: 0.06 }],
 };
 
+/** MiniMax's own API hosts — global and China — which are the only
+ *  endpoints MINIMAX_PRICE_PER_MILLION describes.
+ *
+ *  `config.url` and MINIMAX_BASE_URL are supported overrides: an instance
+ *  can be pointed at a gateway, a reseller, a proxy, or a self-hosted
+ *  deployment.  None of those necessarily bills at MiniMax's published
+ *  pay-as-you-go tariff — a reseller marks it up, an internal gateway may
+ *  not charge per token at all — and a `cost` on turn.completed is stored
+ *  and reported downstream as REAL spend.  So an endpoint this table does
+ *  not describe gets no price table at all, which the loop turns into a
+ *  null cost: an honest blank rather than a confident wrong number, the
+ *  same reasoning that makes an unpriced MODEL null instead of 0.
+ *
+ *  Matched on host, not the whole URL: normalizedApiUrl has already forced
+ *  the path to /v1 and stripped trailing slashes, and a differently-cased
+ *  host is the same endpoint.  Anything unparseable is not MiniMax. */
+const PRICED_API_HOSTS = new Set([new URL(DEFAULT_URL).host, new URL(CN_URL).host]);
+
+export function isPricedMinimaxEndpoint(apiUrl: string): boolean {
+  try {
+    return PRICED_API_HOSTS.has(new URL(apiUrl).host.toLowerCase());
+  } catch {
+    return false;
+  }
+}
+
 /** Titles and summaries (generateText) are a short, latency-sensitive round
  *  that never needs the flagship's 1M-token context — the highspeed variant
  *  is MiniMax's own faster-inference tier for exactly this shape of call.
@@ -184,6 +210,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     const local = loadLocalMiniMaxConfig();
     const apiKey = resolveMinimaxCredentials(input.environment, local);
     const apiUrl = config.url === DEFAULT_URL && local.url !== DEFAULT_URL ? local.url : config.url;
+    // Resolved once, from the endpoint this instance actually calls, so a
+    // gateway or proxy never gets MiniMax's own tariff reported as its
+    // authoritative spend.
+    const pricesApply = isPricedMinimaxEndpoint(apiUrl);
     const models = local.defaultModel && MODELS.options.some((model) => model.id === local.defaultModel)
       ? { ...MODELS, default: local.defaultModel }
       : MODELS;
@@ -504,7 +534,14 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // against its own size, so a turn of several base-tier rounds must
         // not be repriced as one doubled-tier request.  See computeCost's
         // own doc on TurnLoopDeps.
-        computeCost: (usage) => costUsd(usage, MINIMAX_PRICE_PER_MILLION, model),
+        //
+        // Omitted outright, not left to return null per round, when this
+        // instance points at an endpoint MiniMax's published rates do not
+        // describe — see isPricedMinimaxEndpoint.  The loop reads an absent
+        // computeCost as "no price table wired up" and emits a null cost.
+        computeCost: pricesApply
+          ? (usage) => costUsd(usage, MINIMAX_PRICE_PER_MILLION, model)
+          : undefined,
       });
 
       return { turnId };

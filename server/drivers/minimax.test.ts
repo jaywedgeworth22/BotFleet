@@ -8,7 +8,13 @@ import type { RuntimeEvent, TurnToolHost } from "../contracts.ts";
 import { recordEvents } from "../testing/events.ts";
 import { observeRuntimeEvent, resetSentryAiForTests, type SentryAiSink } from "../sentry-ai.ts";
 import { costUsd } from "./chat-completions/pricing.ts";
-import { decodeMinimaxConfig, loadLocalMiniMaxConfig, MinimaxDriver, MINIMAX_PRICE_PER_MILLION } from "./minimax.ts";
+import {
+  decodeMinimaxConfig,
+  isPricedMinimaxEndpoint,
+  loadLocalMiniMaxConfig,
+  MinimaxDriver,
+  MINIMAX_PRICE_PER_MILLION,
+} from "./minimax.ts";
 
 /** One scripted SSE response, [DONE]-terminated. */
 const sse = (...frames: string[]) =>
@@ -764,6 +770,71 @@ describe("MinimaxDriver", () => {
       costUsd({ input: 10, output: 5 }, MINIMAX_PRICE_PER_MILLION, "MiniMax-M3")!,
       12,
     );
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("knows which endpoints its published rates actually describe", () => {
+    expect(isPricedMinimaxEndpoint("https://api.minimax.io/v1")).toBe(true);
+    expect(isPricedMinimaxEndpoint("https://api.minimaxi.com/v1")).toBe(true);
+    // case and a trailing slash are the same endpoint
+    expect(isPricedMinimaxEndpoint("https://API.MiniMax.io/v1/")).toBe(true);
+    // a gateway, a reseller, a self-hosted deployment — none of them
+    // necessarily bills at MiniMax's own tariff
+    expect(isPricedMinimaxEndpoint("https://gateway.internal.example/v1")).toBe(false);
+    expect(isPricedMinimaxEndpoint("https://api.minimax.io.evil.example/v1")).toBe(false);
+    expect(isPricedMinimaxEndpoint("not a url")).toBe(false);
+  });
+
+  it("reports a null cost — never MiniMax's own tariff — for a turn against a custom endpoint", async () => {
+    // config.url and MINIMAX_BASE_URL are supported overrides for a
+    // gateway or proxy whose billing this driver knows nothing about, and
+    // a finite cost is stored downstream as real spend.
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      sse(
+        '{"choices":[{"delta":{"content":"hi"}}]}',
+        '{"choices":[],"usage":{"prompt_tokens":100000,"completion_tokens":50000}}',
+      ),
+    ));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-gateway",
+      displayName: "MiniMax",
+      enabled: true,
+      config: decodeMinimaxConfig({ url: "https://gateway.internal.example" }),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hello" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    // the usage is real and still reported; only the price is unknown
+    expect(completed).toMatchObject({ ok: true, usage: { input: 100_000, output: 50_000 } });
+    expect(costOf(completed)).toBeNull();
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("still prices a turn against MiniMax's own China endpoint", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () =>
+      sse(
+        '{"choices":[{"delta":{"content":"hi"}}]}',
+        '{"choices":[],"usage":{"prompt_tokens":100000,"completion_tokens":50000}}',
+      ),
+    ));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-cn",
+      displayName: "MiniMax",
+      enabled: true,
+      config: decodeMinimaxConfig({ url: "https://api.minimaxi.com" }),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hello" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(costOf(completed)).toBeCloseTo(0.09, 10);
     recorder.stop();
     await instance.dispose();
   });
