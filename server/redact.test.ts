@@ -1,5 +1,5 @@
 // The native log must keep the shape of a session-setup message and lose the
-// credential values. These tests use the exact shapes the drivers actually
+// credential values.  These tests use the exact shapes the drivers actually
 // write — the ACP `env: [{name,value}]` wire form and the claude mcpServers
 // object form — so a change to either shape breaks the test, not the secret.
 import { describe, expect, it } from "vitest";
@@ -145,7 +145,7 @@ const JWT_SIG = "RkFLRVNJRw"; // base64 of "FAKESIG"
 const OPAQUE = `FAKE${"0123456789".repeat(30)}`; // a 304-char opaque value
 
 // Content-shaped secrets: what a bot's own reply, a tool title, or a
-// permission card can carry. High precision on purpose — a false positive
+// permission card can carry.  High precision on purpose — a false positive
 // here rewrites real code in the transcript.
 describe("redactSecretsInText", () => {
   it("masks known key prefixes wherever they appear", () => {
