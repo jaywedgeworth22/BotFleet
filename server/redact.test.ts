@@ -276,6 +276,49 @@ describe("redactSecretsInText", () => {
     }
   });
 
+  it("masks a multi-part authorization header through its LAST part", () => {
+    // A structured credential hides its secret at the END: SigV4 signs with
+    // `…, Signature=<secret>` after two harmless parameters, and Digest
+    // quotes each parameter separately.  Stopping at the first token would
+    // mask the harmless half and ship the signature.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIGNATURE${"0123456789".repeat(2)}FAKE`;
+    const sigv4 = `${HEADER}: AWS4-HMAC-SHA256 Credential=FAKEAKIA/20260909/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=${sig}`;
+    const digest = `${HEADER}: Digest username="fakeuser", realm="test", nonce="FAKENONCE0123", response="${sig}"`;
+    for (const input of [sigv4, digest]) {
+      const out = redactSecretsInText(input);
+      expect(out, input).not.toContain(sig);
+      expect(out, input).toMatch(/«redacted \d+ chars»/);
+    }
+    // the scheme survives, so the line still says what kind of credential
+    // went out — that is the diagnostic the mask is meant to leave behind
+    expect(redactSecretsInText(sigv4)).toContain("AWS4-HMAC-SHA256");
+    expect(redactSecretsInText(digest)).toContain("Digest");
+  });
+
+  it("is idempotent — a second pass keeps the first pass's reported length", () => {
+    // Redaction runs twice by design now: `describeResult()` before the clip
+    // and the Sentry observer after.  If the second pass masked the marker,
+    // Sentry would record the marker's length instead of the secret's, and
+    // the length is the whole diagnostic value of keeping the shape.
+    const HEADER = "Auth" + "orization";
+    const inputs = [
+      `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_KEY_BODY}\n-----END RSA PRIVATE KEY-----`,
+      `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_KEY_BODY}`,
+      `${HEADER}: Basic ${OPAQUE.slice(0, 60)}`,
+      `{"api_key":"${OPAQUE.slice(0, 60)}"}`,
+      `{"api_key":"${OPAQUE.slice(0, 60)}`,
+      `token ${JWT_HEADER}.${JWT_PAYLOAD}.${JWT_SIG} ok`,
+    ];
+    for (const input of inputs) {
+      const once = redactSecretsInText(input);
+      expect(redactSecretsInText(once), input.slice(0, 40)).toBe(once);
+    }
+    // and the length reported really is the secret's, not the marker's
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_KEY_BODY}\n-----END RSA PRIVATE KEY-----`;
+    expect(redactSecretsInText(redactSecretsInText(pem))).toContain(`«redacted ${FAKE_KEY_BODY.length} chars»`);
+  });
+
   it("does not treat a scheme word in prose as a credential", () => {
     // the header NAME is what makes the space in a scheme-prefixed value
     // safe to cross — a bare scheme word would be a false-positive machine

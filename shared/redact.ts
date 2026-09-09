@@ -73,15 +73,29 @@ const BEARER = /(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/gi;
  * spelled out here.  A bare scheme word would be a false-positive machine
  * ("Basic authentication requires…", "Token expired yesterday"); the same
  * word behind this header name cannot be prose.  The scheme is kept, so the
- * line still says what kind of credential went out. */
+ * line still says what kind of credential went out.
+ *
+ * The value runs to the END of the header value, not to the end of the first
+ * token, because a structured credential carries its secret in a LATER part:
+ * SigV4 signs with `…, Signature=<secret>` after two harmless parameters, and
+ * Digest's own parameters are comma-separated and individually quoted.  The
+ * value therefore crosses commas and semicolons, and steps over a balanced
+ * pair of quotes, but stops at the end of the line or at the single quote
+ * that closes it — the one wrapping a `-H "…"` argument or a JSON string. */
 const AUTH_HEADER =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:]\s*)(["']?)([A-Za-z][A-Za-z0-9-]{2,}\s+)?([A-Za-z0-9._~+/=-]{8,})\3/gi;
+  /\b((?:proxy-)?authorization)(["']?\s*[=:]\s*)(["']?)([A-Za-z][A-Za-z0-9-]{2,}\s+)?([^"'\r\n]{8,}(?:"[^"\r\n]{0,160}"[^"'\r\n]{0,160})*)\3/gi;
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
  * The value must be a single token of some length; prose after a colon
- * ("password: leave blank…") has spaces and does not match. */
+ * ("password: leave blank…") has spaces and does not match.
+ *
+ * `authorization` is deliberately NOT in this list: AUTH_HEADER above owns
+ * that key end to end, and running both would mask the scheme AUTH_HEADER
+ * had just kept on purpose (`AWS4-HMAC-SHA256` is a long enough token to
+ * look like a value to this pattern).  The unterminated variant below keeps
+ * it, because that one runs only where AUTH_HEADER cannot match at all. */
 const KEY_VALUE =
-  /\b((?:[A-Za-z0-9_-]*_)?(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|auth[_-]?token|access[_-]?key|private[_-]?key)s?)(["']?\s*[=:]\s*)(["']?)([A-Za-z0-9._~+/=-]{8,})\3/gi;
+  /\b((?:[A-Za-z0-9_-]*_)?(?:api[_-]?key|apikey|secret|token|password|passwd|auth[_-]?token|access[_-]?key|private[_-]?key)s?)(["']?\s*[=:]\s*)(["']?)([A-Za-z0-9._~+/=-]{8,})\3/gi;
 /** The same key list, for a value whose CLOSING quote was lost upstream.
  * `KEY_VALUE` needs `\3` to close the value, so `{"api_key":"<300 chars>"}`
  * clipped to 240 characters matches nothing and the key material goes out
@@ -94,14 +108,17 @@ const KEY_VALUE_UNTERMINATED =
 
 /** Already-masked text must not be masked again — a second pass would report
  * the length of the marker instead of the length of the secret, and the
- * length is the part a reader debugs with. */
+ * length is the part a reader debugs with.  This matters now that redaction
+ * runs twice by design: once in `describeResult()` before the clip, and again
+ * in the Sentry observer for a detail that reached it some other way. */
 const MASK_MARKER = "«redacted ";
 
 export function redactSecretsInText(text: string): string {
   if (!text || text.length < 8) return text;
   let out = text;
-  out = out.replace(PEM_BLOCK, (_m, open: string, body: string, close: string) => {
+  out = out.replace(PEM_BLOCK, (m, open: string, body: string, close: string) => {
     const trimmed = body.trim();
+    if (trimmed.includes(MASK_MARKER)) return m; // already redacted; keep the reported length
     if (!trimmed && !close) return open;
     const masked = mask(trimmed);
     return close ? `${open}\n${masked}\n${close}` : `${open}\n${masked}`;
