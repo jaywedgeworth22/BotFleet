@@ -197,4 +197,42 @@ describe("ProviderRegistry", () => {
     // The boolean flag itself surfaces for the UI to render the toggle.
     expect(described.muted.enabled).toBe(false);
   });
+
+  it("reloadInstance reloads only the specified instance and disposes the previous one", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({
+      a: { driver: "fake", displayName: "A v1" },
+      b: { driver: "fake", displayName: "B v1" },
+    });
+
+    expect(registry.get("a")?.displayName).toBe("A v1");
+    expect(registry.get("b")?.displayName).toBe("B v1");
+
+    const reloaded = await registry.reloadInstance("a", { driver: "fake", displayName: "A v2" });
+    expect(reloaded).not.toBeNull();
+    expect(reloaded?.displayName).toBe("A v2");
+    expect(registry.get("a")?.displayName).toBe("A v2");
+    expect(registry.get("b")?.displayName).toBe("B v1");
+    // Only instance 'a' was disposed
+    expect(fake.disposed).toEqual(["a"]);
+  });
+
+  it("describeWithFreshInstance updates only the specified instance in the memoized list", async () => {
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({
+      a: { driver: "fake", displayName: "A v1" },
+      b: { driver: "fake", displayName: "B v1" },
+    });
+
+    const initial = await registry.describe({ maxAgeMs: 60_000 });
+    expect(initial.find((i) => i.instanceId === "a")?.displayName).toBe("A v1");
+
+    await registry.reloadInstance("a", { driver: "fake", displayName: "A v2" });
+    const fresh = await registry.describeWithFreshInstance("a");
+
+    expect(fresh.find((i) => i.instanceId === "a")?.displayName).toBe("A v2");
+    expect(fresh.find((i) => i.instanceId === "b")?.displayName).toBe("B v1");
+  });
 });

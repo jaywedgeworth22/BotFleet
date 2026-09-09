@@ -21,7 +21,7 @@ const SETTLED_TURN_MEMORY = 512;
 
 export class EventBus {
   private listeners = new Set<RuntimeEventListener>();
-  private unsubscribes: Array<() => void> = [];
+  private unsubscribes = new Map<string, () => void>();
   private pendingLogWarnings = new Map<string, RuntimeEvent>();
   /** `threadId:turnId` of every turn that has already produced a terminal
    * event.  Insertion-ordered, so the oldest entry is the one evicted. */
@@ -34,6 +34,7 @@ export class EventBus {
 
   attach(instances: ProviderInstance[]) {
     for (const instance of instances) {
+      this.detach(instance.instanceId);
       const unsub = instance.adapter.onEvent((event) => {
         // hard invariant borrowed from correlateRuntimeEventWithInstance:
         // an adapter may only emit events for its own driver kind
@@ -57,7 +58,15 @@ export class EventBus {
         }
         this.publish({ ...event, providerInstanceId: instance.instanceId });
       });
-      this.unsubscribes.push(unsub);
+      this.unsubscribes.set(instance.instanceId, unsub);
+    }
+  }
+
+  detach(instanceId: string) {
+    const unsub = this.unsubscribes.get(instanceId);
+    if (unsub) {
+      unsub();
+      this.unsubscribes.delete(instanceId);
     }
   }
 
@@ -128,6 +137,7 @@ export class EventBus {
   }
 
   detachAll() {
-    for (const unsub of this.unsubscribes.splice(0)) unsub();
+    for (const unsub of this.unsubscribes.values()) unsub();
+    this.unsubscribes.clear();
   }
 }

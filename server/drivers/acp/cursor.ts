@@ -279,19 +279,66 @@ function execText(
   });
 }
 
+const CURSOR_PROBE_TTL_MS = 5 * 60 * 1000;
+
+interface CacheEntry<T> {
+  expiresAt: number;
+  result: Promise<T>;
+}
+
+const authProbeCache = new Map<string, CacheEntry<boolean>>();
+const modelProbeCache = new Map<string, CacheEntry<ModelCatalog>>();
+
+export function resetCursorCache() {
+  authProbeCache.clear();
+  modelProbeCache.clear();
+}
+
+function cursorProbeCacheKey(cli: string, env: Record<string, string | undefined>): string {
+  return [
+    cli,
+    env.HOME ?? "",
+    env.XDG_CONFIG_HOME ?? "",
+    env.CURSOR_CONFIG_DIR ?? "",
+    env.CURSOR_API_KEY ?? "",
+    env.CURSOR_AUTH_TOKEN ?? "",
+    env.FAKE_ACP_AUTH ?? "",
+  ].join("::");
+}
+
 export async function probeCursorAuth(
   cli: string,
   env: Record<string, string | undefined>,
   run: typeof execCli = execCli,
 ): Promise<boolean> {
   if (nonBlank(env.CURSOR_API_KEY) || nonBlank(env.CURSOR_AUTH_TOKEN)) return true;
-  for (const args of [["status", "--format", "json"], ["status"]] as const) {
-    const stdout = await execText(run, cli, [...args], env);
-    if (stdout == null) continue;
-    const decoded = decodeCursorAuthStatus(firstJsonValue(stdout)) ?? decodeCursorAuthText(stdout);
-    if (decoded !== null) return decoded;
-  }
-  return false;
+  const cacheKey = cursorProbeCacheKey(cli, env);
+  const cached = authProbeCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+
+  const entry = {
+    expiresAt: Number.POSITIVE_INFINITY,
+    result: (async () => {
+      for (const args of [["status", "--format", "json"], ["status"]] as const) {
+        const stdout = await execText(run, cli, [...args], env);
+        if (stdout == null) continue;
+        const decoded = decodeCursorAuthStatus(firstJsonValue(stdout)) ?? decodeCursorAuthText(stdout);
+        if (decoded !== null) return decoded;
+      }
+      return false;
+    })().then(
+      (res) => {
+        entry.expiresAt = Date.now() + CURSOR_PROBE_TTL_MS;
+        return res;
+      },
+      (err) => {
+        authProbeCache.delete(cacheKey);
+        throw err;
+      },
+    ),
+  };
+  authProbeCache.set(cacheKey, entry);
+  return entry.result;
 }
 
 export async function fetchCursorModels(
@@ -299,16 +346,36 @@ export async function fetchCursorModels(
   env: Record<string, string | undefined>,
   run: typeof execCli = execCli,
 ): Promise<ModelCatalog> {
-  // Live CLI prints plain text (`slug - Label`); `--format json` is not supported yet.
-  for (const args of [["models"], ["--list-models"]] as const) {
-    const stdout = await execText(run, cli, [...args], env);
-    if (stdout == null) continue;
-    const fromText = decodeCursorModelText(stdout);
-    if (fromText) return fromText;
-    const fromJson = decodeCursorModelCatalog(firstJsonValue(stdout));
-    if (fromJson) return fromJson;
-  }
-  return STATIC_CURSOR_MODELS;
+  const cacheKey = cursorProbeCacheKey(cli, env);
+  const cached = modelProbeCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.result;
+
+  const entry = {
+    expiresAt: Number.POSITIVE_INFINITY,
+    result: (async () => {
+      // Live CLI prints plain text (`slug - Label`); `--format json` is not supported yet.
+      for (const args of [["models"], ["--list-models"]] as const) {
+        const stdout = await execText(run, cli, [...args], env);
+        if (stdout == null) continue;
+        const fromText = decodeCursorModelText(stdout);
+        if (fromText) return fromText;
+        const fromJson = decodeCursorModelCatalog(firstJsonValue(stdout));
+        if (fromJson) return fromJson;
+      }
+      return STATIC_CURSOR_MODELS;
+    })().then(
+      (res) => {
+        entry.expiresAt = Date.now() + CURSOR_PROBE_TTL_MS;
+        return res;
+      },
+      (err) => {
+        modelProbeCache.delete(cacheKey);
+        throw err;
+      },
+    ),
+  };
+  modelProbeCache.set(cacheKey, entry);
+  return entry.result;
 }
 
 export function classifyCursorError(error: unknown): ProviderErrorCode | undefined {
