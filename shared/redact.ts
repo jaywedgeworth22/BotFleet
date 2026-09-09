@@ -64,32 +64,33 @@ const KEY_PREFIXES: RegExp[] = [
  * lowercase spelling is just as much a credential, and the 12-character
  * minimum is what keeps "Bearer tokens are sent in the …" out of it. */
 const BEARER = /(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/gi;
-/** The whole value of an authorization header, whatever scheme it names.
- *
- * `KEY_VALUE` cannot reach this one: a scheme-prefixed credential has a
- * SPACE in it, and KEY_VALUE's value is deliberately space-free so that
- * prose after a colon does not match.  Anchoring on the header NAME instead
- * is what makes that space safe — and it is why the scheme words are not
- * spelled out here.  A bare scheme word would be a false-positive machine
- * ("Basic authentication requires…", "Token expired yesterday"); the same
- * word behind this header name cannot be prose.  The scheme is kept, so the
- * line still says what kind of credential went out.
- *
- * The value runs to the END of the header value, not to the end of the first
- * token, because a structured credential carries its secret in a LATER part:
- * SigV4 signs with `…, Signature=<secret>` after two harmless parameters, and
- * Digest's own parameters are comma-separated and individually quoted.  The
- * value therefore crosses commas and semicolons.
- *
- * Where it STOPS is decided by CONTEXT — by how the value was introduced —
- * and not by scanning forward for pairs of quotes.  That is why there are two
- * patterns below rather than one.  A single pattern that stepped over
- * balanced quote pairs had to answer both questions at once, and got each of
- * them wrong in the other's direction: it needed a length cap on the quoted
- * part so that a serialized object's siblings were not eaten, and that same
- * cap is what let an OAuth `oauth_signature` longer than the cap end the
- * match early and ship the signature into the transcript and into Sentry.
- * How the value was introduced answers both questions at once. */
+// ── authorization headers ────────────────────────────────────────────
+// The whole value of an authorization header, whatever scheme it names.
+//
+// `KEY_VALUE` cannot reach this one: a scheme-prefixed credential has a
+// SPACE in it, and KEY_VALUE's value is deliberately space-free so that
+// prose after a colon does not match.  Anchoring on the header NAME instead
+// is what makes that space safe — and it is why the scheme words are not
+// spelled out here.  A bare scheme word would be a false-positive machine
+// ("Basic authentication requires…", "Token expired yesterday"); the same
+// word behind this header name cannot be prose.  The scheme is kept, so the
+// line still says what kind of credential went out.
+//
+// The value runs to the END of the header value, not to the end of the first
+// token, because a structured credential carries its secret in a LATER part:
+// SigV4 signs with `…, Signature=<secret>` after two harmless parameters, and
+// Digest's own parameters are comma-separated and individually quoted.  The
+// value therefore crosses commas and semicolons.
+//
+// Where it STOPS is decided by CONTEXT — by how the value was introduced —
+// and not by scanning forward for pairs of quotes.  That is why there are two
+// patterns below rather than one.  A single pattern that stepped over
+// balanced quote pairs had to answer both questions at once, and got each of
+// them wrong in the other's direction: it needed a length cap on the quoted
+// part so that a serialized object's siblings were not eaten, and that same
+// cap is what let an OAuth `oauth_signature` longer than the cap end the
+// match early and ship the signature into the transcript and into Sentry.
+// Asking how the value was introduced answers both at once.
 
 /** An authorization value INTRODUCED BY A QUOTE — the JSON and config
  * spelling, `"authorization": "Bearer …"` or `authorization='…'`.
