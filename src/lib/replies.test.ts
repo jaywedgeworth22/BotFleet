@@ -12,7 +12,7 @@ describe("reply display", () => {
     expect(replyAuthor(base, "Mochi")).toBe("Mochi");
   });
 
-  it("labels auto-delivered scheduled runs, not You", () => {
+  it("labels auto-delivered runs, not You", () => {
     expect(replyAuthor({ ...base, role: "system", text: "Morning brief" })).toBe("Scheduled Run");
   });
 

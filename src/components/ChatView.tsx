@@ -900,13 +900,15 @@ const MessagesList = memo(function MessagesList({
               }
               if (m.role === "system") {
                 const body = (m.text ?? "").trim();
+                const firstLine = body.split("\n").find((line) => line.trim()) ?? "";
                 return withSystemChrome(
                   <WebhookCard
                     view={{
                       headline: "Scheduled Run",
-                      subtitle: automationSourceLabel(m.automationSource, body),
+                      subtitle: firstLine && firstLine !== "Scheduled Run" ? firstLine.slice(0, 80) : "Routine",
                       payload: body || undefined,
                     }}
+                    icon={<Clock size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />}
                     detailsNoun="Run Details"
                   />,
                 );
