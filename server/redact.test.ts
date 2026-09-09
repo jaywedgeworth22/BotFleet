@@ -408,6 +408,26 @@ describe("redactSecretsInText", () => {
     expect(out).not.toMatch(/«redacted \d+ chars»[^«]*«redacted/);
   });
 
+  it("masks a folded header whose credential sits on the continuation line", () => {
+    // RFC 7230 obs-fold, and what a pretty-printer produces: the break falls
+    // between the scheme and the credential.  "Runs to the end of the line"
+    // has to mean the line the credential is on, or the bare pattern sees a
+    // six-character `Digest`, declines it, and nothing else knows what the
+    // continuation line is.
+    const HEADER = "Auth" + "orization";
+    const secret = `FAKESECRET${"0123456789".repeat(4)}`;
+    for (const fold of ["\n ", "\n\t", "\n  "]) {
+      const label = JSON.stringify(fold);
+      const input = `${HEADER}: Digest${fold}username="fakeuser", response="${secret}"`;
+      const out = redactSecretsInText(input);
+      expect(out, label).not.toContain(secret);
+      // the scheme still survives, on the line the reader is looking at
+      expect(out, label).toContain("Digest");
+      expect(out, label).toMatch(/«redacted \d+ chars»/);
+      expect(out, label).toBe(redactSecretsInText(out));
+    }
+  });
+
   it("masks an authorization value that another pass had already half-masked", () => {
     // SigV4 carries an access-key id BEFORE the signature, so the prefix
     // pass has a shot at part of the value first.  A "does it contain a

@@ -116,7 +116,7 @@ const BEARER = /(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/gi;
  * cannot reach: OAuth and Digest write ESCAPED quotes inside the value, and
  * that pattern's value class stops at the first quote of any kind. */
 const AUTH_HEADER_QUOTED =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:]\s*)(["'])([A-Za-z][A-Za-z0-9-]{2,}[ \t]+)?((?:\\.|(?!\3)[^\\\r\n])+)(\3|$)/gi;
+  /\b((?:proxy-)?authorization)(["']?\s*[=:]\s*)(["'])([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:\\.|(?!\3)[^\\\r\n])+)(\3|$)/gi;
 
 /** A BARE authorization value — an HTTP header line as `curl -v`, an access
  * log, or an echoed stderr line prints it.
@@ -126,6 +126,15 @@ const AUTH_HEADER_QUOTED =
  * this replaces: OAuth hides its secret in `oauth_signature="…344 chars…"`
  * and SigV4 in a trailing `Signature=…`, and any cap on the quoted part ends
  * the match before either of them and leaves the signature in the clear.
+ *
+ * "The line" means the line the credential is on, which is not always the
+ * line the header name is on: a FOLDED header (RFC 7230 obs-fold, and what
+ * a pretty-printer produces) puts the break between the scheme and the
+ * credential, `Digest\n  username="…", response="<secret>"`.  That is why
+ * the separator after the scheme is `\s+` and not horizontal whitespace —
+ * restricting it leaves the bare pattern looking at a six-character
+ * `Digest` and declining, and no later pattern knows what the continuation
+ * line is.
  *
  * A quote with no partner on the line is not part of the value — it is the
  * wrapper of a `-H "…"` argument — so the value stops there and the wrapper
@@ -140,7 +149,7 @@ const AUTH_HEADER_QUOTED =
  * by the quoted pattern — would be reclaimed here and its siblings deleted
  * after all.  Asserting across the whitespace leaves nothing to give back. */
 const AUTH_HEADER_BARE =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:](?![^\S\r\n]*["'])[^\S\r\n]*)([A-Za-z][A-Za-z0-9-]{2,}[ \t]+)?((?:[^"'\r\n]|"[^"\r\n]*"|'[^'\r\n]*')+)/gi;
+  /\b((?:proxy-)?authorization)(["']?\s*[=:](?![^\S\r\n]*["'])[^\S\r\n]*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|"[^"\r\n]*"|'[^'\r\n]*')+)/gi;
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
  * The value must be a single token of some length; prose after a colon
