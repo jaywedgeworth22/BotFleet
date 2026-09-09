@@ -139,13 +139,12 @@ const AUTH_HEADER_QUOTED =
  * Which quotes on that line belong to the value is decided the same way —
  * by context, not by pairing them off.  A quoted parameter of an auth scheme
  * is always introduced by an `=` (RFC 7235 auth-param: `response="…"`,
- * `oauth_signature="…"`), possibly backslash-escaped inside a shell
- * argument, so only a quote behind an `=` opens one.  Every other quote is
- * somebody else's — the wrapper of a `-H "…"` argument, most often — and
- * ends the value there, wrapper intact.  Pairing quotes off instead makes
- * the value swallow whatever separates a header argument from the next
- * quoted argument on the command line, which with no length cap is the rest
- * of the command.
+ * `oauth_signature="…"`, and BWS is allowed either side of that `=`), so
+ * only a quote behind an `=` opens one.  Every other quote is somebody
+ * else's — the wrapper of a `-H "…"` argument, most often — and ends the
+ * value there, wrapper intact.  Pairing quotes off instead makes the value
+ * swallow whatever separates a header argument from the next quoted argument
+ * on the command line, which with no length cap is the rest of the command.
  *
  * A parameter also has to CLOSE like one.  Its closing quote is followed by
  * a delimiter — a comma, a space, the end of the value, the wrapper quote —
@@ -155,14 +154,16 @@ const AUTH_HEADER_QUOTED =
  * opening: `-H "…: Basic <b64>=" <url> -d "<body>"` would pair that wrapper
  * with the body's quote and eat the command in between.
  *
- * `\"` is genuinely ambiguous and both readings get a turn, cheapest first.
- * In a shell argument it IS the parameter's delimiter (`oauth_signature=\"…\"`
- * inside a `-H "…"`); in a raw header line it is an escaped quote INSIDE the
- * parameter (`realm="a\"b"`).  The naive alternative reads it the first way;
- * only when that fails to close before a delimiter does the escape-aware one
- * read it the second way.  Trying the escape-aware reading first would make
- * a shell-escaped header run its parameter through the wrapper and out the
- * far side.
+ * `\"` is genuinely ambiguous — the parameter's own delimiter inside a shell
+ * argument (`oauth_signature=\"…\"` within a `-H "…"`), an escaped quote
+ * INSIDE the parameter on a raw header line (`realm="a\"b"`) — and what
+ * settles it is how the parameter OPENED.  A parameter closes the way it was
+ * opened: one opened with `\"` closes at the next `\"` and holds no bare
+ * quote, one opened with a bare `"` closes at the next unescaped `"` and
+ * steps over `\"` inside itself.  That is a rule rather than a preference,
+ * so neither reading has to be tried first and neither can steal the other's
+ * text: guessing by which reading closes soonest lets `realm="a\",b"` end at
+ * the escaped quote, because a comma follows it and the guess looks right.
  *
  * The last alternative is the truncated parameter: a quote behind an `=`,
  * with no partner anywhere ahead of it on the line, at END OF TEXT, and
@@ -189,7 +190,7 @@ const AUTH_HEADER_QUOTED =
  * fold, so `<header>:` on one line and `Basic <credential>` on the next is
  * still one header value. */
 const AUTH_HEADER_BARE =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|(?<==\\?)"[^"\r\n]*"(?=[\s,;"'\\)\]}]|$)|(?<==\\?)'[^'\r\n]*'(?=[\s,;"'\\)\]}]|$)|(?<==\\?)"(?:\\.|[^"\\\r\n])*"(?=[\s,;"'\\)\]}]|$)|(?<==\\?)'(?:\\.|[^'\\\r\n])*'(?=[\s,;"'\\)\]}]|$)|(?<==\\?)["'](?![^"'\r\n]*["'])[^\s\r\n][^\r\n]*$)+)/gi;
+  /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s*)([A-Za-z][A-Za-z0-9-]{2,}\s+)?((?:[^"'\r\n]|(?<==[ \t]*\\)"(?:[^"\\\r\n]|\\[^"])*\\"(?=[\s,;"'\\)\]}]|$)|(?<==[ \t]*\\)'(?:[^'\\\r\n]|\\[^'])*\\'(?=[\s,;"'\\)\]}]|$)|(?<==[ \t]*)"(?:\\.|[^"\\\r\n])*"(?=[\s,;"'\\)\]}]|$)|(?<==[ \t]*)'(?:\\.|[^'\\\r\n])*'(?=[\s,;"'\\)\]}]|$)|(?<==[ \t]*\\?)["'](?![^"'\r\n]*["'])[^\s\r\n][^\r\n]*$)+)/gi;
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
  * The value must be a single token of some length; prose after a colon

@@ -494,18 +494,34 @@ describe("redactSecretsInText", () => {
     }
   });
 
-  it("steps over an escaped quote inside a bare quoted parameter", () => {
-    // `\"` is ambiguous and both readings get a turn.  Inside a shell
-    // argument it IS the parameter's delimiter; on a raw header line it is an
-    // escaped quote inside the parameter, and reading it the first way there
-    // ends the value at `realm=` and lets the signature behind it walk out.
+  it("closes a bare quoted parameter the way it was opened", () => {
+    // `\"` is ambiguous — the parameter's own delimiter inside a shell
+    // argument, an escaped quote inside the parameter on a raw header line —
+    // and how the parameter OPENED settles it.  Guessing by which reading
+    // closes soonest gets `realm="a\",b"` wrong, because a comma follows the
+    // escaped quote and the guess looks right; the signature behind it then
+    // walks out.  BWS either side of the `=` is legal too (RFC 7235).
     const HEADER = "Auth" + "orization";
     const sig = `FAKESIG${"0123456789".repeat(20)}`;
-    const input = `${HEADER}: OAuth realm="a\\"b", oauth_signature="${sig}"`;
-    const out = redactSecretsInText(input);
-    expect(out).not.toContain(sig);
-    expect(out).toContain("OAuth «redacted");
-    expect(out).toBe(redactSecretsInText(out));
+    const url = " https://api.example.com/v1/long/path";
+    const cases: Array<[string, string]> = [
+      // raw line, escaped quote inside the parameter
+      [`${HEADER}: OAuth realm="a\\"b", oauth_signature="${sig}"`, ""],
+      // the same, with a delimiter right behind the escaped quote
+      [`${HEADER}: OAuth realm="a\\",b", oauth_signature="${sig}"`, ""],
+      // shell argument, where `\"` really is the delimiter
+      [`curl -H "${HEADER}: OAuth a=\\"1\\", oauth_signature=\\"${sig}\\""${url}`, url],
+      // whitespace around the `=`, both spellings
+      [`${HEADER}: OAuth oauth_signature = "${sig}"`, ""],
+      [`curl -H "${HEADER}: OAuth oauth_signature = \\"${sig}\\""${url}`, url],
+    ];
+    for (const [input, keep] of cases) {
+      const out = redactSecretsInText(input);
+      expect(out, input.slice(0, 44)).not.toContain(sig);
+      expect(out, input.slice(0, 44)).toMatch(/«redacted \d+ chars»/);
+      if (keep) expect(out, input.slice(0, 44)).toContain(keep);
+      expect(out, input.slice(0, 44)).toBe(redactSecretsInText(out));
+    }
   });
 
   it("masks an authorization value that another pass had already half-masked", () => {
