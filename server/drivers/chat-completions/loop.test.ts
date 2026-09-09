@@ -69,7 +69,11 @@ interface Harness {
 
 type ScriptedRound =
   | TurnRoundResult
-  | ((opts: { signal: AbortSignal; round: number }) => Promise<TurnRoundResult>);
+  | ((opts: {
+      signal: AbortSignal;
+      round: number;
+      onUsage?: (usage: { input: number; output: number; cachedInput?: number }) => void;
+    }) => Promise<TurnRoundResult>);
 
 /** A model request that only ends when something aborts it — the shape a
  *  hung or very slow provider has, and the only shape that exercises the
@@ -428,6 +432,65 @@ describe("runTurnLoop — usage", () => {
     const settled = terminals(h.events)[0];
     expect(settled.ok).toBe(false);
     expect(settled.cost).toBe(82);
+  });
+
+  it("prices a round that streamed its usage and THEN failed, instead of reporting that turn as free", async () => {
+    // Regression: MiniMax reports usage on its own SSE frame, so a request
+    // that dies mid-stream — a provider 5xx, a request timeout — can have
+    // reported real, billed tokens through `onUsage` before it rejected.
+    // The catch folds those into `totals` and sets `sawUsage`, so the
+    // terminal event carries them as usage; pricing only the rounds that
+    // RESOLVED left `cost` at 0 for a first-round failure, which reads as
+    // "this turn was free" rather than as an honest figure.
+    const h = harness([
+      async (opts) => {
+        opts.onUsage?.({ input: 20, output: 9 });
+        throw new Error("MiniMax HTTP 503");
+      },
+    ]);
+    const exit = await h.run({ computeCost: (usage) => usage.input * 2 + usage.output });
+
+    expect(exit).toBe("provider_error");
+    const settled = terminals(h.events)[0];
+    expect(settled.ok).toBe(false);
+    expect(settled.usage).toEqual({ input: 20, output: 9 });
+    expect(settled.cost).toBe(49);
+  });
+
+  it("adds a failed round's own cost to the rounds that already succeeded, once each", async () => {
+    const h = harness([
+      wantsTools([call("c1")], { input: 40, output: 2 }),
+      async (opts) => {
+        opts.onUsage?.({ input: 10, output: 1 });
+        throw new Error("MiniMax HTTP 503");
+      },
+    ]);
+    await h.run({
+      toolHost: hostReturning({ kind: "result", content: "[]" }),
+      computeCost: (usage) => usage.input * 2 + usage.output,
+    });
+
+    const settled = terminals(h.events)[0];
+    expect(settled.usage).toEqual({ input: 50, output: 3 });
+    // (40*2 + 2) + (10*2 + 1) = 82 + 21 — the failed round counted ONCE,
+    // and priced from its own usage rather than from the {50, 3} total
+    expect(settled.cost).toBe(103);
+  });
+
+  it("reports an unknown cost — not a partial sum — when the round that failed is the unpriced one", async () => {
+    const h = harness([
+      wantsTools([call("c1")], { input: 40, output: 2 }),
+      async (opts) => {
+        opts.onUsage?.({ input: 10, output: 1 });
+        throw new Error("MiniMax HTTP 503");
+      },
+    ]);
+    await h.run({
+      toolHost: hostReturning({ kind: "result", content: "[]" }),
+      computeCost: (usage) => (usage.input === 10 ? null : usage.input),
+    });
+
+    expect(terminals(h.events)[0].cost).toBeNull();
   });
 
   it("never calls computeCost, and never invents a cost, when no round reported usage", async () => {

@@ -250,6 +250,23 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
   // overall cost must read as unknown rather than as whatever priced
   // rounds happened to add up to.
   let costUnknown = false;
+  /** Fold ONE round's own cost into the turn's running total.
+   *
+   *  Called from the success path AND from the catch: a round that
+   *  reported usage through `onUsage` and then rejected mid-stream — a
+   *  provider 5xx or a request timeout after several chunks — was really
+   *  billed for those tokens, and the catch already folds them into
+   *  `totals` and sets `sawUsage`.  Pricing only the successful rounds
+   *  would then emit a `cost` that looks authoritative and is too low:
+   *  zero for a first-round failure, which is exactly the "this turn was
+   *  free" reading the terminal event goes out of its way never to
+   *  produce. */
+  const priceRound = (usage: TurnUsage): void => {
+    if (!deps.computeCost || costUnknown) return;
+    const roundCost = deps.computeCost(usage);
+    if (roundCost == null) costUnknown = true;
+    else costSoFar += roundCost;
+  };
 
   const turnSignal = deps.signal;
   const wall = new AbortController();
@@ -436,6 +453,9 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
           totals.output += roundState.usage.output;
           const cached = roundState.usage.cachedInput;
           if (cached !== undefined) totals.cachedInput = (totals.cachedInput ?? 0) + cached;
+          // These tokens are in `totals`, so they must be in `costSoFar`
+          // too — see priceRound's own comment.
+          priceRound(roundState.usage);
         }
         if (turnSignal.aborted) exit = "interrupted";
         else if (wallHit) {
@@ -463,11 +483,7 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
         // — a size-tiered model must see this request's own size, not the
         // turn's cumulative size, or a multi-round turn gets billed as if
         // every round were one giant request.
-        if (deps.computeCost && !costUnknown) {
-          const roundCost = deps.computeCost(result.usage);
-          if (roundCost == null) costUnknown = true;
-          else costSoFar += roundCost;
-        }
+        priceRound(result.usage);
         // Cumulative, never per-round: this event is a LIVE INDICATOR whose
         // meaning differs per driver and which consumers are told never to
         // sum.  The terminal event carries the authoritative figure.
