@@ -364,7 +364,7 @@ describe("runTurnLoop — usage", () => {
     expect(terminals(h.events)[0].usage).toBeUndefined();
   });
 
-  it("prices the terminal event from the SAME summed usage it reports, on the success path", async () => {
+  it("prices the terminal event by SUMMING each round's OWN cost, on the success path", async () => {
     const h = harness([
       wantsTools([call("c1")], { input: 10, output: 5 }),
       answer("done", { input: 7, output: 3 }),
@@ -380,10 +380,37 @@ describe("runTurnLoop — usage", () => {
     const settled = terminals(h.events)[0];
     expect(settled.ok).toBe(true);
     expect(settled.usage).toEqual({ input: 17, output: 8 });
+    // (10+5) + (7+3) = 25, from TWO calls — never one call against the
+    // cumulative {input:17, output:8}
     expect(settled.cost).toBe(25);
-    // computeCost is called exactly once, with the FINAL cumulative totals
-    // — never once per round
-    expect(seen).toEqual([{ input: 17, output: 8 }]);
+    expect(seen).toEqual([
+      { input: 10, output: 5 },
+      { input: 7, output: 3 },
+    ]);
+  });
+
+  it("prices a size-tiered model from EACH round's own size, never the turn's cumulative size", async () => {
+    // Regression: MiniMax-M3 doubles its rate past 512K input tokens PER
+    // REQUEST.  Two 300K-input rounds are each under that threshold and
+    // must each price at the base rate — pricing them against the
+    // cumulative 600K would apply the doubled rate to the whole turn,
+    // roughly doubling the bill for a turn no single request of which
+    // MiniMax itself billed at the higher tier.
+    const tieredCost = (usage: { input: number; output: number }) =>
+      usage.input > 512_000 ? usage.input * 2 : usage.input;
+    const h = harness([
+      wantsTools([call("c1")], { input: 300_000, output: 0 }),
+      answer("done", { input: 300_000, output: 0 }),
+    ]);
+    await h.run({
+      toolHost: hostReturning({ kind: "result", content: "[]" }),
+      computeCost: tieredCost,
+    });
+    const settled = terminals(h.events)[0];
+    expect(settled.usage).toEqual({ input: 600_000, output: 0 });
+    // base rate both times: 300,000 + 300,000 — NOT the doubled rate
+    // 600,000 * 2 a cumulative-totals bug would produce
+    expect(settled.cost).toBe(600_000);
   });
 
   it("prices the terminal event on the error path too, from whatever usage streamed before the failure", async () => {
@@ -415,6 +442,27 @@ describe("runTurnLoop — usage", () => {
     const h = harness([answer("done", { input: 1, output: 1 })]);
     await h.run();
     expect(terminals(h.events)[0].cost).toBeNull();
+  });
+
+  it("makes the WHOLE turn's cost null — never a partial sum — when any round's cost is unknown", async () => {
+    // A price table missing a row for whatever model this round ran
+    // against returns null for THAT round; the rounds already priced must
+    // not be reported as if they were the turn's whole cost.
+    let round = 0;
+    const h = harness([
+      wantsTools([call("c1")], { input: 10, output: 5 }),
+      answer("done", { input: 7, output: 3 }),
+    ]);
+    await h.run({
+      toolHost: hostReturning({ kind: "result", content: "[]" }),
+      computeCost: () => {
+        round += 1;
+        return round === 1 ? 5 : null;
+      },
+    });
+    const settled = terminals(h.events)[0];
+    expect(settled.usage).toEqual({ input: 17, output: 8 });
+    expect(settled.cost).toBeNull();
   });
 
   it("keeps the live indicator cumulative, never per-round", async () => {

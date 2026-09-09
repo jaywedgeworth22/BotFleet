@@ -163,13 +163,22 @@ export interface TurnLoopDeps {
    *  `turn.completed` may dispatch the next queued turn synchronously, and
    *  it must not find this thread still busy. */
   onSettled?: (exit: TurnLoopExit) => void;
-  /** Turns this turn's summed usage into a dollar cost for the terminal
-   *  event, on the success path AND every error path — usage already
-   *  reflects real API spend for whatever rounds completed before a later
-   *  round errored, so it is priced the same way regardless of how the
-   *  turn ended.  Absent (no price table wired up yet) or a model the
-   *  driver's table cannot price both resolve to `null` here, never `0`:
-   *  a hard-coded zero reads as "this turn was free". */
+  /** Turns ONE ROUND's own usage into a dollar cost for that round —
+   *  called once per round that reports usage, NOT once at the end with
+   *  the turn's cumulative totals.  A provider that tiers its rate by
+   *  request size (MiniMax-M3 doubles past 512K input tokens) bills each
+   *  REQUEST against its own size; pricing the cumulative totals of a
+   *  multi-round turn against one tier would apply the >512K rate to
+   *  every token in a turn whose every individual round was actually
+   *  billed at the base rate.  The loop sums these per-round costs into
+   *  the terminal event's `cost`, on the success path AND every error
+   *  path; `usage` on that same event stays the separately-summed
+   *  cumulative totals it always was.  Absent (no price table wired up
+   *  yet) or a model the driver's table cannot price both make the WHOLE
+   *  turn's cost `null` here, never `0` for the priced rounds and never a
+   *  partial sum: a hard-coded zero reads as "this turn was free", and a
+   *  partial sum reads as a real total when it silently excludes rounds
+   *  the driver could not price. */
   computeCost?: (usage: TurnUsage) => number | null;
   now?: () => number;
 }
@@ -225,6 +234,14 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
 
   const totals: TurnUsage = { input: 0, output: 0 };
   let sawUsage = false;
+  // Summed per-round, from each round's OWN usage — see computeCost's own
+  // comment for why this must not be priced from `totals` instead.
+  let costSoFar = 0;
+  // Once true, `costSoFar` is a partial sum, not a total: some priced
+  // round returned `null` (an unpriced/unknown model), so the turn's
+  // overall cost must read as unknown rather than as whatever priced
+  // rounds happened to add up to.
+  let costUnknown = false;
 
   const turnSignal = deps.signal;
   const wall = new AbortController();
@@ -417,6 +434,15 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
         totals.output += result.usage.output;
         const cached = result.usage.cachedInput;
         if (cached !== undefined) totals.cachedInput = (totals.cachedInput ?? 0) + cached;
+        // Priced from THIS round's own usage, never the running `totals`
+        // — a size-tiered model must see this request's own size, not the
+        // turn's cumulative size, or a multi-round turn gets billed as if
+        // every round were one giant request.
+        if (deps.computeCost && !costUnknown) {
+          const roundCost = deps.computeCost(result.usage);
+          if (roundCost == null) costUnknown = true;
+          else costSoFar += roundCost;
+        }
         // Cumulative, never per-round: this event is a LIVE INDICATOR whose
         // meaning differs per driver and which consumers are told never to
         // sum.  The terminal event carries the authoritative figure.
@@ -500,11 +526,12 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
       type: "turn.completed" as const,
       ok: TERMINAL_OK[exit],
       stopReason: stopReasonOverride ?? STOP_REASON[exit],
-      // Priced from the SAME totals the terminal event's own `usage` field
-      // carries below, on the success path and every error path alike — a
-      // hard-coded 0 would read as "this turn was free", which is worse
-      // than an honest blank.
-      cost: sawUsage ? (deps.computeCost?.(totals) ?? null) : null,
+      // Summed from each round's OWN cost as it happened (see computeCost's
+      // comment for why this is not `deps.computeCost?.(totals)`), on the
+      // success path and every error path alike — a hard-coded 0 would
+      // read as "this turn was free", and a partial sum would read as a
+      // real total when some round's cost was actually unknown.
+      cost: !deps.computeCost || !sawUsage || costUnknown ? null : costSoFar,
     };
     // The one terminal event.  Nothing else in this file emits this type.
     deps.emit(sawUsage ? { ...completed, usage: { ...totals } } : completed);

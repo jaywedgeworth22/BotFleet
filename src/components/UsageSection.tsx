@@ -509,7 +509,7 @@ export function UsageSection() {
             </div>
           ))}
           <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-            Prices for API-billed engines (such as OpenRouter and MiniMax) are calculated directly from input and output token counts each turn. MiniMax M3 turns whose prompt passes 512K input tokens bill at roughly double the listed rate, per MiniMax's own published tier. CLI-authenticated engines run against your active subscription.
+            Prices for API-billed engines (such as OpenRouter and MiniMax) are calculated directly from input and output token counts each turn.  MiniMax M3 turns whose prompt passes 512K input tokens bill at roughly double the listed rate, per MiniMax's own published tier.  CLI-authenticated engines run against your active subscription.
           </div>
         </div>
       </Card>
