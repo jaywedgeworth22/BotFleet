@@ -166,16 +166,17 @@
     },
     {
       "id": "R5",
-      "severity": "P2",
-      "title": "Deduplicate Sentry and PagerDuty redeliveries with provider event identities",
-      "description": "Webhook delivery identity is extracted only from idempotency-key, x-webhook-id, x-github-delivery and webhook-id headers.  PagerDuty V3 event.id and Sentry-specific event identity are not normalized.  With no recognized delivery header each receive gets a fresh UUID, so retries can enqueue repeated bot work.  Existing generic id tests correctly avoid deduplicating unrelated payload ids, so provider-specific adapters are needed.",
-      "fix": "Add explicit provider envelopes with stable event identity and optional signature verification, preserve capability authentication, keep retry dedupe durable, and correlate Sentry and PagerDuty incidents without automatically merging distinct events.  Replay documented provider fixtures and prove exactly one enqueue.",
-      "confidence": "high",
+      "severity": "P3",
+      "title": "Validate Sentry redelivery identity and preserve existing PagerDuty deduplication",
+      "description": "The ingress already extracts x-webhook-id and deduplicates repeated recognized delivery IDs.  PagerDuty deliveries with that stable header are therefore already covered and do not require a separate event.id adapter for retry deduplication.  The remaining validation is to capture a sanitized fixture for the actual Sentry webhook mode and determine whether it supplies a stable recognized header.  Headerless receives get fresh UUIDs, but no real Sentry duplicate execution was reproduced during this audit.",
+      "fix": "Replay a PagerDuty V3 fixture with a stable x-webhook-id to preserve the existing one-enqueue contract.  Capture only safe header names and opaque test event IDs for the configured Sentry webhook mode; add provider-specific fallback identity only if that fixture proves the current headers insufficient.  Preserve distinct event/action identities, capability authentication and durable retry handling.  Close the validation item without new runtime logic if existing headers satisfy the contract.",
+      "confidence": "source-confirmed generic header deduplication; Sentry-specific validation required",
       "evidence": [
-        "server/webhook-ingress.ts:80-89,126-140",
-        "server/webhooks.ts:575-632",
-        "server/webhook-ingress.test.ts:72",
-        "https://support.pagerduty.com/main/docs/webhooks"
+        "server/webhook-ingress.ts:79-87",
+        "server/webhooks.ts:575-610",
+        "server/webhook-ingress.test.ts",
+        "https://support.pagerduty.com/main/docs/webhooks",
+        "https://sentry.zendesk.com/hc/en-us/articles/27232675871771-Webhook-Request-is-Missing-Headers"
       ],
       "issueNumber": 273,
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/273",
@@ -567,7 +568,7 @@
     {
       "id": "BF-IOS-009",
       "severity": "P2",
-      "title": "Agent Settings dismisses after a failed save",
+      "title": "Bot Settings dismisses after a failed save",
       "description": "The Save task always dismisses. updateProfile returns nil and stores a global error on offline, validation, conflict, or server failure, so the editor closes and loses the recoverable form state.",
       "fix": "Return success from save and dismiss only after a successful update, matching GroupProfileView.",
       "confidence": "high-static",
@@ -578,7 +579,7 @@
       ],
       "issueNumber": 293,
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/293",
-      "boardId": "72c9545d556941119b7762176a92beac",
+      "boardId": "f16194b9a2284a3dadd4d47e4a80ade1",
       "boardUrl": "https://mac.jays.services/board"
     },
     {

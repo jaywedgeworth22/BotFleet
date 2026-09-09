@@ -88,7 +88,7 @@ The most consequential shared source defects are: completion/cooldown telemetry 
 
 Sentry-to-PagerDuty alerting and PagerDuty-to-BotFleet webhook delivery are separate directions.  The first has an enabled rule; the second has a verified URL/Access problem.  No alert, incident, OAuth grant, account mutation, or model task was generated to test them.
 
-The webhook ingress already authenticates capability URLs and deduplicates supported delivery headers.  The improvement is provider-aware event identity and durable replay handling, particularly for PagerDuty/Sentry payloads; this audit does not claim that webhook authentication is absent.
+The webhook ingress already authenticates capability URLs and deduplicates supported delivery headers, including `x-webhook-id`.  PagerDuty deliveries with that stable header already use the deduplication path.  R5 is P3 validation: obtain a sanitized fixture for the actual Sentry webhook mode and add fallback identity only if its headers prove insufficient.  No real duplicate delivery was reproduced, and the earlier blanket PagerDuty remediation claim was withdrawn during review.
 
 The [Cloudflare monitoring documentation](https://developers.cloudflare.com/tunnel/monitoring/) distinguishes tunnel connectivity from application reachability.  [PagerDuty's webhook documentation](https://support.pagerduty.com/main/docs/webhooks) describes event identities and verification, while [Composio sessions](https://docs.composio.dev/docs/sessions-via-mcp) provide the account/session model relevant to connector acceptance.  These references inform follow-up criteria; local observations establish the defects above.
 
@@ -127,7 +127,7 @@ The 35 findings map to 34 distinct GitHub issues: 32 newly created follow-up iss
 | R2 | P1 | Restore Composio connectivity and report configured versus usable status separately | [#270](https://github.com/jaywedgeworth22/BotFleet/issues/270) | `0ade868c` |
 | R3 | P1 | Bound fleet RAG fallback and honor explicitly selected service routes | [#271](https://github.com/jaywedgeworth22/BotFleet/issues/271) | `2d627f55` |
 | R4 | P2 | Do not report RAG ready when backend or protected-route checks fail | [#272](https://github.com/jaywedgeworth22/BotFleet/issues/272) | `432930fc` |
-| R5 | P2 | Deduplicate Sentry and PagerDuty redeliveries with provider event identities | [#273](https://github.com/jaywedgeworth22/BotFleet/issues/273) | `d141ec97` |
+| R5 | P3 | Validate Sentry redelivery identity and preserve existing PagerDuty deduplication | [#273](https://github.com/jaywedgeworth22/BotFleet/issues/273) | `d141ec97` |
 | R6 | P2 | Add an operator acceptance matrix for builds engines and integration health | [#274](https://github.com/jaywedgeworth22/BotFleet/issues/274) | `7e582b82` |
 | EN-01 | P1 | Fallback outcomes mutate the primary engine's cooldown and attribution | [#275](https://github.com/jaywedgeworth22/BotFleet/issues/275) | `46f08797` |
 | EN-02 | P1 | Stall cancellation targets the original engine after failover | [#276](https://github.com/jaywedgeworth22/BotFleet/issues/276) | `fbef84b2` |
@@ -150,7 +150,7 @@ The 35 findings map to 34 distinct GitHub issues: 32 newly created follow-up iss
 | BF-IOS-006 | P1 | iOS does not use the server send idempotency contract | [#290](https://github.com/jaywedgeworth22/BotFleet/issues/290) | `4505f828` |
 | BF-IOS-007 | P2 | Accepted image formats cannot be read through the companion route | [#291](https://github.com/jaywedgeworth22/BotFleet/issues/291) | `ced11b51` |
 | BF-IOS-008 | P2 | Editing an engine selection silently clears reasoning effort | [#292](https://github.com/jaywedgeworth22/BotFleet/issues/292) | `1e36bd92` |
-| BF-IOS-009 | P2 | Agent Settings dismisses after a failed save | [#293](https://github.com/jaywedgeworth22/BotFleet/issues/293) | `72c9545d` |
+| BF-IOS-009 | P2 | Bot Settings dismisses after a failed save | [#293](https://github.com/jaywedgeworth22/BotFleet/issues/293) | `f16194b9` |
 | BF-IOS-010 | P3 | Live Activities are explicitly stale while the app is suspended | [#294](https://github.com/jaywedgeworth22/BotFleet/issues/294) | `699ea1ae` |
 | R10 | P2 | Remediate vulnerable Electron packaging dependencies and verify generated artifacts | [#296](https://github.com/jaywedgeworth22/BotFleet/issues/296) | `2c27a635` |
 
@@ -197,6 +197,6 @@ Additional acceptance work belongs to R6 rather than a separate ticket for every
 - `swift test --scratch-path /tmp/botfleet-audit-swift`: 234 CompanionCore tests passed, zero failures, using Swift 6.3.3.  This does not exercise SwiftUI/UIKit, APNs, ActivityKit, or a physical phone.
 - Dependency setup used an isolated copy from a peer tree with an identical lockfile after network installation failed; the peer tree and shared integration checkout were not modified.
 
-- Unsigned Xcode builds were attempted for both generic iOS Simulator and generic iOS device destinations after successful XcodeGen and Swift package resolution.  Both exited 70 before compilation because Xcode reported the iOS 26.5 destination/platform as unavailable.  The SDK is listed, but no usable iOS Simulator runtime or generic iOS device destination platform is available.  No app artifact, launch, screenshot, or full app compilation was obtained; this environment gap is included in R6 acceptance tracking.
+- Unsigned Xcode builds were attempted for both generic iOS Simulator and generic iOS device destinations after successful XcodeGen and Swift package resolution.  Both exited 70 before compilation because Xcode reported the iOS 26.5 destination/platform as unavailable.  The SDK is listed, but no usable iOS Simulator runtime or generic iOS device destination platform is available.  No local app artifact, launch, screenshot, or full app compilation was obtained; this environment gap is included in R6 acceptance tracking.  Hosted CI at audit commit `6cab38ff` subsequently passed the full unsigned iOS app build and Swift tests ([job evidence](https://github.com/jaywedgeworth22/BotFleet/actions/runs/34334853491/job/102411798216)); no iOS source changed in the documentation follow-up.
 
 No live inference, tool execution, paid connector call, destructive failure injection, production restart, TestFlight upload, or full physical-device acceptance was performed.  Authenticated metadata is weaker evidence than a completed bot turn.  Fresh provider acceptance should follow repair of the duplicate execution-state owners.  The report intentionally leaves those acceptance gaps visible and tracked.
