@@ -18,8 +18,10 @@
 // a sibling `config.json.lock` created with O_EXCL -- atomic on macOS, Linux
 // and Windows -- holding the owner's pid so a lock left behind by a crashed
 // process is recognised as stale and reclaimed instead of wedging every
-// later save, while a holder that outlives its lease is fenced: it cannot
-// write once the lock is no longer its own.  Readers never need the lock:
+// later save.  Reclaiming goes through an elected single reclaimer so a
+// fresh lock is never removed by a waiter that judged its predecessor
+// stale, and a holder that outlives its lease is fenced: it cannot write
+// once the lock is no longer its own.  Readers never need the lock:
 // the rename keeps reads consistent on their own.
 //
 // It lives under electron/ rather than shared/ because the packaged app
@@ -103,36 +105,107 @@ function processAlive(pid) {
   }
 }
 
-/** True when the lock at `lockPath` belongs to nobody who could still
- * release it.  A record with a dead pid is stale at once; a record (or an
- * unreadable file) older than `staleMs` is stale regardless. */
-function isStaleLock(lockPath, record, nowMs, staleMs) {
-  if (record) {
-    if (nowMs - record.at > staleMs) return true;
-    return !processAlive(record.pid);
-  }
-  try {
-    return nowMs - statSync(lockPath).mtimeMs > staleMs;
-  } catch {
-    return false; // gone already -- the next create attempt will tell
-  }
+function reclaimMarkerFor(lockPath) {
+  return `${lockPath}.reclaim`;
 }
 
-/** Take a stale lock out of the way.  rename(2) is atomic, so when two
- * waiters both decide the same lock is stale only one of them gets it;
- * the other sees ENOENT and simply tries the create again. */
-function reclaimStaleLock(lockPath) {
-  const parked = `${lockPath}.stale.${process.pid}.${randomUUID()}`;
+/** The reclaim marker that guards `configPath`'s lock: waiters that judge
+ * the lock stale elect one reclaimer through it (see reclaimStaleLock). */
+export function reclaimPathFor(configPath) {
+  return reclaimMarkerFor(lockPathFor(configPath));
+}
+
+/** What is at `lockPath` right now -- its parsed record (null when
+ * unreadable) plus the inode and mtime that identify that exact file -- or
+ * null when there is no lock at all. */
+function inspectLock(lockPath) {
+  let stat;
   try {
-    renameSync(lockPath, parked);
+    stat = statSync(lockPath);
   } catch {
-    return;
+    return null;
+  }
+  return { record: readLockRecord(lockPath), ino: stat.ino, mtimeMs: stat.mtimeMs };
+}
+
+function sameLock(a, b) {
+  return (
+    Boolean(a && b) &&
+    a.ino === b.ino &&
+    a.mtimeMs === b.mtimeMs &&
+    JSON.stringify(a.record) === JSON.stringify(b.record)
+  );
+}
+
+/** True when the inspected lock belongs to nobody who could still release
+ * it.  A record with a dead pid is stale at once; a record (or an
+ * unreadable file) older than `staleMs` is stale regardless. */
+function isStaleLock(seen, nowMs, staleMs) {
+  if (seen.record) {
+    if (nowMs - seen.record.at > staleMs) return true;
+    return !processAlive(seen.record.pid);
+  }
+  return nowMs - seen.mtimeMs > staleMs;
+}
+
+/** Remove the stale lock `seen` without ever removing a fresh one.
+ *
+ * Unlinking by name cannot be made conditional on POSIX, so if every waiter
+ * that judged the lock stale simply removed it, the second could remove the
+ * fresh lock the first had already created in its place and two writers
+ * would overlap.  Instead the waiters elect one reclaimer: whoever creates
+ * the `.reclaim` marker with O_EXCL.  The winner re-inspects the lock,
+ * unlinks it only if it is still the exact file it judged (same inode,
+ * mtime and record), and steps down.  A loser never touches the lock; it
+ * keeps waiting, so a generation created meanwhile is safe from it.  A
+ * marker left by a reclaimer that died mid-way is judged by the same
+ * pid-and-age rule and cleared.
+ *
+ * Returns true when this process held the election (whether or not the
+ * lock still needed removing), false when another reclaimer holds it. */
+function reclaimStaleLock(lockPath, seen, nowMs, staleMs) {
+  const marker = reclaimMarkerFor(lockPath);
+  let fd = null;
+  try {
+    fd = openSync(marker, "wx", 0o600);
+    writeFileSync(fd, JSON.stringify({ pid: process.pid, at: nowMs }));
+    closeSync(fd);
+    fd = null;
+  } catch (error) {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* best-effort */
+      }
+    }
+    if (error?.code !== "EEXIST") throw error;
+    const other = inspectLock(marker);
+    if (other && isStaleLock(other, nowMs, staleMs)) {
+      try {
+        unlinkSync(marker);
+      } catch {
+        /* the reclaimer finished or a peer cleared it first */
+      }
+    }
+    return false;
   }
   try {
-    unlinkSync(parked);
-  } catch {
-    /* best-effort cleanup; a leftover parked file guards nothing */
+    if (sameLock(inspectLock(lockPath), seen)) {
+      try {
+        unlinkSync(lockPath);
+      } catch {
+        /* gone already */
+      }
+    }
+  } finally {
+    try {
+      unlinkSync(marker);
+    } catch {
+      /* best-effort */
+    }
   }
+  return true;
 }
 
 /** Acquire the advisory lock for `configPath`.  Returns a handle with
@@ -204,13 +277,14 @@ export function acquireConfigFileLock(configPath, options = {}) {
       if (error?.code !== "EEXIST") throw error;
     }
     const now = Date.now();
-    const holder = readLockRecord(lockPath);
+    const seen = inspectLock(lockPath);
+    if (!seen) continue; // released between our attempt and this look
+    const holder = seen.record;
     if (holder && holder.pid === process.pid && now - holder.at <= staleMs) {
       throw new Error(`config lock re-entered by this process: ${lockPath}`);
     }
-    if (isStaleLock(lockPath, holder, now, staleMs)) {
-      reclaimStaleLock(lockPath);
-      continue;
+    if (isStaleLock(seen, now, staleMs) && reclaimStaleLock(lockPath, seen, now, staleMs)) {
+      continue; // we held the election: try the create again at once
     }
     if (now - startedAt >= timeoutMs) {
       const who = holder ? `pid ${holder.pid}` : "an unknown writer";

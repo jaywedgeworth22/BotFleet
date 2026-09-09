@@ -27,6 +27,7 @@ export interface ConfigFileLock {
 }
 
 export function lockPathFor(configPath: string): string;
+export function reclaimPathFor(configPath: string): string;
 export function acquireConfigFileLock(configPath: string, options?: ConfigLockOptions): ConfigFileLock;
 export function withConfigFileLock<T>(configPath: string, fn: (lock: ConfigFileLock) => T, options?: ConfigLockOptions): T;
 export function readConfigFile(configPath: string): ConfigFileObject;

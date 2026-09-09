@@ -15,6 +15,7 @@ import {
   acquireConfigFileLock,
   lockPathFor,
   readConfigFile,
+  reclaimPathFor,
   updateConfigFile,
   withConfigFileLock,
   writeFileAtomic,
@@ -74,11 +75,12 @@ console.log("released");
 const COUNTER_SOURCE = `
 const path = process.env.CFL_PATH;
 const section = process.env.CFL_SECTION;
+const options = { timeoutMs: Number(process.env.CFL_TIMEOUT_MS ?? 5000) };
 for (let i = 0; i < Number(process.env.CFL_N); i += 1) {
   mod.updateConfigFile(path, (disk) => {
     const current = disk[section] ?? { count: 0 };
     disk[section] = { count: current.count + 1 };
-  });
+  }, options);
 }
 console.log("done");
 `;
@@ -196,6 +198,67 @@ test("a lock left behind by a dead process is reclaimed", () => {
     assert.ok(Date.now() - started < 1_500, "reclaimed without waiting out the timeout");
     assert.deepEqual(readConfigFile(path), { reclaimed: true });
     assert.equal(existsSync(lockPathFor(path)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a waiter that loses the reclaim election waits instead of touching the stale lock", () => {
+  const { dir, path } = tempConfig();
+  try {
+    const gone = spawnSync(process.execPath, ["-e", "0"]);
+    writeFileSync(lockPathFor(path), JSON.stringify({ pid: gone.pid, at: Date.now() }));
+    const before = readFileSync(lockPathFor(path), "utf8");
+    // A live reclaimer (this pid, fresh) already holds the election.
+    writeFileSync(reclaimPathFor(path), JSON.stringify({ pid: process.pid, at: Date.now() }));
+    assert.throws(() => acquireConfigFileLock(path, { timeoutMs: 150 }), /config lock held by pid \d+/);
+    assert.equal(readFileSync(lockPathFor(path), "utf8"), before, "the loser left the lock exactly as it was");
+    assert.equal(existsSync(reclaimPathFor(path)), true, "and did not clear a live reclaimer's marker");
+    // Once the reclaimer is gone the next waiter wins the election and proceeds.
+    rmSync(reclaimPathFor(path));
+    updateConfigFile(path, (disk) => {
+      disk.won = true;
+    }, { timeoutMs: 1_000 });
+    assert.deepEqual(readConfigFile(path), { won: true });
+    assert.equal(existsSync(reclaimPathFor(path)), false, "the marker is released after reclaiming");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a reclaim marker left by a dead reclaimer is cleared", () => {
+  const { dir, path } = tempConfig();
+  try {
+    const gone = spawnSync(process.execPath, ["-e", "0"]);
+    writeFileSync(lockPathFor(path), JSON.stringify({ pid: gone.pid, at: Date.now() }));
+    writeFileSync(reclaimPathFor(path), JSON.stringify({ pid: gone.pid, at: Date.now() }));
+    updateConfigFile(path, (disk) => {
+      disk.cleared = true;
+    }, { timeoutMs: 2_000 });
+    assert.deepEqual(readConfigFile(path), { cleared: true });
+    assert.equal(existsSync(lockPathFor(path)), false);
+    assert.equal(existsSync(reclaimPathFor(path)), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// The P1 from review: several writers wake up behind one abandoned lock.
+// Without the election, the second to judge it stale could remove the fresh
+// lock the first had just created, and the two would overlap.
+test("several writers behind one dead-pid lock all get through without losing an update", async () => {
+  const { dir, path } = tempConfig();
+  const N = 20;
+  const sections = ["a", "b", "c", "d"];
+  try {
+    const gone = spawnSync(process.execPath, ["-e", "0"]);
+    writeFileSync(lockPathFor(path), JSON.stringify({ pid: gone.pid, at: Date.now() }));
+    const env = { CFL_PATH: path, CFL_N: String(N), CFL_TIMEOUT_MS: "30000" };
+    await Promise.all(sections.map((section) => runWorker(COUNTER_SOURCE, { ...env, CFL_SECTION: section })));
+    const final = readConfigFile(path);
+    assert.deepEqual(final, Object.fromEntries(sections.map((section) => [section, { count: N }])));
+    assert.equal(existsSync(lockPathFor(path)), false, "no lock left behind");
+    assert.equal(existsSync(reclaimPathFor(path)), false, "no reclaim marker left behind");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
