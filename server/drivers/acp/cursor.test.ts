@@ -2,7 +2,7 @@ import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ensureDirs } from "../../config.ts";
 import { recordEvents } from "../../testing/events.ts";
@@ -17,11 +17,20 @@ import {
   decodeCursorModelText,
   STATIC_CURSOR_MODELS,
   resolveCursorAcpModelId,
+  resetCursorCache,
+  probeCursorAuth,
+  fetchCursorModels,
 } from "./cursor.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
 
 describe("decodeCursorAuthStatus", () => {
+  beforeEach(() => {
+    resetCursorCache();
+  });
+  afterEach(() => {
+    resetCursorCache();
+  });
   it("reads isAuthenticated from live CLI JSON", () => {
     expect(decodeCursorAuthStatus({ isAuthenticated: true })).toBe(true);
     expect(decodeCursorAuthStatus({ isAuthenticated: false })).toBe(false);
@@ -394,5 +403,40 @@ describe("cursor ACP model namespace (NS: set_model wiring)", () => {
       await instance.dispose();
       delete process.env.FAKE_ACP_MODE;
     }
+  });
+});
+
+describe("cursor probe caching and scoping", () => {
+  beforeEach(() => {
+    resetCursorCache();
+  });
+
+  it("does not cache a rejected probe promise", async () => {
+    let runs = 0;
+    const failingExec: any = () => {
+      runs += 1;
+      throw new Error("transient failure");
+    };
+
+    await expect(probeCursorAuth("cursor", {}, failingExec)).rejects.toThrow("transient failure");
+    expect(runs).toBe(1);
+
+    // Calling it again should retry instead of serving cached rejection
+    await expect(probeCursorAuth("cursor", {}, failingExec)).rejects.toThrow("transient failure");
+    expect(runs).toBe(2);
+  });
+
+  it("scopes probe caches to effective environment", async () => {
+    let executedEnvs: string[] = [];
+    const trackingExec: any = (_cli: string, _args: string[], opts: any, cb: any) => {
+      executedEnvs.push(opts.env.HOME ?? "");
+      cb(null, "gpt-5.3-codex - GPT-5.3 Codex\n", "");
+      return {} as any;
+    };
+
+    await fetchCursorModels("cursor", { HOME: "/Users/alice" }, trackingExec);
+    await fetchCursorModels("cursor", { HOME: "/Users/bob" }, trackingExec);
+
+    expect(executedEnvs).toEqual(["/Users/alice", "/Users/bob"]);
   });
 });
