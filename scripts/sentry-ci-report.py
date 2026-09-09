@@ -72,6 +72,25 @@ CRON_SCHEDULES = {
     "iOS TestFlight ship (GitHub-hosted macOS)": "18,48 * * * *",
 }
 
+# checkin_margin (minutes): how long after the scheduled trigger time Sentry
+# waits before flagging a missed check-in.  This reporter only ever reports
+# on workflow_run COMPLETION -- it never sends an "in_progress" check-in when
+# the observed workflow starts -- so the margin must cover that workflow's
+# own worst-case run time (its job's `timeout-minutes:`) plus GH Actions
+# queueing delay and this reporter job's own overhead, or a legitimately
+# slow-but-successful run reads as a missed check-in before Sentry ever
+# hears from it.  15 is a safe default for a workflow that normally finishes
+# in a couple of minutes; override per-workflow below for anything slower.
+DEFAULT_CHECKIN_MARGIN_MINUTES = 15
+CRON_CHECKIN_MARGIN_OVERRIDES = {
+    # ios-ship.yml's job sets `timeout-minutes: 90`; +15 for queueing and
+    # this reporter's own dispatch/run time.
+    "iOS TestFlight ship (GitHub-hosted macOS)": 105,
+}
+_CRON_CHECKIN_MARGIN_FOLDED = {
+    name.casefold(): margin for name, margin in CRON_CHECKIN_MARGIN_OVERRIDES.items()
+}
+
 # This map is keyed by a workflow's DISPLAY NAME, which is exactly the kind of
 # string that drifts out from under you: shared-package-pin-check.yml was
 # renamed "Shared package pin check" -> "Shared Package Pin Check" in d849720c
@@ -316,13 +335,16 @@ def main() -> int:
         else:
             checkin_status = "ok" if conclusion == "success" else "error"
             slug = monitor_slug(APP, workflow_name)
+            checkin_margin = _CRON_CHECKIN_MARGIN_FOLDED.get(
+                workflow_name.casefold(), DEFAULT_CHECKIN_MARGIN_MINUTES
+            )
             checkin_payload = {
                 "check_in_id": uuid.uuid4().hex,
                 "monitor_slug": slug,
                 "status": checkin_status,
                 "monitor_config": {
                     "schedule": {"type": "crontab", "value": cron_expr},
-                    "checkin_margin": 15,
+                    "checkin_margin": checkin_margin,
                     "max_runtime": 60,
                     "timezone": "UTC",
                 },
