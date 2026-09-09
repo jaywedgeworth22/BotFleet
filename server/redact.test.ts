@@ -416,6 +416,10 @@ describe("redactSecretsInText", () => {
     // continuation line is.
     const HEADER = "Auth" + "orization";
     const secret = `FAKESECRET${"0123456789".repeat(4)}`;
+    // the fold can also fall right after the colon, before the scheme
+    const afterColon = `${HEADER}:\n  Basic ${secret}`;
+    expect(redactSecretsInText(afterColon)).not.toContain(secret);
+    expect(redactSecretsInText(afterColon)).toContain("Basic");
     for (const fold of ["\n ", "\n\t", "\n  "]) {
       const label = JSON.stringify(fold);
       const input = `${HEADER}: Digest${fold}username="fakeuser", response="${secret}"`;
