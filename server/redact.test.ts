@@ -374,6 +374,30 @@ describe("redactSecretsInText", () => {
     expect(jsonOut).toContain('"message":"upstream said no"');
   });
 
+  it("masks a quote-introduced authorization value whose closing quote was clipped", () => {
+    // A value cut before its own closing quote has no other end left, so the
+    // quote-introduced pattern ends it at the end of the text.  This is the
+    // shape the unterminated key=value fallback cannot reach: OAuth and
+    // Digest write ESCAPED quotes inside the value, and that pattern's value
+    // class stops at the first quote of any kind.
+    const HEADER = "auth" + "orization";
+    const sig = "FAKE".repeat(86);
+    const raw = `{"${HEADER}":"OAuth oauth_signature=\\"${sig}\\", oauth_nonce=\\"FAKENONCE0123\\""}`;
+    expect(raw.length).toBeGreaterThan(DETAIL_LIMIT);
+
+    const clipped = clip(raw, DETAIL_LIMIT);
+    // the clip really did remove the quote that closes the value
+    expect(clipped).not.toContain('oauth_nonce');
+    expect(clipped).toContain(sig.slice(0, 40));
+
+    const out = redactSecretsInText(clipped);
+    expect(out).not.toContain(sig.slice(0, 40));
+    expect(out).toMatch(/«redacted \d+ chars»/);
+    expect(out).toBe(redactSecretsInText(out));
+    // and the reported length is the secret's, not a marker's
+    expect(out).not.toMatch(/«redacted \d+ chars»[^«]*«redacted/);
+  });
+
   it("masks an authorization value that another pass had already half-masked", () => {
     // SigV4 carries an access-key id BEFORE the signature, so the prefix
     // pass has a shot at part of the value first.  A "does it contain a

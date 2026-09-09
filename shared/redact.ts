@@ -105,9 +105,17 @@ const BEARER = /(\bBearer\s+)([A-Za-z0-9._~+/=-]{12,})/gi;
  * a quote inside the string does not end the value early.  The two branches
  * are disjoint on their first character (one requires a backslash, the other
  * forbids it), which is what keeps this linear on a string that never
- * closes. */
+ * closes.
+ *
+ * END OF TEXT closes it too, because a value whose closing quote was clipped
+ * away upstream has no other end left.  That fallback fires only where the
+ * run really did reach the end — a quote of its own kind would have stopped
+ * it first — so it can never be the path a terminated value takes, and the
+ * siblings are still safe.  It is the one shape `KEY_VALUE_UNTERMINATED`
+ * cannot reach: OAuth and Digest write ESCAPED quotes inside the value, and
+ * that pattern's value class stops at the first quote of any kind. */
 const AUTH_HEADER_QUOTED =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:]\s*)(["'])([A-Za-z][A-Za-z0-9-]{2,}[ \t]+)?((?:\\.|(?!\3)[^\\\r\n])+)\3/gi;
+  /\b((?:proxy-)?authorization)(["']?\s*[=:]\s*)(["'])([A-Za-z][A-Za-z0-9-]{2,}[ \t]+)?((?:\\.|(?!\3)[^\\\r\n])+)(\3|$)/gi;
 
 /** A BARE authorization value — an HTTP header line as `curl -v`, an access
  * log, or an echoed stderr line prints it.
@@ -184,10 +192,20 @@ export function redactSecretsInText(text: string): string {
   // too short to be a credential rather than masking the prose after a colon.
   out = out.replace(
     AUTH_HEADER_QUOTED,
-    (m, key: string, sep: string, quote: string, scheme: string | undefined, value: string) =>
-      value.length < 8 || WHOLLY_MASKED.test(value)
-        ? m
-        : `${key}${sep}${quote}${scheme ?? ""}${mask(value)}${quote}`,
+    (m, key: string, sep: string, quote: string, scheme: string | undefined, value: string, close: string) => {
+      // A value that ran to the end of the text lost its closing quote to a
+      // clip, and the scheme goes INSIDE the mask on that path alone.  That
+      // is not cosmetic: `KEY_VALUE_UNTERMINATED` still lists `authorization`
+      // and still sees this shape, and only a WHOLLY masked value makes it
+      // stand down — a `Basic «redacted …»` left behind would be masked a
+      // second time and would then report the marker's length instead of the
+      // secret's.  Masking scheme and value together reproduces, byte for
+      // byte, what that pass produced before this one could reach the shape.
+      const body = close ? value : `${scheme ?? ""}${value}`;
+      if (body.length < 8 || WHOLLY_MASKED.test(body)) return m;
+      const kept = close ? (scheme ?? "") : "";
+      return `${key}${sep}${quote}${kept}${mask(body)}${close}`;
+    },
   );
   out = out.replace(
     AUTH_HEADER_BARE,
