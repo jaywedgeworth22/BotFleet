@@ -352,9 +352,14 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         // A failure's one-line detail is the whole reason the row is worth
         // reading.  Arguments stay off the wire; only the result line goes —
         // and it is real provider output (stdout/stderr/error text a driver
-        // read back from the tool call), so it is redacted before it is cut
-        // down to size: a secret sliced first can lose the half of itself
-        // that would have matched a redaction pattern.
+        // read back from the tool call).
+        //
+        // Every production driver has already redacted this in
+        // `describeResult()`, before the 240-character clip that would have
+        // cut a secret away from the closing marker its pattern needs.  This
+        // pass is the belt to that braces: it costs one regex sweep over 240
+        // characters, and it covers a `detail` that reached us some other way
+        // — a driver that builds the string itself, a replayed event, a test.
         const detail = clean(event.detail);
         if (detail) toolSpan.setAttribute("gen_ai.tool.result.detail", redactSecretsInText(detail).slice(0, 200));
       }

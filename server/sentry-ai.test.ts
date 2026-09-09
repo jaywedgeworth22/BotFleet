@@ -388,36 +388,90 @@ describe("approval, retry, and session lifecycle", () => {
     expect(detail).toContain("«redacted 16 chars»");
   });
 
-  it("redacts a PEM private key from failed tool output after describeResult truncates it", () => {
-    const rawPemOutput =
-      "-----BEGIN RSA PRIVATE KEY-----\n" +
-      "MIIEowIBAAKCAQEA0mN4l39v3B7q1X8Z2k5L6m9n1o3p5r7s9t1u3v5w7x9y1z3a5b7c9d1e3f5g" +
-      "7h9i1j3k5l7m9n1o3p5r7s9t1u3v5w7x9y1z3a5b7c9d1e3f5g7h9i1j3k5l7m9n1o3p5r7s9t1u3v" +
-      "5w7x9y1z3a5b7c9d1e3f5g7h9i1j3k5l7m9n1o3p5r7s9t1u3v5w7x9y1z3a5b7c9d1e3f5g7h9i1j" +
-      "\n-----END RSA PRIVATE KEY-----";
-    const clippedDetail = describeResult(rawPemOutput);
-    expect(clippedDetail).not.toContain("END RSA PRIVATE KEY");
-    expect(clippedDetail).toContain("MIIEowIBAAKCAQEA0");
+  // ── the real driver-to-Sentry path ──────────────────────────────────
+  // Every production driver builds a failed tool's `detail` by handing the
+  // provider's raw result to `describeResult()`, which clips it to 240
+  // characters.  That clip used to run BEFORE any redaction, so a secret
+  // longer than the clip lost the closing marker its pattern anchors on and
+  // the first 200 characters went to Sentry intact.  These tests drive that
+  // exact path — the driver's own payload shape, through the driver's own
+  // `describeResult()` call, into the observer that sets the span attribute
+  // — rather than handing `observeRuntimeEvent` a pre-redacted string.
 
-    const { sink, spans } = recordingSink();
-    observeRuntimeEvent(base({ type: "turn.started" }), sink);
-    observeRuntimeEvent(
-      base({ type: "item.started", itemType: "tool", itemId: "tool-1", title: "bash cat key" }),
-      sink,
-    );
-    observeRuntimeEvent(
-      base({
-        type: "item.completed",
-        itemType: "tool",
-        itemId: "tool-1",
-        ok: false,
-        detail: clippedDetail,
-      }),
-      sink,
-    );
-    const detail = String(spans[1].attributes["gen_ai.tool.result.detail"]);
-    expect(detail).not.toContain("MIIEowIBAAKCAQEA0");
-    expect(detail).toMatch(/BEGIN RSA PRIVATE KEY[\s\S]*«redacted \d+ chars»/);
+  /** Obviously-fake credential material, assembled from pieces so no
+   *  token-shaped literal sits in the source and nobody mistakes it for a
+   *  live key.  Each one is longer than DETAIL_LIMIT on purpose. */
+  const FAKE_PEM_BODY = "FAKEFAKE".repeat(38); // 304 chars of nothing
+  const FAKE_PEM = `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_PEM_BODY}\n-----END RSA PRIVATE KEY-----`;
+  const FAKE_JWT = `eyJhbGciOiJGQUtFIn0.eyJwYXlsb2FkIjoi${"RkFLRQ".repeat(40)}.RkFLRVNJRw`;
+  const FAKE_OPAQUE = `FAKE${"0123456789".repeat(30)}`; // a 304-char opaque value
+  const FAKE_SECRETS = [FAKE_PEM_BODY, FAKE_JWT, FAKE_OPAQUE];
+
+  /** One failed tool's output carrying all three shapes, the way a `curl -v`
+   *  or a `cat` of a config file would print them. */
+  const rawFailedOutput = [
+    "$ deploy --verbose",
+    FAKE_PEM,
+    `POST /v1/deploy 401 {"api_key":"${FAKE_OPAQUE}","retry":false}`,
+    `sent Authentication: ${FAKE_JWT}`,
+    "exit 1",
+  ].join("\n");
+
+  /** The payload shape each driver actually hands `describeResult()`, at the
+   *  line noted.  If a driver changes shape, this table is what fails. */
+  const driverPayloads: Array<[string, unknown]> = [
+    // server/drivers/codex.ts — item.aggregatedOutput, a plain string
+    ["codex", rawFailedOutput],
+    // server/drivers/claude.ts — b.content, Claude tool_result blocks
+    ["claude", [{ type: "text", text: rawFailedOutput }]],
+    // server/drivers/pi.ts — evt.result, an object the harness wraps
+    ["pi", { output: rawFailedOutput }],
+    // server/drivers/acp/core.ts — u.content, ACP content blocks
+    ["acp", [{ type: "content", content: { type: "text", text: rawFailedOutput } }]],
+  ];
+
+  for (const [driver, payload] of driverPayloads) {
+    it(`redacts a failed tool result on the ${driver} driver's path to Sentry`, () => {
+      // exactly what the driver call site does
+      const detailFromDriver = describeResult(payload);
+      expect(detailFromDriver, "the driver produced no detail at all").toBeTruthy();
+
+      const { sink, spans } = recordingSink();
+      observeRuntimeEvent(base({ type: "turn.started" }), sink);
+      observeRuntimeEvent(
+        base({ type: "item.started", itemType: "tool", itemId: "tool-1", title: "bash deploy" }),
+        sink,
+      );
+      observeRuntimeEvent(
+        base({ type: "item.completed", itemType: "tool", itemId: "tool-1", ok: false, detail: detailFromDriver }),
+        sink,
+      );
+
+      const detail = String(spans[1].attributes["gen_ai.tool.result.detail"]);
+      // nothing secret-shaped survives, at any prefix length the clip could
+      // have left behind
+      for (const secret of FAKE_SECRETS) {
+        for (const length of [16, 24, 40, 80]) {
+          expect(detail, `${driver}: ${secret.slice(0, 12)}… survived`).not.toContain(secret.slice(0, length));
+        }
+      }
+      expect(detail).not.toMatch(/eyJ[A-Za-z0-9_-]{8,}\./);
+      // and the shape a reader debugs with is still there
+      expect(detail).toContain("BEGIN RSA PRIVATE KEY");
+      expect(detail).toMatch(/«redacted \d+ chars»/);
+      expect(JSON.stringify(spans)).not.toContain(FAKE_OPAQUE.slice(0, 24));
+    });
+  }
+
+  it("redacts before describeResult clips, so the closing markers still exist", () => {
+    // The order is the fix.  Clipping first is what removed the `END …
+    // PRIVATE KEY` trailer, the JWT's third segment and the closing quote
+    // that the patterns need — this asserts the detail is short and masked,
+    // not long and cut.
+    const detail = String(describeResult(rawFailedOutput));
+    expect(detail).not.toContain(FAKE_PEM_BODY.slice(0, 16));
+    expect(detail).toContain("END RSA PRIVATE KEY");
+    expect(detail.length).toBeLessThanOrEqual(240);
   });
 
   it("leaves a successful tool without a result detail", () => {

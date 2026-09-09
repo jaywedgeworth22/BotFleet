@@ -149,6 +149,43 @@ describe("describeResult", () => {
     expect(describeResult([])).toBeUndefined();
     expect(describeResult({})).toBeUndefined();
   });
+
+  // Tool output is the one place a live credential arrives by accident, and
+  // this line is kept twice over — in the transcript and on the Sentry span.
+  // Redaction has to beat the clip: a secret cut at DETAIL_LIMIT has lost the
+  // closing marker its pattern anchors on, so redacting afterwards finds
+  // nothing.  Fixtures are obviously fake and longer than the clip.
+  it("redacts a secret in tool output BEFORE clipping it", () => {
+    const body = "FAKEFAKE".repeat(38); // 304 chars, outlives DETAIL_LIMIT
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${body}\n-----END RSA PRIVATE KEY-----`;
+    const out = String(describeResult(pem));
+    expect(out).not.toContain("FAKEFAKE");
+    // the clip did not get to cut the block apart, so the shape survives whole
+    expect(out).toContain("BEGIN RSA PRIVATE KEY");
+    expect(out).toContain("END RSA PRIVATE KEY");
+    expect(out).toMatch(/«redacted \d+ chars»/);
+  });
+
+  it("redacts through every wrapper shape a driver hands it", () => {
+    const opaque = `FAKE${"0123456789".repeat(30)}`;
+    const raw = `POST failed {"api_key":"${opaque}","retry":false}`;
+    for (const payload of [
+      raw,
+      [{ type: "text", text: raw }],
+      { output: raw },
+      [{ type: "content", content: { type: "text", text: raw } }],
+    ]) {
+      const out = String(describeResult(payload));
+      expect(out, JSON.stringify(payload).slice(0, 40)).not.toContain(opaque.slice(0, 24));
+      expect(out).toContain("«redacted");
+    }
+  });
+
+  it("leaves ordinary tool output untouched", () => {
+    expect(describeResult("error: cannot find module ./keyboard-shortcuts.ts")).toBe(
+      "error: cannot find module ./keyboard-shortcuts.ts",
+    );
+  });
 });
 
 describe("toolActivity", () => {

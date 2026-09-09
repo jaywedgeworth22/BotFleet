@@ -14,6 +14,8 @@
 // the same table, so the chip a user sees can never disagree with the
 // narration call mode reads aloud.
 
+import { redactSecretsInText } from "./redact.ts";
+
 /** Coarse class of work a step did.  Drives the icon, the verb, and nothing
  * else — deliberately small, because a reader scanning a hundred rows can
  * hold about this many shapes in their head. */
@@ -253,11 +255,26 @@ export function describeTarget(
 
 /** ACP `content` blocks, a Claude `tool_result`, or a plain string — one
  * line of what came back.  A failure's message is the whole reason the row
- * is worth reading, so this runs for failures too. */
+ * is worth reading, so this runs for failures too.
+ *
+ * This is raw provider output — the stdout, stderr and error text of whatever
+ * the bot just ran — so it is the one place in the pipeline where a live
+ * credential can arrive by accident: a `curl -v` that echoed its header, a
+ * `cat` of a key file, a failed API call that quoted the token it sent.  Every
+ * driver funnels its tool result through here, and the line goes on to two
+ * places that keep it: the transcript (replayed into every handed-over
+ * context) and the Sentry `gen_ai.tool.result.detail` attribute.
+ *
+ * So redaction happens HERE, before the clip, rather than at either
+ * destination.  Order is the whole point: `clip` cuts at 240 characters, and a
+ * secret cut in half has lost the closing marker the patterns anchor on — the
+ * `END … PRIVATE KEY` trailer, a JWT's third segment, a quoted value's closing
+ * quote — so redacting the clipped line finds nothing and passes the first
+ * 200 characters, header and key material included, straight through. */
 export function describeResult(content: unknown, limit: number = DETAIL_LIMIT): string | undefined {
   const text = firstResultText(content);
   if (!text) return undefined;
-  const flat = clip(text, limit);
+  const flat = clip(redactSecretsInText(text), limit);
   return flat || undefined;
 }
 

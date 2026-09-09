@@ -132,6 +132,17 @@ describe("redactSecrets", () => {
 });
 
 import { redactSecretsInText } from "./redact.ts";
+import { clip, DETAIL_LIMIT } from "../shared/tool-activity.ts";
+
+// Obviously-fake credential material, assembled from pieces so no
+// token-shaped literal sits in the source (GitHub push protection rightly
+// flags those) and so nobody reading the file mistakes it for a live key.
+const FAKE = "RkFLRQ"; // base64 of "FAKE"
+const FAKE_KEY_BODY = "FAKEFAKE".repeat(38); // 304 chars of nothing
+const JWT_HEADER = "eyJhbGciOiJGQUtFIn0"; // base64url of {"alg":"FAKE"}
+const JWT_PAYLOAD = `eyJwYXlsb2FkIjoi${FAKE.repeat(40)}`; // long enough to outlive the clip
+const JWT_SIG = "RkFLRVNJRw"; // base64 of "FAKESIG"
+const OPAQUE = `FAKE${"0123456789".repeat(30)}`; // a 304-char opaque value
 
 // Content-shaped secrets: what a bot's own reply, a tool title, or a
 // permission card can carry. High precision on purpose — a false positive
@@ -173,6 +184,79 @@ describe("redactSecretsInText", () => {
     const out = redactSecretsInText(`output: ${truncatedPem}`);
     expect(out).not.toContain("MIIEowIBAAKCAQEA0abcdef");
     expect(out).toMatch(/BEGIN RSA PRIVATE KEY[\s\S]*«redacted \d+ chars»/);
+  });
+
+  // ── truncated shapes ────────────────────────────────────────────────
+  // Redaction now runs before the transcript clip (see describeResult), but
+  // a pre-clipped detail still reaches this function on paths we do not own,
+  // and a secret cut in half has lost the closing marker the naive patterns
+  // anchor on.  Each case below is the same secret put through `clip` at the
+  // driver's own DETAIL_LIMIT, which is exactly how it used to get through.
+
+  it("masks a JWT that lost its third segment to a clip", () => {
+    // assembled from obviously-fake base64 so no token-shaped literal sits
+    // in the source: "FAKE"/"FAKESIG" encoded, and an {"alg":"FAKE"} header
+    const jwt = `${JWT_HEADER}.${JWT_PAYLOAD}.${JWT_SIG}`;
+    const raw = `POST /v1/thing failed, sent Authentication with ${jwt} and got 401`;
+    expect(raw.length).toBeGreaterThan(DETAIL_LIMIT);
+
+    const clipped = clip(raw, DETAIL_LIMIT);
+    // the clip really did remove the signature — otherwise this proves nothing
+    expect(clipped).not.toContain(JWT_SIG);
+    expect(clipped).toContain(JWT_PAYLOAD.slice(0, 40));
+
+    const out = redactSecretsInText(clipped);
+    expect(out).not.toContain(JWT_PAYLOAD.slice(0, 40));
+    expect(out).toMatch(/«redacted \d+ chars»/);
+  });
+
+  it("masks a JWT cut mid-payload with no third segment at all", () => {
+    const cut = `${JWT_HEADER}.${JWT_PAYLOAD.slice(0, 60)}`;
+    const out = redactSecretsInText(`bearer exchange failed for ${cut}`);
+    expect(out).not.toContain(JWT_PAYLOAD.slice(0, 20));
+    expect(out).toMatch(/«redacted \d+ chars»/);
+  });
+
+  it("still masks a complete three-segment JWT", () => {
+    const jwt = `${JWT_HEADER}.${JWT_PAYLOAD}.${JWT_SIG}`;
+    expect(redactSecretsInText(`token ${jwt} ok`)).toBe(`token «redacted ${jwt.length} chars» ok`);
+  });
+
+  it("masks a quoted secret value whose closing quote was clipped away", () => {
+    const raw = `curl failed: {"api_key":"${OPAQUE}","retry":false}`;
+    expect(raw.length).toBeGreaterThan(DETAIL_LIMIT);
+
+    const clipped = clip(raw, DETAIL_LIMIT);
+    // the clip really did remove the closing quote KEY_VALUE needs via \3
+    expect(clipped).not.toContain('","retry"');
+    expect(clipped).toContain(OPAQUE.slice(0, 40));
+
+    const out = redactSecretsInText(clipped);
+    expect(out).not.toContain(OPAQUE.slice(0, 40));
+    expect(out).toContain('"api_key":"«redacted');
+  });
+
+  it("masks an unterminated quoted value for every secret-shaped key it knows", () => {
+    for (const key of ["api_key", "apiKey", "client_secret", "access_token", "password", "AUTHORIZATION"]) {
+      const out = redactSecretsInText(`failed: {"${key}":"${OPAQUE.slice(0, 120)}`);
+      expect(out, key).not.toContain(OPAQUE.slice(0, 20));
+      expect(out, key).toMatch(/«redacted \d+ chars»/);
+    }
+  });
+
+  it("does not mask an unterminated value twice", () => {
+    // the prefix pass gets there first; a second mask would report the
+    // length of the marker instead of the length of the secret
+    const key = `sk-ant-api03-${"abcdefghijklmnopqrstuvwxyz0123456789"}`;
+    const out = redactSecretsInText(`{"api_key":"${key}`);
+    expect(out).toBe(`{"api_key":"«redacted ${key.length} chars»`);
+  });
+
+  it("leaves a PEM footer intact when nothing was clipped", () => {
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_KEY_BODY}\n-----END RSA PRIVATE KEY-----`;
+    const out = redactSecretsInText(pem);
+    expect(out).not.toContain("FAKEFAKE");
+    expect(out).toContain("-----END RSA PRIVATE KEY-----");
   });
 
   it("masks the value of a secret-shaped key=value or key: value, keeping the key", () => {
