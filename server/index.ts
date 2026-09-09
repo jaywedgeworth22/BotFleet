@@ -4426,27 +4426,15 @@ function reloadProviders(): Promise<void> {
   return run;
 }
 
-async function runProviderReload() {
-  const RELOAD_REASON = "The turn was interrupted — provider settings changed";
-  bus.detachAll();
-  await registry.disposeAll();
-  // Every watched turn died with the old fleet. Forget them now, or the
-  // watchdog reports a "no activity" stall on a dead thread twenty minutes
-  // later, and settle each one's routine receipt the way the stall path does.
-  const killedTurns = watchdog.settleAll();
-  await registry.load(instanceConfigs(cfg));
-  // The fleet now exists on exactly these credentials — record that, so the
-  // next comparison is against what was built rather than against whatever
-  // `cfg` happened to hold when the comparison ran.
-  loadedCredentialFingerprint = credentialFingerprint(cfg);
-  bus.attach(registry.instances());
-  for (const turn of killedTurns) routines?.failThread(turn.threadId, RELOAD_REASON);
-  // A killed turn's terminal events can die with the old fleet (dispose is
-  // async under the hood), stranding the bot busy — and its screen poller —
-  // forever. Settle anything still marked busy, on the thread that was
-  // actually in flight: a routine runs in a detached task, not the open chat.
-  for (const b of store.bots.filter((b) => b.busy)) {
+const RELOAD_REASON = "The turn was interrupted — provider settings changed";
+
+function settleInterruptedBots(
+  affectedBots: Array<(typeof store.bots)[number]>,
+  reason: string = RELOAD_REASON,
+) {
+  for (const b of affectedBots) {
     const inflight = b.inflightThreadId ?? b.threadId;
+    watchdog.settle(inflight);
     const vmThread = [...localVmThreadTargets.entries()].find(([, target]) =>
       localVmLeaseFor(target).current(localVmOwnerBusy)?.botId === b.id
     )?.[0];
@@ -4464,15 +4452,36 @@ async function runProviderReload() {
       kind: "activity",
       tool: { name: "error: turn interrupted — provider settings changed", ok: false },
     });
-    routines?.failThread(inflight, RELOAD_REASON);
+    routines?.failThread(inflight, reason);
     store.setActivity(b.id, "idle");
     store.patchBot(b.id, { inflightThreadId: undefined });
   }
-  // killed turns settle here without a turn.completed event, so anything
-  // queued behind them drains now — onto the freshly loaded fleet
-  drainQueuedSends();
-  drainConnectorResumes();
-  drainSecretResumes();
+  if (affectedBots.length > 0) {
+    drainQueuedSends();
+    drainConnectorResumes();
+    drainSecretResumes();
+  }
+}
+
+async function runProviderReload() {
+  bus.detachAll();
+  await registry.disposeAll();
+  // Every watched turn died with the old fleet. Forget them now, or the
+  // watchdog reports a "no activity" stall on a dead thread twenty minutes
+  // later, and settle each one's routine receipt the way the stall path does.
+  const killedTurns = watchdog.settleAll();
+  await registry.load(instanceConfigs(cfg));
+  // The fleet now exists on exactly these credentials — record that, so the
+  // next comparison is against what was built rather than against whatever
+  // `cfg` happened to hold when the comparison ran.
+  loadedCredentialFingerprint = credentialFingerprint(cfg);
+  bus.attach(registry.instances());
+  for (const turn of killedTurns) routines?.failThread(turn.threadId, RELOAD_REASON);
+  // A killed turn's terminal events can die with the old fleet (dispose is
+  // async under the hood), stranding the bot busy — and its screen poller —
+  // forever. Settle anything still marked busy, on the thread that was
+  // actually in flight: a routine runs in a detached task, not the open chat.
+  settleInterruptedBots(store.bots.filter((b) => b.busy), RELOAD_REASON);
 }
 
 /** Bring `cfg` in line with a fresh secret-store snapshot, and decide whether
@@ -7789,6 +7798,15 @@ const server = createServer(async (req, res) => {
         if (oldInstance) {
           await oldInstance.adapter.stopAll?.().catch(() => {});
         }
+        const affectedBots = store.bots.filter((b) => {
+          if (!b.busy) return false;
+          const inflight = b.inflightThreadId ?? b.threadId;
+          const task = store.taskByThread(b.id, inflight);
+          const activeInstanceId =
+            task?.modelSelection?.instanceId ?? task?.lastInstanceId ?? b.modelSelection.instanceId;
+          return activeInstanceId === instanceId;
+        });
+        settleInterruptedBots(affectedBots);
         bus.detach(instanceId);
         const newLive = targetEntry ? await registry.reloadInstance(instanceId, targetEntry) : null;
         if (newLive) bus.attach([newLive]);

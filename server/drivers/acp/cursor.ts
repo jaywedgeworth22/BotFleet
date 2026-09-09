@@ -294,13 +294,25 @@ export function resetCursorCache() {
   modelProbeCache.clear();
 }
 
+function cursorProbeCacheKey(cli: string, env: Record<string, string | undefined>): string {
+  return [
+    cli,
+    env.HOME ?? "",
+    env.XDG_CONFIG_HOME ?? "",
+    env.CURSOR_CONFIG_DIR ?? "",
+    env.CURSOR_API_KEY ?? "",
+    env.CURSOR_AUTH_TOKEN ?? "",
+    env.FAKE_ACP_AUTH ?? "",
+  ].join("::");
+}
+
 export async function probeCursorAuth(
   cli: string,
   env: Record<string, string | undefined>,
   run: typeof execCli = execCli,
 ): Promise<boolean> {
   if (nonBlank(env.CURSOR_API_KEY) || nonBlank(env.CURSOR_AUTH_TOKEN)) return true;
-  const cacheKey = `${cli}:${env.FAKE_ACP_AUTH ?? ""}`;
+  const cacheKey = cursorProbeCacheKey(cli, env);
   const cached = authProbeCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.result;
 
@@ -314,9 +326,16 @@ export async function probeCursorAuth(
         if (decoded !== null) return decoded;
       }
       return false;
-    })().finally(() => {
-      entry.expiresAt = Date.now() + CURSOR_PROBE_TTL_MS;
-    }),
+    })().then(
+      (res) => {
+        entry.expiresAt = Date.now() + CURSOR_PROBE_TTL_MS;
+        return res;
+      },
+      (err) => {
+        authProbeCache.delete(cacheKey);
+        throw err;
+      },
+    ),
   };
   authProbeCache.set(cacheKey, entry);
   return entry.result;
@@ -327,7 +346,8 @@ export async function fetchCursorModels(
   env: Record<string, string | undefined>,
   run: typeof execCli = execCli,
 ): Promise<ModelCatalog> {
-  const cached = modelProbeCache.get(cli);
+  const cacheKey = cursorProbeCacheKey(cli, env);
+  const cached = modelProbeCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.result;
 
   const entry = {
@@ -343,11 +363,18 @@ export async function fetchCursorModels(
         if (fromJson) return fromJson;
       }
       return STATIC_CURSOR_MODELS;
-    })().finally(() => {
-      entry.expiresAt = Date.now() + CURSOR_PROBE_TTL_MS;
-    }),
+    })().then(
+      (res) => {
+        entry.expiresAt = Date.now() + CURSOR_PROBE_TTL_MS;
+        return res;
+      },
+      (err) => {
+        modelProbeCache.delete(cacheKey);
+        throw err;
+      },
+    ),
   };
-  modelProbeCache.set(cli, entry);
+  modelProbeCache.set(cacheKey, entry);
   return entry.result;
 }
 

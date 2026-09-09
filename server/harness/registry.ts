@@ -53,6 +53,32 @@ function fullAutoOfRaw(raw: unknown): boolean {
   return (raw as { fullAuto?: unknown } | undefined)?.fullAuto === true;
 }
 
+export interface DescribedInstance {
+  instanceId: InstanceId;
+  driverKind: string;
+  displayName: string;
+  enabled?: boolean;
+  snapshot: ProviderSnapshot;
+  models: { default: string; options: Array<{ id: string; name?: string; contextWindow?: number }> };
+  capabilities: {
+    computerMcp: boolean;
+    agentsMcp: boolean;
+    localComputerMcp: boolean;
+    composioMcp?: boolean;
+    phoneMcp?: boolean;
+    images?: boolean;
+    effortLevels?: readonly string[];
+    queueing?: boolean;
+    approvalReview?: boolean;
+  };
+  access: string;
+  install: unknown;
+  cli: string | undefined;
+  cliDefault: string | undefined;
+  cliCandidates: string[];
+  fullAuto: boolean;
+}
+
 export class ProviderRegistry {
   private byId = new Map<InstanceId, RegistryEntry>();
   /** decoded per-instance `cli` overrides, for describe() — drivers spawn
@@ -157,7 +183,7 @@ export class ProviderRegistry {
    * bot being created does not need a fresher answer than the rail did a
    * moment ago. In-flight describes are shared too, so a burst of callers
    * spawns one probe per engine, not one per caller. */
-  private lastDescribe: { at: number; result: Promise<Awaited<ReturnType<ProviderRegistry["describeFresh"]>>> } | null = null;
+  private lastDescribe: { at: number; result: Promise<DescribedInstance[]> } | null = null;
 
   async describe(opts?: { maxAgeMs?: number; staleWhileRevalidate?: boolean }) {
     const maxAge = opts?.maxAgeMs ?? 0;
@@ -188,7 +214,7 @@ export class ProviderRegistry {
     return result;
   }
 
-  async describeFresh() {
+  async describeFresh(): Promise<DescribedInstance[]> {
     // Multiple instances may share a driver. Scan each default binary once
     // per response instead of repeating filesystem work for every row.
     const candidatesByName = new Map<string, string[]>();
@@ -200,7 +226,7 @@ export class ProviderRegistry {
   private async describeEntry(
     entry: RegistryEntry,
     candidatesByName: Map<string, string[]>,
-  ) {
+  ): Promise<DescribedInstance> {
     const driver = this.driversByKind.get(entry.shadow?.driverKind ?? entry.live!.driverKind);
     const candidatesFor = (d: AnyProviderDriver | undefined): string[] => {
       const name = cliDefaultOf(d);
@@ -303,7 +329,7 @@ export class ProviderRegistry {
 
   /** Probes ONLY the modified instance and updates the cached describe
    * snapshot in place, avoiding cold sweeps across all unrelated engines. */
-  async describeWithFreshInstance(instanceId: InstanceId): Promise<Awaited<ReturnType<ProviderRegistry["describeFresh"]>>> {
+  async describeWithFreshInstance(instanceId: InstanceId): Promise<DescribedInstance[]> {
     const entry = this.byId.get(instanceId);
     if (!entry) return this.describe();
 
@@ -312,16 +338,23 @@ export class ProviderRegistry {
 
     if (this.lastDescribe) {
       try {
-        const list = await this.lastDescribe.result;
-        const index = list.findIndex((item) => item.instanceId === instanceId);
-        const nextList = [...list];
-        if (index >= 0) {
-          nextList[index] = freshInfo;
-        } else {
-          nextList.push(freshInfo);
+        while (this.lastDescribe) {
+          const current: { at: number; result: Promise<DescribedInstance[]> } = this.lastDescribe;
+          const list: DescribedInstance[] = await current.result;
+          if (this.lastDescribe !== current) {
+            // A concurrent describe completed in the meantime; re-merge into the fresher snapshot
+            continue;
+          }
+          const index = list.findIndex((item) => item.instanceId === instanceId);
+          const nextList = [...list];
+          if (index >= 0) {
+            nextList[index] = freshInfo;
+          } else {
+            nextList.push(freshInfo);
+          }
+          this.lastDescribe = { at: Date.now(), result: Promise.resolve(nextList) };
+          return nextList;
         }
-        this.lastDescribe = { at: Date.now(), result: Promise.resolve(nextList) };
-        return nextList;
       } catch {
         // Fall back to full describe if cached promise errored
       }
