@@ -181,6 +181,32 @@ describe("describeResult", () => {
     }
   });
 
+  // This runs on the synchronous event path, so the redaction pass has to
+  // stay bounded: a tool that dumps a log file hands us megabytes, and only
+  // 240 characters of it can ever be kept.
+  it("does not scan a megabyte of tool output to keep 240 characters", () => {
+    const huge = `${"x".repeat(5_000_000)}\n${"Auth" + "orization"}: Basic FAKEFAKEFAKEFAKEFAKE`;
+    const started = Date.now();
+    const out = String(describeResult(huge));
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(out).toHaveLength(240);
+    expect(out.startsWith("xxxx")).toBe(true);
+  });
+
+  it("widens the window when masking compresses the text below the limit", () => {
+    // Each of these is longer than the clip on its own, so redacting only a
+    // narrow prefix would leave far too little text to fill the row — the
+    // window has to grow until the clip is satisfied.
+    const many = Array.from(
+      { length: 60 },
+      (_, i) => `{"api_key":"FAKE${String(i).padStart(4, "0")}${"0123456789".repeat(40)}"}`,
+    ).join("\n");
+    const out = String(describeResult(many));
+    expect(out).toHaveLength(240);
+    expect(out).not.toMatch(/0123456789012345/);
+    expect(out).toContain("«redacted");
+  });
+
   it("leaves ordinary tool output untouched", () => {
     expect(describeResult("error: cannot find module ./keyboard-shortcuts.ts")).toBe(
       "error: cannot find module ./keyboard-shortcuts.ts",

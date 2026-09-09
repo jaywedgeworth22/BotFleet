@@ -106,33 +106,45 @@ const KEY_VALUE =
 const KEY_VALUE_UNTERMINATED =
   /\b((?:[A-Za-z0-9_-]*_)?(?:api[_-]?key|apikey|secret|token|password|passwd|authorization|auth[_-]?token|access[_-]?key|private[_-]?key)s?)(["']?\s*[=:]\s*)(["'])([^"']{8,})$/i;
 
-/** Already-masked text must not be masked again — a second pass would report
- * the length of the marker instead of the length of the secret, and the
- * length is the part a reader debugs with.  This matters now that redaction
- * runs twice by design: once in `describeResult()` before the clip, and again
- * in the Sentry observer for a detail that reached it some other way. */
-const MASK_MARKER = "«redacted ";
+/** Text that is nothing but masks already.
+ *
+ * Redaction runs twice by design — once in `describeResult()` before the
+ * clip, once in the Sentry observer for a detail that arrived some other way
+ * — and a second pass must not mask a mask, because it would then report the
+ * marker's length instead of the secret's, and the length is the part a
+ * reader debugs with.
+ *
+ * WHOLLY masked, not "contains a mask", and the distinction is load-bearing:
+ * a value that is only partly masked still has a live secret in the rest of
+ * it, so it must go through the pass again.  That is why this is not a
+ * `includes()` check — a SigV4 header whose `AKIA…` had been masked by the
+ * prefix pass would have looked "already done" and shipped its signature. */
+const WHOLLY_MASKED = /^[\s,;]*(?:«redacted \d+ chars»[\s,;]*)+$/;
 
 export function redactSecretsInText(text: string): string {
   if (!text || text.length < 8) return text;
   let out = text;
   out = out.replace(PEM_BLOCK, (m, open: string, body: string, close: string) => {
     const trimmed = body.trim();
-    if (trimmed.includes(MASK_MARKER)) return m; // already redacted; keep the reported length
+    if (WHOLLY_MASKED.test(trimmed)) return m; // already redacted; keep the reported length
     if (!trimmed && !close) return open;
     const masked = mask(trimmed);
     return close ? `${open}\n${masked}\n${close}` : `${open}\n${masked}`;
   });
-  for (const re of KEY_PREFIXES) out = out.replace(re, (m) => mask(m));
-  out = out.replace(BEARER, (_m, lead: string, tok: string) => `${lead}${mask(tok)}`);
+  // The authorization header goes FIRST, before the prefix pass.  Its value
+  // is a whole credential, and a prefix pass that had already masked one part
+  // of it (SigV4 carries an `AKIA…` access-key id before the signature) would
+  // leave a partly-masked value behind for this pass to trip over.
   out = out.replace(
     AUTH_HEADER,
     (m, key: string, sep: string, quote: string, scheme: string | undefined, value: string) =>
-      value.includes(MASK_MARKER) ? m : `${key}${sep}${quote}${scheme ?? ""}${mask(value)}${quote}`,
+      WHOLLY_MASKED.test(value) ? m : `${key}${sep}${quote}${scheme ?? ""}${mask(value)}${quote}`,
   );
+  for (const re of KEY_PREFIXES) out = out.replace(re, (m) => mask(m));
+  out = out.replace(BEARER, (_m, lead: string, tok: string) => `${lead}${mask(tok)}`);
   out = out.replace(KEY_VALUE, (_m, key: string, sep: string, quote: string, value: string) => `${key}${sep}${quote}${mask(value)}${quote}`);
   out = out.replace(KEY_VALUE_UNTERMINATED, (m, key: string, sep: string, quote: string, value: string) =>
-    value.includes(MASK_MARKER) ? m : `${key}${sep}${quote}${mask(value)}`,
+    WHOLLY_MASKED.test(value) ? m : `${key}${sep}${quote}${mask(value)}`,
   );
   return out;
 }

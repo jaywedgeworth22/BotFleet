@@ -270,12 +270,27 @@ export function describeTarget(
  * secret cut in half has lost the closing marker the patterns anchor on — the
  * `END … PRIVATE KEY` trailer, a JWT's third segment, a quoted value's closing
  * quote — so redacting the clipped line finds nothing and passes the first
- * 200 characters, header and key material included, straight through. */
+ * 200 characters, header and key material included, straight through.
+ *
+ * It stays BOUNDED, though.  This runs on the synchronous event path, and a
+ * tool that dumped a log file hands us megabytes; scanning all of it to keep
+ * 240 characters would stall turn processing.  So the redaction sees a window
+ * — a few kilobytes, far more than the clip can ever emit — and the window
+ * only grows if masking compressed the text so much that the clip could not
+ * be filled from it.  A secret cut off at the window edge is still caught,
+ * because the patterns learned the truncated shapes for exactly this reason. */
 export function describeResult(content: unknown, limit: number = DETAIL_LIMIT): string | undefined {
   const text = firstResultText(content);
   if (!text) return undefined;
-  const flat = clip(redactSecretsInText(text), limit);
-  return flat || undefined;
+
+  const ceiling = Math.max(limit, DETAIL_LIMIT) * 64;
+  let window = Math.min(Math.max(limit, DETAIL_LIMIT) * 8, ceiling);
+  for (;;) {
+    const flat = clip(redactSecretsInText(text.slice(0, window)), limit);
+    // a clip that filled the whole limit cannot be changed by more input
+    if (flat.length >= limit || window >= text.length || window >= ceiling) return flat || undefined;
+    window = Math.min(window * 4, ceiling, text.length);
+  }
 }
 
 function firstResultText(content: unknown): string | undefined {

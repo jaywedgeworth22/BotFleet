@@ -296,6 +296,21 @@ describe("redactSecretsInText", () => {
     expect(redactSecretsInText(digest)).toContain("Digest");
   });
 
+  it("masks an authorization value that another pass had already half-masked", () => {
+    // SigV4 carries an access-key id BEFORE the signature, so the prefix
+    // pass has a shot at part of the value first.  A "does it contain a
+    // mask" short-circuit would call that value done and ship the signature;
+    // only a WHOLLY masked value may be skipped.
+    const HEADER = "Auth" + "orization";
+    const akia = `AKIA${"FAKEFAKEFAKEFAKE"}`;
+    const sig = `FAKESIGNATURE${"0123456789".repeat(2)}FAKE`;
+    const input = `${HEADER}: AWS4-HMAC-SHA256 Credential=${akia}/20260909/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=${sig}`;
+    const out = redactSecretsInText(input);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain(akia);
+    expect(out).toContain("AWS4-HMAC-SHA256");
+  });
+
   it("is idempotent — a second pass keeps the first pass's reported length", () => {
     // Redaction runs twice by design now: `describeResult()` before the clip
     // and the Sentry observer after.  If the second pass masked the marker,
