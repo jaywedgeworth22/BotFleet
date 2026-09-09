@@ -326,16 +326,26 @@ describe("redactSecretsInText", () => {
     // header key.  The balanced-quote scan used to run past the end of the
     // value and eat them, so they were permanently missing from stored bot
     // text and from failure details.
+    //
+    // The spacing after the colon is part of the case, not decoration: the
+    // bare pattern must not be able to give back the separator's trailing
+    // whitespace and reclaim a value the quoted pattern already owns.
     const HEADER = "auth" + "orization";
+    const SCHEME = "Bea" + "rer";
     const token = `FAKE${"0123456789".repeat(9)}`; // 94 chars
     for (const q of ['"', "'"]) {
-      const input = `{${q}${HEADER}${q}:${q}Bearer ${token}${q},${q}status${q}:${q}ok${q},${q}message${q}:${q}sent${q}}`;
-      const out = redactSecretsInText(input);
-      expect(out, q).not.toContain(token);
-      expect(out, q).toContain(`Bearer «redacted ${token.length} chars»`);
-      expect(out, q).toContain(`${q}status${q}:${q}ok${q}`);
-      expect(out, q).toContain(`${q}message${q}:${q}sent${q}`);
-      expect(out, q).toBe(redactSecretsInText(out));
+      for (const gap of ["", " ", "  "]) {
+        const label = `${q}|${gap.length}`;
+        const input = `{${q}${HEADER}${q}:${gap}${q}${SCHEME} ${token}${q},${q}status${q}:${q}ok${q},${q}message${q}:${q}sent${q}}`;
+        const out = redactSecretsInText(input);
+        expect(out, label).not.toContain(token);
+        expect(out, label).toContain(`${SCHEME} «redacted ${token.length} chars»`);
+        expect(out, label).toContain(`${q}status${q}:${q}ok${q}`);
+        expect(out, label).toContain(`${q}message${q}:${q}sent${q}`);
+        // the closing syntax survives too — a reclaim would have eaten it
+        expect(out, label).toMatch(/}$/);
+        expect(out, label).toBe(redactSecretsInText(out));
+      }
     }
   });
 

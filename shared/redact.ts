@@ -129,10 +129,18 @@ const AUTH_HEADER_QUOTED =
  *
  * A quote with no partner on the line is not part of the value — it is the
  * wrapper of a `-H "…"` argument — so the value stops there and the wrapper
- * survives.  The leading `(?!["'])` is what keeps this pattern off a value
- * the quoted one above owns, so the two never compete for one header. */
+ * survives.
+ *
+ * The `(?![^\S\r\n]*["'])` after the `=` or `:` is what keeps this pattern
+ * off a value the quoted one above owns, so the two never compete for one
+ * header.  It has to sit BEFORE the separator's trailing whitespace and skip
+ * that whitespace itself: a trailing `\s*` outside the check would simply
+ * give the space back so that the check looked at the space instead of the
+ * quote behind it, and `{"authorization": "…"}` — already redacted correctly
+ * by the quoted pattern — would be reclaimed here and its siblings deleted
+ * after all.  Asserting across the whitespace leaves nothing to give back. */
 const AUTH_HEADER_BARE =
-  /\b((?:proxy-)?authorization)(["']?\s*[=:]\s*)(?!["'])([A-Za-z][A-Za-z0-9-]{2,}[ \t]+)?((?:[^"'\r\n]|"[^"\r\n]*"|'[^'\r\n]*')+)/gi;
+  /\b((?:proxy-)?authorization)(["']?\s*[=:](?![^\S\r\n]*["'])[^\S\r\n]*)([A-Za-z][A-Za-z0-9-]{2,}[ \t]+)?((?:[^"'\r\n]|"[^"\r\n]*"|'[^'\r\n]*')+)/gi;
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
  * The value must be a single token of some length; prose after a colon
