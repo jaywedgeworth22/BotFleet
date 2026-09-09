@@ -132,3 +132,13 @@ describe("Settings Models layout", () => {
     expect(swift).not.toContain("VStack(alignment: .leading, spacing: 6)");
   });
 });
+
+describe("Bot Chats sidebar section appears once", () => {
+  it("Sidebar.tsx renders BOT_CHATS_SECTION SectionDivider exactly once", () => {
+    const source = FILES.find((entry) => entry.rel === "components/Sidebar.tsx" || entry.rel.endsWith("/components/Sidebar.tsx"));
+    expect(source, "components/Sidebar.tsx is missing").toBeDefined();
+    // name={BOT_CHATS_SECTION} is the SectionDivider prop — duplicate section = duplicate divider.
+    const matches = source!.text.match(/name=\{BOT_CHATS_SECTION\}/g) ?? [];
+    expect(matches).toHaveLength(1);
+  });
+});
