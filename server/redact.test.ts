@@ -132,6 +132,17 @@ describe("redactSecrets", () => {
 });
 
 import { redactSecretsInText } from "./redact.ts";
+import { clip, DETAIL_LIMIT } from "../shared/tool-activity.ts";
+
+// Obviously-fake credential material, assembled from pieces so no
+// token-shaped literal sits in the source (GitHub push protection rightly
+// flags those) and so nobody reading the file mistakes it for a live key.
+const FAKE = "RkFLRQ"; // base64 of "FAKE"
+const FAKE_KEY_BODY = "FAKEFAKE".repeat(38); // 304 chars of nothing
+const JWT_HEADER = "eyJhbGciOiJGQUtFIn0"; // base64url of {"alg":"FAKE"}
+const JWT_PAYLOAD = `eyJwYXlsb2FkIjoi${FAKE.repeat(40)}`; // long enough to outlive the clip
+const JWT_SIG = "RkFLRVNJRw"; // base64 of "FAKESIG"
+const OPAQUE = `FAKE${"0123456789".repeat(30)}`; // a 304-char opaque value
 
 // Content-shaped secrets: what a bot's own reply, a tool title, or a
 // permission card can carry. High precision on purpose — a false positive
@@ -166,6 +177,180 @@ describe("redactSecretsInText", () => {
     expect(out).not.toContain("b3BlbnNzaC1r");
     expect(out).toMatch(/BEGIN OPENSSH PRIVATE KEY[\s\S]*«redacted \d+ chars»[\s\S]*END OPENSSH PRIVATE KEY/);
     expect(redactSecretsInText('curl -H "Authorization: Bearer abc.def-ghi_jkl123456789"')).toBe('curl -H "Authorization: Bearer «redacted 24 chars»"');
+  });
+
+  it("masks a truncated PEM private key block that lost its closing trailer", () => {
+    const truncatedPem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA0abcdefghijklm1234567890";
+    const out = redactSecretsInText(`output: ${truncatedPem}`);
+    expect(out).not.toContain("MIIEowIBAAKCAQEA0abcdef");
+    expect(out).toMatch(/BEGIN RSA PRIVATE KEY[\s\S]*«redacted \d+ chars»/);
+  });
+
+  // ── truncated shapes ────────────────────────────────────────────────
+  // Redaction now runs before the transcript clip (see describeResult), but
+  // a pre-clipped detail still reaches this function on paths we do not own,
+  // and a secret cut in half has lost the closing marker the naive patterns
+  // anchor on.  Each case below is the same secret put through `clip` at the
+  // driver's own DETAIL_LIMIT, which is exactly how it used to get through.
+
+  it("masks a JWT that lost its third segment to a clip", () => {
+    // assembled from obviously-fake base64 so no token-shaped literal sits
+    // in the source: "FAKE"/"FAKESIG" encoded, and an {"alg":"FAKE"} header
+    const jwt = `${JWT_HEADER}.${JWT_PAYLOAD}.${JWT_SIG}`;
+    const raw = `POST /v1/thing failed, sent Authentication with ${jwt} and got 401`;
+    expect(raw.length).toBeGreaterThan(DETAIL_LIMIT);
+
+    const clipped = clip(raw, DETAIL_LIMIT);
+    // the clip really did remove the signature — otherwise this proves nothing
+    expect(clipped).not.toContain(JWT_SIG);
+    expect(clipped).toContain(JWT_PAYLOAD.slice(0, 40));
+
+    const out = redactSecretsInText(clipped);
+    expect(out).not.toContain(JWT_PAYLOAD.slice(0, 40));
+    expect(out).toMatch(/«redacted \d+ chars»/);
+  });
+
+  it("masks a JWT cut mid-payload with no third segment at all", () => {
+    const cut = `${JWT_HEADER}.${JWT_PAYLOAD.slice(0, 60)}`;
+    const out = redactSecretsInText(`bearer exchange failed for ${cut}`);
+    expect(out).not.toContain(JWT_PAYLOAD.slice(0, 20));
+    expect(out).toMatch(/«redacted \d+ chars»/);
+  });
+
+  it("still masks a complete three-segment JWT", () => {
+    const jwt = `${JWT_HEADER}.${JWT_PAYLOAD}.${JWT_SIG}`;
+    expect(redactSecretsInText(`token ${jwt} ok`)).toBe(`token «redacted ${jwt.length} chars» ok`);
+  });
+
+  it("masks a quoted secret value whose closing quote was clipped away", () => {
+    const raw = `curl failed: {"api_key":"${OPAQUE}","retry":false}`;
+    expect(raw.length).toBeGreaterThan(DETAIL_LIMIT);
+
+    const clipped = clip(raw, DETAIL_LIMIT);
+    // the clip really did remove the closing quote KEY_VALUE needs via \3
+    expect(clipped).not.toContain('","retry"');
+    expect(clipped).toContain(OPAQUE.slice(0, 40));
+
+    const out = redactSecretsInText(clipped);
+    expect(out).not.toContain(OPAQUE.slice(0, 40));
+    expect(out).toContain('"api_key":"«redacted');
+  });
+
+  it("masks an unterminated quoted value for every secret-shaped key it knows", () => {
+    for (const key of ["api_key", "apiKey", "client_secret", "access_token", "password", "AUTHORIZATION"]) {
+      const out = redactSecretsInText(`failed: {"${key}":"${OPAQUE.slice(0, 120)}`);
+      expect(out, key).not.toContain(OPAQUE.slice(0, 20));
+      expect(out, key).toMatch(/«redacted \d+ chars»/);
+    }
+  });
+
+  it("does not mask an unterminated value twice", () => {
+    // the prefix pass gets there first; a second mask would report the
+    // length of the marker instead of the length of the secret
+    const key = `sk-ant-api03-${"abcdefghijklmnopqrstuvwxyz0123456789"}`;
+    const out = redactSecretsInText(`{"api_key":"${key}`);
+    expect(out).toBe(`{"api_key":"«redacted ${key.length} chars»`);
+  });
+
+  it("masks the whole value of an authorization header, whatever the scheme", () => {
+    // `curl -v` prints these verbatim, and a scheme-prefixed credential has
+    // a space in it, which is exactly what KEY_VALUE refuses to cross.  The
+    // header name and the scheme survive; the credential does not.
+    const HEADER = "Auth" + "orization";
+    const value = `ZmFrZXVzZXI6${"FAKE".repeat(6)}`;
+    const cases = [
+      `> ${HEADER}: Basic ${value}`,
+      `${HEADER}: Token ${value}`,
+      `${HEADER.toLowerCase()}: bearer ${value}`,
+      `{"${HEADER.toLowerCase()}": "Basic ${value}"}`,
+      `Proxy-${HEADER}: Digest ${value}`,
+      `${HEADER.toLowerCase()}=Token ${value}`,
+      `${HEADER}: ${value}`, // no scheme at all
+    ];
+    for (const input of cases) {
+      const out = redactSecretsInText(input);
+      expect(out, input).not.toContain(value);
+      expect(out, input).toMatch(/«redacted \d+ chars»/);
+      // the shape a reader debugs with survives
+      expect(out.toLowerCase(), input).toContain(HEADER.toLowerCase());
+    }
+  });
+
+  it("masks a multi-part authorization header through its LAST part", () => {
+    // A structured credential hides its secret at the END: SigV4 signs with
+    // `…, Signature=<secret>` after two harmless parameters, and Digest
+    // quotes each parameter separately.  Stopping at the first token would
+    // mask the harmless half and ship the signature.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIGNATURE${"0123456789".repeat(2)}FAKE`;
+    const sigv4 = `${HEADER}: AWS4-HMAC-SHA256 Credential=FAKEAKIA/20260909/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=${sig}`;
+    const digest = `${HEADER}: Digest username="fakeuser", realm="test", nonce="FAKENONCE0123", response="${sig}"`;
+    for (const input of [sigv4, digest]) {
+      const out = redactSecretsInText(input);
+      expect(out, input).not.toContain(sig);
+      expect(out, input).toMatch(/«redacted \d+ chars»/);
+    }
+    // the scheme survives, so the line still says what kind of credential
+    // went out — that is the diagnostic the mask is meant to leave behind
+    expect(redactSecretsInText(sigv4)).toContain("AWS4-HMAC-SHA256");
+    expect(redactSecretsInText(digest)).toContain("Digest");
+  });
+
+  it("masks an authorization value that another pass had already half-masked", () => {
+    // SigV4 carries an access-key id BEFORE the signature, so the prefix
+    // pass has a shot at part of the value first.  A "does it contain a
+    // mask" short-circuit would call that value done and ship the signature;
+    // only a WHOLLY masked value may be skipped.
+    const HEADER = "Auth" + "orization";
+    const akia = `AKIA${"FAKEFAKEFAKEFAKE"}`;
+    const sig = `FAKESIGNATURE${"0123456789".repeat(2)}FAKE`;
+    const input = `${HEADER}: AWS4-HMAC-SHA256 Credential=${akia}/20260909/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=${sig}`;
+    const out = redactSecretsInText(input);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain(akia);
+    expect(out).toContain("AWS4-HMAC-SHA256");
+  });
+
+  it("is idempotent — a second pass keeps the first pass's reported length", () => {
+    // Redaction runs twice by design now: `describeResult()` before the clip
+    // and the Sentry observer after.  If the second pass masked the marker,
+    // Sentry would record the marker's length instead of the secret's, and
+    // the length is the whole diagnostic value of keeping the shape.
+    const HEADER = "Auth" + "orization";
+    const inputs = [
+      `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_KEY_BODY}\n-----END RSA PRIVATE KEY-----`,
+      `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_KEY_BODY}`,
+      `${HEADER}: Basic ${OPAQUE.slice(0, 60)}`,
+      `{"api_key":"${OPAQUE.slice(0, 60)}"}`,
+      `{"api_key":"${OPAQUE.slice(0, 60)}`,
+      `token ${JWT_HEADER}.${JWT_PAYLOAD}.${JWT_SIG} ok`,
+    ];
+    for (const input of inputs) {
+      const once = redactSecretsInText(input);
+      expect(redactSecretsInText(once), input.slice(0, 40)).toBe(once);
+    }
+    // and the length reported really is the secret's, not the marker's
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_KEY_BODY}\n-----END RSA PRIVATE KEY-----`;
+    expect(redactSecretsInText(redactSecretsInText(pem))).toContain(`«redacted ${FAKE_KEY_BODY.length} chars»`);
+  });
+
+  it("does not treat a scheme word in prose as a credential", () => {
+    // the header NAME is what makes the space in a scheme-prefixed value
+    // safe to cross — a bare scheme word would be a false-positive machine
+    for (const s of [
+      "Basic authentication requires a username and a password",
+      "Token expired yesterday afternoon",
+      "The Authorization header must be present on every request",
+    ]) {
+      expect(redactSecretsInText(s), s).toBe(s);
+    }
+  });
+
+  it("leaves a PEM footer intact when nothing was clipped", () => {
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_KEY_BODY}\n-----END RSA PRIVATE KEY-----`;
+    const out = redactSecretsInText(pem);
+    expect(out).not.toContain("FAKEFAKE");
+    expect(out).toContain("-----END RSA PRIVATE KEY-----");
   });
 
   it("masks the value of a secret-shaped key=value or key: value, keeping the key", () => {
