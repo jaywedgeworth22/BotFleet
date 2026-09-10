@@ -21,10 +21,16 @@ export function RemoteAccessSection() {
   const runTest = async () => {
     setTest({ kind: "running" });
     try {
+      // Probe /api/health, not the bare root: Cloudflare Access protects
+      // everything on this tunnel except that one path, so a bare-root
+      // probe would just follow the redirect to the Access login page and
+      // report HTTP 200 even when the tunnel or the BotFleet origin
+      // behind it is down. /api/health is public and probeIngressUrl
+      // requires its real BotFleet payload for this exact path.
       const response = await fetch("/api/ingress/test", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ publicUrl: NAMED_REMOTE_URL }),
+        body: JSON.stringify({ publicUrl: `${NAMED_REMOTE_URL}/api/health` }),
       });
       // SAFETY: /api/ingress/test guarantees an IngressProbeResult JSON payload with ok and reason.
       const body = (await response.json()) as {

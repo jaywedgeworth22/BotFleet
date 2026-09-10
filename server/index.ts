@@ -3240,7 +3240,10 @@ function describeTunnel(headers: Record<string, string | string[] | undefined>):
  * to at least one address, and the origin returned a non-5xx response to a
  * GET.  4xx still counts as a live origin (it answered).  Anything that
  * looks like a Cloudflare Tunnel or Caddy is named; otherwise the
- * `reason` reports the raw `Server` banner so the operator can confirm. */
+ * `reason` reports the raw `Server` banner so the operator can confirm.
+ * When `raw`'s path is exactly /api/health, a non-5xx status is not
+ * enough: the response body must also be BotFleet's own health payload,
+ * so an Access login page or an unrelated 200 does not read as "ok". */
 async function probeIngressUrl(raw: string): Promise<IngressProbeResult> {
   let parsed: URL;
   try {
@@ -3318,6 +3321,32 @@ async function probeIngressUrl(raw: string): Promise<IngressProbeResult> {
       reason: `The server answered with HTTP ${status}.`,
       ...(tunnel ? { tunnel } : {}),
     };
+  }
+  // /api/health is BotFleet's own public origin check (the Cloudflare Access
+  // policy leaves this one path unauthenticated). A bare-root probe of an
+  // Access-protected URL follows the redirect to the login page and comes
+  // back 200, so every probe against a fully dead tunnel/origin would still
+  // read "ok". Probing this path specifically and requiring its BotFleet
+  // payload — instead of trusting any non-5xx status — tells a live origin
+  // apart from an Access login page or an unrelated server answering 200.
+  if (parsed.pathname === "/api/health") {
+    let payload: unknown;
+    try {
+      payload = await response.json();
+    } catch {
+      payload = undefined;
+    }
+    const isBotFleet =
+      typeof payload === "object" && payload !== null && (payload as { app?: unknown }).app === "botfleet";
+    if (!isBotFleet) {
+      return {
+        ok: false,
+        url: raw,
+        resolved: true,
+        reason: `The server answered with HTTP ${status} but did not return a BotFleet health payload.`,
+        ...(tunnel ? { tunnel } : {}),
+      };
+    }
   }
   const head = tunnel
     ? `${tunnel === "cloudflare" ? "Cloudflare" : tunnel.charAt(0).toUpperCase() + tunnel.slice(1)} answered with HTTP ${status}.`
