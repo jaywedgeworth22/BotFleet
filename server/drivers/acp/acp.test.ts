@@ -63,6 +63,24 @@ const AsyncAuthDriver = createAcpDriver({
   isAuthenticated: async () => true,
 });
 
+/** Proves the initialize flow never spawns the isAuthenticated probe for a
+ *  fail-open driver (authFailure: "continue", the Cursor shape): its result
+ *  can't change the outcome, so calling it — for every driver, every turn,
+ *  once the probe cache expires — was pure wasted latency. */
+let authProbeCalls = 0;
+const AuthProbeSupport: AcpSupport = {
+  ...SELECT_MODEL_SUPPORT,
+  driverKind: "authProbeTest",
+  selectModel: undefined,
+  pickAuthMethod: () => null,
+  authFailure: "continue",
+  isAuthenticated: () => {
+    authProbeCalls++;
+    return true;
+  },
+};
+const AuthProbeDriver = createAcpDriver(AuthProbeSupport);
+
 const ClassifiedErrorDriver = createAcpDriver({
   ...SELECT_MODEL_SUPPORT,
   driverKind: "classifiedErrorTest",
@@ -528,12 +546,62 @@ describe("ACP turns (fake CLI)", () => {
   });
 
   it("grok fails closed when the CLI advertises no cached_token (needs login)", async () => {
-    await create(GrokAgentDriver, "no-auth");
+    process.env.FAKE_ACP_MODE = "no-auth";
+    mkdirSync(join(scratch, ".grok"), { recursive: true });
+    instance = await GrokAgentDriver.create({
+      instanceId: "acp-test",
+      displayName: "ACP Test",
+      environment: { HOME: scratch, GROK_HOME: join(scratch, ".grok") },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    recorder = recordEvents(instance.adapter);
     await instance.adapter.sendTurn({ threadId: "t-auth", text: "go" });
     const done = await recorder.until((e) => e.type === "turn.completed");
     expect(done).toMatchObject({ ok: false, stopReason: "auth_required" });
     const err = recorder.events.find((e) => e.type === "runtime.error")!;
     expect(err.message).toMatch(/not signed in/);
+  });
+
+  it("grok proceeds on ambient login when auth.json exists even without cached_token", async () => {
+    process.env.FAKE_ACP_MODE = "no-auth";
+    mkdirSync(join(scratch, ".grok"), { recursive: true });
+    writeFileSync(join(scratch, ".grok", "auth.json"), "{}\n");
+    instance = await GrokAgentDriver.create({
+      instanceId: "acp-test",
+      displayName: "ACP Test",
+      environment: { HOME: scratch, GROK_HOME: join(scratch, ".grok") },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "t-auth-ambient", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+  });
+
+  it("grok ambient-login probe honors a custom GROK_HOME rather than $HOME/.grok", async () => {
+    process.env.FAKE_ACP_MODE = "no-auth";
+    // $HOME/.grok has no auth.json at all — only the custom GROK_HOME does.
+    // If isAuthenticated hardcoded $HOME/.grok, this would fail closed even
+    // though the account is genuinely signed in under GROK_HOME.
+    mkdirSync(join(scratch, ".grok"), { recursive: true });
+    const customGrokHome = join(scratch, "custom-grok-home");
+    mkdirSync(customGrokHome, { recursive: true });
+    writeFileSync(join(customGrokHome, "auth.json"), "{}\n");
+    instance = await GrokAgentDriver.create({
+      instanceId: "acp-test",
+      displayName: "ACP Test",
+      environment: { HOME: scratch, GROK_HOME: customGrokHome },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "t-auth-grok-home", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
   });
 
   it("grok local inject does not require grok.com login", async () => {
@@ -555,6 +623,15 @@ describe("ACP turns (fake CLI)", () => {
     const done = await recorder.until((e) => e.type === "turn.completed");
     expect(done).toMatchObject({ ok: true });
     expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
+  });
+
+  it("does not probe isAuthenticated for a fail-open (authFailure: continue) driver", async () => {
+    authProbeCalls = 0;
+    await create(AuthProbeDriver);
+    await instance.adapter.sendTurn({ threadId: "t-auth-probe-skip", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+    expect(authProbeCalls).toBe(0);
   });
 
   it("dsh proceeds through a missing auth method (lenient login)", async () => {

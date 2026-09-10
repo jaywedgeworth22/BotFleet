@@ -126,6 +126,16 @@ describe("Sentry AI observability", () => {
     expect(JSON.stringify(spans)).not.toMatch(/sk-|password|BEGIN /);
   });
 
+  it("does not Issue a setup runtime.error (operator login)", () => {
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(
+      base({ type: "runtime.error", message: "Grok CLI is not signed in — run `grok login` in a terminal", setup: true }),
+      sink,
+    );
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.some((b) => b.message.includes("not signed in"))).toBe(true);
+  });
+
   it("records API-backed tool names and chat tokens without messages", async () => {
     const { sink, spans } = recordingSink();
     recordExecutedTools("thread-9", ["read_file", "write_file"], sink);
@@ -279,6 +289,27 @@ describe("failed turns become Issues", () => {
     observeRuntimeEvent(base({ type: "turn.started" }), sink);
     observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: null }), sink);
     expect(String(exceptions[0])).toContain("bot turn failed: unknown");
+  });
+
+  it("does not Issue expected setup or cancel stop reasons", () => {
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "auth_required" }), sink);
+    observeRuntimeEvent(base({ type: "turn.started", turnId: "turn-2" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "cancelled", turnId: "turn-2" }), sink);
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(2);
+  });
+
+  it("does not Issue an 'interrupted' stop reason (openai-compat/Grok/BoxAgent stop shape)", () => {
+    // Those drivers report a user-initiated stop as stopReason "interrupted"
+    // rather than "cancelled" — this must be treated as the same expected,
+    // benign shape of a stop, not sent to Sentry as an error.
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "interrupted" }), sink);
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(1);
   });
 });
 

@@ -27,6 +27,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 (mirror: docs/EFFORT-LOG.md in the repo). As of 2026-08-29.
 
 ## In Progress
+- **2026-09-09 - BF-FIXER - IN_PROGRESS - BOTFLEET-C grokAgent auth_required while signed in.**  Board `e86443a4`.  Branch `fixer/auth-required-ambient`, worktree `~/apps/botfleet-fixer-auth-required`.  ACP fail-closed only when auth.json is missing; Sentry skips setup/cancel Issues.  No TestFlight.
 - **2026-09-09 - AG - IN_PROGRESS - Scope PATCH /api/instances to affected engine and fix settings lock stall.**  Board 22564558.  Branch ag/scoped-engine-reload, worktree ~/apps/botfleet-ag-engine-settings.  Scope instance reload and describe to the modified provider; add TTL caching to Cursor CLI models/auth; lift EnginesSettings UI busy state and update store directly to prevent 409 collisions. <!-- wb-agent-report:2256455865414dd2bf90096f23dbf725 -->
 - **2026-09-09 - CLAUDE - PLANNED - sentry-ai.ts: failed tool result detail sent to Sentry unredacted.** <!-- wb-agent-report:a5688de705dd4413bfdd9e0c107d9f6b -->
 - **2026-09-08 - CLAUDE - PLANNED - HTTP tool executor: five P2 follow-ups from the Codex re-review of #236 (all confirmed on main).** <!-- wb-agent-report:049bad66db014723a0c1538149f8e077 -->

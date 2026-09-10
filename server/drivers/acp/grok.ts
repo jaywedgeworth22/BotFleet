@@ -250,12 +250,13 @@ const support: AcpSupport = {
 
   // Bind the grok.com subscription login. No API-key fallback by design —
   // an unauthenticated CLI is a user action, not something to paper over.
+  // OIDC disk login (auth.json) is still signed in when initialize omits
+  // cached_token; acp/core proceeds on ambient login in that case.
   pickAuthMethod: (methods) => (methods.some((m) => m.id === "cached_token") ? "cached_token" : null),
   authFailure: "fail",
   // this instance's HOME, not the server process's: an instance can carry
   // its own, and probing the wrong one reports another account's login
-  isAuthenticated: (env) =>
-    existsSync(join(env.HOME || env.USERPROFILE || homedir(), ".grok", "auth.json")),
+  isAuthenticated: (env) => existsSync(join(grokHome(env), "auth.json")),
 
   // `--append-system-prompt`/`--rules` are accepted by the CLI but do NOT
   // reach the agent-stdio system prompt (verified against 1.0.0), so the
