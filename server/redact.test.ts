@@ -715,6 +715,39 @@ describe("redactSecretsInText", () => {
     }
   });
 
+  it("keeps scanning past a shell requote for a later field in the same header value", () => {
+    // Bash glues a quoted segment, an unquoted `$` expansion, and another
+    // quoted segment into ONE shell word (confirmed against bash 5.2.21):
+    // `-H "Authorization: OAuth realm="$REALM", oauth_signature="…""` is a
+    // single -H argument whose quoting merely toggles off and back on before
+    // the wrapper itself actually closes.  The quote right before `$REALM`
+    // looks exactly like the wrapper's close in isolation — that is what the
+    // `$SUFFIX`-after-the-wrapper case needed to treat as a close — and
+    // treating it as one here used to stop the mask at `realm=` and hand
+    // `oauth_signature`, the real secret, back in the clear.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://api.example.com/v1/long/path";
+    const withRealm = `curl -H "${HEADER}: OAuth realm="$REALM", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(withRealm);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // and the `$SUFFIX`-after-the-wrapper case this shares its mechanism
+    // with still keeps its tail, because the glued run there never runs
+    // into a further quote of the wrapper's kind
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const suffixed = redactSecretsInText(`curl -H "${HEADER}: ${SCHEME} ${token}"$SUFFIX${url}`);
+    expect(suffixed).not.toContain(token);
+    expect(suffixed).toContain("$SUFFIX");
+    expect(suffixed).toContain(url);
+  });
+
   it("masks an authorization value that another pass had already half-masked", () => {
     // SigV4 carries an access-key id BEFORE the signature, so the prefix
     // pass has a shot at part of the value first.  A "does it contain a

@@ -256,16 +256,50 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * the wrong thing.  There is no salvaging a later candidate in that case —
  * cutting at one would leave the parameters before it in the clear — so the
  * whole line's value is masked, which loses a reader some context and loses
- * no secret. */
+ * no secret.
+ *
+ * A `$` or backtick right behind the quote is not automatically that closing
+ * quote either — it is the START of a glued, unquoted run, and bash keeps
+ * gluing: an OAuth/Digest-style value can toggle the SAME quote back on for
+ * its next field instead of escaping — `realm="$REALM", oauth_signature="…"`
+ * is one continuous `-H` argument (confirmed against bash 5.2.21) — and the
+ * quote right before `$REALM` is indistinguishable, on its own, from the
+ * wrapper's real close.  So a `$`/backtick run is walked forward rather than
+ * trusted: if it runs into whitespace or a separator with no further quote of
+ * this wrapper's kind, the word really did end at the quote that introduced
+ * the run, exactly as `-H "…token…"$SUFFIX <url>` needs.  If it runs into
+ * ANOTHER quote of this wrapper's kind first, the value was never closed at
+ * all — quoting merely toggled off and back on — so that quote is not a
+ * candidate close either; scanning resumes past it, looking for whichever
+ * quote closes THAT segment, so a later field like `oauth_signature` is not
+ * left standing past a requote that looked like the end. */
 function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
   if (!wrapper) return value.length;
-  for (let i = 0; i < value.length; i++) {
-    if (value.charAt(i) !== wrapper.quote) continue;
+  const runBefore = (pos: number): number => {
     let run = 0;
-    while (i - 1 - run >= 0 && value.charAt(i - 1 - run) === "\\") run += 1;
-    if (run !== wrapper.backslashes) continue;
+    while (pos - 1 - run >= 0 && value.charAt(pos - 1 - run) === "\\") run += 1;
+    return run;
+  };
+  const isWrapperQuote = (pos: number): boolean => value.charAt(pos) === wrapper.quote && runBefore(pos) === wrapper.backslashes;
+
+  let i = 0;
+  while (i < value.length) {
+    if (!isWrapperQuote(i)) {
+      i += 1;
+      continue;
+    }
+    const run = runBefore(i);
     const after = value.charAt(i + 1);
-    const closes = after === "" || /[\s;&|<>)\]},$`'"]/.test(after);
+    if (after === "$" || after === "`") {
+      let j = i + 1;
+      while (j < value.length && !isWrapperQuote(j)) j += 1;
+      if (j < value.length) {
+        i = j + 1; // requoted — this candidate was not the close; scan past it
+        continue;
+      }
+      return i - run; // the glued run ran out with no further quote behind it
+    }
+    const closes = after === "" || /[\s;&|<>)\]},'"]/.test(after);
     // the escaping backslashes belong to the delimiter, not to the credential
     return closes ? i - run : value.length;
   }
