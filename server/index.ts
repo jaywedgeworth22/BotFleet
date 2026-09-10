@@ -1972,10 +1972,18 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!group && fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
           const userMsg = fallbackUserMessage;
           const fallbackBotId = bot.id;
+          // The retried turn is a continuation of whatever dispatched the
+          // one that just fell over — a webhook/resource turn stays
+          // unattended, and its automationSource travels with it so a
+          // retry never re-titles the task or, more importantly, never
+          // lets startTurn's default branch call clearUnattended and open
+          // the door for an autoApprove/always-allow grant mid-fallback.
           void startTurn(fallbackBotId, userMsg.text || "", {
             userMessage: userMsg,
             threadId: event.threadId,
             modelSelection: fallbackSelection,
+            automationSource: userMsg.automationSource,
+            unattended: isUnattended(fallbackBotId),
           }).catch((error) => {
             console.error(`fallback startTurn failed for ${fallbackBotId}:`, error);
           });
@@ -3501,7 +3509,12 @@ _loadPending();
       }
 
       const lastMsg = activeMsgs[activeMsgs.length - 1];
-      const resumeUser = lastMsg?.role === "user" && lastMsg.kind === "text" ? lastMsg : undefined;
+      // A turn-starter can be a person's message OR an auto-delivered
+      // routine/webhook/resource instruction stored as role="system" —
+      // recognizing only "user" here would discard the automation
+      // attribution and repersist the recovery notice as a fabricated
+      // human bubble instead of resuming the original system prompt.
+      const resumeUser = (lastMsg?.role === "user" || lastMsg?.role === "system") && lastMsg.kind === "text" ? lastMsg : undefined;
       const prompt = resumeUser
         ? (resumeUser.text || "Please resume.")
         : "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
@@ -3509,6 +3522,8 @@ _loadPending();
       void startTurn(bot.id, prompt, {
         threadId,
         userMessage: resumeUser,
+        automationSource: resumeUser?.automationSource,
+        unattended: resumeUser?.role === "system" ? isUnattended(bot.id) : undefined,
       }).catch((err) => {
         console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
         store.patchBot(bot.id, { inflightThreadId: undefined });
@@ -6925,8 +6940,12 @@ const server = createServer(async (req, res) => {
       // next request is handled
       if (bot.busy) return json(res, 409, { error: "the bot is working — stop it before editing" });
       const source = store.messagesFor(bot.threadId).find((msg) => msg.id === messageId);
-      if (!source || source.role !== "user" || source.kind !== "text") {
-        return json(res, 404, { error: "only user messages can be edited" });
+      // A "user" message is a person's prompt; a "system" message is an
+      // auto-delivered routine/webhook/resource instruction — Regenerate
+      // and edit-last both retarget the same turn-starter on an
+      // automation-only thread, so both roles are editable here.
+      if (!source || (source.role !== "user" && source.role !== "system") || source.kind !== "text") {
+        return json(res, 404, { error: "only user or system-instruction messages can be edited" });
       }
       if (!registry.get(bot.modelSelection.instanceId)) {
         return json(res, 409, {
@@ -6937,7 +6956,12 @@ const server = createServer(async (req, res) => {
       if (!message) return json(res, 404, { error: "no such message" });
       store.patchBot(bot.id, { rewound: true });
       const replyTo = message.replyToId ? resolveReplyTarget(bot.threadId, message.replyToId) : undefined;
-      await startTurn(bot.id, text, { userMessage: message, replyTo });
+      await startTurn(bot.id, text, {
+        userMessage: message,
+        replyTo,
+        automationSource: message.automationSource,
+        unattended: message.role === "system" ? isUnattended(bot.id) : undefined,
+      });
       return json(res, 202, { ok: true });
     }
 

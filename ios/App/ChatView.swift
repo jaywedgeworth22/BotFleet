@@ -1026,7 +1026,11 @@ struct MessageRow: View {
 
     @ViewBuilder
     private var avatarBadge: some View {
-        if message.role != .user {
+        // A `.system` row is an auto-delivered routine/webhook/resource
+        // instruction, not something the bot said — it renders its own
+        // ChannelEventCard below and must not borrow the bot's (or room's)
+        // avatar, matching the desktop rendering.
+        if message.role != .user && message.role != .system {
             if let bot = senderBot {
                 if endsRun {
                     BotAvatarView(bot: bot, size: 28, state: .idle, animated: false)

@@ -8,7 +8,7 @@ Same webhook or the same routine was minting a new chat on every fire.  Auto-del
 
 Designer owns the duplicate "Bot Chats" sidebar section (#1).  This lane is #2 and #3 only.
 
-## What changed
+## What Changed
 
 - Each webhook / resource / routine has a durable `automationKey` on the task (`webhook:<id>` or `routine:<id>`).  A re-fire looks that key up first, then run history, and only then mints a task.  `createTask` with a matching key returns the existing task.
 - Simple mode still writes into the bot's oldest conversation when no keyed task exists, and stamps that thread so a newly selected empty chat is not used.

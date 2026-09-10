@@ -252,6 +252,13 @@ export interface TaskRecord {
    * re-fire appends here instead of minting another task.  Shape is
    * `webhook:<id>` or `routine:<id>` from `automationThreadKey`. */
   automationKey?: string;
+  /** Extra automation keys folded in by `mergeBotTasks` when the task that
+   * originally owned them was merged into this one.  A merged source's key
+   * (and its own aliases) move here rather than being dropped, so the next
+   * firing still finds this task through `taskByAutomationKey` instead of
+   * falling through to the run-history fallback (which fails once the
+   * source task is gone) and minting a duplicate. */
+  automationKeyAliases?: string[];
 }
 
 export interface TaskUsage {
@@ -1050,6 +1057,23 @@ export class Store {
       }
     }
 
+    // The source task's automation key (and any it already collected from
+    // an earlier merge) must survive its deletion below, or the next
+    // webhook/routine firing misses `taskByAutomationKey`, then misses the
+    // run-history fallback too (the source thread is gone), and mints a
+    // fresh duplicate task — exactly what keyed tasks exist to prevent.
+    const mergedKeys = [from.automationKey, ...(from.automationKeyAliases ?? [])].filter(
+      (key): key is string => Boolean(key),
+    );
+    if (mergedKeys.length > 0) {
+      const aliases = new Set(into.automationKeyAliases ?? []);
+      for (const key of mergedKeys) {
+        if (key === into.automationKey) continue;
+        aliases.add(key);
+      }
+      into.automationKeyAliases = aliases.size > 0 ? [...aliases] : undefined;
+    }
+
     return this.deleteTask(botId, fromThreadId);
   }
 
@@ -1305,8 +1329,11 @@ export class Store {
     return pruned;
   }
 
-  /** Fork the conversation: a new user message that replaces `sourceId`
-   * (same parent, new text) and becomes the active leaf. */
+  /** Fork the conversation: a new message that replaces `sourceId`
+   * (same parent, new text) and becomes the active leaf.  Preserves the
+   * source's role and automationSource — regenerating or editing an
+   * auto-delivered instruction (role="system") must produce another
+   * system-attributed prompt, not a fabricated human user bubble. */
   branchMessage(threadId: string, sourceId: string, text: string): Message | null {
     const t = this.thread(threadId);
     const source = t.messages.find((m) => m.id === sourceId);
@@ -1314,11 +1341,12 @@ export class Store {
     const full: Message = {
       id: newId(),
       at: Date.now(),
-      role: "user",
+      role: source.role === "system" ? "system" : "user",
       kind: "text",
       text,
       parentId: source.parentId ?? null,
       replyToId: source.replyToId,
+      automationSource: source.automationSource,
     };
     mdb.appendMessage(threadId, full);
     t.messages.push(full);
@@ -1623,7 +1651,9 @@ export class Store {
 
   taskByAutomationKey(botId: string, automationKey: string): TaskRecord | undefined {
     if (!automationKey) return undefined;
-    return this.bot(botId)?.tasks?.find((t) => t.automationKey === automationKey);
+    return this.bot(botId)?.tasks?.find(
+      (t) => t.automationKey === automationKey || t.automationKeyAliases?.includes(automationKey),
+    );
   }
 
   stampAutomationKey(botId: string, threadId: string, automationKey: string): TaskRecord | null {
