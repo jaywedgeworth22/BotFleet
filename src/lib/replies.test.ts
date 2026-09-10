@@ -12,8 +12,8 @@ describe("reply display", () => {
     expect(replyAuthor(base, "Mochi")).toBe("Mochi");
   });
 
-  it("labels auto-delivered instructions, not You", () => {
-    expect(replyAuthor({ ...base, role: "system", text: "Morning brief" })).toBe("Instructions");
+  it("labels auto-delivered scheduled runs, not You", () => {
+    expect(replyAuthor({ ...base, role: "system", text: "Morning brief" })).toBe("Scheduled Run");
   });
 
   it("doesn't call a peer bot's ask_bot reply 'You' just because it's role: user", () => {

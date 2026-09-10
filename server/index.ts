@@ -3394,7 +3394,7 @@ function serializeRoomContext(threadId: string, userName: string): string {
   return messages
     .filter((m) => m.kind === "text" && m.text)
     .slice(-GROUP_CONTEXT_MESSAGES)
-    .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Instructions" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
+    .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Scheduled Run" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
     .join("\n");
 }
 
@@ -5379,12 +5379,12 @@ const server = createServer(async (req, res) => {
           const active = onActivePath(hit.threadId, hit.messageId);
           // A room hit already carries `from` (the speaking member); a
           // system-role hit never does, but its sender is not the bot
-          // either — an auto-delivered routine/webhook/resource
-          // instruction, not something the bot said — so it needs the
-          // same "Instructions" attribution the export and reply displays
-          // already give it, or the client falls back to `name` (the
-          // bot's own name) and misattributes the hit.
-          const from = hit.from ?? (hit.role === "system" ? "Instructions" : undefined);
+          // either — an auto-delivered routine/webhook/resource run, not
+          // something the bot said — so it needs the same "Scheduled Run"
+          // attribution the export and reply displays already give it, or
+          // the client falls back to `name` (the bot's own name) and
+          // misattributes the hit.
+          const from = hit.from ?? (hit.role === "system" ? "Scheduled Run" : undefined);
           if (bot) {
             const task = store.taskByThread(bot.id, hit.threadId);
             return { ...hit, from, botId: bot.id, name: bot.name, task: task?.title, onActivePath: active };
@@ -5429,7 +5429,7 @@ const server = createServer(async (req, res) => {
       const lines: string[] = [`# ${title}`, ""];
       for (const msg of messages) {
         const who =
-          msg.role === "user" ? userName : msg.role === "system" ? "Instructions" : (msg.from?.name ?? bot?.name ?? "Bot");
+          msg.role === "user" ? userName : msg.role === "system" ? "Scheduled Run" : (msg.from?.name ?? bot?.name ?? "Bot");
         if (msg.kind === "text" && msg.text) lines.push(`**${who}:**`, "", msg.text, "");
         else if (msg.kind === "activity" && msg.tool) lines.push(`> ${msg.tool.name}`, "");
         else if (msg.kind === "screen") lines.push("> [screen capture]", "");

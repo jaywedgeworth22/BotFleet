@@ -11,7 +11,7 @@ Designer owns the duplicate "Bot Chats" sidebar section (#1).  This lane is #2 a
 ## What Changed
 
 - Each webhook / resource / routine has a durable `automationKey` on the task (`webhook:<id>` or `routine:<id>`).  A re-fire looks that key up first, then run history, and only then mints a task.  `createTask` with a matching key returns the existing task.
-- Simple mode still writes into the bot's oldest conversation when no keyed task exists, and stamps that thread so a newly selected empty chat is not used.
+- Simple mode's designated conversation is `bot.threadId` — the chat currently on screen — not the oldest task.  "Keep Extra Threads Hidden" only flips `conversationMode` and leaves the active Projects task selected.  A newly selected empty chat is used when it is the active thread; automation does not skip it in favor of an older conversation.
 - Auto-delivered prompts are stored as `role: "system"`.  The model still receives them as the turn prompt.  Desktop and iOS render a left-edge work card, not a blue bubble.  Older webhook rows that used `role: "user"` still parse into the existing card.  Phones that lack `system` decode it as `.bot` (left, not blue).
 
 ## Verify

@@ -192,16 +192,20 @@ class MessageBoundary extends Component<{ children: ReactNode; fallbackText: str
   }
 }
 
-/** Inline editor a user bubble turns into: Enter sends (forking the
- * conversation), Esc cancels. Shift+Enter for a newline, like everywhere. */
+/** Inline editor a user bubble or system work card turns into: Enter sends
+ * (forking the conversation), Esc cancels.  Shift+Enter for a newline, like
+ * everywhere.  User chrome stays the blue You bubble; system chrome is the
+ * left-edge hairline card, never `bg-bubble-user`. */
 function BubbleEditor({
   initial,
   onCancel,
   onSubmit,
+  chrome = "user",
 }: {
   initial: string;
   onCancel: () => void;
   onSubmit: (text: string) => void;
+  chrome?: "user" | "system";
 }) {
   const [draft, setDraft] = useState(initial);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -215,7 +219,13 @@ function BubbleEditor({
     if (draft.trim()) onSubmit(draft.trim());
   };
   return (
-    <div className={cn(BUBBLE_EDITOR_WIDTH, "rounded-2xl border border-hairline/40 bg-bubble-user px-4 py-3")}>
+    <div
+      className={
+        chrome === "system"
+          ? "w-full min-w-0 max-w-[36rem] rounded-xl border border-hairline/40 bg-raised px-4 py-3"
+          : cn(BUBBLE_EDITOR_WIDTH, "rounded-2xl border border-hairline/40 bg-bubble-user px-4 py-3")
+      }
+    >
       <textarea
         ref={ref}
         value={draft}
@@ -807,8 +817,8 @@ const MessagesList = memo(function MessagesList({
               // stored as role=system.  Older webhook rows still used
               // role=user; keep those off the blue bubble too.
               const autoDelivered = m.role === "system" || (m.role === "user" && !m.from?.botId);
-              // A system instruction card — however it renders (a parsed
-              // webhook/iMessage view, or the generic Instructions card) —
+              // A system work card — however it renders (a parsed
+              // webhook/iMessage view, or the generic Scheduled Run card) —
               // needs the same edit-in-place and "‹ i/N ›" version
               // reachability a user Bubble gets: Composer's ArrowUp can set
               // editingId to a system turn-starter, and Regenerate forks a
@@ -821,11 +831,14 @@ const MessagesList = memo(function MessagesList({
               const withSystemChrome = (card: ReactNode) => {
                 if (systemEditing) {
                   return (
-                    <BubbleEditor
-                      initial={m.text ?? ""}
-                      onCancel={onCancelEdit}
-                      onSubmit={(text) => onSubmitEdit(m.id, text)}
-                    />
+                    <div className="my-0.5 flex justify-start">
+                      <BubbleEditor
+                        chrome="system"
+                        initial={m.text ?? ""}
+                        onCancel={onCancelEdit}
+                        onSubmit={(text) => onSubmitEdit(m.id, text)}
+                      />
+                    </div>
                   );
                 }
                 return (
@@ -887,15 +900,14 @@ const MessagesList = memo(function MessagesList({
               }
               if (m.role === "system") {
                 const body = (m.text ?? "").trim();
-                const firstLine = body.split("\n").find((line) => line.trim()) ?? "Instructions";
                 return withSystemChrome(
                   <WebhookCard
                     view={{
-                      headline: firstLine.slice(0, 120),
+                      headline: "Scheduled Run",
                       subtitle: automationSourceLabel(m.automationSource, body),
                       payload: body || undefined,
                     }}
-                    detailsNoun="Instructions"
+                    detailsNoun="Run Details"
                   />,
                 );
               }
