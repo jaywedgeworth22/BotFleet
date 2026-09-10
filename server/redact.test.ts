@@ -894,4 +894,82 @@ describe("redactSecretsInText", () => {
     expect(out).toContain("https://example.com");
     expect(out).toContain('&& echo "done"');
   });
+
+  // ── round-3 findings (fresh Codex re-review of e2a9b98) ───────────────
+
+  it("masks a Bearer credential that happens to equal a single status word", () => {
+    // `configured`, `provided`, and `available` are syntactically ordinary
+    // Bearer tokens — long enough, no illegal characters — and nothing marks
+    // a LONE status word as prose the way a second word does ("was
+    // configured", "not provided").  The `every`-based status check used to
+    // exempt each of them outright because a single word trivially satisfies
+    // "every word is a status word"; only an unmistakable MULTIWORD status
+    // phrase may bypass masking.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    for (const word of ["configured", "provided", "available"]) {
+      const real = `${HEADER}: ${SCHEME} ${word}`;
+      const out = redactSecretsInText(real);
+      expect(out, real).toMatch(/«redacted \d+ chars»/);
+      expect(out, real).not.toMatch(new RegExp(`${word}$`));
+    }
+    // a genuine multiword status sentence still reads as prose, not a
+    // credential, and must stay untouched
+    for (const status of [`${HEADER}: not configured`, `${HEADER}: was provided`, `${HEADER}: not available`]) {
+      expect(redactSecretsInText(status), status).toBe(status);
+    }
+  });
+
+  it("keeps scanning through a nested command substitution's whitespace", () => {
+    // Command substitution replaces the whole `$(…)` with its output before
+    // the shell word is assembled (confirmed against bash 5.2.21), so the
+    // space inside `$(printf zone)` is never an outer shell-word boundary —
+    // this is one continuous `-H` argument.  Stopping at that inner space
+    // used to end the glued-run lookahead early and leave `oauth_signature`,
+    // the real secret, standing past the cut — same failure mode as the
+    // resolved `$REALM` case, and the same fix: the whole value from `realm=`
+    // onward is masked as one blob, so nothing between it and the secret is
+    // left standing either.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const withSubst = `curl -H "${HEADER}: OAuth realm="$(printf zone)", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(withSubst);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).not.toContain("printf zone");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // and the `$SUFFIX`-after-the-wrapper case this shares its mechanism
+    // with still keeps its tail — a `$(…)` immediately after the wrapper's
+    // own close must not be swallowed as if it were part of the value
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const suffixed = redactSecretsInText(`curl -H "${HEADER}: ${SCHEME} ${token}"$(hostname)${url}`);
+    expect(suffixed).not.toContain(token);
+    expect(suffixed).toContain("$(hostname)");
+    expect(suffixed).toContain(url);
+  });
+
+  it("does not let a quote literal-protected by the opposite quote type hide the real wrapper opener", () => {
+    // A single-quoted argument earlier on the line can contain a literal
+    // double quote — `echo '"' …` — and bash never reads a character inside
+    // single quotes as a delimiter.  Counting that literal as a real
+    // double-quote toggle threw off the parity check and made the genuine
+    // `-H "` opener that follows look like a CLOSER instead, losing the
+    // wrapper entirely and letting redaction consume the closing quote, the
+    // URL, and the rest of the command line.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const line = `echo '"' && curl -H "${HEADER}: ${SCHEME} ${token}" https://example.com`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(token);
+    expect(out).toContain(`${SCHEME} «redacted ${token.length} chars»`);
+    expect(out).toContain("https://example.com");
+    expect(out).toBe(redactSecretsInText(out));
+  });
 });

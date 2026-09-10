@@ -220,12 +220,33 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
   // leave a stub and hand the credential back.  Counting the ones before it
   // at the same escape level settles it without parsing anything: an even
   // count makes this one the odd, opening member of its pair.
+  //
+  // A quote PROTECTED by the opposite quote type is not one of the ones being
+  // counted, though: `echo '"' && curl -H "<header>: …` has a literal `"`
+  // sitting inside `'…'`, and bash never reads a character inside single
+  // quotes as a delimiter at all.  Tallying it as a real toggle throws the
+  // parity off and makes the genuine `-H "` opener that follows look like a
+  // closer instead — the wrapper is lost and redaction runs off the end of
+  // the value.  So this replays the line's quoting one region at a time
+  // rather than counting raw characters: a quote of the OTHER type only ever
+  // opens or closes ITS OWN region and is never tallied; a quote of the
+  // target type only toggles the tally while no other region is already
+  // open, which is exactly what "literal inside the opposite quote" means.
   let seen = 0;
+  let openQuote: string | undefined;
   for (let i = lineStart; i < at; i++) {
-    if (text.charAt(i) !== quote) continue;
+    const ch = text.charAt(i);
+    if (ch !== '"' && ch !== "'") continue;
     let run = 0;
     while (i - 1 - run >= lineStart && text.charAt(i - 1 - run) === "\\") run += 1;
-    if (run === backslashes) seen += 1;
+    if (run !== backslashes) continue; // a different escaping level; not this pairing at all
+    if (openQuote === undefined) {
+      openQuote = ch; // opens a region of ch's type
+      if (ch === quote) seen += 1;
+    } else if (ch === openQuote) {
+      openQuote = undefined; // closes the region it opened
+      if (ch === quote) seen += 1;
+    } // else: ch is the opposite type while a region is open — a literal, not a toggle
   }
   return seen % 2 === 0 ? { quote, backslashes } : undefined;
 }
@@ -284,6 +305,18 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * has to stop at the boundary and treat the run as ended right there, the
  * same as if no further quote existed at all.
  *
+ * A boundary inside a NESTED EXPANSION is not a boundary, though — command
+ * substitution replaces the whole `$(…)` with its output before the shell
+ * word is assembled, so whitespace between its parens never splits the word:
+ * `realm="$(printf zone)", oauth_signature=<secret>"` is one `-H` argument
+ * (confirmed against bash 5.2.21), and stopping at the space inside `$(…)`
+ * left `oauth_signature` standing past a boundary that was never real.  So
+ * `$(` is walked to its balanced `)` — tracking depth, because the command
+ * itself may contain nested parens — as one atomic span with no boundary
+ * check inside it, and a backtick run is walked the same way to its matching
+ * backtick.  Both walks consume the run in one linear pass with no
+ * backtracking, so this stays O(n) on a pathological line.
+ *
  * An empty INLINE parameter needs the identical requote treatment for a
  * reason that has nothing to do with `$` or backticks: `realm=""` opens and
  * closes the SAME quote with nothing between, which is exactly how bash
@@ -322,10 +355,33 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
       let j = i + 1;
       let atBoundary = false;
       while (j < value.length && !isWrapperQuote(j)) {
+        const ch = value.charAt(j);
+        // `$(…)` is replaced with its output before the shell word is
+        // assembled, so whitespace inside it is never a word boundary —
+        // walk the whole balanced span (nesting depth, for a command that
+        // itself contains parens) as one atomic unit.
+        if (ch === "$" && value.charAt(j + 1) === "(") {
+          let depth = 1;
+          j += 2;
+          while (j < value.length && depth > 0) {
+            if (value.charAt(j) === "(") depth += 1;
+            else if (value.charAt(j) === ")") depth -= 1;
+            j += 1;
+          }
+          continue;
+        }
+        // a backtick command substitution is the same story — its own
+        // whitespace runs to the matching backtick, not to a boundary
+        if (ch === "`") {
+          let k = j + 1;
+          while (k < value.length && value.charAt(k) !== "`") k += 1;
+          j = k < value.length ? k + 1 : value.length;
+          continue;
+        }
         // whitespace or a shell separator ends the glued word right here —
         // a same-type quote somewhere further down the line belongs to
         // unrelated, later text, not to this run
-        if (/[\s;&|]/.test(value.charAt(j))) {
+        if (/[\s;&|]/.test(ch)) {
           atBoundary = true;
           break;
         }
@@ -434,8 +490,20 @@ function hasPlaceholderLeadIn(before: string): boolean {
  * sentence this value sits in — see `hasPlaceholderLeadIn`.  It gates only
  * the BARE-noun branch below; the bracketed, filler, prefixed, and status
  * shapes carry their own marker in the text itself and need no sentence
- * context to be trusted. */
-const isPlaceholder = (value: string, leadIn: boolean) => {
+ * context to be trusted.
+ *
+ * `precedingWord` is whatever the AUTH_HEADER patterns' own optional `scheme`
+ * group captured immediately before this value, when they captured anything
+ * at all — and it matters here for a reason that has nothing to do with a
+ * scheme.  That group is any short alphabetic word followed by whitespace,
+ * so on a status sentence like `Authorization: not provided` it captures
+ * `not` as if it were a scheme and hands this function only `provided` —
+ * ONE status word, indistinguishable on its own from a real one-word Bearer
+ * value.  Folding `precedingWord` back in when IT is itself a status word
+ * reassembles the sentence the regex split apart, so `not provided` is still
+ * read as two words and `Bearer configured` is read as the one bare word it
+ * actually is. */
+const isPlaceholder = (value: string, leadIn: boolean, precedingWord?: string) => {
   // trailing sentence punctuation belongs to the prose, not to the
   // placeholder — `Use <header>: <scheme> token.` is still guidance.  Only
   // punctuation no credential ends in is stripped: `=` stays, because base64
@@ -463,8 +531,21 @@ const isPlaceholder = (value: string, leadIn: boolean) => {
   if (leadIn && PLACEHOLDER_WORDS.has(word)) return true;
   // A status sentence is not a credential either: `no value`, `not provided`,
   // `missing`.  Every word has to be one of these, so no credential with a
-  // space in it can pass — and a credential is one token anyway.
-  return word.split(/\s+/).every((part) => STATUS_WORDS.has(part));
+  // space in it can pass — and a credential is one token anyway.  But a
+  // SINGLE status word is not a sentence, and several of them — `configured`,
+  // `provided`, `available` — are also syntactically ordinary Bearer tokens:
+  // `Authorization: Bearer configured` is exactly as plausible a credential
+  // as `Authorization: Bearer <anything-else-that-long>`, and nothing in the
+  // text marks it as prose the way a second word ("was configured", "not
+  // provided") does.  Requiring more than one word is what makes this an
+  // unmistakable STATUS SENTENCE rather than a guess at one unmarked word;
+  // a lone status word falls through and is masked like any other credential
+  // — unless the word right before it was ALSO a status word that the
+  // scheme group swallowed, in which case the sentence was multiword all
+  // along and this reassembles it before judging.
+  const lead = precedingWord?.trim().toLowerCase();
+  const parts = lead && STATUS_WORDS.has(lead) ? [lead, ...word.split(/\s+/)] : word.split(/\s+/);
+  return parts.length > 1 && parts.every((part) => STATUS_WORDS.has(part));
 };
 
 /** Words a status sentence is made of, where a credential would be. */
@@ -568,7 +649,14 @@ export function redactSecretsInText(text: string): string {
       // secret's.  Masking scheme and value together reproduces, byte for
       // byte, what that pass produced before this one could reach the shape.
       const body = close ? value : `${scheme ?? ""}${value}`;
-      if (body.length < minMaskable(scheme) || WHOLLY_MASKED.test(body) || isPlaceholder(body, hasPlaceholderLeadIn(whole.slice(0, offset)))) return m;
+      // scheme is already folded into `body` on the unterminated path — pass
+      // it separately only when it still stands apart from the value
+      if (
+        body.length < minMaskable(scheme) ||
+        WHOLLY_MASKED.test(body) ||
+        isPlaceholder(body, hasPlaceholderLeadIn(whole.slice(0, offset)), close ? scheme : undefined)
+      )
+        return m;
       const kept = close ? (scheme ?? "") : "";
       return `${key}${sep}${quote}${kept}${mask(body)}${close}`;
     },
@@ -585,7 +673,7 @@ export function redactSecretsInText(text: string): string {
       if (
         credential.length < minMaskable(scheme) ||
         WHOLLY_MASKED.test(credential) ||
-        isPlaceholder(credential, hasPlaceholderLeadIn(whole.slice(0, offset)))
+        isPlaceholder(credential, hasPlaceholderLeadIn(whole.slice(0, offset)), scheme)
       )
         return m;
       return `${key}${sep}${scheme ?? ""}${mask(credential)}${value.slice(credential.length)}`;
