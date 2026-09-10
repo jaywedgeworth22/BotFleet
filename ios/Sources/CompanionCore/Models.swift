@@ -370,6 +370,10 @@ public struct SearchHit: Codable, Hashable, Identifiable, Sendable {
     public var botId: String?
     public var groupId: String?
     public var name: String
+    /// Attribution for the hit (e.g. "Instructions" for system/automation
+    /// starters).  Absent on older servers; Codable ignores unknown keys and
+    /// older clients ignore this field.
+    public var from: String?
     public var task: String?
     public var onActivePath: Bool
 
