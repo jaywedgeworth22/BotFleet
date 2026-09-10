@@ -61,7 +61,11 @@ export function WebhookCard({
             aria-expanded={open}
             title={open ? `Collapse ${detailsNoun}` : `Show ${detailsNoun}`}
             className={cn(
-              "flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-ink-secondary hover:bg-raised/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus/40",
+              // Inset, not an outward ring: the card wrapper is overflow-hidden
+              // (clips the payload pane and hover fill to the rounded corners),
+              // which would clip an outward focus ring at every edge and leave
+              // keyboard focus invisible.
+              "flex w-full items-center gap-2.5 px-3.5 py-2.5 text-left text-ink-secondary hover:bg-raised/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-focus/40",
               open && "border-b border-hairline/30",
             )}
           >

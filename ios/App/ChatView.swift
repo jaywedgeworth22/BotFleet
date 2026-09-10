@@ -1178,13 +1178,26 @@ struct MessageRow: View {
                     ImessageEventCard(view: imessage)
                 } else {
                     let body = message.text ?? ""
+                    // Headline names what actually fired this — accurate per
+                    // message.automationSource (falls back to sniffing the
+                    // resource marker for rows persisted before that field
+                    // existed), not the hardcoded "Scheduled Run" a manual
+                    // Run Now or a resource alert would otherwise wear.
+                    // Subtitle is the instruction's own first non-blank line.
                     let first = body.split(whereSeparator: \.isNewline).first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }).map(String.init) ?? ""
+                    let headline = Self.automationSourceLabel(message.automationSource, body: body)
                     ChannelEventCard(
-                        headline: "Scheduled Run",
-                        subtitle: first.isEmpty || first == "Scheduled Run" ? "Routine" : String(first.prefix(80)),
+                        headline: headline,
+                        subtitle: first.isEmpty || first == "Scheduled Run" ? nil : String(first.prefix(80)),
                         payload: body.isEmpty ? nil : body,
-                        systemImage: "clock.arrow.2.circlepath",
-                        accessibilityName: "Scheduled Run"
+                        systemImage: headline == "Resource Alert" ? "gauge.with.dots.needle.67percent" : "clock.arrow.2.circlepath",
+                        // Distinct from `headline` (which is already the specific
+                        // "Scheduled Run" / "Run Now" / "Resource Alert" / "Webhook"
+                        // label) so VoiceOver doesn't announce it twice — the
+                        // Webhook/iMessage cards below have a natural type+headline
+                        // split; this generic card's headline IS the type, so the
+                        // category name is the one distinct thing left to say.
+                        accessibilityName: "Automated Instruction"
                     )
                 }
             } else if message.role == .user, let webhook = WebhookMessageView.parse(message.text) {
@@ -1218,12 +1231,13 @@ struct MessageRow: View {
             .sorted { $0.emoji < $1.emoji }
     }
 
-    /// The subtitle on a generic (non-webhook, non-iMessage) auto-delivered
-    /// instruction card. Prefers the persisted `automationSource`; a row
-    /// from before that field existed falls back to sniffing the
-    /// resource-trigger marker in the stored text, and otherwise reads as
-    /// "Routine" (a real schedule fire, the only case that label was ever
-    /// accurate for).
+    /// The headline on a generic (non-webhook, non-iMessage) auto-delivered
+    /// instruction card. Mirrors the TypeScript `automationSourceLabel`
+    /// (`src/lib/replies.ts`) exactly, including its wording — prefers the
+    /// persisted `automationSource`; a row from before that field existed
+    /// falls back to sniffing the resource-trigger marker in the stored
+    /// text, and otherwise reads as "Scheduled Run" (a real schedule fire,
+    /// the only case that label was ever accurate for).
     static func automationSourceLabel(_ source: String?, body: String) -> String {
         switch source {
         case "resource":
@@ -1233,9 +1247,9 @@ struct MessageRow: View {
         case "webhook":
             return "Webhook"
         case "schedule":
-            return "Routine"
+            return "Scheduled Run"
         default:
-            return body.contains("[UNTRUSTED RESOURCE SAMPLE]") ? "Resource Alert" : "Routine"
+            return body.contains("[UNTRUSTED RESOURCE SAMPLE]") ? "Resource Alert" : "Scheduled Run"
         }
     }
 }
