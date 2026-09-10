@@ -3523,18 +3523,29 @@ _loadPending();
       const resumeUser = turnStartIdx >= 0 ? activeMsgs[turnStartIdx] : undefined;
       // Connector/secret continuation is ephemeral (`cardContinuation`), so a
       // crash mid-resume would otherwise replay the previous completed
-      // prompt.  Replay the persisted starter only when that turn never
-      // produced bot text.
+      // prompt.  Replay the persisted starter's exact TEXT only when that
+      // turn never produced bot text (a completed tool call means whatever
+      // ran already ran — replaying the same prompt could repeat it).
       const replay = shouldReplayPersistedStarter(activeMsgs, turnStartIdx);
       const prompt = replay && resumeUser
         ? (resumeUser.text || "Please resume.")
         : BOOT_RECOVERY_NOTICE;
+      // Whether the resumed turn is unattended is a SEPARATE question from
+      // whether its exact prompt text is replayed: a webhook/resource turn
+      // that already completed a tool before the crash is still that same
+      // externally-triggered turn continuing, not a person now at the
+      // keyboard.  Gating this on `replay` too would both let an
+      // autoApprove grant wrongly authorize a resumed unattended request
+      // AND (since `unattendedBots` is memory-only and empty right after
+      // restart) persist BOOT_RECOVERY_NOTICE as a fabricated `role: "user"`
+      // bubble instead of a `system` continuation — the exact bug this
+      // whole boot-recovery path exists to fix.
       console.log(`boot recovery: auto-resuming in-flight thread ${threadId} for ${bot.name}`);
       void startTurn(bot.id, prompt, {
         threadId,
         userMessage: replay ? resumeUser : undefined,
-        automationSource: replay ? resumeUser?.automationSource : undefined,
-        unattended: replay && resumeUser?.role === "system" ? isUnattended(bot.id) : undefined,
+        automationSource: resumeUser?.automationSource,
+        unattended: resumeUser?.role === "system" ? isUnattended(bot.id) : undefined,
       }).catch((err) => {
         console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
         store.patchBot(bot.id, { inflightThreadId: undefined });
