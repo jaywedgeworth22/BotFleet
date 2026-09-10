@@ -40,9 +40,13 @@ describe("OpenAICompatDriver", () => {
     expect(cfg.apiKeyEnv).toBe("GROQ_KEY");
   });
 
-  it("reports unavailable without an API key", async () => {
+  it("reports unavailable without an API key for the workspace-shared instance", async () => {
+    // "openaiCompat" is the one reserved instance id backed by the shared
+    // openaiCompat.key/OPENAI_COMPAT_API_KEY credential — it still requires
+    // a key. A user-added custom instance does not; see the "keyless custom
+    // engine" tests below.
     const inst = await OpenAICompatDriver.create({
-      instanceId: "test-1",
+      instanceId: "openaiCompat",
       displayName: "Free",
       enabled: true,
       config: { url: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENAI_COMPAT_API_KEY" },
@@ -51,6 +55,46 @@ describe("OpenAICompatDriver", () => {
     const snap = await inst.snapshot();
     expect(snap.state).toBe("unavailable");
     await inst.dispose();
+  });
+
+  it("permits a keyless custom instance (e.g. local Ollama/LM Studio) to be available", async () => {
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "custom-ollama-local",
+      displayName: "Ollama Local",
+      enabled: true,
+      config: { url: "http://localhost:11434/v1", apiKeyEnv: "OPENAI_COMPAT_API_KEY" },
+      environment: {},
+    });
+    const snap = await inst.snapshot();
+    expect(snap.state).toBe("available");
+    expect(snap.authenticated).toBe(true);
+    await inst.dispose();
+  });
+
+  it("omits the Authorization header for a keyless custom instance", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/models")) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      expect(init?.headers).not.toHaveProperty("authorization");
+      return new Response("data: [DONE]\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "custom-ollama-local",
+      displayName: "Ollama Local",
+      enabled: true,
+      config: { url: "http://localhost:11434/v1", apiKeyEnv: "OPENAI_COMPAT_API_KEY" },
+      environment: {},
+    });
+    const recorder = recordEvents(inst.adapter);
+    await inst.adapter.sendTurn({ threadId: "thread", text: "hi", model: "llama3" });
+    await recorder.until((event) => event.type === "turn.completed");
+    recorder.stop();
+    await inst.dispose();
+    expect(fetchMock).toHaveBeenCalled();
   });
 
   it("exposes a refreshed model catalog", async () => {

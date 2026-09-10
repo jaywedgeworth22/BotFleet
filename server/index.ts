@@ -113,6 +113,7 @@ import {
   syncCredentialEnv,
   patchInstanceConfig,
   deleteInstanceConfig,
+  persistableInstanceConfigs,
   isAbsoluteHttpUrl,
   usageIngestUrl,
   usageProjectRules,
@@ -554,11 +555,13 @@ export function askBotAndWait(targetBotId: string, message: string, depth: numbe
 // default selection for new bots: first available instance, claude preferred
 const DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS = 15_000;
 
-async function defaultSelection() {
+async function defaultSelection(excludeInstanceId?: string) {
   // A bot being created can ride a probe taken moments ago; the engine rail
   // still refreshes on demand.
   const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
-  const available = described.filter((d) => d.snapshot.state === "available");
+  const available = described.filter(
+    (d) => d.snapshot.state === "available" && d.instanceId !== excludeInstanceId,
+  );
   // Deliberately NO fallback to described[0]. Handing a bot an engine whose
   // CLI isn't installed makes it look ready and then fail on send with a raw
   // spawn ENOENT — the single worst first-run experience, and the one every
@@ -7879,14 +7882,28 @@ const server = createServer(async (req, res) => {
           config: customConfig,
         };
 
+        // persistableInstanceConfigs(cfg) is NOT currentFleet: currentFleet
+        // is the LIVE transient map, whose per-instance `environment` has
+        // injected credentials baked in (BOX_TOKEN, OPENCODE_API_KEY,
+        // OPENAI_COMPAT_API_KEY, …). On a default install `cfg.instances` is
+        // unset, so spreading currentFleet here would copy those live
+        // secrets into the PERSISTED per-instance `environment` entries on
+        // disk — never meant to be stored there, and a later credential
+        // rotation/clear would leave the stale copy still active.
         const nextInstances = {
-          ...(cfg.instances ?? currentFleet),
+          ...persistableInstanceConfigs(cfg),
           [instanceId]: newInstanceEntry,
         };
 
         saveConfig({ instances: nextInstances });
         Object.assign(cfg, loadConfig());
-        await reloadProviders();
+        // Attach only the newly added instance rather than calling the
+        // global reloadProviders(): that disposes EVERY provider and marks
+        // every currently-busy bot's turn as interrupted, so adding one
+        // independent engine would kill every other bot's active work.
+        const newEntry = instanceConfigs(cfg)[instanceId];
+        const newLive = newEntry ? await registry.reloadInstance(instanceId, newEntry) : null;
+        if (newLive) bus.attach([newLive]);
         resetPathCache();
         return json(res, 201, {
           ok: true,
@@ -7917,32 +7934,64 @@ const server = createServer(async (req, res) => {
         const result = deleteInstanceConfig(cfg, instanceId);
         if (!result.ok) return json(res, 404, { error: `unknown instance "${instanceId}"` });
 
+        // A bot can reference the engine either at the top level
+        // (bot.modelSelection) or per-task (TaskRecord.modelSelection, which
+        // sendBotTurn prioritizes over the bot's own selection) — either one
+        // surviving deletion would fail on the next turn.
+        const referencesInstance = (selection: ModelSelection | undefined) =>
+          selection?.instanceId === instanceId ||
+          selection?.fallbacks?.some((f) => f.instanceId === instanceId) === true;
         const affectedBots = store.bots.filter(
           (b) =>
-            b.modelSelection?.instanceId === instanceId ||
-            b.modelSelection?.fallbacks?.some((f) => f.instanceId === instanceId),
+            referencesInstance(b.modelSelection) ||
+            store.tasks(b.id).some((t) => referencesInstance(t.modelSelection)),
         );
         if (affectedBots.some((b) => b.busy)) {
           return json(res, 409, { error: "cannot delete engine while a bot using it is working" });
         }
         if (affectedBots.length > 0) {
-          const replacement = await defaultSelection();
-          for (const b of affectedBots) {
-            const nextSelection: ModelSelection = { ...b.modelSelection };
-            if (nextSelection.instanceId === instanceId) {
-              nextSelection.instanceId = replacement.instanceId;
-              nextSelection.model = replacement.model;
+          // Exclude the instance being deleted from the replacement pool: it
+          // hasn't been removed from the live registry at this point, so
+          // without this it can select its own about-to-be-deleted id as the
+          // "replacement" and every bot's next turn would fail.
+          const replacement = await defaultSelection(instanceId);
+          const rewrite = (selection: ModelSelection): ModelSelection => {
+            const next: ModelSelection = { ...selection };
+            if (next.instanceId === instanceId) {
+              next.instanceId = replacement.instanceId;
+              next.model = replacement.model;
             }
-            if (nextSelection.fallbacks) {
-              const nextFallbacks = nextSelection.fallbacks.filter((f) => f.instanceId !== instanceId);
+            if (next.fallbacks) {
+              const nextFallbacks = next.fallbacks.filter((f) => f.instanceId !== instanceId);
               if (nextFallbacks.length > 0) {
-                nextSelection.fallbacks = nextFallbacks;
+                next.fallbacks = nextFallbacks;
               } else {
-                delete nextSelection.fallbacks;
+                delete next.fallbacks;
               }
             }
-            const patched = store.patchBot(b.id, { modelSelection: nextSelection });
-            if (patched) broadcast({ kind: "bot", bot: wireBot(patched) });
+            return next;
+          };
+          for (const b of affectedBots) {
+            let changed = false;
+            const patch: { modelSelection?: ModelSelection } = {};
+            if (referencesInstance(b.modelSelection)) {
+              patch.modelSelection = rewrite(b.modelSelection);
+              changed = true;
+            }
+            if (changed) {
+              const patched = store.patchBot(b.id, patch);
+              if (patched) broadcast({ kind: "bot", bot: wireBot(patched) });
+            }
+            for (const task of store.tasks(b.id)) {
+              if (!referencesInstance(task.modelSelection)) continue;
+              const patchedTask = store.patchTask(b.id, task.threadId, {
+                modelSelection: rewrite(task.modelSelection!),
+              });
+              if (patchedTask) {
+                const freshBot = store.bot(b.id);
+                if (freshBot) broadcast({ kind: "bot", bot: wireBot(freshBot) });
+              }
+            }
           }
         }
 
