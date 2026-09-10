@@ -238,16 +238,28 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * odd or even.  A command serialized one level up wraps with `\"` and writes
  * its own quoted parameters `\\\"` — three backslashes, the next level in —
  * and stopping at one of those masks through `oauth_signature=\\` and leaves
- * the signature standing.  A quote behind a run of any other length belongs
- * to some other level and is content here. */
+ * the signature standing.
+ *
+ * And the FIRST such quote either closes the argument or the wrapper was
+ * never real.  A closing quote is followed by whitespace, by the end of the
+ * line, or by a shell separator; a quote followed by ordinary text opened
+ * something instead, which means the quote in front of the header was not an
+ * argument's opener after all and every rule above it was reasoning about
+ * the wrong thing.  There is no salvaging a later candidate in that case —
+ * cutting at one would leave the parameters before it in the clear — so the
+ * whole line's value is masked, which loses a reader some context and loses
+ * no secret. */
 function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
   if (!wrapper) return value.length;
   for (let i = 0; i < value.length; i++) {
     if (value.charAt(i) !== wrapper.quote) continue;
     let run = 0;
     while (i - 1 - run >= 0 && value.charAt(i - 1 - run) === "\\") run += 1;
+    if (run !== wrapper.backslashes) continue;
+    const after = value.charAt(i + 1);
+    const closes = after === "" || /[\s;&|)\]},]/.test(after);
     // the escaping backslashes belong to the delimiter, not to the credential
-    if (run === wrapper.backslashes) return i - run;
+    return closes ? i - run : value.length;
   }
   return value.length;
 }

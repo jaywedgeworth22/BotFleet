@@ -574,9 +574,16 @@ describe("redactSecretsInText", () => {
     ];
     // and an adjacent quote that CLOSES rather than opens does the same
     // damage — a shell word can concatenate a quoted prefix onto the header
-    const closing = redactSecretsInText(`curl "prefix"${HEADER}: OAuth realm="public", oauth_signature="${sig}"`);
-    expect(closing).not.toContain(sig);
-    expect(closing).toContain("curl");
+    for (const line of [
+      `curl "prefix"${HEADER}: OAuth realm="public", oauth_signature="${sig}"`,
+      // and a same-type literal inside opposite quotes must not poison the
+      // count that decides opening from closing
+      `echo '"' && curl "prefix"${HEADER}: OAuth realm="public", oauth_signature="${sig}"`,
+    ]) {
+      const closing = redactSecretsInText(line);
+      expect(closing, line.slice(0, 20)).not.toContain(sig);
+      expect(closing, line.slice(0, 20)).toContain("curl");
+    }
 
     for (const [prefix, keep] of strays) {
       const out = redactSecretsInText(`${prefix}${HEADER}: OAuth realm="public", oauth_signature="${sig}"`);
