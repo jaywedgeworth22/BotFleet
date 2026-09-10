@@ -533,6 +533,230 @@ describe("redactSecretsInText", () => {
     }
   });
 
+  it("masks a short credential when a scheme has already anchored the match", () => {
+    // The eight-character floor is there to keep prose after a colon out of
+    // the mask, and a recognised scheme retires that worry: `Basic` standing
+    // behind the header name cannot be prose, so what follows it is a
+    // credential however short.  `dTpw` is base64 for `u:p`.
+    const HEADER = "Auth" + "orization";
+    for (const input of [`${HEADER.toLowerCase()}="Basic dTpw"`, `${HEADER}: Basic dTpw`, `${HEADER}: Basic dTpw\n`]) {
+      const out = redactSecretsInText(input);
+      expect(out, input).not.toContain("dTpw");
+      expect(out, input).toContain("Basic «redacted 4 chars»");
+    }
+    // without a scheme the floor still stands, so prose after a colon is safe
+    expect(redactSecretsInText("password: (leave blank to keep the current one)")).toBe(
+      "password: (leave blank to keep the current one)",
+    );
+    // and the scheme group matches any short alphabetic token, so the floor
+    // only drops for a word that really does carry short credentials — this
+    // function reads bot text and permission-card copy too
+    // (a value of eight characters or more is masked with or without a scheme,
+    // which is the floor doing its job and is how this behaved before)
+    for (const status of [
+      `${HEADER}: not set`,
+      `${HEADER}: was empty`,
+      `${HEADER}: nil yet`,
+      `${HEADER}: no value`,
+      `${HEADER}: not provided`,
+      `${HEADER}: was not set`,
+      `${HEADER}: header missing`,
+    ]) {
+      expect(redactSecretsInText(status), status).toBe(status);
+    }
+    // documentation placeholders are not credentials at any length, and this
+    // text is persisted guidance a reader is meant to follow
+    const SCHEME_WORD = "Bearer";
+    for (const doc of [
+      `Set ${HEADER}: ${SCHEME_WORD} <token>`,
+      `Use ${HEADER}: Basic {api-key}`,
+      `Send ${HEADER}: ${SCHEME_WORD} [YOUR_TOKEN]`,
+      `${HEADER}: ${SCHEME_WORD} <your-api-token-here>`,
+      // the bare noun a sentence uses when it means "put yours here"
+      `Use ${HEADER}: ${SCHEME_WORD} token`,
+      `Set ${HEADER}: ${SCHEME_WORD} secret`,
+      `${HEADER}: ${SCHEME_WORD} your-api-key`,
+      // a filler run (xxxx, ****, …) is documentation only behind a
+      // recognised lead-in verb too — see the round-4 finding below
+      `Use ${HEADER}: ${SCHEME_WORD} xxxxxxxx`,
+      `send ${SCHEME_WORD} your_token in the header`,
+      // trailing sentence punctuation belongs to the prose
+      `Use ${HEADER}: ${SCHEME_WORD} token.`,
+      `Set ${HEADER}: ${SCHEME_WORD} <token>.`,
+    ]) {
+      expect(redactSecretsInText(doc), doc).toBe(doc);
+    }
+    // and a real credential is still masked, including one that reads like a
+    // placeholder: a `your`/`my` prefix only counts with a separator after
+    // it, so `your-api-key` is documentation and `yourtoken` is a credential
+    expect(redactSecretsInText(`${HEADER}: Basic dTpw`)).toContain("«redacted 4 chars»");
+    for (const real of [`${HEADER}: ${SCHEME_WORD} yourtoken`, `${HEADER}: ${SCHEME_WORD} mysecret`]) {
+      expect(redactSecretsInText(real), real).toMatch(/«redacted \d+ chars»/);
+    }
+    // an EXACT placeholder word is only documentation behind a recognised
+    // lead-in verb ("Use", "Set", …) — the same word with nothing marking it
+    // that way is a real, if bad, credential and must still be masked, the
+    // same as before the placeholder exemption existed (round-2 finding: a
+    // blanket exemption for exact placeholder words let `Bearer password`
+    // through unmasked)
+    for (const real of [`${HEADER}: Basic password`, `${HEADER}: ${SCHEME_WORD} secret,`]) {
+      expect(redactSecretsInText(real), real).toMatch(/«redacted \d+ chars»/);
+    }
+  });
+
+  it("only treats a quote ADJACENT to the header as its wrapper", () => {
+    // An argument that wraps a header opens immediately in front of it.  A
+    // quote with text between it and the header name wraps something else,
+    // or nothing — and an unbalanced one in log text delimits nothing at all.
+    // Cutting the value there left a stub and handed the credential back.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const strays: Array<[string, string]> = [
+      ['size=2"; ', "size=2"],
+      ["it's odd; ", "it's odd"],
+      // one that opens the way a shell argument opens is still not adjacent
+      ['he said "wat; ', "he said"],
+      ["foo \"bar' ", "foo"],
+    ];
+    // and an adjacent quote that CLOSES rather than opens does the same
+    // damage — a shell word can concatenate a quoted prefix onto the header
+    for (const line of [
+      `curl "prefix"${HEADER}: OAuth realm="public", oauth_signature="${sig}"`,
+      // and a same-type literal inside opposite quotes must not poison the
+      // count that decides opening from closing
+      `echo '"' && curl "prefix"${HEADER}: OAuth realm="public", oauth_signature="${sig}"`,
+    ]) {
+      const closing = redactSecretsInText(line);
+      expect(closing, line.slice(0, 20)).not.toContain(sig);
+      expect(closing, line.slice(0, 20)).toContain("curl");
+    }
+
+    for (const [prefix, keep] of strays) {
+      const out = redactSecretsInText(`${prefix}${HEADER}: OAuth realm="public", oauth_signature="${sig}"`);
+      expect(out, prefix).not.toContain(sig);
+      if (keep) expect(out, prefix).toContain(keep);
+      expect(out, prefix).toBe(redactSecretsInText(out));
+    }
+
+    // adjacency does not mean the header must be a `-H` argument: a log line
+    // that quoted the header is wrapped by that quote just the same
+    const logged = redactSecretsInText(`sent header "${HEADER}: OAuth oauth_signature=\\"${sig}\\"" to upstream`);
+    expect(logged).not.toContain(sig);
+    expect(logged).toContain("to upstream");
+
+    // and it is what lets this not parse shell quoting, which cannot be got
+    // right from one line: whether the `'` in `echo "it's ready"` is a nested
+    // opener or a literal has no answer that also works for `bash -c '… "…"'`
+    const url = " https://api.example.com/v1/long/path";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    for (const before of ['echo "it\'s ready" && ', 'echo "say \\"hi\\"" && ', 'echo "hi" && ']) {
+      const out = redactSecretsInText(`${before}curl -H "${HEADER}: Digest ${token}"${url}`);
+      expect(out, before).not.toContain(token);
+      expect(out, before).toContain(url);
+    }
+  });
+
+  it("recognises a wrapper that starts mid-word, and a short credential inside one", () => {
+    // Shell quoting may begin in the middle of a word — `-H"…"` is one
+    // argument to bash — so a wrapper is not always preceded by whitespace.
+    // And once a scheme has anchored the match the credential may be short,
+    // so a length test cannot stand in for wrapper detection either: both
+    // used to run to the end of the line and take the URL with them.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const url = " https://api.example.com/v1/long/path";
+    for (const input of [
+      `curl -H"${HEADER}: ${SCHEME} ${token}"${url}`,
+      `curl -H'${HEADER}: ${SCHEME} ${token}'${url}`,
+    ]) {
+      const out = redactSecretsInText(input);
+      expect(out, input.slice(0, 24)).not.toContain(token);
+      expect(out, input.slice(0, 24)).toContain(url);
+    }
+    // a redirection closes the argument too — bash reads `>` as an operator
+    // bash glues an adjacent quoted and unquoted run into one word, so a `$`
+    // expansion or another quote closes the argument just as a space does
+    for (const redirect of [">trace.log", "<in.txt", "&& echo done", "$SUFFIX", "'more'", '"more"']) {
+      const out = redactSecretsInText(`curl -H "${HEADER}: ${SCHEME} ${token}"${redirect}`);
+      expect(out, redirect).not.toContain(token);
+      expect(out, redirect).toContain(redirect);
+    }
+
+    const short = redactSecretsInText(`curl -H "${HEADER}: Basic dTpw"${url}`);
+    expect(short).not.toContain("dTpw");
+    expect(short).toContain("Basic «redacted 4 chars»");
+    expect(short).toContain(url);
+
+    // A command serialized one level up wraps with `\\"` and writes its own
+    // quoted parameters `\\\\\\"` — three backslashes, the next level in.  The
+    // closing quote is the one at the WRAPPER's level, so the backslash run
+    // has to match exactly; stopping at an inner one masks through
+    // `oauth_signature=\\\\` and leaves the signature standing.
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const nested = `curl -H \\"${HEADER}: OAuth oauth_signature=\\\\\\"${sig}\\\\\\"\\"${url}`;
+    const nestedOut = redactSecretsInText(nested);
+    expect(nestedOut).not.toContain(sig);
+    expect(nestedOut).toContain(url);
+    expect(nestedOut).toBe(redactSecretsInText(nestedOut));
+  });
+
+  it("finds the wrapper through escaping and nesting", () => {
+    // A driver often hands us the command already inside a string, so the
+    // wrapper arrives spelled `\"` and closes the same way; and quotes nest,
+    // so the header's own argument ends at the INNERMOST open quote, not the
+    // outermost.  Getting either wrong puts the rest of the command line in
+    // the mask instead of the credential alone.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const url = " https://api.example.com/v1/long/path";
+    for (const input of [
+      `curl -H \\"${HEADER}: ${SCHEME} ${token}\\"${url}`,
+      `bash -c 'curl -H "${HEADER}: ${SCHEME} ${token}"${url}'`,
+      `bash -c "curl -H '${HEADER}: ${SCHEME} ${token}'${url}"`,
+    ]) {
+      const out = redactSecretsInText(input);
+      expect(out, input.slice(0, 24)).not.toContain(token);
+      expect(out, input.slice(0, 24)).toContain(`${SCHEME} «redacted ${token.length} chars»`);
+      expect(out, input.slice(0, 24)).toContain(url);
+      expect(out, input.slice(0, 24)).toBe(redactSecretsInText(out));
+    }
+  });
+
+  it("keeps scanning past a shell requote for a later field in the same header value", () => {
+    // Bash glues a quoted segment, an unquoted `$` expansion, and another
+    // quoted segment into ONE shell word (confirmed against bash 5.2.21):
+    // `-H "Authorization: OAuth realm="$REALM", oauth_signature="…""` is a
+    // single -H argument whose quoting merely toggles off and back on before
+    // the wrapper itself actually closes.  The quote right before `$REALM`
+    // looks exactly like the wrapper's close in isolation — that is what the
+    // `$SUFFIX`-after-the-wrapper case needed to treat as a close — and
+    // treating it as one here used to stop the mask at `realm=` and hand
+    // `oauth_signature`, the real secret, back in the clear.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://api.example.com/v1/long/path";
+    const withRealm = `curl -H "${HEADER}: OAuth realm="$REALM", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(withRealm);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // and the `$SUFFIX`-after-the-wrapper case this shares its mechanism
+    // with still keeps its tail, because the glued run there never runs
+    // into a further quote of the wrapper's kind
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const suffixed = redactSecretsInText(`curl -H "${HEADER}: ${SCHEME} ${token}"$SUFFIX${url}`);
+    expect(suffixed).not.toContain(token);
+    expect(suffixed).toContain("$SUFFIX");
+    expect(suffixed).toContain(url);
+  });
+
   it("masks an authorization value that another pass had already half-masked", () => {
     // SigV4 carries an access-key id BEFORE the signature, so the prefix
     // pass has a shot at part of the value first.  A "does it contain a
@@ -615,5 +839,464 @@ describe("redactSecretsInText", () => {
     const out = redactSecrets({ command: "curl -H 'Authorization: Bearer abcdefghijklmnop'", note: "fine" }) as Record<string, string>;
     expect(out.command).toContain("«redacted");
     expect(out.note).toBe("fine");
+  });
+
+  // ── round-2 findings (fresh Codex re-review of 993a58e) ──────────────
+
+  it("does not let an empty quoted parameter re-open the opener count for a poisoned line", () => {
+    // Same class as the resolved opposite-quoted-literal thread, but the
+    // credential's FIRST field is an EMPTY quoted parameter: `realm=""`.
+    // Its opening quote is immediately followed by its own closing quote,
+    // which satisfies the "next char is a quote" closer signal that exists
+    // for a DIFFERENT reason (a wrapper's true close glued to a new quoted
+    // shell word) — and that false match used to stop the mask right after
+    // `realm=` and hand `oauth_signature` back in the clear.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const line = `echo '"' && curl "prefix"${HEADER}: OAuth realm="", oauth_signature=${sig}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).toContain("curl");
+    expect(out).toBe(redactSecretsInText(out));
+  });
+
+  it("does not exempt a real Bearer credential that happens to spell an unmarked placeholder word", () => {
+    // The placeholder exemption is for DOCUMENTATION — `Use Authorization:
+    // Bearer token.` — which reads as a placeholder only because a leading
+    // instruction verb marks it as guidance.  The exact same word with
+    // nothing marking it that way is a real, if bad, credential and the
+    // prior eight-character-floor behavior masked it; the placeholder
+    // exemption must not blanket-exempt every occurrence of the word.
+    const HEADER = "Auth" + "orization";
+    for (const word of ["password", "secret", "token"]) {
+      const real = `${HEADER}: Bearer ${word}`;
+      const out = redactSecretsInText(real);
+      expect(out, real).toMatch(/«redacted \d+ chars»/);
+      expect(out, real).not.toMatch(new RegExp(`${word}$`));
+    }
+    // documentation with a recognised lead-in verb still survives
+    for (const doc of [`Use ${HEADER}: Bearer token`, `Set ${HEADER}: Bearer secret`, `Use ${HEADER}: Bearer password`]) {
+      expect(redactSecretsInText(doc), doc).toBe(doc);
+    }
+  });
+
+  it("stops the $SUFFIX continuation lookahead at a shell-word boundary", () => {
+    // A later, unrelated quoted command (`&& echo "done"`) must not be
+    // mistaken for this credential's own glued continuation — the lookahead
+    // has to stop at the first real shell-word boundary, not scan arbitrarily
+    // far ahead for any same-type quote.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const line = `curl -H "${HEADER}: ${SCHEME} ${token}"$SUFFIX https://example.com && echo "done"`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(token);
+    expect(out).toContain("$SUFFIX");
+    expect(out).toContain("https://example.com");
+    expect(out).toContain('&& echo "done"');
+  });
+
+  // ── round-3 findings (fresh Codex re-review of e2a9b98) ───────────────
+
+  it("masks a Bearer credential that happens to equal a single status word", () => {
+    // `configured`, `provided`, and `available` are syntactically ordinary
+    // Bearer tokens — long enough, no illegal characters — and nothing marks
+    // a LONE status word as prose the way a second word does ("was
+    // configured", "not provided").  The `every`-based status check used to
+    // exempt each of them outright because a single word trivially satisfies
+    // "every word is a status word"; only an unmistakable MULTIWORD status
+    // phrase may bypass masking.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    for (const word of ["configured", "provided", "available"]) {
+      const real = `${HEADER}: ${SCHEME} ${word}`;
+      const out = redactSecretsInText(real);
+      expect(out, real).toMatch(/«redacted \d+ chars»/);
+      expect(out, real).not.toMatch(new RegExp(`${word}$`));
+    }
+    // a genuine multiword status sentence still reads as prose, not a
+    // credential, and must stay untouched
+    for (const status of [`${HEADER}: not configured`, `${HEADER}: was provided`, `${HEADER}: not available`]) {
+      expect(redactSecretsInText(status), status).toBe(status);
+    }
+  });
+
+  it("keeps scanning through a nested command substitution's whitespace", () => {
+    // Command substitution replaces the whole `$(…)` with its output before
+    // the shell word is assembled (confirmed against bash 5.2.21), so the
+    // space inside `$(printf zone)` is never an outer shell-word boundary —
+    // this is one continuous `-H` argument.  Stopping at that inner space
+    // used to end the glued-run lookahead early and leave `oauth_signature`,
+    // the real secret, standing past the cut — same failure mode as the
+    // resolved `$REALM` case, and the same fix: the whole value from `realm=`
+    // onward is masked as one blob, so nothing between it and the secret is
+    // left standing either.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const withSubst = `curl -H "${HEADER}: OAuth realm="$(printf zone)", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(withSubst);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).not.toContain("printf zone");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // and the `$SUFFIX`-after-the-wrapper case this shares its mechanism
+    // with still keeps its tail — a `$(…)` immediately after the wrapper's
+    // own close must not be swallowed as if it were part of the value
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const suffixed = redactSecretsInText(`curl -H "${HEADER}: ${SCHEME} ${token}"$(hostname)${url}`);
+    expect(suffixed).not.toContain(token);
+    expect(suffixed).toContain("$(hostname)");
+    expect(suffixed).toContain(url);
+  });
+
+  it("does not let a quote literal-protected by the opposite quote type hide the real wrapper opener", () => {
+    // A single-quoted argument earlier on the line can contain a literal
+    // double quote — `echo '"' …` — and bash never reads a character inside
+    // single quotes as a delimiter.  Counting that literal as a real
+    // double-quote toggle threw off the parity check and made the genuine
+    // `-H "` opener that follows look like a CLOSER instead, losing the
+    // wrapper entirely and letting redaction consume the closing quote, the
+    // URL, and the rest of the command line.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const line = `echo '"' && curl -H "${HEADER}: ${SCHEME} ${token}" https://example.com`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(token);
+    expect(out).toContain(`${SCHEME} «redacted ${token.length} chars»`);
+    expect(out).toContain("https://example.com");
+    expect(out).toBe(redactSecretsInText(out));
+  });
+
+  // ── round-4 finding (fresh Codex re-review of 47ceda1) ────────────────
+
+  it("does not let a quoted paren inside $(...) close the substitution early", () => {
+    // Bash parses a quoted or escaped `)` as part of the substituted
+    // command, not as the substitution's own close — `$(printf ') value')`
+    // is ONE substitution whose argument happens to contain a literal `)`.
+    // The naive depth counter treated every `)` as structural regardless of
+    // quoting, so it closed the span at the literal one and read the space
+    // right after it as a real shell-word boundary — the exact failure the
+    // depth tracking exists to prevent, one quoting level deeper.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$(printf ') value')", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).not.toContain("printf");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // an escaped paren inside the substitution, outside any quote, gets the
+    // same protection — bash still reads it as part of the command
+    const escaped = redactSecretsInText(`curl -H "${HEADER}: OAuth realm="$(printf zone\\) done)", oauth_signature=${sig}"${url}`);
+    expect(escaped).not.toContain(sig);
+    expect(escaped).not.toContain("oauth_signature");
+    expect(escaped).toContain(url);
+  });
+
+  // ── round-5 findings (fresh Codex re-review of cc001b3) ───────────────
+
+  it("does not let an escaped space in a glued shell run look like a boundary", () => {
+    // A backslash preserves the character after it literally (confirmed
+    // against bash 5.2.21), so `$REALM\ value` glued onto the header value
+    // is one continuous shell word even though it contains a space — the
+    // escaped space is not where the outer boundary test should stop.  This
+    // is the same failure mode as the resolved nested-`$(...)` case, one
+    // escaping mechanism over: raw whitespace scanning cannot tell a real
+    // boundary from a protected one.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$REALM\\ value", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+  });
+
+  it("masks an unmarked filler-shaped Bearer token instead of treating it as a placeholder", () => {
+    // A run of nothing but `x` (or `*`, `.`, `…`) LOOKS like a placeholder,
+    // but it is also a perfectly syntactically valid Bearer token — nothing
+    // in `Authorization: Bearer xxxxxxxxxxxx` on its own says which one it
+    // is.  The filler check used to exempt it unconditionally; it now needs
+    // the same recognised lead-in verb the bare-noun placeholder branch
+    // already requires (round-2 finding, same reasoning: an exemption with
+    // no marker in the text lets a real credential through).
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    for (const filler of ["xxxxxxxxxxxx", "************", "...................."]) {
+      const withHeader = `${HEADER}: ${SCHEME} ${filler}`;
+      expect(redactSecretsInText(withHeader), withHeader).toMatch(/«redacted \d+ chars»/);
+    }
+    // and standalone, outside any header — the same BEARER pattern reaches
+    // persisted bot text directly.  Its token charset is narrower (no `*`),
+    // so only the shapes it actually matches are exercised here.
+    for (const filler of ["xxxxxxxxxxxx", "...................."]) {
+      const standalone = `sent ${SCHEME} ${filler} to the proxy`;
+      expect(redactSecretsInText(standalone), standalone).toMatch(/«redacted \d+ chars»/);
+    }
+    // documentation with a recognised lead-in verb still survives
+    for (const doc of [`Use ${HEADER}: ${SCHEME} xxxxxxxxxxxx`, `Set ${HEADER}: ${SCHEME} ****************`]) {
+      expect(redactSecretsInText(doc), doc).toBe(doc);
+    }
+  });
+
+  // ── round-6 findings (fresh Codex re-review of f31f786) ───────────────
+
+  it("keeps scanning through an ANSI-C quoted $'...' glued to the wrapper", () => {
+    // `$'foo bar'` is bash's ANSI-C quoting — a QUOTED shell word, not a
+    // balanced-paren expansion — so the space inside it is never an outer
+    // boundary either (confirmed against bash 5.2.21: this is one complete
+    // `-H` argument).  Its own backslash escapes are honored while walking
+    // to the matching quote, so an escaped `\'` inside it does not end the
+    // span early the way an unescaped one would.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$'foo bar'", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // an escaped quote inside the ANSI-C string does not end it early
+    const withEscape = redactSecretsInText(
+      `curl -H "${HEADER}: OAuth realm="$'foo\\'bar'", oauth_signature=${sig}"${url}`,
+    );
+    expect(withEscape).not.toContain(sig);
+    expect(withEscape).not.toContain("oauth_signature");
+    expect(withEscape).toContain(url);
+  });
+
+  it("treats <(...) and >(...) process substitution as a glued expansion, not a redirection", () => {
+    // `<(list)`/`>(list)` is replaced by a filename before the shell word is
+    // assembled — the same "glues onto the surrounding word" story as
+    // `$(…)` (confirmed against bash 5.2.21: this is one complete `-H`
+    // argument), so it must NOT be read as the `<`/`>` redirection that
+    // would otherwise end the argument right there.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="<(printf foo)", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // the output-side form, `>(...)`, gets the same treatment
+    const outSide = redactSecretsInText(`curl -H "${HEADER}: OAuth realm=">(cat)", oauth_signature=${sig}"${url}`);
+    expect(outSide).not.toContain(sig);
+    expect(outSide).not.toContain("oauth_signature");
+
+    // a BARE `<`/`>` (no paren) is still a real redirection and keeps
+    // closing the argument the way it always has
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const redirected = redactSecretsInText(`curl -H "${HEADER}: ${SCHEME} ${token}"<in.txt${url}`);
+    expect(redirected).not.toContain(token);
+    expect(redirected).toContain("<in.txt");
+    expect(redirected).toContain(url);
+  });
+
+  // ── round-7 finding (fresh Codex re-review of 410a5dd) ────────────────
+
+  it("keeps scanning through a ${...} parameter expansion glued to the wrapper", () => {
+    // `${REALM:-'foo bar'}` (parameter expansion) is replaced before the
+    // shell word is assembled, same as `$(...)` (confirmed against bash
+    // 5.2.21: this is one complete `-H` argument) — and its fallback can
+    // carry quoted whitespace of its own, so the space inside the braces is
+    // never an outer boundary either.  Shares the same quote-aware balanced
+    // walk as `$(...)`, just brace- instead of paren-delimited.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="\${REALM:-'foo bar'}", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // a nested ${...} (a braced fallback referencing another parameter)
+    // still balances correctly
+    const nested = redactSecretsInText(
+      `curl -H "${HEADER}: OAuth realm="\${REALM:-\${OTHER:-'foo bar'}}", oauth_signature=${sig}"${url}`,
+    );
+    expect(nested).not.toContain(sig);
+    expect(nested).not.toContain("oauth_signature");
+    expect(nested).toContain(url);
+  });
+
+  // ── round-8 finding (fresh Codex re-review of 572fda1) ────────────────
+
+  it("does not let an earlier shell command's first word act as this sentence's lead-in", () => {
+    // `set` is both a placeholder lead-in verb AND a bash builtin.  A
+    // recorded command line can run one before the command that actually
+    // carries the header — `set -x; curl -H "Authorization: Bearer
+    // password"` — and the lead-in check used to read the LINE's first
+    // word, so `set` (shell setup, unrelated to the header) exempted a
+    // real credential that happened to spell an unmarked placeholder word.
+    // The check now looks only as far back as the nearest shell separator.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    for (const sep of [";", "&&", "|", "&"]) {
+      const line = `set -x ${sep} curl -H "${HEADER}: ${SCHEME} password"`;
+      const out = redactSecretsInText(line);
+      expect(out, line).toMatch(/«redacted \d+ chars»/);
+      expect(out, line).not.toMatch(/password"$/);
+    }
+    // a lead-in verb that genuinely introduces THIS clause still exempts —
+    // separator-adjacent, not just line-initial
+    const doc = `set -x; use ${HEADER}: ${SCHEME} password`;
+    expect(redactSecretsInText(doc), doc).toBe(doc);
+    // and the plain line-initial case (no earlier clause at all) is
+    // unaffected
+    const stillDoc = `Use ${HEADER}: ${SCHEME} password`;
+    expect(redactSecretsInText(stillDoc), stillDoc).toBe(stillDoc);
+  });
+
+  // ── round-9 finding (fresh Codex re-review of f3f6957) ────────────────
+
+  it("does not let a nested expansion's own close paren end the outer $(...) early", () => {
+    // `$(printf %s ${X:-)x} tail)` is ONE command substitution (confirmed
+    // against bash 5.2.21) — bash reads between MATCHING parens, and the
+    // `)` inside the nested `${X:-)x}`'s fallback belongs to that nested
+    // expansion, not to the outer $(...)'s own close.  A flat depth count
+    // that does not recurse into the nested expansion mistakes it for the
+    // outer close and reads the following space as a real boundary.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$(printf %s \${X:-)x} tail)", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // and the nested expansion may itself be a command substitution with a
+    // stray paren of its own, two levels of "own close, not the outer's"
+    const doublyNested = redactSecretsInText(
+      `curl -H "${HEADER}: OAuth realm="$(printf %s $(echo ')x'))", oauth_signature=${sig}"${url}`,
+    );
+    expect(doublyNested).not.toContain(sig);
+    expect(doublyNested).not.toContain("oauth_signature");
+    expect(doublyNested).toContain(url);
+  });
+
+  // ── round-10 findings (fresh Codex re-review of 117f50f, from a page of
+  // results the prior rounds' 30-item default page size had been silently
+  // cutting off — rounds 8 and 9 each actually carried two findings) ────
+
+  it("does not let an escaped backtick end a legacy command substitution early", () => {
+    // The first backquote NOT preceded by a backslash terminates a backtick
+    // command substitution (Bash manual, Command Substitution) — so
+    // `` `printf '\`value'` `` is one substitution whose argument happens
+    // to contain a literal, escaped backtick, confirmed against bash
+    // 5.2.21.  A scan that stops at the first backtick REGARDLESS of
+    // escaping reads the escaped one as the close and the quote before the
+    // substitution as the wrapper's own close instead.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="\`printf '\\\`value'\`", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+  });
+
+  it("does not read a direct `set` builtin invocation as a placeholder lead-in", () => {
+    // `set -- Authorization: Bearer password` genuinely begins its own
+    // clause with `set` (Bash assigns the rest to positional parameters,
+    // `help set`) — restricting the lead-in check to the current clause
+    // (the earlier round's fix) does not by itself tell that apart from
+    // `Set Authorization: Bearer <token>` prose, since both start the
+    // clause with the same word.  The giveaway is the SECOND word: a real
+    // invocation's is always an option flag.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    for (const flag of ["--", "-x", "-e"]) {
+      const line = `set ${flag} ${HEADER}: ${SCHEME} password`;
+      const out = redactSecretsInText(line);
+      expect(out, line).toMatch(/«redacted \d+ chars»/);
+      expect(out, line).not.toMatch(/password$/);
+    }
+    // genuine prose — no flag right after `set` — still exempts
+    const doc = `set ${HEADER}: ${SCHEME} password`;
+    expect(redactSecretsInText(doc), doc).toBe(doc);
+  });
+
+  it("does not let a case-arm's pattern-closing paren end a $(...) substitution early", () => {
+    // A `case` arm's pattern is closed by a BARE `)` with NO matching `(`
+    // at all — `case x in x) printf foo;; esac` is valid inside `$(…)`
+    // (`help case`, confirmed against bash 5.2.21) — so counting that `)`
+    // as this `$(…)`'s own close reads shell grammar as balancing.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$(case x in x) printf foo;; esac)", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // multiple arms, and a nested case, both still balance correctly
+    const multiArm = redactSecretsInText(
+      `curl -H "${HEADER}: OAuth realm="$(case x in a) case y in b) cmd;; esac;; c) other;; esac)", oauth_signature=${sig}"${url}`,
+    );
+    expect(multiArm).not.toContain(sig);
+    expect(multiArm).not.toContain("oauth_signature");
+    expect(multiArm).toContain(url);
+  });
+
+  it("does not crash on thousands of nested $(...) expansions", () => {
+    // Untrusted bot/tool output can hand redactSecretsInText a line with
+    // roughly 5,000 nested `$(` openers.  Recursing into every one of them
+    // overflows the call stack and throws, which aborts redaction (and,
+    // through Bus.publish, ordinary event processing) instead of merely
+    // losing diagnostic precision — the fix is a bounded recursion depth,
+    // not perfect accuracy at a depth no real shell command would ever use.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    let deep = "a";
+    for (let i = 0; i < 5000; i++) deep = `$(echo ${deep})`;
+    const line = `curl -H "${HEADER}: OAuth realm="${deep}", oauth_signature=${sig}" https://example.com`;
+    let out = "";
+    expect(() => {
+      out = redactSecretsInText(line);
+    }).not.toThrow();
+    expect(out).not.toContain(sig);
   });
 });
