@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createCustomEngine, deleteCustomEngine, type EngineCredentialDeps } from "./EnginesSettings";
+import { createCustomEngine, deleteCustomEngine, type EngineCredentialDeps } from "./custom-engine";
 
 describe("createCustomEngine", () => {
   it("never calls setInstanceCredential when there is no bridge (dev/browser fallback)", async () => {
