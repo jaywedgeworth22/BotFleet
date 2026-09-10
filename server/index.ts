@@ -3283,7 +3283,10 @@ function describeTunnel(headers: Record<string, string | string[] | undefined>):
  * to at least one address, and the origin returned a non-5xx response to a
  * GET.  4xx still counts as a live origin (it answered).  Anything that
  * looks like a Cloudflare Tunnel or Caddy is named; otherwise the
- * `reason` reports the raw `Server` banner so the operator can confirm. */
+ * `reason` reports the raw `Server` banner so the operator can confirm.
+ * When `raw`'s path is exactly /api/health, a non-5xx status is not
+ * enough: the response body must also be BotFleet's own health payload,
+ * so an Access login page or an unrelated 200 does not read as "ok". */
 async function probeIngressUrl(raw: string): Promise<IngressProbeResult> {
   let parsed: URL;
   try {
@@ -3315,63 +3318,102 @@ async function probeIngressUrl(raw: string): Promise<IngressProbeResult> {
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), INGRESS_PROBE_TIMEOUT_MS);
-  let response: Response | undefined;
-  let fetchError: unknown = undefined;
+  // The timer is cleared in a `finally` around the *whole* probe below, not
+  // right after `fetch` resolves. `fetch` only settles once headers arrive —
+  // if we cleared the abort timer here, a response that answers promptly but
+  // then stalls or trickles its body would leave `response.json()` (below)
+  // with nothing left to bound it, and the ingress request — and the Test
+  // Connection button — could hang indefinitely. Keeping the timer armed
+  // through body consumption means `controller.signal` stays wired to
+  // `fetch`'s body reader, so a stalled body still aborts within
+  // INGRESS_PROBE_TIMEOUT_MS.
   try {
-    response = await fetch(parsed.toString(), {
-      method: "GET",
-      redirect: "follow",
-      signal: controller.signal,
-      headers: { "user-agent": INGRESS_PROBE_USER_AGENT },
+    let response: Response | undefined;
+    let fetchError: unknown = undefined;
+    try {
+      response = await fetch(parsed.toString(), {
+        method: "GET",
+        redirect: "follow",
+        signal: controller.signal,
+        headers: { "user-agent": INGRESS_PROBE_USER_AGENT },
+      });
+    } catch (error) {
+      fetchError = error;
+    }
+    if (fetchError || !response) {
+      const message =
+        fetchError instanceof Error
+          ? fetchError.name === "AbortError"
+            ? "The request timed out before the server answered."
+            : fetchError.message
+          : "The server did not answer.";
+      return {
+        ok: false,
+        url: raw,
+        resolved: false,
+        reason: message,
+      };
+    }
+    const status = response.status;
+    // response.headers is a `Headers` instance; describeTunnel expects a plain
+    // record of header values so its `headers["server"]` lookups can find
+    // them, instead of always returning `undefined` (which would silently
+    // make every probe report "no tunnel" and lose the operator's hint).
+    const headerRecord: Record<string, string | string[] | undefined> = {};
+    response.headers.forEach((value, key) => {
+      headerRecord[key.toLowerCase()] = value;
     });
-  } catch (error) {
-    fetchError = error;
+    const tunnel = describeTunnel(headerRecord);
+    if (status >= 500) {
+      return {
+        ok: false,
+        url: raw,
+        resolved: true,
+        reason: `The server answered with HTTP ${status}.`,
+        ...(tunnel ? { tunnel } : {}),
+      };
+    }
+    // /api/health is BotFleet's own public origin check (the Cloudflare Access
+    // policy leaves this one path unauthenticated). A bare-root probe of an
+    // Access-protected URL follows the redirect to the login page and comes
+    // back 200, so every probe against a fully dead tunnel/origin would still
+    // read "ok". Probing this path specifically and requiring its BotFleet
+    // payload — instead of trusting any non-5xx status — tells a live origin
+    // apart from an Access login page or an unrelated server answering 200.
+    if (parsed.pathname === "/api/health") {
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        payload = undefined;
+      }
+      const isBotFleet =
+        typeof payload === "object" && payload !== null && (payload as { app?: unknown }).app === "botfleet";
+      if (!isBotFleet) {
+        return {
+          ok: false,
+          url: raw,
+          resolved: true,
+          reason: controller.signal.aborted
+            ? "The request timed out while reading the server's response."
+            : `The server answered with HTTP ${status} but did not return a BotFleet health payload.`,
+          ...(tunnel ? { tunnel } : {}),
+        };
+      }
+    }
+    const head = tunnel
+      ? `${tunnel === "cloudflare" ? "Cloudflare" : tunnel.charAt(0).toUpperCase() + tunnel.slice(1)} answered with HTTP ${status}.`
+      : `The server answered with HTTP ${status}.`;
+    return {
+      ok: true,
+      url: raw,
+      resolved: true,
+      reason: head,
+      ...(tunnel ? { tunnel } : {}),
+    };
   } finally {
     clearTimeout(timer);
   }
-  if (fetchError || !response) {
-    const message =
-      fetchError instanceof Error
-        ? fetchError.name === "AbortError"
-          ? "The request timed out before the server answered."
-          : fetchError.message
-        : "The server did not answer.";
-    return {
-      ok: false,
-      url: raw,
-      resolved: false,
-      reason: message,
-    };
-  }
-  const status = response.status;
-  // response.headers is a `Headers` instance; describeTunnel expects a plain
-  // record of header values so its `headers["server"]` lookups can find
-  // them, instead of always returning `undefined` (which would silently
-  // make every probe report "no tunnel" and lose the operator's hint).
-  const headerRecord: Record<string, string | string[] | undefined> = {};
-  response.headers.forEach((value, key) => {
-    headerRecord[key.toLowerCase()] = value;
-  });
-  const tunnel = describeTunnel(headerRecord);
-  if (status >= 500) {
-    return {
-      ok: false,
-      url: raw,
-      resolved: true,
-      reason: `The server answered with HTTP ${status}.`,
-      ...(tunnel ? { tunnel } : {}),
-    };
-  }
-  const head = tunnel
-    ? `${tunnel === "cloudflare" ? "Cloudflare" : tunnel.charAt(0).toUpperCase() + tunnel.slice(1)} answered with HTTP ${status}.`
-    : `The server answered with HTTP ${status}.`;
-  return {
-    ok: true,
-    url: raw,
-    resolved: true,
-    reason: head,
-    ...(tunnel ? { tunnel } : {}),
-  };
 }
 
 const resourceTriggers = new ResourceTriggerManager({

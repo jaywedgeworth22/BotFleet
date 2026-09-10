@@ -2575,6 +2575,80 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("POST /api/ingress/test accepts /api/health only with a real BotFleet payload", async () => {
+    const fakeOrigin = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json", server: "cloudflare", "cf-ray": "abc-SJC" });
+      res.end(JSON.stringify({ app: "botfleet", pid: 4242, static: true }));
+    });
+    await new Promise<void>((resolve) => fakeOrigin.listen(0, "127.0.0.1", resolve));
+    const port = (fakeOrigin.address() as { port: number }).port;
+    try {
+      const result = await api("POST", "/api/ingress/test", {
+        publicUrl: `http://127.0.0.1:${port}/api/health`,
+      });
+      expect(result.status).toBe(200);
+      expect(result.body.ok).toBe(true);
+      expect(result.body.tunnel).toBe("cloudflare");
+    } finally {
+      await new Promise<void>((resolve) => fakeOrigin.close(() => resolve()));
+    }
+  });
+
+  it("POST /api/ingress/test rejects an /api/health probe that answers 200 without the BotFleet payload", async () => {
+    // Stands in for a Cloudflare Access login page: the probe follows the
+    // redirect, the edge answers 200, but the body is not BotFleet's own
+    // health JSON, so this must not read as a live origin.
+    const fakeOrigin = createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html", server: "cloudflare", "cf-ray": "abc-SJC" });
+      res.end("<html>Sign in to continue</html>");
+    });
+    await new Promise<void>((resolve) => fakeOrigin.listen(0, "127.0.0.1", resolve));
+    const port = (fakeOrigin.address() as { port: number }).port;
+    try {
+      const result = await api("POST", "/api/ingress/test", {
+        publicUrl: `http://127.0.0.1:${port}/api/health`,
+      });
+      expect(result.status).toBe(200);
+      expect(result.body.ok).toBe(false);
+      expect(String(result.body.reason)).toMatch(/BotFleet health payload/i);
+    } finally {
+      await new Promise<void>((resolve) => fakeOrigin.close(() => resolve()));
+    }
+  });
+
+  it(
+    "POST /api/ingress/test does not hang when /api/health answers promptly but stalls its body",
+    { timeout: 15_000 },
+    async () => {
+      // Regression for a P2 finding: headers must arrive fast while the body
+      // never finishes, so a probe that only bounds `fetch()` itself (and
+      // clears the abort timer once headers land) would leave
+      // `response.json()` unbounded and hang forever. The fix keeps the
+      // 5s abort timer armed through body consumption.
+      const fakeOrigin = createServer((_req, res) => {
+        res.writeHead(200, { "content-type": "application/json", server: "cloudflare" });
+        res.write('{"app":"botfleet"'); // never closes the object, never calls res.end()
+      });
+      await new Promise<void>((resolve) => fakeOrigin.listen(0, "127.0.0.1", resolve));
+      const port = (fakeOrigin.address() as { port: number }).port;
+      try {
+        const started = Date.now();
+        const result = await api("POST", "/api/ingress/test", {
+          publicUrl: `http://127.0.0.1:${port}/api/health`,
+        });
+        const elapsedMs = Date.now() - started;
+        expect(result.status).toBe(200);
+        expect(result.body.ok).toBe(false);
+        // Bounded by the probe's own 5s abort timer, not left hanging on the
+        // stalled body. Generous slack above the 5s bound for CI jitter.
+        expect(elapsedMs).toBeLessThan(9_000);
+      } finally {
+        fakeOrigin.closeAllConnections();
+        await new Promise<void>((resolve) => fakeOrigin.close(() => resolve()));
+      }
+    },
+  );
+
   it("POST /api/ingress/test reports a fetch error when the origin is unreachable", async () => {
     // A local port that nothing is listening on: the OS rejects the
     // connection with ECONNREFUSED, which is exactly the upstream-originated
