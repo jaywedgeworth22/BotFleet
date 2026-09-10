@@ -91,6 +91,44 @@ describe("Codex windows", () => {
     };
     expect(driverKindsForWindow(codexWindow)).toContain("codex");
   });
+
+  it("does not attribute an openai-compat custom-engine window to Codex", () => {
+    // "openai-compat" is server/telemetry.ts's AMBIGUOUS_ENGINE fallback
+    // provider token for a custom engine — it contains "openai" as a literal
+    // substring, so without an explicit exclusion a skipped monthly window
+    // on an unrelated custom engine would wildcard-cap the real Codex
+    // instance, and an ordinary window would render under the wrong row.
+    const customEngineWindow = {
+      provider: "openai-compat",
+      sourceApp: null,
+      label: "Custom Engine",
+      modelId: null,
+      modelType: null,
+      window: "monthly",
+      skip: true,
+      skipReason: "0% remaining",
+    };
+    expect(driverKindsForWindow(customEngineWindow)).toEqual([]);
+  });
+});
+
+describe("Kimi windows", () => {
+  it("maps a moonshot-provider window onto the shipped fleet's kimiAgent driver kind", () => {
+    // inferProviderAndService (server/telemetry.ts) reports Kimi/Moonshot
+    // windows under provider "moonshot"; the raw Usage Monitor windows table
+    // this PR removed was the only place a Kimi window stayed visible
+    // without this mapping.
+    const kimiWindow = {
+      provider: "moonshot",
+      sourceApp: "kimi-cli",
+      label: "Kimi 5h",
+      modelId: null,
+      modelType: null,
+      window: "5h",
+      skip: false,
+    };
+    expect(driverKindsForWindow(kimiWindow)).toEqual(["kimiAgent"]);
+  });
 });
 
 describe("isEngineUnconfigured", () => {

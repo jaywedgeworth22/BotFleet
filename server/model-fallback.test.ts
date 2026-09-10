@@ -434,4 +434,32 @@ describe("QuotaCooldownRegistry", () => {
     expect(second.get("bot", "antigravity", "claude-opus-4-6-thinking")?.error).toBe("exhausted");
     expect(second.get("bot", "grok", "grok-4.6")).toBeUndefined();
   });
+
+  it("clearWhere removes a deleted instance's cooldowns even when they never expire, leaving other instances untouched", () => {
+    // server/index.ts's DELETE /api/instances/:id relies on exactly this: a
+    // recreated custom engine reuses the same slug/instance id, so a stale
+    // wildcard cooldown with no resetsAt — which list()/get() would
+    // otherwise never age out — must not survive the delete and immediately
+    // cap the replacement the moment it exists.
+    const registry = new QuotaCooldownRegistry();
+    registry.recordInstanceCap("custom-ollama", "*", { error: "Session limit or usage cap reached" });
+    registry.record({
+      botId: "bot1",
+      instanceId: "custom-ollama",
+      model: "llama3",
+      resetsAt: null,
+      error: "per-model cap",
+      recordedAt: Date.now(),
+    });
+    registry.recordInstanceCap("codex", "*", { error: "unrelated engine, must survive" });
+
+    expect(registry.list().length).toBe(3);
+
+    registry.clearWhere((cooldown) => cooldown.instanceId === "custom-ollama");
+
+    const remaining = registry.list();
+    expect(remaining.length).toBe(1);
+    expect(remaining[0].instanceId).toBe("codex");
+    expect(registry.forInstance("custom-ollama")).toBeUndefined();
+  });
 });

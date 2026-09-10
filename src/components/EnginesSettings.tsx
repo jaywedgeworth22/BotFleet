@@ -458,16 +458,30 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
 
     setSaving(true);
     setError(null);
+    const trimmedKey = apiKey.trim();
+    // Every other credential card in this app (ApiKeys.tsx, the Secret Store
+    // card) routes through window.ogb.setCredential when the desktop bridge
+    // exists, so the key reaches the OS-encrypted store instead of sitting
+    // in plaintext config.json. A custom engine's key is a dynamic per-
+    // instance secret, not one of that bridge's fixed named slots, so it
+    // takes a sibling method plus a create-then-set-credential sequence:
+    // the instance id is only known once the server has deduped the slug.
+    const hasBridge = Boolean(window.ogb?.setInstanceCredential);
     api("/api/instances", {
       method: "POST",
       body: JSON.stringify({
         name: trimmedName,
         endpoint: trimmedUrl,
-        key: apiKey.trim() || undefined,
+        key: hasBridge ? undefined : (trimmedKey || undefined),
         models,
         iconUrl: iconUrl.trim() || undefined,
       }),
     })
+      .then(async (created: { instanceId: string }) => {
+        if (hasBridge && trimmedKey) {
+          await window.ogb!.setInstanceCredential!(created.instanceId, trimmedKey);
+        }
+      })
       .then(() => Promise.resolve(onAdded()).catch(() => {}))
       .then(onClose)
       .catch((e: Error) => setError(e.message))

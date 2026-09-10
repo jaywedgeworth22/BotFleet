@@ -4550,6 +4550,17 @@ async function applyResolvedSecrets(reason: RefreshReason): Promise<void> {
 // another's changes or dispose a fleet while another reload is creating it.
 let providerConfigBusy = false;
 
+// Runtime-only per-instance credential overrides for openai-compat custom
+// engines saved through the desktop shell's encrypted credential store
+// (?secretStorage=external on PATCH /api/instances/:id): the key never
+// touches config.json, so it lives ONLY here for the life of this process —
+// re-applied to the live registry entry every time that instance reloads,
+// and dropped when the instance is deleted. A relaunch starts this map
+// empty; the instance then boots keyless (the same, already-supported state
+// as a deliberately-keyless local engine) until the desktop shell replays
+// its encrypted store back through this same PATCH route.
+const instanceKeyOverrides = new Map<string, string>();
+
 // ── HTTP plumbing ─────────────────────────────────────────────────────
 /** Folders a paired phone may point a room at.  Only what this computer
  * already handed to a bot or room, plus the app-owned workspaces: the phone
@@ -7768,7 +7779,7 @@ const server = createServer(async (req, res) => {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       const body = await readBody(req);
-      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean } = {};
+      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean; key?: string } = {};
 
       if (body?.cli !== undefined) {
         if (typeof body.cli !== "string") return json(res, 400, { error: "cli must be a string" });
@@ -7786,10 +7797,32 @@ const server = createServer(async (req, res) => {
         patchOptions.enabled = body.enabled;
       }
 
+      if (body?.key !== undefined) {
+        if (typeof body.key !== "string") return json(res, 400, { error: "key must be a string" });
+        if (/[\n\r]/.test(body.key)) return json(res, 400, { error: "key must not contain newlines" });
+        patchOptions.key = body.key;
+      }
+
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
       providerConfigBusy = true;
       try {
         const instanceId = instancePatch[1];
+        // A custom engine's API key saved through the desktop shell's
+        // encrypted credential store arrives here with ?secretStorage=external
+        // (the shell has already, or is about to, write it to credentials.bin)
+        // — it must never also land in plaintext config.json next to the
+        // cli/fullAuto overrides this route persists below. Pull it out of
+        // patchOptions before patchInstanceConfig ever sees it; the live
+        // instance gets it through instanceKeyOverrides instead, the same
+        // per-instance `environment` channel the openai-compat driver already
+        // reads (and, since finding #1, the ONLY channel a custom instance's
+        // key can arrive through).
+        if (patchOptions.key !== undefined && url.searchParams.get("secretStorage") === "external") {
+          const trimmedKey = patchOptions.key.trim();
+          if (trimmedKey) instanceKeyOverrides.set(instanceId, trimmedKey);
+          else instanceKeyOverrides.delete(instanceId);
+          delete patchOptions.key;
+        }
         const result = patchInstanceConfig(cfg, instanceId, patchOptions);
         if (!result.ok) return json(res, 404, { error: `unknown instance "${instanceId}"` });
         // persist the whole instances map this rebuild produced — a fresh
@@ -7799,6 +7832,13 @@ const server = createServer(async (req, res) => {
         Object.assign(cfg, loadConfig());
 
         const targetEntry = instanceConfigs(cfg)[instanceId];
+        // Re-apply any live-only key override on every reload of this
+        // instance — not just the request that just set it — so a later
+        // cli-only or enabled-only PATCH doesn't silently drop it.
+        const keyOverride = instanceKeyOverrides.get(instanceId);
+        if (targetEntry && keyOverride && targetEntry.driver === "openai-compat") {
+          targetEntry.environment = { ...targetEntry.environment, OPENAI_COMPAT_API_KEY: keyOverride };
+        }
         const oldInstance = registry.get(instanceId);
         if (oldInstance) {
           await oldInstance.adapter.stopAll?.().catch(() => {});
@@ -7955,6 +7995,21 @@ const server = createServer(async (req, res) => {
           // without this it can select its own about-to-be-deleted id as the
           // "replacement" and every bot's next turn would fail.
           const replacement = await defaultSelection(instanceId);
+          // defaultSelection() deliberately returns an EMPTY selection rather
+          // than a not-actually-ready fallback when nothing else is
+          // available (see its own comment) — the right answer for a bot
+          // being freshly created, which the UI then shows a setup path for.
+          // Silently writing that empty selection into an EXISTING bot's
+          // modelSelection is not the same kind of honest: it leaves the bot
+          // pointed at instanceId "", which fails every future turn with
+          // "provider instance \"\" is unavailable" and gives the operator no
+          // path back short of manually reconfiguring the bot. Refuse the
+          // deletion instead, the same way a busy affected bot already does.
+          if (!replacement.instanceId) {
+            return json(res, 409, {
+              error: "cannot delete this engine: no other configured engine is available to reassign the bots using it",
+            });
+          }
           const rewrite = (selection: ModelSelection): ModelSelection => {
             const next: ModelSelection = { ...selection };
             if (next.instanceId === instanceId) {
@@ -8003,6 +8058,14 @@ const server = createServer(async (req, res) => {
         // one unused custom engine would destroy unrelated active work.
         bus.detach(instanceId);
         await registry.removeInstance(instanceId);
+        instanceKeyOverrides.delete(instanceId);
+        // A recreated engine reuses the same slug/instance id (the POST
+        // handler's dedup loop only guards against a currently-LIVE
+        // collision), so a stale cooldown — including a "*" wildcard record
+        // with no resetsAt that would otherwise never expire — must not
+        // outlive the engine it was recorded against and immediately cap a
+        // same-named replacement.
+        quotaCooldowns.clearWhere((cooldown) => cooldown.instanceId === instanceId);
         resetPathCache();
         return json(res, 200, {
           ok: true,

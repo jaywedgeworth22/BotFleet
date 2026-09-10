@@ -23,6 +23,18 @@ export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   const hay = `${window.provider} ${window.sourceApp ?? ""} ${window.label}`.toLowerCase();
   if (hay.includes("cursor")) return ["cursorAgent"];
   if (hay.includes("antigravity") || hay.includes("gemini")) return ["antigravityAgent"];
+  // "openai-compat" is the provider token Usage Monitor's own telemetry
+  // ambiguity fallback emits for a custom OpenAI-compatible engine
+  // (server/telemetry.ts's AMBIGUOUS_ENGINE, set when inferProviderAndService
+  // can name no real vendor) — it contains "openai" as a literal substring,
+  // so it must be excluded BEFORE the codex/openai check below, or a skipped
+  // monthly window on an unrelated custom engine would wildcard-cap the real
+  // Codex instance, and an ordinary window would render under the wrong
+  // engine's row. Custom instances share one driver kind ("openai-compat")
+  // across possibly many instances, so there is no reliable way to attribute
+  // this token to one specific instance from the label alone — it maps to
+  // nothing here rather than to the wrong engine.
+  if (hay.includes("openai-compat") || hay.includes("openai compatible")) return [];
   // The shipped fleet's default Codex instance rides driver kind "codex"
   // (server/drivers/codex.ts), not "codexAgent" — that name matches nothing
   // in instanceConfigs()'s DEFAULT_FLEET, so a Codex/OpenAI Usage Monitor
@@ -32,6 +44,12 @@ export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   if (hay.includes("anthropic") || hay.includes("claude")) return ["claudeAgent"];
   if (hay.includes("grok") || hay.includes("xai")) return ["grokAgent", "grok"];
   if (hay.includes("minimax")) return ["minimax"];
+  // inferProviderAndService (server/telemetry.ts) reports Kimi/Moonshot
+  // windows under provider "moonshot"; the shipped fleet's Kimi instance
+  // rides driver kind "kimiAgent" (instanceConfigs()'s DEFAULT_FLEET). The
+  // raw Usage Monitor windows table this PR removed was the only place a
+  // Kimi window stayed visible without this mapping.
+  if (hay.includes("kimi") || hay.includes("moonshot")) return ["kimiAgent"];
   return [];
 }
 

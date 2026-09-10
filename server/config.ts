@@ -1054,7 +1054,7 @@ function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedCon
 export function patchInstanceConfig(
   cfg: AppConfig,
   instanceId: string,
-  patch: { cli?: string; fullAuto?: boolean; enabled?: boolean },
+  patch: { cli?: string; fullAuto?: boolean; enabled?: boolean; key?: string },
 ): InstanceCliUpdate {
   const next: AppConfig = structuredClone(cfg);
   const map = instanceConfigs(next);
@@ -1082,6 +1082,22 @@ export function patchInstanceConfig(
       nextConfig.fullAuto = true;
     } else {
       delete nextConfig.fullAuto;
+    }
+  }
+
+  // Dev-mode (no Electron bridge) fallback only: the caller in server/index.ts
+  // intercepts `key` ahead of this function whenever the request carries
+  // `?secretStorage=external`, so a key routed through the encrypted store
+  // never reaches here and never lands in `nextConfig` — it rides a
+  // runtime-only environment override instead. This branch is what a plain
+  // PATCH (dev/browser, no bridge) falls back to, same plaintext-in-config.json
+  // shape the create-time `customConfig.key` path already uses.
+  if (patch.key !== undefined) {
+    const keyValue = patch.key.trim();
+    if (keyValue) {
+      nextConfig.key = keyValue;
+    } else {
+      delete nextConfig.key;
     }
   }
 

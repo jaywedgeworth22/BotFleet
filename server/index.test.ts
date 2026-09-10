@@ -3732,6 +3732,66 @@ describe("instance CLI override API", () => {
     }
   }, 30_000);
 
+  it("routes a custom engine's key through PATCH ?secretStorage=external without ever persisting it to config.json", async () => {
+    // The desktop shell's credential:set-instance IPC handler PATCHes this
+    // route with ?secretStorage=external after encrypting the key into
+    // credentials.bin — the same "never touches disk here" contract PUT
+    // /api/config already gives the fixed provider secrets, now extended to
+    // a dynamic per-instance key. The live instance still gets it (via
+    // instanceKeyOverrides → its environment map), just never through
+    // config.json.
+    const created = await api("POST", "/api/instances", {
+      name: "Encrypted Key Engine",
+      endpoint: "http://localhost:11498/v1",
+      models: ["encrypted-model"],
+    });
+    expect(created.status).toBe(201);
+    const instanceId = created.body.instanceId;
+    try {
+      const patched = await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, {
+        key: "sk-should-never-touch-disk",
+      });
+      expect(patched.status).toBe(200);
+
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      const persistedEntry = (onDisk.instances ?? {})[instanceId];
+      expect(persistedEntry).toBeDefined();
+      expect(JSON.stringify(persistedEntry)).not.toContain("sk-should-never-touch-disk");
+
+      // A later cli-only PATCH (no key in the body) must not silently drop
+      // the live-only override that's already in effect.
+      const cliPatch = await api("PATCH", `/api/instances/${instanceId}`, { fullAuto: false });
+      expect(cliPatch.status).toBe(200);
+      const onDiskAfter = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(JSON.stringify((onDiskAfter.instances ?? {})[instanceId])).not.toContain("sk-should-never-touch-disk");
+    } finally {
+      await api("DELETE", `/api/instances/${instanceId}`);
+    }
+  }, 30_000);
+
+  it("falls back to persisting a custom engine's key in config.json when saved without the desktop shell", async () => {
+    // Dev/browser path (no Electron bridge, no ?secretStorage=external):
+    // the same shape the create-time flow already uses. A later "edit key"
+    // PATCH must honour that fallback exactly like the create-time POST does.
+    const created = await api("POST", "/api/instances", {
+      name: "Plain Key Engine",
+      endpoint: "http://localhost:11499/v1",
+      models: ["plain-model"],
+    });
+    expect(created.status).toBe(201);
+    const instanceId = created.body.instanceId;
+    try {
+      const patched = await api("PATCH", `/api/instances/${instanceId}`, { key: "sk-plain-dev-fallback" });
+      expect(patched.status).toBe(200);
+
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      const persistedEntry = (onDisk.instances ?? {})[instanceId];
+      expect(persistedEntry?.config?.key).toBe("sk-plain-dev-fallback");
+    } finally {
+      await api("DELETE", `/api/instances/${instanceId}`);
+    }
+  }, 30_000);
+
   it("does not interrupt an unrelated busy bot when adding a new custom engine", async () => {
     // Adding an independent engine used to call the global reloadProviders(),
     // which disposes EVERY provider and settles every busy bot as
@@ -3776,18 +3836,28 @@ describe("instance CLI override API", () => {
     }
   }, 30_000);
 
-  it("excludes the deleted engine from replacement selection, even when it was the only available engine", async () => {
-    // Disable every other fixture engine so the about-to-be-added custom
-    // engine is the ONLY "available" instance — the exact condition that
-    // exposed the bug: defaultSelection() still sees the instance being
-    // deleted in the live registry (deletion hasn't happened yet) and would
-    // hand back the about-to-be-deleted instance's own id as "the
-    // replacement", leaving the bot's next turn pointed at nothing.
+  it("excludes the deleted engine from replacement selection, picking a real other engine instead of itself", async () => {
+    // Disable every other fixture engine and add a SECOND custom engine
+    // besides the one being deleted, so a real (non-empty) replacement
+    // exists — the exact condition that exposed the original bug:
+    // defaultSelection() still sees the instance being deleted in the live
+    // registry (deletion hasn't happened yet) and would hand back the
+    // about-to-be-deleted instance's own id as "the replacement", leaving
+    // the bot's next turn pointed at nothing.
     const toDisable = ["claude", "claude2", "crasher"];
     for (const id of toDisable) {
       expect((await api("PATCH", `/api/instances/${id}`, { enabled: false })).status).toBe(200);
     }
+    let backupId = "";
     try {
+      const backup = await api("POST", "/api/instances", {
+        name: "Backup Engine",
+        endpoint: "http://localhost:11496/v1",
+        models: ["backup-model"],
+      });
+      expect(backup.status).toBe(201);
+      backupId = backup.body.instanceId;
+
       const created = await api("POST", "/api/instances", {
         name: "Solo Engine",
         endpoint: "http://localhost:11493/v1",
@@ -3809,9 +3879,73 @@ describe("instance CLI override API", () => {
       const botsAfter = await api("GET", "/api/bots");
       const foundBot = botsAfter.body.bots.find((b: any) => b.id === soloBotId);
       expect(foundBot).toBeDefined();
+      // A real replacement — not itself, and not the empty string
+      // defaultSelection() honestly reports when nothing else is available
+      // (see "refuses to delete an engine when no replacement is available"
+      // below for that case).
       expect(foundBot.modelSelection.instanceId).not.toBe(instanceId);
+      expect(foundBot.modelSelection.instanceId).not.toBe("");
 
       await api("DELETE", `/api/bots/${soloBotId}`);
+    } finally {
+      if (backupId) await api("DELETE", `/api/instances/${backupId}`);
+      for (const id of toDisable) {
+        expect((await api("PATCH", `/api/instances/${id}`, { enabled: true })).status).toBe(200);
+      }
+      const restored = await api("GET", "/api/instances?fresh=1");
+      for (const id of toDisable) {
+        const row = restored.body.instances.find((i: any) => i.instanceId === id);
+        expect(row?.enabled).toBe(true);
+      }
+    }
+  }, 30_000);
+
+  it("refuses to delete an engine when no other engine is available to reassign its bots", async () => {
+    // With every other fixture engine disabled, the about-to-be-deleted
+    // custom engine is the ONLY available instance, so excluding it from
+    // the replacement pool leaves defaultSelection() with nothing —
+    // deliberately an empty {instanceId:"", model:""}, the honest answer
+    // for a bot being freshly created. Silently writing that into an
+    // EXISTING bot used to leave it referencing instanceId "", failing
+    // every future turn with no way back short of manual reconfiguration.
+    // Deletion must be refused instead, the same way a busy affected bot
+    // already is.
+    const toDisable = ["claude", "claude2", "crasher"];
+    for (const id of toDisable) {
+      expect((await api("PATCH", `/api/instances/${id}`, { enabled: false })).status).toBe(200);
+    }
+    try {
+      const created = await api("POST", "/api/instances", {
+        name: "Only Engine",
+        endpoint: "http://localhost:11497/v1",
+        models: ["only-model"],
+      });
+      expect(created.status).toBe(201);
+      const instanceId = created.body.instanceId;
+
+      const botRes = await api("POST", "/api/bots", {
+        name: "Only Bot",
+        modelSelection: { instanceId, model: "only-model" },
+      });
+      expect(botRes.status).toBe(201);
+      const onlyBotId = botRes.body.bot.id;
+
+      try {
+        const deleted = await api("DELETE", `/api/instances/${instanceId}`);
+        expect(deleted.status).toBe(409);
+        expect(deleted.body.error).toMatch(/no other configured engine is available/);
+
+        // Nothing changed: the bot still references the engine, and the
+        // engine itself is still there.
+        const botsAfter = await api("GET", "/api/bots");
+        const foundBot = botsAfter.body.bots.find((b: any) => b.id === onlyBotId);
+        expect(foundBot?.modelSelection.instanceId).toBe(instanceId);
+        const instancesAfter = await api("GET", "/api/instances");
+        expect(instancesAfter.body.instances.some((i: any) => i.instanceId === instanceId)).toBe(true);
+      } finally {
+        await api("DELETE", `/api/bots/${onlyBotId}`);
+        await api("DELETE", `/api/instances/${instanceId}`);
+      }
     } finally {
       for (const id of toDisable) {
         expect((await api("PATCH", `/api/instances/${id}`, { enabled: true })).status).toBe(200);

@@ -235,6 +235,15 @@ type SkillRecordingPayload = {
           | "infisicalClientSecret",
         value: string,
       ): Promise<ConfigStatus>;
+      /** Save a user-added custom engine's API key through the same
+       * OS-backed store `setCredential` uses — a sibling method, not a name
+       * in that fixed union, because a custom engine's instance id is
+       * dynamic (operator-chosen at creation) rather than one of
+       * setCredential's known singleton slots. Call after the instance
+       * already exists (POST /api/instances returns its id): the key never
+       * lands in config.json, only in credentials.bin and the live running
+       * instance's process-local environment. */
+      setInstanceCredential?(instanceId: string, value: string): Promise<void>;
       /** In-app auto-update (packaged app only; dormant in dev). onState
        * fires immediately with the current state, then on transitions. */
       updater?: {

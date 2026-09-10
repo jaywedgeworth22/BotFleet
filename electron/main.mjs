@@ -783,7 +783,14 @@ async function startServerOn(port) {
     bootTimeoutMs: SERVER_BOOT_TIMEOUT_MS,
     isExited: () => exited,
   });
-  if (identity.outcome === "ready") return { proc };
+  if (identity.outcome === "ready") {
+    // Best-effort: this fresh child has no memory of any custom-engine key
+    // saved in an earlier launch (that value lives only in credentials.bin
+    // and this process's own memory, never on disk) — hand every stored one
+    // back now, before any bot can try to use one of these engines.
+    await replayInstanceCredentials(port);
+    return { proc };
+  }
   if (identity.outcome === "exited") {
     slog(`child on port ${port} exited before answering /api/health`);
   } else {
@@ -1648,6 +1655,76 @@ ipcMain.handle("credential:set", async (_event, name, value) => {
     applyToHarness,
   );
 });
+
+// A custom OpenAI-compatible engine is dynamic — created with whatever
+// instance id the operator's chosen name slugs to — so it cannot sit in
+// CREDENTIAL_PATCH's fixed union above. Same treatment (encrypt at rest,
+// apply live over loopback), keyed by instance id under its own
+// credentials.bin field instead of a top-level config section: PATCH
+// /api/instances/:id?secretStorage=external never writes the key to
+// config.json, applying it only to the live running instance's
+// environment (server/index.ts's instanceKeyOverrides).
+ipcMain.handle("credential:set-instance", async (_event, instanceId, value) => {
+  if (typeof instanceId !== "string" || !/^[\w.-]+$/.test(instanceId) || typeof value !== "string") {
+    throw new Error("Unsupported credential");
+  }
+  if (app.isPackaged && !(await safeStorage.isAsyncEncryptionAvailable())) {
+    throw new Error("The operating-system credential store is unavailable");
+  }
+  const secret = value.trim();
+  const applyToHarness = async () => {
+    // Dev/browser fallback: no desktop shell to replay this from at the next
+    // spawn, so the server's own PATCH persists the key in config.json —
+    // the same plaintext shape the create-time flow already falls back to.
+    const secretStorage = app.isPackaged ? "?secretStorage=external" : "";
+    const response = await fetch(
+      `http://127.0.0.1:${SERVER_PORT}/api/instances/${encodeURIComponent(instanceId)}${secretStorage}`,
+      {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: secret }),
+      },
+    );
+    const body = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(body?.error || `Could not save credential (HTTP ${response.status})`);
+    return body;
+  };
+  if (!app.isPackaged) return applyToHarness();
+
+  return updateSecureCredentialDocument(
+    (credentials) => {
+      const instanceKeys = { ...credentials.instanceKeys };
+      if (secret) instanceKeys[instanceId] = secret;
+      else delete instanceKeys[instanceId];
+      return { ...credentials, instanceKeys };
+    },
+    applyToHarness,
+  );
+});
+
+/** Replay every stored custom-engine key back into a freshly spawned server.
+ * The fixed workspace secrets (xai/box/…) ride process.env at spawn
+ * (workspaceCredentialEnv); a dynamic per-instance key has no fixed env-var
+ * name to piggyback on, so it takes one PATCH per stored key instead, after
+ * the server is confirmed alive. Best-effort and non-fatal: an instance
+ * whose replay fails just boots keyless — the same, already-supported state
+ * as a deliberately-keyless local engine — rather than blocking startup. */
+async function replayInstanceCredentials(port) {
+  const instanceKeys = secureCredentials?.instanceKeys;
+  if (!instanceKeys || typeof instanceKeys !== "object") return;
+  for (const [instanceId, value] of Object.entries(instanceKeys)) {
+    if (typeof value !== "string" || !value) continue;
+    try {
+      await fetch(`http://127.0.0.1:${port}/api/instances/${encodeURIComponent(instanceId)}?secretStorage=external`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ key: value }),
+      });
+    } catch (error) {
+      slog(`[credentials] replay failed for instance "${instanceId}": ${error?.message ?? error}`);
+    }
+  }
+}
 
 async function broadcastDesktopCapabilities() {
   const capabilities = desktopCapabilities({
