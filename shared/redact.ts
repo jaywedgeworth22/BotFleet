@@ -590,16 +590,31 @@ const PLACEHOLDER_WORDS = new Set([
  * a small closed set for the same reason the scheme list is: a MARKER has to
  * do the work, not a guess, or "curl failed: Authorization: Bearer password"
  * would read "failed:" as an instruction and exempt a real credential too.
- * Checked only against the FIRST word of the line the header sits on. */
+ * Checked only against the FIRST word of the CLAUSE the header sits in —
+ * see `hasPlaceholderLeadIn`. */
 const PLACEHOLDER_LEAD_WORDS = new Set(["use", "set", "send", "add", "include", "provide", "pass", "specify"]);
 
-/** Does the text preceding this match, on its own line, open with a
- * recognised instruction verb?  Whitespace apart, same as `wrapperQuoteAt` —
- * the verb has to actually introduce this sentence, not merely appear
- * somewhere earlier in the transcript. */
+/** Does the CLAUSE this match sits in open with a recognised instruction
+ * verb?  Whitespace apart, same as `wrapperQuoteAt` — the verb has to
+ * actually introduce this sentence, not merely appear somewhere earlier in
+ * the transcript.
+ *
+ * A clause, not the whole line: `set` is also a bash BUILTIN, and a
+ * recorded command line can run several of them before the one that
+ * actually carries the header — `set -x; curl -H "Authorization: Bearer
+ * password"` has `set` as the line's first word, but it introduces shell
+ * setup, not this sentence.  Reading the line's first word as the lead-in
+ * exempted the real credential that followed an unrelated earlier command.
+ * So this looks only as far back as the nearest shell separator — `;`,
+ * `&`, `|`, or a newline, whichever is closest — and takes the first word
+ * after THAT as the one that has to be a recognised verb. */
 function hasPlaceholderLeadIn(before: string): boolean {
-  const lineStart = before.lastIndexOf("\n") + 1;
-  const firstWord = before.slice(lineStart).trim().split(/\s+/)[0];
+  let clauseStart = 0;
+  for (const sep of [";", "&", "|", "\n"]) {
+    const idx = before.lastIndexOf(sep) + 1;
+    if (idx > clauseStart) clauseStart = idx;
+  }
+  const firstWord = before.slice(clauseStart).trim().split(/\s+/)[0];
   return !!firstWord && PLACEHOLDER_LEAD_WORDS.has(firstWord.toLowerCase().replace(/[^a-z]/g, ""));
 }
 

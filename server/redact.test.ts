@@ -1149,4 +1149,32 @@ describe("redactSecretsInText", () => {
     expect(nested).not.toContain("oauth_signature");
     expect(nested).toContain(url);
   });
+
+  // ── round-8 finding (fresh Codex re-review of 572fda1) ────────────────
+
+  it("does not let an earlier shell command's first word act as this sentence's lead-in", () => {
+    // `set` is both a placeholder lead-in verb AND a bash builtin.  A
+    // recorded command line can run one before the command that actually
+    // carries the header — `set -x; curl -H "Authorization: Bearer
+    // password"` — and the lead-in check used to read the LINE's first
+    // word, so `set` (shell setup, unrelated to the header) exempted a
+    // real credential that happened to spell an unmarked placeholder word.
+    // The check now looks only as far back as the nearest shell separator.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    for (const sep of [";", "&&", "|", "&"]) {
+      const line = `set -x ${sep} curl -H "${HEADER}: ${SCHEME} password"`;
+      const out = redactSecretsInText(line);
+      expect(out, line).toMatch(/«redacted \d+ chars»/);
+      expect(out, line).not.toMatch(/password"$/);
+    }
+    // a lead-in verb that genuinely introduces THIS clause still exempts —
+    // separator-adjacent, not just line-initial
+    const doc = `set -x; use ${HEADER}: ${SCHEME} password`;
+    expect(redactSecretsInText(doc), doc).toBe(doc);
+    // and the plain line-initial case (no earlier clause at all) is
+    // unaffected
+    const stillDoc = `Use ${HEADER}: ${SCHEME} password`;
+    expect(redactSecretsInText(stillDoc), stillDoc).toBe(stillDoc);
+  });
 });
