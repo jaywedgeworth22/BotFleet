@@ -843,6 +843,8 @@ const MessagesList = memo(function MessagesList({
                           }
                           disabled={systemVersionIndex <= 0 || bot.busy}
                           className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
+                          type="button"
+                          aria-label="Previous Version"
                           title="Previous Version"
                         >
                           <ChevronLeft size={14} />
@@ -860,6 +862,8 @@ const MessagesList = memo(function MessagesList({
                           }
                           disabled={systemVersionIndex >= systemVersions.length - 1 || bot.busy}
                           className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
+                          type="button"
+                          aria-label="Next Version"
                           title="Next Version"
                         >
                           <ChevronRight size={14} />
