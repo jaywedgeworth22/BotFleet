@@ -333,13 +333,17 @@ export function latestChatActivity(
   return Math.max(loadedLastAt ?? 0, createdAt, ...fromTasks);
 }
 
-/** All versions of a user message (itself + the forks that replaced it),
- * oldest first. Length 1 = never edited. */
+/** All versions of a turn-starting message (itself + the forks that
+ * replaced it), oldest first. Length 1 = never edited. A turn starter is a
+ * person's "user" message OR an auto-delivered routine/webhook/resource
+ * instruction stored as "system" — Regenerate forks either role (see
+ * store.branchMessage), so both need their siblings to stay reachable
+ * through the version controls. */
 export function messageVersions(bot: Bot, message: Message): Message[] {
-  if (message.role !== "user" || message.kind !== "text") return [message];
+  if ((message.role !== "user" && message.role !== "system") || message.kind !== "text") return [message];
   return bot.messages
     .filter(
-      (m) => m.role === "user" && m.kind === "text" && (m.parentId ?? null) === (message.parentId ?? null),
+      (m) => m.role === message.role && m.kind === "text" && (m.parentId ?? null) === (message.parentId ?? null),
     )
     .sort((a, b) => a.at - b.at);
 }

@@ -822,15 +822,51 @@ const MessagesList = memo(function MessagesList({
               if (m.role === "system") {
                 const body = (m.text ?? "").trim();
                 const firstLine = body.split("\n").find((line) => line.trim()) ?? "Instructions";
+                // Regenerate forks a system instruction the same way it
+                // forks a user message (store.branchMessage) — the fork's
+                // siblings need the same "‹ i/N ›" reachability the Bubble
+                // version switcher gives a user message, or the previous
+                // automated answer becomes unreachable once regenerated.
+                const versions = messageVersions(bot, m);
+                const versionIndex = versions.findIndex((v) => v.id === m.id);
                 return (
-                  <WebhookCard
-                    view={{
-                      headline: firstLine.slice(0, 120),
-                      subtitle: automationSourceLabel(m.automationSource, body),
-                      payload: body || undefined,
-                    }}
-                    detailsNoun="Instructions"
-                  />
+                  <div className="flex flex-col items-start gap-0.5">
+                    <WebhookCard
+                      view={{
+                        headline: firstLine.slice(0, 120),
+                        subtitle: automationSourceLabel(m.automationSource, body),
+                        payload: body || undefined,
+                      }}
+                      detailsNoun="Instructions"
+                    />
+                    {versions.length > 1 && (
+                      <div className="flex items-center gap-0.5 pl-1 text-[12px] text-ink-secondary">
+                        <button
+                          onClick={() =>
+                            dispatch({ type: "switchBranch", botId: bot.id, messageId: versions[versionIndex - 1].id })
+                          }
+                          disabled={versionIndex <= 0 || bot.busy}
+                          className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
+                          title="Previous Version"
+                        >
+                          <ChevronLeft size={14} />
+                        </button>
+                        <span className="tabular-nums">
+                          {versionIndex + 1}/{versions.length}
+                        </span>
+                        <button
+                          onClick={() =>
+                            dispatch({ type: "switchBranch", botId: bot.id, messageId: versions[versionIndex + 1].id })
+                          }
+                          disabled={versionIndex >= versions.length - 1 || bot.busy}
+                          className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
+                          title="Next Version"
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 );
               }
               return (

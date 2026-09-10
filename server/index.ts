@@ -3508,13 +3508,16 @@ _loadPending();
         }
       }
 
-      const lastMsg = activeMsgs[activeMsgs.length - 1];
       // A turn-starter can be a person's message OR an auto-delivered
       // routine/webhook/resource instruction stored as role="system" —
-      // recognizing only "user" here would discard the automation
-      // attribution and repersist the recovery notice as a fabricated
-      // human bubble instead of resuming the original system prompt.
-      const resumeUser = (lastMsg?.role === "user" || lastMsg?.role === "system") && lastMsg.kind === "text" ? lastMsg : undefined;
+      // and it is not necessarily the LAST row: a webhook/resource turn
+      // that got as far as an activity chip or a permission card before
+      // the process died leaves those rows after it.  Scanning only the
+      // final message would miss the system prompt entirely, discard the
+      // automation attribution, and repersist the recovery notice as a
+      // fabricated human bubble.
+      const turnStartIdx = lastTurnStartIndex(activeMsgs);
+      const resumeUser = turnStartIdx >= 0 ? activeMsgs[turnStartIdx] : undefined;
       const prompt = resumeUser
         ? (resumeUser.text || "Please resume.")
         : "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
@@ -5366,13 +5369,21 @@ const server = createServer(async (req, res) => {
           const group = bot ? undefined : store.groupByThread(hit.threadId);
           if (!bot && !group) return null;
           const active = onActivePath(hit.threadId, hit.messageId);
+          // A room hit already carries `from` (the speaking member); a
+          // system-role hit never does, but its sender is not the bot
+          // either — an auto-delivered routine/webhook/resource
+          // instruction, not something the bot said — so it needs the
+          // same "Instructions" attribution the export and reply displays
+          // already give it, or the client falls back to `name` (the
+          // bot's own name) and misattributes the hit.
+          const from = hit.from ?? (hit.role === "system" ? "Instructions" : undefined);
           if (bot) {
             const task = store.taskByThread(bot.id, hit.threadId);
-            return { ...hit, botId: bot.id, name: bot.name, task: task?.title, onActivePath: active };
+            return { ...hit, from, botId: bot.id, name: bot.name, task: task?.title, onActivePath: active };
           }
           if (group) {
             const task = store.groupTaskByThread(group.id, hit.threadId);
-            return { ...hit, groupId: group.id, name: group.name, task: task?.title, onActivePath: active };
+            return { ...hit, from, groupId: group.id, name: group.name, task: task?.title, onActivePath: active };
           }
           return null;
         })
