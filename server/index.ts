@@ -3016,12 +3016,13 @@ routines = new RoutineManager({
       ? webhooks.list().find((hook) => hook.id === run.webhookId)?.minGapMinutes
       : undefined,
   defaultThread: (botId) => {
+    // Simple mode's designated conversation is whatever the client is
+    // looking at (`bot.threadId` / publicBot), not the oldest task.  "Keep
+    // Extra Threads Hidden" only flips conversationMode and leaves the
+    // active Projects task selected — keying off oldest would append
+    // schedules into a hidden chat and let activateTask yank the UI away.
     const bot = store.bot(botId);
-    if (!bot) return undefined;
-    const tasks = bot.tasks ?? [];
-    if (tasks.length === 0) return bot.threadId;
-    const oldest = tasks.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
-    return oldest.threadId;
+    return bot?.threadId;
   },
   createTask: (botId, title, activate = false, automationKey) => {
     const task = store.createTask(botId, title, activate, automationKey);
