@@ -576,7 +576,9 @@ describe("redactSecretsInText", () => {
       `Use ${HEADER}: ${SCHEME_WORD} token`,
       `Set ${HEADER}: ${SCHEME_WORD} secret`,
       `${HEADER}: ${SCHEME_WORD} your-api-key`,
-      `${HEADER}: ${SCHEME_WORD} xxxxxxxx`,
+      // a filler run (xxxx, ****, …) is documentation only behind a
+      // recognised lead-in verb too — see the round-4 finding below
+      `Use ${HEADER}: ${SCHEME_WORD} xxxxxxxx`,
       `send ${SCHEME_WORD} your_token in the header`,
       // trailing sentence punctuation belongs to the prose
       `Use ${HEADER}: ${SCHEME_WORD} token.`,
@@ -1002,5 +1004,55 @@ describe("redactSecretsInText", () => {
     expect(escaped).not.toContain(sig);
     expect(escaped).not.toContain("oauth_signature");
     expect(escaped).toContain(url);
+  });
+
+  // ── round-5 findings (fresh Codex re-review of cc001b3) ───────────────
+
+  it("does not let an escaped space in a glued shell run look like a boundary", () => {
+    // A backslash preserves the character after it literally (confirmed
+    // against bash 5.2.21), so `$REALM\ value` glued onto the header value
+    // is one continuous shell word even though it contains a space — the
+    // escaped space is not where the outer boundary test should stop.  This
+    // is the same failure mode as the resolved nested-`$(...)` case, one
+    // escaping mechanism over: raw whitespace scanning cannot tell a real
+    // boundary from a protected one.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$REALM\\ value", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+  });
+
+  it("masks an unmarked filler-shaped Bearer token instead of treating it as a placeholder", () => {
+    // A run of nothing but `x` (or `*`, `.`, `…`) LOOKS like a placeholder,
+    // but it is also a perfectly syntactically valid Bearer token — nothing
+    // in `Authorization: Bearer xxxxxxxxxxxx` on its own says which one it
+    // is.  The filler check used to exempt it unconditionally; it now needs
+    // the same recognised lead-in verb the bare-noun placeholder branch
+    // already requires (round-2 finding, same reasoning: an exemption with
+    // no marker in the text lets a real credential through).
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    for (const filler of ["xxxxxxxxxxxx", "************", "...................."]) {
+      const withHeader = `${HEADER}: ${SCHEME} ${filler}`;
+      expect(redactSecretsInText(withHeader), withHeader).toMatch(/«redacted \d+ chars»/);
+    }
+    // and standalone, outside any header — the same BEARER pattern reaches
+    // persisted bot text directly.  Its token charset is narrower (no `*`),
+    // so only the shapes it actually matches are exercised here.
+    for (const filler of ["xxxxxxxxxxxx", "...................."]) {
+      const standalone = `sent ${SCHEME} ${filler} to the proxy`;
+      expect(redactSecretsInText(standalone), standalone).toMatch(/«redacted \d+ chars»/);
+    }
+    // documentation with a recognised lead-in verb still survives
+    for (const doc of [`Use ${HEADER}: ${SCHEME} xxxxxxxxxxxx`, `Set ${HEADER}: ${SCHEME} ****************`]) {
+      expect(redactSecretsInText(doc), doc).toBe(doc);
+    }
   });
 });

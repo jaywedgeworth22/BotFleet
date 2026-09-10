@@ -329,6 +329,15 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * (outside single quotes, where bash never treats backslash as an escape
  * at all), and `(`/`)` only move `depth` while no quote is open.
  *
+ * A backslash-escaped character glues to the run the same way, and outside
+ * any expansion at all: `realm="$REALM\ value", oauth_signature=<secret>"`
+ * is one `-H` argument (confirmed against bash 5.2.21) because the escaped
+ * space is preserved literally rather than ending the shell word.  So the
+ * lookahead steps over any `\`-prefixed character as a single atomic unit
+ * before testing for a boundary — the same "consume it whole, do not let a
+ * character inside it decide anything on its own" treatment `$(…)` and a
+ * backtick span already get.
+ *
  * An empty INLINE parameter needs the identical requote treatment for a
  * reason that has nothing to do with `$` or backticks: `realm=""` opens and
  * closes the SAME quote with nothing between, which is exactly how bash
@@ -406,6 +415,17 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
           let k = j + 1;
           while (k < value.length && value.charAt(k) !== "`") k += 1;
           j = k < value.length ? k + 1 : value.length;
+          continue;
+        }
+        // a backslash-escaped character is glued to the run just as tightly
+        // as `$(…)` or a backtick span — bash preserves whatever follows the
+        // backslash literally, escaped whitespace included, so `$REALM\
+        // value` is one shell word and the escaped space is not a boundary.
+        // Consuming BOTH characters here (rather than only skipping the
+        // backslash) is what keeps an escaped copy of the wrapper's own
+        // quote character from being misread as a boundary or a close too.
+        if (ch === "\\" && j + 1 < value.length) {
+          j += 2;
           continue;
         }
         // whitespace or a shell separator ends the glued word right here —
@@ -517,10 +537,15 @@ function hasPlaceholderLeadIn(before: string): boolean {
 }
 
 /** `leadIn` says whether an instruction verb ("Use", "Set", …) opens the
- * sentence this value sits in — see `hasPlaceholderLeadIn`.  It gates only
- * the BARE-noun branch below; the bracketed, filler, prefixed, and status
- * shapes carry their own marker in the text itself and need no sentence
- * context to be trusted.
+ * sentence this value sits in — see `hasPlaceholderLeadIn`.  It gates the
+ * BARE-noun branch and the FILLER branch (`xxxx`, `****`, `…`) below; the
+ * bracketed and prefixed shapes carry their own unambiguous marker in the
+ * text itself and need no sentence context to be trusted.  A run of nothing
+ * but `x`/`*`/`.`/`…` LOOKS like a placeholder, but it is also a perfectly
+ * syntactically valid Bearer token — `Authorization: Bearer xxxxxxxxxxxx`
+ * reads exactly like real masked-looking prose unless something in the
+ * sentence actually says so, the same reasoning that already gates the
+ * bare-noun branch.
  *
  * `precedingWord` is whatever the AUTH_HEADER patterns' own optional `scheme`
  * group captured immediately before this value, when they captured anything
@@ -541,7 +566,11 @@ const isPlaceholder = (value: string, leadIn: boolean, precedingWord?: string) =
   // anyway, which no JWT segment ever is.
   const trimmed = value.trim().replace(/[.,;:!?]+$/, "") || value.trim();
   if (/^[<{[][^\s<>{}[\]]*[>}\]]$/.test(trimmed)) return true; // bracketed
-  if (/^[x*.\u2026]+$/i.test(trimmed)) return true; // xxxx, ****, …
+  // xxxx, ****, … — needs a recognised lead-in the same as the bare noun
+  // below, because unlike the bracketed shape this one is ALSO a real,
+  // syntactically valid credential and nothing in the text marks it as
+  // documentation on its own
+  if (leadIn && /^[x*.\u2026]+$/i.test(trimmed)) return true;
   const word = trimmed.toLowerCase();
   // A `your`/`my` prefix only counts when a SEPARATOR follows it.
   // `your-api-key` and `your_token` are documentation; `yourtoken` and
