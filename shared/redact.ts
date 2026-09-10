@@ -298,14 +298,48 @@ const SHORT_CREDENTIAL_SCHEMES = new Set([
 const minMaskable = (scheme: string | undefined) =>
   scheme && SHORT_CREDENTIAL_SCHEMES.has(scheme.trim().toLowerCase()) ? 1 : 8;
 
-/** A documentation placeholder, not a credential: `<token>`, `{api-key}`,
- * `[YOUR_TOKEN]`.  Nothing real is spelled that way, and this function runs
- * over persisted bot text and routine instructions as well as over headers,
- * where masking `Set <header>: <scheme> <token>` corrupts the guidance a
- * reader was given.  Lowering the floor behind a known scheme is what made
- * a seven-character placeholder reachable, but the shape is worth skipping
- * at any length. */
-const PLACEHOLDER = /^[<{[][^\s<>{}[\]]*[>}\]]$/;
+/** A documentation placeholder, not a credential.
+ *
+ * Two shapes.  Bracketed — `<token>`, `{api-key}`, `[YOUR_TOKEN]` — where
+ * nothing real is ever spelled that way, so length does not matter.  And the
+ * bare noun a sentence uses when it means "put yours here": `<scheme> token`,
+ * `<scheme> secret`, `<scheme> your-api-key`.  Those are only reachable
+ * because a known scheme lowers the floor, which is exactly the case the
+ * eight-character floor used to cover by accident.
+ *
+ * It matters because this function runs over persisted bot text and routine
+ * instructions as well as over headers, and masking the guidance corrupts
+ * what a reader was told to do.  A real credential that happens to BE the
+ * word `token` is not a credential worth protecting. */
+const PLACEHOLDER_WORDS = new Set([
+  "token",
+  "tokens",
+  "secret",
+  "key",
+  "apikey",
+  "api_key",
+  "api-key",
+  "credential",
+  "credentials",
+  "password",
+  "passwd",
+  "value",
+  "placeholder",
+  "changeme",
+  "redacted",
+  "none",
+  "null",
+  "blank",
+  "empty",
+]);
+
+const isPlaceholder = (value: string) => {
+  const trimmed = value.trim();
+  if (/^[<{[][^\s<>{}[\]]*[>}\]]$/.test(trimmed)) return true; // bracketed
+  if (/^[x*.\u2026]+$/i.test(trimmed)) return true; // xxxx, ****, …
+  const word = trimmed.toLowerCase();
+  return PLACEHOLDER_WORDS.has(word) || PLACEHOLDER_WORDS.has(word.replace(/^(?:your|my|the)[-_]?/, ""));
+};
 
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
@@ -377,7 +411,7 @@ export function redactSecretsInText(text: string): string {
       // secret's.  Masking scheme and value together reproduces, byte for
       // byte, what that pass produced before this one could reach the shape.
       const body = close ? value : `${scheme ?? ""}${value}`;
-      if (body.length < minMaskable(scheme) || WHOLLY_MASKED.test(body) || PLACEHOLDER.test(body)) return m;
+      if (body.length < minMaskable(scheme) || WHOLLY_MASKED.test(body) || isPlaceholder(body)) return m;
       const kept = close ? (scheme ?? "") : "";
       return `${key}${sep}${quote}${kept}${mask(body)}${close}`;
     },
@@ -391,12 +425,15 @@ export function redactSecretsInText(text: string): string {
       // trailing blanks are the line's, not the credential's, so they stay
       // outside the mask and out of the length it reports
       const credential = value.slice(0, end).replace(/[^\S\r\n]+$/, "");
-      if (credential.length < minMaskable(scheme) || WHOLLY_MASKED.test(credential) || PLACEHOLDER.test(credential)) return m;
+      if (credential.length < minMaskable(scheme) || WHOLLY_MASKED.test(credential) || isPlaceholder(credential)) return m;
       return `${key}${sep}${scheme ?? ""}${mask(credential)}${value.slice(credential.length)}`;
     },
   );
   for (const re of KEY_PREFIXES) out = out.replace(re, (m) => mask(m));
-  out = out.replace(BEARER, (_m, lead: string, tok: string) => `${lead}${mask(tok)}`);
+  // the same placeholder rule applies to a scheme word standing on its own:
+  // `<scheme> your-api-key` in a routine's instructions is guidance, not a
+  // credential, and this pass reaches persisted bot text too
+  out = out.replace(BEARER, (m, lead: string, tok: string) => (isPlaceholder(tok) ? m : `${lead}${mask(tok)}`));
   out = out.replace(KEY_VALUE, (_m, key: string, sep: string, quote: string, value: string) => `${key}${sep}${quote}${mask(value)}${quote}`);
   out = out.replace(KEY_VALUE_UNTERMINATED, (m, key: string, sep: string, quote: string, value: string) =>
     WHOLLY_MASKED.test(value) ? m : `${key}${sep}${quote}${mask(value)}`,

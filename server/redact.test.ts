@@ -564,9 +564,18 @@ describe("redactSecretsInText", () => {
       `Use ${HEADER}: Basic {api-key}`,
       `Send ${HEADER}: ${SCHEME_WORD} [YOUR_TOKEN]`,
       `${HEADER}: ${SCHEME_WORD} <your-api-token-here>`,
+      // the bare noun a sentence uses when it means "put yours here"
+      `Use ${HEADER}: ${SCHEME_WORD} token`,
+      `Set ${HEADER}: ${SCHEME_WORD} secret`,
+      `${HEADER}: ${SCHEME_WORD} your-api-key`,
+      `${HEADER}: Basic password`,
+      `${HEADER}: ${SCHEME_WORD} xxxxxxxx`,
+      `send ${SCHEME_WORD} your_token in the header`,
     ]) {
       expect(redactSecretsInText(doc), doc).toBe(doc);
     }
+    // and a real credential of the same length is still masked
+    expect(redactSecretsInText(`${HEADER}: Basic dTpw`)).toContain("«redacted 4 chars»");
   });
 
   it("only treats a quote ADJACENT to the header as its wrapper", () => {
