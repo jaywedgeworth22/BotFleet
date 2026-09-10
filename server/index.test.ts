@@ -3792,6 +3792,80 @@ describe("instance CLI override API", () => {
     }
   }, 30_000);
 
+  it("keeps a custom engine's live-only encrypted key across an unrelated global provider reload", async () => {
+    // PATCH /api/instances/:id?secretStorage=external sets an in-memory-only
+    // instanceKeyOverrides entry, applied by that one route to the live
+    // registry entry it just reloaded. reloadProviders() — triggered by ANY
+    // unrelated settings change (a different provider's own credential, bot
+    // defaults, …) — rebuilds the WHOLE fleet from instanceConfigs(cfg)
+    // alone; without withInstanceKeyOverrides() this silently dropped every
+    // encrypted custom-engine key until the app restarted and Electron
+    // replayed it. Prove it end-to-end: a real turn against a real fixture
+    // endpoint, sent only after a real global reload, still carries the key.
+    let capturedAuthorization: string | null | undefined;
+    const fixture = createServer((req, res) => {
+      if (req.method === "POST" && req.url?.includes("/chat/completions")) {
+        capturedAuthorization = req.headers.authorization ?? null;
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n' + "data: [DONE]\n");
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+    const port = (fixture.address() as { port: number }).port;
+
+    const created = await api("POST", "/api/instances", {
+      name: "Reload Survives Engine",
+      endpoint: `http://127.0.0.1:${port}/v1`,
+      models: ["reload-test-model"],
+    });
+    expect(created.status).toBe(201);
+    const instanceId = created.body.instanceId;
+
+    try {
+      const patched = await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, {
+        key: "sk-reload-survives",
+      });
+      expect(patched.status).toBe(200);
+
+      // An unrelated provider credential is a documented reloadProviders()
+      // trigger (PUT /api/config's own reloadKeys check) — "xai" is not in
+      // that route's no-reload exclusion list (profile/tts/imageGen/vps/…).
+      const unrelatedSave = await api("PUT", "/api/config", { xai: { key: "unrelated-xai-key-for-reload-trigger" } });
+      expect(unrelatedSave.status).toBe(200);
+
+      const botRes = await api("POST", "/api/bots", {
+        name: "Reload Survives Bot",
+        modelSelection: { instanceId, model: "reload-test-model" },
+      });
+      expect(botRes.status).toBe(201);
+      const botId = botRes.body.bot.id;
+      try {
+        const sent = await api("POST", `/api/bots/${botId}/messages`, { text: "does the key survive?" });
+        expect(sent.status).toBe(202);
+
+        await expect
+          .poll(async () => {
+            const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+              (candidate: { id: string }) => candidate.id === botId,
+            );
+            return state?.busy;
+          }, { timeout: 10_000 })
+          .toBe(false);
+
+        expect(capturedAuthorization).toBe("Bearer sk-reload-survives");
+      } finally {
+        await api("DELETE", `/api/bots/${botId}`);
+      }
+    } finally {
+      await api("PUT", "/api/config", { xai: { key: "" } });
+      await api("DELETE", `/api/instances/${instanceId}`);
+      await new Promise<void>((resolve) => fixture.close(() => resolve()));
+    }
+  }, 30_000);
+
   it("does not interrupt an unrelated busy bot when adding a new custom engine", async () => {
     // Adding an independent engine used to call the global reloadProviders(),
     // which disposes EVERY provider and settles every busy bot as

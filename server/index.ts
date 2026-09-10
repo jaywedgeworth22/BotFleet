@@ -131,6 +131,7 @@ import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import {
   isEffortLevel,
+  type InstanceConfigMap,
   type ModelSelection,
   type ProviderInstance,
   type RequestOutcome,
@@ -4475,7 +4476,7 @@ async function runProviderReload() {
   // watchdog reports a "no activity" stall on a dead thread twenty minutes
   // later, and settle each one's routine receipt the way the stall path does.
   const killedTurns = watchdog.settleAll();
-  await registry.load(instanceConfigs(cfg));
+  await registry.load(withInstanceKeyOverrides(instanceConfigs(cfg)));
   // The fleet now exists on exactly these credentials — record that, so the
   // next comparison is against what was built rather than against whatever
   // `cfg` happened to hold when the comparison ran.
@@ -4560,6 +4561,30 @@ let providerConfigBusy = false;
 // as a deliberately-keyless local engine) until the desktop shell replays
 // its encrypted store back through this same PATCH route.
 const instanceKeyOverrides = new Map<string, string>();
+
+/** Merge every live-only instance-key override into a freshly built
+ * instanceConfigs(cfg) map before it becomes (part of) the live registry.
+ * The narrow PATCH /api/instances/:id route that SETS an override already
+ * applied it to the one instance it just touched, but the general
+ * reloadProviders() path — triggered by any unrelated settings change
+ * (another provider's credential, bot defaults, …) — rebuilds the WHOLE
+ * fleet from instanceConfigs(cfg) alone. Without this, that rebuild would
+ * silently drop every custom engine's encrypted key: the instance keeps
+ * reporting available (keyless custom instances always do), so the gap
+ * only surfaces as every subsequent turn failing upstream, until the app
+ * restarts and the desktop shell replays its store. Mutates and returns
+ * the same map — instanceConfigs(cfg) always hands back a freshly spread
+ * transient map, never the caller's persisted entries, so mutating it here
+ * is exactly as safe as instanceConfigs()'s own injectedEnvironment merge. */
+function withInstanceKeyOverrides(map: InstanceConfigMap): InstanceConfigMap {
+  for (const [instanceId, key] of instanceKeyOverrides) {
+    const entry = map[instanceId];
+    if (entry && entry.driver === "openai-compat") {
+      entry.environment = { ...entry.environment, OPENAI_COMPAT_API_KEY: key };
+    }
+  }
+  return map;
+}
 
 // ── HTTP plumbing ─────────────────────────────────────────────────────
 /** Folders a paired phone may point a room at.  Only what this computer
@@ -7831,14 +7856,10 @@ const server = createServer(async (req, res) => {
         saveConfig({ instances: result.config.instances });
         Object.assign(cfg, loadConfig());
 
-        const targetEntry = instanceConfigs(cfg)[instanceId];
         // Re-apply any live-only key override on every reload of this
         // instance — not just the request that just set it — so a later
         // cli-only or enabled-only PATCH doesn't silently drop it.
-        const keyOverride = instanceKeyOverrides.get(instanceId);
-        if (targetEntry && keyOverride && targetEntry.driver === "openai-compat") {
-          targetEntry.environment = { ...targetEntry.environment, OPENAI_COMPAT_API_KEY: keyOverride };
-        }
+        const targetEntry = withInstanceKeyOverrides(instanceConfigs(cfg))[instanceId];
         const oldInstance = registry.get(instanceId);
         if (oldInstance) {
           await oldInstance.adapter.stopAll?.().catch(() => {});

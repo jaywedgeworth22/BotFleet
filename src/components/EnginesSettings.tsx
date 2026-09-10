@@ -37,6 +37,9 @@ function buildEngineCredentialDeps(): EngineCredentialDeps {
     setInstanceCredential: window.ogb?.setInstanceCredential
       ? (instanceId, value) => window.ogb!.setInstanceCredential!(instanceId, value)
       : undefined,
+    clearInstanceCredential: window.ogb?.clearInstanceCredential
+      ? (instanceId) => window.ogb!.clearInstanceCredential!(instanceId)
+      : undefined,
   };
 }
 

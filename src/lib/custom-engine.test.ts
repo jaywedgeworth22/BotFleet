@@ -114,31 +114,62 @@ describe("deleteCustomEngine", () => {
     expect(result).toEqual({ credentialClearError: null });
   });
 
-  it("purges the encrypted store before deleting, so a same-named future engine cannot inherit the old key", async () => {
+  it("deletes the instance BEFORE purging its encrypted key, not after", async () => {
+    // The exact ordering bug a fresh review caught: purging first PATCHes
+    // the live instance (setInstanceCredential's job), which reloads that
+    // provider and settles any bot mid-turn on it as no-longer-busy —
+    // silently defeating DELETE's own busy-bot guard. clearInstanceCredential
+    // never touches the live harness at all, and must only run once the
+    // delete has already gone through.
     const calls: string[] = [];
-    const setInstanceCredential = vi.fn(async (instanceId: string, value: string) => {
-      calls.push(`clear:${instanceId}:${JSON.stringify(value)}`);
-    });
     const deleteInstance = vi.fn(async (instanceId: string) => {
       calls.push(`delete:${instanceId}`);
     });
+    const clearInstanceCredential = vi.fn(async (instanceId: string) => {
+      calls.push(`clear:${instanceId}`);
+    });
 
     const result = await deleteCustomEngine(
-      { createInstance: vi.fn(), deleteInstance, setInstanceCredential },
+      { createInstance: vi.fn(), deleteInstance, clearInstanceCredential },
       "custom-reused-name",
     );
 
-    expect(setInstanceCredential).toHaveBeenCalledWith("custom-reused-name", "");
-    expect(calls).toEqual(['clear:custom-reused-name:""', "delete:custom-reused-name"]);
+    expect(clearInstanceCredential).toHaveBeenCalledWith("custom-reused-name");
+    expect(calls).toEqual(["delete:custom-reused-name", "clear:custom-reused-name"]);
     expect(result).toEqual({ credentialClearError: null });
   });
 
-  it("still deletes the instance when purging the stored credential fails, but reports the failure", async () => {
+  it("never purges the credential when the delete itself is refused (busy bot or no replacement)", async () => {
+    // The other half of the same bug: if purge-then-delete deleted the
+    // credential and THEN the route refused the delete (no replacement
+    // engine available), the instance survived configured but keyless.
+    // Delete-then-purge makes that structurally impossible — a rejected
+    // delete must never reach the purge step at all.
+    const deleteInstance = vi.fn().mockRejectedValue(new Error("cannot delete engine while a bot using it is working"));
+    const clearInstanceCredential = vi.fn();
+
+    await expect(
+      deleteCustomEngine({ createInstance: vi.fn(), deleteInstance, clearInstanceCredential }, "custom-busy"),
+    ).rejects.toThrow(/cannot delete engine/);
+
+    expect(clearInstanceCredential).not.toHaveBeenCalled();
+  });
+
+  it("still reports success when there is no bridge — the dev fallback never wrote an encrypted key to purge", async () => {
     const deleteInstance = vi.fn().mockResolvedValue(undefined);
-    const setInstanceCredential = vi.fn().mockRejectedValue(new Error("The operating-system credential store is unavailable"));
+    const result = await deleteCustomEngine(
+      { createInstance: vi.fn(), deleteInstance, clearInstanceCredential: undefined },
+      "custom-dev-only",
+    );
+    expect(result).toEqual({ credentialClearError: null });
+  });
+
+  it("the delete having already succeeded, still reports it when purging the stored credential fails", async () => {
+    const deleteInstance = vi.fn().mockResolvedValue(undefined);
+    const clearInstanceCredential = vi.fn().mockRejectedValue(new Error("The operating-system credential store is unavailable"));
 
     const result = await deleteCustomEngine(
-      { createInstance: vi.fn(), deleteInstance, setInstanceCredential },
+      { createInstance: vi.fn(), deleteInstance, clearInstanceCredential },
       "custom-y",
     );
 

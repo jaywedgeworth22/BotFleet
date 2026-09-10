@@ -1711,6 +1711,36 @@ ipcMain.handle("credential:set-instance", async (_event, instanceId, value) => {
   );
 });
 
+/** Purge a deleted custom engine's key from the encrypted store ONLY — never
+ * touches the live harness. This is deliberately a different operation from
+ * credential:set-instance(id, ""): that one PATCHes the live instance
+ * (?secretStorage=external), which reloads that provider and settles any
+ * bot mid-turn on it as no-longer-busy. Calling it BEFORE deleting an
+ * engine silently defeated DELETE /api/instances/:id's own busy-bot guard;
+ * the renderer now deletes first and purges the encrypted store after, once
+ * the instance is already gone (server/index.ts's own DELETE handler drops
+ * the live, in-memory override itself). At that point a live PATCH would
+ * only 404 — there is nothing left to reload — so this handler skips it
+ * entirely and only ever touches credentials.bin. */
+ipcMain.handle("credential:clear-instance", async (_event, instanceId) => {
+  if (typeof instanceId !== "string" || !/^[\w.-]+$/.test(instanceId)) {
+    throw new Error("Unsupported credential");
+  }
+  // Dev/browser fallback never wrote this instance's key into the
+  // encrypted store in the first place (credential:set-instance's own
+  // dev-mode branch persists straight to config.json instead) — nothing to
+  // purge here.
+  if (!app.isPackaged) return;
+  if (!(await safeStorage.isAsyncEncryptionAvailable())) {
+    throw new Error("The operating-system credential store is unavailable");
+  }
+  await updateSecureCredentialDocument((credentials) => {
+    const instanceKeys = { ...credentials.instanceKeys };
+    delete instanceKeys[instanceId];
+    return { ...credentials, instanceKeys };
+  });
+});
+
 /** Replay every stored custom-engine key back into a freshly spawned server.
  * The fixed workspace secrets (xai/box/…) ride process.env at spawn
  * (workspaceCredentialEnv); a dynamic per-instance key has no fixed env-var
@@ -1724,11 +1754,27 @@ async function replayInstanceCredentials(port) {
   for (const [instanceId, value] of Object.entries(instanceKeys)) {
     if (typeof value !== "string" || !value) continue;
     try {
-      await fetch(`http://127.0.0.1:${port}/api/instances/${encodeURIComponent(instanceId)}?secretStorage=external`, {
-        method: "PATCH",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ key: value }),
-      });
+      const response = await fetch(
+        `http://127.0.0.1:${port}/api/instances/${encodeURIComponent(instanceId)}?secretStorage=external`,
+        {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ key: value }),
+        },
+      );
+      // A 404 means this instance no longer exists — most likely deletion
+      // (credential:clear-instance) racing an app crash/kill between the
+      // instance actually being removed and its key being purged from
+      // credentials.bin. Self-heal now: drop the stale entry, so a
+      // DIFFERENT engine later created with the same name (same slug, same
+      // instance id) can never have this old key replayed into it.
+      if (response.status === 404) {
+        await updateSecureCredentialDocument((credentials) => {
+          const nextKeys = { ...credentials.instanceKeys };
+          delete nextKeys[instanceId];
+          return { ...credentials, instanceKeys: nextKeys };
+        }).catch(() => {});
+      }
     } catch (error) {
       slog(`[credentials] replay failed for instance "${instanceId}": ${error?.message ?? error}`);
     }

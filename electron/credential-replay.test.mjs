@@ -57,4 +57,37 @@ describe("custom-engine credential replay on boot", () => {
     const replaySource = MAIN_SOURCE.slice(replayIdx, replayIdx + 1200);
     expect(replaySource).toMatch(/secretStorage=external/);
   });
+
+  it("declares credential:clear-instance as a delete-time-only encrypted-store purge, with no live fetch/PATCH of its own", () => {
+    // The bug a fresh review caught: deleteCustomEngine used to purge via
+    // credential:set-instance(id, ""), which PATCHes the live harness and
+    // reloads that provider — settling any busy bot on it as no-longer-busy
+    // and silently defeating DELETE /api/instances/:id's own busy-bot guard
+    // when called BEFORE the delete. credential:clear-instance exists so the
+    // renderer can purge AFTER deleting without ever touching the live
+    // harness at all — this handler's own body must contain no fetch/PATCH.
+    const startIdx = MAIN_SOURCE.indexOf('ipcMain.handle("credential:clear-instance"');
+    expect(startIdx, "credential:clear-instance handler not found").toBeGreaterThan(-1);
+    const endIdx = MAIN_SOURCE.indexOf("\n});", startIdx);
+    expect(endIdx).toBeGreaterThan(startIdx);
+    const handlerSource = MAIN_SOURCE.slice(startIdx, endIdx);
+    expect(handlerSource).not.toMatch(/fetch\(/);
+    expect(handlerSource).toMatch(/updateSecureCredentialDocument/);
+    expect(handlerSource).toMatch(/\/\^\[\\w\.-\]\+\$\//);
+  });
+
+  it("self-heals a stale encrypted instance key when its replay 404s (crash-interrupted delete)", () => {
+    // Residual gap even with delete-then-purge ordering: if the app is
+    // killed between DELETE succeeding and credential:clear-instance's own
+    // purge completing, credentials.bin can still hold a key for an
+    // instance id that no longer exists. The next boot's replay PATCH for
+    // that id 404s (nothing to apply it to) — treat that as the signal to
+    // drop the stale entry right then, before a differently-created engine
+    // could ever reuse the same instance id and inherit it.
+    const replayIdx = MAIN_SOURCE.indexOf("async function replayInstanceCredentials");
+    expect(replayIdx).toBeGreaterThan(-1);
+    const replaySource = MAIN_SOURCE.slice(replayIdx, replayIdx + 1800);
+    expect(replaySource).toMatch(/response\.status === 404/);
+    expect(replaySource).toMatch(/updateSecureCredentialDocument/);
+  });
 });
