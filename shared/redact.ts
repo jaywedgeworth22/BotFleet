@@ -350,8 +350,47 @@ const isPlaceholder = (value: string) => {
   if (/^[<{[][^\s<>{}[\]]*[>}\]]$/.test(trimmed)) return true; // bracketed
   if (/^[x*.\u2026]+$/i.test(trimmed)) return true; // xxxx, ****, …
   const word = trimmed.toLowerCase();
-  return PLACEHOLDER_WORDS.has(word) || PLACEHOLDER_WORDS.has(word.replace(/^(?:your|my|the)[-_]?/, ""));
+  // A `your`/`my` prefix only counts when a SEPARATOR follows it.
+  // `your-api-key` and `your_token` are documentation; `yourtoken` and
+  // `mysecret` are things somebody might actually have set, and exempting
+  // those would hand a real credential straight through.
+  if (PLACEHOLDER_WORDS.has(word.replace(/^(?:your|my|the)[-_]/, ""))) return true;
+  // A status sentence is not a credential either: `no value`, `not provided`,
+  // `missing`.  Every word has to be one of these, so no credential with a
+  // space in it can pass — and a credential is one token anyway.
+  return word.split(/\s+/).every((part) => STATUS_WORDS.has(part));
 };
+
+/** Words a status sentence is made of, where a credential would be. */
+const STATUS_WORDS = new Set([
+  "no",
+  "not",
+  "none",
+  "never",
+  "nil",
+  "null",
+  "missing",
+  "absent",
+  "unset",
+  "empty",
+  "blank",
+  "provided",
+  "present",
+  "configured",
+  "set",
+  "sent",
+  "found",
+  "yet",
+  "value",
+  "header",
+  "required",
+  "available",
+  "was",
+  "is",
+  "a",
+  "any",
+  "the",
+]);
 
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.

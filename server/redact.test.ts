@@ -553,7 +553,15 @@ describe("redactSecretsInText", () => {
     // function reads bot text and permission-card copy too
     // (a value of eight characters or more is masked with or without a scheme,
     // which is the floor doing its job and is how this behaved before)
-    for (const status of [`${HEADER}: not set`, `${HEADER}: was empty`, `${HEADER}: nil yet`]) {
+    for (const status of [
+      `${HEADER}: not set`,
+      `${HEADER}: was empty`,
+      `${HEADER}: nil yet`,
+      `${HEADER}: no value`,
+      `${HEADER}: not provided`,
+      `${HEADER}: was not set`,
+      `${HEADER}: header missing`,
+    ]) {
       expect(redactSecretsInText(status), status).toBe(status);
     }
     // documentation placeholders are not credentials at any length, and this
@@ -578,8 +586,13 @@ describe("redactSecretsInText", () => {
     ]) {
       expect(redactSecretsInText(doc), doc).toBe(doc);
     }
-    // and a real credential of the same length is still masked
+    // and a real credential is still masked, including one that reads like a
+    // placeholder: a `your`/`my` prefix only counts with a separator after
+    // it, so `your-api-key` is documentation and `yourtoken` is a credential
     expect(redactSecretsInText(`${HEADER}: Basic dTpw`)).toContain("«redacted 4 chars»");
+    for (const real of [`${HEADER}: ${SCHEME_WORD} yourtoken`, `${HEADER}: ${SCHEME_WORD} mysecret`]) {
+      expect(redactSecretsInText(real), real).toMatch(/«redacted \d+ chars»/);
+    }
   });
 
   it("only treats a quote ADJACENT to the header as its wrapper", () => {
