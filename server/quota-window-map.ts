@@ -27,7 +27,7 @@ export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   // ambiguity fallback emits for a custom OpenAI-compatible engine
   // (server/telemetry.ts's AMBIGUOUS_ENGINE, set when inferProviderAndService
   // can name no real vendor) — it contains "openai" as a literal substring,
-  // so it must be excluded BEFORE the codex/openai check below, or a skipped
+  // so it must be excluded before any codex/openai check, or a skipped
   // monthly window on an unrelated custom engine would wildcard-cap the real
   // Codex instance, and an ordinary window would render under the wrong
   // engine's row. Custom instances share one driver kind ("openai-compat")
@@ -40,7 +40,18 @@ export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   // in instanceConfigs()'s DEFAULT_FLEET, so a Codex/OpenAI Usage Monitor
   // window was silently unreachable by windowsForDriver() for the one
   // instance most likely to want it.
-  if (hay.includes("codex") || hay.includes("openai")) return ["codex", "codexAgent"];
+  //
+  // Deliberately "codex"/"chatgpt" (the PRODUCT), never a bare "openai"/
+  // "gpt" (the VENDOR/model family): excluding the literal "openai-compat"
+  // token above only catches the case where Usage Monitor could name no
+  // vendor at all. When it CAN — because the custom engine's own model id
+  // happens to look like a real OpenAI model ("gpt-4o" proxied through
+  // OpenRouter, Azure, a self-hosted gateway, …) — its classification can
+  // legitimately report provider "openai" for a window that has nothing to
+  // do with the real app. A custom engine is free to proxy those same
+  // models; only the product name is unique to the one BotFleet actually
+  // ships as "codex".
+  if (hay.includes("codex") || hay.includes("chatgpt")) return ["codex", "codexAgent"];
   if (hay.includes("anthropic") || hay.includes("claude")) return ["claudeAgent"];
   if (hay.includes("grok") || hay.includes("xai")) return ["grokAgent", "grok"];
   if (hay.includes("minimax")) return ["minimax"];

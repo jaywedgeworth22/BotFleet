@@ -110,6 +110,40 @@ describe("Codex windows", () => {
     };
     expect(driverKindsForWindow(customEngineWindow)).toEqual([]);
   });
+
+  it("does not attribute a bare openai-provider window to Codex without a codex/chatgpt product signal", () => {
+    // Usage Monitor's own classification can report provider "openai" (not
+    // "openai-compat") for a custom engine whose configured model merely
+    // LOOKS like a real OpenAI model — e.g. "gpt-4o" proxied through
+    // OpenRouter, Azure, or a self-hosted gateway — with nothing else in
+    // the window distinguishing it from genuine Codex/ChatGPT usage. The
+    // vendor/model family alone ("openai", "gpt") is not proof it came
+    // from the one app BotFleet actually ships as "codex"; only the
+    // product name ("codex"/"chatgpt") is.
+    const gptShapedCustomEngineWindow = {
+      provider: "openai",
+      sourceApp: null,
+      label: "GPT-4o usage",
+      modelId: "gpt-4o",
+      modelType: null,
+      window: "5h",
+      skip: false,
+    };
+    expect(driverKindsForWindow(gptShapedCustomEngineWindow)).toEqual([]);
+  });
+
+  it("still attributes a genuine ChatGPT-labelled window even when the provider token is bare openai", () => {
+    const chatgptWindow = {
+      provider: "openai",
+      sourceApp: "ChatGPT desktop",
+      label: "ChatGPT Plus 5h",
+      modelId: null,
+      modelType: null,
+      window: "5h",
+      skip: false,
+    };
+    expect(driverKindsForWindow(chatgptWindow)).toContain("codex");
+  });
 });
 
 describe("Kimi windows", () => {

@@ -25,6 +25,101 @@ function isEngineEnabled(instance: InstanceInfo): boolean {
   return instance.enabled !== false;
 }
 
+/** Dependencies `createCustomEngine`/`deleteCustomEngine` need, injected
+ * rather than reached for directly (`api`, `window.ogb`) — this repo has no
+ * component-render test harness (no React Testing Library), so the async
+ * orchestration a bug actually lives in — not a pure value transform — is
+ * pulled out where plain `vi.fn()` mocks can exercise it, the same way
+ * `server/harness/registry.test.ts` injects a fake driver instead of a real
+ * one. */
+export type EngineCredentialDeps = {
+  createInstance: (body: {
+    name: string;
+    endpoint: string;
+    key?: string;
+    models: string[];
+    iconUrl?: string;
+  }) => Promise<{ instanceId: string }>;
+  deleteInstance: (instanceId: string) => Promise<unknown>;
+  /** Absent entirely outside the desktop shell — the dev/browser fallback
+   * never routes a key through the encrypted store. */
+  setInstanceCredential?: (instanceId: string, value: string) => Promise<void>;
+};
+
+/** Create a custom engine, then — only when the encrypted-credential bridge
+ * exists and a key was entered — hand that key to the encrypted store under
+ * the id the server just minted. If that second step fails, the instance
+ * that step one already created is deleted before the error propagates: a
+ * half-created, keyless engine must not linger in the list (the normal path
+ * never leaves one behind), and a retry must not mint a second "Engine-2"
+ * alongside it. */
+export async function createCustomEngine(
+  deps: EngineCredentialDeps,
+  input: { name: string; endpoint: string; key: string; models: string[]; iconUrl?: string },
+): Promise<{ instanceId: string }> {
+  const hasBridge = Boolean(deps.setInstanceCredential);
+  const created = await deps.createInstance({
+    name: input.name,
+    endpoint: input.endpoint,
+    key: hasBridge ? undefined : input.key || undefined,
+    models: input.models,
+    iconUrl: input.iconUrl,
+  });
+  if (hasBridge && input.key) {
+    try {
+      await deps.setInstanceCredential!(created.instanceId, input.key);
+    } catch (credentialError) {
+      await deps.deleteInstance(created.instanceId).catch(() => {});
+      const reason = credentialError instanceof Error ? credentialError.message : String(credentialError);
+      // NBSP, not two ASCII spaces — this renders straight into a plain
+      // <div> in the modal below, where white-space:normal collapses a run
+      // of ordinary spaces to one (see server/secret-persistence.test.ts's
+      // "renders its sentence gaps with NBSP" for the same rule elsewhere
+      // in this app).
+      throw new Error(`Could not save the encrypted key, so the new engine was removed.  ${reason}`);
+    }
+  }
+  return created;
+}
+
+/** Delete a custom engine, purging the encrypted store's copy of its key
+ * FIRST. Deleting the instance alone only clears the harness's live,
+ * in-memory override — a later engine created with the exact same name
+ * reuses the exact same slugged instance id, and without this the next
+ * app launch's credential replay would hand THAT engine the deleted one's
+ * bearer token, possibly against a different endpoint. A failed purge still
+ * lets the delete proceed — the visible engine goes away either way — the
+ * caller decides how to surface `credentialClearError`. */
+export async function deleteCustomEngine(
+  deps: EngineCredentialDeps,
+  instanceId: string,
+): Promise<{ credentialClearError: string | null }> {
+  let credentialClearError: string | null = null;
+  if (deps.setInstanceCredential) {
+    try {
+      await deps.setInstanceCredential(instanceId, "");
+    } catch (e) {
+      credentialClearError = e instanceof Error ? e.message : String(e);
+    }
+  }
+  await deps.deleteInstance(instanceId);
+  return { credentialClearError };
+}
+
+/** Real deps for createCustomEngine/deleteCustomEngine, built fresh per call
+ * so a bridge that appears or disappears between renders (should never
+ * happen in practice, but window.ogb is read live rather than cached) is
+ * always current. */
+function buildEngineCredentialDeps(): EngineCredentialDeps {
+  return {
+    createInstance: (body) => api("/api/instances", { method: "POST", body: JSON.stringify(body) }),
+    deleteInstance: (instanceId) => api(`/api/instances/${encodeURIComponent(instanceId)}`, { method: "DELETE" }),
+    setInstanceCredential: window.ogb?.setInstanceCredential
+      ? (instanceId, value) => window.ogb!.setInstanceCredential!(instanceId, value)
+      : undefined,
+  };
+}
+
 function CustomPicker({
   instance,
   cliDefault,
@@ -268,11 +363,19 @@ function EngineRow({
     if (!window.confirm(`Delete custom engine "${instance.displayName}"?`)) return;
     setDeleting(true);
     setError(null);
-    api(`/api/instances/${encodeURIComponent(instance.instanceId)}`, {
-      method: "DELETE",
-    })
-      .then(() => Promise.resolve(refreshInstances({ fresh: true })).catch(() => {}))
-      .catch((e) => setError(e.message))
+    deleteCustomEngine(buildEngineCredentialDeps(), instance.instanceId)
+      .then(({ credentialClearError }) =>
+        Promise.resolve(refreshInstances({ fresh: true }))
+          .catch(() => {})
+          .then(() => {
+            if (credentialClearError) {
+              // NBSP, not two ASCII spaces — see createCustomEngine's own
+              // note; same plain <div> below.
+              setError(`Engine deleted.  Its stored key could not be cleared: ${credentialClearError}`);
+            }
+          }),
+      )
+      .catch((e: Error) => setError(e.message))
       .finally(() => setDeleting(false));
   };
 
@@ -458,30 +561,21 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
 
     setSaving(true);
     setError(null);
-    const trimmedKey = apiKey.trim();
     // Every other credential card in this app (ApiKeys.tsx, the Secret Store
     // card) routes through window.ogb.setCredential when the desktop bridge
     // exists, so the key reaches the OS-encrypted store instead of sitting
     // in plaintext config.json. A custom engine's key is a dynamic per-
     // instance secret, not one of that bridge's fixed named slots, so it
-    // takes a sibling method plus a create-then-set-credential sequence:
-    // the instance id is only known once the server has deduped the slug.
-    const hasBridge = Boolean(window.ogb?.setInstanceCredential);
-    api("/api/instances", {
-      method: "POST",
-      body: JSON.stringify({
-        name: trimmedName,
-        endpoint: trimmedUrl,
-        key: hasBridge ? undefined : (trimmedKey || undefined),
-        models,
-        iconUrl: iconUrl.trim() || undefined,
-      }),
+    // takes a sibling method (createCustomEngine, above) plus a
+    // create-then-set-credential sequence: the instance id is only known
+    // once the server has deduped the slug.
+    createCustomEngine(buildEngineCredentialDeps(), {
+      name: trimmedName,
+      endpoint: trimmedUrl,
+      key: apiKey.trim(),
+      models,
+      iconUrl: iconUrl.trim() || undefined,
     })
-      .then(async (created: { instanceId: string }) => {
-        if (hasBridge && trimmedKey) {
-          await window.ogb!.setInstanceCredential!(created.instanceId, trimmedKey);
-        }
-      })
       .then(() => Promise.resolve(onAdded()).catch(() => {}))
       .then(onClose)
       .catch((e: Error) => setError(e.message))

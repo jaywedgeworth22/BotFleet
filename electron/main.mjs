@@ -828,6 +828,15 @@ async function startServerPackaged() {
     serverProc = null;
     serverMode = "attached";
     SERVER_PORT = result.port;
+    // The spawn branch's own replay (inside startServerOn) only runs for a
+    // child THIS launch forks — an attached harness may be a survivor from
+    // an earlier launch (or another window) that has since been restarted
+    // by something outside this code path, with no memory of any
+    // instanceKeyOverrides a prior launch's replay put into it. Best-effort
+    // and idempotent (re-PATCHing an already-live key is a no-op), so
+    // calling it unconditionally here is cheap insurance against a custom
+    // engine silently going keyless on the attach path.
+    await replayInstanceCredentials(SERVER_PORT);
     if (result.static) {
       rendererBase = `http://127.0.0.1:${SERVER_PORT}`;
       return true;
