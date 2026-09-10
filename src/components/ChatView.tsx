@@ -807,58 +807,58 @@ const MessagesList = memo(function MessagesList({
               // stored as role=system.  Older webhook rows still used
               // role=user; keep those off the blue bubble too.
               const autoDelivered = m.role === "system" || (m.role === "user" && !m.from?.botId);
-              const webhookView = autoDelivered ? webhookMessageView(m.text ?? "") : null;
-              if (webhookView) return <WebhookCard view={webhookView} />;
-              const imessageView = autoDelivered ? imessageMessageView(m.text ?? "") : null;
-              if (imessageView) {
-                return (
-                  <WebhookCard
-                    view={imessageView}
-                    icon={<MessageCircle size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />}
-                    detailsNoun="Message"
-                  />
-                );
-              }
-              if (m.role === "system") {
-                const body = (m.text ?? "").trim();
-                const firstLine = body.split("\n").find((line) => line.trim()) ?? "Instructions";
-                // Regenerate forks a system instruction the same way it
-                // forks a user message (store.branchMessage) — the fork's
-                // siblings need the same "‹ i/N ›" reachability the Bubble
-                // version switcher gives a user message, or the previous
-                // automated answer becomes unreachable once regenerated.
-                const versions = messageVersions(bot, m);
-                const versionIndex = versions.findIndex((v) => v.id === m.id);
+              // A system instruction card — however it renders (a parsed
+              // webhook/iMessage view, or the generic Instructions card) —
+              // needs the same edit-in-place and "‹ i/N ›" version
+              // reachability a user Bubble gets: Composer's ArrowUp can set
+              // editingId to a system turn-starter, and Regenerate forks a
+              // system message the same way it forks a user one
+              // (store.branchMessage), so its siblings must stay selectable
+              // and its edit state must actually render, not just be armed.
+              const systemEditing = m.role === "system" && editingId === m.id;
+              const systemVersions = m.role === "system" ? messageVersions(bot, m) : [m];
+              const systemVersionIndex = systemVersions.findIndex((v) => v.id === m.id);
+              const withSystemChrome = (card: ReactNode) => {
+                if (systemEditing) {
+                  return (
+                    <BubbleEditor
+                      initial={m.text ?? ""}
+                      onCancel={onCancelEdit}
+                      onSubmit={(text) => onSubmitEdit(m.id, text)}
+                    />
+                  );
+                }
                 return (
                   <div className="flex flex-col items-start gap-0.5">
-                    <WebhookCard
-                      view={{
-                        headline: firstLine.slice(0, 120),
-                        subtitle: automationSourceLabel(m.automationSource, body),
-                        payload: body || undefined,
-                      }}
-                      detailsNoun="Instructions"
-                    />
-                    {versions.length > 1 && (
+                    {card}
+                    {systemVersions.length > 1 && (
                       <div className="flex items-center gap-0.5 pl-1 text-[12px] text-ink-secondary">
                         <button
                           onClick={() =>
-                            dispatch({ type: "switchBranch", botId: bot.id, messageId: versions[versionIndex - 1].id })
+                            dispatch({
+                              type: "switchBranch",
+                              botId: bot.id,
+                              messageId: systemVersions[systemVersionIndex - 1].id,
+                            })
                           }
-                          disabled={versionIndex <= 0 || bot.busy}
+                          disabled={systemVersionIndex <= 0 || bot.busy}
                           className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
                           title="Previous Version"
                         >
                           <ChevronLeft size={14} />
                         </button>
                         <span className="tabular-nums">
-                          {versionIndex + 1}/{versions.length}
+                          {systemVersionIndex + 1}/{systemVersions.length}
                         </span>
                         <button
                           onClick={() =>
-                            dispatch({ type: "switchBranch", botId: bot.id, messageId: versions[versionIndex + 1].id })
+                            dispatch({
+                              type: "switchBranch",
+                              botId: bot.id,
+                              messageId: systemVersions[systemVersionIndex + 1].id,
+                            })
                           }
-                          disabled={versionIndex >= versions.length - 1 || bot.busy}
+                          disabled={systemVersionIndex >= systemVersions.length - 1 || bot.busy}
                           className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
                           title="Next Version"
                         >
@@ -867,6 +867,32 @@ const MessagesList = memo(function MessagesList({
                       </div>
                     )}
                   </div>
+                );
+              };
+              const webhookView = autoDelivered ? webhookMessageView(m.text ?? "") : null;
+              if (webhookView) return withSystemChrome(<WebhookCard view={webhookView} />);
+              const imessageView = autoDelivered ? imessageMessageView(m.text ?? "") : null;
+              if (imessageView) {
+                return withSystemChrome(
+                  <WebhookCard
+                    view={imessageView}
+                    icon={<MessageCircle size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />}
+                    detailsNoun="Message"
+                  />,
+                );
+              }
+              if (m.role === "system") {
+                const body = (m.text ?? "").trim();
+                const firstLine = body.split("\n").find((line) => line.trim()) ?? "Instructions";
+                return withSystemChrome(
+                  <WebhookCard
+                    view={{
+                      headline: firstLine.slice(0, 120),
+                      subtitle: automationSourceLabel(m.automationSource, body),
+                      payload: body || undefined,
+                    }}
+                    detailsNoun="Instructions"
+                  />,
                 );
               }
               return (
