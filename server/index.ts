@@ -115,6 +115,9 @@ import {
   skillRecorderEnabled,
   syncCredentialEnv,
   patchInstanceConfig,
+  deleteInstanceConfig,
+  persistableInstanceConfigs,
+  isAbsoluteHttpUrl,
   usageIngestUrl,
   usageProjectRules,
   vpsCpus,
@@ -131,6 +134,7 @@ import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import {
   isEffortLevel,
+  type InstanceConfigMap,
   type ModelSelection,
   type ProviderInstance,
   type RequestOutcome,
@@ -555,11 +559,13 @@ export function askBotAndWait(targetBotId: string, message: string, depth: numbe
 // default selection for new bots: first available instance, claude preferred
 const DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS = 15_000;
 
-async function defaultSelection() {
+async function defaultSelection(excludeInstanceId?: string) {
   // A bot being created can ride a probe taken moments ago; the engine rail
   // still refreshes on demand.
   const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
-  const available = described.filter((d) => d.snapshot.state === "available");
+  const available = described.filter(
+    (d) => d.snapshot.state === "available" && d.instanceId !== excludeInstanceId,
+  );
   // Deliberately NO fallback to described[0]. Handing a bot an engine whose
   // CLI isn't installed makes it look ready and then fail on send with a raw
   // spawn ENOENT — the single worst first-run experience, and the one every
@@ -4532,7 +4538,7 @@ async function runProviderReload() {
   // watchdog reports a "no activity" stall on a dead thread twenty minutes
   // later, and settle each one's routine receipt the way the stall path does.
   const killedTurns = watchdog.settleAll();
-  await registry.load(instanceConfigs(cfg));
+  await registry.load(withInstanceKeyOverrides(instanceConfigs(cfg)));
   // The fleet now exists on exactly these credentials — record that, so the
   // next comparison is against what was built rather than against whatever
   // `cfg` happened to hold when the comparison ran.
@@ -4606,6 +4612,41 @@ async function applyResolvedSecrets(reason: RefreshReason): Promise<void> {
 // and reload sequence single-flight so two settings requests cannot drop one
 // another's changes or dispose a fleet while another reload is creating it.
 let providerConfigBusy = false;
+
+// Runtime-only per-instance credential overrides for openai-compat custom
+// engines saved through the desktop shell's encrypted credential store
+// (?secretStorage=external on PATCH /api/instances/:id): the key never
+// touches config.json, so it lives ONLY here for the life of this process —
+// re-applied to the live registry entry every time that instance reloads,
+// and dropped when the instance is deleted. A relaunch starts this map
+// empty; the instance then boots keyless (the same, already-supported state
+// as a deliberately-keyless local engine) until the desktop shell replays
+// its encrypted store back through this same PATCH route.
+const instanceKeyOverrides = new Map<string, string>();
+
+/** Merge every live-only instance-key override into a freshly built
+ * instanceConfigs(cfg) map before it becomes (part of) the live registry.
+ * The narrow PATCH /api/instances/:id route that SETS an override already
+ * applied it to the one instance it just touched, but the general
+ * reloadProviders() path — triggered by any unrelated settings change
+ * (another provider's credential, bot defaults, …) — rebuilds the WHOLE
+ * fleet from instanceConfigs(cfg) alone. Without this, that rebuild would
+ * silently drop every custom engine's encrypted key: the instance keeps
+ * reporting available (keyless custom instances always do), so the gap
+ * only surfaces as every subsequent turn failing upstream, until the app
+ * restarts and the desktop shell replays its store. Mutates and returns
+ * the same map — instanceConfigs(cfg) always hands back a freshly spread
+ * transient map, never the caller's persisted entries, so mutating it here
+ * is exactly as safe as instanceConfigs()'s own injectedEnvironment merge. */
+function withInstanceKeyOverrides(map: InstanceConfigMap): InstanceConfigMap {
+  for (const [instanceId, key] of instanceKeyOverrides) {
+    const entry = map[instanceId];
+    if (entry && entry.driver === "openai-compat") {
+      entry.environment = { ...entry.environment, OPENAI_COMPAT_API_KEY: key };
+    }
+  }
+  return map;
+}
 
 // ── HTTP plumbing ─────────────────────────────────────────────────────
 /** Folders a paired phone may point a room at.  Only what this computer
@@ -7843,7 +7884,7 @@ const server = createServer(async (req, res) => {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       const body = await readBody(req);
-      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean } = {};
+      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean; key?: string } = {};
 
       if (body?.cli !== undefined) {
         if (typeof body.cli !== "string") return json(res, 400, { error: "cli must be a string" });
@@ -7861,10 +7902,32 @@ const server = createServer(async (req, res) => {
         patchOptions.enabled = body.enabled;
       }
 
+      if (body?.key !== undefined) {
+        if (typeof body.key !== "string") return json(res, 400, { error: "key must be a string" });
+        if (/[\n\r]/.test(body.key)) return json(res, 400, { error: "key must not contain newlines" });
+        patchOptions.key = body.key;
+      }
+
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
       providerConfigBusy = true;
       try {
         const instanceId = instancePatch[1];
+        // A custom engine's API key saved through the desktop shell's
+        // encrypted credential store arrives here with ?secretStorage=external
+        // (the shell has already, or is about to, write it to credentials.bin)
+        // — it must never also land in plaintext config.json next to the
+        // cli/fullAuto overrides this route persists below. Pull it out of
+        // patchOptions before patchInstanceConfig ever sees it; the live
+        // instance gets it through instanceKeyOverrides instead, the same
+        // per-instance `environment` channel the openai-compat driver already
+        // reads (and, since finding #1, the ONLY channel a custom instance's
+        // key can arrive through).
+        if (patchOptions.key !== undefined && url.searchParams.get("secretStorage") === "external") {
+          const trimmedKey = patchOptions.key.trim();
+          if (trimmedKey) instanceKeyOverrides.set(instanceId, trimmedKey);
+          else instanceKeyOverrides.delete(instanceId);
+          delete patchOptions.key;
+        }
         const result = patchInstanceConfig(cfg, instanceId, patchOptions);
         if (!result.ok) return json(res, 404, { error: `unknown instance "${instanceId}"` });
         // persist the whole instances map this rebuild produced — a fresh
@@ -7873,7 +7936,10 @@ const server = createServer(async (req, res) => {
         saveConfig({ instances: result.config.instances });
         Object.assign(cfg, loadConfig());
 
-        const targetEntry = instanceConfigs(cfg)[instanceId];
+        // Re-apply any live-only key override on every reload of this
+        // instance — not just the request that just set it — so a later
+        // cli-only or enabled-only PATCH doesn't silently drop it.
+        const targetEntry = withInstanceKeyOverrides(instanceConfigs(cfg))[instanceId];
         const oldInstance = registry.get(instanceId);
         if (oldInstance) {
           await oldInstance.adapter.stopAll?.().catch(() => {});
@@ -7897,6 +7963,215 @@ const server = createServer(async (req, res) => {
         resetPathCache();
         const instances = await registry.describeWithFreshInstance(instanceId);
         return json(res, 200, { instances });
+      } finally {
+        providerConfigBusy = false;
+      }
+    }
+
+    // ── add custom OpenAI-compatible engine ──
+    // POST /api/instances {name: string, endpoint: string, key?: string, models: string[] | string, iconUrl?: string}
+    if (method === "POST" && path === "/api/instances") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      const body = await readBody(req);
+      const name = typeof body?.name === "string" ? body.name.trim() : "";
+      if (!name || name.length > 64) {
+        return json(res, 400, { error: "name is required and must be 1–64 characters" });
+      }
+      const endpoint = typeof body?.endpoint === "string" ? body.endpoint.trim() : "";
+      if (!endpoint || !isAbsoluteHttpUrl(endpoint)) {
+        return json(res, 400, { error: "endpoint must be a valid http:// or https:// URL" });
+      }
+      const rawKey = typeof body?.key === "string" ? body.key.trim() : undefined;
+      const rawIcon = typeof body?.iconUrl === "string" ? body.iconUrl.trim() : undefined;
+
+      let rawModels: string[] = [];
+      if (Array.isArray(body?.models)) {
+        rawModels = body.models.map((m: unknown) => (typeof m === "string" ? m.trim() : "")).filter(Boolean);
+      } else if (typeof body?.models === "string") {
+        rawModels = body.models.split(/[\n,]+/).map((s: string) => s.trim()).filter(Boolean);
+      }
+      if (rawModels.length === 0) {
+        return json(res, 400, { error: "at least one model ID is required" });
+      }
+      if (rawModels.length > 15) {
+        return json(res, 400, { error: "at most 15 models can be configured per engine" });
+      }
+
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        const currentFleet = instanceConfigs(cfg);
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "custom";
+        let instanceId = `custom-${slug}`;
+        let counter = 1;
+        while (Object.hasOwn(currentFleet, instanceId)) {
+          instanceId = `custom-${slug}-${counter++}`;
+        }
+
+        const customConfig: Record<string, unknown> = {
+          url: endpoint,
+          models: rawModels,
+        };
+        if (rawKey) customConfig.key = rawKey;
+        if (rawIcon) customConfig.iconUrl = rawIcon;
+
+        const newInstanceEntry = {
+          driver: "openai-compat",
+          displayName: name,
+          config: customConfig,
+        };
+
+        // persistableInstanceConfigs(cfg) is NOT currentFleet: currentFleet
+        // is the LIVE transient map, whose per-instance `environment` has
+        // injected credentials baked in (BOX_TOKEN, OPENCODE_API_KEY,
+        // OPENAI_COMPAT_API_KEY, …). On a default install `cfg.instances` is
+        // unset, so spreading currentFleet here would copy those live
+        // secrets into the PERSISTED per-instance `environment` entries on
+        // disk — never meant to be stored there, and a later credential
+        // rotation/clear would leave the stale copy still active.
+        const nextInstances = {
+          ...persistableInstanceConfigs(cfg),
+          [instanceId]: newInstanceEntry,
+        };
+
+        saveConfig({ instances: nextInstances });
+        Object.assign(cfg, loadConfig());
+        // Attach only the newly added instance rather than calling the
+        // global reloadProviders(): that disposes EVERY provider and marks
+        // every currently-busy bot's turn as interrupted, so adding one
+        // independent engine would kill every other bot's active work.
+        const newEntry = instanceConfigs(cfg)[instanceId];
+        const newLive = newEntry ? await registry.reloadInstance(instanceId, newEntry) : null;
+        if (newLive) bus.attach([newLive]);
+        resetPathCache();
+        return json(res, 201, {
+          ok: true,
+          instanceId,
+          instances: await registry.describe(),
+        });
+      } finally {
+        providerConfigBusy = false;
+      }
+    }
+
+    // ── delete custom engine instance ──
+    // DELETE /api/instances/:id
+    const instanceDelete = /^\/api\/instances\/([\w.-]+)$/.exec(path);
+    if (method === "DELETE" && instanceDelete) {
+      const instanceId = instanceDelete[1];
+      const protectedEngines = new Set([
+        "grok", "dsh", "droid", "cursor", "claude", "codex", "antigravity",
+        "minimax", "opencodeGo", "computer", "openaiCompat", "qwen", "hermes", "pi",
+      ]);
+      if (protectedEngines.has(instanceId)) {
+        return json(res, 400, { error: `cannot delete default fleet engine "${instanceId}"` });
+      }
+
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        const result = deleteInstanceConfig(cfg, instanceId);
+        if (!result.ok) return json(res, 404, { error: `unknown instance "${instanceId}"` });
+
+        // A bot can reference the engine either at the top level
+        // (bot.modelSelection) or per-task (TaskRecord.modelSelection, which
+        // sendBotTurn prioritizes over the bot's own selection) — either one
+        // surviving deletion would fail on the next turn.
+        const referencesInstance = (selection: ModelSelection | undefined) =>
+          selection?.instanceId === instanceId ||
+          selection?.fallbacks?.some((f) => f.instanceId === instanceId) === true;
+        const affectedBots = store.bots.filter(
+          (b) =>
+            referencesInstance(b.modelSelection) ||
+            store.tasks(b.id).some((t) => referencesInstance(t.modelSelection)),
+        );
+        if (affectedBots.some((b) => b.busy)) {
+          return json(res, 409, { error: "cannot delete engine while a bot using it is working" });
+        }
+        if (affectedBots.length > 0) {
+          // Exclude the instance being deleted from the replacement pool: it
+          // hasn't been removed from the live registry at this point, so
+          // without this it can select its own about-to-be-deleted id as the
+          // "replacement" and every bot's next turn would fail.
+          const replacement = await defaultSelection(instanceId);
+          // defaultSelection() deliberately returns an EMPTY selection rather
+          // than a not-actually-ready fallback when nothing else is
+          // available (see its own comment) — the right answer for a bot
+          // being freshly created, which the UI then shows a setup path for.
+          // Silently writing that empty selection into an EXISTING bot's
+          // modelSelection is not the same kind of honest: it leaves the bot
+          // pointed at instanceId "", which fails every future turn with
+          // "provider instance \"\" is unavailable" and gives the operator no
+          // path back short of manually reconfiguring the bot. Refuse the
+          // deletion instead, the same way a busy affected bot already does.
+          if (!replacement.instanceId) {
+            return json(res, 409, {
+              error: "cannot delete this engine: no other configured engine is available to reassign the bots using it",
+            });
+          }
+          const rewrite = (selection: ModelSelection): ModelSelection => {
+            const next: ModelSelection = { ...selection };
+            if (next.instanceId === instanceId) {
+              next.instanceId = replacement.instanceId;
+              next.model = replacement.model;
+            }
+            if (next.fallbacks) {
+              const nextFallbacks = next.fallbacks.filter((f) => f.instanceId !== instanceId);
+              if (nextFallbacks.length > 0) {
+                next.fallbacks = nextFallbacks;
+              } else {
+                delete next.fallbacks;
+              }
+            }
+            return next;
+          };
+          for (const b of affectedBots) {
+            let changed = false;
+            const patch: { modelSelection?: ModelSelection } = {};
+            if (referencesInstance(b.modelSelection)) {
+              patch.modelSelection = rewrite(b.modelSelection);
+              changed = true;
+            }
+            if (changed) {
+              const patched = store.patchBot(b.id, patch);
+              if (patched) broadcast({ kind: "bot", bot: wireBot(patched) });
+            }
+            for (const task of store.tasks(b.id)) {
+              if (!referencesInstance(task.modelSelection)) continue;
+              const patchedTask = store.patchTask(b.id, task.threadId, {
+                modelSelection: rewrite(task.modelSelection!),
+              });
+              if (patchedTask) {
+                const freshBot = store.bot(b.id);
+                if (freshBot) broadcast({ kind: "bot", bot: wireBot(freshBot) });
+              }
+            }
+          }
+        }
+
+        saveConfig({ deleteInstance: instanceId });
+        Object.assign(cfg, loadConfig());
+        // Remove only the deleted registry entry and its bus attachment —
+        // not the global reloadProviders(): that disposes EVERY provider and
+        // marks every currently-busy bot's turn as interrupted, so deleting
+        // one unused custom engine would destroy unrelated active work.
+        bus.detach(instanceId);
+        await registry.removeInstance(instanceId);
+        instanceKeyOverrides.delete(instanceId);
+        // A recreated engine reuses the same slug/instance id (the POST
+        // handler's dedup loop only guards against a currently-LIVE
+        // collision), so a stale cooldown — including a "*" wildcard record
+        // with no resetsAt that would otherwise never expire — must not
+        // outlive the engine it was recorded against and immediately cap a
+        // same-named replacement.
+        quotaCooldowns.clearWhere((cooldown) => cooldown.instanceId === instanceId);
+        resetPathCache();
+        return json(res, 200, {
+          ok: true,
+          instances: await registry.describe(),
+        });
       } finally {
         providerConfigBusy = false;
       }

@@ -5,13 +5,14 @@
 // asks before registering — the classic miss is a path the terminal sees
 // but this GUI app can't.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Loader2, TriangleAlert } from "lucide-react";
+import { Check, ChevronDown, Loader2, Plus, TriangleAlert, Upload, X } from "lucide-react";
 
 import { api, useStore, type InstanceInfo } from "@/state/store";
 import { EngineGroupLabel } from "./EngineGroupLabel";
 import { ProviderMark } from "./ProviderIcons";
 import { splitEngineRail } from "@/lib/engine-rail";
 import { cn } from "@/lib/cn";
+import { createCustomEngine, deleteCustomEngine, type EngineCredentialDeps } from "@/lib/custom-engine";
 
 interface ProbeResult {
   ok: boolean;
@@ -23,6 +24,23 @@ interface ProbeResult {
  * — the registry treats absent `enabled` as `true` and the UI must match. */
 function isEngineEnabled(instance: InstanceInfo): boolean {
   return instance.enabled !== false;
+}
+
+/** Real deps for createCustomEngine/deleteCustomEngine (src/lib/custom-engine.ts),
+ * built fresh per call so a bridge that appears or disappears between
+ * renders (should never happen in practice, but window.ogb is read live
+ * rather than cached) is always current. */
+function buildEngineCredentialDeps(): EngineCredentialDeps {
+  return {
+    createInstance: (body) => api("/api/instances", { method: "POST", body: JSON.stringify(body) }),
+    deleteInstance: (instanceId) => api(`/api/instances/${encodeURIComponent(instanceId)}`, { method: "DELETE" }),
+    setInstanceCredential: window.ogb?.setInstanceCredential
+      ? (instanceId, value) => window.ogb!.setInstanceCredential!(instanceId, value)
+      : undefined,
+    clearInstanceCredential: window.ogb?.clearInstanceCredential
+      ? (instanceId) => window.ogb!.clearInstanceCredential!(instanceId)
+      : undefined,
+  };
 }
 
 function CustomPicker({
@@ -221,7 +239,9 @@ function EngineRow({
     patch: { cli?: string; fullAuto?: boolean; enabled?: boolean },
   ) => Promise<{ ok: boolean; error?: string }>;
 }) {
+  const { refreshInstances } = useStore();
   const [open, setOpen] = useState(false);
+  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wasOpenFor = useRef<string | null>(null);
 
@@ -233,6 +253,8 @@ function EngineRow({
   const enabled = isEngineEnabled(instance);
   const isBusy = busyInstanceId !== null;
   const isThisBusy = busyInstanceId === instance.instanceId;
+  const hasCli = instance.cli !== undefined || instance.cliDefault !== undefined;
+  const isCustom = Boolean(instance.isCustom) || (instance.driverKind === "openai-compat" && instance.instanceId !== "openaiCompat");
 
   // Close the picker when this instance's override changes to anything else
   // — a save from this row, another tab, or the 5-min refresh. The picker
@@ -255,12 +277,33 @@ function EngineRow({
   };
 
   const reset = () => {
-    if (isBusy || !enabled) return;
+    if (isBusy || !enabled || deleting) return;
     void patchWithLocalError({ cli: "" });
   };
 
+  const deleteEngine = () => {
+    if (isBusy || deleting) return;
+    if (!window.confirm(`Delete custom engine "${instance.displayName}"?`)) return;
+    setDeleting(true);
+    setError(null);
+    deleteCustomEngine(buildEngineCredentialDeps(), instance.instanceId)
+      .then(({ credentialClearError }) =>
+        Promise.resolve(refreshInstances({ fresh: true }))
+          .catch(() => {})
+          .then(() => {
+            if (credentialClearError) {
+              // NBSP, not two ASCII spaces — see createCustomEngine's own
+              // note; same plain <div> below.
+              setError(`Engine deleted.  Its stored key could not be cleared: ${credentialClearError}`);
+            }
+          }),
+      )
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setDeleting(false));
+  };
+
   const toggleEnabled = (next: boolean) => {
-    if (isBusy) return;
+    if (isBusy || deleting) return;
     void patchWithLocalError({ enabled: next });
   };
 
@@ -271,7 +314,7 @@ function EngineRow({
           className={cn(
             "flex shrink-0 items-center gap-1.5 text-[11.5px] uppercase tracking-wide",
             enabled ? "text-ink-secondary cursor-pointer" : "text-ink-secondary/70 cursor-pointer",
-            isBusy && "cursor-not-allowed opacity-60",
+            (isBusy || deleting) && "cursor-not-allowed opacity-60",
           )}
           title={enabled ? "Disable this engine" : "Enable this engine"}
         >
@@ -280,13 +323,13 @@ function EngineRow({
             aria-label={`${instance.displayName} enabled`}
             className="accent-accent"
             checked={enabled}
-            disabled={isBusy}
+            disabled={isBusy || deleting}
             onChange={(e) => toggleEnabled(e.target.checked)}
           />
           {enabled ? "On" : "Off"}
         </label>
         <span className={cn("size-1.5 shrink-0 rounded-full", instance.cli ? "bg-accent" : "bg-raised-hover")} />
-        <ProviderMark driverKind={instance.driverKind} size={18} />
+        <ProviderMark driverKind={instance.driverKind} size={18} iconUrl={instance.iconUrl} />
         <span className={cn("shrink-0 flex items-center gap-1.5", enabled ? "text-ink" : "text-ink-secondary/70")}>
           {instance.displayName}
           {isThisBusy && <Loader2 size={12} className="animate-spin text-accent" />}
@@ -304,7 +347,7 @@ function EngineRow({
         {instance.cli && (
           <button
             onClick={reset}
-            disabled={isBusy || !enabled}
+            disabled={isBusy || !enabled || deleting}
             className="shrink-0 text-[11.5px] text-ink-secondary hover:text-ink disabled:cursor-not-allowed disabled:opacity-40"
           >
             {isThisBusy ? "Resetting…" : "Reset"}
@@ -312,32 +355,45 @@ function EngineRow({
         )}
         <label className={cn(
           "flex items-center gap-1.5 shrink-0 text-[12px] text-ink-secondary",
-          enabled && !isBusy ? "hover:text-ink cursor-pointer" : "cursor-not-allowed opacity-60",
+          enabled && !isBusy && !deleting ? "hover:text-ink cursor-pointer" : "cursor-not-allowed opacity-60",
         )}>
           <input
             type="checkbox"
             className="accent-accent"
             checked={!!instance.fullAuto}
-            disabled={isBusy || !enabled}
+            disabled={isBusy || !enabled || deleting}
             onChange={(e) => void patchWithLocalError({ fullAuto: e.target.checked })}
           />
           Bypass permissions (autonomous mode)
         </label>
-        <button
-          onClick={() => setOpen((v) => !v)}
-          disabled={!enabled || isBusy}
-          aria-expanded={open}
-          className={cn(
-            "shrink-0 rounded-lg border border-hairline/40 px-3 py-1 text-[12px]",
-            !enabled || isBusy
-              ? "cursor-not-allowed opacity-40"
-              : open
-                ? "bg-accent/15 text-accent"
-                : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
-          )}
-        >
-          Set CLI…
-        </button>
+        {hasCli && (
+          <button
+            onClick={() => setOpen((v) => !v)}
+            disabled={!enabled || isBusy || deleting}
+            aria-expanded={open}
+            className={cn(
+              "shrink-0 rounded-lg border border-hairline/40 px-3 py-1 text-[12px]",
+              !enabled || isBusy || deleting
+                ? "cursor-not-allowed opacity-40"
+                : open
+                  ? "bg-accent/15 text-accent"
+                  : "text-ink-secondary hover:bg-raised/50 hover:text-ink",
+            )}
+          >
+            Set CLI…
+          </button>
+        )}
+        {isCustom && (
+          <button
+            type="button"
+            onClick={deleteEngine}
+            disabled={isBusy || deleting}
+            className="shrink-0 rounded-lg border border-danger/30 px-2.5 py-1 text-[12px] text-danger hover:bg-danger/10 disabled:opacity-40"
+            title="Delete this custom engine"
+          >
+            {deleting ? "Deleting…" : "Delete"}
+          </button>
+        )}
       </div>
       {instance.driverKind === "antigravityAgent" && (
         <div className="mt-2 rounded bg-raised/40 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-hairline/40">
@@ -357,6 +413,12 @@ function EngineRow({
           they spawn MCP servers natively and execute the calls.
         </div>
       )}
+      {isCustom && (
+        <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
+          <strong className="text-ink">Custom OpenAI-Compatible Engine.</strong>
+          {"  "}Configured models: {instance.models.options.map((o) => o.label || o.id).join(", ") || "default"}.
+        </div>
+      )}
       {error && <div role="alert" className="mt-1 text-[12px] text-danger">{error}</div>}
       {open && enabled && (
         <CustomPicker
@@ -371,8 +433,222 @@ function EngineRow({
   );
 }
 
+function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => Promise<void> }) {
+  const [name, setName] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [modelsText, setModelsText] = useState("");
+  const [iconUrl, setIconUrl] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 300 * 1024) {
+      setError("Icon file must be under 300 KB");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === "string") {
+        setIconUrl(reader.result);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const save = () => {
+    const trimmedName = name.trim();
+    const trimmedUrl = endpoint.trim();
+    if (!trimmedName) {
+      setError("Engine name is required");
+      return;
+    }
+    if (!trimmedUrl) {
+      setError("Endpoint URL is required");
+      return;
+    }
+    const models = modelsText
+      .split(/[\n,]+/)
+      .map((m) => m.trim())
+      .filter(Boolean);
+    if (models.length === 0) {
+      setError("At least one model ID is required (e.g. meta-llama/llama-3.3-70b-instruct)");
+      return;
+    }
+    if (models.length > 15) {
+      setError("At most 15 model IDs can be configured");
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    // Every other credential card in this app (ApiKeys.tsx, the Secret Store
+    // card) routes through window.ogb.setCredential when the desktop bridge
+    // exists, so the key reaches the OS-encrypted store instead of sitting
+    // in plaintext config.json. A custom engine's key is a dynamic per-
+    // instance secret, not one of that bridge's fixed named slots, so it
+    // takes a sibling method (createCustomEngine, above) plus a
+    // create-then-set-credential sequence: the instance id is only known
+    // once the server has deduped the slug.
+    createCustomEngine(buildEngineCredentialDeps(), {
+      name: trimmedName,
+      endpoint: trimmedUrl,
+      key: apiKey.trim(),
+      models,
+      iconUrl: iconUrl.trim() || undefined,
+    })
+      .then(() => Promise.resolve(onAdded()).catch(() => {}))
+      .then(onClose)
+      .catch((e: Error) => setError(e.message))
+      .finally(() => setSaving(false));
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-5 backdrop-blur-sm"
+      onMouseDown={(e) => e.target === e.currentTarget && onClose()}
+    >
+      <div className="flex max-h-[90vh] w-full max-w-[540px] flex-col overflow-hidden rounded-2xl border border-hairline/60 bg-panel shadow-2xl text-ink">
+        <div className="flex items-start justify-between border-b border-hairline/40 px-5 py-4">
+          <div>
+            <div className="text-[16px] font-semibold text-ink">Add Custom Engine</div>
+            <div className="mt-1 text-[12px] text-ink-secondary">
+              Connect any OpenAI-compatible API endpoint (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio).
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg p-1.5 text-ink-secondary hover:bg-raised hover:text-ink"
+            aria-label="Close"
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5 text-[13px]">
+          <div>
+            <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
+              Engine Name
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g. Together AI, Ollama Local, Groq Open"
+              className="w-full rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[13px] text-ink outline-none placeholder:text-ink-secondary/60 focus:border-accent/70"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
+              API Endpoint URL
+            </label>
+            <input
+              type="text"
+              value={endpoint}
+              onChange={(e) => setEndpoint(e.target.value)}
+              placeholder="https://api.together.xyz/v1 or http://localhost:11434/v1"
+              className="w-full rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[13px] font-mono text-ink outline-none placeholder:font-sans placeholder:text-ink-secondary/60 focus:border-accent/70"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
+              API Key <span className="font-normal normal-case text-[11px]">· optional</span>
+            </label>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Optional API key (leave blank for local Ollama / LM Studio)"
+              className="w-full rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[13px] font-mono text-ink outline-none placeholder:font-sans placeholder:text-ink-secondary/60 focus:border-accent/70"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
+              Model IDs <span className="font-normal normal-case text-[11px]">· 1 to 15 models, comma or newline separated</span>
+            </label>
+            <textarea
+              rows={3}
+              value={modelsText}
+              onChange={(e) => setModelsText(e.target.value)}
+              placeholder="meta-llama/llama-3.3-70b-instruct&#10;mistralai/mixtral-8x7b-instruct"
+              className="w-full resize-y rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 font-mono text-[12.5px] text-ink outline-none placeholder:font-sans placeholder:text-ink-secondary/60 focus:border-accent/70"
+            />
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
+              Engine Icon <span className="font-normal normal-case text-[11px]">· optional SVG or image URL / upload</span>
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={iconUrl.startsWith("data:") ? "[Uploaded image file]" : iconUrl}
+                onChange={(e) => setIconUrl(e.target.value)}
+                readOnly={iconUrl.startsWith("data:")}
+                placeholder="https://.../icon.svg or data:image/..."
+                className="flex-1 rounded-xl border border-hairline/60 bg-inset px-3.5 py-2 text-[12.5px] text-ink outline-none placeholder:text-ink-secondary/60 focus:border-accent/70"
+              />
+              <label className="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-xl border border-hairline/60 bg-raised px-3 py-2 text-[12px] font-medium text-ink hover:bg-raised-hover">
+                <Upload size={13} />
+                Upload
+                <input type="file" accept=".svg,.png,.webp,.jpg,.jpeg" className="hidden" onChange={handleFileUpload} />
+              </label>
+              {iconUrl && (
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <div className="flex size-8 items-center justify-center rounded-lg border border-hairline/40 bg-raised p-1">
+                    <img src={iconUrl} alt="Icon preview" className="size-full object-contain" />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setIconUrl("")}
+                    className="text-[11px] text-ink-secondary hover:text-danger"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {error && (
+            <div role="alert" className="rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[12px] text-danger">
+              {error}
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 border-t border-hairline/40 px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="rounded-xl px-4 py-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving || !name.trim() || !endpoint.trim() || !modelsText.trim()}
+            className="flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-40"
+          >
+            {saving && <Loader2 size={14} className="animate-spin" />}
+            Add Custom Engine
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function EnginesSettings() {
-  const { state, dispatch } = useStore();
+  const { state, dispatch, refreshInstances } = useStore();
   const [busyInstanceId, setBusyInstanceId] = useState<string | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
 
@@ -403,22 +679,37 @@ export function EnginesSettings() {
     [dispatch],
   );
 
-  // every KNOWN-driver instance has cliDefault; unknown-driver shadows have
-  // neither unless an override was set. Including them keeps a Reset-able row
-  // (and a Set CLI… path) for engines the running build doesn't recognize.
-  const rows = state.instances.filter((i) => i.cli !== undefined || i.cliDefault !== undefined);
+  // Include CLI engines, MiniMax, OpenAI-compat, and custom engines
+  const rows = state.instances.filter((i) =>
+    i.cli !== undefined ||
+    i.cliDefault !== undefined ||
+    i.driverKind === "minimax" ||
+    i.driverKind === "openai-compat" ||
+    Boolean(i.isCustom),
+  );
   // Disabled rows are surfaced separately so the active rail is short and
   // scannable; the show/hide toggle defaults to hidden to keep the everyday
   // view focused.
   const [showDisabled, setShowDisabled] = useState(false);
+  const [addModalOpen, setAddModalOpen] = useState(false);
 
   return (
     <div className="flex flex-col gap-5">
-      <div className="text-[12px] leading-relaxed text-ink-secondary">
-        <strong className="text-ink">Reset</strong> clears the binary override and goes back to the driver's default CLI.{" "}
-        <strong className="text-ink">Bypass permissions</strong> hands the engine full tool autonomy (no approval cards) — useful for headless runs, risky on a workstation.{" "}
-        <strong className="text-ink">Set CLI…</strong> points the engine at a specific binary — a versioned build, a wrapper script, or an absolute path.{" "}
-        Saving any of these reloads providers and interrupts any running turns.
+      <div className="flex items-start justify-between gap-4">
+        <div className="text-[12px] leading-relaxed text-ink-secondary flex-1">
+          <strong className="text-ink">Reset</strong> clears the binary override and goes back to the driver's default CLI.{" "}
+          <strong className="text-ink">Bypass permissions</strong> hands the engine full tool autonomy (no approval cards) — useful for headless runs, risky on a workstation.{" "}
+          <strong className="text-ink">Set CLI…</strong> points the engine at a specific binary — a versioned build, a wrapper script, or an absolute path.{" "}
+          Saving any of these reloads providers and interrupts any running turns.
+        </div>
+        <button
+          type="button"
+          onClick={() => setAddModalOpen(true)}
+          className="flex shrink-0 items-center gap-1.5 rounded-xl border border-hairline/50 bg-raised px-3.5 py-2 text-[12.5px] font-medium text-ink hover:bg-raised-hover shadow-sm"
+        >
+          <Plus size={14} />
+          Add Custom Engine
+        </button>
       </div>
       {busyInstanceId && (
         <div className="flex items-center gap-2 rounded-lg border border-accent/30 bg-accent/10 px-3 py-2 text-[12px] text-accent">
@@ -433,7 +724,7 @@ export function EnginesSettings() {
         </div>
       )}
       {rows.length === 0 && (
-        <div className="text-[13px] text-ink-secondary">No CLI engines detected yet.</div>
+        <div className="text-[13px] text-ink-secondary">No engines detected yet.</div>
       )}
       {(() => {
         const enabled = rows.filter(isEngineEnabled);
@@ -451,7 +742,7 @@ export function EnginesSettings() {
                 onPatch={(patch) => handlePatch(i.instanceId, patch)}
               />
             ))}
-            {custom.length > 0 && <EngineGroupLabel className="pt-1">Local</EngineGroupLabel>}
+            {custom.length > 0 && <EngineGroupLabel className="pt-1">Local & Custom</EngineGroupLabel>}
             {custom.map((i) => (
               <EngineRow
                 key={i.instanceId}
@@ -490,6 +781,13 @@ export function EnginesSettings() {
           </>
         );
       })()}
+
+      {addModalOpen && (
+        <AddCustomEngineModal
+          onClose={() => setAddModalOpen(false)}
+          onAdded={() => refreshInstances({ fresh: true })}
+        />
+      )}
     </div>
   );
 }

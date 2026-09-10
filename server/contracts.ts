@@ -493,6 +493,7 @@ export interface ProviderInstance {
   readonly driverKind: DriverKind;
   readonly displayName: string | undefined;
   readonly enabled: boolean;
+  readonly iconUrl?: string;
   readonly models: ModelCatalog;
   /** Refresh a live catalog without recreating the provider instance. */
   readonly refreshModels?: () => Promise<void>;

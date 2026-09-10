@@ -3654,6 +3654,491 @@ describe("instance CLI override API", () => {
     expect(overlapping.status).toBe(409);
     expect((await slowConfigWrite).status).toBe(200);
   });
+
+  it("creates, describes, and deletes a custom OpenAI-compatible engine", async () => {
+    expect((await api("POST", "/api/instances", { name: "" })).status).toBe(400);
+    expect((await api("POST", "/api/instances", { name: "Ollama", endpoint: "not-a-url" })).status).toBe(400);
+    expect((await api("POST", "/api/instances", { name: "Ollama", endpoint: "http://localhost:11434/v1", models: [] })).status).toBe(400);
+
+    const created = await api("POST", "/api/instances", {
+      name: "Ollama Local",
+      endpoint: "http://localhost:11434/v1",
+      models: ["llama3.3:70b", "mistral:latest"],
+      iconUrl: "http://localhost:11434/icon.svg",
+    });
+    expect(created.status).toBe(201);
+    expect(created.body.ok).toBe(true);
+    const instanceId = created.body.instanceId;
+    expect(instanceId).toContain("custom-ollama-local");
+
+    const instancesRes = await api("GET", "/api/instances");
+    const found = instancesRes.body.instances.find((i: any) => i.instanceId === instanceId);
+    expect(found).toBeDefined();
+    expect(found.displayName).toBe("Ollama Local");
+    expect(found.driverKind).toBe("openai-compat");
+    expect(found.isCustom).toBe(true);
+    expect(found.snapshot.state).toBe("available");
+    expect(found.snapshot.authenticated).toBe(true);
+    expect(found.models.options.map((m: any) => m.id)).toEqual(["llama3.3:70b", "mistral:latest"]);
+
+    const botRes = await api("POST", "/api/bots", {
+      name: "Local Bot",
+      modelSelection: { instanceId, model: "llama3.3:70b" },
+    });
+    expect(botRes.status).toBe(201);
+    const localBotId = botRes.body.bot.id;
+    expect(botRes.body.bot.modelSelection.instanceId).toBe(instanceId);
+
+    expect((await api("DELETE", "/api/instances/claude")).status).toBe(400);
+    expect((await api("DELETE", "/api/instances/openaiCompat")).status).toBe(400);
+
+    const deleted = await api("DELETE", `/api/instances/${instanceId}`);
+    expect(deleted.status).toBe(200);
+    expect(deleted.body.ok).toBe(true);
+
+    const botsAfter = await api("GET", "/api/bots");
+    const foundBot = botsAfter.body.bots.find((b: any) => b.id === localBotId);
+    expect(foundBot).toBeDefined();
+    expect(foundBot.modelSelection.instanceId).not.toBe(instanceId);
+
+    const postDelete = await api("GET", "/api/instances");
+    expect(postDelete.body.instances.find((i: any) => i.instanceId === instanceId)).toBeUndefined();
+  }, 30_000);
+
+  it("never leaks a workspace credential into a new custom engine's persisted config", async () => {
+    // Configure a shared credential that a DIFFERENT driver's default
+    // instance legitimately uses, then add a custom OpenAI-compatible
+    // engine with no key of its own. Neither the live snapshot nor the
+    // on-disk config for the new instance may carry that (or any other)
+    // config-injected secret — only the key the user actually entered for
+    // that specific instance may end up there.
+    const savedKey = await api("PUT", "/api/config", { openaiCompat: { key: "SECRET-SHARED-OPENAI-COMPAT-KEY" } });
+    expect(savedKey.status).toBe(200);
+    try {
+      const created = await api("POST", "/api/instances", {
+        name: "No Key Engine",
+        endpoint: "http://localhost:11495/v1",
+        models: ["no-key-model"],
+      });
+      expect(created.status).toBe(201);
+      const instanceId = created.body.instanceId;
+      try {
+        const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+        const persistedInstances = onDisk.instances ?? {};
+        expect(Object.keys(persistedInstances)).toContain(instanceId);
+        for (const entry of Object.values<any>(persistedInstances)) {
+          const envJson = JSON.stringify(entry?.environment ?? {});
+          expect(envJson.includes("SECRET-SHARED-OPENAI-COMPAT-KEY")).toBe(false);
+        }
+        expect(persistedInstances[instanceId].config?.key).toBeUndefined();
+      } finally {
+        await api("DELETE", `/api/instances/${instanceId}`);
+      }
+    } finally {
+      await api("PUT", "/api/config", { openaiCompat: { key: "" } });
+    }
+  }, 30_000);
+
+  it("routes a custom engine's key through PATCH ?secretStorage=external without ever persisting it to config.json", async () => {
+    // The desktop shell's credential:set-instance IPC handler PATCHes this
+    // route with ?secretStorage=external after encrypting the key into
+    // credentials.bin — the same "never touches disk here" contract PUT
+    // /api/config already gives the fixed provider secrets, now extended to
+    // a dynamic per-instance key. The live instance still gets it (via
+    // instanceKeyOverrides → its environment map), just never through
+    // config.json.
+    const created = await api("POST", "/api/instances", {
+      name: "Encrypted Key Engine",
+      endpoint: "http://localhost:11498/v1",
+      models: ["encrypted-model"],
+    });
+    expect(created.status).toBe(201);
+    const instanceId = created.body.instanceId;
+    try {
+      const patched = await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, {
+        key: "sk-should-never-touch-disk",
+      });
+      expect(patched.status).toBe(200);
+
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      const persistedEntry = (onDisk.instances ?? {})[instanceId];
+      expect(persistedEntry).toBeDefined();
+      expect(JSON.stringify(persistedEntry)).not.toContain("sk-should-never-touch-disk");
+
+      // A later cli-only PATCH (no key in the body) must not silently drop
+      // the live-only override that's already in effect.
+      const cliPatch = await api("PATCH", `/api/instances/${instanceId}`, { fullAuto: false });
+      expect(cliPatch.status).toBe(200);
+      const onDiskAfter = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(JSON.stringify((onDiskAfter.instances ?? {})[instanceId])).not.toContain("sk-should-never-touch-disk");
+    } finally {
+      await api("DELETE", `/api/instances/${instanceId}`);
+    }
+  }, 30_000);
+
+  it("falls back to persisting a custom engine's key in config.json when saved without the desktop shell", async () => {
+    // Dev/browser path (no Electron bridge, no ?secretStorage=external):
+    // the same shape the create-time flow already uses. A later "edit key"
+    // PATCH must honour that fallback exactly like the create-time POST does.
+    const created = await api("POST", "/api/instances", {
+      name: "Plain Key Engine",
+      endpoint: "http://localhost:11499/v1",
+      models: ["plain-model"],
+    });
+    expect(created.status).toBe(201);
+    const instanceId = created.body.instanceId;
+    try {
+      const patched = await api("PATCH", `/api/instances/${instanceId}`, { key: "sk-plain-dev-fallback" });
+      expect(patched.status).toBe(200);
+
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      const persistedEntry = (onDisk.instances ?? {})[instanceId];
+      expect(persistedEntry?.config?.key).toBe("sk-plain-dev-fallback");
+    } finally {
+      await api("DELETE", `/api/instances/${instanceId}`);
+    }
+  }, 30_000);
+
+  it("keeps a custom engine's live-only encrypted key across an unrelated global provider reload", async () => {
+    // PATCH /api/instances/:id?secretStorage=external sets an in-memory-only
+    // instanceKeyOverrides entry, applied by that one route to the live
+    // registry entry it just reloaded. reloadProviders() — triggered by ANY
+    // unrelated settings change (a different provider's own credential, bot
+    // defaults, …) — rebuilds the WHOLE fleet from instanceConfigs(cfg)
+    // alone; without withInstanceKeyOverrides() this silently dropped every
+    // encrypted custom-engine key until the app restarted and Electron
+    // replayed it. Prove it end-to-end: a real turn against a real fixture
+    // endpoint, sent only after a real global reload, still carries the key.
+    let capturedAuthorization: string | null | undefined;
+    const fixture = createServer((req, res) => {
+      if (req.method === "POST" && req.url?.includes("/chat/completions")) {
+        capturedAuthorization = req.headers.authorization ?? null;
+        res.writeHead(200, { "content-type": "text/event-stream" });
+        res.end('data: {"choices":[{"delta":{"content":"ok"}}]}\n' + "data: [DONE]\n");
+        return;
+      }
+      res.writeHead(404);
+      res.end();
+    });
+    await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+    const port = (fixture.address() as { port: number }).port;
+
+    const created = await api("POST", "/api/instances", {
+      name: "Reload Survives Engine",
+      endpoint: `http://127.0.0.1:${port}/v1`,
+      models: ["reload-test-model"],
+    });
+    expect(created.status).toBe(201);
+    const instanceId = created.body.instanceId;
+
+    try {
+      const patched = await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, {
+        key: "sk-reload-survives",
+      });
+      expect(patched.status).toBe(200);
+
+      // An unrelated provider credential is a documented reloadProviders()
+      // trigger (PUT /api/config's own reloadKeys check) — "xai" is not in
+      // that route's no-reload exclusion list (profile/tts/imageGen/vps/…).
+      const unrelatedSave = await api("PUT", "/api/config", { xai: { key: "unrelated-xai-key-for-reload-trigger" } });
+      expect(unrelatedSave.status).toBe(200);
+
+      const botRes = await api("POST", "/api/bots", {
+        name: "Reload Survives Bot",
+        modelSelection: { instanceId, model: "reload-test-model" },
+      });
+      expect(botRes.status).toBe(201);
+      const botId = botRes.body.bot.id;
+      try {
+        const sent = await api("POST", `/api/bots/${botId}/messages`, { text: "does the key survive?" });
+        expect(sent.status).toBe(202);
+
+        await expect
+          .poll(async () => {
+            const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+              (candidate: { id: string }) => candidate.id === botId,
+            );
+            return state?.busy;
+          }, { timeout: 10_000 })
+          .toBe(false);
+
+        expect(capturedAuthorization).toBe("Bearer sk-reload-survives");
+      } finally {
+        await api("DELETE", `/api/bots/${botId}`);
+      }
+    } finally {
+      await api("PUT", "/api/config", { xai: { key: "" } });
+      await api("DELETE", `/api/instances/${instanceId}`);
+      await new Promise<void>((resolve) => fixture.close(() => resolve()));
+    }
+  }, 30_000);
+
+  it("does not interrupt an unrelated busy bot when adding a new custom engine", async () => {
+    // Adding an independent engine used to call the global reloadProviders(),
+    // which disposes EVERY provider and settles every busy bot as
+    // interrupted — even bots that never touch the new engine.
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude = instances.find((i: any) => i.instanceId === "claude");
+    const bot = (await api("POST", "/api/bots", { name: "Busy During Add", computers: [] })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: claude.models.default },
+        computers: [],
+      })).status).toBe(200);
+      // the fixture CLI hangs, so this turn stays live until it is stopped
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hang forever" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(true);
+
+      const created = await api("POST", "/api/instances", {
+        name: "Unrelated Engine",
+        endpoint: "http://localhost:11494/v1",
+        models: ["unrelated-model"],
+      });
+      expect(created.status).toBe(201);
+      const newInstanceId = created.body.instanceId;
+      try {
+        // give any (incorrect) global teardown a moment to have taken effect
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        expect(state?.busy).toBe(true);
+      } finally {
+        await api("DELETE", `/api/instances/${newInstanceId}`);
+      }
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  }, 30_000);
+
+  it("excludes the deleted engine from replacement selection, picking a real other engine instead of itself", async () => {
+    // Disable every other fixture engine and add a SECOND custom engine
+    // besides the one being deleted, so a real (non-empty) replacement
+    // exists — the exact condition that exposed the original bug:
+    // defaultSelection() still sees the instance being deleted in the live
+    // registry (deletion hasn't happened yet) and would hand back the
+    // about-to-be-deleted instance's own id as "the replacement", leaving
+    // the bot's next turn pointed at nothing.
+    const toDisable = ["claude", "claude2", "crasher"];
+    for (const id of toDisable) {
+      expect((await api("PATCH", `/api/instances/${id}`, { enabled: false })).status).toBe(200);
+    }
+    let backupId = "";
+    try {
+      const backup = await api("POST", "/api/instances", {
+        name: "Backup Engine",
+        endpoint: "http://localhost:11496/v1",
+        models: ["backup-model"],
+      });
+      expect(backup.status).toBe(201);
+      backupId = backup.body.instanceId;
+
+      const created = await api("POST", "/api/instances", {
+        name: "Solo Engine",
+        endpoint: "http://localhost:11493/v1",
+        models: ["solo-model"],
+      });
+      expect(created.status).toBe(201);
+      const instanceId = created.body.instanceId;
+
+      const botRes = await api("POST", "/api/bots", {
+        name: "Solo Bot",
+        modelSelection: { instanceId, model: "solo-model" },
+      });
+      expect(botRes.status).toBe(201);
+      const soloBotId = botRes.body.bot.id;
+
+      const deleted = await api("DELETE", `/api/instances/${instanceId}`);
+      expect(deleted.status).toBe(200);
+
+      const botsAfter = await api("GET", "/api/bots");
+      const foundBot = botsAfter.body.bots.find((b: any) => b.id === soloBotId);
+      expect(foundBot).toBeDefined();
+      // A real replacement — not itself, and not the empty string
+      // defaultSelection() honestly reports when nothing else is available
+      // (see "refuses to delete an engine when no replacement is available"
+      // below for that case).
+      expect(foundBot.modelSelection.instanceId).not.toBe(instanceId);
+      expect(foundBot.modelSelection.instanceId).not.toBe("");
+
+      await api("DELETE", `/api/bots/${soloBotId}`);
+    } finally {
+      if (backupId) await api("DELETE", `/api/instances/${backupId}`);
+      for (const id of toDisable) {
+        expect((await api("PATCH", `/api/instances/${id}`, { enabled: true })).status).toBe(200);
+      }
+      const restored = await api("GET", "/api/instances?fresh=1");
+      for (const id of toDisable) {
+        const row = restored.body.instances.find((i: any) => i.instanceId === id);
+        expect(row?.enabled).toBe(true);
+      }
+    }
+  }, 30_000);
+
+  it("refuses to delete an engine when no other engine is available to reassign its bots", async () => {
+    // With every other fixture engine disabled, the about-to-be-deleted
+    // custom engine is the ONLY available instance, so excluding it from
+    // the replacement pool leaves defaultSelection() with nothing —
+    // deliberately an empty {instanceId:"", model:""}, the honest answer
+    // for a bot being freshly created. Silently writing that into an
+    // EXISTING bot used to leave it referencing instanceId "", failing
+    // every future turn with no way back short of manual reconfiguration.
+    // Deletion must be refused instead, the same way a busy affected bot
+    // already is.
+    const toDisable = ["claude", "claude2", "crasher"];
+    for (const id of toDisable) {
+      expect((await api("PATCH", `/api/instances/${id}`, { enabled: false })).status).toBe(200);
+    }
+    try {
+      const created = await api("POST", "/api/instances", {
+        name: "Only Engine",
+        endpoint: "http://localhost:11497/v1",
+        models: ["only-model"],
+      });
+      expect(created.status).toBe(201);
+      const instanceId = created.body.instanceId;
+
+      const botRes = await api("POST", "/api/bots", {
+        name: "Only Bot",
+        modelSelection: { instanceId, model: "only-model" },
+      });
+      expect(botRes.status).toBe(201);
+      const onlyBotId = botRes.body.bot.id;
+
+      try {
+        const deleted = await api("DELETE", `/api/instances/${instanceId}`);
+        expect(deleted.status).toBe(409);
+        expect(deleted.body.error).toMatch(/no other configured engine is available/);
+
+        // Nothing changed: the bot still references the engine, and the
+        // engine itself is still there.
+        const botsAfter = await api("GET", "/api/bots");
+        const foundBot = botsAfter.body.bots.find((b: any) => b.id === onlyBotId);
+        expect(foundBot?.modelSelection.instanceId).toBe(instanceId);
+        const instancesAfter = await api("GET", "/api/instances");
+        expect(instancesAfter.body.instances.some((i: any) => i.instanceId === instanceId)).toBe(true);
+      } finally {
+        await api("DELETE", `/api/bots/${onlyBotId}`);
+        await api("DELETE", `/api/instances/${instanceId}`);
+      }
+    } finally {
+      for (const id of toDisable) {
+        expect((await api("PATCH", `/api/instances/${id}`, { enabled: true })).status).toBe(200);
+      }
+      const restored = await api("GET", "/api/instances?fresh=1");
+      for (const id of toDisable) {
+        const row = restored.body.instances.find((i: any) => i.instanceId === id);
+        expect(row?.enabled).toBe(true);
+      }
+    }
+  }, 30_000);
+
+  it("does not interrupt an unrelated busy bot when deleting an unused custom engine", async () => {
+    // Deleting a custom engine used to call the global reloadProviders(),
+    // which disposes EVERY provider and settles every busy bot as
+    // interrupted — even one on `claude` that never referenced the engine
+    // being deleted. The affectedBots guard already permits this deletion
+    // (the busy bot doesn't reference it); only the deleted instance's own
+    // registry entry and bus attachment may go away.
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude = instances.find((i: any) => i.instanceId === "claude");
+    const created = await api("POST", "/api/instances", {
+      name: "Unrelated Delete Engine",
+      endpoint: "http://localhost:11491/v1",
+      models: ["unrelated-delete-model"],
+    });
+    expect(created.status).toBe(201);
+    const newInstanceId = created.body.instanceId;
+
+    const bot = (await api("POST", "/api/bots", { name: "Busy During Delete", computers: [] })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: claude.models.default },
+        computers: [],
+      })).status).toBe(200);
+      // the fixture CLI hangs, so this turn stays live until it is stopped
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hang forever" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(true);
+
+      const deleted = await api("DELETE", `/api/instances/${newInstanceId}`);
+      expect(deleted.status).toBe(200);
+
+      const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(state?.busy).toBe(true);
+
+      const instancesAfter = (await api("GET", "/api/instances")).body.instances;
+      expect(instancesAfter.some((i: any) => i.instanceId === newInstanceId)).toBe(false);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  }, 30_000);
+
+  it("rewrites a task-level model override that references a deleted engine, not just the bot's own selection", async () => {
+    // A bot can use a deleted engine through a task-level modelSelection
+    // override while its own top-level modelSelection points elsewhere —
+    // sendBotTurn prioritizes the task override, so a stale one surviving
+    // deletion would still fail on the next turn even though the bot
+    // "looks" reassigned.
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude = instances.find((i: any) => i.instanceId === "claude");
+
+    const created = await api("POST", "/api/instances", {
+      name: "Task Override Engine",
+      endpoint: "http://localhost:11492/v1",
+      models: ["task-model"],
+    });
+    expect(created.status).toBe(201);
+    const instanceId = created.body.instanceId;
+
+    const botRes = await api("POST", "/api/bots", {
+      name: "Task Override Bot",
+      modelSelection: { instanceId: "claude", model: claude.models.default },
+      computers: [],
+    });
+    expect(botRes.status).toBe(201);
+    const botId = botRes.body.bot.id;
+
+    try {
+      const taskRes = await api("POST", `/api/bots/${botId}/tasks`, { title: "Side task" });
+      expect(taskRes.status).toBe(201);
+      const threadId = taskRes.body.task.threadId;
+
+      const setSelection = await api("PATCH", `/api/bots/${botId}/tasks/${threadId}`, {
+        modelSelection: { instanceId, model: "task-model" },
+      });
+      expect(setSelection.status).toBe(200);
+      expect(setSelection.body.task.modelSelection.instanceId).toBe(instanceId);
+
+      const deleted = await api("DELETE", `/api/instances/${instanceId}`);
+      expect(deleted.status).toBe(200);
+
+      const after = await api("GET", "/api/bots");
+      const freshBot = after.body.bots.find((b: any) => b.id === botId);
+      expect(freshBot).toBeDefined();
+      // the bot's own selection never referenced the deleted engine
+      expect(freshBot.modelSelection.instanceId).toBe("claude");
+      // but the task-level override must no longer reference it either
+      const freshTask = freshBot.tasks.find((t: any) => t.threadId === threadId);
+      expect(freshTask).toBeDefined();
+      expect(freshTask.modelSelection?.instanceId).not.toBe(instanceId);
+    } finally {
+      await api("DELETE", `/api/bots/${botId}`);
+    }
+  }, 30_000);
 });
 
 describe("computer control API (who is driving)", () => {

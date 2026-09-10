@@ -22,6 +22,8 @@ import {
   syncCredentialEnv,
   vpsSshAlias,
   patchInstanceConfig,
+  persistableInstanceConfigs,
+  stripInjectedEnvironment,
   WORKSPACE_CREDENTIAL_ENV,
   autoUpdateDue,
   AUTO_UPDATE_THROTTLE_MS,
@@ -285,6 +287,76 @@ describe("Instance CLI override", () => {
     const kept = patchInstanceConfig(custom, "claude", { cli: "/x" });
     expect(kept.config.instances!.claude.environment).toEqual({ MY_FLAG: "1" });
   });
+
+  it("never injects the shared OpenAI-compatible key into a user-added custom instance", () => {
+    // "openaiCompat" is the one reserved instance id backed by the
+    // workspace-wide openaiCompat.key. A user-added custom instance shares
+    // the same driver but points at whatever endpoint the user just typed
+    // in — injecting the shared key there too would hand that arbitrary
+    // endpoint the workspace's real OpenRouter/Groq credential.
+    const cfg: AppConfig = {
+      openaiCompat: { key: "SECRET-SHARED-KEY", url: "https://openrouter.ai/api/v1" },
+      instances: {
+        openaiCompat: { driver: "openai-compat" },
+        "custom-ollama": { driver: "openai-compat", config: { url: "http://localhost:11434/v1" } },
+      },
+    };
+    const map = instanceConfigs(cfg);
+    expect(map.openaiCompat.environment).toMatchObject({ OPENAI_COMPAT_API_KEY: "SECRET-SHARED-KEY" });
+    expect(map["custom-ollama"].environment ?? {}).not.toHaveProperty("OPENAI_COMPAT_API_KEY");
+    expect(map["custom-ollama"].environment ?? {}).not.toHaveProperty("OPENAI_COMPAT_URL");
+  });
+
+  it("strips a driver's injected credential only from the instance entitled to it (stripInjectedEnvironment)", () => {
+    const cfg: AppConfig = {
+      openaiCompat: { key: "SECRET-SHARED-KEY" },
+    };
+    const map = instanceConfigs({
+      ...cfg,
+      instances: {
+        openaiCompat: { driver: "openai-compat" },
+        "custom-x": { driver: "openai-compat", config: { url: "https://third-party.example.test/v1" } },
+      },
+    });
+    const stripped = stripInjectedEnvironment(cfg, map);
+    expect(stripped.openaiCompat.environment ?? {}).toEqual({});
+    expect(stripped["custom-x"].environment ?? {}).toEqual({});
+  });
+
+  it("builds the persisted instances base without copying live credentials on a default install", () => {
+    // The exact scenario that leaked secrets: cfg.instances absent (a
+    // default install) plus every credential-consuming driver configured.
+    // persistableInstanceConfigs(cfg) is what a new custom engine gets
+    // merged onto before saveConfig — it must never carry a live secret.
+    const cfg: AppConfig = {
+      xai: { key: "SECRET-XAI" },
+      box: { token: "SECRET-BOX" },
+      opencodeGo: { apiKey: "SECRET-OCG" },
+      openaiCompat: { key: "SECRET-OPENAI-COMPAT" },
+    };
+    const base = persistableInstanceConfigs(cfg);
+    expect(Object.keys(base).length).toBeGreaterThan(0);
+    for (const entry of Object.values(base)) {
+      expect(entry.environment ?? {}).toEqual({});
+    }
+  });
+
+  it("reuses cfg.instances as-is once it is already set", () => {
+    const cfg: AppConfig = { instances: { claude: { driver: "claudeAgent" } } };
+    expect(persistableInstanceConfigs(cfg)).toBe(cfg.instances);
+  });
+});
+
+describe("general config patch schema", () => {
+  it("keeps deleteInstance out of PATCH /api/config — only the dedicated DELETE route may delete an engine", () => {
+    // PATCH /api/config has none of DELETE /api/instances/:id's
+    // protections (protected-engine check, busy-bot check, atomic
+    // reassignment). A deleteInstance key in the patch body must be
+    // silently dropped, never honored.
+    const patch = parseConfigPatch({ deleteInstance: "claude", box: { token: "tok" } });
+    expect(patch).not.toHaveProperty("deleteInstance");
+    expect((patch as { box?: { token?: string } }).box).toEqual({ token: "tok" });
+  });
 });
 
 describe("Instance enable/disable", () => {
@@ -320,6 +392,32 @@ describe("Instance enable/disable", () => {
   it("rejects an unknown instance", () => {
     const cfg: AppConfig = {};
     expect(patchInstanceConfig(cfg, "nope", { enabled: false }).ok).toBe(false);
+  });
+
+  it("clears a stale enabled:false on disk after a re-enable, through the real saveConfig merge", () => {
+    // patchInstanceConfig's own return value looks right either way (`delete
+    // entry.enabled` and `entry.enabled = undefined` both read back as
+    // `undefined`), so this only fails through the actual persistence path:
+    // saveConfig's instances merge is per-key (mergeConfigPatch does
+    // Object.assign(merged, entry) onto the EXISTING disk entry), so a key
+    // simply absent from the patch is invisible to it — re-enabling must
+    // write an explicit `enabled: undefined` (which JSON.stringify then
+    // drops), not just omit the key, or a stale `enabled: false` already on
+    // disk survives the "re-enable" forever.
+    mkdirSync(DATA_DIR, { recursive: true });
+    rmSync(join(DATA_DIR, "config.json"), { force: true });
+    try {
+      saveConfig({ instances: { claude: { driver: "claudeAgent", enabled: false } } });
+      expect(loadConfig().instances!.claude.enabled).toBe(false);
+
+      const reEnabled = patchInstanceConfig(loadConfig(), "claude", { enabled: true });
+      expect(reEnabled.ok).toBe(true);
+      saveConfig({ instances: reEnabled.config.instances });
+
+      expect(loadConfig().instances!.claude.enabled).not.toBe(false);
+    } finally {
+      rmSync(join(DATA_DIR, "config.json"), { force: true });
+    }
   });
 });
 

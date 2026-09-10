@@ -182,6 +182,12 @@ contextBridge.exposeInMainWorld("ogb", {
     }),
   /** Store a provider credential with OS-backed encryption. */
   setCredential: (name, value) => ipcRenderer.invoke("credential:set", name, value),
+  /** Store a user-added custom engine's API key with the same OS-backed
+   * encryption, keyed by its dynamic instance id rather than a fixed name. */
+  setInstanceCredential: (instanceId, value) => ipcRenderer.invoke("credential:set-instance", instanceId, value),
+  /** Purge a deleted custom engine's key from the encrypted store only —
+   * never touches the live harness. */
+  clearInstanceCredential: (instanceId) => ipcRenderer.invoke("credential:clear-instance", instanceId),
 
   /** In-app auto-update. State object:
    *  { status: "idle"|"checking"|"available"|"downloading"|"downloaded"|"error",
