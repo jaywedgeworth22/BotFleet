@@ -90,6 +90,14 @@ export interface Message {
   /** `system` is auto-delivered instructions (routine, webhook, resource).
    * Never a person typing — the model still sees it as the turn prompt. */
   role: "bot" | "user" | "system";
+  /** For a `system` message: what actually fired it (mirrors
+   * RoutineRunTrigger from ./routines.ts, inlined here so store.ts does not
+   * depend on the routines module).  Lets the UI show an accurate subtitle
+   * ("Run Now", "Resource Alert", "Webhook") instead of guessing from text,
+   * and instead of collapsing every non-webhook/imessage system message
+   * into a generic "Routine" label regardless of what actually triggered
+   * it. */
+  automationSource?: "schedule" | "manual" | "webhook" | "resource";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
   card?: OptionCardData;
@@ -1258,7 +1266,11 @@ export class Store {
     // The first-run quiz is not a live ask. Talking past it hides it so the
     // transcript is just the greeting plus what they said. Cards with a
     // requestId are permission/question prompts and stay until answered.
-    if (full.role === "user" && full.kind === "text") this.dismissOnboardingCard(threadId);
+    // role "system" covers auto-delivered routine/webhook/resource
+    // instructions (stored that way so iOS/desktop never paint a blue user
+    // bubble for them) — a thread that opens with one of those should not
+    // leave the onboarding card stuck forever either.
+    if ((full.role === "user" || full.role === "system") && full.kind === "text") this.dismissOnboardingCard(threadId);
     return full;
   }
 

@@ -46,9 +46,13 @@ export function isQuotaOrCapText(text: string): boolean {
   return QUOTA_OR_CAP.test(trimmed);
 }
 
-export function lastUserTextIndex(messages: FallbackScanMessage[]): number {
+/** The last message that actually started a turn — a human's "user" message,
+ * or an auto-delivered routine/webhook/resource instruction stored as
+ * "system" (see server/index.ts's storedRole).  Both are turn prompts; only
+ * "bot" replies and chips are not. */
+export function lastTurnStartIndex(messages: FallbackScanMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user" && messages[i].kind === "text") return i;
+    if ((messages[i].role === "user" || messages[i].role === "system") && messages[i].kind === "text") return i;
   }
   return -1;
 }

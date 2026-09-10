@@ -86,6 +86,11 @@ export interface Message {
   id: string;
   /** `system` is auto-delivered instructions (routine / webhook / resource). */
   role: "bot" | "user" | "system";
+  /** For a `system` message: what actually fired it — mirrors the server's
+   * RoutineRunTrigger, inlined so this module does not depend on it.  Lets
+   * the UI show an accurate subtitle instead of a generic "Routine" label
+   * for every non-webhook/imessage system message. */
+  automationSource?: "schedule" | "manual" | "webhook" | "resource";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
   card?: OptionCardData;

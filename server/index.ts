@@ -59,7 +59,7 @@ import {
 import {
   enableQuotaCooldownPersist,
   isQuotaOrCapText,
-  lastUserTextIndex,
+  lastTurnStartIndex,
   parseQuotaResetTime,
   quotaCooldowns,
   selectTurnFallback,
@@ -1854,7 +1854,7 @@ bus.subscribe((event: RuntimeEvent) => {
       if (fallbackBot) {
         const fallbackKey = `${fallbackBot.id}:${event.threadId}`;
         const activeMsgs = store.activePath(event.threadId);
-        const lastUserIdx = lastUserTextIndex(activeMsgs);
+        const lastUserIdx = lastTurnStartIndex(activeMsgs);
         const afterUser = lastUserIdx >= 0 ? activeMsgs.slice(lastUserIdx + 1) : [];
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
         const lastMsgText = afterUser.length > 0 ? (afterUser[afterUser.length - 1].text ?? "") : "";
@@ -2455,7 +2455,13 @@ async function startTurn(
     const storedRole = opts?.automationSource ? "system" : "user";
     userMessage = opts?.cardContinuation
       ? { id: `card-${randomUUID()}`, at: Date.now(), role: "user", kind: "text", text }
-      : store.appendMessage(threadId, { role: storedRole, kind: "text", text, replyToId: opts?.replyTo?.id });
+      : store.appendMessage(threadId, {
+          role: storedRole,
+          kind: "text",
+          text,
+          replyToId: opts?.replyTo?.id,
+          automationSource: opts?.automationSource,
+        });
   }
 
   // transcript for API-backed drivers: settled text turns on the ACTIVE
@@ -5388,7 +5394,8 @@ const server = createServer(async (req, res) => {
       const userName = cfg.profile?.name?.trim() || "User";
       const lines: string[] = [`# ${title}`, ""];
       for (const msg of messages) {
-        const who = msg.role === "user" ? userName : (msg.from?.name ?? bot?.name ?? "Bot");
+        const who =
+          msg.role === "user" ? userName : msg.role === "system" ? "Instructions" : (msg.from?.name ?? bot?.name ?? "Bot");
         if (msg.kind === "text" && msg.text) lines.push(`**${who}:**`, "", msg.text, "");
         else if (msg.kind === "activity" && msg.tool) lines.push(`> ${msg.tool.name}`, "");
         else if (msg.kind === "screen") lines.push("> [screen capture]", "");

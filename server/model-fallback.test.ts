@@ -6,7 +6,7 @@ import type { ModelSelection } from "./contracts.ts";
 import {
   isQuotaOrCapText,
   isShortProviderErrorText,
-  lastUserTextIndex,
+  lastTurnStartIndex,
   parseQuotaResetTime,
   QuotaCooldownRegistry,
   quotaCooldowns,
@@ -259,16 +259,35 @@ describe("selectTurnFallback", () => {
   });
 });
 
-describe("lastUserTextIndex", () => {
+describe("lastTurnStartIndex", () => {
   it("finds the last user text, ignoring later bot chips", () => {
     expect(
-      lastUserTextIndex([
+      lastTurnStartIndex([
         { role: "user", kind: "text", text: "one" },
         { role: "bot", kind: "text", text: "ok" },
         { role: "user", kind: "text", text: "two" },
         { role: "bot", kind: "activity", tool: { name: "Bash" } },
       ]),
     ).toBe(2);
+  });
+
+  it("also finds an auto-delivered system-role instruction that started the turn", () => {
+    expect(
+      lastTurnStartIndex([
+        { role: "system", kind: "text", text: "routine fired" },
+        { role: "bot", kind: "text", text: "session limit hit" },
+      ]),
+    ).toBe(0);
+  });
+
+  it("prefers the later of a user message and a system instruction", () => {
+    expect(
+      lastTurnStartIndex([
+        { role: "user", kind: "text", text: "one" },
+        { role: "system", kind: "text", text: "webhook fired" },
+        { role: "bot", kind: "activity", tool: { name: "Bash" } },
+      ]),
+    ).toBe(1);
   });
 });
 

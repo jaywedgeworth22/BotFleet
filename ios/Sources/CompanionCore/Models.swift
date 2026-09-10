@@ -136,6 +136,12 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     public var kind: Kind
     public var at: Double
     public var text: String?
+    /// For a `role == .system` message: what actually fired it —
+    /// "schedule", "manual", "webhook", or "resource". Raw string (not an
+    /// enum) so an older phone that predates a new trigger kind still
+    /// decodes the message; absent on rows persisted before this field
+    /// existed.
+    public var automationSource: String? = nil
     public var card: OptionCard?
     public var tool: ToolActivity?
     /// The message this one follows; nil at the thread root. Two messages

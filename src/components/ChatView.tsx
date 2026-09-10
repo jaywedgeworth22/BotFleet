@@ -87,6 +87,26 @@ import { timelineEvents } from "@/lib/taskTimeline";
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
 
+/** The subtitle on a generic (non-webhook, non-iMessage) auto-delivered
+ * instruction card.  Prefers the persisted `automationSource`; older rows
+ * from before that field existed fall back to sniffing the resource-trigger
+ * marker in the stored text, and otherwise read as "Routine" (a real
+ * schedule fire, the only case that label was ever accurate for). */
+function automationSourceLabel(source: string | undefined, body: string): string {
+  switch (source) {
+    case "resource":
+      return "Resource Alert";
+    case "manual":
+      return "Run Now";
+    case "webhook":
+      return "Webhook";
+    case "schedule":
+      return "Routine";
+    default:
+      return body.includes("[UNTRUSTED RESOURCE SAMPLE]") ? "Resource Alert" : "Routine";
+  }
+}
+
 /** "Today" / "Yesterday" / "Mon, Aug 11" — real dates, not a hardcoded label. */
 function dayLabel(at: number): string {
   const d = new Date(at);
@@ -806,7 +826,7 @@ const MessagesList = memo(function MessagesList({
                   <WebhookCard
                     view={{
                       headline: firstLine.slice(0, 120),
-                      subtitle: "Routine",
+                      subtitle: automationSourceLabel(m.automationSource, body),
                       payload: body || undefined,
                     }}
                     detailsNoun="Instructions"
@@ -1012,8 +1032,14 @@ export function ChatView({ bot }: { bot: Bot }) {
     },
     [bot.id, dispatch],
   );
+  // Regenerate needs whatever actually started the last turn — a person's
+  // message, or (on an automation-only thread) the routine/webhook/resource
+  // instruction stored as role="system".  Restricting this to "user" made
+  // Regenerate a no-op on a fresh automation-only thread, and dispatch a
+  // stale older human message instead of the automation prompt on a reused
+  // one.
   const lastUserMessage = useMemo(
-    () => [...messages].reverse().find((m) => m.role === "user" && m.kind === "text"),
+    () => [...messages].reverse().find((m) => (m.role === "user" || m.role === "system") && m.kind === "text"),
     [messages],
   );
 
