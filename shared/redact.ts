@@ -178,7 +178,10 @@ const AUTH_HEADER_BARE = /\b((?:proxy-)?authorization)(["']?\s*[=:](?!\s*["'])\s
  * A quote with text between it and the header name wraps something else, or
  * nothing at all — `size=2"; <header>: …`, `he said "wat; <header>: …` — and
  * cutting the value there leaves a stub and hands the credential back in the
- * clear.  An apostrophe in `it's` is harmless for the same reason.
+ * clear.  An apostrophe in `it's` is harmless for the same reason.  An
+ * adjacent quote that CLOSES rather than opens does the same damage
+ * (`curl "prefix"<header>: …`), and counting the ones before it at the same
+ * escape level says which it is.
  *
  * Adjacency is what lets this NOT parse shell quoting, which is the part
  * that cannot be got right from one line of text: tracking open quotes with
@@ -211,7 +214,20 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
   if (quote !== '"' && quote !== "'") return undefined;
   let backslashes = 0;
   while (at - 1 - backslashes >= lineStart && text.charAt(at - 1 - backslashes) === "\\") backslashes += 1;
-  return { quote, backslashes };
+  // The adjacent quote has to be OPENING one.  A shell word can concatenate a
+  // quoted prefix straight onto the header — `curl "prefix"<header>: …` — and
+  // that quote closes the prefix; cutting the value at the next quote would
+  // leave a stub and hand the credential back.  Counting the ones before it
+  // at the same escape level settles it without parsing anything: an even
+  // count makes this one the odd, opening member of its pair.
+  let seen = 0;
+  for (let i = lineStart; i < at; i++) {
+    if (text.charAt(i) !== quote) continue;
+    let run = 0;
+    while (i - 1 - run >= lineStart && text.charAt(i - 1 - run) === "\\") run += 1;
+    if (run === backslashes) seen += 1;
+  }
+  return seen % 2 === 0 ? { quote, backslashes } : undefined;
 }
 
 /** How much of a bare header value is the credential: everything up to the
