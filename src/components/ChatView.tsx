@@ -40,6 +40,7 @@ import { BotAvatar, MausAvatar } from "./Avatar";
 import { ProviderMark } from "./ProviderIcons";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
+import { automationSourceLabel } from "@/lib/replies";
 import { stateForBot } from "@/lib/mascot";
 import { showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
@@ -172,16 +173,20 @@ class MessageBoundary extends Component<{ children: ReactNode; fallbackText: str
   }
 }
 
-/** Inline editor a user bubble turns into: Enter sends (forking the
- * conversation), Esc cancels. Shift+Enter for a newline, like everywhere. */
+/** Inline editor a user bubble or system work card turns into: Enter sends
+ * (forking the conversation), Esc cancels.  Shift+Enter for a newline, like
+ * everywhere.  User chrome stays the blue You bubble; system chrome is the
+ * left-edge hairline card, never `bg-bubble-user`. */
 function BubbleEditor({
   initial,
   onCancel,
   onSubmit,
+  chrome = "user",
 }: {
   initial: string;
   onCancel: () => void;
   onSubmit: (text: string) => void;
+  chrome?: "user" | "system";
 }) {
   const [draft, setDraft] = useState(initial);
   const ref = useRef<HTMLTextAreaElement>(null);
@@ -195,7 +200,13 @@ function BubbleEditor({
     if (draft.trim()) onSubmit(draft.trim());
   };
   return (
-    <div className={cn(BUBBLE_EDITOR_WIDTH, "rounded-2xl border border-hairline/40 bg-bubble-user px-4 py-3")}>
+    <div
+      className={
+        chrome === "system"
+          ? "w-full min-w-0 max-w-[36rem] rounded-xl border border-hairline/40 bg-raised px-4 py-3"
+          : cn(BUBBLE_EDITOR_WIDTH, "rounded-2xl border border-hairline/40 bg-bubble-user px-4 py-3")
+      }
+    >
       <textarea
         ref={ref}
         value={draft}
@@ -258,7 +269,8 @@ function Bubble({
   // row a bubble sits on, versus whether it gets the human's purple
   // treatment. Any `role: "user"` message aligns right — including a peer
   // bot's `ask_bot` reply mirrored into this thread (`from.botId` set) —
-  // but purple is reserved for what the human actually typed.
+  // but purple is reserved for what the human actually typed.  Auto
+  // instructions are `role: "system"` and never sit on the human side.
   const alignRight = message.role === "user";
   const humanTyped = alignRight && !message.from?.botId;
   const [expanded, setExpanded] = useState(false);
@@ -782,21 +794,110 @@ const MessagesList = memo(function MessagesList({
               return src ? <ScreenFrame src={src} /> : null;
             }
             default: {
-              // Webhook turns are stored as role=user so the model sees them
-              // as the prompt.  They are not something the owner typed — keep
-              // them off the blue bubble and on a collapsible work card.
-              const webhookView =
-                m.role === "user" && !m.from?.botId ? webhookMessageView(m.text ?? "") : null;
-              if (webhookView) return <WebhookCard view={webhookView} />;
-              const imessageView =
-                m.role === "user" && !m.from?.botId ? imessageMessageView(m.text ?? "") : null;
-              if (imessageView) {
+              // Auto-delivered instructions (routine / webhook / resource) are
+              // stored as role=system.  Older webhook rows still used
+              // role=user; keep those off the blue bubble too.
+              const autoDelivered = m.role === "system" || (m.role === "user" && !m.from?.botId);
+              // A system work card — however it renders (a parsed
+              // webhook/iMessage view, or the generic Scheduled Run card) —
+              // needs the same edit-in-place and "‹ i/N ›" version
+              // reachability a user Bubble gets: Composer's ArrowUp can set
+              // editingId to a system turn-starter, and Regenerate forks a
+              // system message the same way it forks a user one
+              // (store.branchMessage), so its siblings must stay selectable
+              // and its edit state must actually render, not just be armed.
+              const systemEditing = m.role === "system" && editingId === m.id;
+              const systemVersions = m.role === "system" ? messageVersions(bot, m) : [m];
+              const systemVersionIndex = systemVersions.findIndex((v) => v.id === m.id);
+              const withSystemChrome = (card: ReactNode) => {
+                if (systemEditing) {
+                  return (
+                    <div className="my-0.5 flex justify-start">
+                      <BubbleEditor
+                        chrome="system"
+                        initial={m.text ?? ""}
+                        onCancel={onCancelEdit}
+                        onSubmit={(text) => onSubmitEdit(m.id, text)}
+                      />
+                    </div>
+                  );
+                }
                 return (
+                  <div className="flex flex-col items-start gap-0.5">
+                    {card}
+                    {systemVersions.length > 1 && (
+                      <div className="flex items-center gap-0.5 pl-1 text-[12px] text-ink-secondary">
+                        <button
+                          onClick={() =>
+                            dispatch({
+                              type: "switchBranch",
+                              botId: bot.id,
+                              messageId: systemVersions[systemVersionIndex - 1].id,
+                            })
+                          }
+                          disabled={systemVersionIndex <= 0 || bot.busy}
+                          className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
+                          type="button"
+                          aria-label="Previous Version"
+                          title="Previous Version"
+                        >
+                          <ChevronLeft size={14} />
+                        </button>
+                        <span className="tabular-nums">
+                          {systemVersionIndex + 1}/{systemVersions.length}
+                        </span>
+                        <button
+                          onClick={() =>
+                            dispatch({
+                              type: "switchBranch",
+                              botId: bot.id,
+                              messageId: systemVersions[systemVersionIndex + 1].id,
+                            })
+                          }
+                          disabled={systemVersionIndex >= systemVersions.length - 1 || bot.busy}
+                          className="rounded p-0.5 hover:bg-raised hover:text-ink disabled:opacity-30 disabled:hover:bg-transparent"
+                          type="button"
+                          aria-label="Next Version"
+                          title="Next Version"
+                        >
+                          <ChevronRight size={14} />
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                );
+              };
+              const webhookView = autoDelivered ? webhookMessageView(m.text ?? "") : null;
+              if (webhookView) return withSystemChrome(<WebhookCard view={webhookView} />);
+              const imessageView = autoDelivered ? imessageMessageView(m.text ?? "") : null;
+              if (imessageView) {
+                return withSystemChrome(
                   <WebhookCard
                     view={imessageView}
                     icon={<MessageCircle size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />}
                     detailsNoun="Message"
-                  />
+                  />,
+                );
+              }
+              if (m.role === "system") {
+                const body = (m.text ?? "").trim();
+                const firstLine = body.split("\n").find((line) => line.trim()) ?? "";
+                // Headline names what actually fired this — accurate per
+                // m.automationSource (falls back to sniffing the resource
+                // marker for rows persisted before that field existed), not
+                // the hardcoded "Scheduled Run" a manual Run Now or a
+                // resource alert would otherwise wear.  Subtitle is the
+                // instruction's own first line, same as before.
+                return withSystemChrome(
+                  <WebhookCard
+                    view={{
+                      headline: automationSourceLabel(m.automationSource, body),
+                      subtitle: firstLine && firstLine !== "Scheduled Run" ? firstLine.slice(0, 80) : undefined,
+                      payload: body || undefined,
+                    }}
+                    icon={<Clock size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />}
+                    detailsNoun="Run Details"
+                  />,
                 );
               }
               return (
@@ -998,8 +1099,14 @@ export function ChatView({ bot }: { bot: Bot }) {
     },
     [bot.id, dispatch],
   );
+  // Regenerate needs whatever actually started the last turn — a person's
+  // message, or (on an automation-only thread) the routine/webhook/resource
+  // instruction stored as role="system".  Restricting this to "user" made
+  // Regenerate a no-op on a fresh automation-only thread, and dispatch a
+  // stale older human message instead of the automation prompt on a reused
+  // one.
   const lastUserMessage = useMemo(
-    () => [...messages].reverse().find((m) => m.role === "user" && m.kind === "text"),
+    () => [...messages].reverse().find((m) => (m.role === "user" || m.role === "system") && m.kind === "text"),
     [messages],
   );
 

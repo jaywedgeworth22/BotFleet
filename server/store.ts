@@ -87,7 +87,17 @@ export interface SecretRequestCardData {
 
 export interface Message {
   id: string;
-  role: "bot" | "user";
+  /** `system` is auto-delivered instructions (routine, webhook, resource).
+   * Never a person typing — the model still sees it as the turn prompt. */
+  role: "bot" | "user" | "system";
+  /** For a `system` message: what actually fired it (mirrors
+   * RoutineRunTrigger from ./routines.ts, inlined here so store.ts does not
+   * depend on the routines module).  Lets the UI show an accurate subtitle
+   * ("Run Now", "Resource Alert", "Webhook") instead of guessing from text,
+   * and instead of collapsing every non-webhook/imessage system message
+   * into a generic "Routine" label regardless of what actually triggered
+   * it. */
+  automationSource?: "schedule" | "manual" | "webhook" | "resource";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
   card?: OptionCardData;
@@ -238,6 +248,17 @@ export interface TaskRecord {
   /** Optional engine for this conversation.  Absent means the bot's own
    * modelSelection.  Used in Projects mode so a thread is not a named bot. */
   modelSelection?: ModelSelection;
+  /** Stable identity for a webhook, resource trigger, or routine so a
+   * re-fire appends here instead of minting another task.  Shape is
+   * `webhook:<id>` or `routine:<id>` from `automationThreadKey`. */
+  automationKey?: string;
+  /** Extra automation keys folded in by `mergeBotTasks` when the task that
+   * originally owned them was merged into this one.  A merged source's key
+   * (and its own aliases) move here rather than being dropped, so the next
+   * firing still finds this task through `taskByAutomationKey` instead of
+   * falling through to the run-history fallback (which fails once the
+   * source task is gone) and minting a duplicate. */
+  automationKeyAliases?: string[];
 }
 
 export interface TaskUsage {
@@ -1036,6 +1057,23 @@ export class Store {
       }
     }
 
+    // The source task's automation key (and any it already collected from
+    // an earlier merge) must survive its deletion below, or the next
+    // webhook/routine firing misses `taskByAutomationKey`, then misses the
+    // run-history fallback too (the source thread is gone), and mints a
+    // fresh duplicate task — exactly what keyed tasks exist to prevent.
+    const mergedKeys = [from.automationKey, ...(from.automationKeyAliases ?? [])].filter(
+      (key): key is string => Boolean(key),
+    );
+    if (mergedKeys.length > 0) {
+      const aliases = new Set(into.automationKeyAliases ?? []);
+      for (const key of mergedKeys) {
+        if (key === into.automationKey) continue;
+        aliases.add(key);
+      }
+      into.automationKeyAliases = aliases.size > 0 ? [...aliases] : undefined;
+    }
+
     return this.deleteTask(botId, fromThreadId);
   }
 
@@ -1252,7 +1290,11 @@ export class Store {
     // The first-run quiz is not a live ask. Talking past it hides it so the
     // transcript is just the greeting plus what they said. Cards with a
     // requestId are permission/question prompts and stay until answered.
-    if (full.role === "user" && full.kind === "text") this.dismissOnboardingCard(threadId);
+    // role "system" covers auto-delivered routine/webhook/resource
+    // instructions (stored that way so iOS/desktop never paint a blue user
+    // bubble for them) — a thread that opens with one of those should not
+    // leave the onboarding card stuck forever either.
+    if ((full.role === "user" || full.role === "system") && full.kind === "text") this.dismissOnboardingCard(threadId);
     return full;
   }
 
@@ -1287,8 +1329,11 @@ export class Store {
     return pruned;
   }
 
-  /** Fork the conversation: a new user message that replaces `sourceId`
-   * (same parent, new text) and becomes the active leaf. */
+  /** Fork the conversation: a new message that replaces `sourceId`
+   * (same parent, new text) and becomes the active leaf.  Preserves the
+   * source's role and automationSource — regenerating or editing an
+   * auto-delivered instruction (role="system") must produce another
+   * system-attributed prompt, not a fabricated human user bubble. */
   branchMessage(threadId: string, sourceId: string, text: string): Message | null {
     const t = this.thread(threadId);
     const source = t.messages.find((m) => m.id === sourceId);
@@ -1296,11 +1341,12 @@ export class Store {
     const full: Message = {
       id: newId(),
       at: Date.now(),
-      role: "user",
+      role: source.role === "system" ? "system" : "user",
       kind: "text",
       text,
       parentId: source.parentId ?? null,
       replyToId: source.replyToId,
+      automationSource: source.automationSource,
     };
     mdb.appendMessage(threadId, full);
     t.messages.push(full);
@@ -1603,16 +1649,45 @@ export class Store {
     return this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
   }
 
+  taskByAutomationKey(botId: string, automationKey: string): TaskRecord | undefined {
+    if (!automationKey) return undefined;
+    return this.bot(botId)?.tasks?.find(
+      (t) => t.automationKey === automationKey || t.automationKeyAliases?.includes(automationKey),
+    );
+  }
+
+  stampAutomationKey(botId: string, threadId: string, automationKey: string): TaskRecord | null {
+    const task = this.taskByThread(botId, threadId);
+    if (!task || !automationKey) return null;
+    if (task.automationKey === automationKey) return task;
+    // Simple mode shares one conversation across sources.  The first key
+    // wins so a later routine cannot steal the lookup for an earlier one.
+    if (task.automationKey) return task;
+    task.automationKey = automationKey;
+    this.saveBots();
+    this.emit({ type: "bot", botId });
+    return task;
+  }
+
   /** A fresh context on the same bot: new thread, new session, same
-   * persona/tools/computer. Becomes the active task. */
-  createTask(botId: string, title?: string, activate = true): TaskRecord | null {
+   * persona/tools/computer. Becomes the active task.  A matching
+   * `automationKey` returns the existing task instead of minting another. */
+  createTask(botId: string, title?: string, activate = true, automationKey?: string): TaskRecord | null {
     const bot = this.bot(botId);
     if (!bot) return null;
+    if (automationKey) {
+      const existing = this.taskByAutomationKey(botId, automationKey);
+      if (existing) {
+        if (activate && bot.threadId !== existing.threadId) this.switchTask(botId, existing.threadId);
+        return existing;
+      }
+    }
     const task: TaskRecord = {
       threadId: newId(),
       title: title?.trim() || UNTITLED_TASK,
       createdAt: Date.now(),
       resumeCursors: {},
+      ...(automationKey ? { automationKey } : {}),
     };
     bot.tasks = [task, ...(bot.tasks ?? [])];
     if (activate) {

@@ -84,7 +84,13 @@ export interface SecretRequestCardData {
 
 export interface Message {
   id: string;
-  role: "bot" | "user";
+  /** `system` is auto-delivered instructions (routine / webhook / resource). */
+  role: "bot" | "user" | "system";
+  /** For a `system` message: what actually fired it — mirrors the server's
+   * RoutineRunTrigger, inlined so this module does not depend on it.  Lets
+   * the UI show an accurate subtitle instead of a generic "Routine" label
+   * for every non-webhook/imessage system message. */
+  automationSource?: "schedule" | "manual" | "webhook" | "resource";
   kind: "text" | "options" | "activity" | "screen" | "connector" | "secret";
   text?: string;
   card?: OptionCardData;
@@ -222,6 +228,8 @@ export interface Task {
   /** Optional engine for this conversation.  Absent means the bot's own
    * modelSelection.  Used in Projects mode so a thread is not a named bot. */
   modelSelection?: ModelSelection;
+  /** Stable webhook/routine identity so a re-fire appends here. */
+  automationKey?: string;
 }
 
 export interface TaskUsage {
@@ -325,13 +333,17 @@ export function latestChatActivity(
   return Math.max(loadedLastAt ?? 0, createdAt, ...fromTasks);
 }
 
-/** All versions of a user message (itself + the forks that replaced it),
- * oldest first. Length 1 = never edited. */
+/** All versions of a turn-starting message (itself + the forks that
+ * replaced it), oldest first. Length 1 = never edited. A turn starter is a
+ * person's "user" message OR an auto-delivered routine/webhook/resource
+ * instruction stored as "system" — Regenerate forks either role (see
+ * store.branchMessage), so both need their siblings to stay reachable
+ * through the version controls. */
 export function messageVersions(bot: Bot, message: Message): Message[] {
-  if (message.role !== "user" || message.kind !== "text") return [message];
+  if ((message.role !== "user" && message.role !== "system") || message.kind !== "text") return [message];
   return bot.messages
     .filter(
-      (m) => m.role === "user" && m.kind === "text" && (m.parentId ?? null) === (message.parentId ?? null),
+      (m) => m.role === message.role && m.kind === "text" && (m.parentId ?? null) === (message.parentId ?? null),
     )
     .sort((a, b) => a.at - b.at);
 }
@@ -553,6 +565,10 @@ export interface InstanceInfo {
   cliCandidates?: string[];
   /** YOLO full access bypass permissions */
   fullAuto?: boolean;
+  /** Custom engine icon URL or data URL */
+  iconUrl?: string;
+  /** User-created custom engine instance */
+  isCustom?: boolean;
 }
 
 export type AppSettingsSection =

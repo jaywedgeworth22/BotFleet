@@ -117,6 +117,10 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
 
     public enum Role: String, Codable, Sendable {
         case bot, user
+        /// Auto-delivered instructions (routine, webhook, resource).  Never
+        /// a person typing.  Older phones that lack this case fall through
+        /// the decoder to `.bot`, which is left-aligned and not blue.
+        case system
 
         /// Same reasoning, and `bot` rather than a third case: an unplaceable
         /// message drawn as yours would be the phone claiming you said
@@ -132,6 +136,12 @@ public struct Message: Codable, Hashable, Identifiable, Sendable {
     public var kind: Kind
     public var at: Double
     public var text: String?
+    /// For a `role == .system` message: what actually fired it —
+    /// "schedule", "manual", "webhook", or "resource". Raw string (not an
+    /// enum) so an older phone that predates a new trigger kind still
+    /// decodes the message; absent on rows persisted before this field
+    /// existed.
+    public var automationSource: String? = nil
     public var card: OptionCard?
     public var tool: ToolActivity?
     /// The message this one follows; nil at the thread root. Two messages
@@ -360,6 +370,10 @@ public struct SearchHit: Codable, Hashable, Identifiable, Sendable {
     public var botId: String?
     public var groupId: String?
     public var name: String
+    /// Attribution for the hit (e.g. "Scheduled Run" for system/automation
+    /// starters).  Absent on older servers; Codable ignores unknown keys and
+    /// older clients ignore this field.
+    public var from: String?
     public var task: String?
     public var onActivePath: Bool
 

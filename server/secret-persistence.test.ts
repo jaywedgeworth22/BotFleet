@@ -165,8 +165,12 @@ describe("the fingerprint baseline and the reload fence", () => {
     expect(INDEX_SOURCE).toContain("credentialFingerprint(cfg) === loadedCredentialFingerprint");
     expect(INDEX_SOURCE).not.toMatch(/const before = credentialFingerprint\(cfg\)/);
     // And it is kept in step with the load that actually built the fleet.
+    // withInstanceKeyOverrides(...) may wrap the instanceConfigs(cfg) call
+    // (it merges live-only custom-engine credentials into the map before it
+    // becomes the registry — see server/index.ts's own comment on it), so
+    // this matches either the bare or the wrapped form.
     expect(INDEX_SOURCE).toMatch(
-      /await registry\.load\(instanceConfigs\(cfg\)\);[\s\S]{0,400}?loadedCredentialFingerprint = credentialFingerprint\(cfg\);/,
+      /await registry\.load\((?:withInstanceKeyOverrides\()?instanceConfigs\(cfg\)\)?\);[\s\S]{0,400}?loadedCredentialFingerprint = credentialFingerprint\(cfg\);/,
     );
   });
 

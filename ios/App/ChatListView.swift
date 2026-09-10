@@ -810,7 +810,7 @@ struct SearchHitRow: View {
 
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(hit.name).font(.system(size: 15, weight: .semibold))
+                    Text(hit.from ?? hit.name).font(.system(size: 15, weight: .semibold))
                     if let task = hit.task, !task.isEmpty {
                         Text(task).font(.system(size: 12)).foregroundStyle(Color.secondary)
                     }

@@ -521,16 +521,32 @@ final class DecodingTests: XCTestCase {
     }
 
     func testAnUnknownRoleIsNotAttributedToYou() throws {
+        // `system` is a real role now (auto-delivered instructions).  A
+        // role this build has never heard of still must not paint as the
+        // human — that would be the phone claiming you said it.
         let json = """
-        {"id":"m1","role":"system","kind":"text","at":1,"text":"hello"}
+        {"id":"m1","role":"narrator","kind":"text","at":1,"text":"hello"}
         """
         let message = try JSONDecoder().decode(Message.self, from: Data(json.utf8))
         XCTAssertEqual(message.role, .bot)
+        XCTAssertNotEqual(message.role, .user)
     }
 
     /// The one that matters. `kind` is not optional, so before this a single
     /// unrecognised message failed the decode of the entire response — the
     /// thread did not render one message oddly, it did not render.
+    func testSystemRoleDecodesAndUnknownRoleIsNotYours() throws {
+        let json = """
+        {"messages":[
+          {"id":"m1","role":"system","kind":"text","at":1,"text":"Morning brief"},
+          {"id":"m2","role":"not-a-role","kind":"text","at":2,"text":"mystery"}
+        ],"hasMore":false}
+        """
+        let page = try JSONDecoder().decode(ThreadPage.self, from: Data(json.utf8))
+        XCTAssertEqual(page.messages.map(\.role), [.system, .bot])
+        XCTAssertNotEqual(page.messages[0].role, .user)
+    }
+
     func testOneUnknownMessageDoesNotSinkThePage() throws {
         let json = """
         {"messages":[

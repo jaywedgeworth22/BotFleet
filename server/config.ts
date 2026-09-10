@@ -203,6 +203,7 @@ const instanceConfigSchema = z.object({
 });
 const instanceConfigMapSchema = z.record(z.string(), instanceConfigSchema);
 const appConfigSchema = z.object({
+  deleteInstance: optionalText,
   xai: z.object({ key: optionalText, url: optionalText }).optional(),
   openaiCompat: z.object({ key: optionalText, url: optionalText }).optional(),
   /** Project key used for Sessions, catalog and agent tools. userId/sessionId
@@ -317,10 +318,18 @@ const appConfigSchema = z.object({
     .optional(),
   instances: instanceConfigMapSchema.optional(),
 });
-const appConfigPatchSchema = appConfigSchema.omit({ instances: true });
+// `deleteInstance` also lives on the base schema (saveConfig's internal
+// callers use appConfigSchema.partial() directly, not this schema) but must
+// never be reachable from the general PATCH /api/config body: that route has
+// none of the DELETE /api/instances/:id route's protections (protected-engine
+// check, busy-bot check, atomic reassignment), so accepting it here would let
+// `PATCH /api/config {"deleteInstance":"claude"}` bypass all of them and
+// strand bots on a protected engine that no longer exists.
+const appConfigPatchSchema = appConfigSchema.omit({ instances: true, deleteInstance: true });
 const jsonObjectSchema = z.record(z.string(), z.json());
 
 export interface AppConfig {
+  deleteInstance?: string;
   xai?: { key?: string; url?: string };
   openaiCompat?: { key?: string; url?: string };
   composio?: { apiKey?: string; userId?: string; sessionId?: string; brokerUrl?: string };
@@ -1012,6 +1021,13 @@ function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedCon
   if (checkedPatch.conversationMode !== undefined) disk.conversationMode = checkedPatch.conversationMode;
   if (checkedPatch.terminology !== undefined) disk.terminology = checkedPatch.terminology;
   if (checkedPatch.terminologyCustom !== undefined) disk.terminologyCustom = checkedPatch.terminologyCustom;
+  if (checkedPatch.deleteInstance) {
+    const currentInstances = jsonObjectSchema.safeParse(disk.instances);
+    if (currentInstances.success && currentInstances.data) {
+      delete currentInstances.data[checkedPatch.deleteInstance];
+      disk.instances = currentInstances.data;
+    }
+  }
   if (checkedPatch.instances) {
     const currentInstances = jsonObjectSchema.safeParse(disk.instances);
     const diskInstances: JsonObject = currentInstances.success ? currentInstances.data : {};
@@ -1038,7 +1054,7 @@ function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedCon
 export function patchInstanceConfig(
   cfg: AppConfig,
   instanceId: string,
-  patch: { cli?: string; fullAuto?: boolean; enabled?: boolean },
+  patch: { cli?: string; fullAuto?: boolean; enabled?: boolean; key?: string },
 ): InstanceCliUpdate {
   const next: AppConfig = structuredClone(cfg);
   const map = instanceConfigs(next);
@@ -1069,27 +1085,49 @@ export function patchInstanceConfig(
     }
   }
 
-  // `enabled` lives on the entry envelope, not in `entry.config` — same shape
-  // the registry reads in ProviderRegistry.load. Re-enabling clears the flag
-  // entirely so a true re-enable and a fresh install both round-trip as the
-  // same on-disk form.
-  if (patch.enabled !== undefined) {
-    if (patch.enabled) {
-      delete entry.enabled;
+  // Dev-mode (no Electron bridge) fallback only: the caller in server/index.ts
+  // intercepts `key` ahead of this function whenever the request carries
+  // `?secretStorage=external`, so a key routed through the encrypted store
+  // never reaches here and never lands in `nextConfig` — it rides a
+  // runtime-only environment override instead. This branch is what a plain
+  // PATCH (dev/browser, no bridge) falls back to, same plaintext-in-config.json
+  // shape the create-time `customConfig.key` path already uses.
+  if (patch.key !== undefined) {
+    const keyValue = patch.key.trim();
+    if (keyValue) {
+      nextConfig.key = keyValue;
     } else {
-      entry.enabled = false;
+      delete nextConfig.key;
     }
   }
 
-  entry.config = Object.keys(nextConfig).length ? nextConfig : undefined;
-  for (const e of Object.values(map)) {
-    if (!e.environment) continue;
-    const injected = injectedEnvironment(next, e.driver);
-    for (const [k, v] of Object.entries(e.environment)) {
-      if (injected.get(k) === v) delete e.environment[k];
-    }
-    if (!Object.keys(e.environment).length) delete e.environment;
+  // `enabled` lives on the entry envelope, not in `entry.config` — same shape
+  // the registry reads in ProviderRegistry.load. Re-enabling clears the flag
+  // so a true re-enable and a fresh install both round-trip as the same
+  // on-disk form — explicit `undefined`, NOT `delete`: saveConfig's instances
+  // merge is per-key (mergeConfigPatch does Object.assign(merged, entry) onto
+  // the existing disk entry), so a key this object never HAS is invisible to
+  // that merge and a stale `enabled: false` already on disk would survive a
+  // re-enable forever. Keeping the key with an explicit `undefined` value
+  // clears it on merge — JSON.stringify drops it from the file the same way
+  // `entry.config = undefined` already does just below.
+  if (patch.enabled !== undefined) {
+    entry.enabled = patch.enabled ? undefined : false;
   }
+
+  entry.config = Object.keys(nextConfig).length ? nextConfig : undefined;
+  next.instances = stripInjectedEnvironment(next, map);
+  return { ok: true, config: next };
+}
+
+export function deleteInstanceConfig(
+  cfg: AppConfig,
+  instanceId: string,
+): { ok: boolean; config: AppConfig } {
+  const next: AppConfig = structuredClone(cfg);
+  const map = instanceConfigs(next);
+  if (!Object.hasOwn(map, instanceId)) return { ok: false, config: cfg };
+  delete map[instanceId];
   next.instances = map;
   return { ok: true, config: next };
 }
@@ -1099,23 +1137,58 @@ interface InstanceCliUpdate {
   config: AppConfig;
 }
 
-/** The credential env instanceConfigs() injects for one driver — shared with
+/** The credential env instanceConfigs() injects for one instance — shared with
  * patchInstanceConfig() so the inject rule and the strip rule cannot drift apart.
  * Each secret goes only to the driver that actually reads it: the API-key
  * Grok driver reads XAI_API_KEY, the Computer driver reads BOX_TOKEN, and
  * OpenCode reads OPENCODE_API_KEY. Every other engine brings its own
  * login, so handing it a key it never uses would only put that key in the
- * environment of an unrelated child process. */
-function injectedEnvironment(cfg: AppConfig, driver: string): Map<string, string> {
+ * environment of an unrelated child process.
+ *
+ * `openai-compat` is the one driver with multiple instances (a user-added
+ * custom engine shares it), so the driver check alone is not enough — the
+ * workspace's `openaiCompat.key`/`url` may only reach the single reserved
+ * `openaiCompat` instance. A user-added instance keeps the same driver but
+ * points at whatever arbitrary endpoint the user just typed in; injecting the
+ * shared credential into it too would hand that endpoint the workspace's real
+ * OpenRouter/Groq key as a bearer token. A custom instance gets only the key
+ * (if any) the user entered for that specific instance, via `config.key`. */
+function injectedEnvironment(cfg: AppConfig, driver: string, instanceId: string): Map<string, string> {
   const environment = new Map<string, string>();
   if (driver === "grok" && cfg.xai?.key) environment.set("XAI_API_KEY", cfg.xai.key);
-  if (driver === "openai-compat" && cfg.openaiCompat?.key)
+  const isWorkspaceOpenAiCompatInstance = driver === "openai-compat" && instanceId === "openaiCompat";
+  if (isWorkspaceOpenAiCompatInstance && cfg.openaiCompat?.key)
     environment.set("OPENAI_COMPAT_API_KEY", cfg.openaiCompat.key);
-  if (driver === "openai-compat" && cfg.openaiCompat?.url)
+  if (isWorkspaceOpenAiCompatInstance && cfg.openaiCompat?.url)
     environment.set("OPENAI_COMPAT_URL", cfg.openaiCompat.url);
   if (driver === "boxAgent" && cfg.box?.token) environment.set("BOX_TOKEN", cfg.box.token);
   if (driver === "opencodeGo" && cfg.opencodeGo?.apiKey) environment.set("OPENCODE_API_KEY", cfg.opencodeGo.apiKey);
   return environment;
+}
+
+/** Strip config-injected credential env (injectedEnvironment above) from a
+ * materialized instance map before it is persisted. instanceConfigs() bakes
+ * those secrets into each entry's `environment` for the live driver to read;
+ * anything that persists a snapshot of that transient map — adding the first
+ * custom engine when `cfg.instances` was never set, patching a per-instance
+ * override — must strip them back out first, or config.json ends up holding
+ * a literal copy of a secret that was never meant to live on disk, and a
+ * later key rotation or clear leaves that stale copy still active. */
+export function stripInjectedEnvironment(cfg: AppConfig, map: InstanceConfigMap): InstanceConfigMap {
+  const stripped: InstanceConfigMap = {};
+  for (const [id, entry] of Object.entries(map)) {
+    if (!entry.environment) {
+      stripped[id] = entry;
+      continue;
+    }
+    const injected = injectedEnvironment(cfg, entry.driver, id);
+    const environment = { ...entry.environment };
+    for (const [k, v] of Object.entries(environment)) {
+      if (injected.get(k) === v) delete environment[k];
+    }
+    stripped[id] = Object.keys(environment).length ? { ...entry, environment } : { ...entry, environment: undefined };
+  }
+  return stripped;
 }
 
 // Default fleet: one instance per built-in driver (upstream
@@ -1185,7 +1258,7 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     const entry = { ...sourceEntry };
     map[id] = entry;
     const environment = { ...entry.environment };
-    for (const [key, value] of injectedEnvironment(cfg, entry.driver)) environment[key] = value;
+    for (const [key, value] of injectedEnvironment(cfg, entry.driver, id)) environment[key] = value;
     entry.environment = environment;
     // The driver URL is configuration, not a credential. Environment is
     // intentionally not consulted by ProviderRegistry when it decodes a
@@ -1204,4 +1277,19 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     }
   }
   return map;
+}
+
+/** The base instances map a new entry (e.g. a newly added custom engine)
+ * should be merged onto before persisting. When `cfg.instances` is already
+ * set, it IS the persistable base — reuse it untouched. On a default
+ * install (`cfg.instances` absent), the base has to be instanceConfigs()'s
+ * materialized default fleet so the full built-in roster round-trips onto
+ * disk once `instances` becomes non-empty — but that map is the LIVE
+ * transient one, with injected credentials baked into `environment`
+ * (BOX_TOKEN, OPENCODE_API_KEY, OPENAI_COMPAT_API_KEY, …), so it must be
+ * stripped first or saving it copies those live secrets into config.json. */
+export function persistableInstanceConfigs(cfg: AppConfig): InstanceConfigMap {
+  return cfg.instances && Object.keys(cfg.instances).length
+    ? cfg.instances
+    : stripInjectedEnvironment(cfg, instanceConfigs(cfg));
 }

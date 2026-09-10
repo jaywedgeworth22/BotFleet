@@ -18,6 +18,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   let bot: "ready" | "busy" | "missing" = "ready";
   let task = 0;
   const threads = new Set<string>();
+  const keys = new Map<string, string>();
   const started: Array<{ botId: string; threadId: string; prompt: string }> = [];
   const runOns: string[] = [];
   const triggerSources: string[] = [];
@@ -32,12 +33,17 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     emit: (payload) => emitted.push(payload),
     botState: () => bot,
     turnLive: () => live,
-    createTask: (_botId, title, activate = false) => {
+    createTask: (_botId, title, activate = false, automationKey) => {
       taskActivations.push(activate);
       taskTitles.push(title);
       const threadId = `thread-${++task}`;
       threads.add(threadId);
+      if (automationKey) keys.set(automationKey, threadId);
       return { threadId };
+    },
+    taskForKey: (_botId, automationKey) => keys.get(automationKey),
+    stampKey: (_botId, threadId, automationKey) => {
+      keys.set(automationKey, threadId);
     },
     taskExists: (_botId, threadId) => threads.has(threadId),
     startTurn: async (botId, threadId, prompt, runOn, triggerSource) => {
@@ -494,6 +500,57 @@ describe("RoutineManager", () => {
     }
     expect(h.started.map((row) => row.threadId)).toEqual(["thread-1", "thread-1", "thread-1"]);
     expect(h.taskTitles).toEqual(["Morning brief"]);
+  });
+
+  it("reuses a stamped key when it is the Simple-mode designated conversation", async () => {
+    const h = harness();
+    h.options.conversationMode = () => "simple";
+    h.options.defaultThread = () => "chat-thread";
+    const morning = h.manager.create({
+      name: "Morning brief",
+      prompt: "Morning",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    h.setNow(morning.nextRunAt!);
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "chat-thread",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    h.setNow(h.manager.listRoutines().find((r) => r.id === morning.id)!.nextRunAt!);
+    await h.manager.tick();
+    expect(h.started.map((row) => row.threadId)).toEqual(["chat-thread", "chat-thread"]);
+    expect(h.taskTitles).toEqual([]);
+  });
+
+  it("keeps Simple-mode automation on the designated conversation instead of a hidden extra", async () => {
+    const h = harness();
+    h.options.conversationMode = () => "simple";
+    h.options.defaultThread = () => "chat-thread";
+    const hidden = new Set(["hidden-projects-thread"]);
+    h.options.taskForKey = () => "hidden-projects-thread";
+    h.options.taskExists = (_botId, threadId) => hidden.has(threadId);
+    const activations: string[] = [];
+    h.options.activateTask = (_botId, threadId) => {
+      activations.push(threadId);
+    };
+    h.manager.enqueueWebhook({
+      webhookId: "hook-1",
+      webhookName: "Sentry incidents",
+      prompt: "Handle page",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d-hidden",
+      receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
+    });
+    await h.manager.tick();
+    expect(h.started).toEqual([{ botId: "maus-webhook", threadId: "chat-thread", prompt: "Handle page" }]);
+    expect(activations).toEqual(["chat-thread"]);
+    expect(activations).not.toContain("hidden-projects-thread");
   });
 
   it("gives two different routines two different threads", async () => {

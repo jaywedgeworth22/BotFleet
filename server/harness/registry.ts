@@ -77,6 +77,8 @@ export interface DescribedInstance {
   cliDefault: string | undefined;
   cliCandidates: string[];
   fullAuto: boolean;
+  iconUrl?: string;
+  isCustom?: boolean;
 }
 
 export class ProviderRegistry {
@@ -162,6 +164,23 @@ export class ProviderRegistry {
       await existing.live.dispose().catch(() => {});
     }
     return this.loadEntry(instanceId, entry);
+  }
+
+  /** Drop a single instance (deleted custom engine) without tearing down the
+   * whole fleet. Mirrors reloadInstance's dispose-then-forget half, minus the
+   * reload: deleting one unused custom engine must not settle every OTHER
+   * bot's in-flight turn as interrupted, which a global reloadProviders()
+   * would do by disposing the entire registry. */
+  async removeInstance(instanceId: InstanceId): Promise<void> {
+    const existing = this.byId.get(instanceId);
+    if (existing?.live) {
+      await existing.live.dispose().catch(() => {});
+    }
+    this.byId.delete(instanceId);
+    this.cliByInstance.delete(instanceId);
+    this.fullAutoByInstance.delete(instanceId);
+    this.enabledByInstance.delete(instanceId);
+    this.lastDescribe = null;
   }
 
   get(instanceId: InstanceId): ProviderInstance | null {
@@ -254,6 +273,8 @@ export class ProviderRegistry {
         // case where the detected-path dropdown matters most
         cliCandidates: candidatesFor(driver),
         fullAuto: this.fullAutoByInstance.get(entry.instanceId) ?? false,
+        iconUrl: undefined,
+        isCustom: entry.shadow.driverKind === "openai-compat" && entry.instanceId !== "openaiCompat",
       };
     }
     const inst = entry.live!;
@@ -324,6 +345,8 @@ export class ProviderRegistry {
       // newly installed CLI shows up on the next refresh.
       cliCandidates: candidatesFor(driver),
       fullAuto: this.fullAutoByInstance.get(inst.instanceId) ?? false,
+      iconUrl: inst.iconUrl,
+      isCustom: inst.driverKind === "openai-compat" && inst.instanceId !== "openaiCompat",
     };
   }
 

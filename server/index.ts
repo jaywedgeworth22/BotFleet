@@ -59,12 +59,15 @@ import {
 import {
   enableQuotaCooldownPersist,
   isQuotaOrCapText,
-  lastUserTextIndex,
+  lastTurnStartIndex,
   parseQuotaResetTime,
   quotaCooldowns,
   selectTurnFallback,
+  shouldReplayPersistedStarter,
+  bootRecoveryTurnOpts,
   sliceIsShortProviderError,
   turnHitQuotaOrCap,
+  BOOT_RECOVERY_NOTICE,
   turnProducedAssistantOutput,
 } from "./model-fallback.ts";
 import * as box from "./box.ts";
@@ -112,6 +115,9 @@ import {
   skillRecorderEnabled,
   syncCredentialEnv,
   patchInstanceConfig,
+  deleteInstanceConfig,
+  persistableInstanceConfigs,
+  isAbsoluteHttpUrl,
   usageIngestUrl,
   usageProjectRules,
   vpsCpus,
@@ -128,6 +134,7 @@ import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import {
   isEffortLevel,
+  type InstanceConfigMap,
   type ModelSelection,
   type ProviderInstance,
   type RequestOutcome,
@@ -552,11 +559,13 @@ export function askBotAndWait(targetBotId: string, message: string, depth: numbe
 // default selection for new bots: first available instance, claude preferred
 const DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS = 15_000;
 
-async function defaultSelection() {
+async function defaultSelection(excludeInstanceId?: string) {
   // A bot being created can ride a probe taken moments ago; the engine rail
   // still refreshes on demand.
   const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
-  const available = described.filter((d) => d.snapshot.state === "available");
+  const available = described.filter(
+    (d) => d.snapshot.state === "available" && d.instanceId !== excludeInstanceId,
+  );
   // Deliberately NO fallback to described[0]. Handing a bot an engine whose
   // CLI isn't installed makes it look ready and then fail on send with a raw
   // spawn ENOENT — the single worst first-run experience, and the one every
@@ -1854,7 +1863,7 @@ bus.subscribe((event: RuntimeEvent) => {
       if (fallbackBot) {
         const fallbackKey = `${fallbackBot.id}:${event.threadId}`;
         const activeMsgs = store.activePath(event.threadId);
-        const lastUserIdx = lastUserTextIndex(activeMsgs);
+        const lastUserIdx = lastTurnStartIndex(activeMsgs);
         const afterUser = lastUserIdx >= 0 ? activeMsgs.slice(lastUserIdx + 1) : [];
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
         const lastMsgText = afterUser.length > 0 ? (afterUser[afterUser.length - 1].text ?? "") : "";
@@ -1972,10 +1981,18 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!group && fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
           const userMsg = fallbackUserMessage;
           const fallbackBotId = bot.id;
+          // The retried turn is a continuation of whatever dispatched the
+          // one that just fell over — a webhook/resource turn stays
+          // unattended, and its automationSource travels with it so a
+          // retry never re-titles the task or, more importantly, never
+          // lets startTurn's default branch call clearUnattended and open
+          // the door for an autoApprove/always-allow grant mid-fallback.
           void startTurn(fallbackBotId, userMsg.text || "", {
             userMessage: userMsg,
             threadId: event.threadId,
             modelSelection: fallbackSelection,
+            automationSource: userMsg.automationSource,
+            unattended: isUnattended(fallbackBotId),
           }).catch((error) => {
             console.error(`fallback startTurn failed for ${fallbackBotId}:`, error);
           });
@@ -2403,8 +2420,12 @@ async function startTurn(
   const task = store.taskByThread(bot.id, threadId);
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
   const commsDepth = opts?.commsDepth ?? 0;
-  // a task takes its name from the first thing you asked it to do
-  if (text.trim() && !opts?.cardContinuation) store.titleTaskFromFirstMessage(bot.id, text, threadId);
+  // a task takes its name from the first thing you asked it to do.
+  // Auto-delivered instructions are not that — they already named the task
+  // from the routine or webhook.
+  if (text.trim() && !opts?.cardContinuation && !opts?.automationSource) {
+    store.titleTaskFromFirstMessage(bot.id, text, threadId);
+  }
 
   const selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, task.modelSelection ?? bot.modelSelection).selection;
@@ -2442,12 +2463,22 @@ async function startTurn(
     );
   }
 
-  // an edit hands us its already-branched user message; a plain send appends
+  // an edit hands us its already-branched user message; a plain send appends.
+  // Auto-delivered instructions are stored as role=system so iOS/desktop
+  // never paint a blue user bubble.  The model still receives them as the
+  // turn prompt via transcriptPromptRole.
   let userMessage = opts?.userMessage;
   if (!userMessage) {
+    const storedRole = opts?.automationSource ? "system" : "user";
     userMessage = opts?.cardContinuation
       ? { id: `card-${randomUUID()}`, at: Date.now(), role: "user", kind: "text", text }
-      : store.appendMessage(threadId, { role: "user", kind: "text", text, replyToId: opts?.replyTo?.id });
+      : store.appendMessage(threadId, {
+          role: storedRole,
+          kind: "text",
+          text,
+          replyToId: opts?.replyTo?.id,
+          automationSource: opts?.automationSource,
+        });
   }
 
   // transcript for API-backed drivers: settled text turns on the ACTIVE
@@ -2462,7 +2493,7 @@ async function startTurn(
     .filter((m) => m.kind === "text" && m.text && !skipTranscript.has(m.id))
     .slice(-40)
     .map((m) => ({
-      role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+      role: m.role === "user" || m.role === "system" ? ("user" as const) : ("assistant" as const),
       text: transcriptText(m, messagesById, cfg.profile?.name?.trim() || "User"),
     }));
 
@@ -2991,9 +3022,17 @@ routines = new RoutineManager({
     run.triggerSource === "webhook" && run.webhookId
       ? webhooks.list().find((hook) => hook.id === run.webhookId)?.minGapMinutes
       : undefined,
-  defaultThread: (botId) => store.bot(botId)?.threadId,
-  createTask: (botId, title, activate = false) => {
-    const task = store.createTask(botId, title, activate);
+  defaultThread: (botId) => {
+    // Simple mode's designated conversation is whatever the client is
+    // looking at (`bot.threadId` / publicBot), not the oldest task.  "Keep
+    // Extra Threads Hidden" only flips conversationMode and leaves the
+    // active Projects task selected — keying off oldest would append
+    // schedules into a hidden chat and let activateTask yank the UI away.
+    const bot = store.bot(botId);
+    return bot?.threadId;
+  },
+  createTask: (botId, title, activate = false, automationKey) => {
+    const task = store.createTask(botId, title, activate, automationKey);
     const bot = store.bot(botId);
     if (task && bot) broadcast({ kind: "bot", bot: publicBot(bot) });
     return task;
@@ -3005,6 +3044,10 @@ routines = new RoutineManager({
     if (switched) broadcast({ kind: "bot", bot: publicBot(switched) });
   },
   taskExists: (botId, threadId) => Boolean(store.taskByThread(botId, threadId)),
+  taskForKey: (botId, automationKey) => store.taskByAutomationKey(botId, automationKey)?.threadId,
+  stampKey: (botId, threadId, automationKey) => {
+    store.stampAutomationKey(botId, threadId, automationKey);
+  },
   startTurn: (botId, threadId, prompt, runOn, triggerSource, onDispatchError) =>
     startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError }),
   interruptTurn: async (botId, threadId, runOn) => {
@@ -3400,7 +3443,7 @@ function serializeRoomContext(threadId: string, userName: string): string {
   return messages
     .filter((m) => m.kind === "text" && m.text)
     .slice(-GROUP_CONTEXT_MESSAGES)
-    .map((m) => `${m.role === "user" ? userName : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
+    .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Scheduled Run" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
     .join("\n");
 }
 
@@ -3517,15 +3560,40 @@ _loadPending();
         }
       }
 
-      const lastMsg = activeMsgs[activeMsgs.length - 1];
-      const resumeUser = lastMsg?.role === "user" && lastMsg.kind === "text" ? lastMsg : undefined;
-      const prompt = resumeUser
+      // A turn-starter can be a person's message OR an auto-delivered
+      // routine/webhook/resource instruction stored as role="system" —
+      // and it is not necessarily the LAST row: a webhook/resource turn
+      // that got as far as an activity chip or a permission card before
+      // the process died leaves those rows after it.  Scanning only the
+      // final message would miss the system prompt entirely, discard the
+      // automation attribution, and repersist the recovery notice as a
+      // fabricated human bubble.
+      const turnStartIdx = lastTurnStartIndex(activeMsgs);
+      const resumeUser = turnStartIdx >= 0 ? activeMsgs[turnStartIdx] : undefined;
+      // Connector/secret continuation is ephemeral (`cardContinuation`), so a
+      // crash mid-resume would otherwise replay the previous completed
+      // prompt.  Replay the persisted starter's exact TEXT only when that
+      // turn never produced bot text (a completed tool call means whatever
+      // ran already ran — replaying the same prompt could repeat it).
+      const replay = shouldReplayPersistedStarter(activeMsgs, turnStartIdx);
+      const prompt = replay && resumeUser
         ? (resumeUser.text || "Please resume.")
-        : "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
+        : BOOT_RECOVERY_NOTICE;
+      // Whether the resumed turn is unattended is a SEPARATE question from
+      // whether its exact prompt text is replayed: a webhook/resource turn
+      // that already completed a tool before the crash is still that same
+      // externally-triggered turn continuing, not a person now at the
+      // keyboard.  Gating this on `replay` too would both let an
+      // autoApprove grant wrongly authorize a resumed unattended request
+      // AND (since `unattendedBots` is memory-only and empty right after
+      // restart) persist BOOT_RECOVERY_NOTICE as a fabricated `role: "user"`
+      // bubble instead of a `system` continuation — the exact bug this
+      // whole boot-recovery path exists to fix.
       console.log(`boot recovery: auto-resuming in-flight thread ${threadId} for ${bot.name}`);
       void startTurn(bot.id, prompt, {
         threadId,
-        userMessage: resumeUser,
+        userMessage: replay ? resumeUser : undefined,
+        ...bootRecoveryTurnOpts(resumeUser, replay),
       }).catch((err) => {
         console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
         store.patchBot(bot.id, { inflightThreadId: undefined });
@@ -4512,7 +4580,7 @@ async function runProviderReload() {
   // watchdog reports a "no activity" stall on a dead thread twenty minutes
   // later, and settle each one's routine receipt the way the stall path does.
   const killedTurns = watchdog.settleAll();
-  await registry.load(instanceConfigs(cfg));
+  await registry.load(withInstanceKeyOverrides(instanceConfigs(cfg)));
   // The fleet now exists on exactly these credentials — record that, so the
   // next comparison is against what was built rather than against whatever
   // `cfg` happened to hold when the comparison ran.
@@ -4586,6 +4654,41 @@ async function applyResolvedSecrets(reason: RefreshReason): Promise<void> {
 // and reload sequence single-flight so two settings requests cannot drop one
 // another's changes or dispose a fleet while another reload is creating it.
 let providerConfigBusy = false;
+
+// Runtime-only per-instance credential overrides for openai-compat custom
+// engines saved through the desktop shell's encrypted credential store
+// (?secretStorage=external on PATCH /api/instances/:id): the key never
+// touches config.json, so it lives ONLY here for the life of this process —
+// re-applied to the live registry entry every time that instance reloads,
+// and dropped when the instance is deleted. A relaunch starts this map
+// empty; the instance then boots keyless (the same, already-supported state
+// as a deliberately-keyless local engine) until the desktop shell replays
+// its encrypted store back through this same PATCH route.
+const instanceKeyOverrides = new Map<string, string>();
+
+/** Merge every live-only instance-key override into a freshly built
+ * instanceConfigs(cfg) map before it becomes (part of) the live registry.
+ * The narrow PATCH /api/instances/:id route that SETS an override already
+ * applied it to the one instance it just touched, but the general
+ * reloadProviders() path — triggered by any unrelated settings change
+ * (another provider's credential, bot defaults, …) — rebuilds the WHOLE
+ * fleet from instanceConfigs(cfg) alone. Without this, that rebuild would
+ * silently drop every custom engine's encrypted key: the instance keeps
+ * reporting available (keyless custom instances always do), so the gap
+ * only surfaces as every subsequent turn failing upstream, until the app
+ * restarts and the desktop shell replays its store. Mutates and returns
+ * the same map — instanceConfigs(cfg) always hands back a freshly spread
+ * transient map, never the caller's persisted entries, so mutating it here
+ * is exactly as safe as instanceConfigs()'s own injectedEnvironment merge. */
+function withInstanceKeyOverrides(map: InstanceConfigMap): InstanceConfigMap {
+  for (const [instanceId, key] of instanceKeyOverrides) {
+    const entry = map[instanceId];
+    if (entry && entry.driver === "openai-compat") {
+      entry.environment = { ...entry.environment, OPENAI_COMPAT_API_KEY: key };
+    }
+  }
+  return map;
+}
 
 // ── HTTP plumbing ─────────────────────────────────────────────────────
 /** Folders a paired phone may point a room at.  Only what this computer
@@ -5368,13 +5471,21 @@ const server = createServer(async (req, res) => {
           const group = bot ? undefined : store.groupByThread(hit.threadId);
           if (!bot && !group) return null;
           const active = onActivePath(hit.threadId, hit.messageId);
+          // A room hit already carries `from` (the speaking member); a
+          // system-role hit never does, but its sender is not the bot
+          // either — an auto-delivered routine/webhook/resource run, not
+          // something the bot said — so it needs the same "Scheduled Run"
+          // attribution the export and reply displays already give it, or
+          // the client falls back to `name` (the bot's own name) and
+          // misattributes the hit.
+          const from = hit.from ?? (hit.role === "system" ? "Scheduled Run" : undefined);
           if (bot) {
             const task = store.taskByThread(bot.id, hit.threadId);
-            return { ...hit, botId: bot.id, name: bot.name, task: task?.title, onActivePath: active };
+            return { ...hit, from, botId: bot.id, name: bot.name, task: task?.title, onActivePath: active };
           }
           if (group) {
             const task = store.groupTaskByThread(group.id, hit.threadId);
-            return { ...hit, groupId: group.id, name: group.name, task: task?.title, onActivePath: active };
+            return { ...hit, from, groupId: group.id, name: group.name, task: task?.title, onActivePath: active };
           }
           return null;
         })
@@ -5411,7 +5522,8 @@ const server = createServer(async (req, res) => {
       const userName = cfg.profile?.name?.trim() || "User";
       const lines: string[] = [`# ${title}`, ""];
       for (const msg of messages) {
-        const who = msg.role === "user" ? userName : (msg.from?.name ?? bot?.name ?? "Bot");
+        const who =
+          msg.role === "user" ? userName : msg.role === "system" ? "Scheduled Run" : (msg.from?.name ?? bot?.name ?? "Bot");
         if (msg.kind === "text" && msg.text) lines.push(`**${who}:**`, "", msg.text, "");
         else if (msg.kind === "activity" && msg.tool) lines.push(`> ${msg.tool.name}`, "");
         else if (msg.kind === "screen") lines.push("> [screen capture]", "");
@@ -6941,8 +7053,12 @@ const server = createServer(async (req, res) => {
       // next request is handled
       if (bot.busy) return json(res, 409, { error: "the bot is working — stop it before editing" });
       const source = store.messagesFor(bot.threadId).find((msg) => msg.id === messageId);
-      if (!source || source.role !== "user" || source.kind !== "text") {
-        return json(res, 404, { error: "only user messages can be edited" });
+      // A "user" message is a person's prompt; a "system" message is an
+      // auto-delivered routine/webhook/resource instruction — Regenerate
+      // and edit-last both retarget the same turn-starter on an
+      // automation-only thread, so both roles are editable here.
+      if (!source || (source.role !== "user" && source.role !== "system") || source.kind !== "text") {
+        return json(res, 404, { error: "only user or system-instruction messages can be edited" });
       }
       if (!registry.get(bot.modelSelection.instanceId)) {
         return json(res, 409, {
@@ -6953,7 +7069,12 @@ const server = createServer(async (req, res) => {
       if (!message) return json(res, 404, { error: "no such message" });
       store.patchBot(bot.id, { rewound: true });
       const replyTo = message.replyToId ? resolveReplyTarget(bot.threadId, message.replyToId) : undefined;
-      await startTurn(bot.id, text, { userMessage: message, replyTo });
+      await startTurn(bot.id, text, {
+        userMessage: message,
+        replyTo,
+        automationSource: message.automationSource,
+        unattended: message.role === "system" ? isUnattended(bot.id) : undefined,
+      });
       return json(res, 202, { ok: true });
     }
 
@@ -7805,7 +7926,7 @@ const server = createServer(async (req, res) => {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       const body = await readBody(req);
-      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean } = {};
+      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean; key?: string } = {};
 
       if (body?.cli !== undefined) {
         if (typeof body.cli !== "string") return json(res, 400, { error: "cli must be a string" });
@@ -7823,10 +7944,32 @@ const server = createServer(async (req, res) => {
         patchOptions.enabled = body.enabled;
       }
 
+      if (body?.key !== undefined) {
+        if (typeof body.key !== "string") return json(res, 400, { error: "key must be a string" });
+        if (/[\n\r]/.test(body.key)) return json(res, 400, { error: "key must not contain newlines" });
+        patchOptions.key = body.key;
+      }
+
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
       providerConfigBusy = true;
       try {
         const instanceId = instancePatch[1];
+        // A custom engine's API key saved through the desktop shell's
+        // encrypted credential store arrives here with ?secretStorage=external
+        // (the shell has already, or is about to, write it to credentials.bin)
+        // — it must never also land in plaintext config.json next to the
+        // cli/fullAuto overrides this route persists below. Pull it out of
+        // patchOptions before patchInstanceConfig ever sees it; the live
+        // instance gets it through instanceKeyOverrides instead, the same
+        // per-instance `environment` channel the openai-compat driver already
+        // reads (and, since finding #1, the ONLY channel a custom instance's
+        // key can arrive through).
+        if (patchOptions.key !== undefined && url.searchParams.get("secretStorage") === "external") {
+          const trimmedKey = patchOptions.key.trim();
+          if (trimmedKey) instanceKeyOverrides.set(instanceId, trimmedKey);
+          else instanceKeyOverrides.delete(instanceId);
+          delete patchOptions.key;
+        }
         const result = patchInstanceConfig(cfg, instanceId, patchOptions);
         if (!result.ok) return json(res, 404, { error: `unknown instance "${instanceId}"` });
         // persist the whole instances map this rebuild produced — a fresh
@@ -7835,7 +7978,10 @@ const server = createServer(async (req, res) => {
         saveConfig({ instances: result.config.instances });
         Object.assign(cfg, loadConfig());
 
-        const targetEntry = instanceConfigs(cfg)[instanceId];
+        // Re-apply any live-only key override on every reload of this
+        // instance — not just the request that just set it — so a later
+        // cli-only or enabled-only PATCH doesn't silently drop it.
+        const targetEntry = withInstanceKeyOverrides(instanceConfigs(cfg))[instanceId];
         const oldInstance = registry.get(instanceId);
         if (oldInstance) {
           await oldInstance.adapter.stopAll?.().catch(() => {});
@@ -7859,6 +8005,215 @@ const server = createServer(async (req, res) => {
         resetPathCache();
         const instances = await registry.describeWithFreshInstance(instanceId);
         return json(res, 200, { instances });
+      } finally {
+        providerConfigBusy = false;
+      }
+    }
+
+    // ── add custom OpenAI-compatible engine ──
+    // POST /api/instances {name: string, endpoint: string, key?: string, models: string[] | string, iconUrl?: string}
+    if (method === "POST" && path === "/api/instances") {
+      if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
+        return json(res, 415, { error: "content-type must be application/json" });
+      }
+      const body = await readBody(req);
+      const name = typeof body?.name === "string" ? body.name.trim() : "";
+      if (!name || name.length > 64) {
+        return json(res, 400, { error: "name is required and must be 1–64 characters" });
+      }
+      const endpoint = typeof body?.endpoint === "string" ? body.endpoint.trim() : "";
+      if (!endpoint || !isAbsoluteHttpUrl(endpoint)) {
+        return json(res, 400, { error: "endpoint must be a valid http:// or https:// URL" });
+      }
+      const rawKey = typeof body?.key === "string" ? body.key.trim() : undefined;
+      const rawIcon = typeof body?.iconUrl === "string" ? body.iconUrl.trim() : undefined;
+
+      let rawModels: string[] = [];
+      if (Array.isArray(body?.models)) {
+        rawModels = body.models.map((m: unknown) => (typeof m === "string" ? m.trim() : "")).filter(Boolean);
+      } else if (typeof body?.models === "string") {
+        rawModels = body.models.split(/[\n,]+/).map((s: string) => s.trim()).filter(Boolean);
+      }
+      if (rawModels.length === 0) {
+        return json(res, 400, { error: "at least one model ID is required" });
+      }
+      if (rawModels.length > 15) {
+        return json(res, 400, { error: "at most 15 models can be configured per engine" });
+      }
+
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        const currentFleet = instanceConfigs(cfg);
+        const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 24) || "custom";
+        let instanceId = `custom-${slug}`;
+        let counter = 1;
+        while (Object.hasOwn(currentFleet, instanceId)) {
+          instanceId = `custom-${slug}-${counter++}`;
+        }
+
+        const customConfig: Record<string, unknown> = {
+          url: endpoint,
+          models: rawModels,
+        };
+        if (rawKey) customConfig.key = rawKey;
+        if (rawIcon) customConfig.iconUrl = rawIcon;
+
+        const newInstanceEntry = {
+          driver: "openai-compat",
+          displayName: name,
+          config: customConfig,
+        };
+
+        // persistableInstanceConfigs(cfg) is NOT currentFleet: currentFleet
+        // is the LIVE transient map, whose per-instance `environment` has
+        // injected credentials baked in (BOX_TOKEN, OPENCODE_API_KEY,
+        // OPENAI_COMPAT_API_KEY, …). On a default install `cfg.instances` is
+        // unset, so spreading currentFleet here would copy those live
+        // secrets into the PERSISTED per-instance `environment` entries on
+        // disk — never meant to be stored there, and a later credential
+        // rotation/clear would leave the stale copy still active.
+        const nextInstances = {
+          ...persistableInstanceConfigs(cfg),
+          [instanceId]: newInstanceEntry,
+        };
+
+        saveConfig({ instances: nextInstances });
+        Object.assign(cfg, loadConfig());
+        // Attach only the newly added instance rather than calling the
+        // global reloadProviders(): that disposes EVERY provider and marks
+        // every currently-busy bot's turn as interrupted, so adding one
+        // independent engine would kill every other bot's active work.
+        const newEntry = instanceConfigs(cfg)[instanceId];
+        const newLive = newEntry ? await registry.reloadInstance(instanceId, newEntry) : null;
+        if (newLive) bus.attach([newLive]);
+        resetPathCache();
+        return json(res, 201, {
+          ok: true,
+          instanceId,
+          instances: await registry.describe(),
+        });
+      } finally {
+        providerConfigBusy = false;
+      }
+    }
+
+    // ── delete custom engine instance ──
+    // DELETE /api/instances/:id
+    const instanceDelete = /^\/api\/instances\/([\w.-]+)$/.exec(path);
+    if (method === "DELETE" && instanceDelete) {
+      const instanceId = instanceDelete[1];
+      const protectedEngines = new Set([
+        "grok", "dsh", "droid", "cursor", "claude", "codex", "antigravity",
+        "minimax", "opencodeGo", "computer", "openaiCompat", "qwen", "hermes", "pi",
+      ]);
+      if (protectedEngines.has(instanceId)) {
+        return json(res, 400, { error: `cannot delete default fleet engine "${instanceId}"` });
+      }
+
+      if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
+      providerConfigBusy = true;
+      try {
+        const result = deleteInstanceConfig(cfg, instanceId);
+        if (!result.ok) return json(res, 404, { error: `unknown instance "${instanceId}"` });
+
+        // A bot can reference the engine either at the top level
+        // (bot.modelSelection) or per-task (TaskRecord.modelSelection, which
+        // sendBotTurn prioritizes over the bot's own selection) — either one
+        // surviving deletion would fail on the next turn.
+        const referencesInstance = (selection: ModelSelection | undefined) =>
+          selection?.instanceId === instanceId ||
+          selection?.fallbacks?.some((f) => f.instanceId === instanceId) === true;
+        const affectedBots = store.bots.filter(
+          (b) =>
+            referencesInstance(b.modelSelection) ||
+            store.tasks(b.id).some((t) => referencesInstance(t.modelSelection)),
+        );
+        if (affectedBots.some((b) => b.busy)) {
+          return json(res, 409, { error: "cannot delete engine while a bot using it is working" });
+        }
+        if (affectedBots.length > 0) {
+          // Exclude the instance being deleted from the replacement pool: it
+          // hasn't been removed from the live registry at this point, so
+          // without this it can select its own about-to-be-deleted id as the
+          // "replacement" and every bot's next turn would fail.
+          const replacement = await defaultSelection(instanceId);
+          // defaultSelection() deliberately returns an EMPTY selection rather
+          // than a not-actually-ready fallback when nothing else is
+          // available (see its own comment) — the right answer for a bot
+          // being freshly created, which the UI then shows a setup path for.
+          // Silently writing that empty selection into an EXISTING bot's
+          // modelSelection is not the same kind of honest: it leaves the bot
+          // pointed at instanceId "", which fails every future turn with
+          // "provider instance \"\" is unavailable" and gives the operator no
+          // path back short of manually reconfiguring the bot. Refuse the
+          // deletion instead, the same way a busy affected bot already does.
+          if (!replacement.instanceId) {
+            return json(res, 409, {
+              error: "cannot delete this engine: no other configured engine is available to reassign the bots using it",
+            });
+          }
+          const rewrite = (selection: ModelSelection): ModelSelection => {
+            const next: ModelSelection = { ...selection };
+            if (next.instanceId === instanceId) {
+              next.instanceId = replacement.instanceId;
+              next.model = replacement.model;
+            }
+            if (next.fallbacks) {
+              const nextFallbacks = next.fallbacks.filter((f) => f.instanceId !== instanceId);
+              if (nextFallbacks.length > 0) {
+                next.fallbacks = nextFallbacks;
+              } else {
+                delete next.fallbacks;
+              }
+            }
+            return next;
+          };
+          for (const b of affectedBots) {
+            let changed = false;
+            const patch: { modelSelection?: ModelSelection } = {};
+            if (referencesInstance(b.modelSelection)) {
+              patch.modelSelection = rewrite(b.modelSelection);
+              changed = true;
+            }
+            if (changed) {
+              const patched = store.patchBot(b.id, patch);
+              if (patched) broadcast({ kind: "bot", bot: wireBot(patched) });
+            }
+            for (const task of store.tasks(b.id)) {
+              if (!referencesInstance(task.modelSelection)) continue;
+              const patchedTask = store.patchTask(b.id, task.threadId, {
+                modelSelection: rewrite(task.modelSelection!),
+              });
+              if (patchedTask) {
+                const freshBot = store.bot(b.id);
+                if (freshBot) broadcast({ kind: "bot", bot: wireBot(freshBot) });
+              }
+            }
+          }
+        }
+
+        saveConfig({ deleteInstance: instanceId });
+        Object.assign(cfg, loadConfig());
+        // Remove only the deleted registry entry and its bus attachment —
+        // not the global reloadProviders(): that disposes EVERY provider and
+        // marks every currently-busy bot's turn as interrupted, so deleting
+        // one unused custom engine would destroy unrelated active work.
+        bus.detach(instanceId);
+        await registry.removeInstance(instanceId);
+        instanceKeyOverrides.delete(instanceId);
+        // A recreated engine reuses the same slug/instance id (the POST
+        // handler's dedup loop only guards against a currently-LIVE
+        // collision), so a stale cooldown — including a "*" wildcard record
+        // with no resetsAt that would otherwise never expire — must not
+        // outlive the engine it was recorded against and immediately cap a
+        // same-named replacement.
+        quotaCooldowns.clearWhere((cooldown) => cooldown.instanceId === instanceId);
+        resetPathCache();
+        return json(res, 200, {
+          ok: true,
+          instances: await registry.describe(),
+        });
       } finally {
         providerConfigBusy = false;
       }

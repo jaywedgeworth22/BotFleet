@@ -225,11 +225,15 @@ public struct CompanionState: Sendable {
         if let more = page.hasMore { hasMore[threadId] = more }
     }
 
-    /// User-message alternatives created by edit-and-retry, oldest first.
+    /// Turn-starter alternatives created by edit-and-retry or Regenerate,
+    /// oldest first.  A turn starter is a person's "user" message OR an
+    /// auto-delivered routine/webhook/resource instruction stored as
+    /// "system" — Regenerate forks either role, so both need their
+    /// siblings reachable through the version controls.
     public func versions(of message: Message, inThread threadId: String) -> [Message] {
-        guard message.role == .user, message.kind == .text else { return [] }
+        guard message.role == .user || message.role == .system, message.kind == .text else { return [] }
         return transcript(forThread: threadId)
-            .filter { $0.role == .user && $0.kind == .text && $0.parentId == message.parentId }
+            .filter { $0.role == message.role && $0.kind == .text && $0.parentId == message.parentId }
             .sorted { $0.at == $1.at ? $0.id < $1.id : $0.at < $1.at }
     }
 

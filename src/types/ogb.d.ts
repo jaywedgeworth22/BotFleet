@@ -235,6 +235,24 @@ type SkillRecordingPayload = {
           | "infisicalClientSecret",
         value: string,
       ): Promise<ConfigStatus>;
+      /** Save a user-added custom engine's API key through the same
+       * OS-backed store `setCredential` uses — a sibling method, not a name
+       * in that fixed union, because a custom engine's instance id is
+       * dynamic (operator-chosen at creation) rather than one of
+       * setCredential's known singleton slots. Call after the instance
+       * already exists (POST /api/instances returns its id): the key never
+       * lands in config.json, only in credentials.bin and the live running
+       * instance's process-local environment. */
+      setInstanceCredential?(instanceId: string, value: string): Promise<void>;
+      /** Purge a deleted custom engine's key from the encrypted store
+       * WITHOUT touching the live harness — unlike setInstanceCredential,
+       * which PATCHes the live instance and would reload that provider
+       * (settling any busy bot as no-longer-busy and defeating the delete
+       * route's own busy-bot guard if called before the delete). Call AFTER
+       * the instance is already gone, so a later engine that reuses the
+       * same name (same slug, same instance id) cannot inherit this key on
+       * the next app launch. */
+      clearInstanceCredential?(instanceId: string): Promise<void>;
       /** In-app auto-update (packaged app only; dormant in dev). onState
        * fires immediately with the current state, then on transitions. */
       updater?: {

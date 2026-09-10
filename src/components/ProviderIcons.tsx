@@ -27,7 +27,7 @@ export function GrokMark({ size = 16, className }: IconProps) {
 /** Official DeepSeek mark (the whale glyph, no background plate). */
 export function DeepSeekMark({ size = 16, className }: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="0 0 512 509.64" className={className} aria-hidden>
+    <svg width={size} height={size} viewBox="85 85 360 330" className={className} aria-hidden>
       <path
         fill="#4D6BFE"
         fillRule="nonzero"
@@ -55,7 +55,7 @@ export function CodexMark({ size = 16, className }: IconProps) {
       src={codexMark}
       width={size}
       height={size}
-      className={cn("object-contain", className)}
+      className={cn("object-contain dark:invert", className)}
       alt="Codex"
       aria-hidden
     />
@@ -207,7 +207,10 @@ export function PiMark({ size = 16, className }: IconProps) {
   );
 }
 
-export function ProviderMark({ driverKind, size, className }: IconProps & { driverKind: string }) {
+export function ProviderMark({ driverKind, size, className, iconUrl }: IconProps & { driverKind: string; iconUrl?: string }) {
+  if (iconUrl) {
+    return <img src={iconUrl} width={size} height={size} className={cn("object-contain", className)} alt={driverKind} aria-hidden />;
+  }
   switch (driverKind) {
     case "grok":
     case "grokAgent":
