@@ -432,7 +432,10 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         // drivers report the failure only here — they never emit
         // runtime.error — so without this a broken engine was invisible.
         const stopReason = clean(event.stopReason)?.slice(0, 200) ?? "unknown";
-        if (stopReason === "auth_required" || stopReason === "cancelled") {
+        // OpenAI-compatible, Grok, BoxAgent, and chat-completions drivers
+        // report a user-initiated stop as "interrupted" rather than
+        // "cancelled" — both are the expected, benign shape of a stop.
+        if (stopReason === "auth_required" || stopReason === "cancelled" || stopReason === "interrupted") {
           sink.addBreadcrumb?.({
             category: "botfleet.turn",
             message: `bot turn failed: ${stopReason}`,

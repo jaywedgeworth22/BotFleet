@@ -669,7 +669,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             const methods: Array<{ id?: string }> = Array.isArray(init?.authMethods) ? init.authMethods : [];
             const methodId = support.pickAuthMethod(methods);
             if (!skipSubscriptionAuthForLocalInject(turn.model)) {
-              const signedIn = await support.isAuthenticated(env, turnConfig);
+              // Only fail-closed drivers (authFailure: "fail", currently just
+              // Grok) need the ambient-login probe at all — a fail-open driver
+              // like Cursor can never have its outcome changed by it, so
+              // skip the extra `isAuthenticated` process spawn(s) entirely.
               if (methodId) {
                 try {
                   await request("authenticate", { methodId }, INIT_TIMEOUT);
@@ -677,9 +680,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   // Signed-in subscription CLIs (grok.com OIDC on disk) still
                   // run off ambient login when authenticate rejects.  BOTFLEET-C
                   // paged high for "not signed in" while auth.json was valid.
-                  if (support.authFailure === "fail" && !signedIn) throw new Error(support.loginNote);
+                  if (support.authFailure === "fail" && !(await support.isAuthenticated(env, turnConfig))) {
+                    throw new Error(support.loginNote);
+                  }
                 }
-              } else if (support.authFailure === "fail" && !signedIn) {
+              } else if (support.authFailure === "fail" && !(await support.isAuthenticated(env, turnConfig))) {
                 throw new Error(support.loginNote);
               }
             }

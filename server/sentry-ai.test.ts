@@ -299,6 +299,17 @@ describe("failed turns become Issues", () => {
     expect(exceptions).toHaveLength(0);
     expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(2);
   });
+
+  it("does not Issue an 'interrupted' stop reason (openai-compat/Grok/BoxAgent stop shape)", () => {
+    // Those drivers report a user-initiated stop as stopReason "interrupted"
+    // rather than "cancelled" — this must be treated as the same expected,
+    // benign shape of a stop, not sent to Sentry as an error.
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "interrupted" }), sink);
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(1);
+  });
 });
 
 describe("approval, retry, and session lifecycle", () => {
