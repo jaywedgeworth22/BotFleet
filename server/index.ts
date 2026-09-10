@@ -7997,7 +7997,12 @@ const server = createServer(async (req, res) => {
 
         saveConfig({ deleteInstance: instanceId });
         Object.assign(cfg, loadConfig());
-        await reloadProviders();
+        // Remove only the deleted registry entry and its bus attachment —
+        // not the global reloadProviders(): that disposes EVERY provider and
+        // marks every currently-busy bot's turn as interrupted, so deleting
+        // one unused custom engine would destroy unrelated active work.
+        bus.detach(instanceId);
+        await registry.removeInstance(instanceId);
         resetPathCache();
         return json(res, 200, {
           ok: true,

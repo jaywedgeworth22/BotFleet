@@ -166,6 +166,23 @@ export class ProviderRegistry {
     return this.loadEntry(instanceId, entry);
   }
 
+  /** Drop a single instance (deleted custom engine) without tearing down the
+   * whole fleet. Mirrors reloadInstance's dispose-then-forget half, minus the
+   * reload: deleting one unused custom engine must not settle every OTHER
+   * bot's in-flight turn as interrupted, which a global reloadProviders()
+   * would do by disposing the entire registry. */
+  async removeInstance(instanceId: InstanceId): Promise<void> {
+    const existing = this.byId.get(instanceId);
+    if (existing?.live) {
+      await existing.live.dispose().catch(() => {});
+    }
+    this.byId.delete(instanceId);
+    this.cliByInstance.delete(instanceId);
+    this.fullAutoByInstance.delete(instanceId);
+    this.enabledByInstance.delete(instanceId);
+    this.lastDescribe = null;
+  }
+
   get(instanceId: InstanceId): ProviderInstance | null {
     return this.byId.get(instanceId)?.live ?? null;
   }

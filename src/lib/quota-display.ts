@@ -75,18 +75,38 @@ export function antigravityGroupSummary(
         ? Math.round(Math.min(...reported) * 100)
         : null;
 
-    let earliestResetMs: number | null = null;
-    for (const m of list) {
-      let rMs: number | null = null;
+    const resetMsOf = (m: QuotaDisplayModel): number | null => {
       if (m.resetTime) {
         const p = Date.parse(m.resetTime);
-        if (Number.isFinite(p)) rMs = p;
+        if (Number.isFinite(p)) return p;
       }
-      if (!rMs && typeof m.timeUntilResetMs === "number" && m.timeUntilResetMs > 0) {
-        rMs = now + m.timeUntilResetMs;
+      if (typeof m.timeUntilResetMs === "number" && m.timeUntilResetMs > 0) {
+        return now + m.timeUntilResetMs;
       }
-      if (rMs) {
-        earliestResetMs = earliestResetMs ? Math.min(earliestResetMs, rMs) : rMs;
+      return null;
+    };
+
+    // The displayed percentage is the most restrictive (lowest) remaining
+    // reading in the group, not an average — so the reset countdown next to
+    // it must come from the SAME model, not the earliest reset among every
+    // model in the group. A model at 10% resetting in 4h alongside one at
+    // 90% resetting in 1h must show "resets in 4h", not the unrelated 1h.
+    // When every model is exhausted there is no single model behind the 0%,
+    // so fall back to the earliest reset among them (whichever comes back
+    // first still lifts the group off 0%).
+    let earliestResetMs: number | null = null;
+    if (exhausted) {
+      for (const m of list) {
+        const rMs = resetMsOf(m);
+        if (rMs) earliestResetMs = earliestResetMs ? Math.min(earliestResetMs, rMs) : rMs;
+      }
+    } else if (reported.length > 0) {
+      const minPercent = Math.min(...reported);
+      for (const m of list) {
+        if (isQuotaModelExhausted(m)) continue;
+        if (m.remainingPercentage !== minPercent) continue;
+        const rMs = resetMsOf(m);
+        if (rMs) earliestResetMs = earliestResetMs ? Math.min(earliestResetMs, rMs) : rMs;
       }
     }
 
@@ -139,6 +159,25 @@ export function antigravityQuotaLines(
 
 export function quotaLinesSummary(lines: QuotaDisplayLine[]): string {
   return lines.map((line) => `${line.label}: ${line.value}`).join(" · ");
+}
+
+/** Every driver's `snapshot()` reports `state: "unavailable"` for two very
+ *  different situations, distinguishable only by `reason`'s wording:
+ *   - never set up: the CLI binary isn't on PATH ("`codex` CLI not found"),
+ *     or no credential was ever entered ("no xAI API key — add …", "no Box
+ *     token — add …"). Hiding these rows is the Fleet Quotas table's whole
+ *     point — a fresh install ships a dozen engines nobody has touched.
+ *   - configured but currently broken: a Box token IS set but the API is
+ *     unreachable, a CLI is installed but out of date, a login expired. The
+ *     user relies on this engine and needs to SEE "Unavailable: <reason>",
+ *     not have the row silently vanish as if it never existed.
+ *  Match only the first shape's wording, so the second keeps its row. */
+export function isEngineUnconfigured(reason: string | undefined | null): boolean {
+  if (!reason) return false;
+  if (/CLI not found/i.test(reason)) return true;
+  if (/^no [\w .-]*\b(?:api key|token)\b/i.test(reason)) return true;
+  if (reason === "Disabled in settings") return true;
+  return false;
 }
 
 export type QuotaWindowDisplay = {

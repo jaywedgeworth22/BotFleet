@@ -3824,6 +3824,54 @@ describe("instance CLI override API", () => {
     }
   }, 30_000);
 
+  it("does not interrupt an unrelated busy bot when deleting an unused custom engine", async () => {
+    // Deleting a custom engine used to call the global reloadProviders(),
+    // which disposes EVERY provider and settles every busy bot as
+    // interrupted — even one on `claude` that never referenced the engine
+    // being deleted. The affectedBots guard already permits this deletion
+    // (the busy bot doesn't reference it); only the deleted instance's own
+    // registry entry and bus attachment may go away.
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude = instances.find((i: any) => i.instanceId === "claude");
+    const created = await api("POST", "/api/instances", {
+      name: "Unrelated Delete Engine",
+      endpoint: "http://localhost:11491/v1",
+      models: ["unrelated-delete-model"],
+    });
+    expect(created.status).toBe(201);
+    const newInstanceId = created.body.instanceId;
+
+    const bot = (await api("POST", "/api/bots", { name: "Busy During Delete", computers: [] })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: claude.models.default },
+        computers: [],
+      })).status).toBe(200);
+      // the fixture CLI hangs, so this turn stays live until it is stopped
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hang forever" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(true);
+
+      const deleted = await api("DELETE", `/api/instances/${newInstanceId}`);
+      expect(deleted.status).toBe(200);
+
+      const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(state?.busy).toBe(true);
+
+      const instancesAfter = (await api("GET", "/api/instances")).body.instances;
+      expect(instancesAfter.some((i: any) => i.instanceId === newInstanceId)).toBe(false);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  }, 30_000);
+
   it("rewrites a task-level model override that references a deleted engine, not just the bot's own selection", async () => {
     // A bot can use a deleted engine through a task-level modelSelection
     // override while its own top-level modelSelection points elsewhere —

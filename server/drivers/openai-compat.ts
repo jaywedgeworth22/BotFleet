@@ -124,16 +124,26 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
 
   async create(input: DriverCreateInput<OpenAICompatConfig>): Promise<ProviderInstance> {
     const { instanceId, config } = input;
+    // process.env is process-wide, not per-instance: syncCredentialEnv copies
+    // the workspace's openaiCompat.key into process.env.OPENAI_COMPAT_API_KEY
+    // (and config.apiKeyEnv usually resolves to that same var) the moment it
+    // is saved, so every openai-compat instance's process.env lookup would
+    // otherwise see it — including a custom instance pointed at an arbitrary
+    // keyless endpoint. Only the single reserved `openaiCompat` instance may
+    // fall back to process.env; a user-added custom instance gets a key only
+    // via its own config.key or its isolated instance environment (matching
+    // injectedEnvironment()'s instance-id gate in config.ts).
+    const isCustomInstance = instanceId !== "openaiCompat";
     const apiKey =
       config.key ??
       input.environment[config.apiKeyEnv] ??
       input.environment["OPENAI_COMPAT_API_KEY"] ??
-      process.env[config.apiKeyEnv] ??
-      process.env["OPENAI_COMPAT_API_KEY"] ??
+      (isCustomInstance
+        ? undefined
+        : (process.env[config.apiKeyEnv] ?? process.env["OPENAI_COMPAT_API_KEY"])) ??
       "";
     const listeners = new Set<RuntimeEventListener>();
     const active = new Map<string, { abort: AbortController; turnId: string }>();
-    const isCustomInstance = instanceId !== "openaiCompat";
     let catalog = DEFAULT_MODELS;
     if (config.models && config.models.length > 0) {
       const options: ModelCatalog["options"] = config.models.map((m) => {

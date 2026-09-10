@@ -4,6 +4,7 @@ import {
   antigravityGroupSummary,
   antigravityQuotaLines,
   formatResetCountdown,
+  isEngineUnconfigured,
   quotaLinesSummary,
   remainingPercentLabel,
   windowHeadlines,
@@ -72,6 +73,55 @@ describe("Cursor monthly windows", () => {
   });
 });
 
+describe("Codex windows", () => {
+  it("maps onto the shipped fleet's codex driver kind, not just codexAgent", () => {
+    // The default fleet's Codex instance rides driver kind "codex"
+    // (server/drivers/codex.ts's DRIVER_KIND) — "codexAgent" matches nothing
+    // instanceConfigs() ever produces, so a Codex/OpenAI Usage Monitor window
+    // was unreachable by windowsForDriver() for the one instance most likely
+    // to want it.
+    const codexWindow = {
+      provider: "openai",
+      sourceApp: "codex-cli",
+      label: "Codex 5h",
+      modelId: null,
+      modelType: null,
+      window: "5h",
+      skip: false,
+    };
+    expect(driverKindsForWindow(codexWindow)).toContain("codex");
+  });
+});
+
+describe("isEngineUnconfigured", () => {
+  it("hides a driver whose CLI was never installed", () => {
+    expect(isEngineUnconfigured("`codex` CLI not found")).toBe(true);
+  });
+
+  it("hides a driver with no API key or token ever entered", () => {
+    expect(isEngineUnconfigured("no xAI API key — add {\"xai\":{\"key\":\"xai-…\"}} to ~/.botfleet/config.json or set XAI_API_KEY")).toBe(true);
+    expect(isEngineUnconfigured("no Box token — add {\"box\":{\"token\":\"…\"}} to ~/.botfleet/config.json")).toBe(true);
+    expect(isEngineUnconfigured("no API key — set OPENAI_COMPAT_API_KEY or add it to the instance config")).toBe(true);
+  });
+
+  it("hides an engine explicitly disabled in settings", () => {
+    expect(isEngineUnconfigured("Disabled in settings")).toBe(true);
+  });
+
+  it("keeps a configured engine that is merely failing right now", () => {
+    // A Box token IS set but the API call failed — this engine is
+    // configured and the user relies on it, so its row must stay visible
+    // with the real failure reason, not vanish as if never set up.
+    expect(isEngineUnconfigured("box API unreachable: fetch failed")).toBe(false);
+    expect(isEngineUnconfigured("Codex CLI is out of date (needs 0.151.0+). Run `npm install -g @openai/codex`")).toBe(false);
+  });
+
+  it("treats no reason as not-unconfigured", () => {
+    expect(isEngineUnconfigured(undefined)).toBe(false);
+    expect(isEngineUnconfigured(null)).toBe(false);
+  });
+});
+
 describe("antigravity group summary", () => {
   it("collapses third-party models into one summary and keeps Gemini separate", () => {
     const groups = antigravityGroupSummary([
@@ -126,6 +176,25 @@ describe("antigravity group summary", () => {
     );
     expect(groups[0].headline).toBe("Gemini: 90% available (5h window, resets in 3h 21m); 46% available (monthly pool, resets on ~17th)");
     expect(groups[1].headline).toBe("Third-Party: 46% available (5h window, resets in 3h 21m)");
+  });
+
+  it("ties the reset countdown to the model that supplied the displayed percentage, not the earliest reset in the group", () => {
+    // The displayed percentage is the MOST RESTRICTIVE reading (10%), not an
+    // average — so the reset next to it must be THAT model's reset (4h), not
+    // an unrelated 90%-remaining model's earlier 1h reset. Showing "10%
+    // available … resets in 1h" would promise replenishment that will not
+    // happen then.
+    const now = Date.now();
+    const tenPercentResetsIn4h = new Date(now + 4 * 3600 * 1000).toISOString();
+    const ninetyPercentResetsIn1h = new Date(now + 1 * 3600 * 1000).toISOString();
+    const groups = antigravityGroupSummary([
+      { label: "GPT-OSS 120B", modelId: "gpt-oss-120b-medium", remainingPercentage: 0.1, isExhausted: false, resetTime: tenPercentResetsIn4h },
+      { label: "Grok 4", modelId: "grok-4", remainingPercentage: 0.9, isExhausted: false, resetTime: ninetyPercentResetsIn1h },
+    ]);
+    const thirdParty = groups.find((group) => group.group === "external")!;
+    expect(thirdParty.remainingPercent).toBe(10);
+    expect(thirdParty.resetAtMs).toBe(Date.parse(tenPercentResetsIn4h));
+    expect(thirdParty.headline).toBe("Third-Party: 10% available (5h window, resets in 4h)");
   });
 });
 

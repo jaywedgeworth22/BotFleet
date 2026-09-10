@@ -97,6 +97,54 @@ describe("OpenAICompatDriver", () => {
     expect(fetchMock).toHaveBeenCalled();
   });
 
+  it("never sends the workspace-shared process.env credential to a custom instance", async () => {
+    // syncCredentialEnv copies a saved openaiCompat.key into
+    // process.env.OPENAI_COMPAT_API_KEY as soon as it's saved — that env var
+    // is process-wide, not scoped to the reserved "openaiCompat" instance,
+    // so every openai-compat instance's own process.env lookup would
+    // otherwise see it. A user-added custom instance must never forward that
+    // workspace credential to whatever arbitrary endpoint the user typed in.
+    process.env.OPENAI_COMPAT_API_KEY = "sk-workspace-secret";
+    const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/models")) return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      expect(init?.headers).not.toHaveProperty("authorization");
+      return new Response("data: [DONE]\n", {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "custom-untrusted-endpoint",
+      displayName: "Untrusted Endpoint",
+      enabled: true,
+      config: { url: "https://untrusted.example.test/v1", apiKeyEnv: "OPENAI_COMPAT_API_KEY" },
+      environment: {},
+    });
+    const recorder = recordEvents(inst.adapter);
+    await inst.adapter.sendTurn({ threadId: "thread", text: "hi", model: "llama3" });
+    await recorder.until((event) => event.type === "turn.completed");
+    recorder.stop();
+    await inst.dispose();
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("still lets the reserved workspace instance fall back to process.env", async () => {
+    process.env.OPENAI_COMPAT_API_KEY = "sk-workspace-secret";
+    const inst = await OpenAICompatDriver.create({
+      instanceId: "openaiCompat",
+      displayName: "Free",
+      enabled: true,
+      config: { url: "https://openrouter.ai/api/v1", apiKeyEnv: "OPENAI_COMPAT_API_KEY" },
+      environment: {},
+    });
+    const snap = await inst.snapshot();
+    expect(snap.state).toBe("available");
+    expect(snap.authenticated).toBe(true);
+    await inst.dispose();
+  });
+
   it("exposes a refreshed model catalog", async () => {
     vi.stubGlobal(
       "fetch",

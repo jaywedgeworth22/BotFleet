@@ -218,6 +218,27 @@ describe("ProviderRegistry", () => {
     expect(fake.disposed).toEqual(["a"]);
   });
 
+  it("removeInstance disposes and drops only the named instance, leaving siblings untouched", async () => {
+    // A deleted custom engine must not force the whole fleet through
+    // reloadProviders(): that disposes EVERY provider and settles every
+    // busy bot elsewhere as interrupted, destroying unrelated work over an
+    // unused engine going away.
+    const fake = makeFakeDriver();
+    const registry = new ProviderRegistry([fake.driver]);
+    await registry.load({
+      a: { driver: "fake", displayName: "A v1" },
+      b: { driver: "fake", displayName: "B v1" },
+    });
+
+    await registry.removeInstance("a");
+
+    expect(fake.disposed).toEqual(["a"]);
+    expect(registry.get("a")).toBeNull();
+    expect(registry.get("b")?.displayName).toBe("B v1");
+    expect(registry.instances()).toHaveLength(1);
+    expect((await registry.describe()).map((d) => d.instanceId)).toEqual(["b"]);
+  });
+
   it("describeWithFreshInstance updates only the specified instance in the memoized list", async () => {
     const fake = makeFakeDriver();
     const registry = new ProviderRegistry([fake.driver]);

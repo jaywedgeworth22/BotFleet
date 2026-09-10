@@ -14,7 +14,7 @@ import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { minimaxPriceRows } from "@/lib/minimax-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
-import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, quotaLinesSummary, usageWindowLines, windowHeadlines } from "@/lib/quota-display";
+import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, quotaLinesSummary, usageWindowLines, windowHeadlines } from "@/lib/quota-display";
 import { isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
@@ -312,7 +312,16 @@ export function UsageSection() {
               instanceWindows.length > 0 ||
               (instance.instanceId === "antigravity" && (antigravityQuota?.models?.length ?? 0) > 0) ||
               ((instance.driverKind === "deepseekAgent" || instance.driverKind === "deepseek") && deepseekBalance?.balanceUsd != null);
-            return instance.snapshot.state === "available" || hasQuotaData;
+            // A configured engine that has gone unavailable — a Box token set
+            // but the API unreachable, a login that expired, a CLI that stops
+            // launching — must still show its row with the real failure
+            // reason below. Only engines never set up (no CLI, no key/token)
+            // or explicitly disabled are worth hiding when they have no
+            // quota data of their own.
+            if (instance.snapshot.state !== "available" && !hasQuotaData) {
+              return !isEngineUnconfigured(instance.snapshot.reason);
+            }
+            return true;
           }).map((instance) => {
             const wildcardCap = Boolean(instance.snapshot.quota?.capped);
             const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);

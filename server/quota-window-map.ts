@@ -23,7 +23,12 @@ export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   const hay = `${window.provider} ${window.sourceApp ?? ""} ${window.label}`.toLowerCase();
   if (hay.includes("cursor")) return ["cursorAgent"];
   if (hay.includes("antigravity") || hay.includes("gemini")) return ["antigravityAgent"];
-  if (hay.includes("codex") || hay.includes("openai")) return ["codexAgent"];
+  // The shipped fleet's default Codex instance rides driver kind "codex"
+  // (server/drivers/codex.ts), not "codexAgent" — that name matches nothing
+  // in instanceConfigs()'s DEFAULT_FLEET, so a Codex/OpenAI Usage Monitor
+  // window was silently unreachable by windowsForDriver() for the one
+  // instance most likely to want it.
+  if (hay.includes("codex") || hay.includes("openai")) return ["codex", "codexAgent"];
   if (hay.includes("anthropic") || hay.includes("claude")) return ["claudeAgent"];
   if (hay.includes("grok") || hay.includes("xai")) return ["grokAgent", "grok"];
   if (hay.includes("minimax")) return ["minimax"];
