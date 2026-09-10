@@ -1030,7 +1030,9 @@ struct MessageRow: View {
         // instruction, not something the bot said — it renders its own
         // ChannelEventCard below and must not borrow the bot's (or room's)
         // avatar, matching the desktop rendering.
-        if message.role != .user && message.role != .system {
+        if message.role == .system {
+            EmptyView()
+        } else if message.role != .user {
             if let bot = senderBot {
                 if endsRun {
                     BotAvatarView(bot: bot, size: 28, state: .idle, animated: false)
@@ -1114,7 +1116,7 @@ struct MessageRow: View {
     }
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
+        HStack(alignment: .bottom, spacing: message.role == .system ? 0 : 8) {
             avatarBadge
             messageContent
         }
@@ -1176,14 +1178,26 @@ struct MessageRow: View {
                     ImessageEventCard(view: imessage)
                 } else {
                     let body = message.text ?? ""
-                    let first = body.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Instructions"
-                    let subtitle = Self.automationSourceLabel(message.automationSource, body: body)
+                    // Headline names what actually fired this — accurate per
+                    // message.automationSource (falls back to sniffing the
+                    // resource marker for rows persisted before that field
+                    // existed), not the hardcoded "Scheduled Run" a manual
+                    // Run Now or a resource alert would otherwise wear.
+                    // Subtitle is the instruction's own first non-blank line.
+                    let first = body.split(whereSeparator: \.isNewline).first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }).map(String.init) ?? ""
+                    let headline = Self.automationSourceLabel(message.automationSource, body: body)
                     ChannelEventCard(
-                        headline: String(first.prefix(120)),
-                        subtitle: subtitle,
+                        headline: headline,
+                        subtitle: first.isEmpty || first == "Scheduled Run" ? nil : String(first.prefix(80)),
                         payload: body.isEmpty ? nil : body,
-                        systemImage: subtitle == "Resource Alert" ? "gauge.with.dots.needle.67percent" : "clock.arrow.2.circlepath",
-                        accessibilityName: subtitle
+                        systemImage: headline == "Resource Alert" ? "gauge.with.dots.needle.67percent" : "clock.arrow.2.circlepath",
+                        // Distinct from `headline` (which is already the specific
+                        // "Scheduled Run" / "Run Now" / "Resource Alert" / "Webhook"
+                        // label) so VoiceOver doesn't announce it twice — the
+                        // Webhook/iMessage cards below have a natural type+headline
+                        // split; this generic card's headline IS the type, so the
+                        // category name is the one distinct thing left to say.
+                        accessibilityName: "Automated Instruction"
                     )
                 }
             } else if message.role == .user, let webhook = WebhookMessageView.parse(message.text) {
@@ -1217,12 +1231,13 @@ struct MessageRow: View {
             .sorted { $0.emoji < $1.emoji }
     }
 
-    /// The subtitle on a generic (non-webhook, non-iMessage) auto-delivered
-    /// instruction card. Prefers the persisted `automationSource`; a row
-    /// from before that field existed falls back to sniffing the
-    /// resource-trigger marker in the stored text, and otherwise reads as
-    /// "Routine" (a real schedule fire, the only case that label was ever
-    /// accurate for).
+    /// The headline on a generic (non-webhook, non-iMessage) auto-delivered
+    /// instruction card. Mirrors the TypeScript `automationSourceLabel`
+    /// (`src/lib/replies.ts`) exactly, including its wording — prefers the
+    /// persisted `automationSource`; a row from before that field existed
+    /// falls back to sniffing the resource-trigger marker in the stored
+    /// text, and otherwise reads as "Scheduled Run" (a real schedule fire,
+    /// the only case that label was ever accurate for).
     static func automationSourceLabel(_ source: String?, body: String) -> String {
         switch source {
         case "resource":
@@ -1232,9 +1247,9 @@ struct MessageRow: View {
         case "webhook":
             return "Webhook"
         case "schedule":
-            return "Routine"
+            return "Scheduled Run"
         default:
-            return body.contains("[UNTRUSTED RESOURCE SAMPLE]") ? "Resource Alert" : "Routine"
+            return body.contains("[UNTRUSTED RESOURCE SAMPLE]") ? "Resource Alert" : "Scheduled Run"
         }
     }
 }
@@ -1450,63 +1465,27 @@ struct ChannelEventCard: View {
 
     var body: some View {
         let isDark = colorScheme == .dark
-        VStack(alignment: .leading, spacing: 6) {
-            Button {
-                guard payload != nil else { return }
-                withAnimation(.spring(response: 0.32, dampingFraction: 0.76)) {
-                    isExpanded.toggle()
-                }
-                Haptics.selection()
-            } label: {
-                HStack(alignment: .center, spacing: 8) {
-                    ZStack {
-                        Circle()
-                            .fill(Color.secondary.opacity(0.14))
-                            .frame(width: 26, height: 26)
-                        Image(systemName: systemImage)
-                            .font(.system(size: 12, weight: .semibold))
-                            .foregroundStyle(Color.secondary)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(headline)
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(isDark ? Color.white : Color.primary)
-                            .lineLimit(isExpanded ? 4 : 2)
-                            .truncationMode(.tail)
-                        if let subtitle {
-                            Text(subtitle)
-                                .font(.system(size: 11.5))
-                                .foregroundStyle(Color.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
+        let expandable = payload != nil
+        VStack(alignment: .leading, spacing: 0) {
+            Group {
+                if expandable {
+                    Button {
+                        withAnimation(.spring(response: 0.32, dampingFraction: 0.76)) {
+                            isExpanded.toggle()
                         }
+                        Haptics.selection()
+                    } label: {
+                        headerRow
                     }
-
-                    Spacer()
-
-                    if payload != nil {
-                        HStack(spacing: 4) {
-                            Text(isExpanded ? "Collapse" : "Details")
-                                .font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(Color.secondary)
-                            Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                                .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(Color.secondary)
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
-                        .background(Color.secondary.opacity(0.1))
-                        .clipShape(Capsule())
-                    }
+                    .buttonStyle(.plain)
+                } else {
+                    headerRow
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 8)
             }
-            .buttonStyle(.plain)
-            .disabled(payload == nil)
 
             if isExpanded, let payload {
+                Divider()
+                    .overlay(Color.primary.opacity(isDark ? 0.12 : 0.08))
                 ScrollView {
                     Text(payload)
                         .font(.system(size: 11, design: .monospaced))
@@ -1515,23 +1494,71 @@ struct ChannelEventCard: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(maxHeight: 220)
-                .padding(.horizontal, 10)
-                .padding(.bottom, 8)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+                .background(isDark ? Color.white.opacity(0.04) : Color(uiColor: .tertiarySystemBackground))
             }
         }
         .background(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(isDark ? Color.white.opacity(0.06) : Color.black.opacity(0.03))
+                .fill(isDark ? Color.white.opacity(0.06) : Color(uiColor: .secondarySystemBackground))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .stroke(Color.secondary.opacity(0.15), lineWidth: 0.75)
+                .stroke(Color.primary.opacity(isDark ? 0.12 : 0.08), lineWidth: 0.75)
         )
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .shadow(color: Color.black.opacity(isDark ? 0 : 0.04), radius: 0, y: 1)
+        .frame(maxWidth: 580, alignment: .leading)
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(accessibilityName). \(headline)")
-        .accessibilityHint(payload == nil ? "" : (isExpanded ? "Collapses the event payload" : "Shows the event payload"))
+        .accessibilityAddTraits(expandable ? .isButton : [])
+        .accessibilityLabel("\(accessibilityName).  \(headline)")
+        .accessibilityHint(payload == nil ? "" : (isExpanded ? "Hides the details" : "Shows the details"))
+    }
+
+    private var headerRow: some View {
+        let isDark = colorScheme == .dark
+        return HStack(alignment: .center, spacing: 10) {
+            ZStack {
+                Circle()
+                    .fill(Color.secondary.opacity(0.12))
+                    .frame(width: 26, height: 26)
+                Image(systemName: systemImage)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(headline)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(isDark ? Color.white : Color.primary)
+                    .lineLimit(isExpanded ? 4 : 2)
+                    .truncationMode(.tail)
+                if let subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 11.5))
+                        .foregroundStyle(Color.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+            }
+
+            Spacer(minLength: 8)
+
+            if payload != nil {
+                HStack(spacing: 4) {
+                    Text(isExpanded ? "Collapse" : "Details")
+                        .font(.system(size: 11.5, weight: .semibold))
+                        .foregroundStyle(Color.accentColor)
+                    Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(Color.accentColor)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
     }
 }
 

@@ -40,6 +40,7 @@ import { BotAvatar, MausAvatar } from "./Avatar";
 import { ProviderMark } from "./ProviderIcons";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
+import { automationSourceLabel } from "@/lib/replies";
 import { stateForBot } from "@/lib/mascot";
 import { showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
@@ -86,26 +87,6 @@ import { timelineEvents } from "@/lib/taskTimeline";
  * bury the conversation; bots get full markdown. */
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
-
-/** The subtitle on a generic (non-webhook, non-iMessage) auto-delivered
- * instruction card.  Prefers the persisted `automationSource`; older rows
- * from before that field existed fall back to sniffing the resource-trigger
- * marker in the stored text, and otherwise read as "Routine" (a real
- * schedule fire, the only case that label was ever accurate for). */
-function automationSourceLabel(source: string | undefined, body: string): string {
-  switch (source) {
-    case "resource":
-      return "Resource Alert";
-    case "manual":
-      return "Run Now";
-    case "webhook":
-      return "Webhook";
-    case "schedule":
-      return "Routine";
-    default:
-      return body.includes("[UNTRUSTED RESOURCE SAMPLE]") ? "Resource Alert" : "Routine";
-  }
-}
 
 /** "Today" / "Yesterday" / "Mon, Aug 11" — real dates, not a hardcoded label. */
 function dayLabel(at: number): string {
@@ -900,13 +881,21 @@ const MessagesList = memo(function MessagesList({
               }
               if (m.role === "system") {
                 const body = (m.text ?? "").trim();
+                const firstLine = body.split("\n").find((line) => line.trim()) ?? "";
+                // Headline names what actually fired this — accurate per
+                // m.automationSource (falls back to sniffing the resource
+                // marker for rows persisted before that field existed), not
+                // the hardcoded "Scheduled Run" a manual Run Now or a
+                // resource alert would otherwise wear.  Subtitle is the
+                // instruction's own first line, same as before.
                 return withSystemChrome(
                   <WebhookCard
                     view={{
-                      headline: "Scheduled Run",
-                      subtitle: automationSourceLabel(m.automationSource, body),
+                      headline: automationSourceLabel(m.automationSource, body),
+                      subtitle: firstLine && firstLine !== "Scheduled Run" ? firstLine.slice(0, 80) : undefined,
                       payload: body || undefined,
                     }}
+                    icon={<Clock size={14} className="shrink-0 text-ink-secondary/70" aria-hidden="true" />}
                     detailsNoun="Run Details"
                   />,
                 );
