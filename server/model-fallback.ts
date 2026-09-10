@@ -46,12 +46,21 @@ export function isQuotaOrCapText(text: string): boolean {
   return QUOTA_OR_CAP.test(trimmed);
 }
 
-export function lastUserTextIndex(messages: FallbackScanMessage[]): number {
+/** The last message that actually started a turn — a human's "user" message,
+ * or an auto-delivered routine/webhook/resource instruction stored as
+ * "system" (see server/index.ts's storedRole).  Both are turn prompts; only
+ * "bot" replies and chips are not. */
+export function lastTurnStartIndex(messages: FallbackScanMessage[]): number {
   for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i].role === "user" && messages[i].kind === "text") return i;
+    if ((messages[i].role === "user" || messages[i].role === "system") && messages[i].kind === "text") return i;
   }
   return -1;
 }
+
+/** Boot-recovery prompt when the in-flight turn has no persisted starter
+ * (connector/secret cardContinuation is ephemeral). */
+export const BOOT_RECOVERY_NOTICE =
+  "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
 
 /** True when the only bot text after the user is a short provider error chip. */
 export function sliceIsShortProviderError(messagesAfterUser: FallbackScanMessage[]): boolean {
@@ -99,6 +108,55 @@ export function turnProducedAssistantOutput(
     if (/^(retrying|working)\b/i.test(name)) return false;
     return true;
   });
+}
+
+/** Replay the persisted turn-starter only when that turn never produced
+ * assistant output.  A card-continuation crash leaves the previous
+ * completed prompt on disk; replaying it would re-run already-finished
+ * work (including tools). */
+export function shouldReplayPersistedStarter(messages: FallbackScanMessage[], turnStartIdx: number): boolean {
+  if (turnStartIdx < 0) return false;
+  return !turnProducedAssistantOutput(messages.slice(turnStartIdx + 1));
+}
+
+/** Persisted trigger of an auto-delivered turn starter.  Mirrors
+ * RoutineRunTrigger without importing routines.ts. */
+export type BootRecoveryAutomationSource = "schedule" | "manual" | "webhook" | "resource";
+
+export interface BootRecoveryResumeUser {
+  role?: string;
+  automationSource?: BootRecoveryAutomationSource;
+}
+
+export interface BootRecoveryTurnOpts {
+  automationSource?: BootRecoveryAutomationSource;
+  unattended?: boolean;
+}
+
+/**
+ * startTurn options for boot recovery other than prompt / userMessage.
+ * `replay` only gates the TEXT that is sent (persisted starter vs
+ * BOOT_RECOVERY_NOTICE) and whether the persisted message is reused —
+ * it must not drop automation context.  After restart `unattendedBots`
+ * is empty, so this must not consult isUnattended.  Forwarding
+ * automationSource also stores BOOT_RECOVERY_NOTICE as role=system.
+ */
+export function bootRecoveryTurnOpts(
+  resumeUser: BootRecoveryResumeUser | undefined,
+  replay: boolean,
+): BootRecoveryTurnOpts {
+  // Replay only chooses the prompt text / whether to reuse the persisted
+  // message.  Attribution must not depend on it.
+  void replay;
+  const automationSource = resumeUser?.automationSource;
+  const webhookOrResource = automationSource === "webhook" || automationSource === "resource";
+  // Calendar `schedule` is the owner's saved prompt (Auto mode on a live
+  // tick).  Recovery still prefers unattended for any system-attributed
+  // starter so the notice is not treated as a person typing — that would
+  // clear the guard and let always-allow authorize a request nobody is
+  // watching.  A system row with no source gets the same treatment.
+  const unattended = webhookOrResource || resumeUser?.role === "system" ? true : undefined;
+  return { automationSource, unattended };
 }
 
 function sameEngine(a: { instanceId: string; model: string }, b: { instanceId: string; model: string }): boolean {

@@ -1,8 +1,10 @@
-// Incoming webhook as a collapsible work card, not a user bubble.
+// Incoming webhook / routine / iMessage as a collapsible work card, not a
+// user bubble.
 //
-// The harness stores the trigger as role=user so the model still sees it as
-// the turn prompt.  That does not mean a person typed it.  The card sits on
-// the transcript's left edge like a tool-run fold: a one-line headline, with
+// Auto-delivered instructions are stored as role=system so the model still
+// sees them as the turn prompt without a blue user bubble.  Older webhook
+// rows used role=user; the card still catches those.  The card sits on the
+// transcript's left edge like a tool-run fold: a one-line headline, with
 // the untrusted payload behind Details.
 import { type ReactNode, useState } from "react";
 import { ChevronDown, ChevronRight, Webhook } from "lucide-react";

@@ -911,7 +911,12 @@ function messageNeedsInput(message: Record<string, any>): boolean {
 }
 
 function dispatchFailedAfterLatestUser(messages: Array<Record<string, any>>): boolean {
-  const lastUser = messages.findLastIndex((message) => message.role === "user");
+  // A turn starts with a person's message OR an auto-delivered
+  // routine/webhook/resource instruction stored as role="system" — scanning
+  // only "user" made a reused automation-only thread look at its whole
+  // fetched tail, so an earlier successful firing's reply could mask this
+  // firing's failure.
+  const lastUser = messages.findLastIndex((message) => message.role === "user" || message.role === "system");
   const turnMessages = messages.slice(lastUser + 1);
   if (turnMessages.some((message) => message.role === "bot" && message.kind === "text" && message.text?.trim())) {
     return false;

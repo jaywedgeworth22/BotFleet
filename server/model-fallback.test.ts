@@ -4,13 +4,15 @@ import { describe, expect, it } from "vitest";
 
 import type { ModelSelection } from "./contracts.ts";
 import {
+  bootRecoveryTurnOpts,
   isQuotaOrCapText,
   isShortProviderErrorText,
-  lastUserTextIndex,
+  lastTurnStartIndex,
   parseQuotaResetTime,
   QuotaCooldownRegistry,
   quotaCooldowns,
   selectTurnFallback,
+  shouldReplayPersistedStarter,
   sliceIsShortProviderError,
   turnHitQuotaOrCap,
   turnProducedAssistantOutput,
@@ -259,16 +261,100 @@ describe("selectTurnFallback", () => {
   });
 });
 
-describe("lastUserTextIndex", () => {
+describe("lastTurnStartIndex", () => {
   it("finds the last user text, ignoring later bot chips", () => {
     expect(
-      lastUserTextIndex([
+      lastTurnStartIndex([
         { role: "user", kind: "text", text: "one" },
         { role: "bot", kind: "text", text: "ok" },
         { role: "user", kind: "text", text: "two" },
         { role: "bot", kind: "activity", tool: { name: "Bash" } },
       ]),
     ).toBe(2);
+  });
+
+  it("also finds an auto-delivered system-role instruction that started the turn", () => {
+    expect(
+      lastTurnStartIndex([
+        { role: "system", kind: "text", text: "routine fired" },
+        { role: "bot", kind: "text", text: "session limit hit" },
+      ]),
+    ).toBe(0);
+  });
+
+  it("prefers the later of a user message and a system instruction", () => {
+    expect(
+      lastTurnStartIndex([
+        { role: "user", kind: "text", text: "one" },
+        { role: "system", kind: "text", text: "webhook fired" },
+        { role: "bot", kind: "activity", tool: { name: "Bash" } },
+      ]),
+    ).toBe(1);
+  });
+});
+
+describe("shouldReplayPersistedStarter", () => {
+  it("replays a webhook/system prompt that only got as far as an activity chip", () => {
+    const messages: FallbackScanMessage[] = [
+      { role: "system", kind: "text", text: "webhook fired" },
+      { role: "bot", kind: "activity", tool: { name: "Bash" } },
+    ];
+    expect(shouldReplayPersistedStarter(messages, 0)).toBe(true);
+  });
+
+  it("does not replay a completed prompt when the in-flight turn was a card continuation", () => {
+    const messages: FallbackScanMessage[] = [
+      { role: "user", kind: "text", text: "connect slack" },
+      { role: "bot", kind: "text", text: "please connect Slack" },
+      { role: "bot", kind: "connector" },
+    ];
+    expect(shouldReplayPersistedStarter(messages, 0)).toBe(false);
+  });
+
+  it("does not replay after a successful tool result (side effects already ran)", () => {
+    const messages: FallbackScanMessage[] = [
+      { role: "system", kind: "text", text: "webhook fired" },
+      { role: "bot", kind: "activity", tool: { name: "Bash", ok: true } },
+    ];
+    expect(shouldReplayPersistedStarter(messages, 0)).toBe(false);
+  });
+});
+
+describe("bootRecoveryTurnOpts", () => {
+  it("forwards webhook automationSource and marks unattended on both replay and BOOT_RECOVERY_NOTICE paths", () => {
+    const resume = { role: "system", automationSource: "webhook" as const };
+    const notice = bootRecoveryTurnOpts(resume, false);
+    const replay = bootRecoveryTurnOpts(resume, true);
+    expect(notice).toEqual({ automationSource: "webhook", unattended: true });
+    expect(replay).toEqual(notice);
+  });
+
+  it("marks resource recovery unattended even when the persisted starter already produced a tool result", () => {
+    expect(bootRecoveryTurnOpts({ role: "system", automationSource: "resource" }, false)).toEqual({
+      automationSource: "resource",
+      unattended: true,
+    });
+  });
+
+  it("forwards schedule automationSource so the recovery notice stores as system", () => {
+    expect(bootRecoveryTurnOpts({ role: "system", automationSource: "schedule" }, false)).toEqual({
+      automationSource: "schedule",
+      unattended: true,
+    });
+  });
+
+  it("marks a system starter without a source unattended so recovery is not treated as a person typing", () => {
+    expect(bootRecoveryTurnOpts({ role: "system" }, false)).toEqual({
+      automationSource: undefined,
+      unattended: true,
+    });
+  });
+
+  it("leaves an ordinary human starter attended and without an automationSource", () => {
+    expect(bootRecoveryTurnOpts({ role: "user" }, true)).toEqual({
+      automationSource: undefined,
+      unattended: undefined,
+    });
   });
 });
 

@@ -1026,7 +1026,11 @@ struct MessageRow: View {
 
     @ViewBuilder
     private var avatarBadge: some View {
-        if message.role != .user {
+        // A `.system` row is an auto-delivered routine/webhook/resource
+        // instruction, not something the bot said — it renders its own
+        // ChannelEventCard below and must not borrow the bot's (or room's)
+        // avatar, matching the desktop rendering.
+        if message.role != .user && message.role != .system {
             if let bot = senderBot {
                 if endsRun {
                     BotAvatarView(bot: bot, size: 28, state: .idle, animated: false)
@@ -1165,7 +1169,24 @@ struct MessageRow: View {
     private var content: some View {
         switch message.kind {
         case .text:
-            if message.role == .user, let webhook = WebhookMessageView.parse(message.text) {
+            if message.role == .system {
+                if let webhook = WebhookMessageView.parse(message.text) {
+                    WebhookEventCard(view: webhook)
+                } else if let imessage = ImessageMessageView.parse(message.text) {
+                    ImessageEventCard(view: imessage)
+                } else {
+                    let body = message.text ?? ""
+                    let first = body.split(whereSeparator: \.isNewline).first.map(String.init) ?? "Instructions"
+                    let subtitle = Self.automationSourceLabel(message.automationSource, body: body)
+                    ChannelEventCard(
+                        headline: String(first.prefix(120)),
+                        subtitle: subtitle,
+                        payload: body.isEmpty ? nil : body,
+                        systemImage: subtitle == "Resource Alert" ? "gauge.with.dots.needle.67percent" : "clock.arrow.2.circlepath",
+                        accessibilityName: subtitle
+                    )
+                }
+            } else if message.role == .user, let webhook = WebhookMessageView.parse(message.text) {
                 WebhookEventCard(view: webhook)
             } else if message.role == .user, let imessage = ImessageMessageView.parse(message.text) {
                 ImessageEventCard(view: imessage)
@@ -1194,6 +1215,27 @@ struct MessageRow: View {
         Dictionary(grouping: reactions, by: \.emoji)
             .map { (emoji: $0.key, count: $0.value.count, mine: $0.value.contains { $0.by == "user" }) }
             .sorted { $0.emoji < $1.emoji }
+    }
+
+    /// The subtitle on a generic (non-webhook, non-iMessage) auto-delivered
+    /// instruction card. Prefers the persisted `automationSource`; a row
+    /// from before that field existed falls back to sniffing the
+    /// resource-trigger marker in the stored text, and otherwise reads as
+    /// "Routine" (a real schedule fire, the only case that label was ever
+    /// accurate for).
+    static func automationSourceLabel(_ source: String?, body: String) -> String {
+        switch source {
+        case "resource":
+            return "Resource Alert"
+        case "manual":
+            return "Run Now"
+        case "webhook":
+            return "Webhook"
+        case "schedule":
+            return "Routine"
+        default:
+            return body.contains("[UNTRUSTED RESOURCE SAMPLE]") ? "Resource Alert" : "Routine"
+        }
     }
 }
 
@@ -1365,8 +1407,9 @@ struct TextBubble: View {
 }
 
 /// Incoming webhook as a collapsible work card, not a blue user bubble.
-/// The harness stores the trigger as role=user so the model still sees it
-/// as the turn prompt.  That does not mean a person typed it.
+/// Auto-delivered instructions are stored as role=system so the model still
+/// sees them as the turn prompt.  Older rows used role=user; the card still
+/// catches those.  That does not mean a person typed it.
 struct WebhookEventCard: View {
     let view: WebhookMessageView
 

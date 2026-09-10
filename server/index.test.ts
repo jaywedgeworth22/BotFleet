@@ -3508,11 +3508,14 @@ describe("resumable event stream", () => {
     const first = await openSse(`${BASE}/api/events`);
     const hello = await first.until((f) => f.kind === "hello");
     await nudge(botId);
-    const seen = await first.until((f) => f.kind === "bot");
+    await first.until((f) => f.kind === "bot");
+    // Cursor is the last bot frame actually buffered — `until` can resolve
+    // before a racing sibling lands; a phone advances past everything it saw.
+    const seenSeq = Math.max(
+      ...first.frames.filter((f) => f.kind === "bot").map((f) => f.seq as number),
+    );
     first.close();
-    // a real client advances its cursor as frames arrive — resume from the
-    // last frame it actually saw, not from where it connected
-    const cursor = `${hello.cursor.split(":")[0]}:${seen.seq}`;
+    const cursor = `${hello.cursor.split(":")[0]}:${seenSeq}`;
 
     // ...three things happen while the phone is asleep...
     await nudge(botId);
@@ -3524,9 +3527,13 @@ describe("resumable event stream", () => {
       // ...and an old cursor still replays them, in order, without a hydrate
       const back = await resumed.until((f) => f.kind === "hello");
       expect(back.resumed).toBe(true);
-      await resumed.until((f) => f.kind === "bot" && f.seq === seen.seq + 3);
-      const replayed = resumed.frames.filter((f) => f.kind === "bot").map((f) => f.seq);
-      expect(replayed).toEqual([seen.seq + 1, seen.seq + 2, seen.seq + 3]);
+      await resumed.until((f) => f.kind === "bot" && f.seq === seenSeq + 3);
+      // Ignore any fourth bot that races in after +3 before `until` returns
+      // (seen on windows-latest under parallel suite load).
+      const replayed = resumed.frames
+        .filter((f) => f.kind === "bot" && f.seq > seenSeq && f.seq <= seenSeq + 3)
+        .map((f) => f.seq);
+      expect(replayed).toEqual([seenSeq + 1, seenSeq + 2, seenSeq + 3]);
     } finally {
       resumed.close();
     }

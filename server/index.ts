@@ -59,12 +59,15 @@ import {
 import {
   enableQuotaCooldownPersist,
   isQuotaOrCapText,
-  lastUserTextIndex,
+  lastTurnStartIndex,
   parseQuotaResetTime,
   quotaCooldowns,
   selectTurnFallback,
+  shouldReplayPersistedStarter,
+  bootRecoveryTurnOpts,
   sliceIsShortProviderError,
   turnHitQuotaOrCap,
+  BOOT_RECOVERY_NOTICE,
   turnProducedAssistantOutput,
 } from "./model-fallback.ts";
 import * as box from "./box.ts";
@@ -1854,7 +1857,7 @@ bus.subscribe((event: RuntimeEvent) => {
       if (fallbackBot) {
         const fallbackKey = `${fallbackBot.id}:${event.threadId}`;
         const activeMsgs = store.activePath(event.threadId);
-        const lastUserIdx = lastUserTextIndex(activeMsgs);
+        const lastUserIdx = lastTurnStartIndex(activeMsgs);
         const afterUser = lastUserIdx >= 0 ? activeMsgs.slice(lastUserIdx + 1) : [];
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
         const lastMsgText = afterUser.length > 0 ? (afterUser[afterUser.length - 1].text ?? "") : "";
@@ -1972,10 +1975,18 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!group && fallbackSelection && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
           const userMsg = fallbackUserMessage;
           const fallbackBotId = bot.id;
+          // The retried turn is a continuation of whatever dispatched the
+          // one that just fell over — a webhook/resource turn stays
+          // unattended, and its automationSource travels with it so a
+          // retry never re-titles the task or, more importantly, never
+          // lets startTurn's default branch call clearUnattended and open
+          // the door for an autoApprove/always-allow grant mid-fallback.
           void startTurn(fallbackBotId, userMsg.text || "", {
             userMessage: userMsg,
             threadId: event.threadId,
             modelSelection: fallbackSelection,
+            automationSource: userMsg.automationSource,
+            unattended: isUnattended(fallbackBotId),
           }).catch((error) => {
             console.error(`fallback startTurn failed for ${fallbackBotId}:`, error);
           });
@@ -2403,8 +2414,12 @@ async function startTurn(
   const task = store.taskByThread(bot.id, threadId);
   if (!task) throw Object.assign(new Error("no such task"), { status: 404 });
   const commsDepth = opts?.commsDepth ?? 0;
-  // a task takes its name from the first thing you asked it to do
-  if (text.trim() && !opts?.cardContinuation) store.titleTaskFromFirstMessage(bot.id, text, threadId);
+  // a task takes its name from the first thing you asked it to do.
+  // Auto-delivered instructions are not that — they already named the task
+  // from the routine or webhook.
+  if (text.trim() && !opts?.cardContinuation && !opts?.automationSource) {
+    store.titleTaskFromFirstMessage(bot.id, text, threadId);
+  }
 
   const selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, task.modelSelection ?? bot.modelSelection).selection;
@@ -2442,12 +2457,22 @@ async function startTurn(
     );
   }
 
-  // an edit hands us its already-branched user message; a plain send appends
+  // an edit hands us its already-branched user message; a plain send appends.
+  // Auto-delivered instructions are stored as role=system so iOS/desktop
+  // never paint a blue user bubble.  The model still receives them as the
+  // turn prompt via transcriptPromptRole.
   let userMessage = opts?.userMessage;
   if (!userMessage) {
+    const storedRole = opts?.automationSource ? "system" : "user";
     userMessage = opts?.cardContinuation
       ? { id: `card-${randomUUID()}`, at: Date.now(), role: "user", kind: "text", text }
-      : store.appendMessage(threadId, { role: "user", kind: "text", text, replyToId: opts?.replyTo?.id });
+      : store.appendMessage(threadId, {
+          role: storedRole,
+          kind: "text",
+          text,
+          replyToId: opts?.replyTo?.id,
+          automationSource: opts?.automationSource,
+        });
   }
 
   // transcript for API-backed drivers: settled text turns on the ACTIVE
@@ -2462,7 +2487,7 @@ async function startTurn(
     .filter((m) => m.kind === "text" && m.text && !skipTranscript.has(m.id))
     .slice(-40)
     .map((m) => ({
-      role: m.role === "user" ? ("user" as const) : ("assistant" as const),
+      role: m.role === "user" || m.role === "system" ? ("user" as const) : ("assistant" as const),
       text: transcriptText(m, messagesById, cfg.profile?.name?.trim() || "User"),
     }));
 
@@ -2991,9 +3016,17 @@ routines = new RoutineManager({
     run.triggerSource === "webhook" && run.webhookId
       ? webhooks.list().find((hook) => hook.id === run.webhookId)?.minGapMinutes
       : undefined,
-  defaultThread: (botId) => store.bot(botId)?.threadId,
-  createTask: (botId, title, activate = false) => {
-    const task = store.createTask(botId, title, activate);
+  defaultThread: (botId) => {
+    // Simple mode's designated conversation is whatever the client is
+    // looking at (`bot.threadId` / publicBot), not the oldest task.  "Keep
+    // Extra Threads Hidden" only flips conversationMode and leaves the
+    // active Projects task selected — keying off oldest would append
+    // schedules into a hidden chat and let activateTask yank the UI away.
+    const bot = store.bot(botId);
+    return bot?.threadId;
+  },
+  createTask: (botId, title, activate = false, automationKey) => {
+    const task = store.createTask(botId, title, activate, automationKey);
     const bot = store.bot(botId);
     if (task && bot) broadcast({ kind: "bot", bot: publicBot(bot) });
     return task;
@@ -3005,6 +3038,10 @@ routines = new RoutineManager({
     if (switched) broadcast({ kind: "bot", bot: publicBot(switched) });
   },
   taskExists: (botId, threadId) => Boolean(store.taskByThread(botId, threadId)),
+  taskForKey: (botId, automationKey) => store.taskByAutomationKey(botId, automationKey)?.threadId,
+  stampKey: (botId, threadId, automationKey) => {
+    store.stampAutomationKey(botId, threadId, automationKey);
+  },
   startTurn: (botId, threadId, prompt, runOn, triggerSource, onDispatchError) =>
     startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError }),
   interruptTurn: async (botId, threadId, runOn) => {
@@ -3358,7 +3395,7 @@ function serializeRoomContext(threadId: string, userName: string): string {
   return messages
     .filter((m) => m.kind === "text" && m.text)
     .slice(-GROUP_CONTEXT_MESSAGES)
-    .map((m) => `${m.role === "user" ? userName : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
+    .map((m) => `${m.role === "user" ? userName : m.role === "system" ? "Scheduled Run" : (m.from?.name ?? "Bot")}: ${transcriptText(m, messagesById, userName)}`)
     .join("\n");
 }
 
@@ -3475,15 +3512,40 @@ _loadPending();
         }
       }
 
-      const lastMsg = activeMsgs[activeMsgs.length - 1];
-      const resumeUser = lastMsg?.role === "user" && lastMsg.kind === "text" ? lastMsg : undefined;
-      const prompt = resumeUser
+      // A turn-starter can be a person's message OR an auto-delivered
+      // routine/webhook/resource instruction stored as role="system" —
+      // and it is not necessarily the LAST row: a webhook/resource turn
+      // that got as far as an activity chip or a permission card before
+      // the process died leaves those rows after it.  Scanning only the
+      // final message would miss the system prompt entirely, discard the
+      // automation attribution, and repersist the recovery notice as a
+      // fabricated human bubble.
+      const turnStartIdx = lastTurnStartIndex(activeMsgs);
+      const resumeUser = turnStartIdx >= 0 ? activeMsgs[turnStartIdx] : undefined;
+      // Connector/secret continuation is ephemeral (`cardContinuation`), so a
+      // crash mid-resume would otherwise replay the previous completed
+      // prompt.  Replay the persisted starter's exact TEXT only when that
+      // turn never produced bot text (a completed tool call means whatever
+      // ran already ran — replaying the same prompt could repeat it).
+      const replay = shouldReplayPersistedStarter(activeMsgs, turnStartIdx);
+      const prompt = replay && resumeUser
         ? (resumeUser.text || "Please resume.")
-        : "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
+        : BOOT_RECOVERY_NOTICE;
+      // Whether the resumed turn is unattended is a SEPARATE question from
+      // whether its exact prompt text is replayed: a webhook/resource turn
+      // that already completed a tool before the crash is still that same
+      // externally-triggered turn continuing, not a person now at the
+      // keyboard.  Gating this on `replay` too would both let an
+      // autoApprove grant wrongly authorize a resumed unattended request
+      // AND (since `unattendedBots` is memory-only and empty right after
+      // restart) persist BOOT_RECOVERY_NOTICE as a fabricated `role: "user"`
+      // bubble instead of a `system` continuation — the exact bug this
+      // whole boot-recovery path exists to fix.
       console.log(`boot recovery: auto-resuming in-flight thread ${threadId} for ${bot.name}`);
       void startTurn(bot.id, prompt, {
         threadId,
-        userMessage: resumeUser,
+        userMessage: replay ? resumeUser : undefined,
+        ...bootRecoveryTurnOpts(resumeUser, replay),
       }).catch((err) => {
         console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
         store.patchBot(bot.id, { inflightThreadId: undefined });
@@ -5326,13 +5388,21 @@ const server = createServer(async (req, res) => {
           const group = bot ? undefined : store.groupByThread(hit.threadId);
           if (!bot && !group) return null;
           const active = onActivePath(hit.threadId, hit.messageId);
+          // A room hit already carries `from` (the speaking member); a
+          // system-role hit never does, but its sender is not the bot
+          // either — an auto-delivered routine/webhook/resource run, not
+          // something the bot said — so it needs the same "Scheduled Run"
+          // attribution the export and reply displays already give it, or
+          // the client falls back to `name` (the bot's own name) and
+          // misattributes the hit.
+          const from = hit.from ?? (hit.role === "system" ? "Scheduled Run" : undefined);
           if (bot) {
             const task = store.taskByThread(bot.id, hit.threadId);
-            return { ...hit, botId: bot.id, name: bot.name, task: task?.title, onActivePath: active };
+            return { ...hit, from, botId: bot.id, name: bot.name, task: task?.title, onActivePath: active };
           }
           if (group) {
             const task = store.groupTaskByThread(group.id, hit.threadId);
-            return { ...hit, groupId: group.id, name: group.name, task: task?.title, onActivePath: active };
+            return { ...hit, from, groupId: group.id, name: group.name, task: task?.title, onActivePath: active };
           }
           return null;
         })
@@ -5369,7 +5439,8 @@ const server = createServer(async (req, res) => {
       const userName = cfg.profile?.name?.trim() || "User";
       const lines: string[] = [`# ${title}`, ""];
       for (const msg of messages) {
-        const who = msg.role === "user" ? userName : (msg.from?.name ?? bot?.name ?? "Bot");
+        const who =
+          msg.role === "user" ? userName : msg.role === "system" ? "Scheduled Run" : (msg.from?.name ?? bot?.name ?? "Bot");
         if (msg.kind === "text" && msg.text) lines.push(`**${who}:**`, "", msg.text, "");
         else if (msg.kind === "activity" && msg.tool) lines.push(`> ${msg.tool.name}`, "");
         else if (msg.kind === "screen") lines.push("> [screen capture]", "");
@@ -6899,8 +6970,12 @@ const server = createServer(async (req, res) => {
       // next request is handled
       if (bot.busy) return json(res, 409, { error: "the bot is working — stop it before editing" });
       const source = store.messagesFor(bot.threadId).find((msg) => msg.id === messageId);
-      if (!source || source.role !== "user" || source.kind !== "text") {
-        return json(res, 404, { error: "only user messages can be edited" });
+      // A "user" message is a person's prompt; a "system" message is an
+      // auto-delivered routine/webhook/resource instruction — Regenerate
+      // and edit-last both retarget the same turn-starter on an
+      // automation-only thread, so both roles are editable here.
+      if (!source || (source.role !== "user" && source.role !== "system") || source.kind !== "text") {
+        return json(res, 404, { error: "only user or system-instruction messages can be edited" });
       }
       if (!registry.get(bot.modelSelection.instanceId)) {
         return json(res, 409, {
@@ -6911,7 +6986,12 @@ const server = createServer(async (req, res) => {
       if (!message) return json(res, 404, { error: "no such message" });
       store.patchBot(bot.id, { rewound: true });
       const replyTo = message.replyToId ? resolveReplyTarget(bot.threadId, message.replyToId) : undefined;
-      await startTurn(bot.id, text, { userMessage: message, replyTo });
+      await startTurn(bot.id, text, {
+        userMessage: message,
+        replyTo,
+        automationSource: message.automationSource,
+        unattended: message.role === "system" ? isUnattended(bot.id) : undefined,
+      });
       return json(res, 202, { ok: true });
     }
 
