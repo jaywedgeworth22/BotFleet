@@ -184,9 +184,13 @@ describe("antigravity group summary", () => {
     // an unrelated 90%-remaining model's earlier 1h reset. Showing "10%
     // available … resets in 1h" would promise replenishment that will not
     // happen then.
+    // Offset off an exact hour boundary (4h 5m / 1h 5m, not 4h / 1h) so the
+    // countdown's floor()-based rounding can't flake between when `now` is
+    // captured here and when the function under test reads its own
+    // Date.now() a moment later.
     const now = Date.now();
-    const tenPercentResetsIn4h = new Date(now + 4 * 3600 * 1000).toISOString();
-    const ninetyPercentResetsIn1h = new Date(now + 1 * 3600 * 1000).toISOString();
+    const tenPercentResetsIn4h = new Date(now + (4 * 3600 + 5 * 60) * 1000).toISOString();
+    const ninetyPercentResetsIn1h = new Date(now + (1 * 3600 + 5 * 60) * 1000).toISOString();
     const groups = antigravityGroupSummary([
       { label: "GPT-OSS 120B", modelId: "gpt-oss-120b-medium", remainingPercentage: 0.1, isExhausted: false, resetTime: tenPercentResetsIn4h },
       { label: "Grok 4", modelId: "grok-4", remainingPercentage: 0.9, isExhausted: false, resetTime: ninetyPercentResetsIn1h },
@@ -194,7 +198,7 @@ describe("antigravity group summary", () => {
     const thirdParty = groups.find((group) => group.group === "external")!;
     expect(thirdParty.remainingPercent).toBe(10);
     expect(thirdParty.resetAtMs).toBe(Date.parse(tenPercentResetsIn4h));
-    expect(thirdParty.headline).toBe("Third-Party: 10% available (5h window, resets in 4h)");
+    expect(thirdParty.headline).toBe("Third-Party: 10% available (5h window, resets in 4h 5m)");
   });
 });
 
