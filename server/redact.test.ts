@@ -972,4 +972,35 @@ describe("redactSecretsInText", () => {
     expect(out).toContain("https://example.com");
     expect(out).toBe(redactSecretsInText(out));
   });
+
+  // ── round-4 finding (fresh Codex re-review of 47ceda1) ────────────────
+
+  it("does not let a quoted paren inside $(...) close the substitution early", () => {
+    // Bash parses a quoted or escaped `)` as part of the substituted
+    // command, not as the substitution's own close — `$(printf ') value')`
+    // is ONE substitution whose argument happens to contain a literal `)`.
+    // The naive depth counter treated every `)` as structural regardless of
+    // quoting, so it closed the span at the literal one and read the space
+    // right after it as a real shell-word boundary — the exact failure the
+    // depth tracking exists to prevent, one quoting level deeper.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$(printf ') value')", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).not.toContain("printf");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // an escaped paren inside the substitution, outside any quote, gets the
+    // same protection — bash still reads it as part of the command
+    const escaped = redactSecretsInText(`curl -H "${HEADER}: OAuth realm="$(printf zone\\) done)", oauth_signature=${sig}"${url}`);
+    expect(escaped).not.toContain(sig);
+    expect(escaped).not.toContain("oauth_signature");
+    expect(escaped).toContain(url);
+  });
 });

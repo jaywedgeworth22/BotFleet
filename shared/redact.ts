@@ -317,6 +317,18 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * backtick.  Both walks consume the run in one linear pass with no
  * backtracking, so this stays O(n) on a pathological line.
  *
+ * A paren INSIDE A QUOTE, inside that same `$(…)`, does not change the
+ * depth either — bash parses a quoted or escaped `)` as part of the
+ * substituted command, not as the substitution's own close
+ * (`$(printf ') value')` is one substitution whose argument happens to
+ * contain a literal `)`).  Counting it anyway closed the span early and
+ * left the space right after it looking like a real boundary again, the
+ * same failure this depth tracking exists to prevent — just one quoting
+ * level deeper.  So the depth walk keeps its own miniature quote state:
+ * a `'`/`"` toggles it, a backslash steps over the character after it
+ * (outside single quotes, where bash never treats backslash as an escape
+ * at all), and `(`/`)` only move `depth` while no quote is open.
+ *
  * An empty INLINE parameter needs the identical requote treatment for a
  * reason that has nothing to do with `$` or backticks: `realm=""` opens and
  * closes the SAME quote with nothing between, which is exactly how bash
@@ -359,13 +371,31 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
         // `$(…)` is replaced with its output before the shell word is
         // assembled, so whitespace inside it is never a word boundary —
         // walk the whole balanced span (nesting depth, for a command that
-        // itself contains parens) as one atomic unit.
+        // itself contains parens) as one atomic unit.  A paren INSIDE A
+        // QUOTE belongs to the substituted command, not to this balancing —
+        // `$(printf ') value')` is one substitution — so a miniature quote
+        // state rides along and only lets `(`/`)` move `depth` while no
+        // quote is open; a backslash steps over the next character (outside
+        // single quotes, where bash gives backslash no escaping power at
+        // all) so an escaped quote or paren cannot be misread as one either.
         if (ch === "$" && value.charAt(j + 1) === "(") {
           let depth = 1;
           j += 2;
+          let innerQuote: string | undefined;
           while (j < value.length && depth > 0) {
-            if (value.charAt(j) === "(") depth += 1;
-            else if (value.charAt(j) === ")") depth -= 1;
+            const inner = value.charAt(j);
+            if (innerQuote) {
+              if (inner === "\\" && innerQuote === '"' && j + 1 < value.length) j += 1;
+              else if (inner === innerQuote) innerQuote = undefined;
+            } else if (inner === "'" || inner === '"') {
+              innerQuote = inner;
+            } else if (inner === "\\" && j + 1 < value.length) {
+              j += 1;
+            } else if (inner === "(") {
+              depth += 1;
+            } else if (inner === ")") {
+              depth -= 1;
+            }
             j += 1;
           }
           continue;
