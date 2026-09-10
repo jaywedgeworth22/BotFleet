@@ -8,8 +8,10 @@ import {
   type SentryAiSink,
   type SentryBreadcrumb,
   type SentryCaptureContext,
+  type SpanLike,
   withChatSpan,
 } from "./sentry-ai.ts";
+import { describeResult } from "../shared/tool-activity.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 
 function base(over: Partial<RuntimeEvent> & Pick<RuntimeEvent, "type">): RuntimeEvent {
@@ -32,6 +34,14 @@ function recordingSink() {
     attributes: Record<string, string | number | boolean>;
     ended: boolean;
     status?: { code: number; message?: string };
+    /** The handle this sink handed back, and the handle it was told to nest
+     *  under.  Identity, not a name — comparing these two is what proves a
+     *  real trace-tree parent/child rather than two spans that merely share
+     *  a gen_ai.conversation.id.  Neither survives JSON.stringify (a
+     *  SpanLike is all functions), so the "nothing sensitive on the wire"
+     *  assertions elsewhere in this file are unaffected. */
+    handle?: SpanLike;
+    parent?: SpanLike;
   }> = [];
   const exceptions: unknown[] = [];
   const contexts: Array<SentryCaptureContext | undefined> = [];
@@ -49,9 +59,10 @@ function recordingSink() {
         attributes: { ...opts.attributes },
         ended: false,
         status: emptyStatus,
+        handle: undefined as SpanLike | undefined,
+        parent: opts.parentSpan,
       };
-      spans.push(rec);
-      return {
+      const handle: SpanLike = {
         setAttribute: (key, value) => {
           rec.attributes[key] = value;
         },
@@ -62,6 +73,9 @@ function recordingSink() {
           rec.ended = true;
         },
       };
+      rec.handle = handle;
+      spans.push(rec);
+      return handle;
     },
     captureException: (error, context) => {
       exceptions.push(error);
@@ -129,6 +143,108 @@ describe("Sentry AI observability", () => {
     expect(chat?.attributes["gen_ai.usage.input_tokens"]).toBe(3);
     expect(chat?.attributes["gen_ai.conversation.id"]).toBe("thread-9");
     expect(JSON.stringify(spans)).not.toMatch(/prompt|messages|sk-/);
+  });
+
+  it("attaches cached input tokens to the chat span when present", async () => {
+    const { sink, spans } = recordingSink();
+    await withChatSpan(
+      { model: "MiniMax-M3", conversationId: "thread-cached", provider: "minimax" },
+      async () => ({ text: "ok", usage: { input: 100, output: 50, cachedInput: 40 } }),
+      sink,
+    );
+
+    const chat = spans.find((s) => s.op === "gen_ai.chat");
+    expect(chat?.attributes["gen_ai.usage.input_tokens"]).toBe(100);
+    expect(chat?.attributes["gen_ai.usage.output_tokens"]).toBe(50);
+    expect(chat?.attributes["gen_ai.usage.input_tokens.cached"]).toBe(40);
+  });
+
+  it("preserves streamed usage on the chat span when the round fails mid-stream", async () => {
+    const { sink, spans } = recordingSink();
+    await expect(
+      withChatSpan(
+        { model: "MiniMax-M3", conversationId: "thread-fail", provider: "minimax" },
+        async ({ recordUsage }) => {
+          recordUsage({ input: 80, output: 20, cachedInput: 15 });
+          throw new Error("stream disconnected abruptly");
+        },
+        sink,
+      ),
+    ).rejects.toThrow("stream disconnected abruptly");
+
+    const chat = spans.find((s) => s.op === "gen_ai.chat");
+    expect(chat).toBeDefined();
+    expect(chat?.attributes["gen_ai.usage.input_tokens"]).toBe(80);
+    expect(chat?.attributes["gen_ai.usage.output_tokens"]).toBe(20);
+    expect(chat?.attributes["gen_ai.usage.input_tokens.cached"]).toBe(15);
+    expect(chat?.status).toEqual({ code: 2, message: "internal_error" });
+    expect(chat?.ended).toBe(true);
+  });
+
+  it("nests the chat span under the turn's invoke_agent span, not merely beside it", async () => {
+    // Sharing a gen_ai.conversation.id only CORRELATES two spans.  Sentry's
+    // AI Agents view reads the trace tree, so a chat round that is not an
+    // actual child of the turn shows up as its own root next to the turn
+    // instead of as a step inside it.
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    await withChatSpan(
+      { model: "MiniMax-M3", conversationId: "thread-1", provider: "minimax" },
+      async () => ({ text: "ok", usage: { input: 2, output: 1 } }),
+      sink,
+    );
+
+    const turn = spans.find((s) => s.op === "gen_ai.invoke_agent");
+    const chat = spans.find((s) => s.op === "gen_ai.chat");
+    expect(turn).toBeDefined();
+    expect(chat).toBeDefined();
+    expect(chat?.parent).toBe(turn?.handle);
+  });
+
+  it("nests every round of a multi-round turn under that same turn span", async () => {
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    for (const model of ["MiniMax-M3", "MiniMax-M3"]) {
+      await withChatSpan(
+        { model, conversationId: "thread-1", provider: "minimax" },
+        async () => ({ text: "ok", usage: { input: 1, output: 1 } }),
+        sink,
+      );
+    }
+
+    const turn = spans.find((s) => s.op === "gen_ai.invoke_agent");
+    const chats = spans.filter((s) => s.op === "gen_ai.chat");
+    expect(chats).toHaveLength(2);
+    expect(chats.every((s) => s.parent === turn?.handle)).toBe(true);
+  });
+
+  it("leaves the parent unset — never null — for a chat round with no open turn", async () => {
+    // generateText's title and summary rounds run outside any turn.  An
+    // explicit null parent would make each of them a trace ROOT; leaving it
+    // unset keeps Sentry's own default parenting.
+    const { sink, spans } = recordingSink();
+    await withChatSpan(
+      { model: "MiniMax-M2.7-highspeed", conversationId: "thread-with-no-turn", provider: "minimax" },
+      async () => ({ text: "a title", usage: null }),
+      sink,
+    );
+
+    const chat = spans.find((s) => s.op === "gen_ai.chat");
+    expect(chat).toBeDefined();
+    expect(chat?.parent).toBeUndefined();
+  });
+
+  it("stops nesting under a turn once that turn has ended", async () => {
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: true }), sink);
+    await withChatSpan(
+      { model: "MiniMax-M3", conversationId: "thread-1", provider: "minimax" },
+      async () => ({ text: "ok", usage: null }),
+      sink,
+    );
+
+    expect(spans.find((s) => s.op === "gen_ai.chat")?.parent).toBeUndefined();
   });
 });
 
@@ -245,6 +361,117 @@ describe("approval, retry, and session lifecycle", () => {
     expect(String(detail)).toHaveLength(200);
     expect(spans[1].status).toEqual({ code: 2, message: "internal_error" });
     expect(JSON.stringify(spans)).not.toMatch(/sk-|password|BEGIN /);
+  });
+
+  it("redacts a secret in a failed tool's detail before it reaches the span", () => {
+    // event.detail is real provider output (stdout/stderr/error text a
+    // driver read back from the tool call, not a synthetic message), so a
+    // failed command that echoed a credential must not reach Sentry intact.
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(
+      base({ type: "item.started", itemType: "tool", itemId: "tool-1", title: "bash curl" }),
+      sink,
+    );
+    observeRuntimeEvent(
+      base({
+        type: "item.completed",
+        itemType: "tool",
+        itemId: "tool-1",
+        ok: false,
+        detail: 'curl failed: {"api_key": "abcd1234efgh5678"}',
+      }),
+      sink,
+    );
+    const detail = String(spans[1].attributes["gen_ai.tool.result.detail"]);
+    expect(detail).not.toContain("abcd1234efgh5678");
+    expect(detail).toContain("«redacted 16 chars»");
+  });
+
+  // ── the real driver-to-Sentry path ──────────────────────────────────
+  // Every production driver builds a failed tool's `detail` by handing the
+  // provider's raw result to `describeResult()`, which clips it to 240
+  // characters.  That clip used to run BEFORE any redaction, so a secret
+  // longer than the clip lost the closing marker its pattern anchors on and
+  // the first 200 characters went to Sentry intact.  These tests drive that
+  // exact path — the driver's own payload shape, through the driver's own
+  // `describeResult()` call, into the observer that sets the span attribute
+  // — rather than handing `observeRuntimeEvent` a pre-redacted string.
+
+  /** Obviously-fake credential material, assembled from pieces so no
+   *  token-shaped literal sits in the source and nobody mistakes it for a
+   *  live key.  Each one is longer than DETAIL_LIMIT on purpose. */
+  const FAKE_PEM_BODY = "FAKEFAKE".repeat(38); // 304 chars of nothing
+  const FAKE_PEM = `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_PEM_BODY}\n-----END RSA PRIVATE KEY-----`;
+  const FAKE_JWT = `eyJhbGciOiJGQUtFIn0.eyJwYXlsb2FkIjoi${"RkFLRQ".repeat(40)}.RkFLRVNJRw`;
+  const FAKE_OPAQUE = `FAKE${"0123456789".repeat(30)}`; // a 304-char opaque value
+  const FAKE_SECRETS = [FAKE_PEM_BODY, FAKE_JWT, FAKE_OPAQUE];
+
+  /** One failed tool's output carrying all three shapes, the way a `curl -v`
+   *  or a `cat` of a config file would print them. */
+  const rawFailedOutput = [
+    "$ deploy --verbose",
+    FAKE_PEM,
+    `POST /v1/deploy 401 {"api_key":"${FAKE_OPAQUE}","retry":false}`,
+    `sent Authentication: ${FAKE_JWT}`,
+    "exit 1",
+  ].join("\n");
+
+  /** The payload shape each driver actually hands `describeResult()`, at the
+   *  line noted.  If a driver changes shape, this table is what fails. */
+  const driverPayloads: Array<[string, unknown]> = [
+    // server/drivers/codex.ts — item.aggregatedOutput, a plain string
+    ["codex", rawFailedOutput],
+    // server/drivers/claude.ts — b.content, Claude tool_result blocks
+    ["claude", [{ type: "text", text: rawFailedOutput }]],
+    // server/drivers/pi.ts — evt.result, an object the harness wraps
+    ["pi", { output: rawFailedOutput }],
+    // server/drivers/acp/core.ts — u.content, ACP content blocks
+    ["acp", [{ type: "content", content: { type: "text", text: rawFailedOutput } }]],
+  ];
+
+  for (const [driver, payload] of driverPayloads) {
+    it(`redacts a failed tool result on the ${driver} driver's path to Sentry`, () => {
+      // exactly what the driver call site does
+      const detailFromDriver = describeResult(payload);
+      expect(detailFromDriver, "the driver produced no detail at all").toBeTruthy();
+
+      const { sink, spans } = recordingSink();
+      observeRuntimeEvent(base({ type: "turn.started" }), sink);
+      observeRuntimeEvent(
+        base({ type: "item.started", itemType: "tool", itemId: "tool-1", title: "bash deploy" }),
+        sink,
+      );
+      observeRuntimeEvent(
+        base({ type: "item.completed", itemType: "tool", itemId: "tool-1", ok: false, detail: detailFromDriver }),
+        sink,
+      );
+
+      const detail = String(spans[1].attributes["gen_ai.tool.result.detail"]);
+      // nothing secret-shaped survives, at any prefix length the clip could
+      // have left behind
+      for (const secret of FAKE_SECRETS) {
+        for (const length of [16, 24, 40, 80]) {
+          expect(detail, `${driver}: ${secret.slice(0, 12)}… survived`).not.toContain(secret.slice(0, length));
+        }
+      }
+      expect(detail).not.toMatch(/eyJ[A-Za-z0-9_-]{8,}\./);
+      // and the shape a reader debugs with is still there
+      expect(detail).toContain("BEGIN RSA PRIVATE KEY");
+      expect(detail).toMatch(/«redacted \d+ chars»/);
+      expect(JSON.stringify(spans)).not.toContain(FAKE_OPAQUE.slice(0, 24));
+    });
+  }
+
+  it("redacts before describeResult clips, so the closing markers still exist", () => {
+    // The order is the fix.  Clipping first is what removed the `END …
+    // PRIVATE KEY` trailer, the JWT's third segment and the closing quote
+    // that the patterns need — this asserts the detail is short and masked,
+    // not long and cut.
+    const detail = String(describeResult(rawFailedOutput));
+    expect(detail).not.toContain(FAKE_PEM_BODY.slice(0, 16));
+    expect(detail).toContain("END RSA PRIVATE KEY");
+    expect(detail.length).toBeLessThanOrEqual(240);
   });
 
   it("leaves a successful tool without a result detail", () => {

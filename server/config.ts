@@ -6,7 +6,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 
-import { writeFileAtomic } from "./atomic.ts";
+import { updateConfigFile } from "../electron/config-file-lock.mjs";
 import type { InstanceConfigMap } from "./contracts.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import { infisicalSnapshot, resolveSecretFields, stripVaultManagedValues } from "./secret-map.ts";
@@ -940,15 +940,10 @@ export const PROVIDER_CREDENTIAL_ENV = [
 
 /** Merge a partial config into ~/.botfleet/config.json (secrets never
  * echoed back — callers report configured-or-not booleans only). */
+type CheckedConfigPatch = z.infer<ReturnType<typeof appConfigSchema.partial>>;
+
 export function saveConfig(patch: Partial<AppConfig>): void {
   const p = join(DATA_DIR, "config.json");
-  let disk: JsonObject = {};
-  try {
-    const parsed = jsonObjectSchema.safeParse(parseJson(readFileSync(p, "utf8")));
-    if (parsed.success) disk = parsed.data;
-  } catch {
-    /* first write */
-  }
   const checkedPatch = appConfigSchema.partial().parse(patch);
   // Last line of defence, on the parsed COPY so a caller's own object is
   // never mutated: whatever the store is currently canonical for does not go
@@ -967,6 +962,21 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     // means a caller tried to persist something the store owns.
     console.warn(`[secrets] not persisting vault-managed values: ${strippedFromDisk.join(", ")}`);
   }
+  mkdirSync(DATA_DIR, { recursive: true });
+  // Under the cross-process lock (electron/config-file-lock.mjs) -- the same
+  // one the Electron auto-updater and boot migrations take -- so the read,
+  // the merge and the rename happen with no other writer in between.  A
+  // save from the other process can never be answered with this one's
+  // stale snapshot, and vice versa.  (PR #251 review, board a2a3a586.)
+  updateConfigFile(p, (raw) => mergeConfigPatch(raw, checkedPatch), { mode: 0o600 });
+}
+
+/** Merge a validated patch into the parsed on-disk object.  Runs under the
+ * config lock, so it must stay synchronous and must not call back into
+ * saveConfig. */
+function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedConfigPatch): JsonObject {
+  const parsed = jsonObjectSchema.safeParse(raw);
+  const disk: JsonObject = parsed.success ? parsed.data : {};
   // usage, qdrant and observability are operator-supplied endpoints (Usage
   // Monitor telemetry, Bot RAG, Sentry).  They must merge like the other
   // sections: a URL-only patch must not wipe a stored token, and a
@@ -1013,8 +1023,7 @@ export function saveConfig(patch: Partial<AppConfig>): void {
     }
     disk.instances = diskInstances;
   }
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileAtomic(p, JSON.stringify(disk, null, 2), { mode: 0o600 });
+  return disk;
 }
 
 /** Set one instance's `config.cli` ("" clears the override back to the

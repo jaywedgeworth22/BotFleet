@@ -11,6 +11,7 @@ import { Card } from "./SettingsPrimitives";
 import { ProviderMark } from "./ProviderIcons";
 import { SecretSourceBadge } from "./SecretSourceBadge";
 import { deepSeekPriceRows } from "@/lib/deepseek-prices";
+import { minimaxPriceRows } from "@/lib/minimax-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
 import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, quotaLinesSummary, usageWindowLines, windowHeadlines } from "@/lib/quota-display";
@@ -491,6 +492,7 @@ export function UsageSection() {
           </div>
           {[
             ...deepSeekPriceRows(),
+            ...minimaxPriceRows(),
             { model: "Grok 3 (CLI)", provider: "xAI", input: "Subscription", cache: "Included", output: "Included", badge: "CLI" },
             { model: "Claude 3.7 Sonnet (CLI)", provider: "Anthropic", input: "Subscription", cache: "Included", output: "Included", badge: "CLI" },
             { model: "Codex / GPT-5.4 (CLI)", provider: "OpenAI", input: "Subscription", cache: "Included", output: "Included", badge: "CLI" },
@@ -507,7 +509,7 @@ export function UsageSection() {
             </div>
           ))}
           <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-            Prices for API-billed engines (such as OpenRouter) are calculated directly from input and output token counts each turn. CLI-authenticated engines run against your active subscription.
+            Prices for API-billed engines (such as OpenRouter and MiniMax) are calculated directly from input and output token counts each turn.{'\u00A0'} MiniMax M3 turns whose prompt passes 512K input tokens bill at roughly double the listed rate, per MiniMax's own published tier.{'\u00A0'} CLI-authenticated engines run against your active subscription.
           </div>
         </div>
       </Card>
