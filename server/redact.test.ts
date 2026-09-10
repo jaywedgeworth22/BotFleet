@@ -1208,4 +1208,95 @@ describe("redactSecretsInText", () => {
     expect(doublyNested).not.toContain("oauth_signature");
     expect(doublyNested).toContain(url);
   });
+
+  // ── round-10 findings (fresh Codex re-review of 117f50f, from a page of
+  // results the prior rounds' 30-item default page size had been silently
+  // cutting off — rounds 8 and 9 each actually carried two findings) ────
+
+  it("does not let an escaped backtick end a legacy command substitution early", () => {
+    // The first backquote NOT preceded by a backslash terminates a backtick
+    // command substitution (Bash manual, Command Substitution) — so
+    // `` `printf '\`value'` `` is one substitution whose argument happens
+    // to contain a literal, escaped backtick, confirmed against bash
+    // 5.2.21.  A scan that stops at the first backtick REGARDLESS of
+    // escaping reads the escaped one as the close and the quote before the
+    // substitution as the wrapper's own close instead.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="\`printf '\\\`value'\`", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+  });
+
+  it("does not read a direct `set` builtin invocation as a placeholder lead-in", () => {
+    // `set -- Authorization: Bearer password` genuinely begins its own
+    // clause with `set` (Bash assigns the rest to positional parameters,
+    // `help set`) — restricting the lead-in check to the current clause
+    // (the earlier round's fix) does not by itself tell that apart from
+    // `Set Authorization: Bearer <token>` prose, since both start the
+    // clause with the same word.  The giveaway is the SECOND word: a real
+    // invocation's is always an option flag.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    for (const flag of ["--", "-x", "-e"]) {
+      const line = `set ${flag} ${HEADER}: ${SCHEME} password`;
+      const out = redactSecretsInText(line);
+      expect(out, line).toMatch(/«redacted \d+ chars»/);
+      expect(out, line).not.toMatch(/password$/);
+    }
+    // genuine prose — no flag right after `set` — still exempts
+    const doc = `set ${HEADER}: ${SCHEME} password`;
+    expect(redactSecretsInText(doc), doc).toBe(doc);
+  });
+
+  it("does not let a case-arm's pattern-closing paren end a $(...) substitution early", () => {
+    // A `case` arm's pattern is closed by a BARE `)` with NO matching `(`
+    // at all — `case x in x) printf foo;; esac` is valid inside `$(…)`
+    // (`help case`, confirmed against bash 5.2.21) — so counting that `)`
+    // as this `$(…)`'s own close reads shell grammar as balancing.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$(case x in x) printf foo;; esac)", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // multiple arms, and a nested case, both still balance correctly
+    const multiArm = redactSecretsInText(
+      `curl -H "${HEADER}: OAuth realm="$(case x in a) case y in b) cmd;; esac;; c) other;; esac)", oauth_signature=${sig}"${url}`,
+    );
+    expect(multiArm).not.toContain(sig);
+    expect(multiArm).not.toContain("oauth_signature");
+    expect(multiArm).toContain(url);
+  });
+
+  it("does not crash on thousands of nested $(...) expansions", () => {
+    // Untrusted bot/tool output can hand redactSecretsInText a line with
+    // roughly 5,000 nested `$(` openers.  Recursing into every one of them
+    // overflows the call stack and throws, which aborts redaction (and,
+    // through Bus.publish, ordinary event processing) instead of merely
+    // losing diagnostic precision — the fix is a bounded recursion depth,
+    // not perfect accuracy at a depth no real shell command would ever use.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    let deep = "a";
+    for (let i = 0; i < 5000; i++) deep = `$(echo ${deep})`;
+    const line = `curl -H "${HEADER}: OAuth realm="${deep}", oauth_signature=${sig}" https://example.com`;
+    let out = "";
+    expect(() => {
+      out = redactSecretsInText(line);
+    }).not.toThrow();
+    expect(out).not.toContain(sig);
+  });
 });

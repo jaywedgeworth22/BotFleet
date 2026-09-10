@@ -370,6 +370,45 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * opener count) from landing the cut on `realm=` and shipping whatever
  * credential field comes after it. */
 
+/** Walks a backtick command substitution to its matching close, starting AT
+ * the opening backtick, and returns the index right after that close (or
+ * `value.length` if it never closes).
+ *
+ * The first backquote NOT preceded by a backslash terminates the form (Bash
+ * manual, Command Substitution) — so a literal, escaped backtick inside one
+ * (`` `printf '\`value'` `` is one substitution whose argument happens to
+ * contain a literal backtick) must not be read as the close.  Only `` \` ``
+ * specifically is special here: this function exists to find a BOUNDARY,
+ * not to interpret every backslash escape backticks recognise, and bash
+ * itself leaves a backslash before anything else in a backquoted string
+ * untouched, so treating unrelated `\x` pairs as atomic would walk past a
+ * close that bash does not. */
+function walkBacktick(value: string, backtickIndex: number): number {
+  let k = backtickIndex + 1;
+  while (k < value.length) {
+    if (value.charAt(k) === "\\" && value.charAt(k + 1) === "`") {
+      k += 2;
+      continue;
+    }
+    if (value.charAt(k) === "`") return k + 1;
+    k += 1;
+  }
+  return value.length;
+}
+
+/** How many levels of NESTED expansion `walkBalancedSpan` will recurse
+ * into before it stops trying to balance precisely and falls back to flat
+ * `open`/`close` counting instead.  Generous against anything a real shell
+ * command would ever nest — and load-bearing: untrusted bot/tool output can
+ * hand this function roughly 5,000 nested `$(` openers in one line, and
+ * recursing into every one of them overflows the call stack and throws,
+ * which aborts `redactSecretsInText` (and, through `Bus.publish`, ordinary
+ * event processing) rather than merely losing diagnostic precision.  Flat
+ * counting beyond this depth is not perfectly shell-accurate for MIXED
+ * bracket nesting that deep, but it cannot crash, and content that pathological
+ * has no realistic legitimate source. */
+const MAX_EXPANSION_NESTING = 64;
+
 /** Walks a balanced `(…)`/`{…}` span — the argument of `$(`, `<(`, `>(`, or
  * `${` — to its matching close, starting just past the OPENING bracket, and
  * returns the index right after that close (or `value.length` if it never
@@ -399,9 +438,31 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * LIVE inside a double-quoted segment of the span too (bash still expands
  * them there), so the quote-state branch recurses the same way; a single
  * quote, by contrast, makes everything up to its own close — even a
- * `$` — purely literal, exactly as bash treats it. */
-function walkBalancedSpan(value: string, openIndex: number, open: string, close: string): number {
+ * `$` — purely literal, exactly as bash treats it.  `budget` bounds how
+ * many levels of THAT recursion are still allowed — see
+ * `MAX_EXPANSION_NESTING` — and once it runs out, a nested opener is no
+ * longer consumed atomically at all; its `(`/`{` character falls through
+ * to the flat counting below like any other, which cannot crash and is
+ * still correct for same-type nesting, just not for mismatched brackets
+ * that deep.
+ *
+ * `case`/`esac` are shell KEYWORDS, not part of this balancing, and hide a
+ * different trap that has nothing to do with quoting or nesting depth: a
+ * `case` arm's pattern is closed by a BARE `)` with NO MATCHING `(` AT ALL
+ * — `case x in x) printf foo;; esac` is valid inside `$(…)` (Bash manual,
+ * `help case`), and counting that `)` as this level's own close is wrong
+ * the same way a stray quote is wrong, just via shell grammar instead of
+ * quoting.  While an open `case` body sits at THIS level's `depth` (no
+ * subshell opened inside it since the `case` keyword), every bare `)` it
+ * produces is a pattern terminator, not a close, tracked with a stack of
+ * the depths at which `case` was seen; `esac` pops it, and a subshell
+ * opened inside the body still balances normally because `(` and `)`
+ * change `depth` as usual whenever it is above the `case`'s own depth. */
+function walkBalancedSpan(value: string, openIndex: number, open: string, close: string, budget = MAX_EXPANSION_NESTING): number {
   let depth = 1;
+  const caseStack: number[] = [];
+  const atWordBoundaryBefore = (pos: number) => pos <= 0 || !/[A-Za-z0-9_]/.test(value.charAt(pos - 1));
+  const atWordBoundaryAfter = (pos: number) => pos >= value.length || !/[A-Za-z0-9_]/.test(value.charAt(pos));
   let j = openIndex + 1;
   let innerQuote: string | undefined;
   while (j < value.length && depth > 0) {
@@ -427,16 +488,15 @@ function walkBalancedSpan(value: string, openIndex: number, open: string, close:
       // in bash, so a NESTED expansion here is still one atomic unit whose
       // own delimiters must not be read as this level's — the same
       // "quoted or escaped doesn't count" rule this function exists for,
-      // one quoting level in.
-      if (inner === "$" && (value.charAt(j + 1) === "(" || value.charAt(j + 1) === "{")) {
+      // one quoting level in.  Beyond `budget`, fall through unconsumed —
+      // see `MAX_EXPANSION_NESTING`.
+      if (budget > 0 && inner === "$" && (value.charAt(j + 1) === "(" || value.charAt(j + 1) === "{")) {
         const nestedOpen = value.charAt(j + 1);
-        j = walkBalancedSpan(value, j + 1, nestedOpen, nestedOpen === "(" ? ")" : "}");
+        j = walkBalancedSpan(value, j + 1, nestedOpen, nestedOpen === "(" ? ")" : "}", budget - 1);
         continue;
       }
       if (inner === "`") {
-        let k = j + 1;
-        while (k < value.length && value.charAt(k) !== "`") k += 1;
-        j = k < value.length ? k + 1 : value.length;
+        j = walkBacktick(value, j);
         continue;
       }
       j += 1;
@@ -457,10 +517,12 @@ function walkBalancedSpan(value: string, openIndex: number, open: string, close:
     // parens/braces belong to IT, not to this level's depth.  This is the
     // fix for the case that motivated recursing at all: a nested `${…}`
     // whose fallback contains a literal `)` (`$(printf %s ${X:-)x} tail)`)
-    // must not have that `)` mistaken for THIS `$(…)`'s own close.
-    if (inner === "$" && (value.charAt(j + 1) === "(" || value.charAt(j + 1) === "{")) {
+    // must not have that `)` mistaken for THIS `$(…)`'s own close.  Beyond
+    // `budget`, none of these three recursing branches consume atomically
+    // any more — see `MAX_EXPANSION_NESTING`.
+    if (budget > 0 && inner === "$" && (value.charAt(j + 1) === "(" || value.charAt(j + 1) === "{")) {
       const nestedOpen = value.charAt(j + 1);
-      j = walkBalancedSpan(value, j + 1, nestedOpen, nestedOpen === "(" ? ")" : "}");
+      j = walkBalancedSpan(value, j + 1, nestedOpen, nestedOpen === "(" ? ")" : "}", budget - 1);
       continue;
     }
     if (inner === "$" && value.charAt(j + 1) === "'") {
@@ -480,14 +542,33 @@ function walkBalancedSpan(value: string, openIndex: number, open: string, close:
       continue;
     }
     if (inner === "`") {
-      let k = j + 1;
-      while (k < value.length && value.charAt(k) !== "`") k += 1;
-      j = k < value.length ? k + 1 : value.length;
+      j = walkBacktick(value, j);
       continue;
     }
-    if ((inner === "<" || inner === ">") && value.charAt(j + 1) === "(") {
-      j = walkBalancedSpan(value, j + 1, "(", ")");
+    if (budget > 0 && (inner === "<" || inner === ">") && value.charAt(j + 1) === "(") {
+      j = walkBalancedSpan(value, j + 1, "(", ")", budget - 1);
       continue;
+    }
+    // `case`/`esac` open and close a region where a bare `)` is a pattern
+    // terminator, not this level's close — see the doc comment above.
+    // Only meaningful for the paren form; `${…}`'s `case` (if any) is
+    // somebody's literal fallback text, not shell grammar, since `case` is
+    // never itself the CONTENTS of a parameter expansion's own syntax.
+    if (open === "(" && close === ")") {
+      if (inner === "c" && value.slice(j, j + 4) === "case" && atWordBoundaryBefore(j) && atWordBoundaryAfter(j + 4)) {
+        caseStack.push(depth);
+        j += 4;
+        continue;
+      }
+      if (inner === "e" && value.slice(j, j + 4) === "esac" && atWordBoundaryBefore(j) && atWordBoundaryAfter(j + 4)) {
+        if (caseStack.length > 0 && caseStack[caseStack.length - 1] === depth) caseStack.pop();
+        j += 4;
+        continue;
+      }
+      if (inner === ")" && caseStack.length > 0 && caseStack[caseStack.length - 1] === depth) {
+        j += 1; // a case arm's pattern terminator — `depth` is untouched
+        continue;
+      }
     }
     if (inner === open) {
       depth += 1;
@@ -569,9 +650,7 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
         // a backtick command substitution is the same story — its own
         // whitespace runs to the matching backtick, not to a boundary
         if (ch === "`") {
-          let k = j + 1;
-          while (k < value.length && value.charAt(k) !== "`") k += 1;
-          j = k < value.length ? k + 1 : value.length;
+          j = walkBacktick(value, j);
           continue;
         }
         // a backslash-escaped character is glued to the run just as tightly
@@ -697,15 +776,32 @@ const PLACEHOLDER_LEAD_WORDS = new Set(["use", "set", "send", "add", "include", 
  * exempted the real credential that followed an unrelated earlier command.
  * So this looks only as far back as the nearest shell separator — `;`,
  * `&`, `|`, or a newline, whichever is closest — and takes the first word
- * after THAT as the one that has to be a recognised verb. */
+ * after THAT as the one that has to be a recognised verb.
+ *
+ * That still is not enough for `set` on its own, though: nothing separates
+ * a DIRECT invocation from prose when it genuinely IS the clause's first
+ * word — `set -- Authorization: Bearer password` (Bash assigns those
+ * arguments to positional parameters, `help set`) begins its own clause
+ * with `set` exactly the way `Set Authorization: Bearer <token>` does.
+ * What tells them apart is the SECOND word: a real invocation's is always
+ * an option flag (`-x`, `-e`, `--`, …), which an instruction sentence
+ * never writes right after the verb.  Gating on that keeps `set` as a
+ * lead-in for prose while refusing it for an actual builtin call — the
+ * other lead-in verbs need no such check because none of them doubles as
+ * a bash builtin that takes flags this way. */
 function hasPlaceholderLeadIn(before: string): boolean {
   let clauseStart = 0;
   for (const sep of [";", "&", "|", "\n"]) {
     const idx = before.lastIndexOf(sep) + 1;
     if (idx > clauseStart) clauseStart = idx;
   }
-  const firstWord = before.slice(clauseStart).trim().split(/\s+/)[0];
-  return !!firstWord && PLACEHOLDER_LEAD_WORDS.has(firstWord.toLowerCase().replace(/[^a-z]/g, ""));
+  const words = before.slice(clauseStart).trim().split(/\s+/);
+  const firstWord = words[0];
+  if (!firstWord) return false;
+  const normalized = firstWord.toLowerCase().replace(/[^a-z]/g, "");
+  if (!PLACEHOLDER_LEAD_WORDS.has(normalized)) return false;
+  if (normalized === "set" && words[1]?.startsWith("-")) return false;
+  return true;
 }
 
 /** `leadIn` says whether an instruction verb ("Use", "Set", …) opens the
