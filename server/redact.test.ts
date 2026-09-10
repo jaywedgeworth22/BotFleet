@@ -576,13 +576,11 @@ describe("redactSecretsInText", () => {
       `Use ${HEADER}: ${SCHEME_WORD} token`,
       `Set ${HEADER}: ${SCHEME_WORD} secret`,
       `${HEADER}: ${SCHEME_WORD} your-api-key`,
-      `${HEADER}: Basic password`,
       `${HEADER}: ${SCHEME_WORD} xxxxxxxx`,
       `send ${SCHEME_WORD} your_token in the header`,
       // trailing sentence punctuation belongs to the prose
       `Use ${HEADER}: ${SCHEME_WORD} token.`,
       `Set ${HEADER}: ${SCHEME_WORD} <token>.`,
-      `${HEADER}: ${SCHEME_WORD} secret,`,
     ]) {
       expect(redactSecretsInText(doc), doc).toBe(doc);
     }
@@ -591,6 +589,15 @@ describe("redactSecretsInText", () => {
     // it, so `your-api-key` is documentation and `yourtoken` is a credential
     expect(redactSecretsInText(`${HEADER}: Basic dTpw`)).toContain("«redacted 4 chars»");
     for (const real of [`${HEADER}: ${SCHEME_WORD} yourtoken`, `${HEADER}: ${SCHEME_WORD} mysecret`]) {
+      expect(redactSecretsInText(real), real).toMatch(/«redacted \d+ chars»/);
+    }
+    // an EXACT placeholder word is only documentation behind a recognised
+    // lead-in verb ("Use", "Set", …) — the same word with nothing marking it
+    // that way is a real, if bad, credential and must still be masked, the
+    // same as before the placeholder exemption existed (round-2 finding: a
+    // blanket exemption for exact placeholder words let `Bearer password`
+    // through unmasked)
+    for (const real of [`${HEADER}: Basic password`, `${HEADER}: ${SCHEME_WORD} secret,`]) {
       expect(redactSecretsInText(real), real).toMatch(/«redacted \d+ chars»/);
     }
   });
@@ -830,5 +837,61 @@ describe("redactSecretsInText", () => {
     const out = redactSecrets({ command: "curl -H 'Authorization: Bearer abcdefghijklmnop'", note: "fine" }) as Record<string, string>;
     expect(out.command).toContain("«redacted");
     expect(out.note).toBe("fine");
+  });
+
+  // ── round-2 findings (fresh Codex re-review of 993a58e) ──────────────
+
+  it("does not let an empty quoted parameter re-open the opener count for a poisoned line", () => {
+    // Same class as the resolved opposite-quoted-literal thread, but the
+    // credential's FIRST field is an EMPTY quoted parameter: `realm=""`.
+    // Its opening quote is immediately followed by its own closing quote,
+    // which satisfies the "next char is a quote" closer signal that exists
+    // for a DIFFERENT reason (a wrapper's true close glued to a new quoted
+    // shell word) — and that false match used to stop the mask right after
+    // `realm=` and hand `oauth_signature` back in the clear.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const line = `echo '"' && curl "prefix"${HEADER}: OAuth realm="", oauth_signature=${sig}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).toContain("curl");
+    expect(out).toBe(redactSecretsInText(out));
+  });
+
+  it("does not exempt a real Bearer credential that happens to spell an unmarked placeholder word", () => {
+    // The placeholder exemption is for DOCUMENTATION — `Use Authorization:
+    // Bearer token.` — which reads as a placeholder only because a leading
+    // instruction verb marks it as guidance.  The exact same word with
+    // nothing marking it that way is a real, if bad, credential and the
+    // prior eight-character-floor behavior masked it; the placeholder
+    // exemption must not blanket-exempt every occurrence of the word.
+    const HEADER = "Auth" + "orization";
+    for (const word of ["password", "secret", "token"]) {
+      const real = `${HEADER}: Bearer ${word}`;
+      const out = redactSecretsInText(real);
+      expect(out, real).toMatch(/«redacted \d+ chars»/);
+      expect(out, real).not.toMatch(new RegExp(`${word}$`));
+    }
+    // documentation with a recognised lead-in verb still survives
+    for (const doc of [`Use ${HEADER}: Bearer token`, `Set ${HEADER}: Bearer secret`, `Use ${HEADER}: Bearer password`]) {
+      expect(redactSecretsInText(doc), doc).toBe(doc);
+    }
+  });
+
+  it("stops the $SUFFIX continuation lookahead at a shell-word boundary", () => {
+    // A later, unrelated quoted command (`&& echo "done"`) must not be
+    // mistaken for this credential's own glued continuation — the lookahead
+    // has to stop at the first real shell-word boundary, not scan arbitrarily
+    // far ahead for any same-type quote.
+    const HEADER = "Auth" + "orization";
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const line = `curl -H "${HEADER}: ${SCHEME} ${token}"$SUFFIX https://example.com && echo "done"`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(token);
+    expect(out).toContain("$SUFFIX");
+    expect(out).toContain("https://example.com");
+    expect(out).toContain('&& echo "done"');
   });
 });

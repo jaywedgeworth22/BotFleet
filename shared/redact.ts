@@ -272,7 +272,33 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * all — quoting merely toggled off and back on — so that quote is not a
  * candidate close either; scanning resumes past it, looking for whichever
  * quote closes THAT segment, so a later field like `oauth_signature` is not
- * left standing past a requote that looked like the end. */
+ * left standing past a requote that looked like the end.
+ *
+ * That forward scan for a requote does not run unbounded, though: bash only
+ * keeps a `$`/backtick run GLUED to what follows while nothing separates
+ * them, and a shell-word boundary — whitespace, `&&`, `;`, `|` — ends the
+ * word right there whether or not a same-type quote shows up later on the
+ * line.  Scanning past that boundary anyway is what let an unrelated later
+ * command, `"…token…"$SUFFIX https://example.com && echo "done"`, be read as
+ * one continuous value all the way to `"done"`'s closing quote — the search
+ * has to stop at the boundary and treat the run as ended right there, the
+ * same as if no further quote existed at all.
+ *
+ * An empty INLINE parameter needs the identical requote treatment for a
+ * reason that has nothing to do with `$` or backticks: `realm=""` opens and
+ * closes the SAME quote with nothing between, which is exactly how bash
+ * glues a quoted segment back onto a following one — `realm="$REALM"` does
+ * it with a variable in the gap, `realm=""` does it with an empty gap.  Read
+ * as an ordinary "does this close" test, though, the adjacent closing quote
+ * of the empty pair looks identical to a wrapper's TRUE close glued to a new
+ * quoted shell word (`"…token…""more"`, tested below) — the only thing that
+ * tells them apart is what precedes the opening quote.  A parameter only
+ * opens behind `=` (RFC 7235 auth-param); a wrapper's own close is not, so
+ * gating on that keeps `"…token…""more"` stopping where it always did while
+ * `realm=""` is treated as a requote and the scan keeps going — which is
+ * what stops an unrelated same-type literal earlier on the line (a poisoned
+ * opener count) from landing the cut on `realm=` and shipping whatever
+ * credential field comes after it. */
 function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
   if (!wrapper) return value.length;
   const runBefore = (pos: number): number => {
@@ -290,14 +316,26 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
     }
     const run = runBefore(i);
     const after = value.charAt(i + 1);
-    if (after === "$" || after === "`") {
+    const before = value.charAt(i - 1);
+    const emptyInlineParam = after === wrapper.quote && before === "=";
+    if (after === "$" || after === "`" || emptyInlineParam) {
       let j = i + 1;
-      while (j < value.length && !isWrapperQuote(j)) j += 1;
-      if (j < value.length) {
+      let atBoundary = false;
+      while (j < value.length && !isWrapperQuote(j)) {
+        // whitespace or a shell separator ends the glued word right here —
+        // a same-type quote somewhere further down the line belongs to
+        // unrelated, later text, not to this run
+        if (/[\s;&|]/.test(value.charAt(j))) {
+          atBoundary = true;
+          break;
+        }
+        j += 1;
+      }
+      if (!atBoundary && j < value.length) {
         i = j + 1; // requoted — this candidate was not the close; scan past it
         continue;
       }
-      return i - run; // the glued run ran out with no further quote behind it
+      return i - run; // the glued run ended — at a boundary or out of text — with no further quote behind it
     }
     const closes = after === "" || /[\s;&|<>)\]},'"]/.test(after);
     // the escaping backslashes belong to the delimiter, not to the credential
@@ -374,7 +412,30 @@ const PLACEHOLDER_WORDS = new Set([
   "empty",
 ]);
 
-const isPlaceholder = (value: string) => {
+/** Instruction verbs a sentence uses to introduce a placeholder — "Use
+ * Authorization: Bearer token.", "Set Authorization: Bearer secret".  Kept to
+ * a small closed set for the same reason the scheme list is: a MARKER has to
+ * do the work, not a guess, or "curl failed: Authorization: Bearer password"
+ * would read "failed:" as an instruction and exempt a real credential too.
+ * Checked only against the FIRST word of the line the header sits on. */
+const PLACEHOLDER_LEAD_WORDS = new Set(["use", "set", "send", "add", "include", "provide", "pass", "specify"]);
+
+/** Does the text preceding this match, on its own line, open with a
+ * recognised instruction verb?  Whitespace apart, same as `wrapperQuoteAt` —
+ * the verb has to actually introduce this sentence, not merely appear
+ * somewhere earlier in the transcript. */
+function hasPlaceholderLeadIn(before: string): boolean {
+  const lineStart = before.lastIndexOf("\n") + 1;
+  const firstWord = before.slice(lineStart).trim().split(/\s+/)[0];
+  return !!firstWord && PLACEHOLDER_LEAD_WORDS.has(firstWord.toLowerCase().replace(/[^a-z]/g, ""));
+}
+
+/** `leadIn` says whether an instruction verb ("Use", "Set", …) opens the
+ * sentence this value sits in — see `hasPlaceholderLeadIn`.  It gates only
+ * the BARE-noun branch below; the bracketed, filler, prefixed, and status
+ * shapes carry their own marker in the text itself and need no sentence
+ * context to be trusted. */
+const isPlaceholder = (value: string, leadIn: boolean) => {
   // trailing sentence punctuation belongs to the prose, not to the
   // placeholder — `Use <header>: <scheme> token.` is still guidance.  Only
   // punctuation no credential ends in is stripped: `=` stays, because base64
@@ -387,8 +448,19 @@ const isPlaceholder = (value: string) => {
   // A `your`/`my` prefix only counts when a SEPARATOR follows it.
   // `your-api-key` and `your_token` are documentation; `yourtoken` and
   // `mysecret` are things somebody might actually have set, and exempting
-  // those would hand a real credential straight through.
-  if (PLACEHOLDER_WORDS.has(word.replace(/^(?:your|my|the)[-_]/, ""))) return true;
+  // those would hand a real credential straight through.  The prefix IS the
+  // marker here, so this branch needs no sentence context of its own.
+  const unprefixed = word.replace(/^(?:your|my|the)[-_]/, "");
+  if (unprefixed !== word && PLACEHOLDER_WORDS.has(unprefixed)) return true;
+  // An EXACT, unprefixed placeholder word — `token`, `secret`, `password` on
+  // its own — carries no marker in the text at all: `Use … Bearer token.` and
+  // `Authorization: Bearer password` (someone's actual, bad password) read
+  // identically once the header has already anchored the match down to this
+  // one word.  Only the sentence around it tells them apart, so this branch
+  // is reachable only with a recognised lead-in verb — otherwise the word is
+  // treated as a real, masked credential, the same as before the placeholder
+  // exemption existed.
+  if (leadIn && PLACEHOLDER_WORDS.has(word)) return true;
   // A status sentence is not a credential either: `no value`, `not provided`,
   // `missing`.  Every word has to be one of these, so no credential with a
   // space in it can pass — and a credential is one token anyway.
@@ -486,7 +558,7 @@ export function redactSecretsInText(text: string): string {
   // too short to be a credential rather than masking the prose after a colon.
   out = out.replace(
     AUTH_HEADER_QUOTED,
-    (m, key: string, sep: string, quote: string, scheme: string | undefined, value: string, close: string) => {
+    (m, key: string, sep: string, quote: string, scheme: string | undefined, value: string, close: string, offset: number, whole: string) => {
       // A value that ran to the end of the text lost its closing quote to a
       // clip, and the scheme goes INSIDE the mask on that path alone.  That
       // is not cosmetic: `KEY_VALUE_UNTERMINATED` still lists `authorization`
@@ -496,7 +568,7 @@ export function redactSecretsInText(text: string): string {
       // secret's.  Masking scheme and value together reproduces, byte for
       // byte, what that pass produced before this one could reach the shape.
       const body = close ? value : `${scheme ?? ""}${value}`;
-      if (body.length < minMaskable(scheme) || WHOLLY_MASKED.test(body) || isPlaceholder(body)) return m;
+      if (body.length < minMaskable(scheme) || WHOLLY_MASKED.test(body) || isPlaceholder(body, hasPlaceholderLeadIn(whole.slice(0, offset)))) return m;
       const kept = close ? (scheme ?? "") : "";
       return `${key}${sep}${quote}${kept}${mask(body)}${close}`;
     },
@@ -510,7 +582,12 @@ export function redactSecretsInText(text: string): string {
       // trailing blanks are the line's, not the credential's, so they stay
       // outside the mask and out of the length it reports
       const credential = value.slice(0, end).replace(/[^\S\r\n]+$/, "");
-      if (credential.length < minMaskable(scheme) || WHOLLY_MASKED.test(credential) || isPlaceholder(credential)) return m;
+      if (
+        credential.length < minMaskable(scheme) ||
+        WHOLLY_MASKED.test(credential) ||
+        isPlaceholder(credential, hasPlaceholderLeadIn(whole.slice(0, offset)))
+      )
+        return m;
       return `${key}${sep}${scheme ?? ""}${mask(credential)}${value.slice(credential.length)}`;
     },
   );
@@ -518,7 +595,9 @@ export function redactSecretsInText(text: string): string {
   // the same placeholder rule applies to a scheme word standing on its own:
   // `<scheme> your-api-key` in a routine's instructions is guidance, not a
   // credential, and this pass reaches persisted bot text too
-  out = out.replace(BEARER, (m, lead: string, tok: string) => (isPlaceholder(tok) ? m : `${lead}${mask(tok)}`));
+  out = out.replace(BEARER, (m, lead: string, tok: string, offset: number, whole: string) =>
+    isPlaceholder(tok, hasPlaceholderLeadIn(whole.slice(0, offset))) ? m : `${lead}${mask(tok)}`,
+  );
   out = out.replace(KEY_VALUE, (_m, key: string, sep: string, quote: string, value: string) => `${key}${sep}${quote}${mask(value)}${quote}`);
   out = out.replace(KEY_VALUE_UNTERMINATED, (m, key: string, sep: string, quote: string, value: string) =>
     WHOLLY_MASKED.test(value) ? m : `${key}${sep}${quote}${mask(value)}`,
