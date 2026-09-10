@@ -2616,6 +2616,39 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it(
+    "POST /api/ingress/test does not hang when /api/health answers promptly but stalls its body",
+    { timeout: 15_000 },
+    async () => {
+      // Regression for a P2 finding: headers must arrive fast while the body
+      // never finishes, so a probe that only bounds `fetch()` itself (and
+      // clears the abort timer once headers land) would leave
+      // `response.json()` unbounded and hang forever. The fix keeps the
+      // 5s abort timer armed through body consumption.
+      const fakeOrigin = createServer((_req, res) => {
+        res.writeHead(200, { "content-type": "application/json", server: "cloudflare" });
+        res.write('{"app":"botfleet"'); // never closes the object, never calls res.end()
+      });
+      await new Promise<void>((resolve) => fakeOrigin.listen(0, "127.0.0.1", resolve));
+      const port = (fakeOrigin.address() as { port: number }).port;
+      try {
+        const started = Date.now();
+        const result = await api("POST", "/api/ingress/test", {
+          publicUrl: `http://127.0.0.1:${port}/api/health`,
+        });
+        const elapsedMs = Date.now() - started;
+        expect(result.status).toBe(200);
+        expect(result.body.ok).toBe(false);
+        // Bounded by the probe's own 5s abort timer, not left hanging on the
+        // stalled body. Generous slack above the 5s bound for CI jitter.
+        expect(elapsedMs).toBeLessThan(9_000);
+      } finally {
+        fakeOrigin.closeAllConnections();
+        await new Promise<void>((resolve) => fakeOrigin.close(() => resolve()));
+      }
+    },
+  );
+
   it("POST /api/ingress/test reports a fetch error when the origin is unreachable", async () => {
     // A local port that nothing is listening on: the OS rejects the
     // connection with ECONNREFUSED, which is exactly the upstream-originated
