@@ -338,17 +338,21 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * character inside it decide anything on its own" treatment `$(…)` and a
  * backtick span already get.
  *
- * `$'…'` (ANSI-C quoting) and `<(…)`/`>(…)` (process substitution) glue on
- * the same way, for their own reasons.  `$'foo bar'` is QUOTED syntax —
- * bash processes its own backslash escapes inside it, so `\'` is a literal
- * quote rather than the close — and is walked to its own matching quote,
- * not treated as balanced parens.  `<(list)`/`>(list)` is replaced by a
- * filename before the word is assembled, same as `$(…)` is replaced by
- * output, and is walked with the identical `walkBalancedParens` this shares
- * with `$(…)`.  A BARE `<`/`>` not followed by `(` is still a real
- * redirection and keeps closing the argument the way it always has — only
- * the paren-bearing form is treated as an expansion at all, so this cannot
- * swallow a genuine `-H "…"><url` the way accepting every `<`/`>` would.
+ * `$'…'`, `${…}`, and `<(…)`/`>(…)` glue on the same way, each for its own
+ * reason.  `$'foo bar'` (ANSI-C quoting) is QUOTED syntax — bash processes
+ * its own backslash escapes inside it, so `\'` is a literal quote rather
+ * than the close — and is walked to its own matching quote, not treated as
+ * a balanced span.  `${REALM:-'foo bar'}` (parameter expansion) shares the
+ * quote-aware balancing `$(…)` uses, just brace-delimited instead of
+ * paren-delimited — its fallback/pattern operators can carry quoted
+ * whitespace of their own.  `<(list)`/`>(list)` (process substitution) is
+ * replaced by a filename before the word is assembled, same as `$(…)` is
+ * replaced by output, and is walked with the identical `walkBalancedSpan`
+ * this shares with `$(…)` and `${…}`.  A BARE `<`/`>` not followed by `(`
+ * is still a real redirection and keeps closing the argument the way it
+ * always has — only the paren-bearing form is treated as an expansion at
+ * all, so this cannot swallow a genuine `-H "…"><url` the way accepting
+ * every `<`/`>` would.
  *
  * An empty INLINE parameter needs the identical requote treatment for a
  * reason that has nothing to do with `$` or backticks: `realm=""` opens and
@@ -366,22 +370,25 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * opener count) from landing the cut on `realm=` and shipping whatever
  * credential field comes after it. */
 
-/** Walks a balanced `(…)` span — the argument of `$(`, `<(`, or `>(` — to
- * its matching close, starting just past the OPENING paren, and returns the
- * index right after that close (or `value.length` if it never closes).
+/** Walks a balanced `(…)`/`{…}` span — the argument of `$(`, `<(`, `>(`, or
+ * `${` — to its matching close, starting just past the OPENING bracket, and
+ * returns the index right after that close (or `value.length` if it never
+ * closes).
  *
- * Shared by all three expansion forms because they all glue onto the shell
- * word the same way and hide the same trap: a paren INSIDE A QUOTE, inside
- * the span, belongs to the substituted command or process, not to this
- * balancing (`$(printf ') value')` is one substitution whose argument
- * happens to contain a literal `)`).  So a miniature quote state rides
- * along and only lets `(`/`)` move `depth` while no quote is open, and a
- * backslash steps over the character after it (outside single quotes,
- * where bash gives backslash no escaping power at all) so an escaped quote
- * or paren cannot be misread as one either. */
-function walkBalancedParens(value: string, openParenIndex: number): number {
+ * Shared by every expansion form that glues onto the shell word this way,
+ * because they all hide the same trap: an open/close character INSIDE A
+ * QUOTE, inside the span, belongs to the substituted command, process, or
+ * fallback value, not to this balancing (`$(printf ') value')` is one
+ * substitution whose argument happens to contain a literal `)`, the same as
+ * `${REALM:-'foo bar'}`'s fallback happening to contain neither bracket but
+ * still needing quote-aware whitespace handling).  So a miniature quote
+ * state rides along and only lets `open`/`close` move `depth` while no
+ * quote is open, and a backslash steps over the character after it (outside
+ * single quotes, where bash gives backslash no escaping power at all) so an
+ * escaped quote or bracket cannot be misread as one either. */
+function walkBalancedSpan(value: string, openIndex: number, open: string, close: string): number {
   let depth = 1;
-  let j = openParenIndex + 1;
+  let j = openIndex + 1;
   let innerQuote: string | undefined;
   while (j < value.length && depth > 0) {
     const inner = value.charAt(j);
@@ -392,9 +399,9 @@ function walkBalancedParens(value: string, openParenIndex: number): number {
       innerQuote = inner;
     } else if (inner === "\\" && j + 1 < value.length) {
       j += 1;
-    } else if (inner === "(") {
+    } else if (inner === open) {
       depth += 1;
-    } else if (inner === ")") {
+    } else if (inner === close) {
       depth -= 1;
     }
     j += 1;
@@ -435,10 +442,18 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
         // `$(…)` is replaced with its output before the shell word is
         // assembled, so whitespace inside it is never a word boundary —
         // walk the whole balanced span as one atomic unit (see
-        // `walkBalancedParens`).  `<(…)`/`>(…)` (process substitution,
+        // `walkBalancedSpan`).  `<(…)`/`>(…)` (process substitution,
         // replaced by a filename) glues on exactly the same way.
         if ((ch === "$" || ch === "<" || ch === ">") && value.charAt(j + 1) === "(") {
-          j = walkBalancedParens(value, j + 1);
+          j = walkBalancedSpan(value, j + 1, "(", ")");
+          continue;
+        }
+        // `${…}` (parameter expansion) glues on the same way too — its
+        // fallback/pattern operators (`${REALM:-'foo bar'}`) can carry
+        // quoted whitespace of their own, so this is the brace-delimited
+        // twin of the paren walk above, not a special case of it.
+        if (ch === "$" && value.charAt(j + 1) === "{") {
+          j = walkBalancedSpan(value, j + 1, "{", "}");
           continue;
         }
         // `$'…'` (ANSI-C quoting) is a QUOTED span, not a balanced-paren

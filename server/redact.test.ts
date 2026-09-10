@@ -1118,4 +1118,35 @@ describe("redactSecretsInText", () => {
     expect(redirected).toContain("<in.txt");
     expect(redirected).toContain(url);
   });
+
+  // ── round-7 finding (fresh Codex re-review of 410a5dd) ────────────────
+
+  it("keeps scanning through a ${...} parameter expansion glued to the wrapper", () => {
+    // `${REALM:-'foo bar'}` (parameter expansion) is replaced before the
+    // shell word is assembled, same as `$(...)` (confirmed against bash
+    // 5.2.21: this is one complete `-H` argument) — and its fallback can
+    // carry quoted whitespace of its own, so the space inside the braces is
+    // never an outer boundary either.  Shares the same quote-aware balanced
+    // walk as `$(...)`, just brace- instead of paren-delimited.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="\${REALM:-'foo bar'}", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // a nested ${...} (a braced fallback referencing another parameter)
+    // still balances correctly
+    const nested = redactSecretsInText(
+      `curl -H "${HEADER}: OAuth realm="\${REALM:-\${OTHER:-'foo bar'}}", oauth_signature=${sig}"${url}`,
+    );
+    expect(nested).not.toContain(sig);
+    expect(nested).not.toContain("oauth_signature");
+    expect(nested).toContain(url);
+  });
 });
