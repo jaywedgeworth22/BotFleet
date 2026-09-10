@@ -13,6 +13,7 @@
 // not be unified — they are different registries that happen to overlap.
 import type { RuntimeEvent } from "./contracts.ts";
 import { observability } from "./observability.ts";
+import { redactSecretsInText } from "./redact.ts";
 import { getSentry, isSentryActive } from "./sentry.ts";
 
 export type SpanLike = {
@@ -349,9 +350,18 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       if (!event.ok) {
         toolSpan.setStatus?.({ code: 2, message: "internal_error" });
         // A failure's one-line detail is the whole reason the row is worth
-        // reading.  Arguments stay off the wire; only the result line goes.
+        // reading.  Arguments stay off the wire; only the result line goes —
+        // and it is real provider output (stdout/stderr/error text a driver
+        // read back from the tool call).
+        //
+        // Every production driver has already redacted this in
+        // `describeResult()`, before the 240-character clip that would have
+        // cut a secret away from the closing marker its pattern needs.  This
+        // pass is the belt to that braces: it costs one regex sweep over 240
+        // characters, and it covers a `detail` that reached us some other way
+        // — a driver that builds the string itself, a replayed event, a test.
         const detail = clean(event.detail);
-        if (detail) toolSpan.setAttribute("gen_ai.tool.result.detail", detail.slice(0, 200));
+        if (detail) toolSpan.setAttribute("gen_ai.tool.result.detail", redactSecretsInText(detail).slice(0, 200));
       }
       toolSpan.end();
       turn.tools.delete(event.itemId);

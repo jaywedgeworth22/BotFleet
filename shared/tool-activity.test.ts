@@ -149,6 +149,69 @@ describe("describeResult", () => {
     expect(describeResult([])).toBeUndefined();
     expect(describeResult({})).toBeUndefined();
   });
+
+  // Tool output is the one place a live credential arrives by accident, and
+  // this line is kept twice over — in the transcript and on the Sentry span.
+  // Redaction has to beat the clip: a secret cut at DETAIL_LIMIT has lost the
+  // closing marker its pattern anchors on, so redacting afterwards finds
+  // nothing.  Fixtures are obviously fake and longer than the clip.
+  it("redacts a secret in tool output BEFORE clipping it", () => {
+    const body = "FAKEFAKE".repeat(38); // 304 chars, outlives DETAIL_LIMIT
+    const pem = `-----BEGIN RSA PRIVATE KEY-----\n${body}\n-----END RSA PRIVATE KEY-----`;
+    const out = String(describeResult(pem));
+    expect(out).not.toContain("FAKEFAKE");
+    // the clip did not get to cut the block apart, so the shape survives whole
+    expect(out).toContain("BEGIN RSA PRIVATE KEY");
+    expect(out).toContain("END RSA PRIVATE KEY");
+    expect(out).toMatch(/«redacted \d+ chars»/);
+  });
+
+  it("redacts through every wrapper shape a driver hands it", () => {
+    const opaque = `FAKE${"0123456789".repeat(30)}`;
+    const raw = `POST failed {"api_key":"${opaque}","retry":false}`;
+    for (const payload of [
+      raw,
+      [{ type: "text", text: raw }],
+      { output: raw },
+      [{ type: "content", content: { type: "text", text: raw } }],
+    ]) {
+      const out = String(describeResult(payload));
+      expect(out, JSON.stringify(payload).slice(0, 40)).not.toContain(opaque.slice(0, 24));
+      expect(out).toContain("«redacted");
+    }
+  });
+
+  // This runs on the synchronous event path, so the redaction pass has to
+  // stay bounded: a tool that dumps a log file hands us megabytes, and only
+  // 240 characters of it can ever be kept.
+  it("does not scan a megabyte of tool output to keep 240 characters", () => {
+    const huge = `${"x".repeat(5_000_000)}\n${"Auth" + "orization"}: Basic FAKEFAKEFAKEFAKEFAKE`;
+    const started = Date.now();
+    const out = String(describeResult(huge));
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(out).toHaveLength(240);
+    expect(out.startsWith("xxxx")).toBe(true);
+  });
+
+  it("widens the window when masking compresses the text below the limit", () => {
+    // Each of these is longer than the clip on its own, so redacting only a
+    // narrow prefix would leave far too little text to fill the row — the
+    // window has to grow until the clip is satisfied.
+    const many = Array.from(
+      { length: 60 },
+      (_, i) => `{"api_key":"FAKE${String(i).padStart(4, "0")}${"0123456789".repeat(40)}"}`,
+    ).join("\n");
+    const out = String(describeResult(many));
+    expect(out).toHaveLength(240);
+    expect(out).not.toMatch(/0123456789012345/);
+    expect(out).toContain("«redacted");
+  });
+
+  it("leaves ordinary tool output untouched", () => {
+    expect(describeResult("error: cannot find module ./keyboard-shortcuts.ts")).toBe(
+      "error: cannot find module ./keyboard-shortcuts.ts",
+    );
+  });
 });
 
 describe("toolActivity", () => {
