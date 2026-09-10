@@ -119,6 +119,46 @@ export function shouldReplayPersistedStarter(messages: FallbackScanMessage[], tu
   return !turnProducedAssistantOutput(messages.slice(turnStartIdx + 1));
 }
 
+/** Persisted trigger of an auto-delivered turn starter.  Mirrors
+ * RoutineRunTrigger without importing routines.ts. */
+export type BootRecoveryAutomationSource = "schedule" | "manual" | "webhook" | "resource";
+
+export interface BootRecoveryResumeUser {
+  role?: string;
+  automationSource?: BootRecoveryAutomationSource;
+}
+
+export interface BootRecoveryTurnOpts {
+  automationSource?: BootRecoveryAutomationSource;
+  unattended?: boolean;
+}
+
+/**
+ * startTurn options for boot recovery other than prompt / userMessage.
+ * `replay` only gates the TEXT that is sent (persisted starter vs
+ * BOOT_RECOVERY_NOTICE) and whether the persisted message is reused —
+ * it must not drop automation context.  After restart `unattendedBots`
+ * is empty, so this must not consult isUnattended.  Forwarding
+ * automationSource also stores BOOT_RECOVERY_NOTICE as role=system.
+ */
+export function bootRecoveryTurnOpts(
+  resumeUser: BootRecoveryResumeUser | undefined,
+  replay: boolean,
+): BootRecoveryTurnOpts {
+  // Replay only chooses the prompt text / whether to reuse the persisted
+  // message.  Attribution must not depend on it.
+  void replay;
+  const automationSource = resumeUser?.automationSource;
+  const webhookOrResource = automationSource === "webhook" || automationSource === "resource";
+  // Calendar `schedule` is the owner's saved prompt (Auto mode on a live
+  // tick).  Recovery still prefers unattended for any system-attributed
+  // starter so the notice is not treated as a person typing — that would
+  // clear the guard and let always-allow authorize a request nobody is
+  // watching.  A system row with no source gets the same treatment.
+  const unattended = webhookOrResource || resumeUser?.role === "system" ? true : undefined;
+  return { automationSource, unattended };
+}
+
 function sameEngine(a: { instanceId: string; model: string }, b: { instanceId: string; model: string }): boolean {
   return a.instanceId === b.instanceId && a.model === b.model;
 }

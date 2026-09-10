@@ -64,6 +64,7 @@ import {
   quotaCooldowns,
   selectTurnFallback,
   shouldReplayPersistedStarter,
+  bootRecoveryTurnOpts,
   sliceIsShortProviderError,
   turnHitQuotaOrCap,
   BOOT_RECOVERY_NOTICE,
@@ -3544,8 +3545,7 @@ _loadPending();
       void startTurn(bot.id, prompt, {
         threadId,
         userMessage: replay ? resumeUser : undefined,
-        automationSource: resumeUser?.automationSource,
-        unattended: resumeUser?.role === "system" ? isUnattended(bot.id) : undefined,
+        ...bootRecoveryTurnOpts(resumeUser, replay),
       }).catch((err) => {
         console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
         store.patchBot(bot.id, { inflightThreadId: undefined });

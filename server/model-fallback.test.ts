@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { ModelSelection } from "./contracts.ts";
 import {
+  bootRecoveryTurnOpts,
   isQuotaOrCapText,
   isShortProviderErrorText,
   lastTurnStartIndex,
@@ -316,6 +317,44 @@ describe("shouldReplayPersistedStarter", () => {
       { role: "bot", kind: "activity", tool: { name: "Bash", ok: true } },
     ];
     expect(shouldReplayPersistedStarter(messages, 0)).toBe(false);
+  });
+});
+
+describe("bootRecoveryTurnOpts", () => {
+  it("forwards webhook automationSource and marks unattended on both replay and BOOT_RECOVERY_NOTICE paths", () => {
+    const resume = { role: "system", automationSource: "webhook" as const };
+    const notice = bootRecoveryTurnOpts(resume, false);
+    const replay = bootRecoveryTurnOpts(resume, true);
+    expect(notice).toEqual({ automationSource: "webhook", unattended: true });
+    expect(replay).toEqual(notice);
+  });
+
+  it("marks resource recovery unattended even when the persisted starter already produced a tool result", () => {
+    expect(bootRecoveryTurnOpts({ role: "system", automationSource: "resource" }, false)).toEqual({
+      automationSource: "resource",
+      unattended: true,
+    });
+  });
+
+  it("forwards schedule automationSource so the recovery notice stores as system", () => {
+    expect(bootRecoveryTurnOpts({ role: "system", automationSource: "schedule" }, false)).toEqual({
+      automationSource: "schedule",
+      unattended: true,
+    });
+  });
+
+  it("marks a system starter without a source unattended so recovery is not treated as a person typing", () => {
+    expect(bootRecoveryTurnOpts({ role: "system" }, false)).toEqual({
+      automationSource: undefined,
+      unattended: true,
+    });
+  });
+
+  it("leaves an ordinary human starter attended and without an automationSource", () => {
+    expect(bootRecoveryTurnOpts({ role: "user" }, true)).toEqual({
+      automationSource: undefined,
+      unattended: undefined,
+    });
   });
 });
 
