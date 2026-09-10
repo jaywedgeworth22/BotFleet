@@ -548,6 +548,14 @@ describe("redactSecretsInText", () => {
     expect(redactSecretsInText("password: (leave blank to keep the current one)")).toBe(
       "password: (leave blank to keep the current one)",
     );
+    // and the scheme group matches any short alphabetic token, so the floor
+    // only drops for a word that really does carry short credentials — this
+    // function reads bot text and permission-card copy too
+    // (a value of eight characters or more is masked with or without a scheme,
+    // which is the floor doing its job and is how this behaved before)
+    for (const status of [`${HEADER}: not set`, `${HEADER}: was empty`, `${HEADER}: nil yet`]) {
+      expect(redactSecretsInText(status), status).toBe(status);
+    }
   });
 
   it("only treats a quote ADJACENT to the header as its wrapper", () => {

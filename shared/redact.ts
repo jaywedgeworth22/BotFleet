@@ -252,14 +252,38 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
   return value.length;
 }
 
+/** Scheme words that justify a SHORT credential behind them.
+ *
+ * Spelled out here and nowhere else.  The patterns deliberately do not name
+ * scheme words — a bare scheme word is a false-positive machine, and it is
+ * the header NAME that makes one safe to cross — but this list creates no
+ * match of its own; it only relaxes a floor for a match the header name has
+ * already anchored.  The two uses are not the same risk. */
+const SHORT_CREDENTIAL_SCHEMES = new Set([
+  "basic",
+  "bearer",
+  "digest",
+  "oauth",
+  "token",
+  "negotiate",
+  "ntlm",
+  "hawk",
+  "mac",
+  "apikey",
+  "sso",
+]);
+
 /** How long a value has to be before it is worth masking.
  *
  * The eight-character floor is there to keep prose after a colon out of the
- * mask, and a RECOGNISED SCHEME retires that worry: `Basic`, `Digest` or
- * `OAuth` standing behind the header name cannot be prose, so whatever
- * follows one is a credential however short.  `Basic dTpw` is `u:p`, and
- * measuring the floor against `dTpw` alone left it in the clear. */
-const minMaskable = (scheme: string | undefined) => (scheme ? 1 : 8);
+ * mask.  A REAL scheme retires that worry — `Basic dTpw` is `u:p`, and
+ * measuring the floor against `dTpw` alone left it in the clear — but the
+ * scheme group matches any short alphabetic token, so `<header>: not set`
+ * offers `not` as a scheme and would have had `set` masked out of ordinary
+ * bot text.  Only a scheme that really does carry short credentials lowers
+ * the floor. */
+const minMaskable = (scheme: string | undefined) =>
+  scheme && SHORT_CREDENTIAL_SCHEMES.has(scheme.trim().toLowerCase()) ? 1 : 8;
 
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
