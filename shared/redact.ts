@@ -338,6 +338,18 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * character inside it decide anything on its own" treatment `$(…)` and a
  * backtick span already get.
  *
+ * `$'…'` (ANSI-C quoting) and `<(…)`/`>(…)` (process substitution) glue on
+ * the same way, for their own reasons.  `$'foo bar'` is QUOTED syntax —
+ * bash processes its own backslash escapes inside it, so `\'` is a literal
+ * quote rather than the close — and is walked to its own matching quote,
+ * not treated as balanced parens.  `<(list)`/`>(list)` is replaced by a
+ * filename before the word is assembled, same as `$(…)` is replaced by
+ * output, and is walked with the identical `walkBalancedParens` this shares
+ * with `$(…)`.  A BARE `<`/`>` not followed by `(` is still a real
+ * redirection and keeps closing the argument the way it always has — only
+ * the paren-bearing form is treated as an expansion at all, so this cannot
+ * swallow a genuine `-H "…"><url` the way accepting every `<`/`>` would.
+ *
  * An empty INLINE parameter needs the identical requote treatment for a
  * reason that has nothing to do with `$` or backticks: `realm=""` opens and
  * closes the SAME quote with nothing between, which is exactly how bash
@@ -353,6 +365,43 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * what stops an unrelated same-type literal earlier on the line (a poisoned
  * opener count) from landing the cut on `realm=` and shipping whatever
  * credential field comes after it. */
+
+/** Walks a balanced `(…)` span — the argument of `$(`, `<(`, or `>(` — to
+ * its matching close, starting just past the OPENING paren, and returns the
+ * index right after that close (or `value.length` if it never closes).
+ *
+ * Shared by all three expansion forms because they all glue onto the shell
+ * word the same way and hide the same trap: a paren INSIDE A QUOTE, inside
+ * the span, belongs to the substituted command or process, not to this
+ * balancing (`$(printf ') value')` is one substitution whose argument
+ * happens to contain a literal `)`).  So a miniature quote state rides
+ * along and only lets `(`/`)` move `depth` while no quote is open, and a
+ * backslash steps over the character after it (outside single quotes,
+ * where bash gives backslash no escaping power at all) so an escaped quote
+ * or paren cannot be misread as one either. */
+function walkBalancedParens(value: string, openParenIndex: number): number {
+  let depth = 1;
+  let j = openParenIndex + 1;
+  let innerQuote: string | undefined;
+  while (j < value.length && depth > 0) {
+    const inner = value.charAt(j);
+    if (innerQuote) {
+      if (inner === "\\" && innerQuote === '"' && j + 1 < value.length) j += 1;
+      else if (inner === innerQuote) innerQuote = undefined;
+    } else if (inner === "'" || inner === '"') {
+      innerQuote = inner;
+    } else if (inner === "\\" && j + 1 < value.length) {
+      j += 1;
+    } else if (inner === "(") {
+      depth += 1;
+    } else if (inner === ")") {
+      depth -= 1;
+    }
+    j += 1;
+  }
+  return j;
+}
+
 function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
   if (!wrapper) return value.length;
   const runBefore = (pos: number): number => {
@@ -372,41 +421,44 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
     const after = value.charAt(i + 1);
     const before = value.charAt(i - 1);
     const emptyInlineParam = after === wrapper.quote && before === "=";
-    if (after === "$" || after === "`" || emptyInlineParam) {
+    // A process substitution glues on too (`<(…)`/`>(…)` is replaced by a
+    // filename, same as `$(…)` is replaced by output) — but a BARE `<`/`>`
+    // not followed by `(` is a real redirection and must keep closing the
+    // argument the way it always has, so only the paren-bearing form enters
+    // the glued-run scan at all.
+    const processSubst = (after === "<" || after === ">") && value.charAt(i + 2) === "(";
+    if (after === "$" || after === "`" || emptyInlineParam || processSubst) {
       let j = i + 1;
       let atBoundary = false;
       while (j < value.length && !isWrapperQuote(j)) {
         const ch = value.charAt(j);
         // `$(…)` is replaced with its output before the shell word is
         // assembled, so whitespace inside it is never a word boundary —
-        // walk the whole balanced span (nesting depth, for a command that
-        // itself contains parens) as one atomic unit.  A paren INSIDE A
-        // QUOTE belongs to the substituted command, not to this balancing —
-        // `$(printf ') value')` is one substitution — so a miniature quote
-        // state rides along and only lets `(`/`)` move `depth` while no
-        // quote is open; a backslash steps over the next character (outside
-        // single quotes, where bash gives backslash no escaping power at
-        // all) so an escaped quote or paren cannot be misread as one either.
-        if (ch === "$" && value.charAt(j + 1) === "(") {
-          let depth = 1;
-          j += 2;
-          let innerQuote: string | undefined;
-          while (j < value.length && depth > 0) {
-            const inner = value.charAt(j);
-            if (innerQuote) {
-              if (inner === "\\" && innerQuote === '"' && j + 1 < value.length) j += 1;
-              else if (inner === innerQuote) innerQuote = undefined;
-            } else if (inner === "'" || inner === '"') {
-              innerQuote = inner;
-            } else if (inner === "\\" && j + 1 < value.length) {
-              j += 1;
-            } else if (inner === "(") {
-              depth += 1;
-            } else if (inner === ")") {
-              depth -= 1;
+        // walk the whole balanced span as one atomic unit (see
+        // `walkBalancedParens`).  `<(…)`/`>(…)` (process substitution,
+        // replaced by a filename) glues on exactly the same way.
+        if ((ch === "$" || ch === "<" || ch === ">") && value.charAt(j + 1) === "(") {
+          j = walkBalancedParens(value, j + 1);
+          continue;
+        }
+        // `$'…'` (ANSI-C quoting) is a QUOTED span, not a balanced-paren
+        // one — bash processes its own backslash escapes, and `\'` inside
+        // it is a literal quote, not the close — so whitespace inside is
+        // never an outer boundary either, walked to its own matching quote.
+        if (ch === "$" && value.charAt(j + 1) === "'") {
+          let k = j + 2;
+          while (k < value.length) {
+            if (value.charAt(k) === "\\" && k + 1 < value.length) {
+              k += 2;
+              continue;
             }
-            j += 1;
+            if (value.charAt(k) === "'") {
+              k += 1;
+              break;
+            }
+            k += 1;
           }
+          j = k;
           continue;
         }
         // a backtick command substitution is the same story — its own

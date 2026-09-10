@@ -1055,4 +1055,67 @@ describe("redactSecretsInText", () => {
       expect(redactSecretsInText(doc), doc).toBe(doc);
     }
   });
+
+  // ── round-6 findings (fresh Codex re-review of f31f786) ───────────────
+
+  it("keeps scanning through an ANSI-C quoted $'...' glued to the wrapper", () => {
+    // `$'foo bar'` is bash's ANSI-C quoting — a QUOTED shell word, not a
+    // balanced-paren expansion — so the space inside it is never an outer
+    // boundary either (confirmed against bash 5.2.21: this is one complete
+    // `-H` argument).  Its own backslash escapes are honored while walking
+    // to the matching quote, so an escaped `\'` inside it does not end the
+    // span early the way an unescaped one would.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$'foo bar'", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // an escaped quote inside the ANSI-C string does not end it early
+    const withEscape = redactSecretsInText(
+      `curl -H "${HEADER}: OAuth realm="$'foo\\'bar'", oauth_signature=${sig}"${url}`,
+    );
+    expect(withEscape).not.toContain(sig);
+    expect(withEscape).not.toContain("oauth_signature");
+    expect(withEscape).toContain(url);
+  });
+
+  it("treats <(...) and >(...) process substitution as a glued expansion, not a redirection", () => {
+    // `<(list)`/`>(list)` is replaced by a filename before the shell word is
+    // assembled — the same "glues onto the surrounding word" story as
+    // `$(…)` (confirmed against bash 5.2.21: this is one complete `-H`
+    // argument), so it must NOT be read as the `<`/`>` redirection that
+    // would otherwise end the argument right there.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="<(printf foo)", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // the output-side form, `>(...)`, gets the same treatment
+    const outSide = redactSecretsInText(`curl -H "${HEADER}: OAuth realm=">(cat)", oauth_signature=${sig}"${url}`);
+    expect(outSide).not.toContain(sig);
+    expect(outSide).not.toContain("oauth_signature");
+
+    // a BARE `<`/`>` (no paren) is still a real redirection and keeps
+    // closing the argument the way it always has
+    const SCHEME = "Bea" + "rer";
+    const token = `FAKE${"0123456789".repeat(9)}`;
+    const redirected = redactSecretsInText(`curl -H "${HEADER}: ${SCHEME} ${token}"<in.txt${url}`);
+    expect(redirected).not.toContain(token);
+    expect(redirected).toContain("<in.txt");
+    expect(redirected).toContain(url);
+  });
 });
