@@ -40,6 +40,7 @@ import { BotAvatar, MausAvatar } from "./Avatar";
 import { ProviderMark } from "./ProviderIcons";
 import { TurnPresence } from "./TurnPresence";
 import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
+import { automationSourceLabel } from "@/lib/replies";
 import { stateForBot } from "@/lib/mascot";
 import { showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
@@ -86,26 +87,6 @@ import { timelineEvents } from "@/lib/taskTimeline";
  * bury the conversation; bots get full markdown. */
 const USER_COLLAPSE_CHARS = 600;
 const USER_COLLAPSE_LINES = 8;
-
-/** The subtitle on a generic (non-webhook, non-iMessage) auto-delivered
- * instruction card.  Prefers the persisted `automationSource`; older rows
- * from before that field existed fall back to sniffing the resource-trigger
- * marker in the stored text, and otherwise read as "Routine" (a real
- * schedule fire, the only case that label was ever accurate for). */
-function automationSourceLabel(source: string | undefined, body: string): string {
-  switch (source) {
-    case "resource":
-      return "Resource Alert";
-    case "manual":
-      return "Run Now";
-    case "webhook":
-      return "Webhook";
-    case "schedule":
-      return "Routine";
-    default:
-      return body.includes("[UNTRUSTED RESOURCE SAMPLE]") ? "Resource Alert" : "Routine";
-  }
-}
 
 /** "Today" / "Yesterday" / "Mon, Aug 11" — real dates, not a hardcoded label. */
 function dayLabel(at: number): string {
