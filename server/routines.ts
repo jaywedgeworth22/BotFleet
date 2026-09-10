@@ -790,10 +790,19 @@ export class RoutineManager {
         // "Fleet PR Health Sweep", not "Schedules".
         const title = run.routineName?.trim() || automationLaneTitle(mode, run.triggerSource);
         // Identity is the source (webhook / routine), not "whatever chat is
-        // open".  A keyed task wins even in Simple, so a re-fire cannot
-        // mint a sibling.  Run history is the fallback for tasks stamped
-        // before automationKey existed.
-        let threadId: string | undefined = this.options.taskForKey?.(run.botId, key);
+        // open".  A keyed task wins so a re-fire cannot mint a sibling.
+        // Run history is the fallback for tasks stamped before
+        // automationKey existed.  Simple mode is one visible conversation:
+        // a leftover Projects-mode extra that still holds the key (Keep
+        // Extra Threads Hidden) must not steal the fire or become the
+        // live chat.
+        const designated = !allowsMultipleBotThreads(mode) ? this.options.defaultThread?.(run.botId) : undefined;
+        const acceptReuse = (id: string | undefined): string | undefined => {
+          if (!id) return undefined;
+          if (designated && id !== designated) return undefined;
+          return id;
+        };
+        let threadId: string | undefined = acceptReuse(this.options.taskForKey?.(run.botId, key));
         if (!threadId) {
           const previous = [...this.runs].reverse().find(
             (candidate) =>
@@ -803,7 +812,7 @@ export class RoutineManager {
               automationThreadKey(candidate) === key &&
               this.options.taskExists?.(run.botId, candidate.threadId!),
           );
-          threadId = previous?.threadId;
+          threadId = acceptReuse(previous?.threadId);
           if (threadId) this.options.stampKey?.(run.botId, threadId, key);
         }
         if (!threadId) {

@@ -63,8 +63,10 @@ import {
   parseQuotaResetTime,
   quotaCooldowns,
   selectTurnFallback,
+  shouldReplayPersistedStarter,
   sliceIsShortProviderError,
   turnHitQuotaOrCap,
+  BOOT_RECOVERY_NOTICE,
   turnProducedAssistantOutput,
 } from "./model-fallback.ts";
 import * as box from "./box.ts";
@@ -3518,15 +3520,20 @@ _loadPending();
       // fabricated human bubble.
       const turnStartIdx = lastTurnStartIndex(activeMsgs);
       const resumeUser = turnStartIdx >= 0 ? activeMsgs[turnStartIdx] : undefined;
-      const prompt = resumeUser
+      // Connector/secret continuation is ephemeral (`cardContinuation`), so a
+      // crash mid-resume would otherwise replay the previous completed
+      // prompt.  Replay the persisted starter only when that turn never
+      // produced bot text.
+      const replay = shouldReplayPersistedStarter(activeMsgs, turnStartIdx);
+      const prompt = replay && resumeUser
         ? (resumeUser.text || "Please resume.")
-        : "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
+        : BOOT_RECOVERY_NOTICE;
       console.log(`boot recovery: auto-resuming in-flight thread ${threadId} for ${bot.name}`);
       void startTurn(bot.id, prompt, {
         threadId,
-        userMessage: resumeUser,
-        automationSource: resumeUser?.automationSource,
-        unattended: resumeUser?.role === "system" ? isUnattended(bot.id) : undefined,
+        userMessage: replay ? resumeUser : undefined,
+        automationSource: replay ? resumeUser?.automationSource : undefined,
+        unattended: replay && resumeUser?.role === "system" ? isUnattended(bot.id) : undefined,
       }).catch((err) => {
         console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
         store.patchBot(bot.id, { inflightThreadId: undefined });

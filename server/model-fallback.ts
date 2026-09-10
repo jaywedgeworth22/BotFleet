@@ -57,6 +57,11 @@ export function lastTurnStartIndex(messages: FallbackScanMessage[]): number {
   return -1;
 }
 
+/** Boot-recovery prompt when the in-flight turn has no persisted starter
+ * (connector/secret cardContinuation is ephemeral). */
+export const BOOT_RECOVERY_NOTICE =
+  "[System notice: BotFleet was restarted while you were working on this task. Please review the conversation above and the current workspace state, and resume your work where you left off.]";
+
 /** True when the only bot text after the user is a short provider error chip. */
 export function sliceIsShortProviderError(messagesAfterUser: FallbackScanMessage[]): boolean {
   const botReplies = messagesAfterUser.filter(
@@ -103,6 +108,15 @@ export function turnProducedAssistantOutput(
     if (/^(retrying|working)\b/i.test(name)) return false;
     return true;
   });
+}
+
+/** Replay the persisted turn-starter only when that turn never produced
+ * assistant output.  A card-continuation crash leaves the previous
+ * completed prompt on disk; replaying it would re-run already-finished
+ * work (including tools). */
+export function shouldReplayPersistedStarter(messages: FallbackScanMessage[], turnStartIdx: number): boolean {
+  if (turnStartIdx < 0) return false;
+  return !turnProducedAssistantOutput(messages.slice(turnStartIdx + 1));
 }
 
 function sameEngine(a: { instanceId: string; model: string }, b: { instanceId: string; model: string }): boolean {

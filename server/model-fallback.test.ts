@@ -11,6 +11,7 @@ import {
   QuotaCooldownRegistry,
   quotaCooldowns,
   selectTurnFallback,
+  shouldReplayPersistedStarter,
   sliceIsShortProviderError,
   turnHitQuotaOrCap,
   turnProducedAssistantOutput,
@@ -288,6 +289,33 @@ describe("lastTurnStartIndex", () => {
         { role: "bot", kind: "activity", tool: { name: "Bash" } },
       ]),
     ).toBe(1);
+  });
+});
+
+describe("shouldReplayPersistedStarter", () => {
+  it("replays a webhook/system prompt that only got as far as an activity chip", () => {
+    const messages: FallbackScanMessage[] = [
+      { role: "system", kind: "text", text: "webhook fired" },
+      { role: "bot", kind: "activity", tool: { name: "Bash" } },
+    ];
+    expect(shouldReplayPersistedStarter(messages, 0)).toBe(true);
+  });
+
+  it("does not replay a completed prompt when the in-flight turn was a card continuation", () => {
+    const messages: FallbackScanMessage[] = [
+      { role: "user", kind: "text", text: "connect slack" },
+      { role: "bot", kind: "text", text: "please connect Slack" },
+      { role: "bot", kind: "connector" },
+    ];
+    expect(shouldReplayPersistedStarter(messages, 0)).toBe(false);
+  });
+
+  it("does not replay after a successful tool result (side effects already ran)", () => {
+    const messages: FallbackScanMessage[] = [
+      { role: "system", kind: "text", text: "webhook fired" },
+      { role: "bot", kind: "activity", tool: { name: "Bash", ok: true } },
+    ];
+    expect(shouldReplayPersistedStarter(messages, 0)).toBe(false);
   });
 });
 

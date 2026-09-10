@@ -1,6 +1,6 @@
 # 2026-09-09 — Same-Source Re-Fires Append; Auto Instructions Are Not User Bubbles
 
-Seat: CLAUDE.  Branch `fixer/thread-append-auto-role`.  Worktree `~/apps/botfleet-fixer-thread-append`.  Board `3d9ff839`.
+Seat: FIXER (GB-FIXER).  Branch `fixer/thread-append-auto-role`.  Worktree `~/apps/botfleet-fixer-thread-append`.  Board `3d9ff839`.
 
 ## Why
 
