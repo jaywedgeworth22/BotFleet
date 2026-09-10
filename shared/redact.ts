@@ -243,7 +243,14 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * And the FIRST such quote either closes the argument or the wrapper was
  * never real.  A closing quote is followed by whitespace, by the end of the
  * line, or by a shell separator — a redirection counts, because bash reads
- * `-H "…">trace.log` as an operator and the quote really did close there; a quote followed by ordinary text opened
+ * `-H "…">trace.log` as an operator and the quote really did close there,
+ * and so does a `$` expansion or another quote, because bash glues an
+ * adjacent quoted and unquoted run into one word.  A quote followed by an
+ * ordinary LETTER is the one shape that stays disqualifying, even though
+ * bash would glue that too: `realm="public"` looks exactly like it, and
+ * accepting it puts the parameters after the cut back in the clear.  The
+ * cost is over-masking a `-H "…"suffix` tail, which loses context and no
+ * secret; a quote followed by ordinary text opened
  * something instead, which means the quote in front of the header was not an
  * argument's opener after all and every rule above it was reasoning about
  * the wrong thing.  There is no salvaging a later candidate in that case —
@@ -258,7 +265,7 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
     while (i - 1 - run >= 0 && value.charAt(i - 1 - run) === "\\") run += 1;
     if (run !== wrapper.backslashes) continue;
     const after = value.charAt(i + 1);
-    const closes = after === "" || /[\s;&|<>)\]},]/.test(after);
+    const closes = after === "" || /[\s;&|<>)\]},$`'"]/.test(after);
     // the escaping backslashes belong to the delimiter, not to the credential
     return closes ? i - run : value.length;
   }
@@ -334,7 +341,12 @@ const PLACEHOLDER_WORDS = new Set([
 ]);
 
 const isPlaceholder = (value: string) => {
-  const trimmed = value.trim();
+  // trailing sentence punctuation belongs to the prose, not to the
+  // placeholder — `Use <header>: <scheme> token.` is still guidance.  Only
+  // punctuation no credential ends in is stripped: `=` stays, because base64
+  // padding is real, and so does `.`, unless what is left is a placeholder
+  // anyway, which no JWT segment ever is.
+  const trimmed = value.trim().replace(/[.,;:!?]+$/, "") || value.trim();
   if (/^[<{[][^\s<>{}[\]]*[>}\]]$/.test(trimmed)) return true; // bracketed
   if (/^[x*.\u2026]+$/i.test(trimmed)) return true; // xxxx, ****, …
   const word = trimmed.toLowerCase();

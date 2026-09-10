@@ -571,6 +571,10 @@ describe("redactSecretsInText", () => {
       `${HEADER}: Basic password`,
       `${HEADER}: ${SCHEME_WORD} xxxxxxxx`,
       `send ${SCHEME_WORD} your_token in the header`,
+      // trailing sentence punctuation belongs to the prose
+      `Use ${HEADER}: ${SCHEME_WORD} token.`,
+      `Set ${HEADER}: ${SCHEME_WORD} <token>.`,
+      `${HEADER}: ${SCHEME_WORD} secret,`,
     ]) {
       expect(redactSecretsInText(doc), doc).toBe(doc);
     }
@@ -649,7 +653,9 @@ describe("redactSecretsInText", () => {
       expect(out, input.slice(0, 24)).toContain(url);
     }
     // a redirection closes the argument too — bash reads `>` as an operator
-    for (const redirect of [">trace.log", "<in.txt", "&& echo done"]) {
+    // bash glues an adjacent quoted and unquoted run into one word, so a `$`
+    // expansion or another quote closes the argument just as a space does
+    for (const redirect of [">trace.log", "<in.txt", "&& echo done", "$SUFFIX", "'more'", '"more"']) {
       const out = redactSecretsInText(`curl -H "${HEADER}: ${SCHEME} ${token}"${redirect}`);
       expect(out, redirect).not.toContain(token);
       expect(out, redirect).toContain(redirect);
