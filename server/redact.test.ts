@@ -1177,4 +1177,35 @@ describe("redactSecretsInText", () => {
     const stillDoc = `Use ${HEADER}: ${SCHEME} password`;
     expect(redactSecretsInText(stillDoc), stillDoc).toBe(stillDoc);
   });
+
+  // ── round-9 finding (fresh Codex re-review of f3f6957) ────────────────
+
+  it("does not let a nested expansion's own close paren end the outer $(...) early", () => {
+    // `$(printf %s ${X:-)x} tail)` is ONE command substitution (confirmed
+    // against bash 5.2.21) — bash reads between MATCHING parens, and the
+    // `)` inside the nested `${X:-)x}`'s fallback belongs to that nested
+    // expansion, not to the outer $(...)'s own close.  A flat depth count
+    // that does not recurse into the nested expansion mistakes it for the
+    // outer close and reads the following space as a real boundary.
+    const HEADER = "Auth" + "orization";
+    const sig = `FAKESIG${"0123456789".repeat(20)}`;
+    const url = " https://example.com";
+    const line = `curl -H "${HEADER}: OAuth realm="$(printf %s \${X:-)x} tail)", oauth_signature=${sig}"${url}`;
+    const out = redactSecretsInText(line);
+    expect(out).not.toContain(sig);
+    expect(out).not.toContain("oauth_signature");
+    expect(out).not.toContain("realm");
+    expect(out).toContain("OAuth «redacted");
+    expect(out).toContain(url);
+    expect(out).toBe(redactSecretsInText(out));
+
+    // and the nested expansion may itself be a command substitution with a
+    // stray paren of its own, two levels of "own close, not the outer's"
+    const doublyNested = redactSecretsInText(
+      `curl -H "${HEADER}: OAuth realm="$(printf %s $(echo ')x'))", oauth_signature=${sig}"${url}`,
+    );
+    expect(doublyNested).not.toContain(sig);
+    expect(doublyNested).not.toContain("oauth_signature");
+    expect(doublyNested).toContain(url);
+  });
 });

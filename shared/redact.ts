@@ -385,21 +385,111 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  * state rides along and only lets `open`/`close` move `depth` while no
  * quote is open, and a backslash steps over the character after it (outside
  * single quotes, where bash gives backslash no escaping power at all) so an
- * escaped quote or bracket cannot be misread as one either. */
+ * escaped quote or bracket cannot be misread as one either.
+ *
+ * A NESTED expansion inside the span is the same trap ONE LEVEL DEEPER, and
+ * it is not covered by the quote state above — `$(printf %s ${X:-)x} tail)`
+ * has no quotes in it at all, but the `)` inside `${X:-)x}`'s fallback
+ * still belongs to that nested `${…}`, not to the outer `$(…)`'s own close.
+ * So a nested `$(…)`, `${…}`, backtick span, `$'…'`, or `<(…)`/`>(…)` found
+ * while walking is recursed into (or, for the quoted forms, walked to its
+ * own close) as one atomic unit — its internal delimiters never reach this
+ * level's `depth` at all, rather than being counted and hoping the count
+ * still balances by coincidence.  Command and parameter substitution stay
+ * LIVE inside a double-quoted segment of the span too (bash still expands
+ * them there), so the quote-state branch recurses the same way; a single
+ * quote, by contrast, makes everything up to its own close — even a
+ * `$` — purely literal, exactly as bash treats it. */
 function walkBalancedSpan(value: string, openIndex: number, open: string, close: string): number {
   let depth = 1;
   let j = openIndex + 1;
   let innerQuote: string | undefined;
   while (j < value.length && depth > 0) {
     const inner = value.charAt(j);
-    if (innerQuote) {
-      if (inner === "\\" && innerQuote === '"' && j + 1 < value.length) j += 1;
-      else if (inner === innerQuote) innerQuote = undefined;
-    } else if (inner === "'" || inner === '"') {
-      innerQuote = inner;
-    } else if (inner === "\\" && j + 1 < value.length) {
+    if (innerQuote === "'") {
+      // single quotes are purely literal in bash — not even `$` starts an
+      // expansion inside one, and there is no escape processing at all
+      if (inner === "'") innerQuote = undefined;
       j += 1;
-    } else if (inner === open) {
+      continue;
+    }
+    if (innerQuote === '"') {
+      if (inner === "\\" && j + 1 < value.length) {
+        j += 2;
+        continue;
+      }
+      if (inner === '"') {
+        innerQuote = undefined;
+        j += 1;
+        continue;
+      }
+      // command and parameter substitution stay LIVE inside double quotes
+      // in bash, so a NESTED expansion here is still one atomic unit whose
+      // own delimiters must not be read as this level's — the same
+      // "quoted or escaped doesn't count" rule this function exists for,
+      // one quoting level in.
+      if (inner === "$" && (value.charAt(j + 1) === "(" || value.charAt(j + 1) === "{")) {
+        const nestedOpen = value.charAt(j + 1);
+        j = walkBalancedSpan(value, j + 1, nestedOpen, nestedOpen === "(" ? ")" : "}");
+        continue;
+      }
+      if (inner === "`") {
+        let k = j + 1;
+        while (k < value.length && value.charAt(k) !== "`") k += 1;
+        j = k < value.length ? k + 1 : value.length;
+        continue;
+      }
+      j += 1;
+      continue;
+    }
+    // no quote currently open at this level
+    if (inner === "'" || inner === '"') {
+      innerQuote = inner;
+      j += 1;
+      continue;
+    }
+    if (inner === "\\" && j + 1 < value.length) {
+      j += 2;
+      continue;
+    }
+    // A NESTED expansion — `$(…)`, `${…}`, a backtick span, `<(…)`/`>(…)`
+    // — is one atomic unit too, exactly like at the top level: its own
+    // parens/braces belong to IT, not to this level's depth.  This is the
+    // fix for the case that motivated recursing at all: a nested `${…}`
+    // whose fallback contains a literal `)` (`$(printf %s ${X:-)x} tail)`)
+    // must not have that `)` mistaken for THIS `$(…)`'s own close.
+    if (inner === "$" && (value.charAt(j + 1) === "(" || value.charAt(j + 1) === "{")) {
+      const nestedOpen = value.charAt(j + 1);
+      j = walkBalancedSpan(value, j + 1, nestedOpen, nestedOpen === "(" ? ")" : "}");
+      continue;
+    }
+    if (inner === "$" && value.charAt(j + 1) === "'") {
+      let k = j + 2;
+      while (k < value.length) {
+        if (value.charAt(k) === "\\" && k + 1 < value.length) {
+          k += 2;
+          continue;
+        }
+        if (value.charAt(k) === "'") {
+          k += 1;
+          break;
+        }
+        k += 1;
+      }
+      j = k;
+      continue;
+    }
+    if (inner === "`") {
+      let k = j + 1;
+      while (k < value.length && value.charAt(k) !== "`") k += 1;
+      j = k < value.length ? k + 1 : value.length;
+      continue;
+    }
+    if ((inner === "<" || inner === ">") && value.charAt(j + 1) === "(") {
+      j = walkBalancedSpan(value, j + 1, "(", ")");
+      continue;
+    }
+    if (inner === open) {
       depth += 1;
     } else if (inner === close) {
       depth -= 1;
