@@ -11,6 +11,7 @@ import {
   type SpanLike,
   withChatSpan,
 } from "./sentry-ai.ts";
+import { describeResult } from "../shared/tool-activity.ts";
 import type { RuntimeEvent } from "./contracts.ts";
 
 function base(over: Partial<RuntimeEvent> & Pick<RuntimeEvent, "type">): RuntimeEvent {
@@ -123,6 +124,16 @@ describe("Sentry AI observability", () => {
     expect(exceptions).toHaveLength(1);
     expect(String(exceptions[0])).toContain("upstream HTTP 500");
     expect(JSON.stringify(spans)).not.toMatch(/sk-|password|BEGIN /);
+  });
+
+  it("does not Issue a setup runtime.error (operator login)", () => {
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(
+      base({ type: "runtime.error", message: "Grok CLI is not signed in — run `grok login` in a terminal", setup: true }),
+      sink,
+    );
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.some((b) => b.message.includes("not signed in"))).toBe(true);
   });
 
   it("records API-backed tool names and chat tokens without messages", async () => {
@@ -279,6 +290,27 @@ describe("failed turns become Issues", () => {
     observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: null }), sink);
     expect(String(exceptions[0])).toContain("bot turn failed: unknown");
   });
+
+  it("does not Issue expected setup or cancel stop reasons", () => {
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "auth_required" }), sink);
+    observeRuntimeEvent(base({ type: "turn.started", turnId: "turn-2" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "cancelled", turnId: "turn-2" }), sink);
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(2);
+  });
+
+  it("does not Issue an 'interrupted' stop reason (openai-compat/Grok/BoxAgent stop shape)", () => {
+    // Those drivers report a user-initiated stop as stopReason "interrupted"
+    // rather than "cancelled" — this must be treated as the same expected,
+    // benign shape of a stop, not sent to Sentry as an error.
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "interrupted" }), sink);
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs.filter((b) => b.message.startsWith("bot turn failed:")).length).toBe(1);
+  });
 });
 
 describe("approval, retry, and session lifecycle", () => {
@@ -360,6 +392,117 @@ describe("approval, retry, and session lifecycle", () => {
     expect(String(detail)).toHaveLength(200);
     expect(spans[1].status).toEqual({ code: 2, message: "internal_error" });
     expect(JSON.stringify(spans)).not.toMatch(/sk-|password|BEGIN /);
+  });
+
+  it("redacts a secret in a failed tool's detail before it reaches the span", () => {
+    // event.detail is real provider output (stdout/stderr/error text a
+    // driver read back from the tool call, not a synthetic message), so a
+    // failed command that echoed a credential must not reach Sentry intact.
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(
+      base({ type: "item.started", itemType: "tool", itemId: "tool-1", title: "bash curl" }),
+      sink,
+    );
+    observeRuntimeEvent(
+      base({
+        type: "item.completed",
+        itemType: "tool",
+        itemId: "tool-1",
+        ok: false,
+        detail: 'curl failed: {"api_key": "abcd1234efgh5678"}',
+      }),
+      sink,
+    );
+    const detail = String(spans[1].attributes["gen_ai.tool.result.detail"]);
+    expect(detail).not.toContain("abcd1234efgh5678");
+    expect(detail).toContain("«redacted 16 chars»");
+  });
+
+  // ── the real driver-to-Sentry path ──────────────────────────────────
+  // Every production driver builds a failed tool's `detail` by handing the
+  // provider's raw result to `describeResult()`, which clips it to 240
+  // characters.  That clip used to run BEFORE any redaction, so a secret
+  // longer than the clip lost the closing marker its pattern anchors on and
+  // the first 200 characters went to Sentry intact.  These tests drive that
+  // exact path — the driver's own payload shape, through the driver's own
+  // `describeResult()` call, into the observer that sets the span attribute
+  // — rather than handing `observeRuntimeEvent` a pre-redacted string.
+
+  /** Obviously-fake credential material, assembled from pieces so no
+   *  token-shaped literal sits in the source and nobody mistakes it for a
+   *  live key.  Each one is longer than DETAIL_LIMIT on purpose. */
+  const FAKE_PEM_BODY = "FAKEFAKE".repeat(38); // 304 chars of nothing
+  const FAKE_PEM = `-----BEGIN RSA PRIVATE KEY-----\n${FAKE_PEM_BODY}\n-----END RSA PRIVATE KEY-----`;
+  const FAKE_JWT = `eyJhbGciOiJGQUtFIn0.eyJwYXlsb2FkIjoi${"RkFLRQ".repeat(40)}.RkFLRVNJRw`;
+  const FAKE_OPAQUE = `FAKE${"0123456789".repeat(30)}`; // a 304-char opaque value
+  const FAKE_SECRETS = [FAKE_PEM_BODY, FAKE_JWT, FAKE_OPAQUE];
+
+  /** One failed tool's output carrying all three shapes, the way a `curl -v`
+   *  or a `cat` of a config file would print them. */
+  const rawFailedOutput = [
+    "$ deploy --verbose",
+    FAKE_PEM,
+    `POST /v1/deploy 401 {"api_key":"${FAKE_OPAQUE}","retry":false}`,
+    `sent Authentication: ${FAKE_JWT}`,
+    "exit 1",
+  ].join("\n");
+
+  /** The payload shape each driver actually hands `describeResult()`, at the
+   *  line noted.  If a driver changes shape, this table is what fails. */
+  const driverPayloads: Array<[string, unknown]> = [
+    // server/drivers/codex.ts — item.aggregatedOutput, a plain string
+    ["codex", rawFailedOutput],
+    // server/drivers/claude.ts — b.content, Claude tool_result blocks
+    ["claude", [{ type: "text", text: rawFailedOutput }]],
+    // server/drivers/pi.ts — evt.result, an object the harness wraps
+    ["pi", { output: rawFailedOutput }],
+    // server/drivers/acp/core.ts — u.content, ACP content blocks
+    ["acp", [{ type: "content", content: { type: "text", text: rawFailedOutput } }]],
+  ];
+
+  for (const [driver, payload] of driverPayloads) {
+    it(`redacts a failed tool result on the ${driver} driver's path to Sentry`, () => {
+      // exactly what the driver call site does
+      const detailFromDriver = describeResult(payload);
+      expect(detailFromDriver, "the driver produced no detail at all").toBeTruthy();
+
+      const { sink, spans } = recordingSink();
+      observeRuntimeEvent(base({ type: "turn.started" }), sink);
+      observeRuntimeEvent(
+        base({ type: "item.started", itemType: "tool", itemId: "tool-1", title: "bash deploy" }),
+        sink,
+      );
+      observeRuntimeEvent(
+        base({ type: "item.completed", itemType: "tool", itemId: "tool-1", ok: false, detail: detailFromDriver }),
+        sink,
+      );
+
+      const detail = String(spans[1].attributes["gen_ai.tool.result.detail"]);
+      // nothing secret-shaped survives, at any prefix length the clip could
+      // have left behind
+      for (const secret of FAKE_SECRETS) {
+        for (const length of [16, 24, 40, 80]) {
+          expect(detail, `${driver}: ${secret.slice(0, 12)}… survived`).not.toContain(secret.slice(0, length));
+        }
+      }
+      expect(detail).not.toMatch(/eyJ[A-Za-z0-9_-]{8,}\./);
+      // and the shape a reader debugs with is still there
+      expect(detail).toContain("BEGIN RSA PRIVATE KEY");
+      expect(detail).toMatch(/«redacted \d+ chars»/);
+      expect(JSON.stringify(spans)).not.toContain(FAKE_OPAQUE.slice(0, 24));
+    });
+  }
+
+  it("redacts before describeResult clips, so the closing markers still exist", () => {
+    // The order is the fix.  Clipping first is what removed the `END …
+    // PRIVATE KEY` trailer, the JWT's third segment and the closing quote
+    // that the patterns need — this asserts the detail is short and masked,
+    // not long and cut.
+    const detail = String(describeResult(rawFailedOutput));
+    expect(detail).not.toContain(FAKE_PEM_BODY.slice(0, 16));
+    expect(detail).toContain("END RSA PRIVATE KEY");
+    expect(detail.length).toBeLessThanOrEqual(240);
   });
 
   it("leaves a successful tool without a result detail", () => {

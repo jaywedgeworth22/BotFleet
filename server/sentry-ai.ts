@@ -13,6 +13,7 @@
 // not be unified — they are different registries that happen to overlap.
 import type { RuntimeEvent } from "./contracts.ts";
 import { observability } from "./observability.ts";
+import { redactSecretsInText } from "./redact.ts";
 import { getSentry, isSentryActive } from "./sentry.ts";
 
 export type SpanLike = {
@@ -349,9 +350,18 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       if (!event.ok) {
         toolSpan.setStatus?.({ code: 2, message: "internal_error" });
         // A failure's one-line detail is the whole reason the row is worth
-        // reading.  Arguments stay off the wire; only the result line goes.
+        // reading.  Arguments stay off the wire; only the result line goes —
+        // and it is real provider output (stdout/stderr/error text a driver
+        // read back from the tool call).
+        //
+        // Every production driver has already redacted this in
+        // `describeResult()`, before the 240-character clip that would have
+        // cut a secret away from the closing marker its pattern needs.  This
+        // pass is the belt to that braces: it costs one regex sweep over 240
+        // characters, and it covers a `detail` that reached us some other way
+        // — a driver that builds the string itself, a replayed event, a test.
         const detail = clean(event.detail);
-        if (detail) toolSpan.setAttribute("gen_ai.tool.result.detail", detail.slice(0, 200));
+        if (detail) toolSpan.setAttribute("gen_ai.tool.result.detail", redactSecretsInText(detail).slice(0, 200));
       }
       toolSpan.end();
       turn.tools.delete(event.itemId);
@@ -413,6 +423,16 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       break;
     }
     case "runtime.error": {
+      // setup:true is "run grok login", not an unexpected crash.  BOTFLEET-A
+      // was this message paged as an Issue while the CLI was signed in.
+      if (event.setup) {
+        sink.addBreadcrumb?.({
+          category: "botfleet.turn",
+          message: event.message.slice(0, 500),
+          level: "warning",
+        });
+        break;
+      }
       sink.captureException(new Error(event.message.slice(0, 500)));
       break;
     }
@@ -421,18 +441,30 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         // A failed turn is the thing an operator wants an Issue for.  Most
         // drivers report the failure only here — they never emit
         // runtime.error — so without this a broken engine was invisible.
-        const turn = turns.get(key);
-        const identity = turn?.identity ?? identityFor(event.threadId);
-        const tags: TurnFailureTags = {
-          "botfleet.provider": event.provider,
-          "botfleet.thread.id": event.threadId,
-          "gen_ai.provider.name": provider,
-          ...identityAttributes(identity),
-        };
-        const model = clean(turn?.model) ?? clean(identity?.model);
-        if (model) tags["gen_ai.request.model"] = model;
         const stopReason = clean(event.stopReason)?.slice(0, 200) ?? "unknown";
-        sink.captureException(new Error(`bot turn failed: ${stopReason}`), { tags });
+        // OpenAI-compatible, Grok, BoxAgent, and chat-completions drivers
+        // report a user-initiated stop as "interrupted" rather than
+        // "cancelled" — both are the expected, benign shape of a stop.
+        if (stopReason === "auth_required" || stopReason === "cancelled" || stopReason === "interrupted") {
+          sink.addBreadcrumb?.({
+            category: "botfleet.turn",
+            message: `bot turn failed: ${stopReason}`,
+            level: "warning",
+            data: { provider: event.provider, threadId: event.threadId },
+          });
+        } else {
+          const turn = turns.get(key);
+          const identity = turn?.identity ?? identityFor(event.threadId);
+          const tags: TurnFailureTags = {
+            "botfleet.provider": event.provider,
+            "botfleet.thread.id": event.threadId,
+            "gen_ai.provider.name": provider,
+            ...identityAttributes(identity),
+          };
+          const model = clean(turn?.model) ?? clean(identity?.model);
+          if (model) tags["gen_ai.request.model"] = model;
+          sink.captureException(new Error(`bot turn failed: ${stopReason}`), { tags });
+        }
       }
       endTurn(key, event.ok, event.usage);
       break;
