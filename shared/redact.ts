@@ -242,7 +242,8 @@ function wrapperQuoteAt(text: string, index: number): Wrapper | undefined {
  *
  * And the FIRST such quote either closes the argument or the wrapper was
  * never real.  A closing quote is followed by whitespace, by the end of the
- * line, or by a shell separator; a quote followed by ordinary text opened
+ * line, or by a shell separator — a redirection counts, because bash reads
+ * `-H "…">trace.log` as an operator and the quote really did close there; a quote followed by ordinary text opened
  * something instead, which means the quote in front of the header was not an
  * argument's opener after all and every rule above it was reasoning about
  * the wrong thing.  There is no salvaging a later candidate in that case —
@@ -257,7 +258,7 @@ function bareValueEnd(value: string, wrapper: Wrapper | undefined): number {
     while (i - 1 - run >= 0 && value.charAt(i - 1 - run) === "\\") run += 1;
     if (run !== wrapper.backslashes) continue;
     const after = value.charAt(i + 1);
-    const closes = after === "" || /[\s;&|)\]},]/.test(after);
+    const closes = after === "" || /[\s;&|<>)\]},]/.test(after);
     // the escaping backslashes belong to the delimiter, not to the credential
     return closes ? i - run : value.length;
   }
@@ -296,6 +297,15 @@ const SHORT_CREDENTIAL_SCHEMES = new Set([
  * the floor. */
 const minMaskable = (scheme: string | undefined) =>
   scheme && SHORT_CREDENTIAL_SCHEMES.has(scheme.trim().toLowerCase()) ? 1 : 8;
+
+/** A documentation placeholder, not a credential: `<token>`, `{api-key}`,
+ * `[YOUR_TOKEN]`.  Nothing real is spelled that way, and this function runs
+ * over persisted bot text and routine instructions as well as over headers,
+ * where masking `Set <header>: <scheme> <token>` corrupts the guidance a
+ * reader was given.  Lowering the floor behind a known scheme is what made
+ * a seven-character placeholder reachable, but the shape is worth skipping
+ * at any length. */
+const PLACEHOLDER = /^[<{[][^\s<>{}[\]]*[>}\]]$/;
 
 const PEM_BLOCK = /(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 /** key=value / key: value / key="value" where the key is secret-shaped.
@@ -367,7 +377,7 @@ export function redactSecretsInText(text: string): string {
       // secret's.  Masking scheme and value together reproduces, byte for
       // byte, what that pass produced before this one could reach the shape.
       const body = close ? value : `${scheme ?? ""}${value}`;
-      if (body.length < minMaskable(scheme) || WHOLLY_MASKED.test(body)) return m;
+      if (body.length < minMaskable(scheme) || WHOLLY_MASKED.test(body) || PLACEHOLDER.test(body)) return m;
       const kept = close ? (scheme ?? "") : "";
       return `${key}${sep}${quote}${kept}${mask(body)}${close}`;
     },
@@ -381,7 +391,7 @@ export function redactSecretsInText(text: string): string {
       // trailing blanks are the line's, not the credential's, so they stay
       // outside the mask and out of the length it reports
       const credential = value.slice(0, end).replace(/[^\S\r\n]+$/, "");
-      if (credential.length < minMaskable(scheme) || WHOLLY_MASKED.test(credential)) return m;
+      if (credential.length < minMaskable(scheme) || WHOLLY_MASKED.test(credential) || PLACEHOLDER.test(credential)) return m;
       return `${key}${sep}${scheme ?? ""}${mask(credential)}${value.slice(credential.length)}`;
     },
   );

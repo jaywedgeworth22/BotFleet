@@ -556,6 +556,17 @@ describe("redactSecretsInText", () => {
     for (const status of [`${HEADER}: not set`, `${HEADER}: was empty`, `${HEADER}: nil yet`]) {
       expect(redactSecretsInText(status), status).toBe(status);
     }
+    // documentation placeholders are not credentials at any length, and this
+    // text is persisted guidance a reader is meant to follow
+    const SCHEME_WORD = "Bearer";
+    for (const doc of [
+      `Set ${HEADER}: ${SCHEME_WORD} <token>`,
+      `Use ${HEADER}: Basic {api-key}`,
+      `Send ${HEADER}: ${SCHEME_WORD} [YOUR_TOKEN]`,
+      `${HEADER}: ${SCHEME_WORD} <your-api-token-here>`,
+    ]) {
+      expect(redactSecretsInText(doc), doc).toBe(doc);
+    }
   });
 
   it("only treats a quote ADJACENT to the header as its wrapper", () => {
@@ -628,6 +639,13 @@ describe("redactSecretsInText", () => {
       expect(out, input.slice(0, 24)).not.toContain(token);
       expect(out, input.slice(0, 24)).toContain(url);
     }
+    // a redirection closes the argument too — bash reads `>` as an operator
+    for (const redirect of [">trace.log", "<in.txt", "&& echo done"]) {
+      const out = redactSecretsInText(`curl -H "${HEADER}: ${SCHEME} ${token}"${redirect}`);
+      expect(out, redirect).not.toContain(token);
+      expect(out, redirect).toContain(redirect);
+    }
+
     const short = redactSecretsInText(`curl -H "${HEADER}: Basic dTpw"${url}`);
     expect(short).not.toContain("dTpw");
     expect(short).toContain("Basic «redacted 4 chars»");
