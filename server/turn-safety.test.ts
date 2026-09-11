@@ -70,6 +70,11 @@ describe("active turn ownership", () => {
     const next = owners.claim("thread-1", { botId: "bot-1", selection, fallbackPolicy: selection });
 
     expect(next.dispatchId).not.toBe(first.dispatchId);
+    expect(owners.isLatest("thread-1", first.dispatchId)).toBe(false);
+    expect(owners.isLatest("thread-1", next.dispatchId)).toBe(true);
+    owners.settle("thread-1", selection.instanceId);
+    expect(owners.isLatest("thread-1", first.dispatchId)).toBe(false);
+    expect(owners.isLatest("thread-1", next.dispatchId)).toBe(true);
     expect(mayReleaseStalledTurn(next.dispatchId !== first.dispatchId, {
       owners: [],
       inspectionFailed: false,

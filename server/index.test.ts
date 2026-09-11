@@ -30,6 +30,9 @@ let child: ChildProcess;
 /** stands in for the box provider so config saving never touches the network */
 let boxStub: Server;
 let boxStubPort = 0;
+let boxTurnGate: Promise<void> | null = null;
+let releaseBoxTurnGate: (() => void) | null = null;
+let boxTurnRequests = 0;
 let home: string;
 let staticDir: string;
 let fakeClaudeDump: string;
@@ -105,13 +108,19 @@ const statusWithHeaders = (headers: Record<string, string>): Promise<number> =>
 
 const writeFakeClaudeWrapper = (
   file: string,
-  mode: "exit-early" | "quota",
-  options: { keepDump?: boolean; quotaGate?: string } = {},
+  mode: "exit-early" | "hang" | "quota",
+  options: { keepDump?: boolean; quotaGate?: string; launchLog?: string } = {},
 ): string => {
   const lines = [
     "#!/usr/bin/env node",
     `process.env.FAKE_CLAUDE_MODE = ${JSON.stringify(mode)};`,
   ];
+  if (options.launchLog) {
+    lines.push(
+      'const { appendFileSync } = await import("node:fs");',
+      `if (!["--version", "--help", "auth"].includes(process.argv[2])) appendFileSync(${JSON.stringify(options.launchLog)}, "launch\\n");`,
+    );
+  }
   if (!options.keepDump) lines.push("delete process.env.FAKE_CLAUDE_DUMP;");
   if (options.quotaGate) {
     lines.push(`process.env.FAKE_CLAUDE_QUOTA_GATE = ${JSON.stringify(options.quotaGate)};`);
@@ -328,10 +337,16 @@ beforeAll(async () => {
         config: { user_id: body.user_id },
       }));
     }
-    if (req.headers.authorization === "Bearer box_slow") {
+    if (req.headers.authorization === "Bearer box_gate" && boxTurnGate) {
+      boxTurnRequests += 1;
+      await boxTurnGate;
+    } else if (req.headers.authorization === "Bearer box_slow") {
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    const ok = req.headers.authorization === "Bearer box_good" || req.headers.authorization === "Bearer box_slow";
+    const ok =
+      req.headers.authorization === "Bearer box_good" ||
+      req.headers.authorization === "Bearer box_slow" ||
+      req.headers.authorization === "Bearer box_gate";
     res.writeHead(ok ? 200 : 401, { "content-type": "application/json" });
     res.end(JSON.stringify(ok ? { ok: true, boxes: [] } : { ok: false, code: "unauthorized" }));
   });
@@ -4324,6 +4339,82 @@ describe("instance CLI override API", () => {
       await api("POST", `/api/bots/${bot.id}/interrupt`, {});
       await api("DELETE", `/api/bots/${bot.id}`);
       expect((await api("PATCH", "/api/instances/claude", { cli: FAKE_CLAUDE_CLI })).status).toBe(200);
+    }
+  }, 20_000);
+
+  it("does not let setup from before a provider reload dispatch or clear its successor", async () => {
+    const launchLog = join(home, "fake-claude-setup-race-launches");
+    const countingCli = writeFakeClaudeWrapper(
+      join(home, "fake-claude-setup-race"),
+      "hang",
+      { keepDump: true, launchLog },
+    );
+    let botId = "";
+    try {
+      rmSync(launchLog, { force: true });
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("PUT", "/api/config", { box: { token: "box_gate" } })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/claude", { cli: countingCli })).status).toBe(200);
+      const claude = (await api("GET", "/api/instances?fresh=1")).body.instances.find(
+        (instance: { instanceId: string }) => instance.instanceId === "claude",
+      );
+      const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+      botId = bot.id;
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: claude.models.default },
+      })).status).toBe(200);
+
+      boxTurnRequests = 0;
+      boxTurnGate = new Promise<void>((resolve) => { releaseBoxTurnGate = resolve; });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "stale setup must not launch" })).status).toBe(202);
+      await expect.poll(() => boxTurnRequests, { timeout: 5_000 }).toBe(1);
+
+      expect((await api("PATCH", "/api/instances/claude", { fullAuto: true })).status).toBe(200);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(false);
+
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "replacement turn stays live" })).status).toBe(202);
+      await expect.poll(() => boxTurnRequests, { timeout: 5_000 }).toBe(2);
+      releaseBoxTurnGate?.();
+      boxTurnGate = null;
+      releaseBoxTurnGate = null;
+
+      const persistedTask = () => {
+        const bots = JSON.parse(readFileSync(join(home, ".botfleet", "bots.json"), "utf8")) as Array<{
+          id: string;
+          tasks: Array<{ threadId: string; lastInstanceId?: string; resumeCursors: Record<string, unknown> }>;
+        }>;
+        return bots.find((candidate) => candidate.id === bot.id)?.tasks.find((task) => task.threadId === bot.threadId);
+      };
+      await expect.poll(() => ({
+        launches: existsSync(launchLog)
+          ? readFileSync(launchLog, "utf8").split("\n").filter(Boolean).length
+          : 0,
+        lastInstanceId: persistedTask()?.lastInstanceId,
+        cursor: persistedTask()?.resumeCursors.claude,
+      }), { timeout: 5_000 }).toEqual({
+        launches: 1,
+        lastInstanceId: "claude",
+        cursor: expect.any(String),
+      });
+      const live = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(live?.busy).toBe(true);
+    } finally {
+      releaseBoxTurnGate?.();
+      boxTurnGate = null;
+      releaseBoxTurnGate = null;
+      if (botId) {
+        await api("POST", `/api/bots/${botId}/interrupt`, {});
+        await api("DELETE", `/api/bots/${botId}`);
+      }
+      expect((await api("PATCH", "/api/instances/claude", { cli: FAKE_CLAUDE_CLI, fullAuto: false })).status).toBe(200);
+      expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
     }
   }, 20_000);
 

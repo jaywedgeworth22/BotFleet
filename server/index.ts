@@ -2701,7 +2701,7 @@ async function startTurn(
   // hang the HTTP request
   store.setActivity(bot.id, "working");
   store.patchBot(bot.id, { unread: false, inflightThreadId: threadId });
-  activeTurnOwners.claim(threadId, {
+  const dispatchOwner = activeTurnOwners.claim(threadId, {
     botId: bot.id,
     selection: { instanceId, model, effort },
     fallbackPolicy,
@@ -2709,6 +2709,27 @@ async function startTurn(
   turnUsage.delete(threadId);
 
   void (async () => {
+    let observedReloadGeneration = providerReloadGeneration;
+    const dispatchStillCurrent = (): boolean => {
+      const owner = activeTurnOwners.forEvent(threadId, instanceId);
+      if (owner?.dispatchId !== dispatchOwner.dispatchId) return false;
+      if (providerReloadInProgress) {
+        throw new Error("provider settings changed during turn setup");
+      }
+      if (providerReloadGeneration !== observedReloadGeneration) {
+        const liveInstance = opts?.runOn === "cloud"
+          ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
+          : registry.get(instanceId);
+        // Every prompt/tool/integration decision below was derived from this
+        // adapter's capabilities.  A replacement needs a fresh turn setup;
+        // never send those stale inputs through a newly configured adapter.
+        if (liveInstance !== instance) {
+          throw new Error("provider settings changed during turn setup");
+        }
+        observedReloadGeneration = providerReloadGeneration;
+      }
+      return true;
+    };
     try {
       const integrations: NonNullable<Parameters<typeof instance.adapter.sendTurn>[0]["integrations"]> = {};
       const selectedSkills = selectBundledSkills(
@@ -2725,6 +2746,8 @@ async function startTurn(
       // switched off: the key is workspace-wide, the grant is per bot.
       if (bot.composio !== false && composio.configured(cfg) && instance.adapter.capabilities.composioMcp === true) {
         const connection = await connectedAppsIntegration(bot.id, threadId);
+        if (providerReloadInProgress) await waitForProviderReloads();
+        if (!dispatchStillCurrent()) return;
         if (connection) integrations.composio = connection;
       }
       if (cfg.qdrant?.enabled !== false && instance.adapter.capabilities.qdrantMcp === true) {
@@ -2819,6 +2842,8 @@ async function startTurn(
         localVmActiveThreads.set(localVmTarget.key, threadId);
         localVmIdleFor(localVmTarget).touch();
         const localVm = await containerComputerStatus(undefined, undefined, localVmTarget);
+        if (providerReloadInProgress) await waitForProviderReloads();
+        if (!dispatchStillCurrent()) return;
         if (!localVm.ready || !localVm.runtime) {
           throw new Error(`${localVm.problem ?? "the Local VM is not ready"} (App Settings → Local VM)`);
         }
@@ -2880,6 +2905,8 @@ async function startTurn(
           const remote = wantsCloud || bot.autoStartVps
             ? await vps.vpsComputerAction("provision", cfg, bot.id)
             : await vps.inspectVpsForAuto(cfg, bot.id);
+          if (providerReloadInProgress) await waitForProviderReloads();
+          if (!dispatchStillCurrent()) return;
           if (remote?.ready && remote.sshAlias) {
             const targetCfg = { ...cfg, vps: { sshAlias: remote.sshAlias } };
             const vpsMcp = vps.vpsComputerMcp(targetCfg, bot.id, remote.container_id ?? undefined);
@@ -2911,12 +2938,18 @@ async function startTurn(
           throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
         }
         let b = await box.findBox(cfg, bot.id).catch(() => null);
+        if (providerReloadInProgress) await waitForProviderReloads();
+        if (!dispatchStillCurrent()) return;
         // Explicit Cloud and the box-native Computer engine provision on first
         // use. Auto remains non-surprising and only reuses an existing box.
         if (!b && mountsCloudComputer && (wantsCloud || instance.driverKind === "boxAgent")) {
           broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
           await box.provisionBox(cfg, bot.id, bot.name);
+          if (providerReloadInProgress) await waitForProviderReloads();
+          if (!dispatchStillCurrent()) return;
           b = await box.findBox(cfg, bot.id).catch(() => null);
+          if (providerReloadInProgress) await waitForProviderReloads();
+          if (!dispatchStillCurrent()) return;
         }
         // an archived box answers every action with an error until it
         // resumes — wake it here, once, instead of letting the agent
@@ -2925,6 +2958,8 @@ async function startTurn(
         if (b && mountsCloudComputer && !["idle", "ready", "running"].includes(b.state)) {
           broadcast({ kind: "computer", botId: bot.id, state: "waking" });
           b = (await box.readyBox(cfg, bot.id).catch(() => null)) ?? b;
+          if (providerReloadInProgress) await waitForProviderReloads();
+          if (!dispatchStillCurrent()) return;
         }
         if (b) {
           previewCapture = () => box.screenshotBox(cfg, bot.id, b!.id);
@@ -3042,7 +3077,13 @@ async function startTurn(
       // the engine cannot edit the project until the snapshot has settled.
       // snapshot() absorbs failures, so checkpointing may delay but never fail
       // a turn.
-      if (checkpointCwd) await checkpoints.snapshot(bot.id, checkpointCwd, `turn ${threadId.slice(0, 8)}`);
+      if (checkpointCwd) {
+        await checkpoints.snapshot(bot.id, checkpointCwd, `turn ${threadId.slice(0, 8)}`);
+        if (providerReloadInProgress) await waitForProviderReloads();
+        if (!dispatchStillCurrent()) return;
+      }
+      if (providerReloadInProgress) await waitForProviderReloads();
+      if (!dispatchStillCurrent()) return;
       watchdog.watch(threadId, bot.id);
       // HTTP drivers (MiniMax, OpenAI-compatible) cannot spawn MCP servers
       // and so cannot run the model's tool calls themselves — the model
@@ -3140,6 +3181,7 @@ async function startTurn(
         if (started.dispatched === false) return;
       }
       // dispatched: the rewind is spent, and the old cursors are dead
+      if (!activeTurnOwners.isLatest(threadId, dispatchOwner.dispatchId)) return;
       if (rewound) store.patchBot(bot.id, { rewound: false, resumeCursors: {} });
       // and this engine now owns the thread's most recent turn
       store.markTaskDispatched(bot.id, threadId, instanceId);
@@ -3147,10 +3189,15 @@ async function startTurn(
       // after its own turn.completed would never be torn down — it would
       // keep polling the box forever, carrying dead per-turn state. busy
       // is flipped false in the fold, so it is the honest "still running".
-      if (previewCapture && store.bot(bot.id)?.busy) {
+      if (
+        previewCapture &&
+        activeTurnOwners.forEvent(threadId, instanceId)?.dispatchId === dispatchOwner.dispatchId &&
+        store.bot(bot.id)?.busy
+      ) {
         startScreenPoller(bot.id, previewCapture, { screenIsTheWork: instance.driverKind === "boxAgent" });
       }
     } catch (e) {
+      if (activeTurnOwners.forEvent(threadId, instanceId)?.dispatchId !== dispatchOwner.dispatchId) return;
       activeTurnOwners.settle(threadId, instanceId);
       releaseLocalVmThread(threadId);
       if (activeVpsThreads.get(bot.id) === threadId) activeVpsThreads.delete(bot.id);
@@ -3166,10 +3213,14 @@ async function startTurn(
       store.patchBot(bot.id, { inflightThreadId: undefined });
       opts?.onDispatchError?.(message);
       // a dispatch failure never emits turn.completed, so the settle-driven
-      // drain would strand anything queued behind this turn
-      drainQueuedSends();
-      drainConnectorResumes();
-      drainSecretResumes();
+      // drain would strand anything queued behind this turn.  A provider
+      // reload performs the same drains only after its replacement fleet is
+      // attached, so do not race that fence from this catch path.
+      if (!providerReloadInProgress) {
+        drainQueuedSends();
+        drainConnectorResumes();
+        drainSecretResumes();
+      }
     }
   })();
 }

@@ -14,6 +14,7 @@ export interface ActiveTurnOwner {
  * owner.  EventBus separately rejects duplicate terminal events by turn id. */
 export class ActiveTurnOwners {
   private readonly byThread = new Map<string, Map<string, ActiveTurnOwner>>();
+  private readonly latestDispatchByThread = new Map<string, number>();
   private nextDispatchId = 1;
 
   claim(threadId: string, owner: Omit<ActiveTurnOwner, "dispatchId">): ActiveTurnOwner {
@@ -29,7 +30,15 @@ export class ActiveTurnOwners {
     }
     const claimed = { ...owner, dispatchId: this.nextDispatchId++ };
     owners.set(owner.selection.instanceId, claimed);
+    this.latestDispatchByThread.set(threadId, claimed.dispatchId);
     return claimed;
+  }
+
+  /** Remains meaningful after settle: asynchronous provider calls can return
+   * after their terminal event, and may update durable cursor state only when
+   * no newer dispatch has claimed this conversation. */
+  isLatest(threadId: string, dispatchId: number): boolean {
+    return this.latestDispatchByThread.get(threadId) === dispatchId;
   }
 
   forEvent(threadId: string, providerInstanceId?: string): ActiveTurnOwner | undefined {
