@@ -28,60 +28,118 @@ describe("RemoteAccessSection", () => {
     expect(html).toContain('aria-label="Copy Remote URL"');
     expect(html).toContain("Copy");
     expect(html).toContain("Test Connection");
-    expect(html).toContain('aria-label="Test Remote Access"');
+    expect(html).toContain('aria-label="Test Connection"');
+    expect(html).not.toContain("Test Remote Access");
     expect(html.toLowerCase()).not.toContain("trycloudflare");
   });
 });
 
 describe("describeIngressTestOutcome", () => {
-  it("surfaces the IngressProbeResult reason on a successful response", () => {
+  it("maps a successful probe to Reachable and keeps the raw reason as hover detail", () => {
+    expect(
+      describeIngressTestOutcome(true, 200, {
+        ok: true,
+        reason: "Cloudflare answered with HTTP 200.",
+        tunnel: "cloudflare",
+      }),
+    ).toEqual({
+      kind: "ok",
+      label: "Reachable",
+      detail: "Cloudflare answered with HTTP 200.",
+      tunnel: "cloudflare",
+    });
     expect(describeIngressTestOutcome(true, 200, { ok: true, reason: "Reachable", tunnel: "cloudflared" })).toEqual({
       kind: "ok",
-      reason: "Reachable",
+      label: "Reachable",
+      detail: "Reachable",
       tunnel: "cloudflared",
-    });
-    expect(describeIngressTestOutcome(true, 200, { ok: false, reason: "Origin refused the connection" })).toEqual({
-      kind: "error",
-      reason: "Origin refused the connection",
-      tunnel: undefined,
     });
   });
 
-  it("surfaces the attached-UI shim's {error} body instead of a blank reason on a non-2xx response", () => {
+  it("maps origin-refused and other non-ok probes to Couldn't reach this Mac.", () => {
+    expect(describeIngressTestOutcome(true, 200, { ok: false, reason: "Origin refused the connection" })).toEqual({
+      kind: "error",
+      label: "Couldn't reach this Mac.",
+      detail: "Origin refused the connection",
+    });
+    expect(describeIngressTestOutcome(true, 200, { ok: false, reason: "connect ECONNREFUSED 127.0.0.1:8799" })).toEqual({
+      kind: "error",
+      label: "Couldn't reach this Mac.",
+      detail: "connect ECONNREFUSED 127.0.0.1:8799",
+    });
+  });
+
+  it("maps timeout, timed out, and aborted probe reasons to The request timed out.", () => {
+    expect(
+      describeIngressTestOutcome(true, 200, {
+        ok: false,
+        reason: "The request timed out before the server answered.",
+      }),
+    ).toEqual({
+      kind: "error",
+      label: "The request timed out.",
+      detail: "The request timed out before the server answered.",
+    });
+    expect(
+      describeIngressTestOutcome(true, 200, {
+        ok: false,
+        reason: "The request timed out while reading the server's response.",
+      }),
+    ).toEqual({
+      kind: "error",
+      label: "The request timed out.",
+      detail: "The request timed out while reading the server's response.",
+    });
+    expect(describeIngressTestOutcome(true, 200, { ok: false, reason: "This operation was aborted" })).toEqual({
+      kind: "error",
+      label: "The request timed out.",
+      detail: "This operation was aborted",
+    });
+  });
+
+  it("maps the attached-UI shim's {error} body to product copy and keeps the raw string as detail", () => {
     // electron/attached-ui-shim.mjs proxyHttp: on an unreachable local harness
     // it answers 502 with { error: "BotFleet harness on port <port> is not reachable" },
-    // not an IngressProbeResult — the falsey-body-cast bug turned this into reason: undefined.
+    // not an IngressProbeResult — the falsey-body-cast bug turned this into a blank pill.
     const result = describeIngressTestOutcome(false, 502, {
       error: "BotFleet harness on port 5199 is not reachable",
     });
-    expect(result).toEqual({ kind: "error", reason: "BotFleet harness on port 5199 is not reachable" });
+    expect(result).toEqual({
+      kind: "error",
+      label: "Couldn't reach this Mac.",
+      detail: "BotFleet harness on port 5199 is not reachable",
+    });
   });
 
-  it("falls back to the HTTP status when a non-2xx response has no usable error field", () => {
+  it("falls back to the HTTP status as hover detail when a non-2xx response has no usable error field", () => {
     expect(describeIngressTestOutcome(false, 500, null)).toEqual({
       kind: "error",
-      reason: "Request failed with status 500",
+      label: "Couldn't reach this Mac.",
+      detail: "Request failed with status 500",
     });
     expect(describeIngressTestOutcome(false, 503, { error: 42 })).toEqual({
       kind: "error",
-      reason: "Request failed with status 503",
+      label: "Couldn't reach this Mac.",
+      detail: "Request failed with status 503",
     });
   });
 });
 
 describe("TestConnectionControl", () => {
-  it("keeps a fixed accessible name and no live region while idle", () => {
+  it("keeps an accessible name that matches the visible label and no live region while idle", () => {
     const html = renderToStaticMarkup(createElement(TestConnectionControl, { test: null, onRunTest: () => {} }));
-    expect(html).toContain('aria-label="Test Remote Access"');
+    expect(html).toContain('aria-label="Test Connection"');
+    expect(html).not.toContain("Test Remote Access");
     expect(html).toContain('aria-busy="false"');
     expect(html).not.toContain("Testing");
   });
 
-  it("updates the accessible name and marks aria-busy while the probe is running", () => {
+  it("updates the accessible name to Testing… and marks aria-busy while the probe is running", () => {
     const html = renderToStaticMarkup(
       createElement(TestConnectionControl, { test: { kind: "running" }, onRunTest: () => {} }),
     );
-    expect(html).toContain('aria-label="Testing Remote Access…"');
+    expect(html).toContain('aria-label="Testing…"');
+    expect(html).not.toContain("Testing Remote Access");
     expect(html).toContain('aria-busy="true"');
     expect(html).toContain('disabled=""');
   });
@@ -95,14 +153,39 @@ describe("TestConnectionControl", () => {
     expect(html).toContain("Testing connection…");
   });
 
-  it("restores the idle accessible name and result region once the probe finishes", () => {
+  it("restores the idle accessible name and shows product copy with raw detail on title", () => {
     const html = renderToStaticMarkup(
-      createElement(TestConnectionControl, { test: { kind: "ok", reason: "Reachable" }, onRunTest: () => {} }),
+      createElement(TestConnectionControl, {
+        test: {
+          kind: "ok",
+          label: "Reachable",
+          detail: "Cloudflare answered with HTTP 200.",
+        },
+        onRunTest: () => {},
+      }),
     );
-    expect(html).toContain('aria-label="Test Remote Access"');
+    expect(html).toContain('aria-label="Test Connection"');
+    expect(html).not.toContain("Test Remote Access");
     expect(html).toContain('aria-busy="false"');
     expect(html).toContain('data-testid="remote-access-test-result"');
-    expect(html).toContain("Reachable");
+    expect(html).toContain(">Reachable</span>");
+    expect(html).toContain('title="Cloudflare answered with HTTP 200."');
+  });
+
+  it("renders unreachable product copy and keeps harness telemetry on title only", () => {
+    const html = renderToStaticMarkup(
+      createElement(TestConnectionControl, {
+        test: {
+          kind: "error",
+          label: "Couldn't reach this Mac.",
+          detail: "BotFleet harness on port 5199 is not reachable",
+        },
+        onRunTest: () => {},
+      }),
+    );
+    expect(html).toContain(">Couldn&#x27;t reach this Mac.</span>");
+    expect(html).toContain('title="BotFleet harness on port 5199 is not reachable"');
+    expect(html).not.toMatch(/>(?:BotFleet harness on port 5199 is not reachable)</);
   });
 });
 
