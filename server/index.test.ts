@@ -8,7 +8,7 @@ import { createServer, request, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 
@@ -76,6 +76,24 @@ const statusWithHeaders = (headers: Record<string, string>): Promise<number> =>
     req.end();
   });
 
+const writeFakeClaudeWrapper = (
+  file: string,
+  mode: "exit-early" | "quota",
+  options: { keepDump?: boolean; quotaGate?: string } = {},
+): string => {
+  const lines = [
+    "#!/usr/bin/env node",
+    `process.env.FAKE_CLAUDE_MODE = ${JSON.stringify(mode)};`,
+  ];
+  if (!options.keepDump) lines.push("delete process.env.FAKE_CLAUDE_DUMP;");
+  if (options.quotaGate) {
+    lines.push(`process.env.FAKE_CLAUDE_QUOTA_GATE = ${JSON.stringify(options.quotaGate)};`);
+  }
+  lines.push(`await import(${JSON.stringify(pathToFileURL(FAKE_CLAUDE_CLI).href)});`, "");
+  writeFileSync(file, lines.join("\n"), { mode: 0o755 });
+  return file;
+};
+
 beforeAll(async () => {
   home = mkdtempSync(join(tmpdir(), "omb-api-test-"));
   staticDir = join(home, "static");
@@ -85,24 +103,13 @@ beforeAll(async () => {
   // instance to FAIL — and thus make a bot genuinely fail over onto another
   // instance — is to override the mode per CLI. FAKE_CLAUDE_DUMP is dropped
   // so this engine never clobbers the argv dump other tests assert on.
-  fakeCrashCli = join(home, "fake-claude-crash");
-  writeFileSync(
-    fakeCrashCli,
-    `#!/bin/sh\nunset FAKE_CLAUDE_DUMP\nFAKE_CLAUDE_MODE=exit-early exec ${JSON.stringify(FAKE_CLAUDE_CLI)} "$@"\n`,
-    { mode: 0o755 },
-  );
-  fakeQuotaCli = join(home, "fake-claude-quota");
-  writeFileSync(
-    fakeQuotaCli,
-    `#!/bin/sh\nunset FAKE_CLAUDE_DUMP\nFAKE_CLAUDE_MODE=quota exec ${JSON.stringify(FAKE_CLAUDE_CLI)} "$@"\n`,
-    { mode: 0o755 },
-  );
+  fakeCrashCli = writeFakeClaudeWrapper(join(home, "fake-claude-crash"), "exit-early");
+  fakeQuotaCli = writeFakeClaudeWrapper(join(home, "fake-claude-quota"), "quota");
   fakeQuotaGate = join(home, "fake-quota-gate");
-  fakeGatedQuotaCli = join(home, "fake-claude-gated-quota");
-  writeFileSync(
-    fakeGatedQuotaCli,
-    `#!/bin/sh\nFAKE_CLAUDE_MODE=quota FAKE_CLAUDE_QUOTA_GATE=${JSON.stringify(fakeQuotaGate)} exec ${JSON.stringify(FAKE_CLAUDE_CLI)} "$@"\n`,
-    { mode: 0o755 },
+  fakeGatedQuotaCli = writeFakeClaudeWrapper(
+    join(home, "fake-claude-gated-quota"),
+    "quota",
+    { keepDump: true, quotaGate: fakeQuotaGate },
   );
   // A stand-in for the operator's `recall` CLI.  "slow" sleeps past the old
   // 6s probe ceiling on purpose — that ceiling was under the real command's
