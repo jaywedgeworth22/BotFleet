@@ -602,19 +602,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // integrations → MCP servers; pre-allow their tools (a headless
       // acceptEdits run silently denies anything unlisted)
       const mcpServers: Record<string, unknown> = {};
-      const importedMcpNames: string[] = [];
-
-      // Load global MCP servers used by the rest of the fleet
-      try {
-        const claudeJson = readFileSync(join(homedir(), ".claude.json"), "utf8");
-        const parsed = JSON.parse(claudeJson);
-        if (parsed && typeof parsed === "object" && parsed.mcpServers && typeof parsed.mcpServers === "object") {
-          Object.assign(mcpServers, parsed.mcpServers);
-          importedMcpNames.push(...Object.keys(parsed.mcpServers));
-        }
-      } catch (e) {
-        // ignore missing or malformed ~/.claude.json
-      }
 
       const allowed: string[] = [];
       if (turn.integrations?.composio) {
@@ -683,29 +670,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
         allowed.push("mcp__ogb");
       }
-      // Fleet MCP servers copied from ~/.claude.json are visible in
-      // mcpServers but acceptEdits silently denies anything whose prefix is
-      // not in --allowedTools. Pre-allow those imported servers only — do
-      // not re-allow BotFleet-owned namespaces that were deliberately omitted
-      // (host-controlled local CUA must not get mcp__computer).
-      for (const name of importedMcpNames) {
-        if (name === "computer") continue;
-        const prefix = `mcp__${name}`;
-        if (!allowed.includes(prefix)) allowed.push(prefix);
-      }
       // The MCP config carries credentials — a Composio consumer key in a
       // header, the box token in the computer proxy's env, the comms token in
       // the agents proxy's env. On argv every one of those is world-readable
       // through `ps` for the life of the turn, to any local process. The CLI
       // accepts a FILE for this flag, so the secrets go in a 0600 file that
       // is removed when the turn settles.
-      let mcpConfigPath: string | null = null;
-      if (Object.keys(mcpServers).length) {
-        mcpConfigPath = join(mkdtempSync(join(tmpdir(), "omb-mcp-")), "mcp.json");
-        writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
-        args.push("--mcp-config", mcpConfigPath);
-        args.push("--allowedTools", allowed.join(","));
-      }
+      // Always pass a strict config, including when this bot has no selected
+      // MCP integrations.  Claude otherwise merges global user MCP servers
+      // into the turn, which would cross the bot boundary.
+      const mcpConfigPath = join(mkdtempSync(join(tmpdir(), "omb-mcp-")), "mcp.json");
+      writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
+      args.push("--mcp-config", mcpConfigPath, "--strict-mcp-config");
+      args.push("--allowedTools", allowed.join(","));
 
       const env = claudeEnvironment(turnModel, turnEnvironment);
       const cwd = turn.cwd ?? homedir();

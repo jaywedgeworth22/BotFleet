@@ -6,9 +6,9 @@
 // These used to be POSIX-only: the fake CLI is a shebang script Windows
 // cannot exec, and the broker is a unix socket. Both now go through
 // resolveCliSpawn / permissionSocketPath, so they run everywhere.
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -337,6 +337,26 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(JSON.stringify(seen.argv)).not.toContain("tok");
     const allowed = seen.argv[seen.argv.indexOf("--allowedTools") + 1];
     expect(allowed).toContain("mcp__agents");
+  });
+
+  it("ignores global Claude MCP servers and enables strict per-bot config", async () => {
+    const globalConfig = join(homedir(), ".claude.json");
+    writeFileSync(globalConfig, JSON.stringify({ mcpServers: { fleetOnly: { command: "/global-mcp" } } }));
+    try {
+      await create();
+      const dump = join(scratch, "strict-mcp.json");
+      process.env.FAKE_CLAUDE_DUMP = dump;
+
+      await instance.adapter.sendTurn({ threadId: "t-strict-mcp", text: "hi" });
+      await recorder.until((event) => event.type === "turn.completed");
+
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      expect(Object.keys(seen.mcpConfig.mcpServers)).toEqual(["ogb"]);
+      expect(seen.mcpConfig.mcpServers.fleetOnly).toBeUndefined();
+      expect(seen.argv).toContain("--strict-mcp-config");
+    } finally {
+      rmSync(globalConfig, { force: true });
+    }
   });
 
   it("passes normalized available and denied built-in tool sets to Claude", async () => {
