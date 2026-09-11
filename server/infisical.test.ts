@@ -460,6 +460,140 @@ describe("writeSecret", () => {
     // And the slow read landing first did not overwrite it on the way out.
     expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("written-value");
   });
+
+  it("rejects writeSecret when the post-upsert verification refresh fails and preserves snapshot", async () => {
+    withSettings({ writeThrough: true });
+    let patchCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        if (init?.method === "PATCH") {
+          patchCount += 1;
+          return new Response("{}", { status: 200 });
+        }
+        return new Response("internal error", { status: 500 });
+      }),
+    );
+
+    await expect(infisical.writeSecret("COMPOSIO_API_KEY", "new-value")).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 502,
+      writeLanded: true,
+      message: expect.stringMatching(/verification refresh failed/i),
+    });
+    expect(patchCount).toBe(1);
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBeUndefined();
+  });
+
+  it("preserves snapshot published before a failed verification refresh", async () => {
+    withSettings({ writeThrough: true });
+    vi.stubGlobal(
+      "fetch",
+      loginThenList([{ secretKey: "COMPOSIO_API_KEY", secretValue: "published-canonical" }]),
+    );
+    await infisical.refresh("manual");
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("published-canonical");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        if (init?.method === "PATCH") return new Response("{}", { status: 200 });
+        return new Response("internal error", { status: 500 });
+      }),
+    );
+
+    await expect(infisical.writeSecret("COMPOSIO_API_KEY", "attempted-value")).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 502,
+      writeLanded: true,
+    });
+
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("published-canonical");
+  });
+
+  it("reconciles ambiguous upsert timeouts when the secret actually landed in Infisical", async () => {
+    withSettings({ writeThrough: true });
+    let patchCount = 0;
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        if (init?.method === "PATCH") {
+          patchCount += 1;
+          throw timeoutErr;
+        }
+        return new Response(
+          JSON.stringify({ secrets: [{ secretKey: "COMPOSIO_API_KEY", secretValue: "landed-value" }] }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    await infisical.writeSecret("COMPOSIO_API_KEY", "landed-value");
+    expect(patchCount).toBe(1);
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("landed-value");
+  });
+
+  it("rejects ambiguous upsert timeouts when the reconciliation refresh fails even if pre-existing snapshot matches", async () => {
+    withSettings({ writeThrough: true });
+    let patchCount = 0;
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+
+    vi.stubGlobal(
+      "fetch",
+      loginThenList([{ secretKey: "COMPOSIO_API_KEY", secretValue: "existing-value" }]),
+    );
+    await infisical.refresh("manual");
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("existing-value");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        if (init?.method === "PATCH") {
+          patchCount += 1;
+          throw timeoutErr;
+        }
+        return new Response("internal error", { status: 500 });
+      }),
+    );
+
+    await expect(infisical.writeSecret("COMPOSIO_API_KEY", "existing-value")).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 504,
+    });
+    expect(patchCount).toBe(1);
+  });
+
+  it("preserves canonical snapshot and rejects with 409 when verification encounters a conflict", async () => {
+    withSettings({ writeThrough: true });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        if (init?.method === "PATCH") return new Response("{}", { status: 200 });
+        return new Response(
+          JSON.stringify({ secrets: [{ secretKey: "COMPOSIO_API_KEY", secretValue: "canonical-newer-value" }] }),
+          { status: 200 },
+        );
+      }),
+    );
+
+    await expect(infisical.writeSecret("COMPOSIO_API_KEY", "stale-attempt")).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 409,
+      writeLanded: true,
+      message: expect.stringMatching(/different value/i),
+    });
+
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("canonical-newer-value");
+  });
 });
 
 describe("identity source", () => {

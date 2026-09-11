@@ -53,8 +53,8 @@ export interface InfisicalStatusView {
  * about what "mapped" means. */
 const MAPPED_INFISICAL_NAMES: ReadonlySet<string> = new Set(SECRET_FIELDS.map((spec) => spec.infisicalName));
 
-const DEFAULT_CALL_TIMEOUT_MS = 8000;
-const DEFAULT_BOOT_CAP_MS = 12000;
+const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+const DEFAULT_BOOT_CAP_MS = 25_000;
 const DEFAULT_REFRESH_MINUTES = 15;
 
 /** Per-HTTP-call timeout.  Overridable for the same reason the boot cap is:
@@ -422,17 +422,58 @@ class InfisicalManager {
       clientSecret: settings.clientSecret,
       timeoutMs: callTimeoutMs(),
     });
-    await upsertSecret({
-      siteUrl: settings.siteUrl,
-      token,
-      projectId: settings.projectId,
-      environment: settings.environment,
-      secretPath: settings.secretPath,
-      name,
-      value,
-      timeoutMs: callTimeoutMs(),
-    });
-    await this.refresh("settings");
+    try {
+      await upsertSecret({
+        siteUrl: settings.siteUrl,
+        token,
+        projectId: settings.projectId,
+        environment: settings.environment,
+        secretPath: settings.secretPath,
+        name,
+        value,
+        timeoutMs: callTimeoutMs(),
+      });
+    } catch (err) {
+      // When a timeout or network drop occurs during upsert, the write may
+      // have already committed in Infisical before the connection severed.
+      // Reconcile by running a refresh to check if the vault holds the value.
+      if (err instanceof InfisicalError && (err.statusCode === 504 || err.statusCode === 502)) {
+        const check = await this.refresh("settings").catch(() => null);
+        if (check && !check.stale && !check.lastError) {
+          const current = infisicalSnapshot();
+          if (current && current.get(name) === value) {
+            return;
+          }
+        }
+      }
+      throw err;
+    }
+
+    const refreshed = await this.refresh("settings");
+    if (refreshed.lastError || refreshed.stale) {
+      // Upsert landed in Infisical, but verification refresh failed.
+      // Do not overwrite the in-memory snapshot with unverified values:
+      // any valid snapshot published by a preceding or concurrent refresh
+      // must be preserved. Throw writeLanded InfisicalError so callers know
+      // the write reached the vault while verification failed.
+      throw new InfisicalError(
+        `Secret "${name}" was updated in Infisical, but verification refresh failed: ${refreshed.lastError ?? "vault snapshot was not updated"}`,
+        502,
+        true,
+      );
+    }
+
+    const snapshot = infisicalSnapshot();
+    if (!snapshot || snapshot.get(name) !== value) {
+      // Verification succeeded but the returned canonical snapshot has a
+      // different value (e.g. concurrent rotation). Preserve the fetched
+      // canonical snapshot and report conflict.
+      throw new InfisicalError(
+        `Secret "${name}" was updated in Infisical, but vault contains a different value.`,
+        409,
+        true,
+      );
+    }
   }
 
   /** Names, field ids and counts only — see the module header.  The fifth
