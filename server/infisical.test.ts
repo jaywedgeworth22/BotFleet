@@ -460,6 +460,29 @@ describe("writeSecret", () => {
     // And the slow read landing first did not overwrite it on the way out.
     expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("written-value");
   });
+
+  it("rejects writeSecret when the post-upsert verification refresh fails", async () => {
+    withSettings({ writeThrough: true });
+    let patchCount = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        if (init?.method === "PATCH") {
+          patchCount += 1;
+          return new Response("{}", { status: 200 });
+        }
+        return new Response("internal error", { status: 500 });
+      }),
+    );
+
+    await expect(infisical.writeSecret("COMPOSIO_API_KEY", "new-value")).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 502,
+      message: expect.stringMatching(/verification refresh failed/i),
+    });
+    expect(patchCount).toBe(1);
+  });
 });
 
 describe("identity source", () => {

@@ -432,7 +432,20 @@ class InfisicalManager {
       value,
       timeoutMs: callTimeoutMs(),
     });
-    await this.refresh("settings");
+    const refreshed = await this.refresh("settings");
+    if (refreshed.lastError || refreshed.stale) {
+      throw new InfisicalError(
+        `Secret "${name}" was updated in Infisical, but verification refresh failed: ${refreshed.lastError ?? "vault snapshot was not updated"}`,
+        502,
+      );
+    }
+    const snapshot = infisicalSnapshot();
+    if (!snapshot || snapshot.get(name) !== value) {
+      throw new InfisicalError(
+        `Secret "${name}" was updated in Infisical, but vault snapshot was not updated with the new value.`,
+        502,
+      );
+    }
   }
 
   /** Names, field ids and counts only — see the module header.  The fifth
