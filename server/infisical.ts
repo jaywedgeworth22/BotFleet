@@ -422,16 +422,31 @@ class InfisicalManager {
       clientSecret: settings.clientSecret,
       timeoutMs: callTimeoutMs(),
     });
-    await upsertSecret({
-      siteUrl: settings.siteUrl,
-      token,
-      projectId: settings.projectId,
-      environment: settings.environment,
-      secretPath: settings.secretPath,
-      name,
-      value,
-      timeoutMs: callTimeoutMs(),
-    });
+    try {
+      await upsertSecret({
+        siteUrl: settings.siteUrl,
+        token,
+        projectId: settings.projectId,
+        environment: settings.environment,
+        secretPath: settings.secretPath,
+        name,
+        value,
+        timeoutMs: callTimeoutMs(),
+      });
+    } catch (err) {
+      // When a timeout or network drop occurs during upsert, the write may
+      // have already committed in Infisical before the connection severed.
+      // Reconcile by running a refresh to check if the vault holds the value.
+      if (err instanceof InfisicalError && (err.statusCode === 504 || err.statusCode === 502)) {
+        await this.refresh("settings").catch(() => null);
+        const current = infisicalSnapshot();
+        if (current && current.get(name) === value) {
+          return;
+        }
+      }
+      throw err;
+    }
+
     const refreshed = await this.refresh("settings");
     if (refreshed.lastError || refreshed.stale) {
       // Upsert landed in Infisical, but verification refresh failed.
@@ -450,17 +465,15 @@ class InfisicalManager {
         true,
       );
     }
+
     const snapshot = infisicalSnapshot();
     if (!snapshot || snapshot.get(name) !== value) {
-      const currentSnapshot = snapshot ?? new Map<string, string>();
-      const nextValues = new Map(currentSnapshot);
-      nextValues.set(name, value);
-      const currentNames = snapshotVaultNames();
-      const nextNames = currentNames.includes(name) ? currentNames : [...currentNames, name];
-      setInfisicalSnapshot(nextValues, nextNames);
+      // Verification succeeded but the returned canonical snapshot has a
+      // different value (e.g. concurrent rotation). Preserve the fetched
+      // canonical snapshot and report conflict.
       throw new InfisicalError(
-        `Secret "${name}" was updated in Infisical, but vault snapshot was not updated with the new value.`,
-        502,
+        `Secret "${name}" was updated in Infisical, but vault contains a different value.`,
+        409,
         true,
       );
     }
