@@ -12,7 +12,7 @@ Background APNs delivery also navigated to the notification task and reported co
 - Bot Stop carries the displayed `threadId`.  Room Stop remains tracked in #310.
 - Bot and room message routes replay only a fulfilled outcome for the same entity, expected task, and key after a task switch.  Unknown, in-flight, rejected, or expired keys return 409 without dispatching into the new task.
 - Background delivery performs a cancellation-bounded refresh and never navigates.  Notification taps retain navigation behavior.
-- The refresh callback is installed during app initialization for cold background launch.  A hydration token discards a fetched snapshot when a newer reducer frame landed during the request.
+- The refresh callback is installed during app initialization for cold background launch.  Every asynchronous fleet snapshot checks both the pairing generation and a state-identity hydration token, so conflict recovery, notification lookup, and background or cold-stream hydration cannot apply data from an old Mac or overwrite a newer reducer frame.
 
 ## Validation
 

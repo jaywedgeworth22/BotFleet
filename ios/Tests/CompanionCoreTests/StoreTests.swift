@@ -38,7 +38,7 @@ final class StoreTests: XCTestCase {
         }
     }
 
-    func testSnapshotFetchedBeforeAStreamFrameCannotOverwriteThatFrame() throws {
+    func testConflictRefreshSnapshotCannotOverwriteAConcurrentStreamFrame() throws {
         var state = try hydrated()
         let staleSnapshot = try fleet()
         let token = state.hydrationToken
@@ -47,6 +47,23 @@ final class StoreTests: XCTestCase {
 
         XCTAssertFalse(state.hydrate(staleSnapshot, ifUnchangedSince: token))
         XCTAssertEqual(state.transcript(forThread: threadId).last?.id, "newer-frame")
+    }
+
+    func testPairingResetInvalidatesAnOldSnapshotTokenEvenAtTheSameRevision() throws {
+        var state = CompanionState()
+        let oldToken = state.hydrationToken
+        state = CompanionState()
+
+        XCTAssertFalse(state.hydrate(try fleet(), ifUnchangedSince: oldToken))
+        XCTAssertTrue(state.bots.isEmpty)
+    }
+
+    func testHelloDoesNotInvalidateAnOtherwiseCurrentSnapshot() throws {
+        var state = try hydrated()
+        let token = state.hydrationToken
+        state.apply(.hello(cursor: "stream:4", resumed: false))
+
+        XCTAssertTrue(state.hydrate(try fleet(), ifUnchangedSince: token))
     }
 
     // MARK: - Messages

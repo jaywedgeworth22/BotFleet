@@ -30,6 +30,12 @@ final class Session: ObservableObject {
         case offline(String)
     }
 
+    private enum SnapshotHydrationOutcome {
+        case applied(changed: Bool)
+        case newerState
+        case pairingChanged
+    }
+
     @Published private(set) var state = CompanionState()
     @Published private(set) var connection: Connection?
     @Published private(set) var status: Status = .unpaired
@@ -471,8 +477,20 @@ final class Session: ObservableObject {
                         // the request dies halfway through replay/hydration,
                         // reconnecting must still ask for the missing gap.
                         if !resumed {
-                            try await hydrate()
-                            state.resetCursor(cursor)
+                            coldHydration: while true {
+                                switch try await hydrateSnapshot(using: client) {
+                                case .applied:
+                                    state.resetCursor(cursor)
+                                    break coldHydration
+                                case .newerState:
+                                    // A local action changed state while the
+                                    // snapshot loaded.  Fetch again before
+                                    // accepting the hello cursor.
+                                    continue
+                                case .pairingChanged:
+                                    return
+                                }
+                            }
                         }
                         status = .live
                         // Remember what actually carried the stream for
@@ -518,12 +536,30 @@ final class Session: ObservableObject {
         }
     }
 
-    private func hydrate() async throws {
-        guard let client else { return }
-        let fleet = try await client.fleet(messages: 50)
+    /// Fetch and apply one fleet snapshot without crossing either mutable
+    /// boundary: a live reducer update or a pairing/client replacement.
+    private func hydrateSnapshot(using requestClient: CompanionClient? = nil) async throws -> SnapshotHydrationOutcome {
+        guard let requestClient = requestClient ?? client else { return .pairingChanged }
+        let generation = pairingGeneration
+        let hydrationToken = state.hydrationToken
+        let previousBots = state.bots
+        let previousRooms = state.rooms
+        let previousMessages = state.messages
+        let previousHasMore = state.hasMore
+        let previousPending = state.pendingQueued
+        let fleet = try await requestClient.fleet(messages: 50)
+        try Task.checkCancellation()
+        guard pairingGeneration == generation else { return .pairingChanged }
+        guard state.hydrate(fleet, ifUnchangedSince: hydrationToken) else { return .newerState }
         log.info("hydrated \(fleet.bots.count, privacy: .public) bots, \(fleet.groups.count, privacy: .public) rooms")
-        state.hydrate(fleet)
         NotificationCoordinator.shared.setBadge(state.unreadCount)
+        return .applied(changed:
+            previousBots != state.bots ||
+            previousRooms != state.rooms ||
+            previousMessages != state.messages ||
+            previousHasMore != state.hasMore ||
+            previousPending != state.pendingQueued
+        )
     }
 
     // MARK: - Which address to dial
@@ -849,33 +885,16 @@ final class Session: ObservableObject {
         if client == nil, restorePending { restore() }
         guard let client else { return false }
         connect()
-
-        let previousBots = state.bots
-        let previousRooms = state.rooms
-        let previousMessages = state.messages
-        let previousHasMore = state.hasMore
-        let previousPending = state.pendingQueued
-        let hydrationToken = state.hydrationToken
-        let fleet = try await client.fleet(messages: 50)
-        // The background-refresh deadline cancels this task.  URLSession
-        // normally observes that cancellation itself; this second boundary
-        // prevents a late, non-cooperative fetch from hydrating stale data.
-        try Task.checkCancellation()
-        // If SSE folded anything while the request was in flight, that live
-        // state and its advanced cursor are newer than this snapshot.  Keep
-        // them together so reconnect never skips a frame we overwrote.
-        guard state.hydrate(fleet, ifUnchangedSince: hydrationToken) else { return true }
-        NotificationCoordinator.shared.setBadge(state.unreadCount)
-        return previousBots != state.bots ||
-            previousRooms != state.rooms ||
-            previousMessages != state.messages ||
-            previousHasMore != state.hasMore ||
-            previousPending != state.pendingQueued
+        switch try await hydrateSnapshot(using: client) {
+        case let .applied(changed): return changed
+        case .newerState: return true
+        case .pairingChanged: return false
+        }
     }
 
     private func refreshAfterTaskConflict() async {
         do {
-            try await hydrate()
+            _ = try await hydrateSnapshot()
         } catch {
             restartStream()
             connect()
@@ -1012,8 +1031,8 @@ final class Session: ObservableObject {
                 memberIds: memberIds
             )
             let updated = try await client.updateRoom(id: id, patch: patch)
-            if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
-                state.rooms[index] = updated
+            if state.rooms.contains(where: { $0.id == updated.id }) {
+                state.apply(.room(updated))
             }
             return true
         } catch {
@@ -1035,8 +1054,8 @@ final class Session: ObservableObject {
             let currentCrop = state.rooms.first(where: { $0.id == id })?.avatarCrop ?? .rounded
             let patch = RoomPatch(avatarUrl: urlVal, avatarCrop: currentCrop)
             let updated = try await client.updateRoom(id: id, patch: patch)
-            if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
-                state.rooms[index] = updated
+            if state.rooms.contains(where: { $0.id == updated.id }) {
+                state.apply(.room(updated))
             }
         } catch {
             actionError = error.localizedDescription
@@ -1275,8 +1294,7 @@ final class Session: ObservableObject {
         do {
             var bot = state.bot(target.botId)
             if bot == nil {
-                let fleet = try await client.fleet(messages: 50)
-                state.hydrate(fleet)
+                if case .pairingChanged = try await hydrateSnapshot(using: client) { return }
                 bot = state.bot(target.botId)
             }
             // A room's approval/question notification carries the asker bot
