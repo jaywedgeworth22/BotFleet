@@ -180,7 +180,6 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       const retryScale = Number(process.env.FAKE_GROK_RETRY_SCALE ?? "1");
       active.set(threadId, { abort, turnId });
 
-      
       const messages: any[] = [
         ...(turn.system ? [{ role: "system", content: turn.system }] : []),
         ...(turn.transcript ?? []).flatMap((m: any) => {
@@ -208,15 +207,6 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         }),
         { role: "user", content: turn.text },
       ];
-      
-      for (const m of (turn.transcript ?? [])) {
-        if (m.role === "assistant") {
-          messages.push({ role: "assistant", content: m.text });
-        } else {
-          messages.push({ role: "user", content: m.text });
-        }
-      }
-      messages.push({ role: "user", content: turn.text });
       appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: { model: turn.model, messages } });
 
       emit({ ...base(threadId, turnId), type: "turn.started" });
