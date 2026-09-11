@@ -1128,13 +1128,24 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.prompt).toBe("summarize safely");
     expect(seen.argv).not.toContain("summarize safely");
+    expect(seen.argv).toContain("--strict-mcp-config");
+    expect(JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1])).toEqual({ mcpServers: {} });
+    expect(seen.argv[seen.argv.indexOf("--tools") + 1]).toBe("");
     expect(seen.env.CLAUDE_CONFIG_DIR).toBe(instanceConfigDir);
     for (const name of names) expect(seen.env[name]).toBeUndefined();
   });
 
   it("declares safe same-provider permission review", async () => {
     await create();
+    const dump = join(scratch, "review-isolation.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
     await expect(instance.reviewPermission?.("review this request")).resolves.toBe("fake generated text");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.prompt).toBe("review this request");
+    expect(seen.argv).not.toContain("review this request");
+    expect(seen.argv).toContain("--strict-mcp-config");
+    expect(JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1])).toEqual({ mcpServers: {} });
+    expect(seen.argv[seen.argv.indexOf("--tools") + 1]).toBe("");
   });
 
   it("stops permission review when its caller gives up", async () => {
@@ -1158,6 +1169,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 // and disabled the model picker with them (#108).
 describe("ClaudeDriver snapshot auth (fake CLI)", () => {
   let instance: ProviderInstance;
+  let scratch: string;
 
   const create = async () => {
     instance = await ClaudeDriver.create({
@@ -1172,12 +1184,38 @@ describe("ClaudeDriver snapshot auth (fake CLI)", () => {
   beforeEach(() => {
     ensureDirs();
     chmodSync(FAKE_CLI, 0o755);
+    scratch = mkdtempSync(join(tmpdir(), "omb-claude-probe-test-"));
   });
 
   afterEach(async () => {
     delete process.env.FAKE_CLAUDE_AUTH;
+    delete process.env.FAKE_CLAUDE_HELP;
+    delete process.env.FAKE_CLAUDE_HELP_PROBES;
+    delete process.env.FAKE_CLAUDE_VERSION;
     delete process.env.ANTHROPIC_API_KEY;
     await instance?.dispose();
+    await removeTempDir(scratch);
+  });
+
+  it("marks a CLI without strict MCP support unavailable with upgrade guidance", async () => {
+    process.env.FAKE_CLAUDE_HELP = "unsupported";
+    await create();
+    expect(await instance.snapshot()).toMatchObject({
+      state: "unavailable", reason: expect.stringContaining("Update Claude Code"),
+    });
+  });
+
+  it("caches capability checks and rechecks when the CLI version changes", async () => {
+    const probes = join(scratch, "help-probes");
+    process.env.FAKE_CLAUDE_HELP_PROBES = probes;
+    await create();
+    expect(await instance.snapshot()).toMatchObject({ state: "available" });
+    expect(await instance.snapshot()).toMatchObject({ state: "available" });
+    expect(readFileSync(probes, "utf8")).toBe("probe\n");
+    process.env.FAKE_CLAUDE_VERSION = "1.0.0 (Claude Code)";
+    process.env.FAKE_CLAUDE_HELP = "unsupported";
+    expect(await instance.snapshot()).toMatchObject({ state: "unavailable" });
+    expect(readFileSync(probes, "utf8")).toBe("probe\nprobe\n");
   });
 
   it("reports authenticated when `auth status` says loggedIn", async () => {

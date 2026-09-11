@@ -1072,6 +1072,29 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       return writeUser(s, threadId, text);
     };
 
+    // Probe capabilities once per detected version.  Failed probes expire so
+    // a transient timeout does not require a harness restart to recover.
+    let strictMcpProbe: { version: string; expiresAt: number; result: Promise<boolean> } | undefined;
+    const supportsStrictMcp = (version: string, env: NodeJS.ProcessEnv): Promise<boolean> => {
+      if (strictMcpProbe?.version === version && strictMcpProbe.expiresAt > Date.now()) {
+        return strictMcpProbe.result;
+      }
+      const probe = {
+        version,
+        expiresAt: Date.now() + 30_000,
+        result: new Promise<boolean>((resolve) => {
+          execCli(config.cli, ["--help"], { timeout: 3000, env }, (error, stdout) => {
+            resolve(!error && /(?:^|\s)--strict-mcp-config(?:\s|$)/m.test(stdout));
+          });
+        }),
+      };
+      strictMcpProbe = probe;
+      void probe.result.then((supported) => {
+        if (supported) probe.expiresAt = Infinity;
+      });
+      return probe.result;
+    };
+
     const snapshot = async (): Promise<ProviderSnapshot> => {
       const env = claudeEnvironment(undefined, { ...process.env, ...input.environment });
       const version = await new Promise<string | null>((resolve) => {
@@ -1080,6 +1103,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         );
       });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
+      if (!(await supportsStrictMcp(version, env))) {
+        return {
+          state: "unavailable",
+          reason: "Claude CLI isolation support could not be verified.  Update Claude Code to a version supporting --strict-mcp-config, then refresh engines.",
+        };
+      }
       const authenticated = await claudeSignedIn(config.cli, env);
       // claudeEnvironment strips ANTHROPIC_API_KEY, so turns run on the
       // CLI's own login (Pro/Max): the cost it reports is what the call
@@ -1095,7 +1124,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       new Promise((resolve, reject) => {
         const child = spawnCli(
           config.cli,
-          ["-p", "--model", "claude-haiku-4-5", "--output-format", "text"],
+          [
+            "-p", "--model", "claude-haiku-4-5", "--output-format", "text",
+            "--tools", "", "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config",
+          ],
           {
             stdio: ["pipe", "pipe", "pipe"],
             env: claudeEnvironment("claude-haiku-4-5", { ...process.env, ...input.environment }),

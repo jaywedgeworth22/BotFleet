@@ -4,12 +4,16 @@
 
 Issues #278 and #279 isolate provider request context per bot.  Claude no longer imports the user’s global `~/.claude.json` MCP servers, and every Claude turn passes a strict MCP config containing only the bot’s selected integrations.  Grok builds one chat-completions message list from the system prompt, transcript, tool history, and current prompt.
 
+Claude title generation and permission review also pass an empty strict MCP config and disable built-in tools.  Prompts stay on stdin.  A bounded `--help` capability probe prevents Settings from advertising a CLI without verified strict MCP support as available.  Successful probes are cached per detected CLI version; failures expire after 30 seconds.  Normal turns do not add a capability subprocess, and every launch retains the strict flag so unsupported CLIs fail closed.
+
 ## Validation
 
-- `pnpm exec vitest run server/drivers/claude.test.ts server/drivers/grok.test.ts`: 69 passed, 1 skipped.
-- `pnpm exec tsc -p tsconfig.server.json --noEmit`: passed.
-- Full `pnpm` gate: pending the shared engine safety slot; no broad test result is claimed here.
+- `pnpm exec vitest run server/drivers/claude.test.ts server/drivers/grok.test.ts`: 71 passed, 1 skipped after the capability and helper fixes.
+- `pnpm typecheck`: passed before the final capability follow-up; repeated for the final change.
+- Full `pnpm typecheck && pnpm test`: passed after harness integration (3,482 Vitest tests passed, 19 skipped, plus all chained suites).
+- Hosted macOS, Linux, Windows, control-plane, Linux package, Swift and iOS build gates passed at `65ed1b57`; final follow-up CI must pass before merge.
+- A hosted exact-minute quota display test failure was fixed by freezing its clock; product quota behavior is unchanged.
 
 ## Rollout
 
-Deploy only with a Claude CLI version that supports `--strict-mcp-config`.  The focused fake CLI verifies argument and config isolation; CI and the full gate still need to validate the merged branch across platforms.
+Deploy only with a Claude CLI that advertises `--strict-mcp-config`; unsupported or unresponsive capability probes show upgrade guidance.  The focused fake CLI verifies argument/config isolation and version-aware probe caching.  No paid inference or manual runtime restart was performed; deployed CLI acceptance remains a separate check.  The documented CLI contract is [Anthropic's CLI reference](https://code.claude.com/docs/en/cli-reference).
