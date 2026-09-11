@@ -94,6 +94,7 @@ function claudeEnvironment(
 }
 
 const DRIVER_KIND = "claudeAgent";
+const CLAUDE_ISOLATION_REASON = "Update Claude Code to a version supporting --strict-mcp-config and refresh engines; CLI isolation support could not be verified.";
 
 export interface ClaudeConfig {
   cli: string;
@@ -554,6 +555,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
+      const turnId = newId();
+      let preflightCancelled = false;
+      const preflight = { turnId, stop: () => { preflightCancelled = true; } };
+      active.set(threadId, preflight);
+      try {
+        await requireStrictMcp();
+        if (preflightCancelled) throw new Error("Claude turn interrupted before launch");
+      } finally {
+        if (active.get(threadId) === preflight) active.delete(threadId);
+      }
       const computerMounts = turnComputerMounts(turn.integrations);
       // Scope approval to the host computer's own tools. A remote desktop's
       // tools also begin with "mcp__computer", but clicking in a disposable
@@ -567,7 +578,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // else could make host control safe on a bypass instance.
       const permissionMode: ClaudeConfig["permissionMode"] =
         controlsHost && config.permissionMode === "bypassPermissions" ? "auto" : config.permissionMode;
-      const turnId = newId();
       const retryAbort = new AbortController();
       const retry = retryState.get(threadId) ?? { attempt: 0, cancelled: false };
       retry.cancelled = false;
@@ -1095,6 +1105,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       return probe.result;
     };
 
+    const requireStrictMcp = async (): Promise<void> => {
+      const env = claudeEnvironment(undefined, { ...process.env, ...input.environment });
+      if (!(await supportsStrictMcp(strictMcpProbe?.version ?? "unprobed", env))) {
+        throw new Error(CLAUDE_ISOLATION_REASON);
+      }
+    };
+
     const snapshot = async (): Promise<ProviderSnapshot> => {
       const env = claudeEnvironment(undefined, { ...process.env, ...input.environment });
       const version = await new Promise<string | null>((resolve) => {
@@ -1106,7 +1123,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (!(await supportsStrictMcp(version, env))) {
         return {
           state: "unavailable",
-          reason: "Claude CLI isolation support could not be verified.  Update Claude Code to a version supporting --strict-mcp-config, then refresh engines.",
+          reason: CLAUDE_ISOLATION_REASON,
         };
       }
       const authenticated = await claudeSignedIn(config.cli, env);
@@ -1120,8 +1137,11 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * summaries can contain paths, commands, or secrets, so the generic
      * `claude -p "prompt"` shape is not safe for review. No tools or MCP
      * servers are mounted in this isolated process. */
-    const generateReview = (prompt: string, signal?: AbortSignal): Promise<string> =>
-      new Promise((resolve, reject) => {
+    const generateReview = async (prompt: string, signal?: AbortSignal): Promise<string> => {
+      if (signal?.aborted) throw new Error("Claude review aborted");
+      await requireStrictMcp();
+      if (signal?.aborted) throw new Error("Claude review aborted");
+      return new Promise((resolve, reject) => {
         const child = spawnCli(
           config.cli,
           [
@@ -1176,6 +1196,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           child.stdin.end(prompt);
         }
       });
+    };
 
     return {
       instanceId,

@@ -175,6 +175,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     delete process.env.FAKE_CLAUDE_PARTIAL_FAILS;
     delete process.env.FAKE_CLAUDE_STATE;
     delete process.env.FAKE_CLAUDE_RETRY_SCALE;
+    delete process.env.FAKE_CLAUDE_HELP;
+    delete process.env.FAKE_CLAUDE_HELP_PROBES;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.XAI_API_KEY;
     delete process.env.COMPOSIO_API_KEY;
@@ -756,7 +758,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(done).toMatchObject({ ok: true });
   });
 
-  it("a missing binary surfaces as spawn_error, and snapshot says unavailable", async () => {
+  it("a missing binary rejects before dispatch, and snapshot says unavailable", async () => {
     instance = await ClaudeDriver.create({
       instanceId: "claude-missing",
       displayName: undefined,
@@ -766,9 +768,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     });
     recorder = recordEvents(instance.adapter);
 
-    await instance.adapter.sendTurn({ threadId: "t-missing", text: "go" });
-    const done = await recorder.until((e) => e.type === "turn.completed");
-    expect(done).toMatchObject({ ok: false, stopReason: "spawn_error" });
+    await expect(instance.adapter.sendTurn({ threadId: "t-missing", text: "go" })).rejects.toThrow(/isolation support could not be verified/);
 
     expect(await instance.snapshot()).toMatchObject({ state: "unavailable" });
   });
@@ -1146,6 +1146,44 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(seen.argv).toContain("--strict-mcp-config");
     expect(JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1])).toEqual({ mcpServers: {} });
     expect(seen.argv[seen.argv.indexOf("--tools") + 1]).toBe("");
+  });
+
+  it("blocks bot turns and both helpers before spawning an unsupported CLI even without a snapshot", async () => {
+    process.env.FAKE_CLAUDE_HELP = "unsupported";
+    const dump = join(scratch, "must-not-dispatch.json");
+    const probes = join(scratch, "unsupported-help-probes");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    process.env.FAKE_CLAUDE_HELP_PROBES = probes;
+    await create();
+    await expect(instance.adapter.sendTurn({ threadId: "t-unsupported", text: "go" })).rejects.toThrow(/Update Claude Code/);
+    await expect(instance.generateText?.("title")).rejects.toThrow(/Update Claude Code/);
+    await expect(instance.reviewPermission?.("review")).rejects.toThrow(/Update Claude Code/);
+    expect(existsSync(dump)).toBe(false);
+    expect(readFileSync(probes, "utf8")).toBe("probe\n");
+  });
+
+  it("reuses a successful capability probe across turns and helpers", async () => {
+    const probes = join(scratch, "supported-help-probes");
+    process.env.FAKE_CLAUDE_HELP_PROBES = probes;
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-supported", text: "go" });
+    await recorder.until((e) => e.type === "turn.completed");
+    await instance.generateText?.("title");
+    await instance.reviewPermission?.("review");
+    expect(readFileSync(probes, "utf8")).toBe("probe\n");
+  });
+
+  it("honors Stop while the first capability probe is pending", async () => {
+    const dump = join(scratch, "stopped-before-dispatch.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await create();
+    const pending = instance.adapter.sendTurn({ threadId: "t-stop-probe", text: "go" });
+    const rejected = expect(pending).rejects.toThrow(/interrupted before launch/);
+    expect(instance.adapter.hasSession?.("t-stop-probe")).toBe(true);
+    await instance.adapter.interruptTurn("t-stop-probe");
+    await rejected;
+    expect(instance.adapter.hasSession?.("t-stop-probe")).toBe(false);
+    expect(existsSync(dump)).toBe(false);
   });
 
   it("stops permission review when its caller gives up", async () => {

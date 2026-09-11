@@ -4,12 +4,12 @@
 
 Issues #278 and #279 isolate provider request context per bot.  Claude no longer imports the user’s global `~/.claude.json` MCP servers, and every Claude turn passes a strict MCP config containing only the bot’s selected integrations.  Grok builds one chat-completions message list from the system prompt, transcript, tool history, and current prompt.
 
-Claude title generation and permission review also pass an empty strict MCP config and disable built-in tools.  Prompts stay on stdin.  A bounded `--help` capability probe prevents Settings from advertising a CLI without verified strict MCP support as available.  Successful probes are cached per detected CLI version; failures expire after 30 seconds.  Normal turns do not add a capability subprocess, and every launch retains the strict flag so unsupported CLIs fail closed.
+Claude title generation and permission review also pass an empty strict MCP config and disable built-in tools.  Prompts stay on stdin.  A bounded `--help` capability probe prevents Settings from advertising a CLI without verified strict MCP support as available.  Successful probes are cached per detected CLI version; failures expire after 30 seconds.  Bot turns and one-shot helpers enforce the same cached capability result before launch, including when Settings has not probed the instance.  Later calls reuse that result without another subprocess.  Stop during the initial probe prevents the turn from launching.  Every launch retains the strict flag so unsupported CLIs fail closed.
 
 ## Validation
 
-- `pnpm exec vitest run server/drivers/claude.test.ts server/drivers/grok.test.ts`: 71 passed, 1 skipped after the capability and helper fixes.
-- `pnpm typecheck`: passed before the final capability follow-up; repeated for the final change.
+- `pnpm exec vitest run server/drivers/claude.test.ts server/drivers/grok.test.ts`: 74 passed, 1 skipped after the capability and helper fixes.
+- `pnpm typecheck`: passed after the launch-guard follow-up.
 - Full `pnpm typecheck && pnpm test`: passed after harness integration (3,482 Vitest tests passed, 19 skipped, plus all chained suites).
 - Hosted macOS, Linux, Windows, control-plane, Linux package, Swift and iOS build gates passed at `65ed1b57`; final follow-up CI must pass before merge.
 - A hosted exact-minute quota display test failure was fixed by freezing its clock; product quota behavior is unchanged.
