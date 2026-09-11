@@ -205,7 +205,7 @@ test("probeHarness: connection refused means nobody is home", async () => {
   const seen = await probeHarness({
     port: 8799,
     fetchImpl: async () => {
-      throw new Error("ECONNREFUSED");
+      throw Object.assign(new Error("fetch failed"), { cause: { code: "ECONNREFUSED" } });
     },
   });
   assert.deepEqual(seen, { kind: "none" });
@@ -383,4 +383,65 @@ test("the second pass re-probes, so a harness that came up meanwhile is attached
     sleep: noSleep,
   });
   assert.deepEqual(result, { mode: "attached", port: 8799, pid: 55, static: false });
+});
+
+test("ambiguous probe errors never mean a free port", async () => {
+  for (const error of [new DOMException("slow", "TimeoutError"), Object.assign(new Error("reset"), { cause: { code: "ECONNRESET" } })]) {
+    assert.deepEqual(await probeHarness({ port: 8799, fetchImpl: async () => { throw error; } }), { kind: "unavailable" });
+  }
+  assert.deepEqual(await probeHarness({ port: 8799, fetchImpl: async () => ({ json: async () => { throw new Error("aborted body"); } }) }), { kind: "unavailable" });
+});
+
+test("an uncertain listener prevents spawning on every fallback port", async () => {
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799],
+    probe: async (port) => ({ kind: port === 8799 ? "unavailable" : "none" }),
+    spawn: async () => { throw new Error("duplicate spawn"); },
+    sleep: noSleep,
+  });
+  assert.deepEqual(result, { mode: "failed", conflictOnly: false });
+});
+
+test("a free first port does not hide an existing harness on a later port", async () => {
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799],
+    probe: async (port) => port === 18799 ? { kind: "botfleet", pid: 12, static: false } : { kind: "none" },
+    spawn: async () => { throw new Error("duplicate spawn"); },
+    sleep: noSleep,
+  });
+  assert.equal(result.mode, "attached");
+  assert.equal(result.port, 18799);
+});
+
+test("a live data owner pins discovery even while its health port is not listening", async () => {
+  const ports = [];
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799], owner: () => ({ pid: 12, port: 37999 }),
+    probe: async (port) => { ports.push(port); return { kind: "none" }; },
+    spawn: async () => { throw new Error("duplicate spawn"); }, sleep: noSleep,
+  });
+  assert.deepEqual(ports, [37999, 37999]);
+  assert.deepEqual(result, { mode: "failed", conflictOnly: false });
+});
+
+test("ownership challenge rejects a matching PID without proof of the data root", async () => {
+  const owner = { pid: 82972, port: 8799, nonce: "a".repeat(64) };
+  assert.deepEqual(await probeHarness({ port: 8799, owner,
+    fetchImpl: async () => ({ ok: true, json: async () => HARNESS }),
+  }), { kind: "unavailable" });
+  const { harnessOwnerProof } = await import("./harness-ownership.mjs");
+  assert.deepEqual(await probeHarness({ port: 8799, owner,
+    fetchImpl: async (_url, options) => ({ ok: true, json: async () => ({ ...HARNESS,
+      ownerProof: harnessOwnerProof(owner, options.headers["x-botfleet-owner-challenge"]),
+    }) }),
+  }), { kind: "botfleet", pid: 82972, static: false });
+});
+
+test("production discovery refuses legacy or wrong-root harnesses without ownership proof", async () => {
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799], owner: () => null,
+    probe: async () => ({ kind: "botfleet", pid: 12, static: true }),
+    spawn: async () => { throw new Error("duplicate spawn"); }, sleep: noSleep,
+  });
+  assert.deepEqual(result, { mode: "failed", conflictOnly: false });
 });
