@@ -677,7 +677,12 @@ final class Session: ObservableObject {
             do {
                 switch chat {
                 case let .bot(bot):
-                    let result = try await client.send(text: prompt, toBot: bot.id)
+                    let result = try await client.send(
+                        text: prompt,
+                        toBot: bot.id,
+                        threadId: threadId,
+                        idempotencyKey: localId
+                    )
                     if result.queued == true, let queueId = result.queueId, !queueId.isEmpty {
                         let dest = result.threadId ?? bot.threadId
                         if dest != threadId {
@@ -687,11 +692,20 @@ final class Session: ObservableObject {
                             state.promotePendingSend(threadId: dest, from: localId, to: queueId)
                         }
                     }
-                case let .room(room): try await client.send(text: prompt, toRoom: room.id)
+                case let .room(room):
+                    try await client.send(
+                        text: prompt,
+                        toRoom: room.id,
+                        threadId: threadId,
+                        idempotencyKey: localId
+                    )
                 }
                 return true
             } catch {
                 state.cancelPendingQueued(threadId: threadId, queueId: localId)
+                if let apiError = error as? APIError, apiError.isConflict {
+                    await refreshAfterTaskConflict()
+                }
                 throw error
             }
         } catch let error as APIError where error.isUnauthorized {
@@ -814,7 +828,54 @@ final class Session: ObservableObject {
     }
 
     func interrupt(bot: Bot) async {
-        await perform { try await $0.interrupt(botId: bot.id) }
+        guard let client else { return }
+        do {
+            try await client.interrupt(botId: bot.id, threadId: bot.threadId)
+        } catch let error as APIError where error.isUnauthorized {
+            status = .unauthorized
+        } catch let error as APIError where error.isConflict {
+            await refreshAfterTaskConflict()
+            actionError = error.localizedDescription
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    /// APNs background delivery refreshes the current snapshot without
+    /// selecting a chat.  The delegate awaits this before reporting fetch
+    /// completion, and `connect` keeps the event stream ready during the
+    /// remaining background execution window.
+    func refreshFromRemoteNotification() async throws -> Bool {
+        if client == nil, restorePending { restore() }
+        guard let client else { return false }
+        connect()
+
+        let previousBots = state.bots
+        let previousRooms = state.rooms
+        let previousMessages = state.messages
+        let previousHasMore = state.hasMore
+        let previousPending = state.pendingQueued
+        let fleet = try await client.fleet(messages: 50)
+        // The background-refresh deadline cancels this task.  URLSession
+        // normally observes that cancellation itself; this second boundary
+        // prevents a late, non-cooperative fetch from hydrating stale data.
+        try Task.checkCancellation()
+        state.hydrate(fleet)
+        NotificationCoordinator.shared.setBadge(state.unreadCount)
+        return previousBots != state.bots ||
+            previousRooms != state.rooms ||
+            previousMessages != state.messages ||
+            previousHasMore != state.hasMore ||
+            previousPending != state.pendingQueued
+    }
+
+    private func refreshAfterTaskConflict() async {
+        do {
+            try await hydrate()
+        } catch {
+            restartStream()
+            connect()
+        }
     }
 
     /// Ask for one fresh cloud viewer URL. Unlike ordinary actions this

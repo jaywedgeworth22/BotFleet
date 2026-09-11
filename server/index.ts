@@ -1120,6 +1120,13 @@ async function replyOnce(key: string | undefined, deliver: () => Promise<RouteRe
   const reply = await result;
   return replayed ? { status: reply.status, body: { ...reply.body, replayed: true } } : reply;
 }
+async function replayMessageReply(key: string | undefined): Promise<RouteReply | undefined> {
+  if (!key) return undefined;
+  const replay = messageIdempotency.replay(key);
+  if (!replay) return undefined;
+  const reply = await replay.result;
+  return { status: reply.status, body: { ...reply.body, replayed: true } };
+}
 /** How far back a filtered decision-log read looks.  Both log files are
  * rotation-capped at 4 MB, so this comfortably covers everything on disk. */
 const DECISION_FILTER_WINDOW = 50_000;
@@ -6291,7 +6298,13 @@ const server = createServer(async (req, res) => {
       if (body.threadId !== undefined && (typeof body.threadId !== "string" || !/^[\w-]+$/.test(body.threadId))) {
         return json(res, 400, { error: "threadId must be a task id" });
       }
-      if (body.threadId !== undefined && body.threadId !== group.threadId) {
+      const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
+      if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
+      const expectedThreadId = body.threadId ?? group.threadId;
+      const scopedIdempotencyKey = idempotencyKey && `channel:${group.id}:${expectedThreadId}:${idempotencyKey}`;
+      if (expectedThreadId !== group.threadId) {
+        const replay = await replayMessageReply(scopedIdempotencyKey);
+        if (replay) return json(res, replay.status, replay.body);
         return json(res, 409, { error: "the channel switched tasks before it could receive the message" });
       }
 
@@ -6310,10 +6323,8 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: true, ignored: "self_echo" });
       }
 
-      const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
-      if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const replyTo = resolveReplyTarget(group.threadId, body.replyToId);
-      const reply = await replyOnce(idempotencyKey && `channel:${group.id}:${group.threadId}:${idempotencyKey}`, async () => {
+      const reply = await replyOnce(scopedIdempotencyKey, async () => {
         startGroupTurn(group.id, text, replyTo);
         return { status: 202, body: { ok: true } };
       });
@@ -6963,7 +6974,13 @@ const server = createServer(async (req, res) => {
       if (body.threadId !== undefined && (typeof body.threadId !== "string" || !/^[\w-]+$/.test(body.threadId))) {
         return json(res, 400, { error: "threadId must be a task id" });
       }
-      if (body.threadId !== undefined && body.threadId !== bot.threadId) {
+      const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
+      if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
+      const expectedThreadId = body.threadId ?? bot.threadId;
+      const scopedIdempotencyKey = idempotencyKey && `bot:${bot.id}:${expectedThreadId}:${idempotencyKey}`;
+      if (expectedThreadId !== bot.threadId) {
+        const replay = await replayMessageReply(scopedIdempotencyKey);
+        if (replay) return json(res, replay.status, replay.body);
         return json(res, 409, { error: "the bot switched tasks before it could receive the message" });
       }
 
@@ -6985,8 +7002,6 @@ const server = createServer(async (req, res) => {
         return json(res, 200, { ok: true, ignored: "self_echo" });
       }
 
-      const idempotencyKey = idempotencyKeyFrom(body.idempotencyKey);
-      if (idempotencyKey === null) return json(res, 400, { error: IDEMPOTENCY_KEY_ERROR });
       const replyTo = resolveReplyTarget(bot.threadId, body.replyToId);
       const deliver = async (): Promise<RouteReply> => {
         // Claude can accept the message inside its live turn. If the write
@@ -7021,7 +7036,7 @@ const server = createServer(async (req, res) => {
       };
       // A retried send must not run the instruction twice: the key is scoped
       // to this bot and task, and a replay answers with the first outcome.
-      const reply = await replyOnce(idempotencyKey && `bot:${bot.id}:${bot.threadId}:${idempotencyKey}`, deliver);
+      const reply = await replyOnce(scopedIdempotencyKey, deliver);
       return json(res, reply.status, reply.body);
     }
 

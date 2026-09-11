@@ -50,6 +50,16 @@ export class IdempotencyCache<T> {
     return { replayed: false, result };
   }
 
+  /** Return an earlier attempt without starting new work.  Route guards use
+   * this when mutable routing state changed after the original request: a
+   * known key may replay its outcome, while an unknown key must still be
+   * rejected rather than dispatched into the new destination. */
+  replay(key: string): IdempotentRun<T> | undefined {
+    this.prune();
+    const existing = this.entries.get(key);
+    return existing ? { replayed: true, result: existing.result } : undefined;
+  }
+
   get size(): number {
     return this.entries.size;
   }

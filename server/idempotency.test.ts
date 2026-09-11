@@ -32,6 +32,16 @@ describe("IdempotencyCache", () => {
     await expect(Promise.all([first.result, retry.result])).resolves.toEqual([7, 7]);
   });
 
+  it("looks up a known attempt without starting work for an unknown key", async () => {
+    const cache = new IdempotencyCache<string>();
+    await cache.run("known", async () => "first").result;
+
+    const replay = cache.replay("known");
+    expect(replay?.replayed).toBe(true);
+    await expect(replay?.result).resolves.toBe("first");
+    expect(cache.replay("unknown")).toBeUndefined();
+  });
+
   it("forgets a rejected attempt so the caller can retry a real failure", async () => {
     const cache = new IdempotencyCache<string>();
     const failing = cache.run("k", async () => { throw new Error("provider unavailable"); });

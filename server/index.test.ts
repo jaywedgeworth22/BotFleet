@@ -2044,6 +2044,72 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("replays committed sends after a task switch but rejects an unknown key", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Retry pin", memberIds: [bot.id] })).body.group;
+    const botText = "Run this bot instruction once";
+    const roomText = "Run this room instruction once";
+    try {
+      const firstBot = await api("POST", `/api/bots/${bot.id}/messages`, {
+        text: botText,
+        threadId: bot.threadId,
+        idempotencyKey: "ios-bot-lost-response",
+      });
+      expect(firstBot.status).toBe(202);
+      await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId });
+      const secondBotTask = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "After lost response" });
+      expect(secondBotTask.status).toBe(201);
+
+      const botRetry = await api("POST", `/api/bots/${bot.id}/messages`, {
+        text: botText,
+        threadId: bot.threadId,
+        idempotencyKey: "ios-bot-lost-response",
+      });
+      expect(botRetry.status).toBe(202);
+      expect(botRetry.body).toMatchObject({ ok: true, replayed: true });
+      const unknownBotRetry = await api("POST", `/api/bots/${bot.id}/messages`, {
+        text: "Must not reach the new task",
+        threadId: bot.threadId,
+        idempotencyKey: "ios-bot-unknown-key",
+      });
+      expect(unknownBotRetry.status).toBe(409);
+      const botOriginal = await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`);
+      expect(botOriginal.body.messages.filter((message: { text?: string }) => message.text === botText)).toHaveLength(1);
+
+      await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" });
+      const firstRoom = await api("POST", `/api/groups/${room.id}/messages`, {
+        text: roomText,
+        threadId: room.threadId,
+        idempotencyKey: "ios-room-lost-response",
+      });
+      expect(firstRoom.status).toBe(202);
+      await api("POST", `/api/groups/${room.id}/interrupt`, { threadId: room.threadId });
+      const secondRoomTask = await api("POST", `/api/groups/${room.id}/tasks`, { title: "After lost response" });
+      expect(secondRoomTask.status).toBe(201);
+
+      const roomRetry = await api("POST", `/api/groups/${room.id}/messages`, {
+        text: roomText,
+        threadId: room.threadId,
+        idempotencyKey: "ios-room-lost-response",
+      });
+      expect(roomRetry.status).toBe(202);
+      expect(roomRetry.body).toMatchObject({ ok: true, replayed: true });
+      const unknownRoomRetry = await api("POST", `/api/groups/${room.id}/messages`, {
+        text: "Must not reach the new room task",
+        threadId: room.threadId,
+        idempotencyKey: "ios-room-unknown-key",
+      });
+      expect(unknownRoomRetry.status).toBe(409);
+      const roomOriginal = await api("GET", `/api/threads/${room.threadId}/messages?limit=200`);
+      expect(roomOriginal.body.messages.filter((message: { text?: string }) => message.text === roomText)).toHaveLength(1);
+    } finally {
+      await api("POST", `/api/groups/${room.id}/interrupt`, {});
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
   it("leaves a bot with no effort level untouched", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     expect(bot.modelSelection.effort).toBeUndefined();
@@ -4065,7 +4131,10 @@ describe("instance CLI override API", () => {
     // every future turn with no way back short of manual reconfiguration.
     // Deletion must be refused instead, the same way a busy affected bot
     // already is.
-    const toDisable = ["claude", "claude2", "crasher"];
+    // Registry defaults and native CLI discovery can add engines beyond the
+    // three fixture CLIs.  Isolate the premise using the actual starting pool.
+    const initialInstances = (await api("GET", "/api/instances")).body.instances;
+    const toDisable = initialInstances.filter((instance: any) => instance.enabled).map((instance: any) => instance.instanceId);
     for (const id of toDisable) {
       expect((await api("PATCH", `/api/instances/${id}`, { enabled: false })).status).toBe(200);
     }
