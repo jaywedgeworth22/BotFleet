@@ -24,12 +24,39 @@ import {
 
 const require = createRequire(import.meta.url);
 const { validateDriverCandidate } = require("../electron/cua-linux.cjs");
+const electronBuilderRoot = path.dirname(require.resolve("electron-builder/package.json"));
+const appBuilderVersion = require(
+  require.resolve("app-builder-lib/package.json", { paths: [electronBuilderRoot] }),
+).version;
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const releaseDir = path.resolve(process.argv[2] ?? path.join(root, "release"));
 
 function fail(message) {
   throw new Error(`[verify-linux-package] ${message}`);
+}
+
+function verifyAppBuilderVersion() {
+  const [major, minor] = appBuilderVersion.split(".").map(Number);
+  if (
+    !Number.isInteger(major) ||
+    !Number.isInteger(minor) ||
+    major < 26 ||
+    (major === 26 && minor < 15)
+  ) {
+    fail(`app-builder-lib ${appBuilderVersion} is below the patched 26.15.0 floor`);
+  }
+}
+
+function verifyAppImageLauncher(appRun) {
+  requireFile(appRun);
+  const launcher = readFileSync(appRun, "utf8");
+  for (const variable of ["LD_LIBRARY_PATH", "PATH", "XDG_DATA_DIRS", "GSETTINGS_SCHEMA_DIR"]) {
+    const safeExpansion = `\${${variable}:+:\${${variable}}}`;
+    if (!launcher.includes(safeExpansion) || launcher.includes(`:\${${variable}}\"`)) {
+      fail(`AppRun does not guard the ${variable} separator when the variable is unset`);
+    }
+  }
 }
 
 function exactlyOne(suffix) {
@@ -375,6 +402,7 @@ const unpacked = path.join(releaseDir, "linux-unpacked");
 const executable = path.join(unpacked, "botfleet");
 const resources = path.join(unpacked, "resources");
 
+verifyAppBuilderVersion();
 requireExecutable(appImage);
 requireExecutable(executable);
 requireDirectoryMode(unpacked, 0o755);
@@ -472,6 +500,7 @@ try {
     );
   }
   const appImageResources = path.join(squashRoot, "resources");
+  verifyAppImageLauncher(path.join(squashRoot, "AppRun"));
   // Depending on the pinned appimagetool runtime, SquashFS directories are
   // emitted as root:root 0755 or 0775. Require one mode consistently across
   // the reviewed resource tree. The app never executes through that path:
@@ -496,4 +525,7 @@ try {
   rmSync(appImageExtracted, { recursive: true, force: true });
 }
 
-console.log(`[verify-linux-package] OK\n- ${path.basename(appImage)}\n- ${path.basename(deb)}`);
+console.log(
+  `[verify-linux-package] OK (app-builder-lib ${appBuilderVersion})\n` +
+    `- ${path.basename(appImage)}\n- ${path.basename(deb)}`,
+);

@@ -37,7 +37,7 @@ name: Sentry CI Report
 #   CI,
 #   iOS TestFlight ship (GitHub-hosted macOS),
 #   Package Ubuntu,
-#   Package Windows,
+#   Validate Desktop Packages,
 #   Release,
 #   Sentry Deploy
 #
@@ -75,7 +75,7 @@ on:
       - CI
       - iOS TestFlight ship (GitHub-hosted macOS)
       - Package Ubuntu
-      - Package Windows
+      - Validate Desktop Packages
       - Release
       - Sentry Deploy
     types: [completed]
