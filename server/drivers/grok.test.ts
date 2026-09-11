@@ -25,6 +25,7 @@ describe("GrokDriver turns (fake fetch)", () => {
   /** Script of responses/errors consumed in order; empty = succeed with text. */
   let script: Array<{ status?: number; sse?: string }> = [];
   let calls = 0;
+  let requestBodies: Array<Record<string, any>> = [];
 
   const create = async () => {
     instance = await GrokDriver.create({
@@ -41,9 +42,11 @@ describe("GrokDriver turns (fake fetch)", () => {
     process.env.FAKE_GROK_RETRY_SCALE = "0.001";
     previousFetch = globalThis.fetch;
     calls = 0;
+    requestBodies = [];
     // SAFETY: the stub only returns real Response objects, the sole member
     // of fetch's return type this driver consumes.
-    globalThis.fetch = (async () => {
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(JSON.parse(String(init?.body ?? "{}")));
       const step = script.shift();
       calls++;
       if (!step || step.sse !== undefined) return sseResponse(step?.sse ?? SSE_BODY("done from fake grok"));
@@ -76,6 +79,44 @@ describe("GrokDriver turns (fake fetch)", () => {
       itemType: "assistant_text",
       text: "done from fake grok",
     });
+  });
+
+  it("sends transcript tool history and the current prompt exactly once", async () => {
+    script = [];
+    await create();
+    await instance.adapter.sendTurn({
+      threadId: "t-history",
+      system: "You are a test bot.",
+      transcript: [
+        { role: "user", text: "Find the report." },
+        {
+          role: "assistant",
+          text: "I will search.",
+          toolCalls: [{ id: "call-1", name: "search", arguments: '{"query":"report"}' }],
+        },
+        { role: "user", text: "", toolResults: [{ id: "call-1", result: "report.txt" }] },
+      ],
+      text: "Summarize it.",
+      tools: [{ name: "search", description: "Search files" }],
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    expect(requestBodies).toHaveLength(1);
+    expect(requestBodies[0]).toMatchObject({
+      messages: [
+        { role: "system", content: "You are a test bot." },
+        { role: "user", content: "Find the report." },
+        {
+          role: "assistant",
+          content: "I will search.",
+          tool_calls: [{ id: "call-1", type: "function", function: { name: "search", arguments: '{"query":"report"}' } }],
+        },
+        { role: "tool", tool_call_id: "call-1", content: "report.txt" },
+        { role: "user", content: "Summarize it." },
+      ],
+      tools: [{ type: "function", function: { name: "search", description: "Search files" } }],
+    });
+    expect(requestBodies[0].messages).toHaveLength(5);
   });
 
   it("keeps a final unterminated data line from the SSE stream", async () => {
