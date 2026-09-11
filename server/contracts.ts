@@ -338,6 +338,10 @@ export interface TurnToolHost {
 
 export interface TurnStartResult {
   turnId: TurnId;
+  /** False when the driver emitted a terminal event before provider launch.
+   * Callers must preserve that event while skipping successful-dispatch
+   * bookkeeping such as cursor freshness.  Omitted means dispatched. */
+  dispatched?: boolean;
 }
 
 export interface ProviderAdapter {

@@ -1157,7 +1157,9 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     process.env.FAKE_CLAUDE_DUMP = dump;
     process.env.FAKE_CLAUDE_HELP_PROBES = probes;
     await create();
-    await instance.adapter.sendTurn({ threadId: "t-unsupported", text: "go" });
+    await expect(instance.adapter.sendTurn({ threadId: "t-unsupported", text: "go" })).resolves.toMatchObject({
+      dispatched: false,
+    });
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: expect.stringContaining("Update Claude Code") }));
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "turn.completed", ok: false, stopReason: "spawn_error" }));
@@ -1185,7 +1187,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const pending = instance.adapter.sendTurn({ threadId: "t-stop-probe", text: "go" });
     expect(instance.adapter.hasSession?.("t-stop-probe")).toBe(true);
     await instance.adapter.interruptTurn("t-stop-probe");
-    await pending;
+    await expect(pending).resolves.toMatchObject({ dispatched: false });
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
     expect(recorder.events).toContainEqual(expect.objectContaining({ type: "turn.completed", ok: false, stopReason: "interrupted" }));
     expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);

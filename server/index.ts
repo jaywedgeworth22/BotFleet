@@ -3075,7 +3075,11 @@ async function startTurn(
           commsDepth,
         });
       } else {
-        await instance.adapter.sendTurn(turnInput);
+        const started = await instance.adapter.sendTurn(turnInput);
+        // A driver may settle before launch (for example, a failed capability
+        // preflight).  Its terminal event still drives fallback and cleanup,
+        // but it did not make this engine the thread's latest dispatcher.
+        if (started.dispatched === false) return;
       }
       // dispatched: the rewind is spent, and the old cursors are dead
       if (rewound) store.patchBot(bot.id, { rewound: false, resumeCursors: {} });

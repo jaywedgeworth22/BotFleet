@@ -39,6 +39,8 @@ let fakeQuotaCli: string;
 /** quota CLI held behind a file gate so work can queue before completion */
 let fakeGatedQuotaCli: string;
 let fakeQuotaGate: string;
+/** wrapper CLI whose version probe passes but strict-MCP help probe fails */
+let fakeUnsupportedClaudeCli: string;
 /** stands in for a host's `recall` CLI; its behaviour is switched per test
  * by writing a mode into ~/.botfleet/fake-recall-mode */
 let fakeRecallCli: string;
@@ -110,6 +112,17 @@ beforeAll(async () => {
     join(home, "fake-claude-gated-quota"),
     "quota",
     { keepDump: true, quotaGate: fakeQuotaGate },
+  );
+  fakeUnsupportedClaudeCli = join(home, "fake-claude-unsupported");
+  writeFileSync(
+    fakeUnsupportedClaudeCli,
+    [
+      "#!/usr/bin/env node",
+      'process.env.FAKE_CLAUDE_HELP = "unsupported";',
+      `await import(${JSON.stringify(pathToFileURL(FAKE_CLAUDE_CLI).href)});`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
   );
   // A stand-in for the operator's `recall` CLI.  "slow" sleeps past the old
   // 6s probe ceiling on purpose — that ceiling was under the real command's
@@ -3980,6 +3993,70 @@ describe("instance CLI override API", () => {
     expect(res.body.message).toContain("more than 64 KiB");
     expect(res.body.install).toBeUndefined();
   });
+
+  it("keeps the last successful dispatcher when Claude preflight blocks before launch", async () => {
+    const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+    const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
+    const claude2 = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude2");
+    const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+    const persistedTask = () => {
+      const bots = JSON.parse(readFileSync(join(home, ".botfleet", "bots.json"), "utf8")) as Array<{
+        id: string;
+        tasks: Array<{ threadId: string; lastInstanceId?: string; resumeCursors: Record<string, unknown> }>;
+      }>;
+      return bots.find((candidate) => candidate.id === bot.id)?.tasks.find((task) => task.threadId === bot.threadId);
+    };
+    const select = async (instanceId: string, model: string) => {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId, model },
+      })).status).toBe(200);
+    };
+    const interrupt = async () => {
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`, {})).status).toBe(200);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(false);
+    };
+
+    try {
+      await select("claude", claude.models.default);
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "establish a Claude cursor" })).status).toBe(202);
+      await expect.poll(() => persistedTask(), { timeout: 5_000 }).toMatchObject({
+        lastInstanceId: "claude",
+        resumeCursors: { claude: expect.any(String) },
+      });
+      const claudeCursor = persistedTask()?.resumeCursors.claude;
+      await interrupt();
+
+      await select("claude2", claude2.models.default);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "make the second engine current" })).status).toBe(202);
+      await expect.poll(() => persistedTask()?.lastInstanceId, { timeout: 5_000 }).toBe("claude2");
+      await interrupt();
+
+      expect((await api("PATCH", "/api/instances/claude", { cli: fakeUnsupportedClaudeCli })).status).toBe(200);
+      await select("claude", claude.models.default);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "fail before provider launch" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }, { timeout: 5_000 }).toBe(false);
+
+      expect(persistedTask()).toMatchObject({
+        lastInstanceId: "claude2",
+        resumeCursors: { claude: claudeCursor },
+      });
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PATCH", "/api/instances/claude", { cli: FAKE_CLAUDE_CLI })).status).toBe(200);
+    }
+  }, 20_000);
 
   it("rejects overlapping provider configuration writes", async () => {
     const slowConfigWrite = api("PUT", "/api/config", { box: { token: "box_slow" } });

@@ -581,7 +581,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           ...base(threadId, turnId), type: "turn.completed", ok: false,
           stopReason: preflightCancelled ? "interrupted" : "spawn_error", cost: null,
         });
-        return { turnId };
+        return { turnId, dispatched: false };
       }
       const computerMounts = turnComputerMounts(turn.integrations);
       // Scope approval to the host computer's own tools. A remote desktop's
