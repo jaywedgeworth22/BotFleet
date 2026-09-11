@@ -6,6 +6,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, request, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -41,6 +42,10 @@ let fakeGatedQuotaCli: string;
 let fakeQuotaGate: string;
 /** wrapper CLI whose version probe passes but strict-MCP help probe fails */
 let fakeUnsupportedClaudeCli: string;
+/** wrapper whose version probe can be held so fallback health stays pending */
+let fakeSlowProbeCli: string;
+let fakeSlowProbeGate: string;
+let fakeSlowProbeStarted: string;
 /** stands in for a host's `recall` CLI; its behaviour is switched per test
  * by writing a mode into ~/.botfleet/fake-recall-mode */
 let fakeRecallCli: string;
@@ -67,6 +72,26 @@ const uploadAvatar = async (mime = "image/png"): Promise<string> => {
   if (!name) throw new Error("attachment response did not include a filename");
   return `/api/attachments/${name}`;
 };
+
+const connectSocket = (path: string): Promise<Socket> => new Promise((resolve, reject) => {
+  let retriesLeft = 40;
+  const tryConnect = () => {
+    const socket = connect(path);
+    const onConnect = () => {
+      socket.removeListener("error", onError);
+      resolve(socket);
+    };
+    const onError = (error: NodeJS.ErrnoException) => {
+      socket.removeListener("connect", onConnect);
+      socket.destroy();
+      if (error.code === "ENOENT" && retriesLeft-- > 0) return void setTimeout(tryConnect, 25);
+      reject(error);
+    };
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+  };
+  tryConnect();
+});
 
 const statusWithHeaders = (headers: Record<string, string>): Promise<number> =>
   new Promise((resolve, reject) => {
@@ -124,6 +149,25 @@ beforeAll(async () => {
     ].join("\n"),
     { mode: 0o755 },
   );
+  fakeSlowProbeCli = join(home, "fake-claude-slow-probe");
+  fakeSlowProbeGate = join(home, "fake-slow-probe-gate");
+  fakeSlowProbeStarted = join(home, "fake-slow-probe-started");
+  writeFileSync(fakeSlowProbeGate, "release");
+  writeFileSync(
+    fakeSlowProbeCli,
+    [
+      "#!/usr/bin/env node",
+      'const { appendFileSync, existsSync } = await import("node:fs");',
+      `if (process.argv[2] === "--version" && !existsSync(${JSON.stringify(fakeSlowProbeGate)})) {`,
+      `  appendFileSync(${JSON.stringify(fakeSlowProbeStarted)}, "probe\\n");`,
+      `  while (!existsSync(${JSON.stringify(fakeSlowProbeGate)})) await new Promise((resolve) => setTimeout(resolve, 10));`,
+      "}",
+      "delete process.env.FAKE_CLAUDE_DUMP;",
+      `await import(${JSON.stringify(pathToFileURL(FAKE_CLAUDE_CLI).href)});`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
   // A stand-in for the operator's `recall` CLI.  "slow" sleeps past the old
   // 6s probe ceiling on purpose — that ceiling was under the real command's
   // measured cost, so a healthy corpus timed out on every single probe.
@@ -162,6 +206,7 @@ beforeAll(async () => {
         crasher: { driver: "claudeAgent", displayName: "Fixture Crasher", config: { cli: fakeCrashCli } },
         quota: { driver: "claudeAgent", displayName: "Fixture Quota", enabled: false, config: { cli: fakeQuotaCli } },
         gatedQuota: { driver: "claudeAgent", displayName: "Fixture Gated Quota", enabled: false, config: { cli: fakeGatedQuotaCli } },
+        slowProbe: { driver: "claudeAgent", displayName: "Fixture Slow Probe", enabled: false, config: { cli: fakeSlowProbeCli } },
       },
     }),
   );
@@ -1995,6 +2040,74 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("delivers a room approval to the fallback instance that opened it", async () => {
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude2 = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude2");
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", {
+      name: "Fallback approval owner",
+      memberIds: [bot.id],
+    })).body.group;
+    let socket: Socket | undefined;
+    try {
+      expect((await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "crasher",
+          model: claude2.models.default,
+          fallbacks: [{ instanceId: "claude2", model: claude2.models.default }],
+        },
+      })).status).toBe(200);
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "fail over, then ask" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots")).body;
+        const current = state.groups.find((candidate: { id: string }) => candidate.id === room.id);
+        return current?.messages.some((message: { tool?: { name?: string } }) =>
+          message.tool?.name?.startsWith("Fell over to"),
+        );
+      }, { timeout: 20_000 }).toBe(true);
+
+      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+      const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8")) as {
+        mcpConfig: { mcpServers: { ogb: { args: string[] } } };
+      };
+      socket = await connectSocket(dump.mcpConfig.mcpServers.ogb.args[1]);
+      const brokerAnswer = new Promise<{ behavior: string }>((resolve) => {
+        let buffer = "";
+        socket!.on("data", (chunk) => {
+          buffer += chunk;
+          const newline = buffer.indexOf("\n");
+          if (newline !== -1) resolve(JSON.parse(buffer.slice(0, newline)));
+        });
+      });
+      socket.write(JSON.stringify({
+        t: "ask",
+        id: "fallback-room-approval",
+        tool: "Bash",
+        input: { command: "echo safe" },
+      }) + "\n");
+      await expect.poll(async () => {
+        const transcript = await api("GET", `/api/threads/${room.threadId}/messages?limit=200`);
+        return transcript.body.messages.some(
+          (message: { card?: { requestId?: string } }) => message.card?.requestId === "fallback-room-approval",
+        );
+      }, { timeout: 5_000 }).toBe(true);
+
+      const answered = await api("POST", `/api/threads/${room.threadId}/respond`, {
+        requestId: "fallback-room-approval",
+        behavior: "allow",
+      });
+      expect(answered).toEqual({ status: 200, body: { ok: true, outcome: "allowed-once" } });
+      await expect(brokerAnswer).resolves.toMatchObject({ behavior: "allow" });
+    } finally {
+      socket?.destroy();
+      await api("POST", `/api/groups/${room.id}/interrupt`, { threadId: room.threadId });
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  }, 30_000);
+
   it("records a quota cooldown against the fallback engine that actually ran", async () => {
     expect((await api("PATCH", "/api/instances/quota", { enabled: true })).status).toBe(200);
     const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
@@ -2118,6 +2231,162 @@ describe("harness HTTP API", () => {
         expect((await api("PATCH", `/api/instances/${instanceId}`, { enabled: true })).status).toBe(200);
       }
       expect((await api("PATCH", "/api/instances/gatedQuota", { enabled: false })).status).toBe(200);
+    }
+  }, 40_000);
+
+  it("holds deferred fallback ownership across targeted and unrelated provider reloads", async () => {
+    // The harness's one-shot boot recovery scan runs 2.5s after startup.
+    // Let it inspect the empty fixture before creating deliberately busy bots.
+    await new Promise((resolve) => setTimeout(resolve, 2_700));
+    const otherInstances = ["claude", "claude2", "crasher", "quota"];
+    const activeBots: Array<{ id: string; threadId: string }> = [];
+    try {
+      writeFileSync(fakeSlowProbeGate, "release");
+      expect((await api("PATCH", "/api/instances/slowProbe", { enabled: true })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/gatedQuota", { enabled: true })).status).toBe(200);
+      for (const instanceId of otherInstances) {
+        expect((await api("PATCH", `/api/instances/${instanceId}`, { enabled: false })).status).toBe(200);
+      }
+      const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+      const gatedQuota = instances.find(
+        (instance: { instanceId: string }) => instance.instanceId === "gatedQuota",
+      );
+
+      const overlap = async (reloadInstanceId: "gatedQuota" | "claude", queueSuccessor: boolean) => {
+        writeFileSync(fakeSlowProbeGate, "release");
+        rmSync(fakeSlowProbeStarted, { force: true });
+        rmSync(fakeQuotaGate, { force: true });
+        rmSync(fakeClaudeDump, { force: true });
+        const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+        activeBots.push(bot);
+        expect((await api("PATCH", `/api/bots/${bot.id}`, {
+          modelSelection: {
+            instanceId: "gatedQuota",
+            model: gatedQuota.models.default,
+          },
+        })).status).toBe(200);
+        expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hold quota completion" })).status).toBe(202);
+        await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+
+        rmSync(fakeSlowProbeGate, { force: true });
+        const slowDescribe = api("GET", "/api/instances?fresh=1");
+        await expect.poll(() => existsSync(fakeSlowProbeStarted), { timeout: 5_000 }).toBe(true);
+        let reload: Promise<{ status: number; body: any }>;
+        if (reloadInstanceId === "claude") {
+          reload = api("PATCH", `/api/instances/${reloadInstanceId}`, { fullAuto: true });
+        }
+
+        writeFileSync(fakeQuotaGate, "release");
+        await expect.poll(async () => {
+          const transcript = await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`);
+          return transcript.body.messages.some(
+            (message: { text?: string }) => message.text?.includes("You've hit your session limit"),
+          );
+        }, { timeout: 5_000 }).toBe(true);
+
+        if (reloadInstanceId === "gatedQuota") {
+          reload = api("PATCH", `/api/instances/${reloadInstanceId}`, { fullAuto: true });
+          await expect.poll(async () => {
+            const transcript = await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`);
+            return transcript.body.messages.some((message: { tool?: { name?: string } }) =>
+              message.tool?.name?.includes("provider settings changed"),
+            );
+          }, { timeout: 5_000 }).toBe(true);
+        }
+
+        if (queueSuccessor) {
+          expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "run after reload" }))).toEqual({
+            status: 202,
+            body: expect.objectContaining({ ok: true, queued: true }),
+          });
+        }
+        const held = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        expect(held?.busy).toBe(true);
+
+        writeFileSync(fakeSlowProbeGate, "release");
+        expect((await slowDescribe).status).toBe(200);
+        expect((await reload!).status).toBe(200);
+        if (queueSuccessor) {
+          // The targeted reload suppresses the interrupted turn's fallback,
+          // then the completion fold drains this successor.  Its own quota
+          // response and launch dump prove it reached the replacement fleet.
+          await expect.poll(async () => {
+            const transcript = await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`);
+            let launchedQueuedPrompt = false;
+            try {
+              launchedQueuedPrompt = JSON.stringify(JSON.parse(readFileSync(fakeClaudeDump, "utf8"))).includes(
+                "run after reload",
+              );
+            } catch {
+              // The fake CLI replaces its dump atomically, but it may not
+              // have launched the successor yet.
+            }
+            return {
+              launchedQueuedPrompt,
+              queuedUserVisible: transcript.body.messages.some(
+                (message: { role?: string; text?: string }) =>
+                  message.role === "user" && message.text === "run after reload",
+              ),
+              quotaReplies: transcript.body.messages.filter(
+                (message: { text?: string }) => message.text?.includes("You've hit your session limit"),
+              ).length,
+            };
+          }, { timeout: 10_000 }).toEqual({
+            launchedQueuedPrompt: true,
+            queuedUserVisible: true,
+            quotaReplies: 2,
+          });
+        } else {
+          await expect.poll(async () => {
+            const state = (await api("GET", "/api/bots")).body.bots.find(
+              (candidate: { id: string }) => candidate.id === bot.id,
+            );
+            return {
+              busy: state?.busy,
+              fellOver: state?.messages.some((message: { tool?: { name?: string } }) =>
+                message.tool?.name?.startsWith("Fell over to"),
+              ),
+            };
+          }, { timeout: 10_000 }).toEqual({ busy: true, fellOver: true });
+        }
+
+        const beforeStop = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        if (beforeStop?.busy) {
+          const stop = await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+          expect(stop.body).toMatchObject({ ok: true, stopped: true });
+        }
+        await expect.poll(async () => {
+          const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+            (candidate: { id: string }) => candidate.id === bot.id,
+          );
+          return state?.busy;
+        }).toBe(false);
+        await api("DELETE", `/api/bots/${bot.id}`);
+        activeBots.splice(activeBots.indexOf(bot), 1);
+        expect((await api("PATCH", `/api/instances/${reloadInstanceId}`, { fullAuto: false })).status).toBe(200);
+      };
+
+      // Reloading the completed engine latches the old request, then drains
+      // the queued successor.  Reloading another engine preserves and starts
+      // the already-selected fallback after the replacement fleet is live.
+      await overlap("claude", false);
+      await overlap("gatedQuota", true);
+    } finally {
+      writeFileSync(fakeSlowProbeGate, "release");
+      writeFileSync(fakeQuotaGate, "release");
+      for (const bot of activeBots) {
+        await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+        await api("DELETE", `/api/bots/${bot.id}`);
+      }
+      for (const instanceId of otherInstances) {
+        expect((await api("PATCH", `/api/instances/${instanceId}`, { enabled: true })).status).toBe(200);
+      }
+      expect((await api("PATCH", "/api/instances/gatedQuota", { enabled: false, fullAuto: false })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/slowProbe", { enabled: false, fullAuto: false })).status).toBe(200);
     }
   }, 40_000);
 

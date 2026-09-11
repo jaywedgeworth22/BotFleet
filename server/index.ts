@@ -1021,6 +1021,9 @@ const toolMessageByItem = new Map<string, string>(); // threadId:itemId -> messa
 // actually looking for.  Cleared with the message mapping above it.
 const toolStartedAt = new Map<string, number>(); // threadId:itemId -> epoch ms
 const askMessageByRequest = new Map<string, string>(); // threadId:requestId -> messageId
+// The instance that emitted request.opened owns the live broker.  Persisted
+// model selection can still name the primary after this turn fell back.
+const askInstanceByRequest = new Map<string, string>(); // threadId:requestId -> instanceId
 
 /** Deliver a person's answer to the engine that asked, and tell the truth
  * about what happened. `unavailable` — the turn ended, the ask timed out,
@@ -1040,14 +1043,15 @@ async function answerRequest(
   // the askMessageByRequest entry — by the time the await returns, nobody
   // remembers which tool this requestId was about.
   const thread = store.messagesFor(threadId);
-  const cardMessageId = askMessageByRequest.get(`${threadId}:${requestId}`);
+  const requestKey = `${threadId}:${requestId}`;
+  const cardMessageId = askMessageByRequest.get(requestKey);
   // The map is an in-flight optimization and disappears on restart; the
   // durable transcript still carries the request id and its audit metadata.
   const cardMessage = cardMessageId
     ? thread.find((m) => m.id === cardMessageId)
     : thread.find((m) => m.card?.requestId === requestId);
   const card = cardMessage?.card;
-  const instance = registry.get(instanceId);
+  const instance = registry.get(askInstanceByRequest.get(requestKey) ?? instanceId);
   let outcome: RequestOutcome = "unavailable";
   if (instance) {
     try {
@@ -1056,6 +1060,7 @@ async function answerRequest(
       outcome = "unavailable";
     }
   }
+  if (outcome !== "unavailable") askInstanceByRequest.delete(requestKey);
   // The human's verdict, recorded only when it actually reached the engine:
   // `unavailable` means the action never ran, and a "user-approved" row
   // over a request nothing answered would be the audit log lying. A
@@ -1077,7 +1082,7 @@ async function answerRequest(
     // The in-flight map is memory-only. After a restart the card is still on
     // the thread, so fall back to the request it carries — otherwise an
     // unreachable approval is never closed and keeps owning the composer.
-    const messageId = askMessageByRequest.get(`${threadId}:${requestId}`);
+    const messageId = askMessageByRequest.get(requestKey);
     const thread = store.messagesFor(threadId);
     const existing = messageId
       ? thread.find((m) => m.id === messageId)
@@ -1085,7 +1090,8 @@ async function answerRequest(
     if (existing?.card && !existing.card.answered) {
       store.patchMessage(threadId, existing.id, { card: { ...existing.card, answered: "unavailable", dismissed: true } });
     }
-    if (messageId) askMessageByRequest.delete(`${threadId}:${requestId}`);
+    if (messageId) askMessageByRequest.delete(requestKey);
+    askInstanceByRequest.delete(requestKey);
     store.appendMessage(threadId, {
       role: "bot",
       kind: "activity",
@@ -1109,6 +1115,7 @@ function closeOpenApprovals(threadId: string): void {
     if (card.routineRequest) continue;
     store.patchMessage(threadId, message.id, { card: { ...card, answered: "unavailable", dismissed: true } });
     askMessageByRequest.delete(`${threadId}:${card.requestId}`);
+    askInstanceByRequest.delete(`${threadId}:${card.requestId}`);
   }
 }
 
@@ -1194,10 +1201,19 @@ async function interruptThreadEverywhere(threadId: string): Promise<InterruptOut
 /** Room turns re-enter the member engine after turn.completed so failover
  * does not race the sequential roster walk. */
 const pendingMemberFallback = new Map<string, { groupId: string; botId: string; selection: ModelSelection }>();
+type InterruptedTurn = {
+  botId: string;
+  threadId: string;
+  instanceId?: string;
+  dispatchId?: number;
+};
 /** Room waiters receive the terminal event synchronously.  Automatic fallback
  * may need an async health probe, so they await this fold before deciding
  * whether to advance the roster or retry the same member. */
 const completionFolds = new Map<string, Promise<void>>();
+/** The actual owner remains reload-visible while its terminal fold awaits
+ * fallback health.  ActiveTurnOwners has already settled by then. */
+const completionFoldOwners = new Map<string, InterruptedTurn & { token: symbol }>();
 
 /** Put a notification on the wire. Clients decide what to do with it — a
  * desktop notification now, a push to a paired phone later. */
@@ -1666,6 +1682,9 @@ bus.subscribe((event: RuntimeEvent) => {
       }
       break;
     case "request.opened": {
+      if (event.requestId && event.providerInstanceId) {
+        askInstanceByRequest.set(`${event.threadId}:${event.requestId}`, event.providerInstanceId);
+      }
       const permission = event.requestType === "permission";
       // Auto mode / always-allow: answer routine tool permissions for the
       // bot so it keeps working. A QUESTION always reaches the human — the
@@ -1863,6 +1882,7 @@ bus.subscribe((event: RuntimeEvent) => {
         }
         if (event.requestId) askMessageByRequest.delete(`${event.threadId}:${event.requestId}`);
       }
+      if (event.requestId) askInstanceByRequest.delete(`${event.threadId}:${event.requestId}`);
       break;
     }
     case "turn.retrying":
@@ -1901,6 +1921,7 @@ bus.subscribe((event: RuntimeEvent) => {
       turnUsage.set(event.threadId, { input: event.input, output: event.output, cachedInput: event.cachedInput });
       break;
     case "turn.completed": {
+      const completionToken = Symbol(event.turnId);
       const completionFold = (async () => {
       if (isToolCallsStopReason(event.stopReason)) return;
       const settledOwner = activeTurnOwners.settle(event.threadId, event.providerInstanceId);
@@ -1927,9 +1948,20 @@ bus.subscribe((event: RuntimeEvent) => {
           ? registry.get(event.providerInstanceId)?.models.default ?? fallbackPolicy?.model ?? ""
           : fallbackPolicy?.model ?? "",
       };
+      if (fallbackBot) {
+        completionFoldOwners.set(event.threadId, {
+          botId: fallbackBot.id,
+          threadId: event.threadId,
+          instanceId: actualSelection.instanceId,
+          dispatchId: settledOwner?.dispatchId,
+          token: completionToken,
+        });
+      }
       let fallbackUserMessage: Message | undefined;
       let fallbackSelection: ModelSelection | undefined;
       let deferredAutoFallback = false;
+      let waitedForProviderReload = false;
+      const fallbackHealthReloadGeneration = providerReloadGeneration;
       if (fallbackBot) {
         const fallbackKey = `${fallbackBot.id}:${event.threadId}`;
         const activeMsgs = store.activePath(event.threadId);
@@ -1967,6 +1999,29 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!chain && quotaOrCap) {
           deferredAutoFallback = true;
           chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId);
+        }
+        // A provider reload fences every dispatch, including a fallback to an
+        // unrelated instance.  Keep this completion fold and its busy owner
+        // intact until every queued reload has installed its replacement
+        // fleet, then re-check the Stop latch before choosing the next engine.
+        if (providerReloadInProgress) {
+          waitedForProviderReload = true;
+          await waitForProviderReloads();
+        }
+        // The earlier health result may have described the fleet before a
+        // reload that finished while its probes were still pending.  Rebuild
+        // from the replacement registry even when the in-progress flag has
+        // already returned to false.
+        if (deferredAutoFallback && providerReloadGeneration !== fallbackHealthReloadGeneration) {
+          for (;;) {
+            if (providerReloadInProgress) {
+              waitedForProviderReload = true;
+              await waitForProviderReloads();
+            }
+            const refreshedAt = providerReloadGeneration;
+            chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId);
+            if (!providerReloadInProgress && providerReloadGeneration === refreshedAt) break;
+          }
         }
         // A user stop ends the request; it does not license wandering to the
         // next engine.  Consume the latch BEFORE selectTurnFallback, because
@@ -2133,7 +2188,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // Queue-drain subscribers already ran while an automatic fallback's
       // health probe held the bot busy.  Retry the drains after this fold;
       // they remain no-ops when a fallback synchronously reclaimed the bot.
-      if (deferredAutoFallback && !providerReloadInProgress) {
+      if ((deferredAutoFallback || waitedForProviderReload) && !providerReloadInProgress) {
         drainQueuedSends();
         drainRoomQueue();
         drainConnectorResumes();
@@ -2147,6 +2202,9 @@ bus.subscribe((event: RuntimeEvent) => {
       completionFolds.set(event.threadId, completionFold);
       void completionFold.finally(() => {
         if (completionFolds.get(event.threadId) === completionFold) completionFolds.delete(event.threadId);
+        if (completionFoldOwners.get(event.threadId)?.token === completionToken) {
+          completionFoldOwners.delete(event.threadId);
+        }
       });
       break;
     }
@@ -4698,6 +4756,11 @@ function configStatus() {
 let providerReloadChain: Promise<void> = Promise.resolve();
 let pendingProviderReloads = 0;
 let providerReloadInProgress = false;
+let providerReloadGeneration = 0;
+
+async function waitForProviderReloads(): Promise<void> {
+  while (providerReloadInProgress) await providerReloadChain;
+}
 
 function serializeProviderReload(runProviderMutation: () => Promise<void>): Promise<void> {
   pendingProviderReloads += 1;
@@ -4708,6 +4771,7 @@ function serializeProviderReload(runProviderMutation: () => Promise<void>): Prom
   const run = providerReloadChain.then(runProviderMutation, runProviderMutation);
   const settled = run.then(
     () => {
+      providerReloadGeneration += 1;
       pendingProviderReloads -= 1;
       if (pendingProviderReloads === 0) {
         providerReloadInProgress = false;
@@ -4715,6 +4779,7 @@ function serializeProviderReload(runProviderMutation: () => Promise<void>): Prom
       }
     },
     (error) => {
+      providerReloadGeneration += 1;
       pendingProviderReloads -= 1;
       if (pendingProviderReloads === 0) providerReloadInProgress = false;
       throw error;
@@ -4735,23 +4800,18 @@ function reloadProviders(): Promise<void> {
 
 const RELOAD_REASON = "The turn was interrupted — provider settings changed";
 
-type InterruptedTurn = {
-  botId: string;
-  threadId: string;
-  instanceId?: string;
-  dispatchId?: number;
-};
-
 function activeInterruptedTurns(instanceId?: string): InterruptedTurn[] {
   return store.bots
     .filter((bot) => bot.busy)
     .map((bot) => {
       const owner = activeTurnOwners.forBot(bot.id);
+      const threadId = owner?.threadId ?? bot.inflightThreadId ?? bot.threadId;
+      const completing = completionFoldOwners.get(threadId);
       return {
         botId: bot.id,
-        threadId: owner?.threadId ?? bot.inflightThreadId ?? bot.threadId,
-        instanceId: owner?.selection.instanceId,
-        dispatchId: owner?.dispatchId,
+        threadId,
+        instanceId: owner?.selection.instanceId ?? completing?.instanceId,
+        dispatchId: owner?.dispatchId ?? completing?.dispatchId,
       };
     })
     .filter((turn) => !instanceId || turn.instanceId === instanceId);
@@ -4781,6 +4841,18 @@ function settleInterruptedBots(
     // it must not append an interruption or release a newer resource lease.
     if (turn.dispatchId !== undefined && !currentOwner && !completing) continue;
     latchInterruptedTurns([turn]);
+    // The terminal fold still owns busy/inflight state and will consume the
+    // latch after any fallback-health/reload waits.  Releasing resources here
+    // would let reload drains start a successor that the older fold can clear.
+    if (completing) {
+      store.appendMessage(inflight, {
+        role: "bot",
+        kind: "activity",
+        tool: { name: "error: turn interrupted — provider settings changed", ok: false },
+      });
+      routines?.failThread(inflight, reason);
+      continue;
+    }
     activeTurnOwners.clearThread(inflight);
     watchdog.settle(inflight);
     const vmThread = [...localVmThreadTargets.entries()].find(([, target]) =>
@@ -4801,10 +4873,6 @@ function settleInterruptedBots(
       tool: { name: "error: turn interrupted — provider settings changed", ok: false },
     });
     routines?.failThread(inflight, reason);
-    // A delivered terminal event still owns its completion fold.  Keep the
-    // bot fenced until that fold consumes the stop latch; otherwise a new
-    // same-thread dispatch can start and the old fold can release it.
-    if (completing) continue;
     const group = store.groupByThread(inflight);
     if (group?.busyBotId === b.id && groupSpeakers.get(inflight)?.botId === b.id) {
       groupSpeakers.delete(inflight);
@@ -7275,7 +7343,10 @@ const server = createServer(async (req, res) => {
         // existing server-side queue records it atomically for the next turn.
         if (bot.busy) {
           const instance = registry.get(bot.modelSelection.instanceId);
-          if (instance?.adapter.capabilities.queueing && instance.adapter.steer) {
+          // A reload can dispose the live adapter after steer accepts this
+          // message.  Hold it in the server queue until the replacement
+          // fleet is attached, then dispatch it as a fresh turn.
+          if (!providerReloadInProgress && instance?.adapter.capabilities.queueing && instance.adapter.steer) {
             const steered = await instance.adapter
               .steer(bot.threadId, promptWithReply(text, replyTo, cfg.profile?.name?.trim() || "User"))
               .catch(() => false);
