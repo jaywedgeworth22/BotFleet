@@ -244,3 +244,258 @@ describe("upsertSecret", () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 });
+
+describe("network failures and timeouts", () => {
+  it("wraps fetch timeout in InfisicalError with 504 and phase context", async () => {
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw timeoutErr;
+      }),
+    );
+
+    let caught: unknown;
+    try {
+      await login({
+        siteUrl: "https://app.infisical.example",
+        clientId: "client-1",
+        clientSecret: SENTINEL_CLIENT_SECRET,
+        timeoutMs: 5000,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(InfisicalError);
+    if (caught instanceof InfisicalError) {
+      expect(caught.statusCode).toBe(504);
+      expect(caught.message).toBe("Infisical login timed out after 5000 ms");
+    }
+  });
+
+  it("wraps listSecrets timeout in InfisicalError with 504", async () => {
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw timeoutErr;
+      }),
+    );
+
+    await expect(
+      listSecrets({
+        siteUrl: "https://app.infisical.example",
+        token: SENTINEL_TOKEN,
+        projectId: "proj-1",
+        environment: "prod",
+        secretPath: "/",
+        viewValues: false,
+        timeoutMs: 2500,
+      }),
+    ).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 504,
+      message: "Infisical secrets list timed out after 2500 ms",
+    });
+  });
+
+  it("wraps upsertSecret timeout in InfisicalError with 504", async () => {
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw timeoutErr;
+      }),
+    );
+
+    await expect(
+      upsertSecret({
+        siteUrl: "https://app.infisical.example",
+        token: SENTINEL_TOKEN,
+        projectId: "proj-1",
+        environment: "prod",
+        secretPath: "/",
+        name: "COMPOSIO_API_KEY",
+        value: "new-value",
+        timeoutMs: 3000,
+      }),
+    ).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 504,
+      message: "Infisical secret update timed out after 3000 ms",
+    });
+  });
+
+  it("wraps general network failure in InfisicalError with 502", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        throw new TypeError("fetch failed");
+      }),
+    );
+
+    await expect(
+      login({
+        siteUrl: "https://app.infisical.example",
+        clientId: "client-1",
+        clientSecret: SENTINEL_CLIENT_SECRET,
+      }),
+    ).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 502,
+      message: "Infisical login failed: fetch failed",
+    });
+  });
+
+  it("wraps listSecrets body streaming timeout in InfisicalError with 504", async () => {
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw timeoutErr;
+        },
+      } as unknown as Response)),
+    );
+
+    await expect(
+      listSecrets({
+        siteUrl: "https://app.infisical.example",
+        token: SENTINEL_TOKEN,
+        projectId: "proj-1",
+        environment: "prod",
+        secretPath: "/",
+        viewValues: true,
+        timeoutMs: 4000,
+      }),
+    ).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 504,
+      message: "Infisical secrets list timed out after 4000 ms",
+    });
+  });
+
+  it("throws 502 when listSecrets body has no secrets array", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ notSecrets: [] }), { status: 200 })),
+    );
+
+    await expect(
+      listSecrets({
+        siteUrl: "https://app.infisical.example",
+        token: SENTINEL_TOKEN,
+        projectId: "proj-1",
+        environment: "prod",
+        secretPath: "/",
+        viewValues: true,
+      }),
+    ).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 502,
+      message: "Infisical secrets list response carried no secrets array",
+    });
+  });
+
+  it("wraps login body streaming timeout in InfisicalError with 504", async () => {
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw timeoutErr;
+        },
+      } as unknown as Response)),
+    );
+
+    await expect(
+      login({
+        siteUrl: "https://app.infisical.example",
+        clientId: "client-1",
+        clientSecret: SENTINEL_CLIENT_SECRET,
+        timeoutMs: 4500,
+      }),
+    ).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 504,
+      message: "Infisical login timed out after 4500 ms",
+    });
+  });
+
+  it("discards JSON parser excerpts and secret snippets on malformed listSecrets response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError(`Unexpected token 'x' in JSON at position 10: "${SENTINEL_TOKEN}"`);
+        },
+      } as unknown as Response)),
+    );
+
+    let caught: unknown;
+    try {
+      await listSecrets({
+        siteUrl: "https://app.infisical.example",
+        token: SENTINEL_TOKEN,
+        projectId: "proj-1",
+        environment: "prod",
+        secretPath: "/",
+        viewValues: true,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(InfisicalError);
+    if (caught instanceof InfisicalError) {
+      expect(caught.statusCode).toBe(502);
+      expect(caught.message).toBe("Infisical secrets list failed: invalid response body");
+      expect(caught.message).not.toContain(SENTINEL_TOKEN);
+    }
+  });
+
+  it("discards JSON parser excerpts on malformed login response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError(`Unexpected token 'x' in JSON at position 10: "${SENTINEL_CLIENT_SECRET}"`);
+        },
+      } as unknown as Response)),
+    );
+
+    let caught: unknown;
+    try {
+      await login({
+        siteUrl: "https://app.infisical.example",
+        clientId: "client-1",
+        clientSecret: SENTINEL_CLIENT_SECRET,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(InfisicalError);
+    if (caught instanceof InfisicalError) {
+      expect(caught.statusCode).toBe(502);
+      expect(caught.message).toBe("Infisical login failed: invalid response body");
+      expect(caught.message).not.toContain(SENTINEL_CLIENT_SECRET);
+    }
+  });
+});
+
+
