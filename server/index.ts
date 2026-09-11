@@ -2381,6 +2381,9 @@ function drainRoomQueue() {
       round.hop,
       new Set(),
       round.cardContinuation,
+      undefined,
+      undefined,
+      round.turnSelection,
     ).catch((error) => {
       store.appendMessage(round.threadId, {
         role: "bot",
@@ -3848,7 +3851,7 @@ async function runGroupMemberTurn(
     : Boolean(group && store.groupTaskByThread(group.id, threadId));
   if (!group || !bot || !ownsThread) return false;
   if (providerReloadInProgress) {
-    queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation }, Date.now());
+    queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation, turnSelection }, Date.now());
     return true;
   }
   spoken.add(botId);
@@ -3875,7 +3878,7 @@ async function runGroupMemberTurn(
     // rather than being dropped.  It used to say "skipped this round" and
     // lose the work, which reads as the bot refusing and leaves saying it
     // again as the only recovery.
-    const queued = queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation }, Date.now());
+    const queued = queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation, turnSelection }, Date.now());
     const message = queued
       ? `${bot.name} is busy in another conversation — queued for when it frees up`
       : `${bot.name} is busy in another conversation — already queued`;
@@ -3923,7 +3926,7 @@ async function runGroupMemberTurn(
   // room operation before it starts a process.
   if (isCancelled?.()) return false;
   if (providerReloadInProgress) {
-    queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation }, Date.now());
+    queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation, turnSelection }, Date.now());
     return true;
   }
   // A reload that completed while discovery was awaiting replaced the
@@ -3949,7 +3952,7 @@ async function runGroupMemberTurn(
   if (readyBot.busy) {
     // Same race, later: another turn claimed this bot while connected-app
     // setup was in flight.  Queue it for the same reason.
-    const queued = queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation }, Date.now());
+    const queued = queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation, turnSelection }, Date.now());
     const message = queued
       ? `${bot.name} became busy in another conversation — queued for when it frees up`
       : `${bot.name} became busy in another conversation — already queued`;
@@ -4813,6 +4816,17 @@ async function waitForProviderReloads(): Promise<void> {
   while (providerReloadInProgress) await providerReloadChain;
 }
 
+function finishProviderReloadMutation(): void {
+  providerReloadGeneration += 1;
+  pendingProviderReloads -= 1;
+  if (pendingProviderReloads !== 0) return;
+  providerReloadInProgress = false;
+  // Success and failure both lower the global fence.  Unaffected engines can
+  // accept deferred work after a failed mutation, and the original rejection
+  // still reaches its settings caller through serializeProviderReload.
+  drainProviderReloadContinuations();
+}
+
 function serializeProviderReload(runProviderMutation: () => Promise<void>): Promise<void> {
   pendingProviderReloads += 1;
   // Fence dispatch as soon as a mutation is queued, including the gap
@@ -4821,18 +4835,9 @@ function serializeProviderReload(runProviderMutation: () => Promise<void>): Prom
   providerReloadInProgress = true;
   const run = providerReloadChain.then(runProviderMutation, runProviderMutation);
   const settled = run.then(
-    () => {
-      providerReloadGeneration += 1;
-      pendingProviderReloads -= 1;
-      if (pendingProviderReloads === 0) {
-        providerReloadInProgress = false;
-        drainProviderReloadContinuations();
-      }
-    },
+    () => finishProviderReloadMutation(),
     (error) => {
-      providerReloadGeneration += 1;
-      pendingProviderReloads -= 1;
-      if (pendingProviderReloads === 0) providerReloadInProgress = false;
+      finishProviderReloadMutation();
       throw error;
     },
   );

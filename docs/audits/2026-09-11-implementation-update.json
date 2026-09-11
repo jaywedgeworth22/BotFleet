@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-11T14:49:47-05:00",
+  "updatedAt": "2026-09-11T16:12:10-05:00",
   "timezone": "America/Chicago",
   "baselineAudit": "2026-09-09-findings.json",
   "baselineCommit": "121cb85aa3ebb85cb2d5b9233bc69838979a88f7",
@@ -17,6 +17,12 @@
     "verification": "Fresh GitHub Dependabot REST query after merge; snapshot on 2026-09-11"
   },
   "additionalIssues": [
+    {
+      "number": 321,
+      "state": "open",
+      "boardId": "6ca81ed5c9764eea8a8e1f710c3a281c",
+      "summary": "Preserve exact VPS lease ownership across delayed final screenshots so the workspace SSH alias guard remains effective"
+    },
     {
       "number": 319,
       "state": "open",
