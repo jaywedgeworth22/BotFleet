@@ -431,6 +431,71 @@ describe("network failures and timeouts", () => {
       message: "Infisical login timed out after 4500 ms",
     });
   });
+
+  it("discards JSON parser excerpts and secret snippets on malformed listSecrets response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError(`Unexpected token 'x' in JSON at position 10: "${SENTINEL_TOKEN}"`);
+        },
+      } as unknown as Response)),
+    );
+
+    let caught: unknown;
+    try {
+      await listSecrets({
+        siteUrl: "https://app.infisical.example",
+        token: SENTINEL_TOKEN,
+        projectId: "proj-1",
+        environment: "prod",
+        secretPath: "/",
+        viewValues: true,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(InfisicalError);
+    if (caught instanceof InfisicalError) {
+      expect(caught.statusCode).toBe(502);
+      expect(caught.message).toBe("Infisical secrets list failed: invalid response body");
+      expect(caught.message).not.toContain(SENTINEL_TOKEN);
+    }
+  });
+
+  it("discards JSON parser excerpts on malformed login response", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw new SyntaxError(`Unexpected token 'x' in JSON at position 10: "${SENTINEL_CLIENT_SECRET}"`);
+        },
+      } as unknown as Response)),
+    );
+
+    let caught: unknown;
+    try {
+      await login({
+        siteUrl: "https://app.infisical.example",
+        clientId: "client-1",
+        clientSecret: SENTINEL_CLIENT_SECRET,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(InfisicalError);
+    if (caught instanceof InfisicalError) {
+      expect(caught.statusCode).toBe(502);
+      expect(caught.message).toBe("Infisical login failed: invalid response body");
+      expect(caught.message).not.toContain(SENTINEL_CLIENT_SECRET);
+    }
+  });
 });
 
 

@@ -92,7 +92,8 @@ export async function login({
   try {
     rawBody = await res.json();
   } catch (err) {
-    throw toInfisicalError(err, "login", timeoutMs);
+    if (isTimeoutError(err)) throw toInfisicalError(err, "login", timeoutMs);
+    throw new InfisicalError("Infisical login failed: invalid response body", 502);
   }
   const body = rawBody && typeof rawBody === "object" ? (rawBody as { accessToken?: unknown }) : null;
   const token = body && typeof body.accessToken === "string" ? body.accessToken : "";
@@ -159,7 +160,8 @@ export async function listSecrets({
   try {
     listRawBody = await res.json();
   } catch (err) {
-    throw toInfisicalError(err, "secrets list", timeoutMs);
+    if (isTimeoutError(err)) throw toInfisicalError(err, "secrets list", timeoutMs);
+    throw new InfisicalError("Infisical secrets list failed: invalid response body", 502);
   }
   const body = listRawBody && typeof listRawBody === "object" ? (listRawBody as { secrets?: unknown }) : null;
   if (!Array.isArray(body?.secrets)) {
