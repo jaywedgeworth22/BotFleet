@@ -265,6 +265,10 @@ describe("turn transition wiring", () => {
     expect(roomTurn.indexOf("store.patchBot(bot.id, { inflightThreadId: threadId })")).toBeLessThan(
       roomTurn.indexOf("activeTurnOwners.claim(threadId"),
     );
+    expect(roomTurn.match(/if \(providerReloadInProgress\)/g)).toHaveLength(2);
+    expect(roomTurn.indexOf("instance = registry.get(selection.instanceId)")).toBeLessThan(
+      roomTurn.indexOf("activeTurnOwners.claim(threadId"),
+    );
     expect(completion).toContain("inflightThreadId: undefined");
     expect(reload.indexOf("latchInterruptedTurns(affectedTurns)")).toBeLessThan(
       reload.indexOf("bus.detachAll()"),

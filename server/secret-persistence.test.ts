@@ -189,7 +189,10 @@ describe("the fingerprint baseline and the reload fence", () => {
     // Settings routes only; Sync Now and a late `onApplied` reach the reload
     // on their own.
     expect(INDEX_SOURCE).toContain("let providerReloadChain: Promise<void> = Promise.resolve();");
-    expect(INDEX_SOURCE).toMatch(/function reloadProviders\(\): Promise<void> \{[\s\S]{0,400}?providerReloadChain\.then\(/);
+    expect(INDEX_SOURCE).toMatch(/function serializeProviderReload[\s\S]{0,800}?providerReloadChain\.then\(/);
+    expect(INDEX_SOURCE).toMatch(
+      /function reloadProviders\(\): Promise<void> \{[\s\S]{0,120}?serializeProviderReload\(runProviderReload\)/,
+    );
     expect(INDEX_SOURCE).toContain("async function runProviderReload()");
   });
 

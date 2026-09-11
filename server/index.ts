@@ -3740,7 +3740,7 @@ async function runGroupMemberTurn(
   }
   spoken.add(botId);
   const selection = turnSelection ?? bot.modelSelection;
-  const instance = registry.get(selection.instanceId);
+  let instance = registry.get(selection.instanceId);
   const userName = cfg.profile?.name?.trim() || "User";
   if (!instance) {
     const message = `${bot.name}'s model is unavailable`;
@@ -3809,6 +3809,25 @@ async function runGroupMemberTurn(
   // the bot. An interrupt during that setup window must still stop the queued
   // room operation before it starts a process.
   if (isCancelled?.()) return false;
+  if (providerReloadInProgress) {
+    queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation }, Date.now());
+    return true;
+  }
+  // A reload that completed while discovery was awaiting replaced the
+  // registry object.  Resolve it again so this dispatch can never retain an
+  // adapter that was stopped or detached during setup.
+  instance = registry.get(selection.instanceId);
+  if (!instance) {
+    const message = `${bot.name}'s model became unavailable during setup`;
+    store.appendMessage(threadId, {
+      role: "bot",
+      kind: "activity",
+      from: { botId: bot.id, name: bot.name, color: bot.color },
+      tool: { name: `error: ${message}`, ok: false },
+    });
+    onDispatchError?.(message);
+    return true;
+  }
   // A 1:1 or another room turn may have claimed this bot while connected-app
   // setup was in flight. Re-check immediately before the synchronous claim so
   // one bot can never own two provider processes.
