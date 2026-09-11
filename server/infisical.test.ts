@@ -461,7 +461,7 @@ describe("writeSecret", () => {
     expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("written-value");
   });
 
-  it("rejects writeSecret when the post-upsert verification refresh fails", async () => {
+  it("rejects writeSecret when the post-upsert verification refresh fails and preserves snapshot", async () => {
     withSettings({ writeThrough: true });
     let patchCount = 0;
     vi.stubGlobal(
@@ -483,7 +483,34 @@ describe("writeSecret", () => {
       message: expect.stringMatching(/verification refresh failed/i),
     });
     expect(patchCount).toBe(1);
-    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("new-value");
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBeUndefined();
+  });
+
+  it("preserves snapshot published before a failed verification refresh", async () => {
+    withSettings({ writeThrough: true });
+    vi.stubGlobal(
+      "fetch",
+      loginThenList([{ secretKey: "COMPOSIO_API_KEY", secretValue: "published-canonical" }]),
+    );
+    await infisical.refresh("manual");
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("published-canonical");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        if (init?.method === "PATCH") return new Response("{}", { status: 200 });
+        return new Response("internal error", { status: 500 });
+      }),
+    );
+
+    await expect(infisical.writeSecret("COMPOSIO_API_KEY", "attempted-value")).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 502,
+      writeLanded: true,
+    });
+
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("published-canonical");
   });
 
   it("reconciles ambiguous upsert timeouts when the secret actually landed in Infisical", async () => {

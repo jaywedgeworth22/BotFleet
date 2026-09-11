@@ -452,15 +452,10 @@ class InfisicalManager {
     const refreshed = await this.refresh("settings");
     if (refreshed.lastError || refreshed.stale) {
       // Upsert landed in Infisical, but verification refresh failed.
-      // Update in-memory snapshot so the landed write is not lost to the
-      // running process, but throw writeLanded InfisicalError so callers
-      // know the write reached the vault while verification failed.
-      const currentSnapshot = infisicalSnapshot() ?? new Map<string, string>();
-      const nextValues = new Map(currentSnapshot);
-      nextValues.set(name, value);
-      const currentNames = snapshotVaultNames();
-      const nextNames = currentNames.includes(name) ? currentNames : [...currentNames, name];
-      setInfisicalSnapshot(nextValues, nextNames);
+      // Do not overwrite the in-memory snapshot with unverified values:
+      // any valid snapshot published by a preceding or concurrent refresh
+      // must be preserved. Throw writeLanded InfisicalError so callers know
+      // the write reached the vault while verification failed.
       throw new InfisicalError(
         `Secret "${name}" was updated in Infisical, but verification refresh failed: ${refreshed.lastError ?? "vault snapshot was not updated"}`,
         502,
