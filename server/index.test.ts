@@ -34,6 +34,8 @@ let staticDir: string;
 let fakeClaudeDump: string;
 /** wrapper CLI that always crashes before a result — drives a real failover */
 let fakeCrashCli: string;
+/** wrapper CLI that returns a successful-looking quota message */
+let fakeQuotaCli: string;
 /** stands in for a host's `recall` CLI; its behaviour is switched per test
  * by writing a mode into ~/.botfleet/fake-recall-mode */
 let fakeRecallCli: string;
@@ -86,6 +88,12 @@ beforeAll(async () => {
     `#!/bin/sh\nunset FAKE_CLAUDE_DUMP\nFAKE_CLAUDE_MODE=exit-early exec ${JSON.stringify(FAKE_CLAUDE_CLI)} "$@"\n`,
     { mode: 0o755 },
   );
+  fakeQuotaCli = join(home, "fake-claude-quota");
+  writeFileSync(
+    fakeQuotaCli,
+    `#!/bin/sh\nunset FAKE_CLAUDE_DUMP\nFAKE_CLAUDE_MODE=quota exec ${JSON.stringify(FAKE_CLAUDE_CLI)} "$@"\n`,
+    { mode: 0o755 },
+  );
   // A stand-in for the operator's `recall` CLI.  "slow" sleeps past the old
   // 6s probe ceiling on purpose — that ceiling was under the real command's
   // measured cost, so a healthy corpus timed out on every single probe.
@@ -122,6 +130,7 @@ beforeAll(async () => {
         // adapter from bot.modelSelection stops the wrong engine.
         claude2: { driver: "claudeAgent", displayName: "Fixture Claude Two", config: { cli: FAKE_CLAUDE_CLI } },
         crasher: { driver: "claudeAgent", displayName: "Fixture Crasher", config: { cli: fakeCrashCli } },
+        quota: { driver: "claudeAgent", displayName: "Fixture Quota", enabled: false, config: { cli: fakeQuotaCli } },
       },
     }),
   );
@@ -1954,6 +1963,54 @@ describe("harness HTTP API", () => {
       await api("DELETE", `/api/bots/${bot.id}`);
     }
   });
+
+  it("records a quota cooldown against the fallback engine that actually ran", async () => {
+    expect((await api("PATCH", "/api/instances/quota", { enabled: true })).status).toBe(200);
+    const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+    const crasher = instances.find((instance: { instanceId: string }) => instance.instanceId === "crasher");
+    const quota = instances.find((instance: { instanceId: string }) => instance.instanceId === "quota");
+    expect(crasher?.snapshot.state).toBe("available");
+    expect(quota?.snapshot.state).toBe("available");
+
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "crasher",
+          model: crasher.models.default,
+          fallbacks: [{ instanceId: "quota", model: quota.models.default }],
+        },
+      })).status).toBe(200);
+
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "fail over into quota" })).status).toBe(202);
+      await expect.poll(async () => {
+        const quotas = (await api("GET", "/api/quotas")).body.cooldowns as Array<{
+          botId: string;
+          instanceId: string;
+          model: string;
+        }>;
+        return quotas.find((cooldown) => cooldown.botId === bot.id);
+      }, { timeout: 20_000 }).toMatchObject({
+        botId: bot.id,
+        instanceId: "quota",
+        model: quota.models.default,
+      });
+
+      const cooldowns = (await api("GET", "/api/quotas")).body.cooldowns as Array<{
+        botId: string;
+        instanceId: string;
+      }>;
+      expect(cooldowns.some((cooldown) => cooldown.botId === bot.id && cooldown.instanceId === "crasher")).toBe(false);
+      const after = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(after.modelSelection.instanceId).toBe("crasher");
+      expect(after.busy).toBe(false);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PATCH", "/api/instances/quota", { enabled: false })).status).toBe(200);
+    }
+  }, 30_000);
 
   it("reports stopped:false when the stop matched no live turn", async () => {
     // An idle bot has no session on any instance. The old endpoint answered a

@@ -4,7 +4,7 @@
 // scripted session. Failure modes are toggled by env var, mirroring how
 // the real thing misbehaves:
 //
-//   FAKE_CLAUDE_MODE   happy (default) | exit-early | hang | malformed
+//   FAKE_CLAUDE_MODE   happy (default) | exit-early | hang | malformed | quota
 //                      | stream (partial-message text deltas before the
 //                        whole-message frame, plus subagent noise to drop)
 //   FAKE_CLAUDE_DUMP   path to write {argv, env, prompt, mcpConfig} as JSON,
@@ -165,6 +165,26 @@ const playTurn = (prompt: JsonValue) => {
 
   if (mode === "malformed") {
     process.stdout.write("this is not json\n{broken\n");
+  }
+
+  if (mode === "quota") {
+    out({
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "You've hit your session limit · resets in 30 minutes" }],
+        usage: { input_tokens: 3, cache_read_input_tokens: 0, output_tokens: 1 },
+      },
+    });
+    out({
+      type: "result",
+      is_error: false,
+      stop_reason: "end_turn",
+      total_cost_usd: 0,
+      usage: { input_tokens: 3, cache_read_input_tokens: 0, output_tokens: 1 },
+    });
+    turnRunning = false;
+    finishIfDone();
+    return;
   }
 
   if (mode === "stream") {

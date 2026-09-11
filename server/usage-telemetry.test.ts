@@ -426,4 +426,11 @@ describe("harness telemetry wiring", () => {
     expect(fromEngine.length).toBe(2);
     expect(indexSource).not.toMatch(/driverKind:\s*\w+\.modelSelection\.instanceId/);
   });
+
+  it("attributes instance and model usage to the per-turn selection", () => {
+    expect(indexSource.match(/instanceId:\s*actualSelection\.instanceId\b/g)?.length).toBeGreaterThanOrEqual(2);
+    expect(indexSource.match(/modelId:\s*actualSelection\.model\b/g)).toHaveLength(2);
+    expect(indexSource).not.toMatch(/instanceId:\s*(?:bot|roomBot)\.modelSelection\.instanceId/);
+    expect(indexSource).not.toMatch(/modelId:\s*(?:bot|roomBot)\.modelSelection\.model/);
+  });
 });

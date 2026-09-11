@@ -145,6 +145,14 @@ import { buildTurnTools } from "./turn-tools.ts";
 import { isToolCallsStopReason, sendTurnWithToolLoop } from "./tool-executor.ts";
 import { createTurnToolHost } from "./tools/host.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
+import {
+  ActiveTurnOwners,
+  eligibleAutoFallbackChain,
+  inspectThreadOwners,
+  interruptThreadOwners,
+  mayReleaseStalledTurn,
+  type InterruptOutcome,
+} from "./turn-safety.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
@@ -1166,41 +1174,21 @@ const stoppedTurns = new Set<string>();
  *
  * Failures are logged rather than swallowed: an interrupt that throws is
  * exactly the case the old blanket `.catch(() => {})` made invisible. */
-/** Outcome of a stop request.  `stopped` and `refused` are distinct on purpose:
- * "nothing was running" and "a driver refused to stop" are opposite problems, and
- * the second is exactly the case this endpoint exists to make visible. */
-type InterruptOutcome = { stopped: boolean; refused: boolean };
-
 async function interruptThreadEverywhere(threadId: string): Promise<InterruptOutcome> {
-  const owners = registry.instances().filter((instance) => {
-    try {
-      return instance.adapter.hasSession(threadId);
-    } catch (error) {
-      console.error(`interrupt: hasSession failed on instance ${instance.instanceId}:`, error);
-      return false;
-    }
-  });
-  const results = await Promise.all(
-    owners.map(async (instance) => {
-      try {
-        await instance.adapter.interruptTurn(threadId);
-        return true;
-      } catch (error) {
-        // A driver that refused to stop has NOT stopped: report the failure
-        // rather than letting the caller answer a hopeful stopped:true.
-        console.error(`interrupt failed on instance ${instance.instanceId} for thread ${threadId}:`, error);
-        return false;
-      }
-    }),
+  return interruptThreadOwners(
+    registry.instances(),
+    threadId,
+    (instanceId, error) => console.error(`interrupt: hasSession failed on instance ${instanceId}:`, error),
+    (instanceId, error) => console.error(`interrupt failed on instance ${instanceId} for thread ${threadId}:`, error),
   );
-  // A refusal is only interesting when it was the reason nothing stopped: if some
-  // other owner did stop the turn, the user got what they asked for.
-  const stopped = results.some(Boolean);
-  return { stopped, refused: !stopped && results.some((ok) => ok === false) };
 }
 /** Room turns re-enter the member engine after turn.completed so failover
  * does not race the sequential roster walk. */
-const pendingMemberFallback = new Map<string, { groupId: string; botId: string }>();
+const pendingMemberFallback = new Map<string, { groupId: string; botId: string; selection: ModelSelection }>();
+/** Room waiters receive the terminal event synchronously.  Automatic fallback
+ * may need an async health probe, so they await this fold before deciding
+ * whether to advance the roster or retry the same member. */
+const completionFolds = new Map<string, Promise<void>>();
 
 /** Put a notification on the wire. Clients decide what to do with it — a
  * desktop notification now, a push to a paired phone later. */
@@ -1213,6 +1201,7 @@ function notify(notification: Notification | null) {
 // Group threads: the fold needs to know WHO is talking — the turn engine
 // records the active member here before dispatching its turn.
 const groupSpeakers = new Map<string, { botId: string; name: string; color: string }>();
+const activeTurnOwners = new ActiveTurnOwners();
 
 // A Sentry span only ever sees a thread id.  This is what turns one into the
 // bot, the engine, and the room behind it, so a failed turn in the Issues
@@ -1223,12 +1212,13 @@ configureTurnIdentity((threadId) => {
   const group = store.groupByThread(threadId);
   const speaker = groupSpeakers.get(threadId);
   const bot = speaker ? store.bot(speaker.botId) : store.botByThread(threadId);
+  const active = activeTurnOwners.current(threadId);
   if (!bot && !group) return null;
   return {
     botId: bot?.id,
     botName: bot?.name ?? speaker?.name,
-    instanceId: bot?.modelSelection.instanceId,
-    model: bot?.modelSelection.model,
+    instanceId: active?.selection.instanceId ?? bot?.modelSelection.instanceId,
+    model: active?.selection.model ?? bot?.modelSelection.model,
     roomId: group?.id,
     roomName: group?.name,
   };
@@ -1257,6 +1247,54 @@ const roomStallCompletions = new RoomTurnStallRegistry();
 // should never fire — which is exactly why it is worth six lines: if it ever
 // does, the log line is the bug report.
 const STUCK_TURN_SWEEP_MS = 1_800_000;
+
+function releaseStalledTurnIfUnowned(
+  turn: { threadId: string; botId: string },
+  stalledDispatchId: number | undefined,
+): void {
+  // The stalled entry was removed before onStall ran.  A watched entry now
+  // belongs to a newer dispatch on the same conversation, so this old grace
+  // callback must not release its setup window.
+  const currentOwner = activeTurnOwners.current(turn.threadId);
+  const newerTurnClaimed = currentOwner !== undefined && currentOwner.dispatchId !== stalledDispatchId;
+  const newerTurnWatching = watchdog.watching(turn.threadId);
+  const inspection = inspectThreadOwners(
+    registry.instances(),
+    turn.threadId,
+    (instanceId, error) => console.error(`watchdog: hasSession failed on instance ${instanceId}:`, error),
+  );
+  if (!mayReleaseStalledTurn(newerTurnClaimed || newerTurnWatching, inspection)) {
+    const reason = newerTurnClaimed || newerTurnWatching
+      ? "a newer dispatch owns this conversation"
+      : inspection.inspectionFailed
+      ? "runtime ownership could not be verified"
+      : `${inspection.owners.map((owner) => owner.instanceId).join(", ")} still owns the provider process`;
+    console.error(`watchdog: retaining bot and computer ownership for stalled thread ${turn.threadId} — ${reason}`);
+    return;
+  }
+
+  activeTurnOwners.clearThread(turn.threadId);
+  turnUsage.delete(turn.threadId);
+  releaseLocalVmThread(turn.threadId);
+  const group = store.groupByThread(turn.threadId);
+  const speaker = groupSpeakers.get(turn.threadId);
+  if (group && group.busyBotId === turn.botId && speaker?.botId === turn.botId) {
+    groupSpeakers.delete(turn.threadId);
+    store.patchGroup(group.id, { busyBotId: null, unread: true });
+  }
+  const bot = store.bot(turn.botId);
+  if (!bot?.busy || (bot.inflightThreadId && bot.inflightThreadId !== turn.threadId)) return;
+  stopScreenPoller(bot.id);
+  if (activeVpsThreads.get(bot.id) === turn.threadId) activeVpsThreads.delete(bot.id);
+  store.setActivity(bot.id, "idle");
+  store.patchBot(bot.id, { inflightThreadId: undefined });
+  // This grace fallback replaces a missing turn.completed event.  Release
+  // every kind of work that may have queued behind this bot.
+  drainQueuedSends();
+  drainConnectorResumes();
+  drainSecretResumes();
+}
+
 const watchdog = new TurnWatchdog({
   stallMs: TURN_STALL_MS,
   checkMs: 60_000,
@@ -1278,53 +1316,38 @@ const watchdog = new TurnWatchdog({
   },
   onStall: (turn) => {
     repeats.settle(turn.threadId);
-    const bot = store.bot(turn.botId);
-    const instance = bot ? registry.get(bot.modelSelection.instanceId) : null;
-    void instance?.adapter.interruptTurn(turn.threadId).catch(() => {});
+    const stalledDispatchId = activeTurnOwners.current(turn.threadId)?.dispatchId;
     const minutes = Math.round(TURN_STALL_MS / 60_000);
-    store.appendMessage(turn.threadId, {
-      role: "bot",
-      kind: "activity",
-      tool: { name: `error: no activity for ${minutes} minutes — the turn was stopped`, ok: false },
-    });
+    // The watchdog is a terminal decision for this user request.  Drivers
+    // commonly report a killed child as exit_before_result, which otherwise
+    // looks eligible for model fallback.
+    stoppedTurns.add(`${turn.botId}:${turn.threadId}`);
+    fallbackAttemptByTurn.delete(`${turn.botId}:${turn.threadId}`);
     finalizeDelegationWatch(turn.threadId, false, "", "Delegated turn stalled and was stopped");
-    // The run receipt settles here too: a wedged provider may never send
-    // turn.completed, and a run left `running` holds a slot against the
-    // webhook and resource-trigger pending caps until the app restarts.
     routines?.failThread(turn.threadId, `no activity for ${minutes} minutes — the turn was stopped`);
-    turnUsage.delete(turn.threadId);
     roomStallCompletions.stall(turn.threadId);
-    // The 6s grace is about bot busy, not the VM fence. Release the lease
-    // immediately so another thread can claim the desktop; releaseLocalVmThread
-    // is a no-op when this thread never held one, and turn.completed is safe
-    // to call again.
-    releaseLocalVmThread(turn.threadId);
-    // ACP interruption settles within five seconds; other adapters settle
-    // sooner. Keep ownership during that grace period so another turn cannot
-    // overlap the process we are stopping. The normal turn.completed fold
-    // clears it first when the adapter responds.
-    const release = setTimeout(() => {
-      const group = store.groupByThread(turn.threadId);
-      const speaker = groupSpeakers.get(turn.threadId);
-      if (group && group.busyBotId === turn.botId && speaker?.botId === turn.botId) {
-        groupSpeakers.delete(turn.threadId);
-        store.patchGroup(group.id, { busyBotId: null, unread: true });
+    void interruptThreadEverywhere(turn.threadId).then((outcome) => {
+      const retained = outcome.inspectionFailed || (!outcome.stopped && outcome.ownerCount > 0);
+      store.appendMessage(turn.threadId, {
+        role: "bot",
+        kind: "activity",
+        tool: {
+          name: retained
+            ? `error: no activity for ${minutes} minutes — the provider process could not be stopped and still owns this bot`
+            : `error: no activity for ${minutes} minutes — the turn was stopped`,
+          ok: false,
+        },
+      });
+      if (retained) {
+        console.error(`watchdog: stalled thread ${turn.threadId} could not be stopped; retaining bot and computer ownership`);
+        return;
       }
-      const currentBot = store.bot(turn.botId);
-      if (currentBot?.busy) {
-        stopScreenPoller(currentBot.id);
-        if (activeVpsThreads.get(currentBot.id) === turn.threadId) activeVpsThreads.delete(currentBot.id);
-        store.setActivity(currentBot.id, "idle");
-        store.patchBot(currentBot.id, { inflightThreadId: undefined });
-        // The grace fallback replaces a missing turn.completed event. Release
-        // every kind of work that may have queued behind this bot, including
-        // connector and credential continuations.
-        drainQueuedSends();
-        drainConnectorResumes();
-        drainSecretResumes();
-      }
-    }, 6_000);
-    release.unref?.();
+      // An accepted interrupt can return before its child exits.  The normal
+      // turn.completed fold releases first; this fallback runs only when every
+      // adapter confirms the thread no longer has a runtime owner.
+      const release = setTimeout(() => releaseStalledTurnIfUnowned(turn, stalledDispatchId), 6_000);
+      release.unref?.();
+    });
   },
 });
 watchdog.start();
@@ -1848,7 +1871,9 @@ bus.subscribe((event: RuntimeEvent) => {
       turnUsage.set(event.threadId, { input: event.input, output: event.output, cachedInput: event.cachedInput });
       break;
     case "turn.completed": {
-      if (isToolCallsStopReason(event.stopReason)) break;
+      const completionFold = (async () => {
+      if (isToolCallsStopReason(event.stopReason)) return;
+      const settledOwner = activeTurnOwners.settle(event.threadId, event.providerInstanceId);
       const reply = lastReply.get(event.threadId) ?? "";
       lastReply.delete(event.threadId);
       const lastReported = turnUsage.get(event.threadId);
@@ -1862,8 +1887,19 @@ bus.subscribe((event: RuntimeEvent) => {
       // and reports them the same way.
       const tokens = event.usage ?? lastReported;
       const fallbackBot = bot ?? (speaker ? store.bot(speaker.botId) : undefined);
+      const storedFallbackPolicy = fallbackBot
+        ? (bot ? store.taskByThread(fallbackBot.id, event.threadId)?.modelSelection : undefined) ?? fallbackBot.modelSelection
+        : undefined;
+      const fallbackPolicy = settledOwner?.fallbackPolicy ?? storedFallbackPolicy;
+      const actualSelection = settledOwner?.selection ?? {
+        instanceId: event.providerInstanceId ?? fallbackPolicy?.instanceId ?? "",
+        model: event.providerInstanceId
+          ? registry.get(event.providerInstanceId)?.models.default ?? fallbackPolicy?.model ?? ""
+          : fallbackPolicy?.model ?? "",
+      };
       let fallbackUserMessage: Message | undefined;
       let fallbackSelection: ModelSelection | undefined;
+      let deferredAutoFallback = false;
       if (fallbackBot) {
         const fallbackKey = `${fallbackBot.id}:${event.threadId}`;
         const activeMsgs = store.activePath(event.threadId);
@@ -1878,13 +1914,13 @@ bus.subscribe((event: RuntimeEvent) => {
         if (isOk) {
           fallbackAttemptByTurn.delete(fallbackKey);
           pendingMemberFallback.delete(event.threadId);
-          quotaCooldowns.clear(fallbackBot.id, fallbackBot.modelSelection.instanceId, fallbackBot.modelSelection.model);
+          quotaCooldowns.clear(fallbackBot.id, actualSelection.instanceId, actualSelection.model);
         }
         if (quotaOrCap) {
           quotaCooldowns.record({
             botId: fallbackBot.id,
-            instanceId: fallbackBot.modelSelection.instanceId,
-            model: fallbackBot.modelSelection.model,
+            instanceId: actualSelection.instanceId,
+            model: actualSelection.model,
             resetsAt: quotaInfo.resetsAt,
             error: reply || lastMsgText || "quota exceeded",
             recordedAt: Date.now(),
@@ -1896,12 +1932,12 @@ bus.subscribe((event: RuntimeEvent) => {
         // same produced / stop-reason gate a configured chain gets. Plain
         // errors without a chain settle as before — a bot that was not given
         // a fallback must not wander to another engine on any failure.
-        const configuredChain = fallbackBot.modelSelection.fallbacks;
-        const chain = configuredChain && configuredChain.length > 0
-          ? configuredChain
-          : quotaOrCap
-            ? autoFallbackChain(fallbackBot.modelSelection.instanceId)
-            : undefined;
+        const configuredChain = fallbackPolicy?.fallbacks;
+        let chain = configuredChain && configuredChain.length > 0 ? configuredChain : undefined;
+        if (!chain && quotaOrCap) {
+          deferredAutoFallback = true;
+          chain = await autoFallbackChain(fallbackBot.id, actualSelection.instanceId);
+        }
         // A user stop ends the request; it does not license wandering to the
         // next engine.  Consume the latch BEFORE selectTurnFallback, because
         // the driver reports this settle as `exit_before_result` and that
@@ -1915,8 +1951,8 @@ bus.subscribe((event: RuntimeEvent) => {
           fallbacks: chain,
           used,
           current: {
-            instanceId: fallbackBot.modelSelection.instanceId,
-            model: fallbackBot.modelSelection.model,
+            instanceId: actualSelection.instanceId,
+            model: actualSelection.model,
           },
         });
         if (next && fallbackUserMessage && typeof fallbackUserMessage.text === "string") {
@@ -1936,7 +1972,11 @@ bus.subscribe((event: RuntimeEvent) => {
             tool: { name: `Fell over to ${next.model}${resetNote}`, ok: true, kind: "notice" },
           });
           if (group && speaker?.botId === fallbackBot.id) {
-            pendingMemberFallback.set(event.threadId, { groupId: group.id, botId: fallbackBot.id });
+            pendingMemberFallback.set(event.threadId, {
+              groupId: group.id,
+              botId: fallbackBot.id,
+              selection: fallbackSelection,
+            });
           }
         } else {
           fallbackUserMessage = undefined;
@@ -1966,8 +2006,8 @@ bus.subscribe((event: RuntimeEvent) => {
           threadId: event.threadId,
           taskTitle: currentTask?.title,
           cwd: currentTask?.cwd || bot.cwd,
-          instanceId: bot.modelSelection.instanceId,
-          modelId: bot.modelSelection.model,
+          instanceId: actualSelection.instanceId,
+          modelId: actualSelection.model,
           // The engine, not the instance id.  `bus.attach` refuses any event
           // whose `provider` is not the emitting instance's own driver kind,
           // so this is the engine that actually ran the turn — and an engine
@@ -2032,8 +2072,8 @@ bus.subscribe((event: RuntimeEvent) => {
             threadId: event.threadId,
             taskTitle: store.groupTaskByThread(group.id, event.threadId)?.title,
             cwd: group.cwd || roomBot.cwd,
-            instanceId: roomBot.modelSelection.instanceId,
-            modelId: roomBot.modelSelection.model,
+            instanceId: actualSelection.instanceId,
+            modelId: actualSelection.model,
             // The engine that ran the turn, same as the 1:1 branch above.
             driverKind: event.provider,
             inputTokens: tokens?.input,
@@ -2060,8 +2100,22 @@ bus.subscribe((event: RuntimeEvent) => {
       // channel that only ever shows requests is half a record. Mirror the
       // reply on success; mirror a failed/stopped terminal chip otherwise.
       finalizeDelegationWatch(event.threadId, event.ok, reply);
+      // Queue-drain subscribers already ran while an automatic fallback's
+      // health probe held the bot busy.  Retry the drains after this fold;
+      // they remain no-ops when a fallback synchronously reclaimed the bot.
+      if (deferredAutoFallback) {
+        drainQueuedSends();
+        drainRoomQueue();
+      }
       // group busy/unread settle in the group turn engine, which knows
       // whether more member turns are queued behind this one
+      })().catch((error) => {
+        console.error(`turn.completed fold failed for ${event.threadId}:`, error);
+      });
+      completionFolds.set(event.threadId, completionFold);
+      void completionFold.finally(() => {
+        if (completionFolds.get(event.threadId) === completionFold) completionFolds.delete(event.threadId);
+      });
       break;
     }
   }
@@ -2071,18 +2125,21 @@ bus.subscribe((event: RuntimeEvent) => {
  * instance (by fleet priority) is offered as a one-step chain. The caller
  * still runs it through selectTurnFallback, so the produced / quota /
  * stop-reason rules apply exactly as they do for a configured chain. */
-function autoFallbackChain(currentInstanceId: string): ModelSelection[] {
+async function autoFallbackChain(botId: string, currentInstanceId: string): Promise<ModelSelection[]> {
   const priority = ["claude", "antigravity", "gemini", "codex", "openaiCompat", "grok"];
-  const candidates = registry
-    .instances()
-    .filter((inst) => inst.instanceId !== currentInstanceId && inst.enabled !== false && Boolean(inst.models?.default))
-    .sort((a, b) => {
-      const aIdx = priority.indexOf(a.instanceId);
-      const bIdx = priority.indexOf(b.instanceId);
-      return (aIdx === -1 ? 99 : aIdx) - (bIdx === -1 ? 99 : bIdx);
+  try {
+    const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
+    return eligibleAutoFallbackChain(described, {
+      botId,
+      currentInstanceId,
+      priority,
+      isCooling: (candidateBotId, instanceId, model) =>
+        Boolean(quotaCooldowns.get(candidateBotId, instanceId, model)),
     });
-  const pick = candidates[0];
-  return pick ? [{ instanceId: pick.instanceId, model: pick.models.default }] : [];
+  } catch (error) {
+    console.error("automatic fallback health probe failed:", error);
+    return [];
+  }
 }
 
 // Delegated turns are fire-and-forget, so the drain cannot hand the
@@ -2431,8 +2488,9 @@ async function startTurn(
     store.titleTaskFromFirstMessage(bot.id, text, threadId);
   }
 
+  const fallbackPolicy = task.modelSelection ?? bot.modelSelection;
   const selection = opts?.modelSelection
-    ?? quotaCooldowns.resolveModel(bot.id, task.modelSelection ?? bot.modelSelection).selection;
+    ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
   // A fresh user turn re-arms both the saved chain and the stop latch; the
   // fallback dispatch (which carries modelSelection) is a continuation of the
   // turn that just settled, so it must inherit them instead.
@@ -2541,6 +2599,11 @@ async function startTurn(
   // hang the HTTP request
   store.setActivity(bot.id, "working");
   store.patchBot(bot.id, { unread: false, inflightThreadId: threadId });
+  activeTurnOwners.claim(threadId, {
+    botId: bot.id,
+    selection: { instanceId, model, effort },
+    fallbackPolicy,
+  });
   turnUsage.delete(threadId);
 
   void (async () => {
@@ -2982,6 +3045,7 @@ async function startTurn(
         startScreenPoller(bot.id, previewCapture, { screenIsTheWork: instance.driverKind === "boxAgent" });
       }
     } catch (e) {
+      activeTurnOwners.settle(threadId, instanceId);
       releaseLocalVmThread(threadId);
       if (activeVpsThreads.get(bot.id) === threadId) activeVpsThreads.delete(bot.id);
       watchdog.settle(threadId);
@@ -3617,6 +3681,7 @@ async function runGroupMemberTurn(
   cardContinuation?: string,
   onDispatchError?: (message: string) => void,
   isCancelled?: () => boolean,
+  turnSelection?: ModelSelection,
 ): Promise<boolean> {
   if (isCancelled?.()) return false;
   const group = store.group(groupId);
@@ -3626,7 +3691,8 @@ async function runGroupMemberTurn(
     : Boolean(group && store.groupTaskByThread(group.id, threadId));
   if (!group || !bot || !ownsThread) return false;
   spoken.add(botId);
-  const instance = registry.get(bot.modelSelection.instanceId);
+  const selection = turnSelection ?? bot.modelSelection;
+  const instance = registry.get(selection.instanceId);
   const userName = cfg.profile?.name?.trim() || "User";
   if (!instance) {
     const message = `${bot.name}'s model is unavailable`;
@@ -3719,6 +3785,11 @@ async function runGroupMemberTurn(
 
   store.patchGroup(group.id, { busyBotId: bot.id }); // the store's change stream carries the frame
   groupSpeakers.set(threadId, { botId: bot.id, name: bot.name, color: bot.color });
+  activeTurnOwners.claim(threadId, {
+    botId: bot.id,
+    selection,
+    fallbackPolicy: bot.modelSelection,
+  });
 
   const roster = group.memberIds
     .map((id) => store.bot(id))
@@ -3812,9 +3883,10 @@ async function runGroupMemberTurn(
         system: roomSystem,
         cwd,
         integrations,
-        ...memberTurnSelection(bot.modelSelection),
+        ...memberTurnSelection(selection),
       })
       .catch((err) => {
+        activeTurnOwners.settle(threadId, instance.instanceId);
         const message = err instanceof Error ? err.message : "turn failed";
         store.appendMessage(threadId, {
           role: "bot",
@@ -3827,6 +3899,8 @@ async function runGroupMemberTurn(
         finish("dispatch_failed");
       });
   });
+  const completionFold = completionFolds.get(threadId);
+  if (completionFold) await completionFold;
   // A timed-out provider still owns the room thread until its interrupt
   // produces turn.completed (or the stall watchdog's grace fallback runs).
   // Do not clear busy or start the next member on that same thread early.
@@ -3853,7 +3927,17 @@ async function runGroupMemberTurn(
     pendingMemberFallback.delete(threadId);
     if (!isCancelled?.() && outcome === "settled") {
       spoken.delete(bot.id);
-      return runGroupMemberTurn(groupId, threadId, bot.id, hop, spoken, cardContinuation, onDispatchError, isCancelled);
+      return runGroupMemberTurn(
+        groupId,
+        threadId,
+        bot.id,
+        hop,
+        spoken,
+        cardContinuation,
+        onDispatchError,
+        isCancelled,
+        pendingFallback.selection,
+      );
     }
   }
 
@@ -4548,6 +4632,14 @@ function settleInterruptedBots(
 ) {
   for (const b of affectedBots) {
     const inflight = b.inflightThreadId ?? b.threadId;
+    const completing = completionFolds.has(inflight);
+    // A provider reload is a terminal operator action for this dispatch.
+    // In particular, it may race the async health probe used by automatic
+    // fallback; latch Stop before that probe can choose a new provider.
+    stoppedTurns.add(`${b.id}:${inflight}`);
+    fallbackAttemptByTurn.delete(`${b.id}:${inflight}`);
+    pendingMemberFallback.delete(inflight);
+    activeTurnOwners.clearThread(inflight);
     watchdog.settle(inflight);
     const vmThread = [...localVmThreadTargets.entries()].find(([, target]) =>
       localVmLeaseFor(target).current(localVmOwnerBusy)?.botId === b.id
@@ -4567,6 +4659,10 @@ function settleInterruptedBots(
       tool: { name: "error: turn interrupted — provider settings changed", ok: false },
     });
     routines?.failThread(inflight, reason);
+    // A delivered terminal event still owns its completion fold.  Keep the
+    // bot fenced until that fold consumes the stop latch; otherwise a new
+    // same-thread dispatch can start and the old fold can release it.
+    if (completing) continue;
     store.setActivity(b.id, "idle");
     store.patchBot(b.id, { inflightThreadId: undefined });
   }
