@@ -8569,14 +8569,32 @@ const server = createServer(async (req, res) => {
       // vault's name list survives a failed refresh, so it is the honest
       // signal; when there is no list at all because the store has never
       // answered, the request is refused rather than guessed at.
+      // Refuse combined requests that attempt to modify Infisical connection settings
+      // and write credentials at the same time: Infisical must be updated and verified
+      // first before credentials can be routed to it.
+      if (
+        patch.infisical !== undefined &&
+        SECRET_FIELDS.some((spec) => readSecretField(patch, spec) !== undefined)
+      ) {
+        return json(res, 400, {
+          error: "Updating Infisical settings and credentials in the same request is not supported.\u00A0 Save Infisical settings first.",
+        });
+      }
+
       const vaultForSave = infisical.getStatus();
       const vaultKnownNames = new Set(vaultNames());
       // Enabled, an error on the record, and no successful sync ever: the
       // manager cannot say what it manages.
       const vaultUnreachable =
         vaultForSave.enabled && vaultForSave.lastSyncAt === null && vaultForSave.lastError !== null;
-      const managedBySave = (spec: SecretFieldSpec): boolean =>
-        vaultForSave.enabled && (secretSource(spec.id) === "infisical" || vaultKnownNames.has(spec.infisicalName));
+      const managedBySave = (spec: SecretFieldSpec, requested: string): boolean => {
+        if (!vaultForSave.enabled) return false;
+        const alreadyInVault = secretSource(spec.id) === "infisical" || vaultKnownNames.has(spec.infisicalName);
+        if (alreadyInVault) return true;
+        // With Write Through on, non-empty values write through to Infisical so it
+        // becomes the authoritative source of truth, even for fresh names.
+        return vaultForSave.writeThrough && requested.length > 0;
+      };
 
       const managedInPatch: { spec: SecretFieldSpec; requested: string }[] = [];
       for (const spec of SECRET_FIELDS) {
@@ -8589,7 +8607,7 @@ const server = createServer(async (req, res) => {
             infisicalName: spec.infisicalName,
           });
         }
-        if (!managedBySave(spec)) continue;
+        if (!managedBySave(spec, requested)) continue;
         if (!vaultForSave.writeThrough) {
           return json(res, 409, {
             // NBSP + space, not two ASCII spaces: this string is rendered
@@ -8615,6 +8633,9 @@ const server = createServer(async (req, res) => {
           await infisical.writeSecret(spec.infisicalName, requested);
           writtenToVault.push(spec.id);
         } catch (error) {
+          if (error instanceof InfisicalError && error.writeLanded) {
+            writtenToVault.push(spec.id);
+          }
           // A policy refusal from the manager stays a 409; anything else is
           // the store failing to answer, which is a 502 with a redacted
           // reason.  Nothing has been saved on this computer in either case.

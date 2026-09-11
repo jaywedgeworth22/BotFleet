@@ -2056,7 +2056,14 @@ describe("harness HTTP API", () => {
         idempotencyKey: "ios-bot-lost-response",
       });
       expect(firstBot.status).toBe(202);
-      await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId });
+      const stoppedBot = await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId });
+      expect(stoppedBot.status).toBe(200);
+      await expect.poll(async () => {
+        const current = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return current?.busy;
+      }, { timeout: 5_000 }).toBe(false);
       const secondBotTask = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "After lost response" });
       expect(secondBotTask.status).toBe(201);
 
@@ -2083,7 +2090,14 @@ describe("harness HTTP API", () => {
         idempotencyKey: "ios-room-lost-response",
       });
       expect(firstRoom.status).toBe(202);
-      await api("POST", `/api/groups/${room.id}/interrupt`, { threadId: room.threadId });
+      const stoppedRoom = await api("POST", `/api/groups/${room.id}/interrupt`, { threadId: room.threadId });
+      expect(stoppedRoom.status).toBe(200);
+      await expect.poll(async () => {
+        const current = (await api("GET", "/api/bots?messages=0")).body.groups.find(
+          (candidate: { id: string }) => candidate.id === room.id,
+        );
+        return current?.busyBotId ?? null;
+      }, { timeout: 5_000 }).toBeNull();
       const secondRoomTask = await api("POST", `/api/groups/${room.id}/tasks`, { title: "After lost response" });
       expect(secondRoomTask.status).toBe(201);
 
@@ -2723,6 +2737,33 @@ describe("harness HTTP API", () => {
     expect(result.status).toBe(200);
     expect(result.body.ok).toBe(false);
     expect(String(result.body.reason)).toMatch(/ECONNREFUSED|did not answer|fetch failed/i);
+  });
+
+  it("GET /api/infisical/status reports unconfigured state and field rows without secrets", async () => {
+    const res = await api("GET", "/api/infisical/status");
+    expect(res.status).toBe(200);
+    expect(res.body.infisical).toBeDefined();
+    expect(res.body.infisical.configured).toBe(false);
+    expect(Array.isArray(res.body.fields)).toBe(true);
+    for (const field of res.body.fields) {
+      if (field.secret) expect(field.value).toBeNull();
+    }
+  });
+
+  it("POST /api/infisical/test reports requirement to add machine identity when unconfigured", async () => {
+    const res = await api("POST", "/api/infisical/test");
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    expect(String(res.body.error)).toMatch(/machine identity|project id/i);
+  });
+
+  it("rejects PATCH /api/config combining Infisical settings and credentials", async () => {
+    const res = await api("PATCH", "/api/config", {
+      infisical: { environment: "staging" },
+      xai: { key: "new-xai-key" },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Updating Infisical settings and credentials in the same request is not supported/);
   });
 
   it("keeps shared Local VM mode by default and resolves isolated targets per bot when enabled", async () => {
@@ -4131,10 +4172,10 @@ describe("instance CLI override API", () => {
     // every future turn with no way back short of manual reconfiguration.
     // Deletion must be refused instead, the same way a busy affected bot
     // already is.
-    // Registry defaults and native CLI discovery can add engines beyond the
-    // three fixture CLIs.  Isolate the premise using the actual starting pool.
-    const initialInstances = (await api("GET", "/api/instances")).body.instances;
-    const toDisable = initialInstances.filter((instance: any) => instance.enabled).map((instance: any) => instance.instanceId);
+    const instancesRes = await api("GET", "/api/instances");
+    const toDisable = (instancesRes.body.instances as Array<{ instanceId: string; enabled: boolean }>)
+      .filter((i) => i.enabled)
+      .map((i) => i.instanceId);
     for (const id of toDisable) {
       expect((await api("PATCH", `/api/instances/${id}`, { enabled: false })).status).toBe(200);
     }
