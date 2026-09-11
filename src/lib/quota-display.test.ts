@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   antigravityGroupSummary,
@@ -10,6 +10,11 @@ import {
   windowHeadlines,
 } from "./quota-display";
 import { driverKindsForWindow, isPlanLevelSkip, modelsToSkip } from "../../server/quota-window-map";
+
+// Countdown fixtures compare exact minute labels.  Keep construction and
+// formatting on the same clock instead of racing a minute boundary.
+beforeEach(() => { vi.spyOn(Date, "now").mockReturnValue(1_788_912_000_000); });
+afterEach(() => { vi.restoreAllMocks(); });
 
 describe("antigravity quota lines", () => {
   const models = [
@@ -256,10 +261,7 @@ describe("antigravity group summary", () => {
     // an unrelated 90%-remaining model's earlier 1h reset. Showing "10%
     // available … resets in 1h" would promise replenishment that will not
     // happen then.
-    // Offset off an exact hour boundary (4h 5m / 1h 5m, not 4h / 1h) so the
-    // countdown's floor()-based rounding can't flake between when `now` is
-    // captured here and when the function under test reads its own
-    // Date.now() a moment later.
+    // The fixed clock keeps the reset-owner assertion independent of elapsed time.
     const now = Date.now();
     const tenPercentResetsIn4h = new Date(now + (4 * 3600 + 5 * 60) * 1000).toISOString();
     const ninetyPercentResetsIn1h = new Date(now + (1 * 3600 + 5 * 60) * 1000).toISOString();
