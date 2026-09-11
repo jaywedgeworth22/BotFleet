@@ -2106,6 +2106,8 @@ bus.subscribe((event: RuntimeEvent) => {
       if (deferredAutoFallback) {
         drainQueuedSends();
         drainRoomQueue();
+        drainConnectorResumes();
+        drainSecretResumes();
       }
       // group busy/unread settle in the group turn engine, which knows
       // whether more member turns are queued behind this one

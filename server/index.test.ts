@@ -36,6 +36,9 @@ let fakeClaudeDump: string;
 let fakeCrashCli: string;
 /** wrapper CLI that returns a successful-looking quota message */
 let fakeQuotaCli: string;
+/** quota CLI held behind a file gate so work can queue before completion */
+let fakeGatedQuotaCli: string;
+let fakeQuotaGate: string;
 /** stands in for a host's `recall` CLI; its behaviour is switched per test
  * by writing a mode into ~/.botfleet/fake-recall-mode */
 let fakeRecallCli: string;
@@ -94,6 +97,13 @@ beforeAll(async () => {
     `#!/bin/sh\nunset FAKE_CLAUDE_DUMP\nFAKE_CLAUDE_MODE=quota exec ${JSON.stringify(FAKE_CLAUDE_CLI)} "$@"\n`,
     { mode: 0o755 },
   );
+  fakeQuotaGate = join(home, "fake-quota-gate");
+  fakeGatedQuotaCli = join(home, "fake-claude-gated-quota");
+  writeFileSync(
+    fakeGatedQuotaCli,
+    `#!/bin/sh\nFAKE_CLAUDE_MODE=quota FAKE_CLAUDE_QUOTA_GATE=${JSON.stringify(fakeQuotaGate)} exec ${JSON.stringify(FAKE_CLAUDE_CLI)} "$@"\n`,
+    { mode: 0o755 },
+  );
   // A stand-in for the operator's `recall` CLI.  "slow" sleeps past the old
   // 6s probe ceiling on purpose — that ceiling was under the real command's
   // measured cost, so a healthy corpus timed out on every single probe.
@@ -131,6 +141,7 @@ beforeAll(async () => {
         claude2: { driver: "claudeAgent", displayName: "Fixture Claude Two", config: { cli: FAKE_CLAUDE_CLI } },
         crasher: { driver: "claudeAgent", displayName: "Fixture Crasher", config: { cli: fakeCrashCli } },
         quota: { driver: "claudeAgent", displayName: "Fixture Quota", enabled: false, config: { cli: fakeQuotaCli } },
+        gatedQuota: { driver: "claudeAgent", displayName: "Fixture Gated Quota", enabled: false, config: { cli: fakeGatedQuotaCli } },
       },
     }),
   );
@@ -2011,6 +2022,84 @@ describe("harness HTTP API", () => {
       expect((await api("PATCH", "/api/instances/quota", { enabled: false })).status).toBe(200);
     }
   }, 30_000);
+
+  it("drains a queued credential continuation after deferred fallback finds no candidate", async () => {
+    const otherInstances = ["claude", "claude2", "crasher"];
+    let botId = "";
+    let threadId = "";
+    try {
+      rmSync(fakeClaudeDump, { force: true });
+      rmSync(fakeQuotaGate, { force: true });
+      expect((await api("PATCH", "/api/instances/gatedQuota", { enabled: true })).status).toBe(200);
+      for (const instanceId of otherInstances) {
+        expect((await api("PATCH", `/api/instances/${instanceId}`, { enabled: false })).status).toBe(200);
+      }
+      const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+      const gatedQuota = instances.find(
+        (instance: { instanceId: string }) => instance.instanceId === "gatedQuota",
+      );
+      expect(gatedQuota?.snapshot.state).toBe("available");
+
+      const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+      botId = bot.id;
+      threadId = bot.threadId;
+      expect((await api("PATCH", `/api/bots/${botId}`, {
+        modelSelection: { instanceId: "gatedQuota", model: gatedQuota.models.default },
+      })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "wait for credential" })).status).toBe(202);
+      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+      const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8")) as {
+        mcpConfig: { mcpServers: { agents: { env: { OMB_COMMS_TOKEN: string } } } };
+      };
+      const token = dump.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN;
+
+      const requested = await fetch(`${BASE}/api/internal/request-credential`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          fromBotId: botId,
+          fromThreadId: threadId,
+          credentialId: "openaiImageApiKey",
+          reason: "needed after the quota turn",
+        }),
+      });
+      expect(requested.status).toBe(201);
+      const { messageId } = (await requested.json()) as { messageId: string };
+      expect((await api("POST", `/api/bots/${botId}/secret-cards/${messageId}/dismiss`, {
+        threadId,
+      }))).toEqual({ status: 200, body: { dismissed: true, resumed: true } });
+
+      // Completion now enters the asynchronous health lookup.  Every other
+      // engine is disabled, so the lookup settles without a fallback and the
+      // credential continuation must be drained after the bot becomes idle.
+      writeFileSync(fakeQuotaGate, "release");
+      await expect.poll(async () => {
+        const transcript = await api("GET", `/api/threads/${threadId}/messages?limit=200`);
+        return transcript.body.messages.filter(
+          (message: { text?: string }) => message.text?.includes("You've hit your session limit"),
+        ).length;
+      }, { timeout: 20_000 }).toBe(2);
+      await expect.poll(async () => {
+        const current = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === botId,
+        );
+        return current?.busy;
+      }, { timeout: 5_000 }).toBe(false);
+    } finally {
+      rmSync(fakeQuotaGate, { force: true });
+      if (botId) {
+        await api("POST", `/api/bots/${botId}/interrupt`, {});
+        await api("DELETE", `/api/bots/${botId}`);
+      }
+      for (const instanceId of otherInstances) {
+        expect((await api("PATCH", `/api/instances/${instanceId}`, { enabled: true })).status).toBe(200);
+      }
+      expect((await api("PATCH", "/api/instances/gatedQuota", { enabled: false })).status).toBe(200);
+    }
+  }, 40_000);
 
   it("reports stopped:false when the stop matched no live turn", async () => {
     // An idle bot has no session on any instance. The old endpoint answered a

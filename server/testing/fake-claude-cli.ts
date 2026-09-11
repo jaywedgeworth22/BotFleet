@@ -15,9 +15,11 @@
 //                      so a test cannot open it after the fact.
 //   FAKE_CLAUDE_AUTH   in (default) | out | unsupported | malformed |
 //                      inherited-api-key — what `auth status` reports
+//   FAKE_CLAUDE_QUOTA_GATE  optional file whose creation releases quota mode,
+//                           so integration tests can queue work before settle
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
 // The dump is read by a separate process that only knows the file exists.
 // A plain writeFileSync creates the file and then fills it, so a reader that
@@ -168,22 +170,34 @@ const playTurn = (prompt: JsonValue) => {
   }
 
   if (mode === "quota") {
-    out({
-      type: "assistant",
-      message: {
-        content: [{ type: "text", text: "You've hit your session limit · resets in 30 minutes" }],
+    const finishQuota = () => {
+      out({
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "You've hit your session limit · resets in 30 minutes" }],
+          usage: { input_tokens: 3, cache_read_input_tokens: 0, output_tokens: 1 },
+        },
+      });
+      out({
+        type: "result",
+        is_error: false,
+        stop_reason: "end_turn",
+        total_cost_usd: 0,
         usage: { input_tokens: 3, cache_read_input_tokens: 0, output_tokens: 1 },
-      },
-    });
-    out({
-      type: "result",
-      is_error: false,
-      stop_reason: "end_turn",
-      total_cost_usd: 0,
-      usage: { input_tokens: 3, cache_read_input_tokens: 0, output_tokens: 1 },
-    });
-    turnRunning = false;
-    finishIfDone();
+      });
+      turnRunning = false;
+      finishIfDone();
+    };
+    const gate = process.env.FAKE_CLAUDE_QUOTA_GATE;
+    if (gate && !existsSync(gate)) {
+      const timer = setInterval(() => {
+        if (!existsSync(gate)) return;
+        clearInterval(timer);
+        finishQuota();
+      }, 10);
+    } else {
+      finishQuota();
+    }
     return;
   }
 
