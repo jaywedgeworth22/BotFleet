@@ -8606,6 +8606,9 @@ const server = createServer(async (req, res) => {
           await infisical.writeSecret(spec.infisicalName, requested);
           writtenToVault.push(spec.id);
         } catch (error) {
+          if (error instanceof InfisicalError && error.writeLanded) {
+            writtenToVault.push(spec.id);
+          }
           // A policy refusal from the manager stays a 409; anything else is
           // the store failing to answer, which is a 502 with a redacted
           // reason.  Nothing has been saved on this computer in either case.

@@ -479,9 +479,11 @@ describe("writeSecret", () => {
     await expect(infisical.writeSecret("COMPOSIO_API_KEY", "new-value")).rejects.toMatchObject({
       name: "InfisicalError",
       statusCode: 502,
+      writeLanded: true,
       message: expect.stringMatching(/verification refresh failed/i),
     });
     expect(patchCount).toBe(1);
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("new-value");
   });
 });
 

@@ -20,11 +20,13 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 export class InfisicalError extends Error {
   readonly statusCode: number;
+  readonly writeLanded: boolean;
 
-  constructor(message: string, statusCode: number) {
+  constructor(message: string, statusCode: number, writeLanded = false) {
     super(redactSecretsInText(message));
     this.name = "InfisicalError";
     this.statusCode = statusCode;
+    this.writeLanded = writeLanded;
   }
 }
 
