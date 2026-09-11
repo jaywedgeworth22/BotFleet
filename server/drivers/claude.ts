@@ -557,13 +557,31 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
       let preflightCancelled = false;
+      let preflightError: unknown;
       const preflight = { turnId, stop: () => { preflightCancelled = true; } };
       active.set(threadId, preflight);
       try {
         await requireStrictMcp();
-        if (preflightCancelled) throw new Error("Claude turn interrupted before launch");
+      } catch (error) {
+        preflightError = error;
       } finally {
         if (active.get(threadId) === preflight) active.delete(threadId);
+      }
+      if (preflightCancelled || preflightError) {
+        retryState.delete(threadId);
+        // Preserve the failed-turn contract used by fallback, telemetry, and
+        // queue draining, even though isolation rejected the CLI before spawn.
+        if (!preflightCancelled) {
+          emit({
+            ...base(threadId, turnId), type: "runtime.error",
+            message: preflightError instanceof Error ? preflightError.message : String(preflightError),
+          });
+        }
+        emit({
+          ...base(threadId, turnId), type: "turn.completed", ok: false,
+          stopReason: preflightCancelled ? "interrupted" : "spawn_error", cost: null,
+        });
+        return { turnId };
       }
       const computerMounts = turnComputerMounts(turn.integrations);
       // Scope approval to the host computer's own tools. A remote desktop's
