@@ -22,6 +22,7 @@ import { buildDiagnosticsReport, decodeLogTail, diagnosticsFileName } from "./di
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
 import { activateExistingWindow } from "./single-instance.mjs";
 import { pollServerIdentity, probeHarness, resolvePackagedServer } from "./server-boot-probe.mjs";
+import { readHarnessOwner } from "./harness-ownership.mjs";
 import { startUiShim } from "./attached-ui-shim.mjs";
 import { packageUrlFromCommandLine, packageUrlFromDeepLink } from "./package-link.mjs";
 import { windowChromeOptions } from "./window-chrome.mjs";
@@ -807,13 +808,14 @@ async function startServerOn(port) {
 }
 
 async function startServerPackaged() {
-  // Attach-or-spawn: a port that already answers as a BotFleet harness is
-  // joined, a foreign owner is skipped, a free port gets our own child. Two
+  // Attach-or-spawn: a proven data-root owner is joined, a foreign owner
+  // is skipped, and an unambiguous free port gets our own child.  Two
   // passes: a quit-and-reopen relaunch can race the dying instance's server
   // during teardown — one settle-and-retry covers it.
   const result = await resolvePackagedServer({
     ports: [8799, 18799, 28799],
-    probe: (port) => probeHarness({ port }),
+    owner: () => readHarnessOwner(process.env.OMB_DATA_DIR || path.join(app.getPath("home"), ".botfleet")),
+    probe: (port, owner) => probeHarness({ port, owner }),
     spawn: startServerOn,
     log: slog,
   });
