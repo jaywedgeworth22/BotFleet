@@ -2677,6 +2677,15 @@ describe("harness HTTP API", () => {
     expect(String(res.body.error)).toMatch(/machine identity|project id/i);
   });
 
+  it("rejects PATCH /api/config combining Infisical settings and credentials", async () => {
+    const res = await api("PATCH", "/api/config", {
+      infisical: { environment: "staging" },
+      xai: { key: "new-xai-key" },
+    });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/Updating Infisical settings and credentials in the same request is not supported/);
+  });
+
   it("keeps shared Local VM mode by default and resolves isolated targets per bot when enabled", async () => {
     const first = (await api("POST", "/api/bots")).body.bot;
     const second = (await api("POST", "/api/bots")).body.bot;

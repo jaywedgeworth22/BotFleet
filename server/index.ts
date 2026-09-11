@@ -8554,6 +8554,18 @@ const server = createServer(async (req, res) => {
       // vault's name list survives a failed refresh, so it is the honest
       // signal; when there is no list at all because the store has never
       // answered, the request is refused rather than guessed at.
+      // Refuse combined requests that attempt to modify Infisical connection settings
+      // and write credentials at the same time: Infisical must be updated and verified
+      // first before credentials can be routed to it.
+      if (
+        patch.infisical !== undefined &&
+        SECRET_FIELDS.some((spec) => readSecretField(patch, spec) !== undefined)
+      ) {
+        return json(res, 400, {
+          error: "Updating Infisical settings and credentials in the same request is not supported.\u00A0 Save Infisical settings first.",
+        });
+      }
+
       const vaultForSave = infisical.getStatus();
       const vaultKnownNames = new Set(vaultNames());
       // Enabled, an error on the record, and no successful sync ever: the
