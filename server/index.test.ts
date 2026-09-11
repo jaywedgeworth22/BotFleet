@@ -6,6 +6,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer, request, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { connect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -29,11 +30,25 @@ let child: ChildProcess;
 /** stands in for the box provider so config saving never touches the network */
 let boxStub: Server;
 let boxStubPort = 0;
+let boxTurnGate: Promise<void> | null = null;
+let releaseBoxTurnGate: (() => void) | null = null;
+let boxTurnRequests = 0;
 let home: string;
 let staticDir: string;
 let fakeClaudeDump: string;
 /** wrapper CLI that always crashes before a result — drives a real failover */
 let fakeCrashCli: string;
+/** wrapper CLI that returns a successful-looking quota message */
+let fakeQuotaCli: string;
+/** quota CLI held behind a file gate so work can queue before completion */
+let fakeGatedQuotaCli: string;
+let fakeQuotaGate: string;
+/** wrapper CLI whose version probe passes but strict-MCP help probe fails */
+let fakeUnsupportedClaudeCli: string;
+/** wrapper whose version probe can be held so fallback health stays pending */
+let fakeSlowProbeCli: string;
+let fakeSlowProbeGate: string;
+let fakeSlowProbeStarted: string;
 /** stands in for a host's `recall` CLI; its behaviour is switched per test
  * by writing a mode into ~/.botfleet/fake-recall-mode */
 let fakeRecallCli: string;
@@ -61,6 +76,26 @@ const uploadAvatar = async (mime = "image/png"): Promise<string> => {
   return `/api/attachments/${name}`;
 };
 
+const connectSocket = (path: string): Promise<Socket> => new Promise((resolve, reject) => {
+  let retriesLeft = 40;
+  const tryConnect = () => {
+    const socket = connect(path);
+    const onConnect = () => {
+      socket.removeListener("error", onError);
+      resolve(socket);
+    };
+    const onError = (error: NodeJS.ErrnoException) => {
+      socket.removeListener("connect", onConnect);
+      socket.destroy();
+      if (error.code === "ENOENT" && retriesLeft-- > 0) return void setTimeout(tryConnect, 25);
+      reject(error);
+    };
+    socket.once("connect", onConnect);
+    socket.once("error", onError);
+  };
+  tryConnect();
+});
+
 const statusWithHeaders = (headers: Record<string, string>): Promise<number> =>
   new Promise((resolve, reject) => {
     const req = request({ hostname: "127.0.0.1", port: PORT, path: "/api/health", headers }, (res) => {
@@ -73,13 +108,19 @@ const statusWithHeaders = (headers: Record<string, string>): Promise<number> =>
 
 const writeFakeClaudeWrapper = (
   file: string,
-  mode: "exit-early" | "quota",
-  options: { keepDump?: boolean; quotaGate?: string } = {},
+  mode: "exit-early" | "hang" | "quota",
+  options: { keepDump?: boolean; quotaGate?: string; launchLog?: string } = {},
 ): string => {
   const lines = [
     "#!/usr/bin/env node",
     `process.env.FAKE_CLAUDE_MODE = ${JSON.stringify(mode)};`,
   ];
+  if (options.launchLog) {
+    lines.push(
+      'const { appendFileSync } = await import("node:fs");',
+      `if (!["--version", "--help", "auth"].includes(process.argv[2])) appendFileSync(${JSON.stringify(options.launchLog)}, "launch\\n");`,
+    );
+  }
   if (!options.keepDump) lines.push("delete process.env.FAKE_CLAUDE_DUMP;");
   if (options.quotaGate) {
     lines.push(`process.env.FAKE_CLAUDE_QUOTA_GATE = ${JSON.stringify(options.quotaGate)};`);
@@ -99,6 +140,43 @@ beforeAll(async () => {
   // instance — is to override the mode per CLI. FAKE_CLAUDE_DUMP is dropped
   // so this engine never clobbers the argv dump other tests assert on.
   fakeCrashCli = writeFakeClaudeWrapper(join(home, "fake-claude-crash"), "exit-early");
+  fakeQuotaCli = writeFakeClaudeWrapper(join(home, "fake-claude-quota"), "quota");
+  fakeQuotaGate = join(home, "fake-quota-gate");
+  fakeGatedQuotaCli = writeFakeClaudeWrapper(
+    join(home, "fake-claude-gated-quota"),
+    "quota",
+    { keepDump: true, quotaGate: fakeQuotaGate },
+  );
+  fakeUnsupportedClaudeCli = join(home, "fake-claude-unsupported");
+  writeFileSync(
+    fakeUnsupportedClaudeCli,
+    [
+      "#!/usr/bin/env node",
+      'process.env.FAKE_CLAUDE_HELP = "unsupported";',
+      `await import(${JSON.stringify(pathToFileURL(FAKE_CLAUDE_CLI).href)});`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  fakeSlowProbeCli = join(home, "fake-claude-slow-probe");
+  fakeSlowProbeGate = join(home, "fake-slow-probe-gate");
+  fakeSlowProbeStarted = join(home, "fake-slow-probe-started");
+  writeFileSync(fakeSlowProbeGate, "release");
+  writeFileSync(
+    fakeSlowProbeCli,
+    [
+      "#!/usr/bin/env node",
+      'const { appendFileSync, existsSync } = await import("node:fs");',
+      `if (process.argv[2] === "--version" && !existsSync(${JSON.stringify(fakeSlowProbeGate)})) {`,
+      `  appendFileSync(${JSON.stringify(fakeSlowProbeStarted)}, "probe\\n");`,
+      `  while (!existsSync(${JSON.stringify(fakeSlowProbeGate)})) await new Promise((resolve) => setTimeout(resolve, 10));`,
+      "}",
+      "delete process.env.FAKE_CLAUDE_DUMP;",
+      `await import(${JSON.stringify(pathToFileURL(FAKE_CLAUDE_CLI).href)});`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
   // A stand-in for the operator's `recall` CLI.  "slow" sleeps past the old
   // 6s probe ceiling on purpose — that ceiling was under the real command's
   // measured cost, so a healthy corpus timed out on every single probe.
@@ -135,6 +213,9 @@ beforeAll(async () => {
         // adapter from bot.modelSelection stops the wrong engine.
         claude2: { driver: "claudeAgent", displayName: "Fixture Claude Two", config: { cli: FAKE_CLAUDE_CLI } },
         crasher: { driver: "claudeAgent", displayName: "Fixture Crasher", config: { cli: fakeCrashCli } },
+        quota: { driver: "claudeAgent", displayName: "Fixture Quota", enabled: false, config: { cli: fakeQuotaCli } },
+        gatedQuota: { driver: "claudeAgent", displayName: "Fixture Gated Quota", enabled: false, config: { cli: fakeGatedQuotaCli } },
+        slowProbe: { driver: "claudeAgent", displayName: "Fixture Slow Probe", enabled: false, config: { cli: fakeSlowProbeCli } },
       },
     }),
   );
@@ -256,10 +337,16 @@ beforeAll(async () => {
         config: { user_id: body.user_id },
       }));
     }
-    if (req.headers.authorization === "Bearer box_slow") {
+    if (req.headers.authorization === "Bearer box_gate" && boxTurnGate) {
+      boxTurnRequests += 1;
+      await boxTurnGate;
+    } else if (req.headers.authorization === "Bearer box_slow") {
       await new Promise((resolve) => setTimeout(resolve, 150));
     }
-    const ok = req.headers.authorization === "Bearer box_good" || req.headers.authorization === "Bearer box_slow";
+    const ok =
+      req.headers.authorization === "Bearer box_good" ||
+      req.headers.authorization === "Bearer box_slow" ||
+      req.headers.authorization === "Bearer box_gate";
     res.writeHead(ok ? 200 : 401, { "content-type": "application/json" });
     res.end(JSON.stringify(ok ? { ok: true, boxes: [] } : { ok: false, code: "unauthorized" }));
   });
@@ -1967,6 +2054,356 @@ describe("harness HTTP API", () => {
       await api("DELETE", `/api/bots/${bot.id}`);
     }
   });
+
+  it("delivers a room approval to the fallback instance that opened it", async () => {
+    const instances = (await api("GET", "/api/instances")).body.instances;
+    const claude2 = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude2");
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", {
+      name: "Fallback approval owner",
+      memberIds: [bot.id],
+    })).body.group;
+    let socket: Socket | undefined;
+    try {
+      expect((await api("PATCH", `/api/groups/${room.id}/setup`, { action: "skip" })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "crasher",
+          model: claude2.models.default,
+          fallbacks: [{ instanceId: "claude2", model: claude2.models.default }],
+        },
+      })).status).toBe(200);
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "fail over, then ask" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots")).body;
+        const current = state.groups.find((candidate: { id: string }) => candidate.id === room.id);
+        return current?.messages.some((message: { tool?: { name?: string } }) =>
+          message.tool?.name?.startsWith("Fell over to"),
+        );
+      }, { timeout: 20_000 }).toBe(true);
+
+      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+      const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8")) as {
+        mcpConfig: { mcpServers: { ogb: { args: string[] } } };
+      };
+      socket = await connectSocket(dump.mcpConfig.mcpServers.ogb.args[1]);
+      const brokerAnswer = new Promise<{ behavior: string }>((resolve) => {
+        let buffer = "";
+        socket!.on("data", (chunk) => {
+          buffer += chunk;
+          const newline = buffer.indexOf("\n");
+          if (newline !== -1) resolve(JSON.parse(buffer.slice(0, newline)));
+        });
+      });
+      socket.write(JSON.stringify({
+        t: "ask",
+        id: "fallback-room-approval",
+        tool: "Bash",
+        input: { command: "echo safe" },
+      }) + "\n");
+      await expect.poll(async () => {
+        const transcript = await api("GET", `/api/threads/${room.threadId}/messages?limit=200`);
+        return transcript.body.messages.some(
+          (message: { card?: { requestId?: string } }) => message.card?.requestId === "fallback-room-approval",
+        );
+      }, { timeout: 5_000 }).toBe(true);
+
+      const answered = await api("POST", `/api/threads/${room.threadId}/respond`, {
+        requestId: "fallback-room-approval",
+        behavior: "allow",
+      });
+      expect(answered).toEqual({ status: 200, body: { ok: true, outcome: "allowed-once" } });
+      await expect(brokerAnswer).resolves.toMatchObject({ behavior: "allow" });
+    } finally {
+      socket?.destroy();
+      await api("POST", `/api/groups/${room.id}/interrupt`, { threadId: room.threadId });
+      await api("DELETE", `/api/groups/${room.id}`);
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  }, 30_000);
+
+  it("records a quota cooldown against the fallback engine that actually ran", async () => {
+    expect((await api("PATCH", "/api/instances/quota", { enabled: true })).status).toBe(200);
+    const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+    const crasher = instances.find((instance: { instanceId: string }) => instance.instanceId === "crasher");
+    const quota = instances.find((instance: { instanceId: string }) => instance.instanceId === "quota");
+    expect(crasher?.snapshot.state).toBe("available");
+    expect(quota?.snapshot.state).toBe("available");
+
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "crasher",
+          model: crasher.models.default,
+          fallbacks: [{ instanceId: "quota", model: quota.models.default }],
+        },
+      })).status).toBe(200);
+
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "fail over into quota" })).status).toBe(202);
+      await expect.poll(async () => {
+        const quotas = (await api("GET", "/api/quotas")).body.cooldowns as Array<{
+          botId: string;
+          instanceId: string;
+          model: string;
+        }>;
+        return quotas.find((cooldown) => cooldown.botId === bot.id);
+      }, { timeout: 20_000 }).toMatchObject({
+        botId: bot.id,
+        instanceId: "quota",
+        model: quota.models.default,
+      });
+
+      const cooldowns = (await api("GET", "/api/quotas")).body.cooldowns as Array<{
+        botId: string;
+        instanceId: string;
+      }>;
+      expect(cooldowns.some((cooldown) => cooldown.botId === bot.id && cooldown.instanceId === "crasher")).toBe(false);
+      const after = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(after.modelSelection.instanceId).toBe("crasher");
+      expect(after.busy).toBe(false);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PATCH", "/api/instances/quota", { enabled: false })).status).toBe(200);
+    }
+  }, 30_000);
+
+  it("drains a queued credential continuation after deferred fallback finds no candidate", async () => {
+    const otherInstances = ["claude", "claude2", "crasher"];
+    let botId = "";
+    let threadId = "";
+    try {
+      rmSync(fakeClaudeDump, { force: true });
+      rmSync(fakeQuotaGate, { force: true });
+      expect((await api("PATCH", "/api/instances/gatedQuota", { enabled: true })).status).toBe(200);
+      for (const instanceId of otherInstances) {
+        expect((await api("PATCH", `/api/instances/${instanceId}`, { enabled: false })).status).toBe(200);
+      }
+      const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+      const gatedQuota = instances.find(
+        (instance: { instanceId: string }) => instance.instanceId === "gatedQuota",
+      );
+      expect(gatedQuota?.snapshot.state).toBe("available");
+
+      const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+      botId = bot.id;
+      threadId = bot.threadId;
+      expect((await api("PATCH", `/api/bots/${botId}`, {
+        modelSelection: { instanceId: "gatedQuota", model: gatedQuota.models.default },
+      })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${botId}/messages`, { text: "wait for credential" })).status).toBe(202);
+      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+      const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8")) as {
+        mcpConfig: { mcpServers: { agents: { env: { OMB_COMMS_TOKEN: string } } } };
+      };
+      const token = dump.mcpConfig.mcpServers.agents.env.OMB_COMMS_TOKEN;
+
+      const requested = await fetch(`${BASE}/api/internal/request-credential`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          fromBotId: botId,
+          fromThreadId: threadId,
+          credentialId: "openaiImageApiKey",
+          reason: "needed after the quota turn",
+        }),
+      });
+      expect(requested.status).toBe(201);
+      const { messageId } = (await requested.json()) as { messageId: string };
+      expect((await api("POST", `/api/bots/${botId}/secret-cards/${messageId}/dismiss`, {
+        threadId,
+      }))).toEqual({ status: 200, body: { dismissed: true, resumed: true } });
+
+      // Completion now enters the asynchronous health lookup.  Every other
+      // engine is disabled, so the lookup settles without a fallback and the
+      // credential continuation must be drained after the bot becomes idle.
+      writeFileSync(fakeQuotaGate, "release");
+      await expect.poll(async () => {
+        const transcript = await api("GET", `/api/threads/${threadId}/messages?limit=200`);
+        return transcript.body.messages.filter(
+          (message: { text?: string }) => message.text?.includes("You've hit your session limit"),
+        ).length;
+      }, { timeout: 20_000 }).toBe(2);
+      await expect.poll(async () => {
+        const current = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === botId,
+        );
+        return current?.busy;
+      }, { timeout: 5_000 }).toBe(false);
+    } finally {
+      rmSync(fakeQuotaGate, { force: true });
+      if (botId) {
+        await api("POST", `/api/bots/${botId}/interrupt`, {});
+        await api("DELETE", `/api/bots/${botId}`);
+      }
+      for (const instanceId of otherInstances) {
+        expect((await api("PATCH", `/api/instances/${instanceId}`, { enabled: true })).status).toBe(200);
+      }
+      expect((await api("PATCH", "/api/instances/gatedQuota", { enabled: false })).status).toBe(200);
+    }
+  }, 40_000);
+
+  it("holds deferred fallback ownership across targeted and unrelated provider reloads", async () => {
+    // The harness's one-shot boot recovery scan runs 2.5s after startup.
+    // Let it inspect the empty fixture before creating deliberately busy bots.
+    await new Promise((resolve) => setTimeout(resolve, 2_700));
+    const otherInstances = ["claude", "claude2", "crasher", "quota"];
+    const activeBots: Array<{ id: string; threadId: string }> = [];
+    try {
+      writeFileSync(fakeSlowProbeGate, "release");
+      expect((await api("PATCH", "/api/instances/slowProbe", { enabled: true })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/gatedQuota", { enabled: true })).status).toBe(200);
+      for (const instanceId of otherInstances) {
+        expect((await api("PATCH", `/api/instances/${instanceId}`, { enabled: false })).status).toBe(200);
+      }
+      const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+      const gatedQuota = instances.find(
+        (instance: { instanceId: string }) => instance.instanceId === "gatedQuota",
+      );
+
+      const overlap = async (reloadInstanceId: "gatedQuota" | "claude", queueSuccessor: boolean) => {
+        writeFileSync(fakeSlowProbeGate, "release");
+        rmSync(fakeSlowProbeStarted, { force: true });
+        rmSync(fakeQuotaGate, { force: true });
+        rmSync(fakeClaudeDump, { force: true });
+        const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+        activeBots.push(bot);
+        expect((await api("PATCH", `/api/bots/${bot.id}`, {
+          modelSelection: {
+            instanceId: "gatedQuota",
+            model: gatedQuota.models.default,
+          },
+        })).status).toBe(200);
+        expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hold quota completion" })).status).toBe(202);
+        await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+
+        rmSync(fakeSlowProbeGate, { force: true });
+        const slowDescribe = api("GET", "/api/instances?fresh=1");
+        await expect.poll(() => existsSync(fakeSlowProbeStarted), { timeout: 5_000 }).toBe(true);
+        let reload: Promise<{ status: number; body: any }>;
+        if (reloadInstanceId === "claude") {
+          reload = api("PATCH", `/api/instances/${reloadInstanceId}`, { fullAuto: true });
+        }
+
+        writeFileSync(fakeQuotaGate, "release");
+        await expect.poll(async () => {
+          const transcript = await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`);
+          return transcript.body.messages.some(
+            (message: { text?: string }) => message.text?.includes("You've hit your session limit"),
+          );
+        }, { timeout: 5_000 }).toBe(true);
+
+        if (reloadInstanceId === "gatedQuota") {
+          reload = api("PATCH", `/api/instances/${reloadInstanceId}`, { fullAuto: true });
+          await expect.poll(async () => {
+            const transcript = await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`);
+            return transcript.body.messages.some((message: { tool?: { name?: string } }) =>
+              message.tool?.name?.includes("provider settings changed"),
+            );
+          }, { timeout: 5_000 }).toBe(true);
+        }
+
+        if (queueSuccessor) {
+          expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "run after reload" }))).toEqual({
+            status: 202,
+            body: expect.objectContaining({ ok: true, queued: true }),
+          });
+        }
+        const held = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        expect(held?.busy).toBe(true);
+
+        writeFileSync(fakeSlowProbeGate, "release");
+        expect((await slowDescribe).status).toBe(200);
+        expect((await reload!).status).toBe(200);
+        if (queueSuccessor) {
+          // The targeted reload suppresses the interrupted turn's fallback,
+          // then the completion fold drains this successor.  Its own quota
+          // response and launch dump prove it reached the replacement fleet.
+          await expect.poll(async () => {
+            const transcript = await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`);
+            let launchedQueuedPrompt = false;
+            try {
+              launchedQueuedPrompt = JSON.stringify(JSON.parse(readFileSync(fakeClaudeDump, "utf8"))).includes(
+                "run after reload",
+              );
+            } catch {
+              // The fake CLI replaces its dump atomically, but it may not
+              // have launched the successor yet.
+            }
+            return {
+              launchedQueuedPrompt,
+              queuedUserVisible: transcript.body.messages.some(
+                (message: { role?: string; text?: string }) =>
+                  message.role === "user" && message.text === "run after reload",
+              ),
+              quotaReplies: transcript.body.messages.filter(
+                (message: { text?: string }) => message.text?.includes("You've hit your session limit"),
+              ).length,
+            };
+          }, { timeout: 10_000 }).toEqual({
+            launchedQueuedPrompt: true,
+            queuedUserVisible: true,
+            quotaReplies: 2,
+          });
+        } else {
+          await expect.poll(async () => {
+            const state = (await api("GET", "/api/bots")).body.bots.find(
+              (candidate: { id: string }) => candidate.id === bot.id,
+            );
+            return {
+              busy: state?.busy,
+              fellOver: state?.messages.some((message: { tool?: { name?: string } }) =>
+                message.tool?.name?.startsWith("Fell over to"),
+              ),
+            };
+          }, { timeout: 10_000 }).toEqual({ busy: true, fellOver: true });
+        }
+
+        const beforeStop = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        if (beforeStop?.busy) {
+          const stop = await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+          expect(stop.body).toMatchObject({ ok: true, stopped: true });
+        }
+        await expect.poll(async () => {
+          const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+            (candidate: { id: string }) => candidate.id === bot.id,
+          );
+          return state?.busy;
+        }).toBe(false);
+        await api("DELETE", `/api/bots/${bot.id}`);
+        activeBots.splice(activeBots.indexOf(bot), 1);
+        expect((await api("PATCH", `/api/instances/${reloadInstanceId}`, { fullAuto: false })).status).toBe(200);
+      };
+
+      // Reloading the completed engine latches the old request, then drains
+      // the queued successor.  Reloading another engine preserves and starts
+      // the already-selected fallback after the replacement fleet is live.
+      await overlap("claude", false);
+      await overlap("gatedQuota", true);
+    } finally {
+      writeFileSync(fakeSlowProbeGate, "release");
+      writeFileSync(fakeQuotaGate, "release");
+      for (const bot of activeBots) {
+        await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+        await api("DELETE", `/api/bots/${bot.id}`);
+      }
+      for (const instanceId of otherInstances) {
+        expect((await api("PATCH", `/api/instances/${instanceId}`, { enabled: true })).status).toBe(200);
+      }
+      expect((await api("PATCH", "/api/instances/gatedQuota", { enabled: false, fullAuto: false })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/slowProbe", { enabled: false, fullAuto: false })).status).toBe(200);
+    }
+  }, 40_000);
 
   it("reports stopped:false when the stop matched no live turn", async () => {
     // An idle bot has no session on any instance. The old endpoint answered a
@@ -3841,6 +4278,146 @@ describe("instance CLI override API", () => {
     expect(res.body.install).toBeUndefined();
   });
 
+  it("keeps the last successful dispatcher when Claude preflight blocks before launch", async () => {
+    const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+    const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
+    const claude2 = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude2");
+    const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+    const persistedTask = () => {
+      const bots = JSON.parse(readFileSync(join(home, ".botfleet", "bots.json"), "utf8")) as Array<{
+        id: string;
+        tasks: Array<{ threadId: string; lastInstanceId?: string; resumeCursors: Record<string, unknown> }>;
+      }>;
+      return bots.find((candidate) => candidate.id === bot.id)?.tasks.find((task) => task.threadId === bot.threadId);
+    };
+    const select = async (instanceId: string, model: string) => {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId, model },
+      })).status).toBe(200);
+    };
+    const interrupt = async () => {
+      expect((await api("POST", `/api/bots/${bot.id}/interrupt`, {})).status).toBe(200);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(false);
+    };
+
+    try {
+      await select("claude", claude.models.default);
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "establish a Claude cursor" })).status).toBe(202);
+      await expect.poll(() => persistedTask(), { timeout: 5_000 }).toMatchObject({
+        lastInstanceId: "claude",
+        resumeCursors: { claude: expect.any(String) },
+      });
+      const claudeCursor = persistedTask()?.resumeCursors.claude;
+      await interrupt();
+
+      await select("claude2", claude2.models.default);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "make the second engine current" })).status).toBe(202);
+      await expect.poll(() => persistedTask()?.lastInstanceId, { timeout: 5_000 }).toBe("claude2");
+      await interrupt();
+
+      expect((await api("PATCH", "/api/instances/claude", { cli: fakeUnsupportedClaudeCli })).status).toBe(200);
+      await select("claude", claude.models.default);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "fail before provider launch" })).status).toBe(202);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }, { timeout: 5_000 }).toBe(false);
+
+      expect(persistedTask()).toMatchObject({
+        lastInstanceId: "claude2",
+        resumeCursors: { claude: claudeCursor },
+      });
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, {});
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PATCH", "/api/instances/claude", { cli: FAKE_CLAUDE_CLI })).status).toBe(200);
+    }
+  }, 20_000);
+
+  it("does not let setup from before a provider reload dispatch or clear its successor", async () => {
+    const launchLog = join(home, "fake-claude-setup-race-launches");
+    const countingCli = writeFakeClaudeWrapper(
+      join(home, "fake-claude-setup-race"),
+      "hang",
+      { keepDump: true, launchLog },
+    );
+    let botId = "";
+    try {
+      rmSync(launchLog, { force: true });
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("PUT", "/api/config", { box: { token: "box_gate" } })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/claude", { cli: countingCli })).status).toBe(200);
+      const claude = (await api("GET", "/api/instances?fresh=1")).body.instances.find(
+        (instance: { instanceId: string }) => instance.instanceId === "claude",
+      );
+      const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+      botId = bot.id;
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "claude", model: claude.models.default },
+      })).status).toBe(200);
+
+      boxTurnRequests = 0;
+      boxTurnGate = new Promise<void>((resolve) => { releaseBoxTurnGate = resolve; });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "stale setup must not launch" })).status).toBe(202);
+      await expect.poll(() => boxTurnRequests, { timeout: 5_000 }).toBe(1);
+
+      expect((await api("PATCH", "/api/instances/claude", { fullAuto: true })).status).toBe(200);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return state?.busy;
+      }).toBe(false);
+
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "replacement turn stays live" })).status).toBe(202);
+      await expect.poll(() => boxTurnRequests, { timeout: 5_000 }).toBe(2);
+      releaseBoxTurnGate?.();
+      boxTurnGate = null;
+      releaseBoxTurnGate = null;
+
+      const persistedTask = () => {
+        const bots = JSON.parse(readFileSync(join(home, ".botfleet", "bots.json"), "utf8")) as Array<{
+          id: string;
+          tasks: Array<{ threadId: string; lastInstanceId?: string; resumeCursors: Record<string, unknown> }>;
+        }>;
+        return bots.find((candidate) => candidate.id === bot.id)?.tasks.find((task) => task.threadId === bot.threadId);
+      };
+      await expect.poll(() => ({
+        launches: existsSync(launchLog)
+          ? readFileSync(launchLog, "utf8").split("\n").filter(Boolean).length
+          : 0,
+        lastInstanceId: persistedTask()?.lastInstanceId,
+        cursor: persistedTask()?.resumeCursors.claude,
+      }), { timeout: 5_000 }).toEqual({
+        launches: 1,
+        lastInstanceId: "claude",
+        cursor: expect.any(String),
+      });
+      const live = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(live?.busy).toBe(true);
+    } finally {
+      releaseBoxTurnGate?.();
+      boxTurnGate = null;
+      releaseBoxTurnGate = null;
+      if (botId) {
+        await api("POST", `/api/bots/${botId}/interrupt`, {});
+        await api("DELETE", `/api/bots/${botId}`);
+      }
+      expect((await api("PATCH", "/api/instances/claude", { cli: FAKE_CLAUDE_CLI, fullAuto: false })).status).toBe(200);
+      expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
+    }
+  }, 20_000);
+
   it("rejects overlapping provider configuration writes", async () => {
     const slowConfigWrite = api("PUT", "/api/config", { box: { token: "box_slow" } });
     await new Promise((resolve) => setTimeout(resolve, 30));
@@ -3848,6 +4425,59 @@ describe("instance CLI override API", () => {
     expect(overlapping.status).toBe(409);
     expect((await slowConfigWrite).status).toBe(200);
   });
+
+  it("settles an interrupted instance reload on the actual room thread", async () => {
+    let botId = "";
+    let botThreadId = "";
+    let roomId = "";
+    let roomThreadId = "";
+    try {
+      const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+      const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
+      expect(claude?.snapshot.state).toBe("available");
+
+      const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+      botId = bot.id;
+      botThreadId = bot.threadId;
+      expect((await api("PATCH", `/api/bots/${botId}`, {
+        modelSelection: { instanceId: "claude", model: claude.models.default },
+      })).status).toBe(200);
+      const room = (await api("POST", "/api/groups", {
+        name: "Reload room identity",
+        memberIds: [botId],
+      })).body.group as { id: string; threadId: string };
+      roomId = room.id;
+      roomThreadId = room.threadId;
+      expect((await api("PATCH", `/api/groups/${roomId}/setup`, { action: "skip" })).status).toBe(200);
+
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/groups/${roomId}/messages`, { text: "hold this room turn" })).status).toBe(202);
+      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+
+      const reload = await api("PATCH", "/api/instances/claude", { fullAuto: true });
+      expect(reload.status).toBe(200);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots")).body;
+        return {
+          botBusy: state.bots.find((candidate: { id: string }) => candidate.id === botId)?.busy,
+          roomBusyBotId: state.groups.find((candidate: { id: string }) => candidate.id === roomId)?.busyBotId,
+        };
+      }, { timeout: 5_000 }).toEqual({ botBusy: false, roomBusyBotId: null });
+
+      const roomMessages = (await api("GET", `/api/threads/${roomThreadId}/messages?limit=200`)).body.messages;
+      expect(roomMessages.some((message: { tool?: { name?: string } }) =>
+        message.tool?.name?.includes("provider settings changed"),
+      )).toBe(true);
+      const botMessages = (await api("GET", `/api/threads/${botThreadId}/messages?limit=200`)).body.messages;
+      expect(botMessages.some((message: { tool?: { name?: string } }) =>
+        message.tool?.name?.includes("provider settings changed"),
+      )).toBe(false);
+    } finally {
+      if (roomId) await api("DELETE", `/api/groups/${roomId}`);
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+      expect((await api("PATCH", "/api/instances/claude", { fullAuto: false })).status).toBe(200);
+    }
+  }, 20_000);
 
   it("creates, describes, and deletes a custom OpenAI-compatible engine", async () => {
     expect((await api("POST", "/api/instances", { name: "" })).status).toBe(400);

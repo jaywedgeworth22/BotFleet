@@ -69,6 +69,30 @@ describe("room round queue", () => {
     expect(seen).toEqual([{ hop: 2, cardContinuation: "yes" }]);
   });
 
+  it("preserves the selected engine and its fallback chain until the round drains", () => {
+    const turnSelection = {
+      instanceId: "claude-work",
+      model: "claude-sonnet-4-6",
+      effort: "high" as const,
+      fallbacks: [
+        {
+          instanceId: "codex-backup",
+          model: "gpt-5.3-codex",
+          effort: "medium" as const,
+          fallbacks: [{ instanceId: "local-last", model: "qwen3", effort: "low" as const }],
+        },
+      ],
+    };
+    queueRoomRound(round({ turnSelection }), NOW);
+
+    let drainedSelection;
+    drainRoomRounds(storeWith({ director: {} }), NOW, (queued) => {
+      drainedSelection = queued.turnSelection;
+    });
+
+    expect(drainedSelection).toEqual(turnSelection);
+  });
+
   it("drops a round that waited past its welcome rather than speaking into a moved-on room", () => {
     queueRoomRound(round(), NOW);
     const ran: string[] = [];

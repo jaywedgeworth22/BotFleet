@@ -4,7 +4,7 @@
 // scripted session. Failure modes are toggled by env var, mirroring how
 // the real thing misbehaves:
 //
-//   FAKE_CLAUDE_MODE   happy (default) | exit-early | hang | malformed
+//   FAKE_CLAUDE_MODE   happy (default) | exit-early | hang | malformed | quota
 //                      | stream (partial-message text deltas before the
 //                        whole-message frame, plus subagent noise to drop)
 //   FAKE_CLAUDE_DUMP   path to write {argv, env, prompt, mcpConfig} as JSON,
@@ -15,9 +15,11 @@
 //                      so a test cannot open it after the fact.
 //   FAKE_CLAUDE_AUTH   in (default) | out | unsupported | malformed |
 //                      inherited-api-key — what `auth status` reports
+//   FAKE_CLAUDE_QUOTA_GATE  optional file whose creation releases quota mode,
+//                           so integration tests can queue work before settle
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
-import { appendFileSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
 // The dump is read by a separate process that only knows the file exists.
 // A plain writeFileSync creates the file and then fills it, so a reader that
@@ -171,6 +173,38 @@ const playTurn = (prompt: JsonValue) => {
 
   if (mode === "malformed") {
     process.stdout.write("this is not json\n{broken\n");
+  }
+
+  if (mode === "quota") {
+    const finishQuota = () => {
+      out({
+        type: "assistant",
+        message: {
+          content: [{ type: "text", text: "You've hit your session limit · resets in 30 minutes" }],
+          usage: { input_tokens: 3, cache_read_input_tokens: 0, output_tokens: 1 },
+        },
+      });
+      out({
+        type: "result",
+        is_error: false,
+        stop_reason: "end_turn",
+        total_cost_usd: 0,
+        usage: { input_tokens: 3, cache_read_input_tokens: 0, output_tokens: 1 },
+      });
+      turnRunning = false;
+      finishIfDone();
+    };
+    const gate = process.env.FAKE_CLAUDE_QUOTA_GATE;
+    if (gate && !existsSync(gate)) {
+      const timer = setInterval(() => {
+        if (!existsSync(gate)) return;
+        clearInterval(timer);
+        finishQuota();
+      }, 10);
+    } else {
+      finishQuota();
+    }
+    return;
   }
 
   if (mode === "stream") {

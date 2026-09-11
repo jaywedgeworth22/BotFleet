@@ -758,7 +758,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(done).toMatchObject({ ok: true });
   });
 
-  it("a missing binary rejects before dispatch, and snapshot says unavailable", async () => {
+  it("a missing binary surfaces as spawn_error without dispatch, and snapshot says unavailable", async () => {
     instance = await ClaudeDriver.create({
       instanceId: "claude-missing",
       displayName: undefined,
@@ -768,7 +768,9 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     });
     recorder = recordEvents(instance.adapter);
 
-    await expect(instance.adapter.sendTurn({ threadId: "t-missing", text: "go" })).rejects.toThrow(/isolation support could not be verified/);
+    await instance.adapter.sendTurn({ threadId: "t-missing", text: "go" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: false, stopReason: "spawn_error" });
 
     expect(await instance.snapshot()).toMatchObject({ state: "unavailable" });
   });
@@ -1155,7 +1157,12 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     process.env.FAKE_CLAUDE_DUMP = dump;
     process.env.FAKE_CLAUDE_HELP_PROBES = probes;
     await create();
-    await expect(instance.adapter.sendTurn({ threadId: "t-unsupported", text: "go" })).rejects.toThrow(/Update Claude Code/);
+    await expect(instance.adapter.sendTurn({ threadId: "t-unsupported", text: "go" })).resolves.toMatchObject({
+      dispatched: false,
+    });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "runtime.error", message: expect.stringContaining("Update Claude Code") }));
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "turn.completed", ok: false, stopReason: "spawn_error" }));
     await expect(instance.generateText?.("title")).rejects.toThrow(/Update Claude Code/);
     await expect(instance.reviewPermission?.("review")).rejects.toThrow(/Update Claude Code/);
     expect(existsSync(dump)).toBe(false);
@@ -1178,10 +1185,12 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     process.env.FAKE_CLAUDE_DUMP = dump;
     await create();
     const pending = instance.adapter.sendTurn({ threadId: "t-stop-probe", text: "go" });
-    const rejected = expect(pending).rejects.toThrow(/interrupted before launch/);
     expect(instance.adapter.hasSession?.("t-stop-probe")).toBe(true);
     await instance.adapter.interruptTurn("t-stop-probe");
-    await rejected;
+    await expect(pending).resolves.toMatchObject({ dispatched: false });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events).toContainEqual(expect.objectContaining({ type: "turn.completed", ok: false, stopReason: "interrupted" }));
+    expect(recorder.events.some((e) => e.type === "runtime.error")).toBe(false);
     expect(instance.adapter.hasSession?.("t-stop-probe")).toBe(false);
     expect(existsSync(dump)).toBe(false);
   });

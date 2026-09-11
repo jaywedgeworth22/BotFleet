@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-09-11T14:21:19-05:00",
+  "updatedAt": "2026-09-11T16:12:10-05:00",
   "timezone": "America/Chicago",
   "baselineAudit": "2026-09-09-findings.json",
   "baselineCommit": "121cb85aa3ebb85cb2d5b9233bc69838979a88f7",
@@ -9,7 +9,26 @@
     "implementedByThisBatch": 11,
     "remainingOriginalFindings": 24
   },
+  "dependencySecurity": {
+    "implementationPr": 316,
+    "mergeCommit": "7ae5c8c17d03f37b897c03187b7d243131bf03ee",
+    "initialOpenAlerts": 26,
+    "postMergeOpenAlerts": 0,
+    "verification": "Fresh GitHub Dependabot REST query after merge; snapshot on 2026-09-11"
+  },
   "additionalIssues": [
+    {
+      "number": 321,
+      "state": "open",
+      "boardId": "6ca81ed5c9764eea8a8e1f710c3a281c",
+      "summary": "Preserve exact VPS lease ownership across delayed final screenshots so the workspace SSH alias guard remains effective"
+    },
+    {
+      "number": 319,
+      "state": "open",
+      "boardId": "e296144327fc4cdab5960e6cff0f7ae5",
+      "summary": "Make the on-demand Mac updater preserve active work and support staged installation and rollback"
+    },
     {
       "number": 318,
       "state": "open",
@@ -24,6 +43,7 @@
     {
       "number": 311,
       "implementationPr": 316,
+      "implementationState": "merged",
       "summary": "Docs/test dependency security updates discovered during the audit remediation"
     }
   ],
@@ -43,7 +63,7 @@
         "findingId": "D1",
         "sourceCommit": "121cb85aa3ebb85cb2d5b9233bc69838979a88f7"
       },
-      "remainingAcceptanceOrWork": "Use the normal update lifecycle to stop legacy harness binaries, then verify a single live data owner and authenticated attachment.  Existing legacy processes do not cooperate with the new lock."
+      "remainingAcceptanceOrWork": "Use the normal update lifecycle to stop legacy harness binaries, then verify a single live data owner and authenticated attachment.  Existing legacy processes do not cooperate with the new lock; final inspection reproduced two PIDs sharing the same database/WAL on the older runtime."
     },
     {
       "id": "D2",
@@ -222,7 +242,7 @@
       "issueNumber": 275,
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/275",
       "boardId": "46f08797c6e146469e9ed768aaf064c0",
-      "implementationState": "in_review",
+      "implementationState": "in_this_pr",
       "implementationPr": "https://github.com/jaywedgeworth22/BotFleet/pull/315",
       "mergeCommit": null,
       "originalEvidence": {
@@ -239,7 +259,7 @@
       "issueNumber": 276,
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/276",
       "boardId": "fbef84b20ea14ef68ff47322c0ae5add",
-      "implementationState": "in_review",
+      "implementationState": "in_this_pr",
       "implementationPr": "https://github.com/jaywedgeworth22/BotFleet/pull/315",
       "mergeCommit": null,
       "originalEvidence": {
@@ -256,7 +276,7 @@
       "issueNumber": 277,
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/277",
       "boardId": "adae362e0a544da7a5669d771af4f17d",
-      "implementationState": "in_review",
+      "implementationState": "in_this_pr",
       "implementationPr": "https://github.com/jaywedgeworth22/BotFleet/pull/315",
       "mergeCommit": null,
       "originalEvidence": {
@@ -613,15 +633,15 @@
       "issueNumber": 296,
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/296",
       "boardId": "2c27a6351b18472993007b0a9f86d24d",
-      "implementationState": "in_this_pr",
+      "implementationState": "merged",
       "implementationPr": "https://github.com/jaywedgeworth22/BotFleet/pull/316",
-      "mergeCommit": null,
+      "mergeCommit": "7ae5c8c17d03f37b897c03187b7d243131bf03ee",
       "originalEvidence": {
         "file": "2026-09-09-findings.json",
         "findingId": "R10",
         "sourceCommit": "121cb85aa3ebb85cb2d5b9233bc69838979a88f7"
       },
-      "remainingAcceptanceOrWork": "Refresh Dependabot state after merge and validate signed release/update behavior on an installed build; unsigned native packaging has passed on all three platforms."
+      "remainingAcceptanceOrWork": "Dependabot refresh after #316 found zero open alerts.  Validate signed release/update behavior on an installed build; unsigned native packaging has passed on all three platforms."
     }
   ]
 }
