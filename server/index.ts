@@ -150,8 +150,10 @@ import {
   eligibleAutoFallbackChain,
   inspectThreadOwners,
   interruptThreadOwners,
-  mayReleaseStalledTurn,
+  scheduleStalledReleaseRecheck,
+  stalledReleaseDecision,
   type InterruptOutcome,
+  type StalledReleaseDecision,
 } from "./turn-safety.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
@@ -1251,7 +1253,7 @@ const STUCK_TURN_SWEEP_MS = 1_800_000;
 function releaseStalledTurnIfUnowned(
   turn: { threadId: string; botId: string },
   stalledDispatchId: number | undefined,
-): void {
+): StalledReleaseDecision {
   // The stalled entry was removed before onStall ran.  A watched entry now
   // belongs to a newer dispatch on the same conversation, so this old grace
   // callback must not release its setup window.
@@ -1263,16 +1265,18 @@ function releaseStalledTurnIfUnowned(
     turn.threadId,
     (instanceId, error) => console.error(`watchdog: hasSession failed on instance ${instanceId}:`, error),
   );
-  if (!mayReleaseStalledTurn(newerTurnClaimed || newerTurnWatching, inspection)) {
+  const decision = stalledReleaseDecision(newerTurnClaimed || newerTurnWatching, inspection);
+  if (decision !== "release") {
     const reason = newerTurnClaimed || newerTurnWatching
       ? "a newer dispatch owns this conversation"
       : inspection.inspectionFailed
       ? "runtime ownership could not be verified"
       : `${inspection.owners.map((owner) => owner.instanceId).join(", ")} still owns the provider process`;
     console.error(`watchdog: retaining bot and computer ownership for stalled thread ${turn.threadId} — ${reason}`);
-    return;
+    return decision;
   }
 
+  stoppedTurns.delete(`${turn.botId}:${turn.threadId}`);
   activeTurnOwners.clearThread(turn.threadId);
   turnUsage.delete(turn.threadId);
   releaseLocalVmThread(turn.threadId);
@@ -1283,7 +1287,7 @@ function releaseStalledTurnIfUnowned(
     store.patchGroup(group.id, { busyBotId: null, unread: true });
   }
   const bot = store.bot(turn.botId);
-  if (!bot?.busy || (bot.inflightThreadId && bot.inflightThreadId !== turn.threadId)) return;
+  if (!bot?.busy || (bot.inflightThreadId && bot.inflightThreadId !== turn.threadId)) return "release";
   stopScreenPoller(bot.id);
   if (activeVpsThreads.get(bot.id) === turn.threadId) activeVpsThreads.delete(bot.id);
   store.setActivity(bot.id, "idle");
@@ -1293,6 +1297,20 @@ function releaseStalledTurnIfUnowned(
   drainQueuedSends();
   drainConnectorResumes();
   drainSecretResumes();
+  return "release";
+}
+
+function scheduleStalledTurnRelease(
+  turn: { threadId: string; botId: string },
+  stalledDispatchId: number | undefined,
+): void {
+  scheduleStalledReleaseRecheck(
+    () => releaseStalledTurnIfUnowned(turn, stalledDispatchId),
+    (callback, delayMs) => {
+      const release = setTimeout(callback, delayMs);
+      release.unref?.();
+    },
+  );
 }
 
 const watchdog = new TurnWatchdog({
@@ -1340,13 +1358,11 @@ const watchdog = new TurnWatchdog({
       });
       if (retained) {
         console.error(`watchdog: stalled thread ${turn.threadId} could not be stopped; retaining bot and computer ownership`);
-        return;
       }
       // An accepted interrupt can return before its child exits.  The normal
-      // turn.completed fold releases first; this fallback runs only when every
-      // adapter confirms the thread no longer has a runtime owner.
-      const release = setTimeout(() => releaseStalledTurnIfUnowned(turn, stalledDispatchId), 6_000);
-      release.unref?.();
+      // turn.completed fold releases first; these backed-off rechecks run until
+      // every adapter confirms the thread no longer has a runtime owner.
+      scheduleStalledTurnRelease(turn, stalledDispatchId);
     });
   },
 });
@@ -3783,6 +3799,7 @@ async function runGroupMemberTurn(
     });
     return true;
   }
+  if (!turnSelection) stoppedTurns.delete(`${bot.id}:${threadId}`);
   store.setActivity(bot.id, "working");
 
   store.patchGroup(group.id, { busyBotId: bot.id }); // the store's change stream carries the frame

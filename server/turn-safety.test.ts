@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -6,9 +7,14 @@ import {
   inspectThreadOwners,
   interruptThreadOwners,
   mayReleaseStalledTurn,
+  scheduleStalledReleaseRecheck,
+  stalledReleaseDecision,
   type AutoFallbackCandidate,
+  type StalledReleaseDecision,
   type ThreadRuntimeInstance,
 } from "./turn-safety.ts";
+
+const indexSource = readFileSync(new URL("./index.ts", import.meta.url), "utf8");
 
 const candidate = (
   instanceId: string,
@@ -140,9 +146,48 @@ describe("runtime-owner interruption", () => {
   it("releases only after every owner exited and no newer dispatch is watched", () => {
     const noOwners = { owners: [], inspectionFailed: false };
     expect(mayReleaseStalledTurn(false, noOwners)).toBe(true);
+    expect(stalledReleaseDecision(false, noOwners)).toBe("release");
     expect(mayReleaseStalledTurn(true, noOwners)).toBe(false);
-    expect(mayReleaseStalledTurn(false, { owners: [runtime("live", () => true)], inspectionFailed: false })).toBe(false);
-    expect(mayReleaseStalledTurn(false, { owners: [], inspectionFailed: true })).toBe(false);
+    expect(stalledReleaseDecision(true, noOwners)).toBe("superseded");
+    const liveOwner = { owners: [runtime("live", () => true)], inspectionFailed: false };
+    expect(mayReleaseStalledTurn(false, liveOwner)).toBe(false);
+    expect(stalledReleaseDecision(false, liveOwner)).toBe("retry");
+    const uncertain = { owners: [], inspectionFailed: true };
+    expect(mayReleaseStalledTurn(false, uncertain)).toBe(false);
+    expect(stalledReleaseDecision(false, uncertain)).toBe("retry");
+  });
+
+  it("rechecks retained ownership with bounded backoff until release", () => {
+    const decisions: StalledReleaseDecision[] = ["retry", "retry", "retry", "retry", "retry", "release"];
+    const scheduled: Array<{ callback: () => void; delayMs: number }> = [];
+    scheduleStalledReleaseRecheck(
+      () => decisions.shift() ?? "release",
+      (callback, delayMs) => scheduled.push({ callback, delayMs }),
+    );
+
+    expect(scheduled.map(({ delayMs }) => delayMs)).toEqual([6_000]);
+    scheduled.shift()!.callback();
+    expect(scheduled.map(({ delayMs }) => delayMs)).toEqual([12_000]);
+    scheduled.shift()!.callback();
+    expect(scheduled.map(({ delayMs }) => delayMs)).toEqual([24_000]);
+    scheduled.shift()!.callback();
+    expect(scheduled.map(({ delayMs }) => delayMs)).toEqual([48_000]);
+    scheduled.shift()!.callback();
+    expect(scheduled.map(({ delayMs }) => delayMs)).toEqual([60_000]);
+    scheduled.shift()!.callback();
+    expect(scheduled.map(({ delayMs }) => delayMs)).toEqual([60_000]);
+    scheduled.shift()!.callback();
+    expect(scheduled).toEqual([]);
+  });
+
+  it("stops rechecking when a newer dispatch supersedes the stalled turn", () => {
+    const scheduled: Array<() => void> = [];
+    scheduleStalledReleaseRecheck(
+      () => "superseded",
+      (callback) => scheduled.push(callback),
+    );
+    scheduled.shift()!();
+    expect(scheduled).toEqual([]);
   });
 
   it("distinguishes a refused stop from an owner that actually accepted interruption", async () => {
@@ -163,5 +208,24 @@ describe("runtime-owner interruption", () => {
       inspectionFailed: false,
     });
     expect(onError).toHaveBeenCalledWith("refused", expect.any(Error));
+  });
+});
+
+describe("watchdog stop-latch wiring", () => {
+  it("clears a stalled request before grace releases it or a fresh room dispatch starts", () => {
+    const graceRelease = indexSource.slice(
+      indexSource.indexOf("function releaseStalledTurnIfUnowned"),
+      indexSource.indexOf("function scheduleStalledTurnRelease"),
+    );
+    const roomDispatch = indexSource.slice(
+      indexSource.indexOf("async function runGroupMemberTurn"),
+      indexSource.indexOf(
+        "store.setActivity(bot.id, \"working\")",
+        indexSource.indexOf("async function runGroupMemberTurn"),
+      ),
+    );
+
+    expect(graceRelease).toContain("stoppedTurns.delete(`${turn.botId}:${turn.threadId}`)");
+    expect(roomDispatch).toContain("if (!turnSelection) stoppedTurns.delete(`${bot.id}:${threadId}`)");
   });
 });

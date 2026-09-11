@@ -123,11 +123,40 @@ export interface ThreadOwnerInspection {
   inspectionFailed: boolean;
 }
 
+export type StalledReleaseDecision = "release" | "retry" | "superseded";
+
+/** A missing terminal event needs repeated ownership checks: a child may take
+ * longer than the first grace window to exit.  A newer dispatch ends the old
+ * recovery loop, while live or uncertain ownership keeps it retrying. */
+export function stalledReleaseDecision(
+  newerTurnWatching: boolean,
+  inspection: ThreadOwnerInspection,
+): StalledReleaseDecision {
+  if (newerTurnWatching) return "superseded";
+  if (inspection.inspectionFailed || inspection.owners.length > 0) return "retry";
+  return "release";
+}
+
+/** Keep one recheck outstanding while an old provider still owns the thread.
+ * Back off to a bounded interval, and stop as soon as ownership
+ * is released or a newer dispatch supersedes this recovery. */
+export function scheduleStalledReleaseRecheck(
+  attempt: () => StalledReleaseDecision,
+  schedule: (callback: () => void, delayMs: number) => void,
+  delayMs = 6_000,
+  maxDelayMs = 60_000,
+): void {
+  schedule(() => {
+    if (attempt() !== "retry") return;
+    scheduleStalledReleaseRecheck(attempt, schedule, Math.min(delayMs * 2, maxDelayMs), maxDelayMs);
+  }, delayMs);
+}
+
 export function mayReleaseStalledTurn(
   newerTurnWatching: boolean,
   inspection: ThreadOwnerInspection,
 ): boolean {
-  return !newerTurnWatching && !inspection.inspectionFailed && inspection.owners.length === 0;
+  return stalledReleaseDecision(newerTurnWatching, inspection) === "release";
 }
 
 export interface InterruptOutcome {
