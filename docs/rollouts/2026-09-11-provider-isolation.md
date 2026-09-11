@@ -10,8 +10,9 @@ Claude title generation and permission review also pass an empty strict MCP conf
 
 - `pnpm exec vitest run server/drivers/claude.test.ts server/drivers/grok.test.ts`: 74 passed, 1 skipped after the capability and helper fixes.
 - `pnpm typecheck`: passed after the launch-guard follow-up.
-- Full `pnpm typecheck && pnpm test`: passed after harness integration (3,482 Vitest tests passed, 19 skipped, plus all chained suites).
+- Full `pnpm typecheck && pnpm test`: passed after the final launch guard (3,491 Vitest tests passed, 19 skipped, plus all chained suites).
 - Hosted macOS, Linux, Windows, control-plane, Linux package, Swift and iOS build gates passed at `65ed1b57`; final follow-up CI must pass before merge.
+- Final Windows CI exposed a POSIX-only crashing-CLI fixture in the existing real-server failover test.  Replaced it with the same Node wrapper used by the engine-safety lane; the focused failover regression and typecheck passed.
 - A hosted exact-minute quota display test failure was fixed by freezing its clock; product quota behavior is unchanged.
 
 ## Rollout
