@@ -4065,7 +4065,10 @@ describe("instance CLI override API", () => {
     // every future turn with no way back short of manual reconfiguration.
     // Deletion must be refused instead, the same way a busy affected bot
     // already is.
-    const toDisable = ["claude", "claude2", "crasher"];
+    // Registry defaults and native CLI discovery can add engines beyond the
+    // three fixture CLIs.  Isolate the premise using the actual starting pool.
+    const initialInstances = (await api("GET", "/api/instances")).body.instances;
+    const toDisable = initialInstances.filter((instance: any) => instance.enabled).map((instance: any) => instance.instanceId);
     for (const id of toDisable) {
       expect((await api("PATCH", `/api/instances/${id}`, { enabled: false })).status).toBe(200);
     }
