@@ -2659,6 +2659,24 @@ describe("harness HTTP API", () => {
     expect(String(result.body.reason)).toMatch(/ECONNREFUSED|did not answer|fetch failed/i);
   });
 
+  it("GET /api/infisical/status reports unconfigured state and field rows without secrets", async () => {
+    const res = await api("GET", "/api/infisical/status");
+    expect(res.status).toBe(200);
+    expect(res.body.infisical).toBeDefined();
+    expect(res.body.infisical.configured).toBe(false);
+    expect(Array.isArray(res.body.fields)).toBe(true);
+    for (const field of res.body.fields) {
+      if (field.secret) expect(field.value).toBeNull();
+    }
+  });
+
+  it("POST /api/infisical/test reports requirement to add machine identity when unconfigured", async () => {
+    const res = await api("POST", "/api/infisical/test");
+    expect(res.status).toBe(200);
+    expect(res.body.ok).toBe(false);
+    expect(String(res.body.error)).toMatch(/machine identity|project id/i);
+  });
+
   it("keeps shared Local VM mode by default and resolves isolated targets per bot when enabled", async () => {
     const first = (await api("POST", "/api/bots")).body.bot;
     const second = (await api("POST", "/api/bots")).body.bot;

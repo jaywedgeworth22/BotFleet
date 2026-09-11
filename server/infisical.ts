@@ -53,8 +53,8 @@ export interface InfisicalStatusView {
  * about what "mapped" means. */
 const MAPPED_INFISICAL_NAMES: ReadonlySet<string> = new Set(SECRET_FIELDS.map((spec) => spec.infisicalName));
 
-const DEFAULT_CALL_TIMEOUT_MS = 8000;
-const DEFAULT_BOOT_CAP_MS = 12000;
+const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+const DEFAULT_BOOT_CAP_MS = 25_000;
 const DEFAULT_REFRESH_MINUTES = 15;
 
 /** Per-HTTP-call timeout.  Overridable for the same reason the boot cap is:

@@ -34,7 +34,7 @@ function stripTrailingSlash(url) {
  * string only.  Body is built with JSON.stringify, never string
  * interpolation, so a client secret containing a quote cannot break the
  * request shape. */
-export async function loginUniversalAuth({ siteUrl, clientId, clientSecret, fetchImpl = fetch, timeoutMs = 8000 }) {
+export async function loginUniversalAuth({ siteUrl, clientId, clientSecret, fetchImpl = fetch, timeoutMs = 30_000 }) {
   const res = await fetchImpl(`${siteUrl}/api/v1/auth/universal-auth/login`, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -56,7 +56,7 @@ export async function loginUniversalAuth({ siteUrl, clientId, clientSecret, fetc
  * Map<secretKey, secretValue>.  viewSecretValue is always "true" here; this
  * script only ever runs where values are needed (it exists to populate
  * GITHUB_ENV), unlike the probe path in server/infisical.ts. */
-export async function listSecretsRaw({ siteUrl, token, projectId, environment, secretPath, fetchImpl = fetch, timeoutMs = 8000 }) {
+export async function listSecretsRaw({ siteUrl, token, projectId, environment, secretPath, fetchImpl = fetch, timeoutMs = 30_000 }) {
   const qs = new URLSearchParams({
     workspaceId: projectId,
     environment,

@@ -16,7 +16,7 @@
 // to a thrown message.
 import { redactSecretsInText } from "./redact.ts";
 
-const DEFAULT_TIMEOUT_MS = 8000;
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 export class InfisicalError extends Error {
   readonly statusCode: number;
@@ -30,6 +30,27 @@ export class InfisicalError extends Error {
 
 function httpError(fallback: string, status: number): InfisicalError {
   return new InfisicalError(`${fallback}: HTTP ${status}`, status);
+}
+
+function isTimeoutError(err: unknown): boolean {
+  if (err instanceof Error) {
+    return (
+      err.name === "TimeoutError" ||
+      err.name === "AbortError" ||
+      err.message.includes("timeout") ||
+      err.message.includes("aborted")
+    );
+  }
+  return false;
+}
+
+function toInfisicalError(err: unknown, operation: string, timeoutMs: number): InfisicalError {
+  if (err instanceof InfisicalError) return err;
+  if (isTimeoutError(err)) {
+    return new InfisicalError(`Infisical ${operation} timed out after ${timeoutMs} ms`, 504);
+  }
+  const message = err instanceof Error ? err.message : "network failure";
+  return new InfisicalError(`Infisical ${operation} failed: ${message}`, 502);
 }
 
 export interface LoginOptions {
@@ -49,12 +70,17 @@ export async function login({
   clientSecret,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 }: LoginOptions): Promise<string> {
-  const res = await fetch(`${siteUrl}/api/v1/auth/universal-auth/login`, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ clientId, clientSecret }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${siteUrl}/api/v1/auth/universal-auth/login`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ clientId, clientSecret }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    throw toInfisicalError(err, "login", timeoutMs);
+  }
   if (!res.ok) throw httpError("Infisical login failed", res.status);
 
   // SAFETY: Infisical's response body is untyped JSON off the wire; the cast
@@ -106,11 +132,16 @@ export async function listSecrets({
     expandSecretReferences: "false",
     include_imports: "false",
   });
-  const res = await fetch(`${siteUrl}/api/v3/secrets/raw?${qs.toString()}`, {
-    method: "GET",
-    headers: { authorization: `Bearer ${token}` },
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${siteUrl}/api/v3/secrets/raw?${qs.toString()}`, {
+      method: "GET",
+      headers: { authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    throw toInfisicalError(err, "secrets list", timeoutMs);
+  }
   if (!res.ok) throw httpError("Infisical secrets list failed", res.status);
 
   // SAFETY: same untyped-wire-JSON reasoning as `login()` above — the cast
@@ -166,20 +197,30 @@ export async function upsertSecret({
   const url = `${siteUrl}/api/v3/secrets/raw/${encodeURIComponent(name)}`;
   const headers = { "content-type": "application/json", authorization: `Bearer ${token}` };
 
-  const patchRes = await fetch(url, {
-    method: "PATCH",
-    headers,
-    body: JSON.stringify({ workspaceId: projectId, environment, secretPath, secretValue: value }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let patchRes: Response;
+  try {
+    patchRes = await fetch(url, {
+      method: "PATCH",
+      headers,
+      body: JSON.stringify({ workspaceId: projectId, environment, secretPath, secretValue: value }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    throw toInfisicalError(err, "secret update", timeoutMs);
+  }
   if (patchRes.ok) return;
   if (patchRes.status !== 404) throw httpError("Infisical secret update failed", patchRes.status);
 
-  const postRes = await fetch(url, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ workspaceId: projectId, environment, secretPath, secretValue: value, type: "shared" }),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let postRes: Response;
+  try {
+    postRes = await fetch(url, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ workspaceId: projectId, environment, secretPath, secretValue: value, type: "shared" }),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+  } catch (err) {
+    throw toInfisicalError(err, "secret create", timeoutMs);
+  }
   if (!postRes.ok) throw httpError("Infisical secret create failed", postRes.status);
 }

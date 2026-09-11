@@ -8560,8 +8560,14 @@ const server = createServer(async (req, res) => {
       // manager cannot say what it manages.
       const vaultUnreachable =
         vaultForSave.enabled && vaultForSave.lastSyncAt === null && vaultForSave.lastError !== null;
-      const managedBySave = (spec: SecretFieldSpec): boolean =>
-        vaultForSave.enabled && (secretSource(spec.id) === "infisical" || vaultKnownNames.has(spec.infisicalName));
+      const managedBySave = (spec: SecretFieldSpec, requested: string): boolean => {
+        if (!vaultForSave.enabled) return false;
+        const alreadyInVault = secretSource(spec.id) === "infisical" || vaultKnownNames.has(spec.infisicalName);
+        if (alreadyInVault) return true;
+        // With Write Through on, non-empty values write through to Infisical so it
+        // becomes the authoritative source of truth, even for fresh names.
+        return vaultForSave.writeThrough && requested.length > 0;
+      };
 
       const managedInPatch: { spec: SecretFieldSpec; requested: string }[] = [];
       for (const spec of SECRET_FIELDS) {
@@ -8574,7 +8580,7 @@ const server = createServer(async (req, res) => {
             infisicalName: spec.infisicalName,
           });
         }
-        if (!managedBySave(spec)) continue;
+        if (!managedBySave(spec, requested)) continue;
         if (!vaultForSave.writeThrough) {
           return json(res, 409, {
             // NBSP + space, not two ASCII spaces: this string is rendered
