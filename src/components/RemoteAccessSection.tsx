@@ -12,8 +12,34 @@ import { Card, CopyableValue } from "./SettingsPrimitives";
 
 export type RemoteAccessTestResult =
   | { kind: "running" }
-  | { kind: "ok"; reason: string; tunnel?: string }
-  | { kind: "error"; reason: string; tunnel?: string };
+  | { kind: "ok"; label: string; detail?: string; tunnel?: string }
+  | { kind: "error"; label: string; detail?: string; tunnel?: string };
+
+const PRODUCT_REACHABLE = "Reachable";
+const PRODUCT_TIMEOUT = "The request timed out.";
+const PRODUCT_UNREACHABLE = "Couldn't reach this Mac.";
+
+/**
+ * Product pill copy for Settings.  Probe/shim telemetry stays on `detail`
+ * (title/hover) and must never become the visible label.
+ */
+function mapIngressProbeCopy(
+  kind: "ok" | "error",
+  raw: string | undefined,
+  tunnel?: string,
+): Extract<RemoteAccessTestResult, { kind: "ok" | "error" }> {
+  const detail = typeof raw === "string" ? raw : "";
+  const haystack = detail.toLowerCase();
+  const timedOut =
+    haystack.includes("timeout") || haystack.includes("timed out") || haystack.includes("aborted");
+  const label = kind === "ok" ? PRODUCT_REACHABLE : timedOut ? PRODUCT_TIMEOUT : PRODUCT_UNREACHABLE;
+  return {
+    kind,
+    label,
+    ...(detail ? { detail } : {}),
+    ...(tunnel ? { tunnel } : {}),
+  };
+}
 
 /**
  * Turns a raw /api/ingress/test fetch outcome into a RemoteAccessTestResult.
@@ -25,7 +51,10 @@ export type RemoteAccessTestResult =
  * { error: string } body. Casting that shape to IngressProbeResult reads a
  * falsey `ok` and an undefined `reason`, so the control would display a blank
  * error exactly when there is something useful to say. Check response.ok
- * first and surface the shim's `error` field in that case.
+ * first and keep the shim's `error` (or the status fallback) as hover `detail`.
+ *
+ * Visible copy is product-only: Reachable / The request timed out. /
+ * Couldn't reach this Mac.
  */
 export function describeIngressTestOutcome(
   ok: boolean,
@@ -37,12 +66,12 @@ export function describeIngressTestOutcome(
       typeof body === "object" && body !== null && "error" in body && typeof (body as { error?: unknown }).error === "string"
         ? (body as { error: string }).error
         : undefined;
-    return { kind: "error", reason: error ?? `Request failed with status ${status}` };
+    return mapIngressProbeCopy("error", error ?? `Request failed with status ${status}`);
   }
   const parsed = body as { ok: boolean; reason: string; tunnel?: string };
   return parsed.ok
-    ? { kind: "ok", reason: parsed.reason, tunnel: parsed.tunnel }
-    : { kind: "error", reason: parsed.reason, tunnel: parsed.tunnel };
+    ? mapIngressProbeCopy("ok", parsed.reason, parsed.tunnel)
+    : mapIngressProbeCopy("error", parsed.reason, parsed.tunnel);
 }
 
 const buttonSecondary =
@@ -66,12 +95,12 @@ export function TestConnectionControl({
       <button
         onClick={onRunTest}
         disabled={running}
-        // The visible label swaps to "Testing…" while the probe runs, but a
-        // fixed aria-label would keep announcing "Test Remote Access" the
-        // whole time — screen-reader users would get no indication the
-        // five-second probe even started. Mirror the running state in the
-        // accessible name and mark the control aria-busy to match.
-        aria-label={running ? "Testing Remote Access…" : "Test Remote Access"}
+        // Accessible name must match the visible chrome: "Test Connection"
+        // idle, "Testing…" while the five-second probe runs. A mismatched
+        // aria-label ("Test Remote Access") announced a different name than
+        // the button on screen. Keep aria-busy so the busy state is exposed
+        // independently of the label swap.
+        aria-label={running ? "Testing…" : "Test Connection"}
         aria-busy={running}
         className={buttonSecondary}
       >
@@ -87,9 +116,10 @@ export function TestConnectionControl({
             role={test.kind === "ok" ? "status" : "alert"}
             aria-live="polite"
             data-testid="remote-access-test-result"
+            title={test.detail}
             className={`text-[12px] leading-relaxed ${test.kind === "ok" ? "text-success" : "text-danger"}`}
           >
-            {test.reason}
+            {test.label}
           </span>
         )
       ) : null}
@@ -117,7 +147,7 @@ export function RemoteAccessSection() {
       const body = await response.json().catch(() => null);
       setTest(describeIngressTestOutcome(response.ok, response.status, body));
     } catch (cause) {
-      setTest({ kind: "error", reason: cause instanceof Error ? cause.message : String(cause) });
+      setTest(mapIngressProbeCopy("error", cause instanceof Error ? cause.message : String(cause)));
     }
   };
 
