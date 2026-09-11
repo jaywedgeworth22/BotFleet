@@ -38,6 +38,17 @@ final class StoreTests: XCTestCase {
         }
     }
 
+    func testSnapshotFetchedBeforeAStreamFrameCannotOverwriteThatFrame() throws {
+        var state = try hydrated()
+        let staleSnapshot = try fleet()
+        let token = state.hydrationToken
+        let threadId = try XCTUnwrap(state.bots.first?.threadId)
+        state.apply(.message(threadId: threadId, message: message("newer-frame", text: "arrived live")))
+
+        XCTAssertFalse(state.hydrate(staleSnapshot, ifUnchangedSince: token))
+        XCTAssertEqual(state.transcript(forThread: threadId).last?.id, "newer-frame")
+    }
+
     // MARK: - Messages
 
     func testAppendsAndPatchesInPlace() throws {

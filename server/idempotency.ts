@@ -23,7 +23,7 @@ export interface IdempotencyCacheOptions {
 }
 
 export class IdempotencyCache<T> {
-  private readonly entries = new Map<string, { at: number; result: Promise<T> }>();
+  private readonly entries = new Map<string, { at: number; result: Promise<T>; settled: boolean }>();
   private readonly ttlMs: number;
   private readonly maxEntries: number;
   private readonly now: () => number;
@@ -37,38 +37,48 @@ export class IdempotencyCache<T> {
   /** Run `attempt` once per key.  A second call with the same live key
    * returns the first call's promise and marks the run as replayed. */
   run(key: string, attempt: () => Promise<T>): IdempotentRun<T> {
-    this.prune();
+    this.pruneExpired();
     const existing = this.entries.get(key);
     if (existing) return { replayed: true, result: existing.result };
+    this.evictForInsertion();
     const result = attempt();
-    const entry = { at: this.now(), result };
+    const entry = { at: this.now(), result, settled: false };
     this.entries.set(key, entry);
-    result.catch(() => {
-      // A failed attempt is not an outcome worth replaying — let the retry run.
-      if (this.entries.get(key) === entry) this.entries.delete(key);
-    });
+    void result.then(
+      () => {
+        if (this.entries.get(key) === entry) entry.settled = true;
+      },
+      () => {
+        // A failed attempt is not an outcome worth replaying — let a retry on
+        // the same task run, and reject a stale-task retry as an unknown key.
+        if (this.entries.get(key) === entry) this.entries.delete(key);
+      },
+    );
     return { replayed: false, result };
   }
 
-  /** Return an earlier attempt without starting new work.  Route guards use
+  /** Return an earlier fulfilled attempt without starting new work.  Route guards use
    * this when mutable routing state changed after the original request: a
-   * known key may replay its outcome, while an unknown key must still be
-   * rejected rather than dispatched into the new destination. */
+   * committed key may replay its outcome, while unknown, in-flight, and
+   * rejected keys must be rejected rather than dispatched into the new task. */
   replay(key: string): IdempotentRun<T> | undefined {
-    this.prune();
+    this.pruneExpired();
     const existing = this.entries.get(key);
-    return existing ? { replayed: true, result: existing.result } : undefined;
+    return existing?.settled ? { replayed: true, result: existing.result } : undefined;
   }
 
   get size(): number {
     return this.entries.size;
   }
 
-  private prune(): void {
+  private pruneExpired(): void {
     const cutoff = this.now() - this.ttlMs;
     for (const [key, entry] of this.entries) {
       if (entry.at < cutoff) this.entries.delete(key);
     }
+  }
+
+  private evictForInsertion(): void {
     while (this.entries.size >= this.maxEntries) {
       const oldest = this.entries.keys().next().value;
       if (oldest === undefined) break;

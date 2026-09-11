@@ -42,6 +42,26 @@ describe("IdempotencyCache", () => {
     expect(cache.replay("unknown")).toBeUndefined();
   });
 
+  it("keeps a full cache intact during replay lookup", async () => {
+    const cache = new IdempotencyCache<string>({ maxEntries: 2 });
+    await cache.run("oldest", async () => "first").result;
+    await cache.run("newest", async () => "second").result;
+
+    await expect(cache.replay("oldest")?.result).resolves.toBe("first");
+    expect(cache.size).toBe(2);
+  });
+
+  it("does not expose in-flight or rejected attempts as committed replays", async () => {
+    const cache = new IdempotencyCache<string>();
+    let reject!: (error: Error) => void;
+    const pending = cache.run("pending", () => new Promise<string>((_, fail) => { reject = fail; }));
+    expect(cache.replay("pending")).toBeUndefined();
+
+    reject(new Error("dispatch failed"));
+    await expect(pending.result).rejects.toThrow("dispatch failed");
+    expect(cache.replay("pending")).toBeUndefined();
+  });
+
   it("forgets a rejected attempt so the caller can retry a real failure", async () => {
     const cache = new IdempotencyCache<string>();
     const failing = cache.run("k", async () => { throw new Error("provider unavailable"); });

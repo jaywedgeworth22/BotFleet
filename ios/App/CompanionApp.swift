@@ -13,12 +13,20 @@ import UserNotifications
 @main
 struct CompanionApp: App {
     @UIApplicationDelegateAdaptor(CompanionAppDelegate.self) private var appDelegate
-    @StateObject private var session = Session()
+    @StateObject private var session: Session
     @Environment(\.scenePhase) private var scenePhase
     @State private var liveActivities = LiveActivityCoordinator()
 
     init() {
         SentryTelemetry.start()
+        let session = Session()
+        _session = StateObject(wrappedValue: session)
+        appDelegate.onDeviceToken = { hex in
+            Task { await session.registerPushToken(hex) }
+        }
+        appDelegate.onRemoteRefresh = {
+            try await session.refreshFromRemoteNotification()
+        }
     }
 
     var body: some Scene {
@@ -27,12 +35,6 @@ struct CompanionApp: App {
                 .preferredColorScheme(.light)
                 .environmentObject(session)
                 .onAppear {
-                    appDelegate.onDeviceToken = { hex in
-                        Task { await session.registerPushToken(hex) }
-                    }
-                    appDelegate.onRemoteRefresh = {
-                        try await session.refreshFromRemoteNotification()
-                    }
                     session.connect()
                     session.registerForRemoteNotificationsIfAllowed()
                     liveActivities.attach(to: session)

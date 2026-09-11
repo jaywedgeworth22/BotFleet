@@ -855,12 +855,16 @@ final class Session: ObservableObject {
         let previousMessages = state.messages
         let previousHasMore = state.hasMore
         let previousPending = state.pendingQueued
+        let hydrationToken = state.hydrationToken
         let fleet = try await client.fleet(messages: 50)
         // The background-refresh deadline cancels this task.  URLSession
         // normally observes that cancellation itself; this second boundary
         // prevents a late, non-cooperative fetch from hydrating stale data.
         try Task.checkCancellation()
-        state.hydrate(fleet)
+        // If SSE folded anything while the request was in flight, that live
+        // state and its advanced cursor are newer than this snapshot.  Keep
+        // them together so reconnect never skips a frame we overwrote.
+        guard state.hydrate(fleet, ifUnchangedSince: hydrationToken) else { return true }
         NotificationCoordinator.shared.setBadge(state.unreadCount)
         return previousBots != state.bots ||
             previousRooms != state.rooms ||

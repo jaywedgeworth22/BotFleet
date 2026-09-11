@@ -10,6 +10,12 @@
 // a phone client is a weekend of work rather than a rewrite.
 import Foundation
 
+/// Captures the reducer position before an asynchronous snapshot request.
+/// A later hydrate may replace state only if no frame landed meanwhile.
+public struct HydrationToken: Equatable, Sendable {
+    fileprivate let revision: UInt64
+}
+
 public struct CompanionState: Sendable {
     public var bots: [Bot] = []
     public var rooms: [Room] = []
@@ -42,8 +48,15 @@ public struct CompanionState: Sendable {
     public var pendingQueued: [String: [QueuedSend]] = [:]
     /// queueIds whose drain frame beat the POST continuation. One-shot.
     public var consumedQueueIds: Set<String> = []
+    /// Monotonic reducer position used to reject snapshots fetched before a
+    /// newer stream frame was folded.
+    private var hydrationRevision: UInt64 = 0
 
     public init() {}
+
+    public var hydrationToken: HydrationToken {
+        HydrationToken(revision: hydrationRevision)
+    }
 
     // MARK: - Reading
 
@@ -181,6 +194,7 @@ public struct CompanionState: Sendable {
 
     /// Replace everything from a `GET /api/bots` response.
     public mutating func hydrate(_ fleet: Fleet) {
+        hydrationRevision &+= 1
         bots = fleet.bots
         rooms = fleet.groups
         messages.removeAll()
@@ -203,6 +217,15 @@ public struct CompanionState: Sendable {
                 consumePendingQueued(threadId: threadId, queueId: entry.queueId)
             }
         }
+    }
+
+    /// Apply an asynchronous snapshot only while it is still the newest
+    /// source of truth.  Live frames folded during the fetch win instead.
+    @discardableResult
+    public mutating func hydrate(_ fleet: Fleet, ifUnchangedSince token: HydrationToken) -> Bool {
+        guard hydrationRevision == token.revision else { return false }
+        hydrate(fleet)
+        return true
     }
 
     /// Prepend an older page fetched for scrollback.
@@ -244,6 +267,7 @@ public struct CompanionState: Sendable {
     }
 
     public mutating func apply(_ frame: Frame) {
+        hydrationRevision &+= 1
         switch frame {
         case .hello:
             // A hello describes the server's latest position, not one this
