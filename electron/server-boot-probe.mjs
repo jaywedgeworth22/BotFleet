@@ -20,6 +20,9 @@
 //   undefined and our own freshly-bound child would fail the identity match
 //   and be reaped as a "foreign owner" on its very first health answer.
 
+import { randomBytes } from "node:crypto";
+import { verifyHarnessOwnerProof } from "./harness-ownership.mjs";
+
 export const BOOT_PROBE_INTERVAL_MS = 500;
 
 const defaultSleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -96,10 +99,11 @@ export async function pollServerIdentity({
 // 18799 and forked a SECOND harness against the same ~/.botfleet data dir —
 // two writers, no lock, routines firing twice. The rule is now:
 //
-//   - a port that answers /api/health with `app: "botfleet"` is a harness we
-//     ATTACH to (no child is forked, and we never kill it on quit);
+//   - production attachment requires a live data-root owner and a valid
+//     challenge proof (no child is forked, and we never kill it on quit);
 //   - a port that answers with anything else is a foreign owner — skip it;
-//   - a port that refuses connections is free — fork our own child there.
+//   - a port that refuses connections is free only after every candidate has
+//     been checked and no live owner or ambiguous listener prevents spawning.
 //
 // The probe is a single bounded request, not the child-identity poll above:
 // we are asking "is anybody home", not "is my child up yet".
@@ -111,29 +115,38 @@ export const HARNESS_PROBE_TIMEOUT_MS = 2_000;
 export const ATTACH_SETTLE_MS = 1_500;
 
 /**
- * @param {{ port: number, timeoutMs?: number, fetchImpl?: typeof fetch }} options
+ * @param {{ port: number, owner?: import("./harness-ownership.mjs").HarnessOwner | null, timeoutMs?: number, fetchImpl?: typeof fetch }} options
  * @returns {Promise<
  *   | { kind: "none" }
  *   | { kind: "foreign" }
+ *   | { kind: "unavailable" }
  *   | { kind: "botfleet", pid: number, static: boolean }
  * >}
  */
 export async function probeHarness({
   port,
+  owner = null,
   timeoutMs = HARNESS_PROBE_TIMEOUT_MS,
   fetchImpl = globalThis.fetch,
 }) {
   let res;
+  const challenge = owner ? randomBytes(32).toString("hex") : undefined;
   try {
     res = await fetchImpl(`http://127.0.0.1:${port}/api/health`, {
       signal: AbortSignal.timeout(timeoutMs),
+      ...(challenge ? { headers: { "x-botfleet-owner-challenge": challenge } } : {}),
+      redirect: "error",
     });
-  } catch {
-    // Refused, reset, or a listener that never answered inside the budget:
-    // nothing we can attach to either way.
-    return { kind: "none" };
+  } catch (error) {
+    // Only an explicit refused connection proves the port is free.  A slow,
+    // reset, or partially responding listener may still own the entire fleet.
+    return { kind: error?.code === "ECONNREFUSED" || error?.cause?.code === "ECONNREFUSED" ? "none" : "unavailable" };
   }
-  const body = await res.json().catch(() => null);
+  let body;
+  try { body = await res.json(); } catch { return { kind: "unavailable" }; }
+  if (owner && (body?.pid !== owner.pid || !verifyHarnessOwnerProof(owner, challenge, body?.ownerProof))) {
+    return { kind: "unavailable" };
+  }
   if (res.ok && body?.app === "botfleet" && Number.isInteger(body.pid)) {
     return { kind: "botfleet", pid: body.pid, static: Boolean(body.static) };
   }
@@ -147,7 +160,8 @@ export async function probeHarness({
  *
  * @param {{
  *   ports: number[],
- *   probe: (port: number) => Promise<Awaited<ReturnType<typeof probeHarness>>>,
+ *   owner?: () => import("./harness-ownership.mjs").HarnessOwner | null,
+ *   probe: (port: number, owner?: import("./harness-ownership.mjs").HarnessOwner | null) => Promise<Awaited<ReturnType<typeof probeHarness>>>,
  *   spawn: (port: number) => Promise<{ proc: unknown } | { proc: null, reason?: string }>,
  *   attempts?: number,
  *   retrySettleMs?: number,
@@ -163,6 +177,7 @@ export async function probeHarness({
  */
 export async function resolvePackagedServer({
   ports,
+  owner,
   probe,
   spawn,
   attempts = 2,
@@ -175,14 +190,33 @@ export async function resolvePackagedServer({
   // decides which error-page message renders when nothing works out.
   let everyPortForeignOwned = true;
   for (let attempt = 0; attempt < attempts; attempt++) {
-    for (const port of ports) {
-      let seen = await probe(port);
+    let currentOwner;
+    try { currentOwner = owner?.() ?? null; } catch {
+      log("cannot validate data ownership; refusing to spawn another harness");
+      return { mode: "failed", conflictOnly: false };
+    }
+    const candidatePorts = currentOwner ? [currentOwner.port] : ports;
+    const freePorts = [];
+    let uncertain = Boolean(currentOwner);
+    // Inspect every candidate before spawning: the first port can be free
+    // while a harness owns the data on a later one.
+    for (const port of candidatePorts) {
+      let seen = await probe(port, currentOwner);
+      if (seen.kind === "botfleet" && owner && !currentOwner) {
+        // A legacy process cannot prove which data directory it serves.
+        // Re-read on the next pass in case an updated owner is still booting.
+        // Never attach and replay credentials to an unproven data root.
+        log(`harness on port ${port} has no data ownership proof; update and restart it before attaching`);
+        uncertain = true;
+        everyPortForeignOwned = false;
+        continue;
+      }
       if (seen.kind === "botfleet" && attachSettleMs > 0) {
         const firstPid = seen.pid;
         await sleep(attachSettleMs);
-        seen = await probe(port);
+        seen = await probe(port, currentOwner);
         if (seen.kind !== "botfleet") {
-          log(`harness on port ${port} (pid ${firstPid}) went away during settle; treating the port as ${seen.kind === "foreign" ? "foreign-owned" : "free"}`);
+          log(`harness on port ${port} (pid ${firstPid}) changed during settle: ${seen.kind}`);
         } else if (seen.pid !== firstPid) {
           log(`harness on port ${port} restarted during settle (pid ${firstPid} -> ${seen.pid})`);
         }
@@ -195,6 +229,15 @@ export async function resolvePackagedServer({
         log(`port ${port} answered health checks from another program`);
         continue;
       }
+      if (seen.kind === "unavailable") {
+        uncertain = true;
+        everyPortForeignOwned = false;
+      } else {
+        freePorts.push(port);
+      }
+    }
+    if (currentOwner) everyPortForeignOwned = false;
+    for (const port of uncertain ? [] : freePorts) {
       const started = await spawn(port);
       if (started.proc) return { mode: "spawned", port, proc: started.proc };
       // A child that exited or timed out is not evidence of a port conflict —

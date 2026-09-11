@@ -39,6 +39,7 @@ import { resolveStaticFile } from "./static-files.ts";
 import { attachmentExists, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, isImageMime, readAttachment, saveAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
 import { openBotFleetDesktop } from "./desktop-open.ts";
 import { IdempotencyCache } from "./idempotency.ts";
+import { initializeHarnessOwnership, harnessOwnerProof } from "../electron/harness-ownership.mjs";
 import {
   avatarGenerationRequestSchema,
   avatarGenerationStateMatches,
@@ -249,7 +250,10 @@ const MIME: Record<string, string> = {
   ".woff2": "font/woff2",
 };
 
-ensureDirs();
+// Fence duplicate schedulers and database writers before config, providers,
+// SQLite, routines, or webhook receivers start.  Health timeouts never release it.
+// The parent startup lock also serializes the one-time legacy directory move.
+const harnessOwner = initializeHarnessOwnership(DATA_DIR, PORT, ensureDirs);
 const cfg = loadConfig();
 // Flipped once, at the end of this file, when everything a secret change
 // might rebuild or re-point exists.  A snapshot that lands before then is
@@ -7533,7 +7537,10 @@ const server = createServer(async (req, res) => {
     // child proves it is OURS by echoing its pid (a stray dev server has
     // the same API shape but a different pid)
     if (method === "GET" && path === "/api/health") {
-      return json(res, 200, { app: "botfleet", pid: process.pid, static: Boolean(STATIC_DIR) });
+      return json(res, 200, {
+        app: "botfleet", pid: process.pid, static: Boolean(STATIC_DIR),
+        ownerProof: harnessOwnerProof(harnessOwner, req.headers["x-botfleet-owner-challenge"]),
+      });
     }
     if (method === "GET" && path === "/api/telemetry/status") {
       return json(res, 200, telemetry.getStatus());
