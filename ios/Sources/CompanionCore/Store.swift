@@ -10,6 +10,13 @@
 // a phone client is a weekend of work rather than a rewrite.
 import Foundation
 
+/// Captures the reducer position before an asynchronous snapshot request.
+/// A later hydrate may replace state only if no frame landed meanwhile.
+public struct HydrationToken: Equatable, Sendable {
+    fileprivate let stateID: UUID
+    fileprivate let revision: UInt64
+}
+
 public struct CompanionState: Sendable {
     public var bots: [Bot] = []
     public var rooms: [Room] = []
@@ -42,8 +49,16 @@ public struct CompanionState: Sendable {
     public var pendingQueued: [String: [QueuedSend]] = [:]
     /// queueIds whose drain frame beat the POST continuation. One-shot.
     public var consumedQueueIds: Set<String> = []
+    /// Monotonic reducer position used to reject snapshots fetched before a
+    /// newer stream frame was folded.
+    private let hydrationStateID = UUID()
+    private var hydrationRevision: UInt64 = 0
 
     public init() {}
+
+    public var hydrationToken: HydrationToken {
+        HydrationToken(stateID: hydrationStateID, revision: hydrationRevision)
+    }
 
     // MARK: - Reading
 
@@ -181,6 +196,7 @@ public struct CompanionState: Sendable {
 
     /// Replace everything from a `GET /api/bots` response.
     public mutating func hydrate(_ fleet: Fleet) {
+        hydrationRevision &+= 1
         bots = fleet.bots
         rooms = fleet.groups
         messages.removeAll()
@@ -205,8 +221,18 @@ public struct CompanionState: Sendable {
         }
     }
 
+    /// Apply an asynchronous snapshot only while it is still the newest
+    /// source of truth.  Live frames folded during the fetch win instead.
+    @discardableResult
+    public mutating func hydrate(_ fleet: Fleet, ifUnchangedSince token: HydrationToken) -> Bool {
+        guard hydrationStateID == token.stateID, hydrationRevision == token.revision else { return false }
+        hydrate(fleet)
+        return true
+    }
+
     /// Prepend an older page fetched for scrollback.
     public mutating func prepend(_ page: ThreadPage, toThread threadId: String) {
+        hydrationRevision &+= 1
         let existing = messages[threadId] ?? []
         let known = Set(existing.map(\.id))
         messages[threadId] = page.messages.filter { !known.contains($0.id) } + existing
@@ -215,6 +241,7 @@ public struct CompanionState: Sendable {
 
     /// Merge a search landing window into the pages already held.
     public mutating func merge(_ page: ThreadPage, intoThread threadId: String) {
+        hydrationRevision &+= 1
         var byId = Dictionary(
             uniqueKeysWithValues: (messages[threadId] ?? []).map { ($0.id, $0) }
         )
@@ -244,6 +271,12 @@ public struct CompanionState: Sendable {
     }
 
     public mutating func apply(_ frame: Frame) {
+        switch frame {
+        case .message, .messagePatch, .thread, .bot, .botDeleted, .room, .roomDeleted:
+            hydrationRevision &+= 1
+        case .hello, .notify, .screen, .computer, .config, .runtime, .unknown:
+            break
+        }
         switch frame {
         case .hello:
             // A hello describes the server's latest position, not one this

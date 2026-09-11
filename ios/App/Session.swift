@@ -30,6 +30,12 @@ final class Session: ObservableObject {
         case offline(String)
     }
 
+    private enum SnapshotHydrationOutcome {
+        case applied(changed: Bool)
+        case newerState
+        case pairingChanged
+    }
+
     @Published private(set) var state = CompanionState()
     @Published private(set) var connection: Connection?
     @Published private(set) var status: Status = .unpaired
@@ -471,8 +477,20 @@ final class Session: ObservableObject {
                         // the request dies halfway through replay/hydration,
                         // reconnecting must still ask for the missing gap.
                         if !resumed {
-                            try await hydrate()
-                            state.resetCursor(cursor)
+                            coldHydration: while true {
+                                switch try await hydrateSnapshot(using: client) {
+                                case .applied:
+                                    state.resetCursor(cursor)
+                                    break coldHydration
+                                case .newerState:
+                                    // A local action changed state while the
+                                    // snapshot loaded.  Fetch again before
+                                    // accepting the hello cursor.
+                                    continue
+                                case .pairingChanged:
+                                    return
+                                }
+                            }
                         }
                         status = .live
                         // Remember what actually carried the stream for
@@ -518,12 +536,30 @@ final class Session: ObservableObject {
         }
     }
 
-    private func hydrate() async throws {
-        guard let client else { return }
-        let fleet = try await client.fleet(messages: 50)
+    /// Fetch and apply one fleet snapshot without crossing either mutable
+    /// boundary: a live reducer update or a pairing/client replacement.
+    private func hydrateSnapshot(using requestClient: CompanionClient? = nil) async throws -> SnapshotHydrationOutcome {
+        guard let requestClient = requestClient ?? client else { return .pairingChanged }
+        let generation = pairingGeneration
+        let hydrationToken = state.hydrationToken
+        let previousBots = state.bots
+        let previousRooms = state.rooms
+        let previousMessages = state.messages
+        let previousHasMore = state.hasMore
+        let previousPending = state.pendingQueued
+        let fleet = try await requestClient.fleet(messages: 50)
+        try Task.checkCancellation()
+        guard pairingGeneration == generation else { return .pairingChanged }
+        guard state.hydrate(fleet, ifUnchangedSince: hydrationToken) else { return .newerState }
         log.info("hydrated \(fleet.bots.count, privacy: .public) bots, \(fleet.groups.count, privacy: .public) rooms")
-        state.hydrate(fleet)
         NotificationCoordinator.shared.setBadge(state.unreadCount)
+        return .applied(changed:
+            previousBots != state.bots ||
+            previousRooms != state.rooms ||
+            previousMessages != state.messages ||
+            previousHasMore != state.hasMore ||
+            previousPending != state.pendingQueued
+        )
     }
 
     // MARK: - Which address to dial
@@ -677,7 +713,12 @@ final class Session: ObservableObject {
             do {
                 switch chat {
                 case let .bot(bot):
-                    let result = try await client.send(text: prompt, toBot: bot.id)
+                    let result = try await client.send(
+                        text: prompt,
+                        toBot: bot.id,
+                        threadId: threadId,
+                        idempotencyKey: localId
+                    )
                     if result.queued == true, let queueId = result.queueId, !queueId.isEmpty {
                         let dest = result.threadId ?? bot.threadId
                         if dest != threadId {
@@ -687,11 +728,20 @@ final class Session: ObservableObject {
                             state.promotePendingSend(threadId: dest, from: localId, to: queueId)
                         }
                     }
-                case let .room(room): try await client.send(text: prompt, toRoom: room.id)
+                case let .room(room):
+                    try await client.send(
+                        text: prompt,
+                        toRoom: room.id,
+                        threadId: threadId,
+                        idempotencyKey: localId
+                    )
                 }
                 return true
             } catch {
                 state.cancelPendingQueued(threadId: threadId, queueId: localId)
+                if let apiError = error as? APIError, apiError.isConflict {
+                    await refreshAfterTaskConflict()
+                }
                 throw error
             }
         } catch let error as APIError where error.isUnauthorized {
@@ -814,7 +864,41 @@ final class Session: ObservableObject {
     }
 
     func interrupt(bot: Bot) async {
-        await perform { try await $0.interrupt(botId: bot.id) }
+        guard let client else { return }
+        do {
+            try await client.interrupt(botId: bot.id, threadId: bot.threadId)
+        } catch let error as APIError where error.isUnauthorized {
+            status = .unauthorized
+        } catch let error as APIError where error.isConflict {
+            await refreshAfterTaskConflict()
+            actionError = error.localizedDescription
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    /// APNs background delivery refreshes the current snapshot without
+    /// selecting a chat.  The delegate awaits this before reporting fetch
+    /// completion, and `connect` keeps the event stream ready during the
+    /// remaining background execution window.
+    func refreshFromRemoteNotification() async throws -> Bool {
+        if client == nil, restorePending { restore() }
+        guard let client else { return false }
+        connect()
+        switch try await hydrateSnapshot(using: client) {
+        case let .applied(changed): return changed
+        case .newerState: return true
+        case .pairingChanged: return false
+        }
+    }
+
+    private func refreshAfterTaskConflict() async {
+        do {
+            _ = try await hydrateSnapshot()
+        } catch {
+            restartStream()
+            connect()
+        }
     }
 
     /// Ask for one fresh cloud viewer URL. Unlike ordinary actions this
@@ -947,8 +1031,8 @@ final class Session: ObservableObject {
                 memberIds: memberIds
             )
             let updated = try await client.updateRoom(id: id, patch: patch)
-            if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
-                state.rooms[index] = updated
+            if state.rooms.contains(where: { $0.id == updated.id }) {
+                state.apply(.room(updated))
             }
             return true
         } catch {
@@ -970,8 +1054,8 @@ final class Session: ObservableObject {
             let currentCrop = state.rooms.first(where: { $0.id == id })?.avatarCrop ?? .rounded
             let patch = RoomPatch(avatarUrl: urlVal, avatarCrop: currentCrop)
             let updated = try await client.updateRoom(id: id, patch: patch)
-            if let index = state.rooms.firstIndex(where: { $0.id == updated.id }) {
-                state.rooms[index] = updated
+            if state.rooms.contains(where: { $0.id == updated.id }) {
+                state.apply(.room(updated))
             }
         } catch {
             actionError = error.localizedDescription
@@ -1210,8 +1294,7 @@ final class Session: ObservableObject {
         do {
             var bot = state.bot(target.botId)
             if bot == nil {
-                let fleet = try await client.fleet(messages: 50)
-                state.hydrate(fleet)
+                if case .pairingChanged = try await hydrateSnapshot(using: client) { return }
                 bot = state.bot(target.botId)
             }
             // A room's approval/question notification carries the asker bot
