@@ -4083,7 +4083,10 @@ describe("instance CLI override API", () => {
     // every future turn with no way back short of manual reconfiguration.
     // Deletion must be refused instead, the same way a busy affected bot
     // already is.
-    const toDisable = ["claude", "claude2", "crasher"];
+    const instancesRes = await api("GET", "/api/instances");
+    const toDisable = (instancesRes.body.instances as Array<{ instanceId: string; enabled: boolean }>)
+      .filter((i) => i.enabled)
+      .map((i) => i.instanceId);
     for (const id of toDisable) {
       expect((await api("PATCH", `/api/instances/${id}`, { enabled: false })).status).toBe(200);
     }

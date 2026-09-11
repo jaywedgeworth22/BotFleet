@@ -86,7 +86,13 @@ export async function login({
   // SAFETY: Infisical's response body is untyped JSON off the wire; the cast
   // only names the one field read below, and that field is re-checked with
   // `typeof` before it is ever treated as the token.
-  const body = (await res.json().catch(() => null)) as { accessToken?: unknown } | null;
+  let rawBody: unknown;
+  try {
+    rawBody = await res.json();
+  } catch (err) {
+    throw toInfisicalError(err, "login", timeoutMs);
+  }
+  const body = rawBody && typeof rawBody === "object" ? (rawBody as { accessToken?: unknown }) : null;
   const token = body && typeof body.accessToken === "string" ? body.accessToken : "";
   if (!token) throw new InfisicalError("Infisical login response carried no accessToken", 502);
   return token;
@@ -147,8 +153,17 @@ export async function listSecrets({
   // SAFETY: same untyped-wire-JSON reasoning as `login()` above — the cast
   // names only the one field this function reads, and every row pulled out
   // of it is re-validated below before it is trusted for anything.
-  const body = (await res.json().catch(() => null)) as { secrets?: unknown } | null;
-  const rows = Array.isArray(body?.secrets) ? body.secrets : [];
+  let listRawBody: unknown;
+  try {
+    listRawBody = await res.json();
+  } catch (err) {
+    throw toInfisicalError(err, "secrets list", timeoutMs);
+  }
+  const body = listRawBody && typeof listRawBody === "object" ? (listRawBody as { secrets?: unknown }) : null;
+  if (!Array.isArray(body?.secrets)) {
+    throw new InfisicalError("Infisical secrets list response carried no secrets array", 502);
+  }
+  const rows = body.secrets;
   const names: string[] = [];
   const values = new Map<string, string>();
   for (const row of rows) {

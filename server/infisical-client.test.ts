@@ -350,5 +350,87 @@ describe("network failures and timeouts", () => {
       message: "Infisical login failed: fetch failed",
     });
   });
+
+  it("wraps listSecrets body streaming timeout in InfisicalError with 504", async () => {
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw timeoutErr;
+        },
+      } as unknown as Response)),
+    );
+
+    await expect(
+      listSecrets({
+        siteUrl: "https://app.infisical.example",
+        token: SENTINEL_TOKEN,
+        projectId: "proj-1",
+        environment: "prod",
+        secretPath: "/",
+        viewValues: true,
+        timeoutMs: 4000,
+      }),
+    ).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 504,
+      message: "Infisical secrets list timed out after 4000 ms",
+    });
+  });
+
+  it("throws 502 when listSecrets body has no secrets array", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(JSON.stringify({ notSecrets: [] }), { status: 200 })),
+    );
+
+    await expect(
+      listSecrets({
+        siteUrl: "https://app.infisical.example",
+        token: SENTINEL_TOKEN,
+        projectId: "proj-1",
+        environment: "prod",
+        secretPath: "/",
+        viewValues: true,
+      }),
+    ).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 502,
+      message: "Infisical secrets list response carried no secrets array",
+    });
+  });
+
+  it("wraps login body streaming timeout in InfisicalError with 504", async () => {
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => {
+          throw timeoutErr;
+        },
+      } as unknown as Response)),
+    );
+
+    await expect(
+      login({
+        siteUrl: "https://app.infisical.example",
+        clientId: "client-1",
+        clientSecret: SENTINEL_CLIENT_SECRET,
+        timeoutMs: 4500,
+      }),
+    ).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 504,
+      message: "Infisical login timed out after 4500 ms",
+    });
+  });
 });
+
 
