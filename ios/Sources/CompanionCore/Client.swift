@@ -355,6 +355,11 @@ public enum APIError: Error, LocalizedError, Sendable {
         if case let .status(code, _) = self { return code == 404 }
         return false
     }
+
+    public var isConflict: Bool {
+        if case let .status(code, _) = self { return code == 409 }
+        return false
+    }
 }
 
 public struct CompanionClient: Sendable {
@@ -423,6 +428,29 @@ public struct CompanionClient: Sendable {
     private func send(_ request: URLRequest) async throws {
         let (data, response) = try await perform(request)
         try Self.check(response, data)
+    }
+
+    /// Only requests carrying an idempotency key use this retry path.  The
+    /// request is constructed once, so the retry cannot acquire a new key
+    /// after the server committed the first attempt but its response was lost.
+    private func sendIdempotent<T: Decodable>(_ request: URLRequest, as type: T.Type) async throws -> T {
+        do {
+            return try await send(request, as: type)
+        } catch let error as APIError {
+            guard case .transport = error else { throw error }
+            try Task.checkCancellation()
+            return try await send(request, as: type)
+        }
+    }
+
+    private func sendIdempotent(_ request: URLRequest) async throws {
+        do {
+            try await send(request)
+        } catch let error as APIError {
+            guard case .transport = error else { throw error }
+            try Task.checkCancellation()
+            try await send(request)
+        }
     }
 
     private func perform(_ request: URLRequest) async throws -> (Data, URLResponse) {
@@ -943,9 +971,18 @@ public struct CompanionClient: Sendable {
     }
 
     @discardableResult
-    public func send(text: String, toBot botId: String) async throws -> SendMessageResult {
-        try await send(
-            try makeRequest("POST", "/api/bots/\(botId)/messages", body: ["text": text]),
+    public func send(
+        text: String,
+        toBot botId: String,
+        threadId: String,
+        idempotencyKey: String
+    ) async throws -> SendMessageResult {
+        try await sendIdempotent(
+            try makeRequest("POST", "/api/bots/\(botId)/messages", body: [
+                "text": text,
+                "threadId": threadId,
+                "idempotencyKey": idempotencyKey,
+            ]),
             as: SendMessageResult.self
         )
     }
@@ -954,8 +991,17 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("DELETE", "/api/bots/\(botId)/queue/\(queueId)"))
     }
 
-    public func send(text: String, toRoom groupId: String) async throws {
-        try await send(try makeRequest("POST", "/api/groups/\(groupId)/messages", body: ["text": text]))
+    public func send(
+        text: String,
+        toRoom groupId: String,
+        threadId: String,
+        idempotencyKey: String
+    ) async throws {
+        try await sendIdempotent(try makeRequest("POST", "/api/groups/\(groupId)/messages", body: [
+            "text": text,
+            "threadId": threadId,
+            "idempotencyKey": idempotencyKey,
+        ]))
     }
 
     /// Answer an approval or a question.
@@ -1068,8 +1114,12 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("DELETE", "/api/bots/\(botId)/tasks/\(threadId)"), as: BotResponse.self).bot
     }
 
-    public func interrupt(botId: String) async throws {
-        try await send(try makeRequest("POST", "/api/bots/\(botId)/interrupt"))
+    public func interrupt(botId: String, threadId: String) async throws {
+        try await send(try makeRequest(
+            "POST",
+            "/api/bots/\(botId)/interrupt",
+            body: ["threadId": threadId]
+        ))
     }
 
     /// Mint a fresh interactive viewer for an existing cloud computer. The

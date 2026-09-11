@@ -13,12 +13,20 @@ import UserNotifications
 @main
 struct CompanionApp: App {
     @UIApplicationDelegateAdaptor(CompanionAppDelegate.self) private var appDelegate
-    @StateObject private var session = Session()
+    @StateObject private var session: Session
     @Environment(\.scenePhase) private var scenePhase
     @State private var liveActivities = LiveActivityCoordinator()
 
     init() {
         SentryTelemetry.start()
+        let session = Session()
+        _session = StateObject(wrappedValue: session)
+        appDelegate.onDeviceToken = { hex in
+            Task { await session.registerPushToken(hex) }
+        }
+        appDelegate.onRemoteRefresh = {
+            try await session.refreshFromRemoteNotification()
+        }
     }
 
     var body: some Scene {
@@ -27,15 +35,6 @@ struct CompanionApp: App {
                 .preferredColorScheme(.light)
                 .environmentObject(session)
                 .onAppear {
-                    appDelegate.onDeviceToken = { hex in
-                        Task { await session.registerPushToken(hex) }
-                    }
-                    appDelegate.onRemoteWake = {
-                        session.connect()
-                    }
-                    appDelegate.onRemoteTarget = { target in
-                        Task { await session.openNotification(target) }
-                    }
                     session.connect()
                     session.registerForRemoteNotificationsIfAllowed()
                     liveActivities.attach(to: session)
@@ -59,8 +58,7 @@ struct CompanionApp: App {
 /// token is posted to the sidecar; this process never sends an APNs push.
 final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
     var onDeviceToken: ((String) -> Void)?
-    var onRemoteWake: (() -> Void)?
-    var onRemoteTarget: ((NotificationTarget) -> Void)?
+    var onRemoteRefresh: (@MainActor @Sendable () async throws -> Bool)?
 
     func application(
         _ application: UIApplication,
@@ -82,11 +80,20 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
-        onRemoteWake?()
-        if let target = NotificationTarget.fromRemoteUserInfo(userInfo) {
-            onRemoteTarget?(target)
+        guard let onRemoteRefresh else {
+            completionHandler(.noData)
+            return
         }
-        completionHandler(.newData)
+        Task {
+            let outcome = await BackgroundRefreshCoordinator.run(timeoutNanoseconds: 15_000_000_000) {
+                try await onRemoteRefresh()
+            }
+            switch outcome {
+            case .newData: completionHandler(.newData)
+            case .noData: completionHandler(.noData)
+            case .failed: completionHandler(.failed)
+            }
+        }
     }
 }
 

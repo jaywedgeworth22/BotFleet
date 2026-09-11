@@ -94,6 +94,7 @@ function claudeEnvironment(
 }
 
 const DRIVER_KIND = "claudeAgent";
+const CLAUDE_ISOLATION_REASON = "Update Claude Code to a version supporting --strict-mcp-config and refresh engines; CLI isolation support could not be verified.";
 
 export interface ClaudeConfig {
   cli: string;
@@ -554,6 +555,16 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
+      const turnId = newId();
+      let preflightCancelled = false;
+      const preflight = { turnId, stop: () => { preflightCancelled = true; } };
+      active.set(threadId, preflight);
+      try {
+        await requireStrictMcp();
+        if (preflightCancelled) throw new Error("Claude turn interrupted before launch");
+      } finally {
+        if (active.get(threadId) === preflight) active.delete(threadId);
+      }
       const computerMounts = turnComputerMounts(turn.integrations);
       // Scope approval to the host computer's own tools. A remote desktop's
       // tools also begin with "mcp__computer", but clicking in a disposable
@@ -567,7 +578,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // else could make host control safe on a bypass instance.
       const permissionMode: ClaudeConfig["permissionMode"] =
         controlsHost && config.permissionMode === "bypassPermissions" ? "auto" : config.permissionMode;
-      const turnId = newId();
       const retryAbort = new AbortController();
       const retry = retryState.get(threadId) ?? { attempt: 0, cancelled: false };
       retry.cancelled = false;
@@ -602,19 +612,6 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       // integrations → MCP servers; pre-allow their tools (a headless
       // acceptEdits run silently denies anything unlisted)
       const mcpServers: Record<string, unknown> = {};
-      const importedMcpNames: string[] = [];
-
-      // Load global MCP servers used by the rest of the fleet
-      try {
-        const claudeJson = readFileSync(join(homedir(), ".claude.json"), "utf8");
-        const parsed = JSON.parse(claudeJson);
-        if (parsed && typeof parsed === "object" && parsed.mcpServers && typeof parsed.mcpServers === "object") {
-          Object.assign(mcpServers, parsed.mcpServers);
-          importedMcpNames.push(...Object.keys(parsed.mcpServers));
-        }
-      } catch (e) {
-        // ignore missing or malformed ~/.claude.json
-      }
 
       const allowed: string[] = [];
       if (turn.integrations?.composio) {
@@ -683,29 +680,19 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
         allowed.push("mcp__ogb");
       }
-      // Fleet MCP servers copied from ~/.claude.json are visible in
-      // mcpServers but acceptEdits silently denies anything whose prefix is
-      // not in --allowedTools. Pre-allow those imported servers only — do
-      // not re-allow BotFleet-owned namespaces that were deliberately omitted
-      // (host-controlled local CUA must not get mcp__computer).
-      for (const name of importedMcpNames) {
-        if (name === "computer") continue;
-        const prefix = `mcp__${name}`;
-        if (!allowed.includes(prefix)) allowed.push(prefix);
-      }
       // The MCP config carries credentials — a Composio consumer key in a
       // header, the box token in the computer proxy's env, the comms token in
       // the agents proxy's env. On argv every one of those is world-readable
       // through `ps` for the life of the turn, to any local process. The CLI
       // accepts a FILE for this flag, so the secrets go in a 0600 file that
       // is removed when the turn settles.
-      let mcpConfigPath: string | null = null;
-      if (Object.keys(mcpServers).length) {
-        mcpConfigPath = join(mkdtempSync(join(tmpdir(), "omb-mcp-")), "mcp.json");
-        writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
-        args.push("--mcp-config", mcpConfigPath);
-        args.push("--allowedTools", allowed.join(","));
-      }
+      // Always pass a strict config, including when this bot has no selected
+      // MCP integrations.  Claude otherwise merges global user MCP servers
+      // into the turn, which would cross the bot boundary.
+      const mcpConfigPath = join(mkdtempSync(join(tmpdir(), "omb-mcp-")), "mcp.json");
+      writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers }), { mode: 0o600 });
+      args.push("--mcp-config", mcpConfigPath, "--strict-mcp-config");
+      args.push("--allowedTools", allowed.join(","));
 
       const env = claudeEnvironment(turnModel, turnEnvironment);
       const cwd = turn.cwd ?? homedir();
@@ -1095,6 +1082,36 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       return writeUser(s, threadId, text);
     };
 
+    // Probe capabilities once per detected version.  Failed probes expire so
+    // a transient timeout does not require a harness restart to recover.
+    let strictMcpProbe: { version: string; expiresAt: number; result: Promise<boolean> } | undefined;
+    const supportsStrictMcp = (version: string, env: NodeJS.ProcessEnv): Promise<boolean> => {
+      if (strictMcpProbe?.version === version && strictMcpProbe.expiresAt > Date.now()) {
+        return strictMcpProbe.result;
+      }
+      const probe = {
+        version,
+        expiresAt: Date.now() + 30_000,
+        result: new Promise<boolean>((resolve) => {
+          execCli(config.cli, ["--help"], { timeout: 3000, env }, (error, stdout) => {
+            resolve(!error && /(?:^|\s)--strict-mcp-config(?:\s|$)/m.test(stdout));
+          });
+        }),
+      };
+      strictMcpProbe = probe;
+      void probe.result.then((supported) => {
+        if (supported) probe.expiresAt = Infinity;
+      });
+      return probe.result;
+    };
+
+    const requireStrictMcp = async (): Promise<void> => {
+      const env = claudeEnvironment(undefined, { ...process.env, ...input.environment });
+      if (!(await supportsStrictMcp(strictMcpProbe?.version ?? "unprobed", env))) {
+        throw new Error(CLAUDE_ISOLATION_REASON);
+      }
+    };
+
     const snapshot = async (): Promise<ProviderSnapshot> => {
       const env = claudeEnvironment(undefined, { ...process.env, ...input.environment });
       const version = await new Promise<string | null>((resolve) => {
@@ -1103,6 +1120,12 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         );
       });
       if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
+      if (!(await supportsStrictMcp(version, env))) {
+        return {
+          state: "unavailable",
+          reason: CLAUDE_ISOLATION_REASON,
+        };
+      }
       const authenticated = await claudeSignedIn(config.cli, env);
       // claudeEnvironment strips ANTHROPIC_API_KEY, so turns run on the
       // CLI's own login (Pro/Max): the cost it reports is what the call
@@ -1114,11 +1137,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
      * summaries can contain paths, commands, or secrets, so the generic
      * `claude -p "prompt"` shape is not safe for review. No tools or MCP
      * servers are mounted in this isolated process. */
-    const generateReview = (prompt: string, signal?: AbortSignal): Promise<string> =>
-      new Promise((resolve, reject) => {
+    const generateReview = async (prompt: string, signal?: AbortSignal): Promise<string> => {
+      if (signal?.aborted) throw new Error("Claude review aborted");
+      await requireStrictMcp();
+      if (signal?.aborted) throw new Error("Claude review aborted");
+      return new Promise((resolve, reject) => {
         const child = spawnCli(
           config.cli,
-          ["-p", "--model", "claude-haiku-4-5", "--output-format", "text"],
+          [
+            "-p", "--model", "claude-haiku-4-5", "--output-format", "text",
+            "--tools", "", "--mcp-config", '{"mcpServers":{}}', "--strict-mcp-config",
+          ],
           {
             stdio: ["pipe", "pipe", "pipe"],
             env: claudeEnvironment("claude-haiku-4-5", { ...process.env, ...input.environment }),
@@ -1167,6 +1196,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
           child.stdin.end(prompt);
         }
       });
+    };
 
     return {
       instanceId,

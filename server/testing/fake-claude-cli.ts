@@ -19,7 +19,7 @@
 //                           so integration tests can queue work before settle
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 
 // The dump is read by a separate process that only knows the file exists.
 // A plain writeFileSync creates the file and then fills it, so a reader that
@@ -46,7 +46,13 @@ const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
 
 // Snapshot probes: both answer on argv alone and exit without reading stdin.
 if (argv[0] === "--version") {
-  process.stdout.write("2.1.232 (Claude Code)\n");
+  process.stdout.write(`${process.env.FAKE_CLAUDE_VERSION ?? "2.1.232 (Claude Code)"}\n`);
+  process.exit(0);
+}
+
+if (argv[0] === "--help") {
+  if (process.env.FAKE_CLAUDE_HELP_PROBES) appendFileSync(process.env.FAKE_CLAUDE_HELP_PROBES, "probe\n");
+  process.stdout.write(process.env.FAKE_CLAUDE_HELP === "unsupported" ? "Usage: claude\n" : "  --strict-mcp-config  Only load explicit MCP servers\n");
   process.exit(0);
 }
 

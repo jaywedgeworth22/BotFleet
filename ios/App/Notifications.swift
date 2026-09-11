@@ -73,7 +73,10 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        if let target = NotificationTarget.fromRemoteUserInfo(response.notification.request.content.userInfo) {
+        if let target = NotificationTarget.navigationTarget(
+            fromRemoteUserInfo: response.notification.request.content.userInfo,
+            source: .userResponse
+        ) {
             responseHandler?(target)
         }
         completionHandler()

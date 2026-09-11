@@ -6,9 +6,9 @@
 // These used to be POSIX-only: the fake CLI is a shebang script Windows
 // cannot exec, and the broker is a unix socket. Both now go through
 // resolveCliSpawn / permissionSocketPath, so they run everywhere.
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -175,6 +175,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     delete process.env.FAKE_CLAUDE_PARTIAL_FAILS;
     delete process.env.FAKE_CLAUDE_STATE;
     delete process.env.FAKE_CLAUDE_RETRY_SCALE;
+    delete process.env.FAKE_CLAUDE_HELP;
+    delete process.env.FAKE_CLAUDE_HELP_PROBES;
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.XAI_API_KEY;
     delete process.env.COMPOSIO_API_KEY;
@@ -337,6 +339,26 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(JSON.stringify(seen.argv)).not.toContain("tok");
     const allowed = seen.argv[seen.argv.indexOf("--allowedTools") + 1];
     expect(allowed).toContain("mcp__agents");
+  });
+
+  it("ignores global Claude MCP servers and enables strict per-bot config", async () => {
+    const globalConfig = join(homedir(), ".claude.json");
+    writeFileSync(globalConfig, JSON.stringify({ mcpServers: { fleetOnly: { command: "/global-mcp" } } }));
+    try {
+      await create();
+      const dump = join(scratch, "strict-mcp.json");
+      process.env.FAKE_CLAUDE_DUMP = dump;
+
+      await instance.adapter.sendTurn({ threadId: "t-strict-mcp", text: "hi" });
+      await recorder.until((event) => event.type === "turn.completed");
+
+      const seen = JSON.parse(readFileSync(dump, "utf8"));
+      expect(Object.keys(seen.mcpConfig.mcpServers)).toEqual(["ogb"]);
+      expect(seen.mcpConfig.mcpServers.fleetOnly).toBeUndefined();
+      expect(seen.argv).toContain("--strict-mcp-config");
+    } finally {
+      rmSync(globalConfig, { force: true });
+    }
   });
 
   it("passes normalized available and denied built-in tool sets to Claude", async () => {
@@ -736,7 +758,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     expect(done).toMatchObject({ ok: true });
   });
 
-  it("a missing binary surfaces as spawn_error, and snapshot says unavailable", async () => {
+  it("a missing binary rejects before dispatch, and snapshot says unavailable", async () => {
     instance = await ClaudeDriver.create({
       instanceId: "claude-missing",
       displayName: undefined,
@@ -746,9 +768,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     });
     recorder = recordEvents(instance.adapter);
 
-    await instance.adapter.sendTurn({ threadId: "t-missing", text: "go" });
-    const done = await recorder.until((e) => e.type === "turn.completed");
-    expect(done).toMatchObject({ ok: false, stopReason: "spawn_error" });
+    await expect(instance.adapter.sendTurn({ threadId: "t-missing", text: "go" })).rejects.toThrow(/isolation support could not be verified/);
 
     expect(await instance.snapshot()).toMatchObject({ state: "unavailable" });
   });
@@ -1108,13 +1128,62 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const seen = JSON.parse(readFileSync(dump, "utf8"));
     expect(seen.prompt).toBe("summarize safely");
     expect(seen.argv).not.toContain("summarize safely");
+    expect(seen.argv).toContain("--strict-mcp-config");
+    expect(JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1])).toEqual({ mcpServers: {} });
+    expect(seen.argv[seen.argv.indexOf("--tools") + 1]).toBe("");
     expect(seen.env.CLAUDE_CONFIG_DIR).toBe(instanceConfigDir);
     for (const name of names) expect(seen.env[name]).toBeUndefined();
   });
 
   it("declares safe same-provider permission review", async () => {
     await create();
+    const dump = join(scratch, "review-isolation.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
     await expect(instance.reviewPermission?.("review this request")).resolves.toBe("fake generated text");
+    const seen = JSON.parse(readFileSync(dump, "utf8"));
+    expect(seen.prompt).toBe("review this request");
+    expect(seen.argv).not.toContain("review this request");
+    expect(seen.argv).toContain("--strict-mcp-config");
+    expect(JSON.parse(seen.argv[seen.argv.indexOf("--mcp-config") + 1])).toEqual({ mcpServers: {} });
+    expect(seen.argv[seen.argv.indexOf("--tools") + 1]).toBe("");
+  });
+
+  it("blocks bot turns and both helpers before spawning an unsupported CLI even without a snapshot", async () => {
+    process.env.FAKE_CLAUDE_HELP = "unsupported";
+    const dump = join(scratch, "must-not-dispatch.json");
+    const probes = join(scratch, "unsupported-help-probes");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    process.env.FAKE_CLAUDE_HELP_PROBES = probes;
+    await create();
+    await expect(instance.adapter.sendTurn({ threadId: "t-unsupported", text: "go" })).rejects.toThrow(/Update Claude Code/);
+    await expect(instance.generateText?.("title")).rejects.toThrow(/Update Claude Code/);
+    await expect(instance.reviewPermission?.("review")).rejects.toThrow(/Update Claude Code/);
+    expect(existsSync(dump)).toBe(false);
+    expect(readFileSync(probes, "utf8")).toBe("probe\n");
+  });
+
+  it("reuses a successful capability probe across turns and helpers", async () => {
+    const probes = join(scratch, "supported-help-probes");
+    process.env.FAKE_CLAUDE_HELP_PROBES = probes;
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-supported", text: "go" });
+    await recorder.until((e) => e.type === "turn.completed");
+    await instance.generateText?.("title");
+    await instance.reviewPermission?.("review");
+    expect(readFileSync(probes, "utf8")).toBe("probe\n");
+  });
+
+  it("honors Stop while the first capability probe is pending", async () => {
+    const dump = join(scratch, "stopped-before-dispatch.json");
+    process.env.FAKE_CLAUDE_DUMP = dump;
+    await create();
+    const pending = instance.adapter.sendTurn({ threadId: "t-stop-probe", text: "go" });
+    const rejected = expect(pending).rejects.toThrow(/interrupted before launch/);
+    expect(instance.adapter.hasSession?.("t-stop-probe")).toBe(true);
+    await instance.adapter.interruptTurn("t-stop-probe");
+    await rejected;
+    expect(instance.adapter.hasSession?.("t-stop-probe")).toBe(false);
+    expect(existsSync(dump)).toBe(false);
   });
 
   it("stops permission review when its caller gives up", async () => {
@@ -1138,6 +1207,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
 // and disabled the model picker with them (#108).
 describe("ClaudeDriver snapshot auth (fake CLI)", () => {
   let instance: ProviderInstance;
+  let scratch: string;
 
   const create = async () => {
     instance = await ClaudeDriver.create({
@@ -1152,12 +1222,38 @@ describe("ClaudeDriver snapshot auth (fake CLI)", () => {
   beforeEach(() => {
     ensureDirs();
     chmodSync(FAKE_CLI, 0o755);
+    scratch = mkdtempSync(join(tmpdir(), "omb-claude-probe-test-"));
   });
 
   afterEach(async () => {
     delete process.env.FAKE_CLAUDE_AUTH;
+    delete process.env.FAKE_CLAUDE_HELP;
+    delete process.env.FAKE_CLAUDE_HELP_PROBES;
+    delete process.env.FAKE_CLAUDE_VERSION;
     delete process.env.ANTHROPIC_API_KEY;
     await instance?.dispose();
+    await removeTempDir(scratch);
+  });
+
+  it("marks a CLI without strict MCP support unavailable with upgrade guidance", async () => {
+    process.env.FAKE_CLAUDE_HELP = "unsupported";
+    await create();
+    expect(await instance.snapshot()).toMatchObject({
+      state: "unavailable", reason: expect.stringContaining("Update Claude Code"),
+    });
+  });
+
+  it("caches capability checks and rechecks when the CLI version changes", async () => {
+    const probes = join(scratch, "help-probes");
+    process.env.FAKE_CLAUDE_HELP_PROBES = probes;
+    await create();
+    expect(await instance.snapshot()).toMatchObject({ state: "available" });
+    expect(await instance.snapshot()).toMatchObject({ state: "available" });
+    expect(readFileSync(probes, "utf8")).toBe("probe\n");
+    process.env.FAKE_CLAUDE_VERSION = "1.0.0 (Claude Code)";
+    process.env.FAKE_CLAUDE_HELP = "unsupported";
+    expect(await instance.snapshot()).toMatchObject({ state: "unavailable" });
+    expect(readFileSync(probes, "utf8")).toBe("probe\nprobe\n");
   });
 
   it("reports authenticated when `auth status` says loggedIn", async () => {
