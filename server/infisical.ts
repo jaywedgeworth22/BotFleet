@@ -438,10 +438,12 @@ class InfisicalManager {
       // have already committed in Infisical before the connection severed.
       // Reconcile by running a refresh to check if the vault holds the value.
       if (err instanceof InfisicalError && (err.statusCode === 504 || err.statusCode === 502)) {
-        await this.refresh("settings").catch(() => null);
-        const current = infisicalSnapshot();
-        if (current && current.get(name) === value) {
-          return;
+        const check = await this.refresh("settings").catch(() => null);
+        if (check && !check.stale && !check.lastError) {
+          const current = infisicalSnapshot();
+          if (current && current.get(name) === value) {
+            return;
+          }
         }
       }
       throw err;

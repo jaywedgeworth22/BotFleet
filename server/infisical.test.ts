@@ -512,6 +512,38 @@ describe("writeSecret", () => {
     expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("landed-value");
   });
 
+  it("rejects ambiguous upsert timeouts when the reconciliation refresh fails even if pre-existing snapshot matches", async () => {
+    withSettings({ writeThrough: true });
+    let patchCount = 0;
+    const timeoutErr = new Error("The operation was aborted due to timeout");
+    timeoutErr.name = "TimeoutError";
+
+    vi.stubGlobal(
+      "fetch",
+      loginThenList([{ secretKey: "COMPOSIO_API_KEY", secretValue: "existing-value" }]),
+    );
+    await infisical.refresh("manual");
+    expect(infisicalSnapshot()?.get("COMPOSIO_API_KEY")).toBe("existing-value");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string, init?: RequestInit) => {
+        if (url.includes("/login")) return new Response(JSON.stringify({ accessToken: SENTINEL_TOKEN }), { status: 200 });
+        if (init?.method === "PATCH") {
+          patchCount += 1;
+          throw timeoutErr;
+        }
+        return new Response("internal error", { status: 500 });
+      }),
+    );
+
+    await expect(infisical.writeSecret("COMPOSIO_API_KEY", "existing-value")).rejects.toMatchObject({
+      name: "InfisicalError",
+      statusCode: 504,
+    });
+    expect(patchCount).toBe(1);
+  });
+
   it("preserves canonical snapshot and rejects with 409 when verification encounters a conflict", async () => {
     withSettings({ writeThrough: true });
     vi.stubGlobal(
