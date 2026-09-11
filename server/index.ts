@@ -1260,15 +1260,22 @@ function releaseStalledTurnIfUnowned(
   const currentOwner = activeTurnOwners.current(turn.threadId);
   const newerTurnClaimed = currentOwner !== undefined && currentOwner.dispatchId !== stalledDispatchId;
   const newerTurnWatching = watchdog.watching(turn.threadId);
+  const completionPending = completionFolds.has(turn.threadId);
   const inspection = inspectThreadOwners(
     registry.instances(),
     turn.threadId,
     (instanceId, error) => console.error(`watchdog: hasSession failed on instance ${instanceId}:`, error),
   );
-  const decision = stalledReleaseDecision(newerTurnClaimed || newerTurnWatching, inspection);
+  const decision = stalledReleaseDecision(
+    newerTurnClaimed || newerTurnWatching,
+    inspection,
+    completionPending,
+  );
   if (decision !== "release") {
     const reason = newerTurnClaimed || newerTurnWatching
       ? "a newer dispatch owns this conversation"
+      : completionPending
+      ? "the terminal completion fold still owns this conversation"
       : inspection.inspectionFailed
       ? "runtime ownership could not be verified"
       : `${inspection.owners.map((owner) => owner.instanceId).join(", ")} still owns the provider process`;
@@ -2106,9 +2113,9 @@ bus.subscribe((event: RuntimeEvent) => {
         groupSpeakers.delete(event.threadId);
         store.patchGroup(group.id, { busyBotId: null, unread: true });
         const speakingBot = store.bot(speaker.botId);
-        if (speakingBot?.busy) {
-          store.setActivity(speakingBot.id, "idle");
-          store.patchBot(speakingBot.id, { unread: true });
+        if (speakingBot) {
+          if (speakingBot.busy) store.setActivity(speakingBot.id, "idle");
+          store.patchBot(speakingBot.id, { unread: true, inflightThreadId: undefined });
         }
       }
       // A delegated turn's terminal state belongs in the A⇄B channel:
@@ -2119,7 +2126,7 @@ bus.subscribe((event: RuntimeEvent) => {
       // Queue-drain subscribers already ran while an automatic fallback's
       // health probe held the bot busy.  Retry the drains after this fold;
       // they remain no-ops when a fallback synchronously reclaimed the bot.
-      if (deferredAutoFallback) {
+      if (deferredAutoFallback && !providerReloadInProgress) {
         drainQueuedSends();
         drainRoomQueue();
         drainConnectorResumes();
@@ -2263,6 +2270,8 @@ const runDelegatedTurn: Parameters<typeof drainDelegations>[3] = (toBotId, text,
     });
 };
 
+const providerReloadDelegationDrains = new Set<string>();
+
 bus.subscribe((event: RuntimeEvent) => {
   if (event.type !== "turn.completed") return;
   if (isToolCallsStopReason(event.stopReason)) return;
@@ -2270,6 +2279,10 @@ bus.subscribe((event: RuntimeEvent) => {
   // firing it later: the user who hit Stop does not expect the delegations
   // that turn queued to run anyway, minutes later, on an unrelated turn.
   if (!event.ok) return void discardDelegations(commsBus, event.threadId);
+  if (providerReloadInProgress) {
+    providerReloadDelegationDrains.add(event.threadId);
+    return;
+  }
   drainDelegations(commsBus, approvalBus, event.threadId, runDelegatedTurn);
 });
 
@@ -2287,6 +2300,7 @@ bus.subscribe((event: RuntimeEvent) => {
 bus.subscribe((event: RuntimeEvent) => {
   if (event.type !== "turn.completed") return;
   if (isToolCallsStopReason(event.stopReason)) return;
+  if (providerReloadInProgress) return;
   drainQueuedSends();
   drainRoomQueue();
 });
@@ -2474,6 +2488,11 @@ async function startTurn(
 ) {
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
+  if (providerReloadInProgress) {
+    throw Object.assign(new Error("provider settings are being reloaded — retry when the reload finishes"), {
+      status: 409,
+    });
+  }
   if (checkpointRestoreLeases.has(botId)) {
     throw Object.assign(new Error("this bot's project files are being restored — wait for the restore to finish"), {
       status: 409,
@@ -3708,6 +3727,10 @@ async function runGroupMemberTurn(
     ? group.threadId === threadId
     : Boolean(group && store.groupTaskByThread(group.id, threadId));
   if (!group || !bot || !ownsThread) return false;
+  if (providerReloadInProgress) {
+    queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation }, Date.now());
+    return true;
+  }
   spoken.add(botId);
   const selection = turnSelection ?? bot.modelSelection;
   const instance = registry.get(selection.instanceId);
@@ -3801,7 +3824,7 @@ async function runGroupMemberTurn(
   }
   if (!turnSelection) stoppedTurns.delete(`${bot.id}:${threadId}`);
   store.setActivity(bot.id, "working");
-
+  store.patchBot(bot.id, { inflightThreadId: threadId });
   store.patchGroup(group.id, { busyBotId: bot.id }); // the store's change stream carries the frame
   groupSpeakers.set(threadId, { botId: bot.id, name: bot.name, color: bot.color });
   activeTurnOwners.claim(threadId, {
@@ -3930,7 +3953,11 @@ async function runGroupMemberTurn(
   if (store.group(group.id)?.busyBotId === bot.id) {
     groupSpeakers.delete(threadId);
     store.patchGroup(group.id, { busyBotId: null, unread: true });
-    if (store.bot(bot.id)?.busy) store.setActivity(bot.id, "idle");
+    const currentBot = store.bot(bot.id);
+    if (currentBot) {
+      if (currentBot.busy) store.setActivity(bot.id, "idle");
+      store.patchBot(bot.id, { inflightThreadId: undefined });
+    }
   }
   if (outcome === "dispatch_failed") {
     // No turn.completed follows a rejected room dispatch. Anything that was
@@ -4163,6 +4190,10 @@ function markConnectorResumeFailed(threadId: string, resumeKey: string, error: s
 function dispatchConnectorResume(entry: { botId: string; threadId: string; resumeKey: string; labels: string[] }) {
   const owner = connectorThread(entry.botId, entry.threadId);
   if (!owner) return;
+  if (providerReloadInProgress) {
+    pendingConnectorResumes.set(`${entry.threadId}:${entry.resumeKey}`, entry);
+    return;
+  }
   const names = entry.labels.join(", ");
   const prompt = `BotFleet connection update: the user securely connected ${names}. Continue the task that paused for this connection. Do not ask them to connect it again.`;
   if (owner.bot.busy) {
@@ -4258,6 +4289,10 @@ function markSecretResumeFailed(threadId: string, messageId: string, error: stri
 function dispatchSecretResume(entry: SecretResumeEntry) {
   const owner = connectorThread(entry.botId, entry.threadId);
   if (!owner) return;
+  if (providerReloadInProgress) {
+    pendingSecretResumes.set(`${entry.threadId}:${entry.messageId}`, entry);
+    return;
+  }
   const prompt =
     entry.outcome === "provided"
       ? `BotFleet credential update: the user securely provided ${entry.label}. Continue the task that paused for it. You do not receive the secret and must not ask them to paste it into chat.`
@@ -4631,33 +4666,91 @@ function configStatus() {
  * afterwards.  Handing it the run already in flight would be cheaper and
  * wrong — that run read `cfg` before this caller changed it. */
 let providerReloadChain: Promise<void> = Promise.resolve();
+let pendingProviderReloads = 0;
+let providerReloadInProgress = false;
+
+function serializeProviderReload(runProviderMutation: () => Promise<void>): Promise<void> {
+  pendingProviderReloads += 1;
+  // Fence dispatch as soon as a mutation is queued, including the gap
+  // between two serialized reloads.  Otherwise the first run's drain can
+  // start work that the already-queued second run immediately disposes.
+  providerReloadInProgress = true;
+  const run = providerReloadChain.then(runProviderMutation, runProviderMutation);
+  const settled = run.then(
+    () => {
+      pendingProviderReloads -= 1;
+      if (pendingProviderReloads === 0) {
+        providerReloadInProgress = false;
+        drainProviderReloadContinuations();
+      }
+    },
+    (error) => {
+      pendingProviderReloads -= 1;
+      if (pendingProviderReloads === 0) providerReloadInProgress = false;
+      throw error;
+    },
+  );
+  // The chain itself must never reject, or every later caller inherits the
+  // failure; the run each caller awaits still rejects normally.
+  providerReloadChain = settled.catch(() => {});
+  return settled;
+}
 
 /** Rebuild the provider fleet after a config change so new keys take
  * effect without a server restart (kills any in-flight turns).  Serialized:
  * see `providerReloadChain`. */
 function reloadProviders(): Promise<void> {
-  const run = providerReloadChain.then(runProviderReload, runProviderReload);
-  // The chain itself must never reject, or every later caller inherits the
-  // failure; the run each caller awaits still rejects normally.
-  providerReloadChain = run.catch(() => {});
-  return run;
+  return serializeProviderReload(runProviderReload);
 }
 
 const RELOAD_REASON = "The turn was interrupted — provider settings changed";
 
+type InterruptedTurn = {
+  botId: string;
+  threadId: string;
+  instanceId?: string;
+  dispatchId?: number;
+};
+
+function activeInterruptedTurns(instanceId?: string): InterruptedTurn[] {
+  return store.bots
+    .filter((bot) => bot.busy)
+    .map((bot) => {
+      const owner = activeTurnOwners.forBot(bot.id);
+      return {
+        botId: bot.id,
+        threadId: owner?.threadId ?? bot.inflightThreadId ?? bot.threadId,
+        instanceId: owner?.selection.instanceId,
+        dispatchId: owner?.dispatchId,
+      };
+    })
+    .filter((turn) => !instanceId || turn.instanceId === instanceId);
+}
+
+function latchInterruptedTurns(turns: readonly InterruptedTurn[]): void {
+  for (const turn of turns) {
+    stoppedTurns.add(`${turn.botId}:${turn.threadId}`);
+    fallbackAttemptByTurn.delete(`${turn.botId}:${turn.threadId}`);
+    pendingMemberFallback.delete(turn.threadId);
+  }
+}
+
 function settleInterruptedBots(
-  affectedBots: Array<(typeof store.bots)[number]>,
+  affectedTurns: readonly InterruptedTurn[],
   reason: string = RELOAD_REASON,
 ) {
-  for (const b of affectedBots) {
-    const inflight = b.inflightThreadId ?? b.threadId;
+  for (const turn of affectedTurns) {
+    const b = store.bot(turn.botId);
+    if (!b || !b.busy) continue;
+    const inflight = turn.threadId;
+    const currentOwner = activeTurnOwners.forBot(b.id);
+    if (currentOwner && currentOwner.dispatchId !== turn.dispatchId) continue;
     const completing = completionFolds.has(inflight);
-    // A provider reload is a terminal operator action for this dispatch.
-    // In particular, it may race the async health probe used by automatic
-    // fallback; latch Stop before that probe can choose a new provider.
-    stoppedTurns.add(`${b.id}:${inflight}`);
-    fallbackAttemptByTurn.delete(`${b.id}:${inflight}`);
-    pendingMemberFallback.delete(inflight);
+    // A terminal fold can finish while dispose/load is awaiting.  With no
+    // current owner and no fold left, this snapshot is already fully settled;
+    // it must not append an interruption or release a newer resource lease.
+    if (turn.dispatchId !== undefined && !currentOwner && !completing) continue;
+    latchInterruptedTurns([turn]);
     activeTurnOwners.clearThread(inflight);
     watchdog.settle(inflight);
     const vmThread = [...localVmThreadTargets.entries()].find(([, target]) =>
@@ -4682,23 +4775,27 @@ function settleInterruptedBots(
     // bot fenced until that fold consumes the stop latch; otherwise a new
     // same-thread dispatch can start and the old fold can release it.
     if (completing) continue;
+    const group = store.groupByThread(inflight);
+    if (group?.busyBotId === b.id && groupSpeakers.get(inflight)?.botId === b.id) {
+      groupSpeakers.delete(inflight);
+      store.patchGroup(group.id, { busyBotId: null, unread: true });
+    }
     store.setActivity(b.id, "idle");
     store.patchBot(b.id, { inflightThreadId: undefined });
-  }
-  if (affectedBots.length > 0) {
-    drainQueuedSends();
-    drainConnectorResumes();
-    drainSecretResumes();
   }
 }
 
 async function runProviderReload() {
+  // Snapshot the actual bot/room thread and latch Stop before the first
+  // teardown side effect or await.  An asynchronous completion fold can now
+  // finish during dispose/load without dispatching a fallback on the old fleet.
+  const affectedTurns = activeInterruptedTurns();
+  latchInterruptedTurns(affectedTurns);
+  // Every watched turn is about to die with the old fleet.  Remove it before
+  // dispose can yield long enough for the watchdog to race this reload.
+  const killedTurns = watchdog.settleAll();
   bus.detachAll();
   await registry.disposeAll();
-  // Every watched turn died with the old fleet. Forget them now, or the
-  // watchdog reports a "no activity" stall on a dead thread twenty minutes
-  // later, and settle each one's routine receipt the way the stall path does.
-  const killedTurns = watchdog.settleAll();
   await registry.load(withInstanceKeyOverrides(instanceConfigs(cfg)));
   // The fleet now exists on exactly these credentials — record that, so the
   // next comparison is against what was built rather than against whatever
@@ -4708,9 +4805,36 @@ async function runProviderReload() {
   for (const turn of killedTurns) routines?.failThread(turn.threadId, RELOAD_REASON);
   // A killed turn's terminal events can die with the old fleet (dispose is
   // async under the hood), stranding the bot busy — and its screen poller —
-  // forever. Settle anything still marked busy, on the thread that was
-  // actually in flight: a routine runs in a detached task, not the open chat.
-  settleInterruptedBots(store.bots.filter((b) => b.busy), RELOAD_REASON);
+  // forever. Settle the exact thread snapshot taken before teardown.
+  settleInterruptedBots(affectedTurns, RELOAD_REASON);
+}
+
+function drainProviderReloadContinuations(): void {
+  // Completion subscribers deliberately skip drains while adapters are
+  // detached.  Release every queued work kind only after the replacement
+  // fleet is live.
+  for (const threadId of providerReloadDelegationDrains) {
+    providerReloadDelegationDrains.delete(threadId);
+    drainDelegations(commsBus, approvalBus, threadId, runDelegatedTurn);
+  }
+  drainQueuedSends();
+  drainRoomQueue();
+  drainConnectorResumes();
+  drainSecretResumes();
+}
+
+async function runInstanceProviderReload(
+  instanceId: string,
+  targetEntry: ReturnType<typeof instanceConfigs>[string] | undefined,
+): Promise<void> {
+  const affectedTurns = activeInterruptedTurns(instanceId);
+  latchInterruptedTurns(affectedTurns);
+  const oldInstance = registry.get(instanceId);
+  if (oldInstance) await oldInstance.adapter.stopAll?.().catch(() => {});
+  settleInterruptedBots(affectedTurns);
+  bus.detach(instanceId);
+  const newLive = targetEntry ? await registry.reloadInstance(instanceId, targetEntry) : null;
+  if (newLive) bus.attach([newLive]);
 }
 
 /** Bring `cfg` in line with a fresh secret-store snapshot, and decide whether
@@ -8104,22 +8228,7 @@ const server = createServer(async (req, res) => {
         // instance — not just the request that just set it — so a later
         // cli-only or enabled-only PATCH doesn't silently drop it.
         const targetEntry = withInstanceKeyOverrides(instanceConfigs(cfg))[instanceId];
-        const oldInstance = registry.get(instanceId);
-        if (oldInstance) {
-          await oldInstance.adapter.stopAll?.().catch(() => {});
-        }
-        const affectedBots = store.bots.filter((b) => {
-          if (!b.busy) return false;
-          const inflight = b.inflightThreadId ?? b.threadId;
-          const task = store.taskByThread(b.id, inflight);
-          const activeInstanceId =
-            task?.modelSelection?.instanceId ?? task?.lastInstanceId ?? b.modelSelection.instanceId;
-          return activeInstanceId === instanceId;
-        });
-        settleInterruptedBots(affectedBots);
-        bus.detach(instanceId);
-        const newLive = targetEntry ? await registry.reloadInstance(instanceId, targetEntry) : null;
-        if (newLive) bus.attach([newLive]);
+        await serializeProviderReload(() => runInstanceProviderReload(instanceId, targetEntry));
 
         // rescan BEFORE describe(): the response's cliCandidates are computed
         // from the memoized PATH, so resetting after would answer this request

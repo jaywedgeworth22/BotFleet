@@ -3909,6 +3909,59 @@ describe("instance CLI override API", () => {
     expect((await slowConfigWrite).status).toBe(200);
   });
 
+  it("settles an interrupted instance reload on the actual room thread", async () => {
+    let botId = "";
+    let botThreadId = "";
+    let roomId = "";
+    let roomThreadId = "";
+    try {
+      const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+      const claude = instances.find((instance: { instanceId: string }) => instance.instanceId === "claude");
+      expect(claude?.snapshot.state).toBe("available");
+
+      const bot = (await api("POST", "/api/bots")).body.bot as { id: string; threadId: string };
+      botId = bot.id;
+      botThreadId = bot.threadId;
+      expect((await api("PATCH", `/api/bots/${botId}`, {
+        modelSelection: { instanceId: "claude", model: claude.models.default },
+      })).status).toBe(200);
+      const room = (await api("POST", "/api/groups", {
+        name: "Reload room identity",
+        memberIds: [botId],
+      })).body.group as { id: string; threadId: string };
+      roomId = room.id;
+      roomThreadId = room.threadId;
+      expect((await api("PATCH", `/api/groups/${roomId}/setup`, { action: "skip" })).status).toBe(200);
+
+      rmSync(fakeClaudeDump, { force: true });
+      expect((await api("POST", `/api/groups/${roomId}/messages`, { text: "hold this room turn" })).status).toBe(202);
+      await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
+
+      const reload = await api("PATCH", "/api/instances/claude", { fullAuto: true });
+      expect(reload.status).toBe(200);
+      await expect.poll(async () => {
+        const state = (await api("GET", "/api/bots")).body;
+        return {
+          botBusy: state.bots.find((candidate: { id: string }) => candidate.id === botId)?.busy,
+          roomBusyBotId: state.groups.find((candidate: { id: string }) => candidate.id === roomId)?.busyBotId,
+        };
+      }, { timeout: 5_000 }).toEqual({ botBusy: false, roomBusyBotId: null });
+
+      const roomMessages = (await api("GET", `/api/threads/${roomThreadId}/messages?limit=200`)).body.messages;
+      expect(roomMessages.some((message: { tool?: { name?: string } }) =>
+        message.tool?.name?.includes("provider settings changed"),
+      )).toBe(true);
+      const botMessages = (await api("GET", `/api/threads/${botThreadId}/messages?limit=200`)).body.messages;
+      expect(botMessages.some((message: { tool?: { name?: string } }) =>
+        message.tool?.name?.includes("provider settings changed"),
+      )).toBe(false);
+    } finally {
+      if (roomId) await api("DELETE", `/api/groups/${roomId}`);
+      if (botId) await api("DELETE", `/api/bots/${botId}`);
+      expect((await api("PATCH", "/api/instances/claude", { fullAuto: false })).status).toBe(200);
+    }
+  }, 20_000);
+
   it("creates, describes, and deletes a custom OpenAI-compatible engine", async () => {
     expect((await api("POST", "/api/instances", { name: "" })).status).toBe(400);
     expect((await api("POST", "/api/instances", { name: "Ollama", endpoint: "not-a-url" })).status).toBe(400);

@@ -45,6 +45,21 @@ export class ActiveTurnOwners {
     return [...owners.values()].at(-1);
   }
 
+  forBot(botId: string): (ActiveTurnOwner & { threadId: string }) | undefined {
+    let latest: (ActiveTurnOwner & { threadId: string }) | undefined;
+    for (const [threadId, owners] of this.byThread) {
+      for (const owner of owners.values()) {
+        if (owner.botId !== botId || (latest && owner.dispatchId <= latest.dispatchId)) continue;
+        latest = { ...owner, threadId };
+      }
+    }
+    return latest;
+  }
+
+  threadForBot(botId: string): string | undefined {
+    return this.forBot(botId)?.threadId;
+  }
+
   settle(threadId: string, providerInstanceId?: string): ActiveTurnOwner | undefined {
     const owner = this.forEvent(threadId, providerInstanceId);
     if (!owner) return undefined;
@@ -131,9 +146,10 @@ export type StalledReleaseDecision = "release" | "retry" | "superseded";
 export function stalledReleaseDecision(
   newerTurnWatching: boolean,
   inspection: ThreadOwnerInspection,
+  completionPending = false,
 ): StalledReleaseDecision {
   if (newerTurnWatching) return "superseded";
-  if (inspection.inspectionFailed || inspection.owners.length > 0) return "retry";
+  if (completionPending || inspection.inspectionFailed || inspection.owners.length > 0) return "retry";
   return "release";
 }
 
@@ -155,8 +171,9 @@ export function scheduleStalledReleaseRecheck(
 export function mayReleaseStalledTurn(
   newerTurnWatching: boolean,
   inspection: ThreadOwnerInspection,
+  completionPending = false,
 ): boolean {
-  return stalledReleaseDecision(newerTurnWatching, inspection) === "release";
+  return stalledReleaseDecision(newerTurnWatching, inspection, completionPending) === "release";
 }
 
 export interface InterruptOutcome {

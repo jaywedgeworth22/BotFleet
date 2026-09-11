@@ -48,6 +48,8 @@ describe("active turn ownership", () => {
     expect(owners.forEvent("thread-1", "fallback")?.selection).toEqual(policy.fallbacks[0]);
     expect(owners.settle("thread-1", "primary")?.selection.instanceId).toBe("primary");
     expect(owners.current("thread-1")?.selection.instanceId).toBe("fallback");
+    expect(owners.threadForBot("bot-1")).toBe("thread-1");
+    expect(owners.forBot("bot-1")?.selection.instanceId).toBe("fallback");
   });
 
   it("rejects two live claims for the same thread and provider instance", () => {
@@ -155,6 +157,7 @@ describe("runtime-owner interruption", () => {
     const uncertain = { owners: [], inspectionFailed: true };
     expect(mayReleaseStalledTurn(false, uncertain)).toBe(false);
     expect(stalledReleaseDecision(false, uncertain)).toBe("retry");
+    expect(stalledReleaseDecision(false, noOwners, true)).toBe("retry");
   });
 
   it("rechecks retained ownership with bounded backoff until release", () => {
@@ -211,7 +214,7 @@ describe("runtime-owner interruption", () => {
   });
 });
 
-describe("watchdog stop-latch wiring", () => {
+describe("turn transition wiring", () => {
   it("clears a stalled request before grace releases it or a fresh room dispatch starts", () => {
     const graceRelease = indexSource.slice(
       indexSource.indexOf("function releaseStalledTurnIfUnowned"),
@@ -227,5 +230,56 @@ describe("watchdog stop-latch wiring", () => {
 
     expect(graceRelease).toContain("stoppedTurns.delete(`${turn.botId}:${turn.threadId}`)");
     expect(roomDispatch).toContain("if (!turnSelection) stoppedTurns.delete(`${bot.id}:${threadId}`)");
+  });
+
+  it("claims room identity synchronously and holds completion ownership across reload", () => {
+    const roomTurn = indexSource.slice(
+      indexSource.indexOf("async function runGroupMemberTurn"),
+      indexSource.indexOf("function startGroupTurn"),
+    );
+    const reload = indexSource.slice(
+      indexSource.indexOf("async function runProviderReload"),
+      indexSource.indexOf("/** Bring `cfg` in line"),
+    );
+    const serializeReload = indexSource.slice(
+      indexSource.indexOf("function serializeProviderReload"),
+      indexSource.indexOf("/** Rebuild the provider fleet"),
+    );
+    const settleReload = indexSource.slice(
+      indexSource.indexOf("function settleInterruptedBots"),
+      indexSource.indexOf("async function runProviderReload"),
+    );
+    const instanceReload = indexSource.slice(
+      indexSource.indexOf("async function runInstanceProviderReload"),
+      indexSource.indexOf("/** Bring `cfg` in line"),
+    );
+    const completion = indexSource.slice(
+      indexSource.indexOf('case "turn.completed"'),
+      indexSource.indexOf("/** #90 auto-failover"),
+    );
+    const startTurn = indexSource.slice(
+      indexSource.indexOf("async function startTurn"),
+      indexSource.indexOf("async function runGroupMemberTurn"),
+    );
+
+    expect(roomTurn.indexOf("store.patchBot(bot.id, { inflightThreadId: threadId })")).toBeLessThan(
+      roomTurn.indexOf("activeTurnOwners.claim(threadId"),
+    );
+    expect(completion).toContain("inflightThreadId: undefined");
+    expect(reload.indexOf("latchInterruptedTurns(affectedTurns)")).toBeLessThan(
+      reload.indexOf("bus.detachAll()"),
+    );
+    expect(reload.indexOf("bus.detachAll()")).toBeLessThan(reload.indexOf("await registry.disposeAll()"));
+    expect(reload).toContain("bus.attach(registry.instances())");
+    expect(instanceReload.indexOf("latchInterruptedTurns(affectedTurns)")).toBeLessThan(
+      instanceReload.indexOf("await oldInstance.adapter.stopAll"),
+    );
+    expect(instanceReload).toContain("bus.attach([newLive])");
+    expect(serializeReload.indexOf("providerReloadInProgress = false")).toBeLessThan(
+      serializeReload.indexOf("drainProviderReloadContinuations()"),
+    );
+    expect(settleReload).toContain("currentOwner.dispatchId !== turn.dispatchId");
+    expect(completion).toContain("deferredAutoFallback && !providerReloadInProgress");
+    expect(startTurn).toContain("if (providerReloadInProgress)");
   });
 });
