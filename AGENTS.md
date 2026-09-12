@@ -49,6 +49,8 @@ Search the `fleet-agents` corpus before re-deriving a lesson (`recall "query"` o
 
 Verification gate before every PR: `pnpm typecheck && pnpm test`, plus `cd ios && swift test` and an unsigned `xcodebuild` when iOS files change.  UI changes need screenshots in the PR body.
 
+A PR whose complete diff is confined to `docs/**` or the root documentation files allowlisted by `scripts/ci-change-scope.mjs` may use `pnpm test:ci-scope && git diff --check` locally.  The hosted workflow still reports every protected check through its documentation-only fast path.  Any other changed path, plus every scheduled or manually dispatched CI run, keeps the complete gate above.
+
 ## Mac Local Processes (binding)
 
 BotFleet runs always-on pieces on the Mac: `com.jay.botfleet-server` (harness on `127.0.0.1:8799`, webhook receiver `8800`), `com.jay.botfleet-imessage-relay`, `com.jay.mac-resource-watch`, and the on-demand `~/apps/update-botfleet.sh`.  If you create, change, load, bootout, or retire any LaunchAgent, cron row, pm2 job, or helper script other agents run, you **must** update `/Users/jay/apps/MAC-LOCAL-PROCESSES.md` and refresh the Apple Note (`apple-notes-coding.sh --update`) in the same change, and say whether it is always-on or on-demand.  The always-on harness runs from a detached `origin/main` checkout, never from a seat's feature branch.  Canonical: `AGENT-SYNC.md` § Mac local processes.
