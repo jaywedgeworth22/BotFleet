@@ -4,7 +4,7 @@ Issue #294.  Board `699ea1ae`.  Branch `codex/ios-live-activity-suspend-20260912
 
 ## Behavior
 
-BotFleet uses local ActivityKit updates and does not register Live Activity push tokens.  When the app enters the background, it invalidates queued foreground updates, clears its activity snapshot, and requests immediate teardown of every BotFleet Live Activity.  Returning to the foreground creates a new lifecycle generation, keeps updates disabled while a guarded post-resume snapshot loads, and reconciles that fresh state only after teardown finishes.
+BotFleet uses local ActivityKit updates and does not register Live Activity push tokens.  Initial activation first clears any ActivityKit cards restored from the previous process.  When the app enters the background, it invalidates queued foreground updates, clears its activity snapshot, and requests immediate teardown of every BotFleet Live Activity.  Returning to the foreground creates a new lifecycle generation, keeps updates disabled while a guarded post-resume snapshot loads, and reconciles that fresh state only after teardown finishes.
 
 The inactive phase keeps the current update policy because it also covers short system interruptions such as Control Center.  Only the background transition disables updates and starts teardown.
 

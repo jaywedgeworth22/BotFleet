@@ -36,9 +36,10 @@ public struct LiveActivityLifecycle: Sendable {
         case .active:
             guard freshStateRequired else { return nil }
             freshStateRequired = false
+            let isInitialActivation = generation == 0
             generation += 1
             updatesEnabled = false
-            return .awaitFreshState
+            return isInitialActivation ? .resetAndAwaitFreshState : .awaitFreshState
         case .inactive:
             return nil
         case .background:

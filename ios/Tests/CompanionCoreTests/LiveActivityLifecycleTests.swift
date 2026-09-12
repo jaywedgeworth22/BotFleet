@@ -6,7 +6,7 @@ final class LiveActivityLifecycleTests: XCTestCase {
         var lifecycle = LiveActivityLifecycle()
         XCTAssertFalse(lifecycle.updatesEnabled)
 
-        XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
+        XCTAssertEqual(lifecycle.transition(to: .active), .resetAndAwaitFreshState)
         let foregroundGeneration = lifecycle.generation
         XCTAssertFalse(lifecycle.permitsUpdates(from: foregroundGeneration))
         XCTAssertTrue(lifecycle.acceptFreshState(for: foregroundGeneration))
@@ -23,7 +23,7 @@ final class LiveActivityLifecycleTests: XCTestCase {
 
     func testForegroundReturnAcceptsOnlyItsOwnFreshSnapshot() {
         var lifecycle = LiveActivityLifecycle()
-        XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
+        XCTAssertEqual(lifecycle.transition(to: .active), .resetAndAwaitFreshState)
         let staleResumeGeneration = lifecycle.generation
         XCTAssertEqual(lifecycle.transition(to: .background), .endAll)
 
@@ -39,7 +39,7 @@ final class LiveActivityLifecycleTests: XCTestCase {
 
     func testInactiveOnlyInterruptionRetainsCurrentUpdatePolicy() {
         var lifecycle = LiveActivityLifecycle()
-        XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
+        XCTAssertEqual(lifecycle.transition(to: .active), .resetAndAwaitFreshState)
         let foregroundGeneration = lifecycle.generation
 
         XCTAssertNil(lifecycle.transition(to: .inactive))
@@ -51,7 +51,7 @@ final class LiveActivityLifecycleTests: XCTestCase {
 
     func testForegroundRepairingResetsActivitiesAndRestartsFreshHydration() {
         var lifecycle = LiveActivityLifecycle()
-        XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
+        XCTAssertEqual(lifecycle.transition(to: .active), .resetAndAwaitFreshState)
         let oldPairingGeneration = lifecycle.generation
         XCTAssertTrue(lifecycle.acceptFreshState(for: oldPairingGeneration))
 
