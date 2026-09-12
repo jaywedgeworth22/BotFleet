@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -11,6 +13,7 @@ import { verifyReleaseTag } from "./verify-release-tag.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = "1.0.31";
+const builderRequire = createRequire(createRequire(import.meta.url).resolve("electron-builder"));
 
 function hash(file, algorithm, encoding) {
   return createHash(algorithm).update(readFileSync(file)).digest(encoding);
@@ -49,7 +52,15 @@ function fixture() {
     `BotFleet-${VERSION}-amd64.deb`,
   ];
   for (const file of files) writeFileSync(join(directory, file), `bytes:${file}`);
-  for (const file of files.slice(0, 5)) writeFileSync(join(directory, `${file}.blockmap`), `map:${file}`);
+  for (const file of files.slice(0, 5)) {
+    execFileSync(process.platform === "win32" ? "python" : "python3", ["-c", `
+import base64,gzip,hashlib,json,sys
+from pathlib import Path
+p=Path(sys.argv[1]); data=p.read_bytes()
+blockmap={"version":"2","files":[{"name":"file","offset":0,"checksums":[base64.b64encode(hashlib.blake2b(data,digest_size=18).digest()).decode("ascii")],"sizes":[len(data)]}]}
+Path(str(p)+".blockmap").write_bytes(gzip.compress(json.dumps(blockmap).encode()))
+`, join(directory, file)]);
+  }
   cpSync(join(directory, files[2]), join(directory, "BotFleet.dmg"));
   cpSync(join(directory, files[3]), join(directory, "BotFleet-intel.dmg"));
   cpSync(join(directory, files[4]), join(directory, "BotFleet-setup.exe"));
@@ -100,6 +111,34 @@ test("mac feed regeneration replaces duplicate intermediate entries deterministi
     const text = readFileSync(feedPath, "utf8");
     assert.equal([...text.matchAll(/^\s{2}- url:/gm)].length, 4);
     assert.equal(new Set([...text.matchAll(/^\s{2}- url:\s+(\S+)/gm)].map((match) => match[1])).size, 4);
+    assert.doesNotThrow(() => verifyReleaseAssets(directory, VERSION));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test("valid artifact feeds cannot hide a corrupt or stale installer blockmap", () => {
+  const corrupt = fixture();
+  const stale = fixture();
+  try {
+    writeFileSync(join(corrupt.directory, `${corrupt.files[0]}.blockmap`), "corrupt map");
+    assert.throws(() => verifyReleaseAssets(corrupt.directory, VERSION), /invalid blockmap/);
+    cpSync(join(stale.directory, `${stale.files[1]}.blockmap`), join(stale.directory, `${stale.files[0]}.blockmap`));
+    assert.throws(() => verifyReleaseAssets(stale.directory, VERSION), /invalid blockmap/);
+  } finally {
+    rmSync(corrupt.directory, { recursive: true, force: true });
+    rmSync(stale.directory, { recursive: true, force: true });
+  }
+});
+
+test("validates multiple chunks produced by the installed Electron packager", async () => {
+  const { directory, files } = fixture();
+  try {
+    const { buildBlockMap } = builderRequire("app-builder-lib/out/targets/blockmap/blockmap.js");
+    const artifact = join(directory, files[0]);
+    writeFileSync(artifact, Buffer.alloc(100_000, 91));
+    await buildBlockMap(artifact, "gzip", `${artifact}.blockmap`);
+    writeFileSync(join(directory, "latest-mac.yml"), buildMacFeed(directory, VERSION, "2026-09-12T00:00:00.000Z"));
     assert.doesNotThrow(() => verifyReleaseAssets(directory, VERSION));
   } finally {
     rmSync(directory, { recursive: true, force: true });

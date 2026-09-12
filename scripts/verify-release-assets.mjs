@@ -1,7 +1,8 @@
 // Verify a fully assembled desktop release before it can reach GitHub
-// Releases.  This script intentionally has no package dependencies so the
-// assembly job can run directly after downloading the platform artifacts.
+// Releases.  Node and Python standard libraries validate feeds and chunk
+// hashes without installing the Electron packaging dependency tree.
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -102,6 +103,14 @@ function verifyFeed(directory, feedName, version, expectedUrls, blockmapUrls = [
   for (const url of blockmapUrls) {
     if (!existsSync(join(directory, `${url}.blockmap`))) {
       throw new Error(`${feedName}: missing ${url}.blockmap`);
+    }
+    try {
+      execFileSync(process.platform === "win32" ? "python" : "python3", [
+        fileURLToPath(new URL("./verify-release-blockmap.py", import.meta.url)),
+        join(directory, url), join(directory, `${url}.blockmap`),
+      ], { stdio: "pipe", timeout: 120_000 });
+    } catch {
+      throw new Error(`${feedName}: invalid blockmap for ${url}`);
     }
   }
   console.log(`${feedName}: verified ${feed.entries.length} artifacts`);
