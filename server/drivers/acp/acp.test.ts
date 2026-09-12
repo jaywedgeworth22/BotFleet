@@ -63,6 +63,14 @@ const AsyncAuthDriver = createAcpDriver({
   isAuthenticated: async () => true,
 });
 
+const VersionGateDriver = createAcpDriver({
+  ...SELECT_MODEL_SUPPORT,
+  driverKind: "versionGateTest",
+  defaultCli: FAKE_CLI,
+  selectModel: undefined,
+  versionCompatibilityReason: (version) => version.includes("2.0.0") ? null : "ACP 2.0.0 is required",
+});
+
 /** Proves the initialize flow never spawns the isAuthenticated probe for a
  *  fail-open driver (authFailure: "continue", the Cursor shape): its result
  *  can't change the outcome, so calling it — for every driver, every turn,
@@ -965,6 +973,35 @@ describe("ACP turns (fake CLI)", () => {
 });
 
 describe("ACP snapshot", () => {
+  it("enforces a stock CLI compatibility gate again at dispatch", async () => {
+    process.env.FAKE_ACP_VERSION = "fake-acp 1.0.0";
+    const instance = await VersionGateDriver.create({
+      instanceId: "version-gated",
+      displayName: undefined,
+      environment: {},
+      enabled: true,
+      config: VersionGateDriver.defaultConfig(),
+    });
+    const recorder = recordEvents(instance.adapter);
+    try {
+      expect(await instance.snapshot()).toMatchObject({
+        state: "unavailable",
+        reason: "ACP 2.0.0 is required",
+        version: "fake-acp 1.0.0",
+      });
+      const started = await instance.adapter.sendTurn({ threadId: "version-gated", text: "do not dispatch" });
+      expect(started.dispatched).toBe(false);
+      expect(recorder.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "runtime.error", message: "ACP 2.0.0 is required", setup: true }),
+        expect.objectContaining({ type: "turn.completed", ok: false, stopReason: "setup_required" }),
+      ]));
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+      delete process.env.FAKE_ACP_VERSION;
+    }
+  });
+
   it("a missing binary is unavailable", async () => {
     const instance = await GrokAgentDriver.create({
       instanceId: "grok-missing",

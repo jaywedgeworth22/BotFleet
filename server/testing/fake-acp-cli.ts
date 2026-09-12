@@ -52,7 +52,7 @@ if (mode === "cancel-exits-with-child") {
 // model is chosen with session/set_config_option, because `opencode acp` takes
 // no -m. Off unless FAKE_ACP_MODELS is set, so every existing mode is byte-
 // identical to before.
-const models = process.env.FAKE_ACP_MODELS_JSON
+const models: string[] = process.env.FAKE_ACP_MODELS_JSON
   ? JSON.parse(process.env.FAKE_ACP_MODELS_JSON)
   : (process.env.FAKE_ACP_MODELS ?? "").split(",").filter(Boolean);
 let currentModel: string | null = models[0] ?? null;
@@ -135,7 +135,7 @@ if (process.env.FAKE_ACP_DUMP) {
   writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify({ argv, env: dumpEnv }, null, 2));
 }
 if (argv.includes("--version")) {
-  console.log("fake-acp 1.0.0");
+  console.log(process.env.FAKE_ACP_VERSION ?? "fake-acp 1.0.0");
   process.exit(0);
 }
 // Cursor's driver probes `agent status` / `agent models` on the same binary

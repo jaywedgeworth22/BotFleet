@@ -324,6 +324,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
       const emit = (event: RuntimeEvent) => {
         for (const l of [...listeners]) l(event);
       };
+      const cliVersion = (effective: AcpConfig, env: Record<string, string | undefined>) =>
+        new Promise<string | null>((resolve) => {
+          execCli(effective.cli, ["--version"], { timeout: 8000, env }, (err, stdout) =>
+            resolve(err ? null : stdout.trim()),
+          );
+        });
       const base = (threadId: string, turnId: string) => ({
         eventId: newEventId(),
         provider: DRIVER_KIND,
@@ -412,6 +418,21 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         const turnId = newId();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
         const env = childEnv(turnConfig);
+        // Snapshot status is advisory and callers can dispatch directly.  A
+        // provider that requires a minimum stock CLI must enforce that same
+        // contract at the last boundary before spawning a paid turn.
+        if (support.versionCompatibilityReason && turnConfig.cli === support.defaultCli) {
+          const version = await cliVersion(turnConfig, env);
+          const incompatible = version
+            ? support.versionCompatibilityReason(version, turnConfig)
+            : `\`${turnConfig.cli}\` CLI not found`;
+          if (incompatible) {
+            emit({ ...base(threadId, turnId), type: "turn.started" });
+            emit({ ...base(threadId, turnId), type: "runtime.error", message: incompatible, setup: true });
+            emit({ ...base(threadId, turnId), type: "turn.completed", ok: false, stopReason: "setup_required", cost: null });
+            return { turnId, dispatched: false };
+          }
+        }
         if (
           support.requireAuthenticationBeforeSpawn
           && !skipSubscriptionAuthForLocalInject(turn.model)
@@ -953,11 +974,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       const snapshot = async (): Promise<ProviderSnapshot> => {
         const env = childEnv();
-        const version = await new Promise<string | null>((resolve) => {
-          execCli(config.cli, ["--version"], { timeout: 8000, env }, (err, stdout) =>
-            resolve(err ? null : stdout.trim()),
-          );
-        });
+        const version = await cliVersion(config, env);
         if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
         const incompatible = support.versionCompatibilityReason?.(version, config);
         if (incompatible) return { state: "unavailable", reason: incompatible, version };
