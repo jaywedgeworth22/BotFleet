@@ -23,6 +23,8 @@ Ten CODEX historical effort records were checked against the already completed c
 | `c91ce9ead277433eb49af11e1e532a8a` | duplicate | #314 (`86410c70`) |
 | `7b387ff9900c4636a2a4d64e58362396` | duplicate | #314 (`86410c70`) |
 
+A second pass retired 48 exact effort mirrors as Duplicate.  Each had one `wb-agent-report` marker pointing to an existing canonical record and copied that record's task title.  This provenance establishes a duplicate view of the same task without inferring its completion; canonical statuses and ownership remained unchanged, including active work.  Ambiguous title-only or broader-scope entries remain review candidates.
+
 Seven owned live effort bullets were also placed under their actual In Progress/Completed sections without changing their text.  The synchronizer uses section headings, not the inline status words.  Appending an active claim below Changelog hides it from that parser; leaving a Completed paragraph under In Progress reopens its derivative.  All unrelated peer rows were retained.
 
 ## Newly Revalidated Product Work
@@ -34,3 +36,5 @@ The review found existing reports that still match current source, so they now h
 Run `node scripts/audit-effort-board.mjs BOARD.json ISSUES.json MERGED_PRS.json [DEPLOYMENTS.json]`.  Inputs are explicit snapshots; the tool contains no network client, credentials, or writeback mode.  Optional deployment receipts must identify a board record, surface, observed time, commit, and receipt.  The report retains ownership, redacts URLs from titles, and rejects foreign-app or duplicate-ID snapshots.
 
 `node --test scripts/audit-effort-board.node-test.mjs` passes three behavior tests, including nonmutation, source-versus-deployment separation, and URL redaction.  The on-demand helper is registered in the Mac process inventory and its pinned Coding note.  Current PR/build receipts and physical-device acceptance must still be checked before further corrections.
+
+The required local typecheck passed.  The full Vitest run passed 3,560 tests but two fixture servers missed their startup deadlines under heavy Mac load; both affected suites then passed alone (six tests), and every remaining chained suite passed.  These were empty-stderr startup failures, not product assertion failures.  Hosted acceptance remains pending.
