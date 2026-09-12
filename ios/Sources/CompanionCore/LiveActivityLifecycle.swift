@@ -66,7 +66,7 @@ public struct LiveActivityLifecycle: Sendable {
     }
 
     public mutating func acceptFreshState(for candidateGeneration: Int) -> Bool {
-        guard phase == .active, candidateGeneration == generation else { return false }
+        guard phase != .background, candidateGeneration == generation else { return false }
         updatesEnabled = true
         return true
     }

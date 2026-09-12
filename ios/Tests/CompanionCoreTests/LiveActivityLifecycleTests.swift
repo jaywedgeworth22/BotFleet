@@ -41,9 +41,9 @@ final class LiveActivityLifecycleTests: XCTestCase {
         var lifecycle = LiveActivityLifecycle()
         XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
         let foregroundGeneration = lifecycle.generation
-        XCTAssertTrue(lifecycle.acceptFreshState(for: foregroundGeneration))
 
         XCTAssertNil(lifecycle.transition(to: .inactive))
+        XCTAssertTrue(lifecycle.acceptFreshState(for: foregroundGeneration))
         XCTAssertNil(lifecycle.transition(to: .active))
         XCTAssertEqual(lifecycle.generation, foregroundGeneration)
         XCTAssertTrue(lifecycle.permitsUpdates(from: foregroundGeneration))
