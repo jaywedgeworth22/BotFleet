@@ -25,76 +25,58 @@ import { WebhooksPanel } from "@/components/WebhooksPanel";
 import { ResourceTriggersPanel } from "@/components/ResourceTriggersPanel";
 import { cn } from "@/lib/cn";
 import { MAUS_COLORS, type MausState } from "@/lib/mascot";
-import type { Routine, RoutineInput, RoutineRun, RoutineRunOn, RoutineRunStatus } from "@/lib/routines";
+import type { Routine, RoutineInput, RoutineRunOn, RoutineRunStatus } from "@/lib/routines";
+import {
+  CENTRAL_TIME_ZONE,
+  DAY_NAMES,
+  calendarDayLabel,
+  calendarMinuteOfDay,
+  niceCalendarDate,
+  niceCalendarTime,
+  projectedRoutineItems,
+  routineScheduleLabel,
+  timeZoneLabel,
+  type CalendarItem,
+} from "@/lib/routine-calendar";
 import { api, useStore, type Bot } from "@/state/store";
 import { routineOutcomeCode, routineOutcomeSummary, ROUTINE_OUTCOME_LABELS } from "../../shared/routine-outcomes";
+import {
+  addDaysInTimeZone,
+  epochFromInputDateTime,
+  inputDateTimeInTimeZone,
+  shortTimeZoneName,
+  startOfDayInTimeZone,
+  startOfWeekInTimeZone,
+} from "../../shared/time-zone";
 
 const HOUR_HEIGHT = 68;
-const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-
-type CalendarItem = {
-  id: string;
-  at: number;
-  routine: Routine | null;
-  run: RoutineRun | null;
-};
 
 function startOfDay(at: number) {
-  const date = new Date(at);
-  date.setHours(0, 0, 0, 0);
-  return date.getTime();
+  return startOfDayInTimeZone(at, CENTRAL_TIME_ZONE);
 }
 
 function addDays(at: number, days: number) {
-  const date = new Date(at);
-  date.setDate(date.getDate() + days);
-  return date.getTime();
+  return addDaysInTimeZone(at, days, CENTRAL_TIME_ZONE);
 }
 
 function startOfWeek(at: number) {
-  const date = new Date(startOfDay(at));
-  const offset = (date.getDay() + 6) % 7;
-  date.setDate(date.getDate() - offset);
-  return date.getTime();
-}
-
-function atLocalTime(day: number, time: string) {
-  const [hour, minute] = time.split(":").map(Number);
-  const date = new Date(day);
-  date.setHours(hour, minute, 0, 0);
-  return date.getTime();
+  return startOfWeekInTimeZone(at, CENTRAL_TIME_ZONE);
 }
 
 function toInputDateTime(at: number) {
-  const date = new Date(at - new Date(at).getTimezoneOffset() * 60_000);
-  return date.toISOString().slice(0, 16);
+  return inputDateTimeInTimeZone(at, CENTRAL_TIME_ZONE);
 }
 
 function niceDate(at: number, includeWeekday = true) {
-  return new Date(at).toLocaleDateString([], {
-    weekday: includeWeekday ? "long" : undefined,
-    month: "short",
-    day: "numeric",
-    year: new Date(at).getFullYear() !== new Date().getFullYear() ? "numeric" : undefined,
-  });
+  return niceCalendarDate(at, includeWeekday);
 }
 
 function niceTime(at: number) {
-  return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  return niceCalendarTime(at);
 }
 
 function scheduleLabel(routine: Routine) {
-  if (routine.schedule.type === "once") {
-    return `${niceDate(routine.schedule.at)}, ${niceTime(routine.schedule.at)}`;
-  }
-  const days = routine.schedule.weekdays;
-  const dayLabel =
-    days.length === 7
-      ? "Every day"
-      : days.join(",") === "1,2,3,4,5"
-        ? "Weekdays"
-        : days.map((day) => DAY_NAMES[day]).join(", ");
-  return `${dayLabel} at ${niceTime(atLocalTime(Date.now(), routine.schedule.time))}`;
+  return routineScheduleLabel(routine);
 }
 
 function canToggleRoutine(routine: Routine) {
@@ -148,40 +130,6 @@ function webhookPromptParts(prompt?: string) {
   return instructions && eventData ? { instructions, eventData } : null;
 }
 
-function projectedItems(routines: Routine[], runs: RoutineRun[], from: number, to: number): CalendarItem[] {
-  const items: CalendarItem[] = runs
-    .filter((run) => run.scheduledFor >= from && run.scheduledFor < to)
-    .map((run) => ({
-      id: `run-${run.id}`,
-      at: run.scheduledFor,
-      routine: routines.find((routine) => routine.id === run.routineId) ?? null,
-      run,
-    }));
-
-  const hasReceipt = (routineId: string, at: number) =>
-    runs.some((run) => run.routineId === routineId && Math.abs(run.scheduledFor - at) < 60_000);
-
-  for (const routine of routines) {
-    if (!routine.enabled) continue;
-    if (routine.schedule.type === "once") {
-      const at = routine.schedule.at;
-      if (at >= from && at < to && !hasReceipt(routine.id, at)) {
-        items.push({ id: `next-${routine.id}-${at}`, at, routine, run: null });
-      }
-      continue;
-    }
-    for (let day = startOfDay(from); day < to; day = addDays(day, 1)) {
-      const date = new Date(day);
-      if (!routine.schedule.weekdays.includes(date.getDay())) continue;
-      const at = atLocalTime(day, routine.schedule.time);
-      if (at >= from && at < to && at >= routine.createdAt && !hasReceipt(routine.id, at)) {
-        items.push({ id: `next-${routine.id}-${at}`, at, routine, run: null });
-      }
-    }
-  }
-  return items.sort((a, b) => a.at - b.at);
-}
-
 function RoutineCard({ item, bot, compact, onOpen }: { item: CalendarItem; bot: Bot; compact: boolean; onOpen: () => void }) {
   const status = item.run?.status;
   const color = MAUS_COLORS[bot.color];
@@ -197,7 +145,7 @@ function RoutineCard({ item, bot, compact, onOpen }: { item: CalendarItem; bot: 
         status === "cancelled" && "opacity-55",
       )}
       style={{
-        top: `${((new Date(item.at).getHours() * 60 + new Date(item.at).getMinutes()) / 60) * HOUR_HEIGHT}px`,
+        top: `${(calendarMinuteOfDay(item.at) / 60) * HOUR_HEIGHT}px`,
         minHeight: item.run?.triggerSource === "webhook" || item.run?.triggerSource === "resource"
           ? "48px"
           : `${Math.max(48, ((item.routine?.durationMinutes ?? item.run?.durationMinutes ?? 30) / 60) * HOUR_HEIGHT)}px`,
@@ -262,11 +210,11 @@ function CalendarGrid({
         <div className="border-b border-r border-hairline/40" />
         {starts.map((start) => {
           const isToday = start === today;
-          const date = new Date(start);
+          const label = calendarDayLabel(start);
           return (
             <div key={start} className="border-b border-r border-hairline/40 px-3 py-2.5 text-center last:border-r-0">
-              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-secondary">{DAY_NAMES[date.getDay()]}</div>
-              <div className={cn("mx-auto mt-1 flex size-7 items-center justify-center rounded-full text-[14px] font-semibold", isToday ? "bg-accent text-white" : "text-ink")}>{date.getDate()}</div>
+              <div className="text-[10px] font-medium uppercase tracking-[0.14em] text-ink-secondary">{label.weekday}</div>
+              <div className={cn("mx-auto mt-1 flex size-7 items-center justify-center rounded-full text-[14px] font-semibold", isToday ? "bg-accent text-white" : "text-ink")}>{label.day}</div>
             </div>
           );
         })}
@@ -275,14 +223,13 @@ function CalendarGrid({
         <div className="relative border-r border-hairline/40">
           {Array.from({ length: 24 }, (_, hour) => (
             <div key={hour} className="absolute right-2 -translate-y-1/2 text-[10px] tabular-nums text-ink-secondary/65" style={{ top: hour * HOUR_HEIGHT }}>
-              {hour === 0 ? "" : new Date(2000, 0, 1, hour).toLocaleTimeString([], { hour: "numeric" })}
+              {hour === 0 ? "" : new Intl.DateTimeFormat(undefined, { hour: "numeric", timeZone: "UTC" }).format(Date.UTC(2000, 0, 1, hour))}
             </div>
           ))}
         </div>
         {starts.map((start) => {
           const dayItems = items.filter((item) => startOfDay(item.at) === start);
-          const now = new Date();
-          const nowTop = ((now.getHours() * 60 + now.getMinutes()) / 60) * HOUR_HEIGHT;
+          const nowTop = (calendarMinuteOfDay(Date.now()) / 60) * HOUR_HEIGHT;
           return (
             <div key={start} className="relative border-r border-hairline/40 last:border-r-0">
               {Array.from({ length: 24 }, (_, hour) => (
@@ -329,6 +276,9 @@ export function RoutineEditor({
     toInputDateTime(routine?.schedule.type === "once" ? routine.schedule.at : nextHour()),
   );
   const [time, setTime] = useState(routine?.schedule.type === "daily" ? routine.schedule.time : "09:00");
+  const [timeZone] = useState(
+    routine?.schedule.type === "daily" ? routine.schedule.timeZone ?? CENTRAL_TIME_ZONE : CENTRAL_TIME_ZONE,
+  );
   const [weekdays, setWeekdays] = useState(
     routine?.schedule.type === "daily" ? routine.schedule.weekdays : [1, 2, 3, 4, 5],
   );
@@ -339,21 +289,21 @@ export function RoutineEditor({
   const cloudReady = Boolean(state.config?.box.configured && cloudInstance?.snapshot.state === "available");
 
   const save = async () => {
-    const input: RoutineInput = {
-      name,
-      prompt,
-      botId,
-      runOn,
-      enabled: routine ? undefined : true,
-      durationMinutes,
-      schedule:
-        kind === "once"
-          ? { type: "once", at: new Date(at).getTime() }
-          : { type: "daily", time, weekdays },
-    };
     setSaving(true);
     setError("");
     try {
+      const input: RoutineInput = {
+        name,
+        prompt,
+        botId,
+        runOn,
+        enabled: routine ? undefined : true,
+        durationMinutes,
+        schedule:
+          kind === "once"
+            ? { type: "once", at: epochFromInputDateTime(at, CENTRAL_TIME_ZONE) }
+            : { type: "daily", time, weekdays, timeZone },
+      };
       const response = await api(routine ? `/api/routines/${routine.id}` : "/api/routines", {
         method: routine ? "PATCH" : "POST",
         body: JSON.stringify(input),
@@ -441,7 +391,10 @@ export function RoutineEditor({
               ))}
             </div>
             {kind === "once" ? (
-              <input type="datetime-local" value={at} onChange={(event) => setAt(event.target.value)} className="block rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[14px] text-ink outline-none focus:border-accent/70 [color-scheme:dark]" />
+              <div className="space-y-2">
+                <input type="datetime-local" value={at} onChange={(event) => setAt(event.target.value)} className="block rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[14px] text-ink outline-none focus:border-accent/70 [color-scheme:dark]" />
+                <p className="text-[11.5px] text-ink-secondary">Date and time use {timeZoneLabel(CENTRAL_TIME_ZONE)}.</p>
+              </div>
             ) : (
               <div className="space-y-3">
                 <input type="time" value={time} onChange={(event) => setTime(event.target.value)} className="rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[14px] text-ink outline-none focus:border-accent/70 [color-scheme:dark]" />
@@ -450,6 +403,7 @@ export function RoutineEditor({
                     <button key={label} type="button" onClick={() => setWeekdays((current) => current.includes(day) ? (current.length === 1 ? current : current.filter((value) => value !== day)) : [...current, day].sort())} className={cn("size-10 rounded-xl border text-[11px] font-medium", weekdays.includes(day) ? "border-accent bg-accent text-white" : "border-hairline/50 bg-inset text-ink-secondary hover:text-ink")}>{label.slice(0, 2)}</button>
                   ))}
                 </div>
+                <p className="text-[11.5px] text-ink-secondary">Time zone: {timeZoneLabel(timeZone, routine?.nextRunAt ?? Date.now())}.{'  '}Existing routines keep their saved zone.</p>
               </div>
             )}
           </div>
@@ -511,7 +465,7 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
             <BotAvatar bot={bot} state={run ? statusState(run.status) : stateForBot(bot)} size={72} animated={run?.status === "running" || run?.status === "waiting"} label={bot.name} />
             <div className="min-w-0">
               <div className="truncate text-[20px] font-semibold text-white" title={title}>{title}</div>
-              <div className="mt-1 flex items-center gap-2 text-[13px] text-white/65"><span>{bot.name}</span><span>·</span><span>{niceDate(item.at)}, {niceTime(item.at)}</span></div>
+              <div className="mt-1 flex items-center gap-2 text-[13px] text-white/65"><span>{bot.name}</span><span>·</span><span>{niceDate(item.at)}, {niceTime(item.at)} {shortTimeZoneName(item.at, CENTRAL_TIME_ZONE)}</span></div>
               <div className={cn("mt-2 inline-flex items-center gap-1.5 rounded-full bg-black/25 px-2.5 py-1 text-[11px] font-medium capitalize", run ? statusTone(run.status) : "text-white/70")}>
                 {run?.status === "running" && <Loader2 size={11} className="animate-spin" />}
                 {run?.status === "completed" && <CheckCircle2 size={11} />}
@@ -608,7 +562,7 @@ export function RoutinesPage() {
   const rangeStart = viewDays === 7 ? startOfWeek(anchor) : startOfDay(anchor);
   const rangeEnd = addDays(rangeStart, viewDays);
   const items = useMemo(
-    () => projectedItems(state.routines, state.routineRuns, rangeStart, rangeEnd).filter((item) => botFilter === "all" || (item.routine?.botId ?? item.run?.botId) === botFilter),
+    () => projectedRoutineItems(state.routines, state.routineRuns, rangeStart, rangeEnd).filter((item) => botFilter === "all" || (item.routine?.botId ?? item.run?.botId) === botFilter),
     [state.routines, state.routineRuns, rangeStart, rangeEnd, botFilter],
   );
   const liveSelected = selected
@@ -693,7 +647,8 @@ export function RoutinesPage() {
             <button onClick={() => move(1)} className="rounded-lg p-2 text-ink-secondary hover:bg-raised hover:text-ink" aria-label="Next Dates"><ChevronRight size={16} /></button>
           </div>
           <div className="min-w-[190px] px-2 text-[14px] font-semibold text-ink">
-            {new Date(rangeStart).toLocaleDateString([], { month: "long", year: "numeric" })}
+            {new Intl.DateTimeFormat(undefined, { timeZone: CENTRAL_TIME_ZONE, month: "long", year: "numeric" }).format(rangeStart)}
+            <span className="ml-2 text-[10.5px] font-medium text-ink-secondary">Central Time</span>
           </div>
           <select value={botFilter} onChange={(event) => setBotFilter(event.target.value)} className="rounded-xl border border-hairline/50 bg-panel px-3 py-2 text-[12px] text-ink outline-none focus:border-accent/60">
             <option value="all">All bots</option>

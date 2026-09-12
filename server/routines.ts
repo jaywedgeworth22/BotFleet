@@ -13,10 +13,11 @@ import {
 } from "../shared/conversation-mode.ts";
 import { foldPrompts, gapEndsAt, withinGap } from "./trigger-gap.ts";
 import { routineFailureCode, routineFailurePhase, type RoutineOutcomeCode, type RoutineFailurePhase } from "../shared/routine-outcomes.ts";
+import { nextZonedOccurrence, validTimeZone } from "../shared/time-zone.ts";
 
 export type RoutineSchedule =
   | { type: "once"; at: number }
-  | { type: "daily"; time: string; weekdays: number[] };
+  | { type: "daily"; time: string; weekdays: number[]; timeZone?: string };
 
 /** `cloud` runs the agent itself inside the bot's Box VM. `maus` keeps
  * using the provider selected on the MAUS and only borrows its configured
@@ -216,6 +217,9 @@ export interface RoutineManagerOptions {
    * receipt `running` forever — that also holds a slot against the webhook
    * and resource-trigger pending caps until the app restarts. */
   turnLive?: (run: RoutineRun) => boolean;
+  /** Effective host timezone exposed for legacy recurrences that predate an
+   * explicit schedule zone.  Their stored and execution semantics stay local. */
+  timeZone?: () => string;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
@@ -253,7 +257,9 @@ function cleanSchedule(schedule: RoutineSchedule): RoutineSchedule {
   if (schedule?.type === "daily") {
     const time = String(schedule.time ?? "");
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error("Time must use HH:MM");
-    return { type: "daily", time, weekdays: cleanDays(schedule.weekdays) };
+    const timeZone = typeof schedule.timeZone === "string" ? schedule.timeZone.trim() : "";
+    if (timeZone && !validTimeZone(timeZone)) throw new Error("Choose a valid timezone");
+    return { type: "daily", time, weekdays: cleanDays(schedule.weekdays), ...(timeZone ? { timeZone } : {}) };
   }
   throw new Error("Choose a supported schedule");
 }
@@ -261,6 +267,7 @@ function cleanSchedule(schedule: RoutineSchedule): RoutineSchedule {
 /** Next wall-clock occurrence in this computer's timezone, strictly after `after`. */
 export function nextOccurrence(schedule: RoutineSchedule, after: number): number | null {
   if (schedule.type === "once") return schedule.at > after ? schedule.at : null;
+  if (schedule.timeZone) return nextZonedOccurrence(schedule, after, schedule.timeZone);
   const [hour, minute] = schedule.time.split(":").map(Number);
   const weekdays = new Set(cleanDays(schedule.weekdays));
   for (let offset = 0; offset <= 8; offset++) {
@@ -361,7 +368,8 @@ export class RoutineManager {
   }
 
   listRoutines(): Routine[] {
-    return this.routines.map((r) => ({ ...r, schedule: { ...r.schedule } }));
+    const effectiveTimeZone = this.options.timeZone?.();
+    return this.routines.map((routine) => this.clientRoutine(routine, effectiveTimeZone));
   }
 
   listRuns(from?: number, to?: number): RoutineRun[] {
@@ -1045,7 +1053,14 @@ export class RoutineManager {
   }
 
   private emitRoutine(routine: Routine) {
-    this.options.emit?.({ kind: "routine", routine: { ...routine, schedule: { ...routine.schedule } } });
+    this.options.emit?.({ kind: "routine", routine: this.clientRoutine(routine, this.options.timeZone?.()) });
+  }
+
+  private clientRoutine(routine: Routine, effectiveTimeZone?: string): Routine {
+    const schedule = routine.schedule.type === "daily" && !routine.schedule.timeZone && effectiveTimeZone
+      ? { ...routine.schedule, timeZone: effectiveTimeZone }
+      : { ...routine.schedule };
+    return { ...routine, schedule };
   }
 
   private emitRun(run: RoutineRun) {

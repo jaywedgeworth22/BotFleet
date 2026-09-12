@@ -3212,8 +3212,10 @@ async function startTurn(
 // ── routines: persisted definitions → detached bot tasks ───────────────
 // The scheduler owns timing and receipts; the existing harness remains the
 // only owner of provider sessions, approvals, tools, computers and messages.
+const routineTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 routines = new RoutineManager({
   emit: broadcast,
+  timeZone: routineTimeZone,
   admit: () => !runtimeQuiescing,
   botState: (botId) => {
     const bot = store.bot(botId);
@@ -3333,7 +3335,6 @@ const routineRequests = new RoutineRequestService({
   canPersist: routineProposalPersistence,
 });
 const ROUTINE_WEEKDAY_NAMES = ["sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
-const routineTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 const agentRoutine = (routine: ReturnType<RoutineManager["listRoutines"]>[number]) => {
   // Routines created in the calendar predate chat-card redaction and may
   // contain a credential in their instructions. The list result is handed
@@ -3354,6 +3355,7 @@ const agentRoutine = (routine: ReturnType<RoutineManager["listRoutines"]>[number
           type: "weekly" as const,
           time: routine.schedule.time,
           weekdays: routine.schedule.weekdays.map((day) => ROUTINE_WEEKDAY_NAMES[day]),
+          timeZone: routine.schedule.timeZone ?? routineTimeZone(),
         },
     nextRunAt: routine.nextRunAt === null ? null : new Date(routine.nextRunAt).toISOString(),
   };
@@ -5632,12 +5634,15 @@ const server = createServer(async (req, res) => {
       const from = fromParam == null ? undefined : Number(fromParam);
       const to = toParam == null ? undefined : Number(toParam);
       return json(res, 200, {
+        timeZone: routineTimeZone(),
         routines: routines!.listRoutines(),
         runs: routines!.listRuns(from != null && Number.isFinite(from) ? from : undefined, to != null && Number.isFinite(to) ? to : undefined),
       });
     }
     if (path === "/api/routines" && method === "POST") {
-      return json(res, 201, { routine: routines!.create(await readBody(req)) });
+      const created = routines!.create(await readBody(req));
+      const routine = routines!.listRoutines().find((candidate) => candidate.id === created.id) ?? created;
+      return json(res, 201, { routine });
     }
     let routineMatch = path.match(/^\/api\/routines\/([\w-]+)\/run$/);
     if (routineMatch && method === "POST") {
@@ -5646,7 +5651,10 @@ const server = createServer(async (req, res) => {
     }
     routineMatch = path.match(/^\/api\/routines\/([\w-]+)$/);
     if (routineMatch && method === "PATCH") {
-      const routine = routines!.update(routineMatch[1], await readBody(req));
+      const updated = routines!.update(routineMatch[1], await readBody(req));
+      const routine = updated
+        ? routines!.listRoutines().find((candidate) => candidate.id === updated.id) ?? updated
+        : null;
       return routine ? json(res, 200, { routine }) : json(res, 404, { error: "no such routine" });
     }
     if (routineMatch && method === "DELETE") {

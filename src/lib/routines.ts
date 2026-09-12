@@ -2,7 +2,7 @@ import type { RoutineOutcomeCode, RoutineFailurePhase } from "../../shared/routi
 
 export type RoutineSchedule =
   | { type: "once"; at: number }
-  | { type: "daily"; time: string; weekdays: number[] };
+  | { type: "daily"; time: string; weekdays: number[]; timeZone?: string };
 
 export type RoutineRunOn = "maus" | "cloud";
 

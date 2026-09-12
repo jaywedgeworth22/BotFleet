@@ -3583,6 +3583,7 @@ describe("harness HTTP API", () => {
       }).toEqual(["card-shown:routine", "user-approved:user"]);
 
       const after = await api("GET", "/api/routines");
+      expect(after.body.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
       expect(after.body.routines.filter((routine: { botId: string }) => routine.botId === bot.id)).toHaveLength(1);
       const duplicate = await api("POST", `/api/threads/${bot.threadId}/respond`, {
         requestId: proposal.requestId,
@@ -3606,6 +3607,7 @@ describe("harness HTTP API", () => {
         schedule: { type: "daily", time: "10:00", weekdays: [1] },
       });
       legacyRoutineId = legacy.body.routine.id;
+      expect(legacy.body.routine.schedule.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
       const listed = await fetch(
         `${BASE}/api/internal/routines?fromBotId=${encodeURIComponent(bot.id)}&fromThreadId=${encodeURIComponent(bot.threadId)}`,
         { headers: internalHeaders },
@@ -3616,9 +3618,11 @@ describe("harness HTTP API", () => {
           id: z.string(),
           instructions: z.string(),
           instructionsTruncated: z.boolean(),
+          schedule: z.object({ timeZone: z.string() }).passthrough(),
         }).passthrough()),
       }).parse(await listed.json());
       const legacyResult = listedBody.routines.find((routine) => routine.id === legacyRoutineId)!;
+      expect(legacyResult.schedule.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
       expect(legacyResult.instructions).not.toContain(fakeSecret);
       expect(legacyResult.name).not.toContain(fakeNameSecret);
       expect(legacyResult.instructions).toContain("redacted");

@@ -52,7 +52,7 @@ describe("package export", () => {
         botId: "private-id",
         runOn: "maus",
         enabled: true,
-        schedule: { type: "daily", time: "09:00", weekdays: [1] },
+        schedule: { type: "daily", time: "09:00", weekdays: [1], timeZone: "America/Chicago" },
         durationMinutes: 30,
         nextRunAt: 123,
         createdAt: 1,
@@ -71,6 +71,7 @@ describe("package export", () => {
       },
     });
     expect(JSON.stringify(exported)).not.toMatch(/private-id|private-thread|private-engine|secret-model|secret-session|private\/path|autoApprove|alwaysAllow|nextRunAt/);
+    expect(exported.package.routines?.[0].schedule).toMatchObject({ timeZone: "America/Chicago" });
   });
 
   it("shares one identical playbook definition across multiple bots", () => {

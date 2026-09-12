@@ -4,6 +4,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { schemaIssue, type JsonValue } from "./schema.ts";
 import type { MausColor } from "./store.ts";
 import type { TeamManifestMember } from "./team-manifest.ts";
+import { validTimeZone } from "../shared/time-zone.ts";
 
 export const BOT_PACKAGE_FORMAT = "botfleet.package" as const;
 export const BOT_PACKAGE_VERSION = 1 as const;
@@ -97,6 +98,7 @@ const packageSchema = z.object({
           type: z.literal("daily"),
           time: requiredText(5).regex(/^([01]\d|2[0-3]):[0-5]\d$/, { message: "must use HH:MM" }),
           weekdays: z.array(z.number().int().min(0).max(6)).min(1).max(7),
+          timeZone: z.string().refine(validTimeZone, { message: "must be an IANA timezone" }).optional(),
         }),
       ]),
       durationMinutes: z.number().int().min(15).max(240),
@@ -223,7 +225,7 @@ export function renderBotPackageMarkdown(document: ParsedBotPackage): string {
   const routines = (pkg.routines ?? []).map((routine) => [
     `### ${routine.name}`,
     `**Owner:** \`${routine.agent}\`  `,
-    `**Schedule:** ${routine.schedule.type === "daily" ? `${routine.schedule.time} on weekdays ${routine.schedule.weekdays.join(", ")}` : `once at ${routine.schedule.at}`}  `,
+    `**Schedule:** ${routine.schedule.type === "daily" ? `${routine.schedule.time} on weekdays ${routine.schedule.weekdays.join(", ")} (${routine.schedule.timeZone ?? "recipient local time"})` : `once at ${routine.schedule.at}`}  `,
     "**Initial state:** paused — the user must enable it",
     "",
     routine.prompt,
