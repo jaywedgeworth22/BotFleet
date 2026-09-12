@@ -40,6 +40,8 @@ let fakeClaudeDump: string;
 let fakeCrashCli: string;
 /** wrapper CLI that returns a successful-looking quota message */
 let fakeQuotaCli: string;
+/** successful subscription CLI that reports an API-equivalent cost */
+let fakePricedClaudeCli: string;
 /** quota CLI held behind a file gate so work can queue before completion */
 let fakeGatedQuotaCli: string;
 let fakeQuotaGate: string;
@@ -141,6 +143,18 @@ beforeAll(async () => {
   // so this engine never clobbers the argv dump other tests assert on.
   fakeCrashCli = writeFakeClaudeWrapper(join(home, "fake-claude-crash"), "exit-early");
   fakeQuotaCli = writeFakeClaudeWrapper(join(home, "fake-claude-quota"), "quota");
+  fakePricedClaudeCli = join(home, "fake-claude-priced");
+  writeFileSync(
+    fakePricedClaudeCli,
+    [
+      "#!/usr/bin/env node",
+      "delete process.env.FAKE_CLAUDE_MODE;",
+      "delete process.env.FAKE_CLAUDE_DUMP;",
+      `await import(${JSON.stringify(pathToFileURL(FAKE_CLAUDE_CLI).href)});`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
   fakeQuotaGate = join(home, "fake-quota-gate");
   fakeGatedQuotaCli = writeFakeClaudeWrapper(
     join(home, "fake-claude-gated-quota"),
@@ -214,6 +228,7 @@ beforeAll(async () => {
         claude2: { driver: "claudeAgent", displayName: "Fixture Claude Two", config: { cli: FAKE_CLAUDE_CLI } },
         crasher: { driver: "claudeAgent", displayName: "Fixture Crasher", config: { cli: fakeCrashCli } },
         quota: { driver: "claudeAgent", displayName: "Fixture Quota", enabled: false, config: { cli: fakeQuotaCli } },
+        pricedClaude: { driver: "claudeAgent", displayName: "Fixture Priced Claude", enabled: false, config: { cli: fakePricedClaudeCli } },
         gatedQuota: { driver: "claudeAgent", displayName: "Fixture Gated Quota", enabled: false, config: { cli: fakeGatedQuotaCli } },
         slowProbe: { driver: "claudeAgent", displayName: "Fixture Slow Probe", enabled: false, config: { cli: fakeSlowProbeCli } },
       },
@@ -2328,6 +2343,37 @@ describe("harness HTTP API", () => {
     } finally {
       await api("DELETE", `/api/bots/${bot.id}`);
       expect((await api("PATCH", "/api/instances/quota", { enabled: false })).status).toBe(200);
+    }
+  }, 30_000);
+
+  it("keeps Claude subscription-equivalent prices out of the task's actual-spend total", async () => {
+    expect((await api("PATCH", "/api/instances/pricedClaude", { enabled: true })).status).toBe(200);
+    const pricedClaude = (await api("GET", "/api/instances?fresh=1")).body.instances.find(
+      (instance: { instanceId: string }) => instance.instanceId === "pricedClaude",
+    );
+    expect(pricedClaude?.snapshot.state).toBe("available");
+    const bot = (await api("POST", "/api/bots")).body.bot;
+
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: { instanceId: "pricedClaude", model: pricedClaude.models.default },
+      })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "report subscription usage" })).status).toBe(202);
+
+      await expect.poll(async () => {
+        const current = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return current?.busy;
+      }, { timeout: 20_000 }).toBe(false);
+      const current = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      const task = current.tasks.find((candidate: { threadId: string }) => candidate.threadId === bot.threadId);
+      expect(task.usage).toMatchObject({ input: 12, output: 5, costUsd: null, turns: 1 });
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PATCH", "/api/instances/pricedClaude", { enabled: false })).status).toBe(200);
     }
   }, 30_000);
 

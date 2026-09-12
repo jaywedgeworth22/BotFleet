@@ -2074,6 +2074,7 @@ bus.subscribe((event: RuntimeEvent) => {
           output: tokens?.output,
           cachedInput: tokens?.cachedInput,
           costUsd: event.cost ?? null,
+          billingMode: event.billingMode,
         });
         const currentTask = store.tasks(bot.id).find((t) => t.threadId === event.threadId);
         telemetry.trackTurn({
@@ -2093,6 +2094,7 @@ bus.subscribe((event: RuntimeEvent) => {
           outputTokens: tokens?.output,
           cachedInputTokens: tokens?.cachedInput,
           costUsd: event.cost ?? null,
+          billingMode: event.billingMode,
           success: event.ok !== false,
         });
         // settled → idle; a setup failure already marked it dead, keep that
@@ -2166,6 +2168,7 @@ bus.subscribe((event: RuntimeEvent) => {
             outputTokens: tokens?.output,
             cachedInputTokens: tokens?.cachedInput,
             costUsd: event.cost ?? null,
+            billingMode: event.billingMode,
             success: event.ok !== false,
             roomId: group.id,
             roomName: group.name,

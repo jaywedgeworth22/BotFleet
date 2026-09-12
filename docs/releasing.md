@@ -3,11 +3,12 @@
 One workflow builds everything: **Actions → Release → Run workflow**.  It
 builds macOS (arm64 + x64, signed, notarized, stapled), Windows, and Ubuntu
 from a single pinned commit, verifies every artifact the way a user would
-receive it, assembles a complete draft on this repository's own
-[Releases page](https://github.com/jaywedgeworth22/BotFleet/releases),
-and — if you ticked **publish** — flips it live.
-Leave publish unticked to review the draft notes first, then publish from the
-GitHub UI.
+receive it, and preserves one complete artifact set in Actions.  That default
+mode does not create or change a GitHub Release.  Tick **draft** to upload the
+verified set to a draft on this repository's own
+[Releases page](https://github.com/jaywedgeworth22/BotFleet/releases).  Tick
+**publish** only when that exact run should create or update the draft and make
+it public immediately.
 
 There is exactly one publish target: this repository.  `electron-builder.yml`
 `publish` names `jaywedgeworth22/BotFleet`, which electron-builder bakes into
@@ -38,8 +39,8 @@ electron-updater reads a feed file, not the DMG:
 A release that carries only DMGs, as
 [`v0.1.38`](https://github.com/jaywedgeworth22/BotFleet/releases/tag/v0.1.38)
 did, cannot be found by any installed app: **Check for updates** fails
-on every platform.  `1.0.30` is the first desktop version that is supposed to
-ship with `latest-mac.yml` and both macOS zips from `release.yml`.  Never
+on every platform.  `1.0.31` is the first desktop version prepared to ship
+with `latest-mac.yml` and both macOS zips from `release.yml`.  Never
 hand-edit or carry forward a feed file; it pins sha512 hashes of the exact
 bytes on the release.
 
@@ -53,16 +54,18 @@ stapling silently invalidating every published hash, and a finished release
 sitting invisible as a draft.  Don't remove a gate without reading the comment
 above it.
 
-## One-Time Setup: Four Secrets
+## One-Time Setup: Signing Credentials
 
-Set these in **BotFleet → Settings → Secrets and variables → Actions**.  Only
-the repository owner does this; agents never handle these values.
+Provide these through the release automation identity's Infisical `prod`
+environment or the same-named GitHub Actions secret fallback.  Only the
+repository owner handles these values.
 
 ### 1. `MAC_CERT_P12_BASE64` + `MAC_CERT_PASSWORD`
 
 The Developer ID Application certificate for team **CC8UTF7ATG**, which is the
-identity `electron-builder.yml` pins
-(`Developer ID Application: Jay Wedgeworth, LLC (CC8UTF7ATG)`).  A certificate
+identity selector `electron-builder.yml` pins
+(`Jay Wedgeworth, LLC (CC8UTF7ATG)`).  The matching certificate's full
+Keychain name begins with `Developer ID Application:`.  A certificate
 from any other team fails the pinned identity even if it imports cleanly.
 Export it from the Mac that currently signs releases:
 
@@ -74,9 +77,10 @@ base64 -i DeveloperID.p12 | pbcopy   # → MAC_CERT_P12_BASE64
 # the export password             → MAC_CERT_PASSWORD
 ```
 
-The two `release.yml` runs so far both stopped at *Import the Developer ID
-certificate into a throwaway keychain*, which is what an absent or mismatched
-pair of these secrets looks like.
+The latest observed run, `33822154040`, stopped at *Import the Developer ID
+certificate into a throwaway keychain* with both values empty.  As of September
+12, the repository secret-name list still omits this pair; the workflow can also
+resolve them from Infisical, whose current values were not inspected here.
 
 ### 2. `APPLE_API_KEY_P8_BASE64` + `APPLE_API_KEY_ID` + `APPLE_API_ISSUER_ID`
 
@@ -92,17 +96,16 @@ password for CI — revocable, scoped, no 2FA dance):
 base64 -i AuthKey_XXXXXXXX.p8 | pbcopy   # → APPLE_API_KEY_P8_BASE64
 ```
 
-### 3. `RELEASES_PAT`
-
-A fine-grained personal access token that lets the workflow create and edit
-releases: **GitHub → Settings → Developer settings → Fine-grained tokens** →
-repository access: only `jaywedgeworth22/BotFleet` → permissions:
-**Contents: Read and write**.  Set a long expiry and a calendar reminder.
+Release creation uses GitHub's short-lived workflow token.  Only the conditional
+release job receives `contents: write`; the default artifact-only run keeps
+read-only permissions.  No personal access token is needed now that build
+artifacts and Releases live in the same repository.
 
 ### Local Fallback
 
 The hand-cut path still works when Actions is down or a release needs
-surgery: `pnpm package:mac`, gate with `codesign --verify --deep --strict`,
+surgery: `pnpm package:mac:release`, gate both applications with
+`codesign --verify --deep --strict`,
 notarize with the local keychain profile (`xcrun notarytool submit …
 --keychain-profile AC_PASSWORD`), staple, re-zip, regenerate blockmaps and
 `node scripts/regenerate-mac-feed.mjs`, upload to the matching
