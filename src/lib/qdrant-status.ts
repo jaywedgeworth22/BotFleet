@@ -34,10 +34,10 @@ export function qdrantLastSuccessLabel(status: QdrantStatus | null): string {
 }
 
 export async function settleQdrantSave<T>(operation: () => Promise<T>): Promise<
-  { ok: true; value: T; clearTestResult: boolean } | { ok: false; error: string }
+  { ok: true; value: T } | { ok: false; error: string }
 > {
   try {
-    return { ok: true, value: await operation(), clearTestResult: true };
+    return { ok: true, value: await operation() };
   } catch (error) {
     return {
       ok: false,
