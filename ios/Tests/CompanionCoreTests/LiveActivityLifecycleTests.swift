@@ -63,4 +63,16 @@ final class LiveActivityLifecycleTests: XCTestCase {
         XCTAssertTrue(lifecycle.acceptFreshState(for: newPairingGeneration))
         XCTAssertTrue(lifecycle.permitsUpdates(from: newPairingGeneration))
     }
+
+    func testSnapshotRevisionConflictsUseBoundedExponentialBackoff() {
+        var backoff = LiveActivityRefreshBackoff(
+            initialNanoseconds: 1,
+            maximumNanoseconds: 15
+        )
+
+        XCTAssertEqual(
+            (0..<7).map { _ in backoff.takeNextDelay() },
+            [1, 2, 4, 8, 15, 15, 15]
+        )
+    }
 }

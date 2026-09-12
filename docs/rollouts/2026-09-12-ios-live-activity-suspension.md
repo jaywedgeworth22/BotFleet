@@ -10,10 +10,10 @@ The inactive phase keeps the current update policy because it also covers short 
 
 ## Race Handling
 
-ActivityKit mutations run through one ordered task chain.  Each foreground update carries the generation that scheduled it and rechecks that generation around suspension points.  A stale update therefore cannot recreate an activity after background teardown, while a rapid foreground return waits for both teardown and a post-resume snapshot before rebuilding.  Snapshot application uses the same pairing-generation and state-revision guards as other companion hydration paths; transient failures retry quietly while the app remains active.  Signing out ends activities immediately, and a new pairing in the same foreground session resets the generation and starts a fresh guarded hydration.
+ActivityKit mutations run through one ordered task chain.  Each foreground update carries the generation that scheduled it and rechecks that generation around suspension points.  A stale update therefore cannot recreate an activity after background teardown, while a rapid foreground return waits for both teardown and a post-resume snapshot before rebuilding.  Snapshot application uses the same pairing-generation and state-revision guards as other companion hydration paths; transient failures and stream-revision conflicts retry with a bounded 1, 2, 4, 8, then 15-second backoff while the app remains active.  Signing out ends activities immediately, and a new pairing in the same foreground session resets the generation and starts a fresh guarded hydration.
 
 ## Validation
 
-- `cd ios && swift test` — 261 tests passed after integrating current main.
+- `cd ios && swift test` — 262 tests passed after integrating current main.
 - Local unsigned app build remains blocked because Xcode reports that iOS 26.5 is not installed.  The SDK listing is present, but no eligible device or simulator runtime is installed; hosted unsigned compilation is required for the final head.
 - Physical-device stale, update, end, tap, and relaunch acceptance remains open.  No paired device or production notification state was mutated.

@@ -897,15 +897,16 @@ final class Session: ObservableObject {
 
     /// Fetch a post-resume snapshot before local-only Live Activities are
     /// allowed to reappear.  A racing SSE frame invalidates the snapshot; retry
-    /// until one lands without overwriting newer stream state.  The caller
-    /// cancels this quiet retry loop on the next background transition.
+    /// with bounded backoff until one lands without overwriting newer stream
+    /// state.  The caller cancels this quiet loop on the next background
+    /// transition.
     func refreshLiveActivityState() async -> CompanionState? {
-        var retryDelay: UInt64 = 1_000_000_000
+        var retryBackoff = LiveActivityRefreshBackoff()
         while !Task.isCancelled {
             if client == nil, restorePending { restore() }
             guard let requestClient = client else {
-                try? await Task.sleep(nanoseconds: retryDelay)
-                retryDelay = min(retryDelay * 2, 15_000_000_000)
+                let delay = retryBackoff.takeNextDelay()
+                try? await Task.sleep(nanoseconds: delay)
                 continue
             }
             connect()
@@ -914,6 +915,8 @@ final class Session: ObservableObject {
                 case .applied:
                     return state
                 case .newerState:
+                    let delay = retryBackoff.takeNextDelay()
+                    try? await Task.sleep(nanoseconds: delay)
                     continue
                 case .pairingChanged:
                     continue
@@ -924,8 +927,8 @@ final class Session: ObservableObject {
                 status = .unauthorized
                 return nil
             } catch {
-                try? await Task.sleep(nanoseconds: retryDelay)
-                retryDelay = min(retryDelay * 2, 15_000_000_000)
+                let delay = retryBackoff.takeNextDelay()
+                try? await Task.sleep(nanoseconds: delay)
             }
         }
         return nil
