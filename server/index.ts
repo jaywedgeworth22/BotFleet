@@ -4561,6 +4561,10 @@ async function runGroupMemberTurn(
             executeListAgentsRequest,
             executeAskBotRequest,
             executeListRoutinesRequest,
+            executeDelegateBotRequest,
+            executeCreateBotRequest,
+            executeRequestCredentialRequest,
+            executeRoutineRequestRequest,
           },
         })
       : undefined;

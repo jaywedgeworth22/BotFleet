@@ -542,9 +542,17 @@ function Bubble({
       </div>
       {/* busy-gated so a flag stranded by a server restart shows nothing */}
       {humanTyped && message.queued && bot.busy && (
-        <div className="mt-1 flex items-center gap-1 pr-1 text-[11px] text-ink-secondary/70">
+        <div className="mt-1 flex items-center gap-1.5 pr-1 text-[11px] text-ink-secondary/70">
           <Clock size={11} aria-hidden="true" />
           <span>Queued — sends when this turn finishes</span>
+          <button
+            type="button"
+            onClick={() => dispatch({ type: "interrupt", botId: bot.id })}
+            className="ml-1 rounded px-1.5 py-0.5 text-[11px] font-medium text-accent hover:bg-raised hover:underline"
+            title="Interrupt current turn and send this message immediately"
+          >
+            Steer Now
+          </button>
           <button
             type="button"
             onClick={() => dispatch({ type: "cancelQueued", botId: bot.id, queueId: message.queueId ?? message.id })}
