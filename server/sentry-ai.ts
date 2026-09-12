@@ -70,10 +70,13 @@ type AgentTurn = {
   provider: string;
   identity: TurnIdentity | null;
   tools: Map<string, SpanLike>;
-  errorReported: boolean;
 };
 
 const turns = new Map<string, AgentTurn>();
+// Diagnostics can be enabled after turn.started was emitted.  Keep the
+// provider-error boundary independently from span state so a later failed
+// completion still deduplicates against the captured runtime error.
+const reportedProviderErrors = new Set<string>();
 
 let identityResolver: ((threadId: string) => TurnIdentity | null) | null = null;
 
@@ -267,6 +270,7 @@ export function genAiProvider(driverKind: string): string {
 
 function endTurn(key: string, ok: boolean, usage?: { input?: number; output?: number; cachedInput?: number }): void {
   const turn = turns.get(key);
+  reportedProviderErrors.delete(key);
   if (!turn) return;
   for (const tool of turn.tools.values()) tool.end();
   turn.tools.clear();
@@ -304,6 +308,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
 
   switch (event.type) {
     case "turn.started": {
+      reportedProviderErrors.delete(key);
       const identity = identityFor(event.threadId);
       const span = sink.startInactiveSpan({
         op: "gen_ai.invoke_agent",
@@ -319,7 +324,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       });
       const model = clean(identity?.model);
       if (model) span.setAttribute("gen_ai.request.model", model);
-      turns.set(key, { span, provider, identity, model, tools: new Map(), errorReported: false });
+      turns.set(key, { span, provider, identity, model, tools: new Map() });
       break;
     }
     case "session.started": {
@@ -456,17 +461,17 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       // turn.  Capture that infrastructure failure, but do not let it consume
       // the provider turn's one-error boundary.
       const providerTurnFailure = event.raw?.source !== "botfleet.event-log";
-      if (!providerTurnFailure || !turn?.errorReported) {
+      if (!providerTurnFailure || !reportedProviderErrors.has(key)) {
         sink.captureException(
           new Error(event.message.slice(0, 500)),
           turn ? { tags: failureTags(event, provider, turn) } : undefined,
         );
-        if (turn && providerTurnFailure) turn.errorReported = true;
+        if (providerTurnFailure) reportedProviderErrors.add(key);
       }
       break;
     }
     case "turn.completed": {
-      const runtimeErrorReported = turns.get(key)?.errorReported === true;
+      const runtimeErrorReported = reportedProviderErrors.has(key);
       if (!event.ok) {
         // A failed turn is the thing an operator wants an Issue for.  Most
         // drivers report the failure only here — they never emit
@@ -503,6 +508,7 @@ export function resetSentryAiForTests(): void {
     turn.span.end();
   }
   turns.clear();
+  reportedProviderErrors.clear();
   identityResolver = null;
 }
 

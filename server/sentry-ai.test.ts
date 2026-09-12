@@ -152,6 +152,15 @@ describe("Sentry AI observability", () => {
     });
   });
 
+  it("deduplicates a runtime error when diagnostics starts after the turn span", () => {
+    const { sink, exceptions } = recordingSink();
+    observeRuntimeEvent(base({ type: "runtime.error", message: "provider process exited" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "exit code 1" }), sink);
+
+    expect(exceptions).toHaveLength(1);
+    expect(String(exceptions[0])).toContain("provider process exited");
+  });
+
   it("does not carry runtime-error suppression into a later turn on the same thread", () => {
     const { sink, exceptions } = recordingSink();
     observeRuntimeEvent(base({ type: "turn.started" }), sink);
