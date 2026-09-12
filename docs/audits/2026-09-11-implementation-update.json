@@ -1,13 +1,13 @@
 {
-  "updatedAt": "2026-09-11T16:12:10-05:00",
+  "updatedAt": "2026-09-12T05:38:59-05:00",
   "timezone": "America/Chicago",
   "baselineAudit": "2026-09-09-findings.json",
   "baselineCommit": "121cb85aa3ebb85cb2d5b9233bc69838979a88f7",
   "scope": "Implementation and validation addendum; historical evidence is preserved, not rewritten.  Source merges do not establish runtime or physical-device acceptance.",
   "counts": {
     "originalFindings": 35,
-    "implementedByThisBatch": 11,
-    "remainingOriginalFindings": 24
+    "implementedByThisBatch": 12,
+    "remainingOriginalFindings": 23
   },
   "dependencySecurity": {
     "implementationPr": 316,
@@ -361,15 +361,15 @@
       "issueNumber": 282,
       "issueUrl": "https://github.com/jaywedgeworth22/BotFleet/issues/282",
       "boardId": "ad5536b6440f42c69152443fa5a4d432",
-      "implementationState": "open_followup",
-      "implementationPr": null,
+      "implementationState": "in_pr",
+      "implementationPr": "https://github.com/jaywedgeworth22/BotFleet/pull/344",
       "mergeCommit": null,
       "originalEvidence": {
         "file": "2026-09-09-findings.json",
         "findingId": "EN-08",
         "sourceCommit": "121cb85aa3ebb85cb2d5b9233bc69838979a88f7"
       },
-      "remainingAcceptanceOrWork": "Separate subscription-equivalent estimates from actual billed spend throughout telemetry and UI."
+      "remainingAcceptanceOrWork": "Verify the deployed Usage Monitor retains the equivalent as estimate metadata without adding it to actual spend."
     },
     {
       "id": "EN-09",

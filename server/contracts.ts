@@ -86,6 +86,8 @@ export interface RuntimeEventBase {
   raw?: { source: string; payload: unknown };
 }
 
+export type TurnBillingMode = "actual" | "estimated";
+
 export type RuntimeEvent = RuntimeEventBase &
   (
     | { type: "session.started"; sessionId: string | null; model?: string | null }
@@ -104,6 +106,8 @@ export type RuntimeEvent = RuntimeEventBase &
         ok: boolean;
         stopReason?: string | null;
         cost?: number | null;
+        /** Whether `cost` is a charge or a provider-reported equivalent. */
+        billingMode?: TurnBillingMode;
         denials?: string[];
         /** THIS turn's token total, as the provider reports it at the end.
          * The one figure the harness accumulates — thread.token-usage.updated

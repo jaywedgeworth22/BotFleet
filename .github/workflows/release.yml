@@ -1,8 +1,7 @@
-# One-button releases: builds macOS (arm64 + x64, signed, notarized, stapled),
-# Windows, and Ubuntu from ONE commit, assembles a complete draft on
-# this repository's own Releases (jaywedgeworth22/BotFleet, the publish
-# target baked into app-update.yml by electron-builder.yml) with verified feeds, and publishes
-# after a human approves the draft.
+# One-button release staging: builds macOS (arm64 + x64, signed, notarized,
+# stapled), Windows, and Ubuntu from ONE commit, then verifies one complete
+# artifact set.  The default run only uploads a private Actions artifact.
+# Draft creation and publication are separate, explicit inputs.
 #
 # Every gate below exists because its absence shipped (or nearly shipped) a
 # broken build from a laptop:
@@ -18,7 +17,7 @@
 #   - assemble-then-publish    -> 0.1.24 sat as an invisible draft; a mac-only
 #                                 publish 404s the README's other buttons
 #
-# One-time setup (repo secrets) is documented in docs/releasing.md.
+# One-time signing setup is documented in docs/releasing.md.
 name: Release
 
 on:
@@ -29,7 +28,12 @@ on:
         required: false
         type: string
       publish:
-        description: "Publish immediately after assembly (otherwise leave a draft for review)"
+        description: "Publish immediately after assembly (also creates/updates the draft)"
+        required: false
+        type: boolean
+        default: false
+      draft:
+        description: "Create or update a GitHub draft release after artifact verification"
         required: false
         type: boolean
         default: false
@@ -59,22 +63,10 @@ jobs:
         run: |
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
-      # RELEASES_PAT is not yet seeded in Infisical (orchestrator step 2) --
-      # the GH_FALLBACK_ keeps this job green in the meantime.  Not required:
-      # a missing token fails the very next step's `gh` call anyway, with a
-      # clearer error than this action could give.
-      - name: Load the releases PAT
-        uses: ./.github/actions/infisical-secrets
-        with:
-          names: RELEASES_PAT
-          project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
-          client-id: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
-          client-secret: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET || secrets.INFISICAL_CLIENT_SECRET }}
-        env:
-          GH_FALLBACK_RELEASES_PAT: ${{ secrets.RELEASES_PAT }}
       - name: Refuse to overwrite a published release
+        if: ${{ inputs.draft || inputs.publish }}
         env:
-          GH_TOKEN: ${{ env.RELEASES_PAT }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           v="v$(node -p "require('./package.json').version")"
           if gh release view "$v" --repo "$RELEASES_REPO" --json isDraft --jq .isDraft 2>/dev/null | grep -q false; then
@@ -101,15 +93,14 @@ jobs:
       - name: Clean generated output
         run: rm -rf dist dist-server dist-native release
 
-      # MAC_CERT_P12_BASE64 / MAC_CERT_PASSWORD are not yet seeded in
-      # Infisical (orchestrator step 2) -- the GH_FALLBACK_ keeps this job
-      # green until they are.  Not `required`: decision 5 names both as
-      # pending an owner-supplied value, and a still-missing name here warns
-      # rather than failing this early.
+      # Prefer the automation identity's Infisical values and accept the
+      # same-named GitHub secrets as a migration fallback.  A release without
+      # both values cannot be signed, so fail here with the missing names.
       - name: Load the Developer ID certificate
         uses: ./.github/actions/infisical-secrets
         with:
           names: MAC_CERT_P12_BASE64 MAC_CERT_PASSWORD
+          required: MAC_CERT_P12_BASE64 MAC_CERT_PASSWORD
           project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
           client-id: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
           client-secret: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET || secrets.INFISICAL_CLIENT_SECRET }}
@@ -168,7 +159,7 @@ jobs:
           fi
 
       - name: Package both architectures
-        run: pnpm package:mac
+        run: pnpm package:mac:release
 
       - name: "Gate: the signature must verify BEFORE notarization"
         run: |
@@ -482,7 +473,7 @@ jobs:
           v=$(node -p "require('./package.json').version")
           cp "release/BotFleet-$v-amd64.deb" release/BotFleet-amd64.deb
           cp "release/BotFleet-$v-x86_64.AppImage" release/BotFleet.AppImage
-          (cd release && sha256sum BotFleet-$v-amd64.deb BotFleet-$v-x86_64.AppImage > SHA256SUMS-ubuntu-x64.txt)
+          (cd release && sha256sum "BotFleet-$v-amd64.deb" "BotFleet-$v-x86_64.AppImage" > SHA256SUMS-ubuntu-x64.txt)
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: linux-release
@@ -495,84 +486,100 @@ jobs:
           retention-days: 7
 
   assemble:
-    name: Assemble the draft and verify every feed
+    name: Assemble and verify every feed
     needs: [prepare, mac, windows, linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: assets
           merge-multiple: true
       - name: Verify every feed hash against the actual bytes
-        run: |
-          cd assets
-          node --input-type=module - <<'EOF'
-          import { createHash } from "node:crypto";
-          import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
-          const sha512 = (f) => createHash("sha512").update(readFileSync(f)).digest("base64");
-          let bad = 0;
-          // Mac auto-update is a product promise.  Skipping a missing
-          // latest-mac.yml is how v0.1.38 shipped DMGs only and Check
-          // for updates could not find the feed.
-          if (!existsSync("latest-mac.yml")) {
-            console.error("REQUIRED missing latest-mac.yml (macOS auto-update feed)");
-            bad++;
-          }
-          const macZips = readdirSync(".").filter((name) => /BotFleet-.*-(arm64|x64)\.zip$/.test(name));
-          if (macZips.length < 2) {
-            console.error(`REQUIRED missing macOS zip artifacts (found ${macZips.join(", ") || "none"})`);
-            bad++;
-          }
-          for (const feed of ["latest-mac.yml", "latest.yml", "latest-linux.yml"]) {
-            if (!existsSync(feed)) continue;
-            const text = readFileSync(feed, "utf8");
-            for (const [, url, hash, size] of text.matchAll(/url:\s+(\S+)[\s\S]*?sha512:\s+(\S+)\n\s+size:\s+(\d+)/g)) {
-              if (!existsSync(url)) { console.error(`MISSING ${url} (listed in ${feed})`); bad++; continue; }
-              const okHash = sha512(url) === hash;
-              const okSize = statSync(url).size === Number(size);
-              if (!okHash || !okSize) { console.error(`MISMATCH ${url} in ${feed}`); bad++; }
-              else console.log(`ok ${url}`);
-            }
-          }
-          if (bad) process.exit(1);
-          console.log(`\nall feeds verified; ${readdirSync(".").length} assets staged`);
-          EOF
-      # RELEASES_PAT is not yet seeded in Infisical (orchestrator step 2) --
-      # the GH_FALLBACK_ keeps this job green in the meantime.
-      - name: Load the releases PAT
-        uses: ./.github/actions/infisical-secrets
-        with:
-          names: RELEASES_PAT
-          project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
-          client-id: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
-          client-secret: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET || secrets.INFISICAL_CLIENT_SECRET }}
         env:
-          GH_FALLBACK_RELEASES_PAT: ${{ secrets.RELEASES_PAT }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: node scripts/verify-release-assets.mjs assets "$VERSION"
+      - name: Preserve the complete verified release set
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: botfleet-release-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.sha }}
+          path: assets
+          if-no-files-found: error
+          retention-days: 14
 
+  release:
+    name: Create the GitHub release
+    if: ${{ inputs.draft || inputs.publish }}
+    needs: [prepare, assemble]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    concurrency:
+      group: release-${{ needs.prepare.outputs.version }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: botfleet-release-${{ needs.prepare.outputs.version }}-${{ needs.prepare.outputs.sha }}
+          path: assets
       - name: Create or update the draft with the complete asset set
         env:
-          GH_TOKEN: ${{ env.RELEASES_PAT }}
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
           SHA: ${{ needs.prepare.outputs.sha }}
         run: |
+          node scripts/verify-release-tag.mjs
           cd assets
           tag="v$VERSION"
           notes="Draft assembled by the release workflow from $RELEASES_REPO@$SHA.  Edit these notes, then publish."
-          if ! gh release view "$tag" --repo "$RELEASES_REPO" > /dev/null 2>&1; then
+          if existing=$(gh api "repos/$RELEASES_REPO/releases/tags/$tag" 2>/dev/null); then
+            is_draft=$(jq -r .draft <<< "$existing")
+            existing_target=$(jq -r .target_commitish <<< "$existing")
+            if [ "$is_draft" != true ]; then
+              echo "::error::$tag is already published; refusing to replace its assets"
+              exit 1
+            fi
+            if [ "$existing_target" != "$SHA" ]; then
+              echo "::error::$tag existing draft targets $existing_target, not pinned $SHA"
+              exit 1
+            fi
+          else
             gh release create "$tag" --repo "$RELEASES_REPO" \
-              --draft --title "BotFleet $VERSION" \
+              --draft --target "$SHA" --title "BotFleet $VERSION" \
               --notes "$notes"
           fi
+          while IFS= read -r old_asset; do
+            if [ ! -f "$old_asset" ]; then
+              gh release delete-asset "$tag" "$old_asset" --repo "$RELEASES_REPO" --yes
+            fi
+          done < <(gh release view "$tag" --repo "$RELEASES_REPO" --json assets --jq '.assets[].name')
           for f in *; do
             gh release upload "$tag" "$f" --repo "$RELEASES_REPO" --clobber
           done
           echo "$RELEASES_REPO asset count: $(gh release view "$tag" --repo "$RELEASES_REPO" --json assets --jq '.assets | length')"
 
+      - name: Download and verify the uploaded draft bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          mkdir uploaded
+          gh release download "v$VERSION" --repo "$RELEASES_REPO" --dir uploaded
+          node scripts/verify-release-assets.mjs uploaded "$VERSION"
+
       - name: Publish (only when asked to)
         if: ${{ inputs.publish }}
         env:
-          GH_TOKEN: ${{ env.RELEASES_PAT }}
+          GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
           gh release edit "v$VERSION" --repo "$RELEASES_REPO" --draft=false --latest

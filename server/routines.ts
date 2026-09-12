@@ -1,3 +1,4 @@
+import { retainRoutineRuns } from "../shared/routine-retention.ts";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -613,7 +614,6 @@ export class RoutineManager {
       createdAt: this.now(),
     };
     this.runs.push(run);
-    if (this.runs.length > MAX_RUNS) this.runs.splice(0, this.runs.length - MAX_RUNS);
     this.save();
     this.emitRun(run);
     queueMicrotask(() => void this.tick());
@@ -650,7 +650,6 @@ export class RoutineManager {
       createdAt: this.now(),
     };
     this.runs.push(run);
-    if (this.runs.length > MAX_RUNS) this.runs.splice(0, this.runs.length - MAX_RUNS);
     this.save();
     this.emitRun(run);
     queueMicrotask(() => void this.tick());
@@ -1040,7 +1039,6 @@ export class RoutineManager {
       createdAt: this.now(),
     };
     this.runs.push(run);
-    if (this.runs.length > MAX_RUNS) this.runs.splice(0, this.runs.length - MAX_RUNS);
     return run;
   }
 
@@ -1132,6 +1130,9 @@ export class RoutineManager {
       const owner = run.coalescedInto ? byId.get(run.coalescedInto) : undefined;
       if (owner) this.copyCombinedOutcome(run, owner);
     }
+    this.runs = retainRoutineRuns(this.runs, MAX_RUNS, this.routineRequestReceipts
+      .filter((receipt) => receipt.action === "run_now")
+      .map((receipt) => receipt.resultId));
     mkdirSync(dirname(this.file), { recursive: true });
     const temp = `${this.file}.tmp`;
     writeFileSync(temp, JSON.stringify({
