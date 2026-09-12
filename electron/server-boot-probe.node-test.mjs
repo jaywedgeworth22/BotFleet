@@ -481,3 +481,17 @@ test("a failure with no live owner keeps the two-field shape older callers expec
   });
   assert.deepEqual(result, { mode: "failed", conflictOnly: false });
 });
+
+test("an owner that disappears between attempts is not named in the final diagnosis", async () => {
+  const owners = [{ version: 1, pid: 100, port: 8799, nonce: "ab".repeat(32) }, null];
+  const spawned = [];
+  const result = await resolvePackagedServer({
+    ports: [8799],
+    owner: () => owners.shift() ?? null,
+    probe: async () => ({ kind: "unavailable" }),
+    spawn: async (port) => { spawned.push(port); return { proc: null, reason: "timeout" }; },
+    sleep: noSleep,
+  });
+  assert.deepEqual(result, { mode: "failed", conflictOnly: false });
+  assert.deepEqual(spawned, []);
+});

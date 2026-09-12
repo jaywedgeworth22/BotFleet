@@ -227,6 +227,10 @@ export async function resolvePackagedServer({
       log("cannot validate data ownership; refusing to spawn another harness");
       return { mode: "failed", conflictOnly: false };
     }
+    // Each pass re-reads the owner, so the diagnosis must follow this pass:
+    // a harness that died during the settle gap must not be named on the
+    // page as "running but not answering".
+    unresponsiveOwner = null;
     const candidatePorts = currentOwner ? [currentOwner.port] : ports;
     const freePorts = [];
     let uncertain = Boolean(currentOwner);
