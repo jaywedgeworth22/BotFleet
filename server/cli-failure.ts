@@ -4,13 +4,7 @@ import { z } from "zod";
 
 import { redactSecretsInText } from "./redact.ts";
 
-/** How long the settings probe gives a local `recall` CLI to answer.  The
- * bot-facing proxy (qdrant-proxy's executeRecallCli) already allows 30s, and
- * this probe runs the same binary against the same corpus: a `recall stats`
- * that has to wake an embedder and round-trip a collection genuinely takes
- * several seconds.  The old 6s ceiling was under the measured cost, so a
- * perfectly healthy corpus timed out on every probe and the panel reported
- * "did not answer" while the bots using it were fine. */
+/** Maximum bot tool CLI budget; settings probes use their shorter request budget. */
 export const RECALL_CLI_TIMEOUT_MS = 30_000;
 
 // What a failed child process looks like, parsed rather than poked at: a
