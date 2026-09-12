@@ -34,6 +34,9 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 (mirror: docs/EFFORT-LOG.md in the repo). As of 2026-08-29.
 
 ## In Progress
+
+- **2026-09-12 — CODEX — IN PROGRESS — Authenticated build/API identity and staged Mac update acceptance (#265/#274, boards e4190ce1 / 7e582b82).**  Worktree `~/apps/botfleet-codex-mac-20260912` @ `codex/mac-rollout-20260912`.  Coordinate #319 updater before changing live processes; verify actual running source and one data owner.  <!-- codex-mac-rollout-20260912 -->
+
 - **2026-09-11 — GROK — IN PROGRESS — Map Remote Access Test Connection pill to product copy (board `f3c03a10`, branch `grok/remote-access-test-copy`, worktree `~/apps/botfleet-designer-remote-access-copy`).**  Designer follow-up to #298.  Extra-ship no. <!-- wb-agent-report:f3c03a1060cd4be1b21c83b0b4ef4e67 -->
 - **2026-09-09 — AG — IN PROGRESS — Quota telemetry countdowns, rates table cleanup, MiniMax & Custom Engines in Settings, DeepSeek & Codex logo adjustments (board `3271270141be46768817d261e11df9d8`, branch `ag/quota-rates-custom-engines`, worktree `~/apps/botfleet-ag-quota-engines`).**  Strip static CLI rows from pricing table; remove redundant lower Usage Monitor breakdown; add explicit 5h/monthly reset countdowns to Gemini/Third-Party quotas; filter unconfigured engines from quotas; enable MiniMax and user-defined OpenAI-compatible custom engines with multi-model support in EnginesSettings; tighten DeepSeek SVG viewBox; add dark:invert to CodexMark.
 - **2026-09-09 - BF-FIXER - IN_PROGRESS - BOTFLEET-C grokAgent auth_required while signed in.**  Board `e86443a4`.  Branch `fixer/auth-required-ambient`, worktree `~/apps/botfleet-fixer-auth-required`.  ACP fail-closed only when auth.json is missing; Sentry skips setup/cancel Issues.  No TestFlight.
