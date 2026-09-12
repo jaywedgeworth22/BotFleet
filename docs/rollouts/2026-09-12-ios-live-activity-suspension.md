@@ -14,6 +14,6 @@ ActivityKit mutations run through one ordered task chain.  Each foreground updat
 
 ## Validation
 
-- `cd ios && swift test` — 257 tests passed.
+- `cd ios && swift test` — 258 tests passed.
 - Local unsigned app build remains blocked because Xcode reports that iOS 26.5 is not installed.  The SDK listing is present, but no eligible device or simulator runtime is installed.
 - Physical-device stale, update, end, tap, and relaunch acceptance remains open.  No paired device or production notification state was mutated.
