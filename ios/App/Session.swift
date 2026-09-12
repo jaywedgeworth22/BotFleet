@@ -788,11 +788,8 @@ final class Session: ObservableObject {
         }
     }
 
-    func answer(chat: Chat, card: OptionCard, choice: String, rememberingPermission: Bool = true) async {
+    func answer(chat: Chat, card: OptionCard, choice: String) async {
         guard let requestId = card.requestId else { return }
-        if rememberingPermission, card.shouldRememberPermission(for: choice), case let .bot(bot) = chat {
-            await alwaysAllow(bot: bot, card: card)
-        }
         await answer(
             threadId: chat.threadId,
             requestId: requestId,
@@ -818,14 +815,6 @@ final class Session: ObservableObject {
                 try await $0.respond(threadId: threadId, requestId: requestId, behavior: "answer", message: choice)
             }
         }
-    }
-
-    /// "Always allow" — the grant key comes from the card, never from
-    /// anything derived here, so the phone and the harness cannot disagree
-    /// about what was just permitted.
-    func alwaysAllow(bot: Bot, card: OptionCard) async {
-        guard let key = card.allowKey else { return }
-        await perform { try await $0.alwaysAllow(botId: bot.id, key: key) }
     }
 
     /// Make a new bot. The harness chooses its name, colour and greeting, so
@@ -867,6 +856,20 @@ final class Session: ObservableObject {
         guard let client else { return }
         do {
             try await client.interrupt(botId: bot.id, threadId: bot.threadId)
+        } catch let error as APIError where error.isUnauthorized {
+            status = .unauthorized
+        } catch let error as APIError where error.isConflict {
+            await refreshAfterTaskConflict()
+            actionError = error.localizedDescription
+        } catch {
+            actionError = error.localizedDescription
+        }
+    }
+
+    func interrupt(room: Room) async {
+        guard let client else { return }
+        do {
+            try await client.interrupt(groupId: room.id, threadId: room.threadId)
         } catch let error as APIError where error.isUnauthorized {
             status = .unauthorized
         } catch let error as APIError where error.isConflict {
@@ -1515,7 +1518,7 @@ enum Chat: Identifiable, Hashable {
     var busy: Bool {
         switch self {
         case let .bot(bot): return bot.busy ?? false
-        case let .room(room): return room.busyBotId != nil
+        case let .room(room): return room.isWorking
         }
     }
 

@@ -7,7 +7,11 @@
 // and the one that quietly stopped being true once before.
 import { describe, expect, it } from "vitest";
 
-import { denyReason } from "../src/routes.ts";
+import {
+  COMPANION_PROFILE_PATCH_FIELDS,
+  companionProfilePatchDenial,
+  denyReason,
+} from "../src/routes.ts";
 
 const ask = (method: string, path: string, authenticated = true) =>
   denyReason({ method, path, authenticated });
@@ -57,6 +61,7 @@ describe("what the app may do", () => {
     ["POST", "/api/bots/bot_123/avatar/generate"],
     ["POST", "/api/bots/bot_123/computer/join"],
     ["POST", "/api/groups/room-1/messages"],
+    ["POST", "/api/groups/room-1/interrupt"],
     ["POST", "/api/groups/room-1/read"],
     ["POST", "/api/groups/room-1/tasks"],
     ["POST", "/api/groups/room-1/tasks/th_1"],
@@ -103,6 +108,40 @@ describe("what it may not", () => {
     // fields on profile are still refused by the harness, not widened here.
     expect(ask("PATCH", "/api/bots/bot_123/profile")).toBeNull();
     expect(ask("POST", "/api/threads/th_1/respond")).toBeNull();
+  });
+
+  it("accepts every paired profile field and refuses host-control fields", () => {
+    for (const field of COMPANION_PROFILE_PATCH_FIELDS) {
+      expect(companionProfilePatchDenial({ [field]: "value" }), field).toBeNull();
+    }
+    for (const field of [
+      "autoApprove",
+      "autoReview",
+      "composio",
+      "computers",
+      "cloudBackend",
+      "autoStartVps",
+      "cwd",
+      "extraCwds",
+      "userNotes",
+      "chiefOfStaff",
+      "approvePeerComms",
+      "futurePrivilege",
+    ]) {
+      expect(companionProfilePatchDenial({ name: "Scout", [field]: true }), field).toEqual({
+        status: 403,
+        error: `${field} can only be changed in BotFleet on your computer`,
+      });
+    }
+  });
+
+  it("serves exactly the image formats the native client can render", () => {
+    for (const extension of ["png", "jpg", "jpeg", "gif", "webp"]) {
+      expect(allowed("GET", `/api/attachments/avatar-123.${extension}`), extension).toBe(true);
+    }
+    for (const extension of ["heic", "heif", "avif", "bmp", "svg"]) {
+      expect(allowed("GET", `/api/attachments/avatar-123.${extension}`), extension).toBe(false);
+    }
   });
 
   it("refuses host configuration, and says where it happens", () => {

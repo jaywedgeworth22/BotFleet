@@ -772,18 +772,7 @@ public struct CompanionClient: Sendable {
         let prefix = "/api/attachments/"
         guard path.hasPrefix(prefix) else { return false }
         let name = path.dropFirst(prefix.count)
-        guard let dot = name.lastIndex(of: "."), dot != name.startIndex else { return false }
-        let stem = name[..<dot]
-        let ext = name[name.index(after: dot)...]
-        // Match shared/bot-avatar.ts rather than trusting URL normalization:
-        // one bare ASCII filename, one extension separator, and no dot segment.
-        let validStem = !stem.isEmpty && stem.utf8.allSatisfy { byte in
-            (48...57).contains(byte)
-                || (65...90).contains(byte)
-                || (97...122).contains(byte)
-                || byte == 45
-        }
-        return validStem && ["png", "jpg", "gif", "webp"].contains(String(ext))
+        return ChatAttachments.isRenderableImageName(String(name))
     }
 
     public func voices() async throws -> [Voice] {
@@ -826,16 +815,12 @@ public struct CompanionClient: Sendable {
     /// must use `uploadChatAttachment` and embed the disk `path` instead —
     /// agents cannot open `/api/attachments/:name`.
     public func uploadAvatar(data: Data, mime: String) async throws -> String {
-        let allowed = [
-            "image/png", "image/jpeg", "image/gif", "image/webp",
-            "image/heic", "image/heif", "image/avif",
-            "image/bmp", "image/svg+xml",
-        ]
-        guard allowed.contains(mime), data.count <= 10 * 1_024 * 1_024 else {
-            throw APIError.transport("Choose a PNG, JPEG, GIF, WebP, HEIC, BMP, or SVG image up to 10 MB.")
+        let normalized = ChatAttachments.normalizeMIME(mime)
+        guard ChatAttachments.isDisplayImageMIME(normalized), data.count <= ChatAttachments.imageMaxBytes else {
+            throw APIError.transport("Choose a PNG, JPEG, GIF, or WebP image up to 10 MB.")
         }
         var request = try makeRequest("POST", "/api/attachments")
-        request.setValue(mime, forHTTPHeaderField: "Content-Type")
+        request.setValue(normalized, forHTTPHeaderField: "Content-Type")
         request.httpBody = data
         let saved = try await send(request, as: AttachmentResponse.self)
         let name = URL(fileURLWithPath: saved.path).lastPathComponent
@@ -1015,12 +1000,6 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("POST", "/api/threads/\(threadId)/respond", body: body))
     }
 
-    /// Remember a grant so the same tool stops asking. The harness decides
-    /// the key and puts it on the card; the phone never derives its own.
-    public func alwaysAllow(botId: String, key: String) async throws {
-        try await send(try makeRequest("POST", "/api/bots/\(botId)/always-allow", body: ["allowKey": key]))
-    }
-
     /// Starts one more account authorization for a toolkit. Revocation is
     /// intentionally absent: the paired-device boundary keeps that on the Mac.
     public func authorizeConnector(slug: String, alias: String?) async throws -> URL {
@@ -1118,6 +1097,14 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest(
             "POST",
             "/api/bots/\(botId)/interrupt",
+            body: ["threadId": threadId]
+        ))
+    }
+
+    public func interrupt(groupId: String, threadId: String) async throws {
+        try await send(try makeRequest(
+            "POST",
+            "/api/groups/\(groupId)/interrupt",
             body: ["threadId": threadId]
         ))
     }

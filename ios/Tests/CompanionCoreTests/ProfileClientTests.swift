@@ -112,6 +112,32 @@ final class ProfileClientTests: XCTestCase {
         XCTAssertEqual(body["avatarCrop"] as? String, "mascot")
     }
 
+    func testProfileClientPreservesPrimaryAndFallbackReasoningEffort() async throws {
+        ProfileRequestStub.responseBody = Self.botResponse
+        let selection = ModelSelection(
+            instanceId: "codex",
+            model: "gpt-6",
+            effort: "future-ultra",
+            fallbacks: [ModelSelection(instanceId: "claude", model: "opus", effort: "high")]
+        )
+
+        _ = try await client.updateProfile(
+            botId: "avatar-bot",
+            patch: BotProfilePatch(modelSelection: selection)
+        )
+
+        let data = try XCTUnwrap(ProfileRequestStub.capturedBody)
+        let body = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        XCTAssertEqual(body.keys.sorted(), ["modelSelection"])
+        let primary = try XCTUnwrap(body["modelSelection"] as? [String: Any])
+        XCTAssertEqual(primary["effort"] as? String, "future-ultra")
+        let fallbacks = try XCTUnwrap(primary["fallbacks"] as? [[String: Any]])
+        XCTAssertEqual(fallbacks.first?["effort"] as? String, "high")
+
+        let roundTrip = try JSONDecoder().decode(ModelSelection.self, from: JSONEncoder().encode(selection))
+        XCTAssertEqual(roundTrip, selection)
+    }
+
     func testAvatarGenerationRequestOutlivesTheServersImageTimeout() async throws {
         ProfileRequestStub.responseBody = Self.generatedAvatarResponse
 

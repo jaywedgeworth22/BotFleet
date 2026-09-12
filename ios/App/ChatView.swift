@@ -579,11 +579,18 @@ struct ChatView: View {
                 }
             }
         })
-        if current.busy, case let .bot(bot) = current {
+        if current.busy {
             out.append(PlusAction(
                 id: "stop", systemImage: "stop.fill", title: "Interrupt",
                 subtitle: "Stop the current turn", destructive: true
-            ) { Task { await session.interrupt(bot: bot) } })
+            ) {
+                Task {
+                    switch current {
+                    case let .bot(bot): await session.interrupt(bot: bot)
+                    case let .room(room): await session.interrupt(room: room)
+                    }
+                }
+            })
         }
         return out
     }
@@ -985,11 +992,16 @@ struct ChatView: View {
             session.actionError = "Remove an attachment before adding another."
             return
         }
-        // Sidecar GET only serves png/jpg/gif/webp.  Convert camera HEIC so
-        // the transcript can draw the image this phone just sent.
-        if ["image/heic", "image/heif", "image/avif"].contains(resolved),
-           let image = UIImage(data: data),
-           let jpeg = image.jpegData(compressionQuality: 0.9) {
+        // Sidecar GET and the transcript renderer share four display formats.
+        // Convert any other decodable image before upload so a successful send
+        // cannot leave behind an attachment the phone cannot read back.
+        if ChatAttachments.isImageMIME(resolved), !ChatAttachments.isDisplayImageMIME(resolved) {
+            guard let image = UIImage(data: data),
+                  let jpeg = image.jpegData(compressionQuality: 0.9)
+            else {
+                session.actionError = "\(name) could not be converted to PNG, JPEG, GIF, or WebP."
+                return
+            }
             let jpegName = (name as NSString).deletingPathExtension + ".jpg"
             pendingAttachments.append(PendingChatAttachment(name: jpegName, mime: "image/jpeg", data: jpeg))
             return
@@ -1716,22 +1728,6 @@ struct CardView: View {
     @EnvironmentObject private var session: Session
     @State private var answering = false
 
-    /// The option this card offers that means "go ahead".
-    ///
-    /// Deliberately not the literal string "Allow". `options` is whatever the
-    /// harness sent, and it only falls back to ["Allow", "Deny"] when the
-    /// provider event named no choices of its own (`server/index.ts`) — a card
-    /// is free to say "Yes", "Approve", "Allow once". Answering with a string
-    /// the card never offered writes the grant and then hands the harness a
-    /// choice it can reject, so the bot stays stopped with nothing on screen
-    /// to explain it. The conventional label wins when it is present, which
-    /// keeps the ordinary permission card behaving exactly as before.
-    private var allowChoice: String? {
-        guard let options = message.card?.options else { return nil }
-        return options.first { $0.caseInsensitiveCompare("Allow") == .orderedSame }
-            ?? options.first { !Self.isRefusal($0) }
-    }
-
     /// One definition of "the refusal", shared by the button tint and the
     /// choice above so the two cannot drift apart.
     private static func isRefusal(_ option: String) -> Bool { OptionCard.isRefusal(option) }
@@ -1774,7 +1770,7 @@ struct CardView: View {
                                     answering = false
                                 }
                             } label: {
-                                Text(option)
+                                Text(card.displayChoice(for: option))
                                     .font(.system(size: 15, weight: .semibold))
                                     .foregroundStyle(Self.isRefusal(option) ? Color.primary : .white)
                                     .frame(maxWidth: .infinity)
@@ -1789,30 +1785,6 @@ struct CardView: View {
                     }
                     .padding(.top, 2)
 
-                    // The grant key comes from the card. The phone never
-                    // derives its own, so it cannot permit something subtly
-                    // wider than the computer would have. The same goes for
-                    // the answer: it is one of the options the card offered,
-                    // never a string invented here.
-                    if card.allowKey != nil, let allow = allowChoice, case let .bot(bot) = chat {
-                        Button("Always allow this tool") {
-                            answering = true
-                            Task {
-                                await session.alwaysAllow(bot: bot, card: card)
-                                await session.answer(
-                                    chat: chat,
-                                    card: card,
-                                    choice: allow,
-                                    rememberingPermission: false
-                                )
-                                answering = false
-                            }
-                        }
-                        .font(.system(size: 12))
-                        .foregroundStyle(Color.secondary)
-                        .frame(maxWidth: .infinity)
-                        .disabled(answering)
-                    }
                 } else if let answered = card.answered {
                     Label(answered, systemImage: "checkmark.circle")
                         .font(.system(size: 14))
