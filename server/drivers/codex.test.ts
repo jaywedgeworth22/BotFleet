@@ -349,6 +349,66 @@ describe("CodexDriver turns (fake app-server)", () => {
     expect(methods).not.toContain("turn/start");
   });
 
+  it("retries a transient resume against the same saved Codex thread", async () => {
+    const dump = join(scratch, "resume-retry.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+    process.env.FAKE_CODEX_STATE = join(scratch, "resume-launches");
+    process.env.FAKE_CODEX_RETRY_SCALE = "0.001";
+    await create({ mode: "resume-transient" });
+
+    await instance.adapter.sendTurn({
+      threadId: "t-resume-retry",
+      text: "continue",
+      resumeCursor: "codex-thread-preserved",
+    });
+    await recorder.until((event) => event.type === "turn.completed" && event.ok === true);
+
+    expect(recorder.events.filter((event) => event.type === "turn.retrying")).toHaveLength(1);
+    const started = recorder.events.find((event) => event.type === "session.started");
+    expect(started).toMatchObject({ sessionId: "codex-thread-preserved" });
+    expect(recorder.events.filter((event) => event.type === "turn.started")).toHaveLength(1);
+    const methods = JSON.parse(readFileSync(dump, "utf8")).calls.map((call: { method: string }) => call.method);
+    expect(methods).toContain("thread/resume");
+    expect(methods).not.toContain("thread/start");
+  });
+
+  it("fails visibly when transient Codex resume retries are exhausted", async () => {
+    process.env.FAKE_CODEX_TRANSIENTS = "9";
+    process.env.FAKE_CODEX_STATE = join(scratch, "resume-exhausted-launches");
+    process.env.FAKE_CODEX_RETRY_SCALE = "0.001";
+    await create({ mode: "resume-transient" });
+
+    await instance.adapter.sendTurn({
+      threadId: "t-resume-exhausted",
+      text: "continue",
+      resumeCursor: "codex-thread-preserved",
+    });
+    const error = await recorder.until((event) => event.type === "runtime.error");
+    const done = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events.filter((event) => event.type === "turn.retrying")).toHaveLength(2);
+    expect(error).toMatchObject({ message: expect.stringMatching(/503: upstream capacity exceeded/) });
+    expect(done).toMatchObject({ ok: false, stopReason: "resume_failed" });
+    expect(recorder.events.some((event) => event.type === "session.started")).toBe(false);
+  });
+
+  it("classifies authentication rejected during Codex resume as setup", async () => {
+    await create({ mode: "resume-unauthorized" });
+
+    await instance.adapter.sendTurn({
+      threadId: "t-resume-auth",
+      text: "continue",
+      resumeCursor: "codex-thread-preserved",
+    });
+    const error = await recorder.until((event) => event.type === "runtime.error");
+    const done = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(error).toMatchObject({ setup: true });
+    expect(error).toMatchObject({ message: expect.stringMatching(/401 Unauthorized/) });
+    expect(done).toMatchObject({ ok: false, stopReason: "auth_required" });
+    expect(recorder.events.some((event) => event.type === "session.started")).toBe(false);
+  });
+
   it("surfaces an approval request and forwards the user's decision", async () => {
     await create({ mode: "approval" });
     const dump = join(scratch, "dump.json");

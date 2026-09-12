@@ -42,7 +42,7 @@ const DRIVER_KIND = "codex";
 class CodexResumeError extends Error {
   constructor(options?: { cause?: unknown }) {
     super(
-      "The saved Codex session could not be resumed. Start a fresh task or rewind this conversation to replay its visible history.",
+      "The saved Codex session could not be resumed.  Start a fresh task or rewind this conversation to replay its visible history.",
       options,
     );
     this.name = "CodexResumeError";
@@ -583,14 +583,23 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           ...(turn.effort ? { effort: turn.effort } : {}),
         });
       } catch (e) {
-        const failure = e instanceof Error ? e : { text: String(e) };
-        const message = e instanceof Error ? e.message : String(e);
-        const needsAuth = /(?:\b401\b|unauthorized|missing bearer|authentication required)/i.test(message);
-        if (!state.settled && e instanceof CodexResumeError) {
-          emit({ ...base(threadId, turnId), type: "runtime.error", message });
-          settle(false, "resume_failed");
-          return;
-        }
+        const resumeFailure = e instanceof CodexResumeError;
+        const failure = resumeFailure && e.cause !== undefined
+          ? e.cause instanceof Error
+            ? e.cause
+            : { text: String(e.cause) }
+          : e instanceof Error
+            ? e
+            : { text: String(e) };
+        const failureMessage = failure instanceof Error
+          ? failure.message
+          : "text" in failure
+            ? failure.text
+            : String(failure);
+        const message = resumeFailure && failureMessage !== e.message
+          ? `${e.message}  ${failureMessage}`
+          : failureMessage;
+        const needsAuth = /(?:\b401\b|unauthorized|missing bearer|authentication required)/i.test(failureMessage);
         const verdict = classifyError(failure);
         if (!state.settled && !needsAuth && verdict.transient && attempt < RETRY_MAX_ATTEMPTS - 1 && state.sawStreamDelta === false) {
           const delayMs = computeBackoff(attempt);
@@ -624,7 +633,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             message,
             ...(needsAuth ? { setup: true } : {}),
           });
-          settle(false, needsAuth ? "auth_required" : "rpc_error");
+          settle(false, needsAuth ? "auth_required" : resumeFailure ? "resume_failed" : "rpc_error");
         }
       }
     };

@@ -195,7 +195,7 @@ class AcpRpcTimeoutError extends Error {
 class AcpResumeError extends Error {
   constructor(options?: { cause?: unknown }) {
     super(
-      "The saved ACP session could not be resumed. Start a fresh task or rewind this conversation to replay its visible history.",
+      "The saved ACP session could not be resumed.  Start a fresh task or rewind this conversation to replay its visible history.",
       options,
     );
     this.name = "AcpResumeError";
