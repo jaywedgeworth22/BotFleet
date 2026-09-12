@@ -155,6 +155,34 @@ test("a harness that is gone yields 502, not a hang", async () => {
   }
 });
 
+test("does not retry an idempotent upstream request after its downstream closes", async () => {
+  let attempts = 0;
+  const harness = http.createServer((req) => {
+    attempts += 1;
+    setTimeout(() => req.socket.destroy(), 25);
+  });
+  await new Promise((resolve) => harness.listen(0, "127.0.0.1", resolve));
+  const port = harness.address().port;
+  const shim = await startUiShim({ uiDir: makeUiDir(), harnessPort: port });
+  try {
+    await new Promise((resolve) => {
+      const request = http.get(`http://127.0.0.1:${shim.port}/api/slow`);
+      request.once("socket", () => {
+        setTimeout(() => {
+          request.destroy();
+          resolve();
+        }, 10);
+      });
+      request.on("error", () => {});
+    });
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.equal(attempts, 1);
+  } finally {
+    await shim.close();
+    await new Promise((resolve) => harness.close(resolve));
+  }
+});
+
 test("upgrade requests are tunnelled to the harness", async () => {
   const harness = await startFakeHarness();
   const shim = await startUiShim({ uiDir: makeUiDir(), harnessPort: harness.port });
