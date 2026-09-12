@@ -278,6 +278,23 @@ function endTurn(key: string, ok: boolean, usage?: { input?: number; output?: nu
   turns.delete(key);
 }
 
+function failureTags(
+  event: RuntimeEvent,
+  provider: string,
+  turn: AgentTurn | undefined,
+): TurnFailureTags {
+  const identity = turn?.identity ?? identityFor(event.threadId);
+  const tags: TurnFailureTags = {
+    "botfleet.provider": event.provider,
+    "botfleet.thread.id": event.threadId,
+    "gen_ai.provider.name": provider,
+    ...identityAttributes(identity),
+  };
+  const model = clean(turn?.model) ?? clean(identity?.model);
+  if (model) tags["gen_ai.request.model"] = model;
+  return tags;
+}
+
 /** Map a harness runtime event onto gen_ai spans.  No-op without a sink. */
 export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | null = liveSink()): void {
   if (!sink) return;
@@ -436,7 +453,10 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       }
       const turn = turns.get(key);
       if (!turn?.errorReported) {
-        sink.captureException(new Error(event.message.slice(0, 500)));
+        sink.captureException(
+          new Error(event.message.slice(0, 500)),
+          turn ? { tags: failureTags(event, provider, turn) } : undefined,
+        );
         if (turn) turn.errorReported = true;
       }
       break;
@@ -460,16 +480,9 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
           });
         } else if (!runtimeErrorReported) {
           const turn = turns.get(key);
-          const identity = turn?.identity ?? identityFor(event.threadId);
-          const tags: TurnFailureTags = {
-            "botfleet.provider": event.provider,
-            "botfleet.thread.id": event.threadId,
-            "gen_ai.provider.name": provider,
-            ...identityAttributes(identity),
-          };
-          const model = clean(turn?.model) ?? clean(identity?.model);
-          if (model) tags["gen_ai.request.model"] = model;
-          sink.captureException(new Error(`bot turn failed: ${stopReason}`), { tags });
+          sink.captureException(new Error(`bot turn failed: ${stopReason}`), {
+            tags: failureTags(event, provider, turn),
+          });
         }
       }
       endTurn(key, event.ok, event.usage);

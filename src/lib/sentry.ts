@@ -184,16 +184,23 @@ function closeClient(): void {
 
 /** Start the browser SDK against a DSN the harness resolved. */
 function startRuntimeClient(dsn: string, environment: string, tracesSampleRate: number): void {
+  const replayRaw = viteEnvText(import.meta.env.VITE_SENTRY_REPLAY_ENABLED);
+  const replayDisabled = replayRaw ? /^(false|0|off|no)$/i.test(replayRaw) : false;
   const replaysSessionSampleRate = Number(viteEnvText(import.meta.env.VITE_SENTRY_REPLAY_SESSION_SAMPLE_RATE) ?? "0.1");
   const replaysOnErrorSampleRate = Number(viteEnvText(import.meta.env.VITE_SENTRY_REPLAY_ERROR_SAMPLE_RATE) ?? "1.0");
+  const replayEnabled = buildTimeOptions?.replayEnabled ?? !replayDisabled;
 
   sentryPort.init({
     dsn,
     environment,
     tracesSampleRate,
-    replayEnabled: true,
-    replaysSessionSampleRate: Number.isFinite(replaysSessionSampleRate) ? replaysSessionSampleRate : 0,
-    replaysOnErrorSampleRate: Number.isFinite(replaysOnErrorSampleRate) ? replaysOnErrorSampleRate : 0,
+    replayEnabled,
+    replaysSessionSampleRate: replayEnabled
+      ? buildTimeOptions?.replaysSessionSampleRate ?? (Number.isFinite(replaysSessionSampleRate) ? replaysSessionSampleRate : 0)
+      : 0,
+    replaysOnErrorSampleRate: replayEnabled
+      ? buildTimeOptions?.replaysOnErrorSampleRate ?? (Number.isFinite(replaysOnErrorSampleRate) ? replaysOnErrorSampleRate : 0)
+      : 0,
   });
 
   runtimeIdentity = runtimeIdentityOf(dsn, environment, tracesSampleRate);

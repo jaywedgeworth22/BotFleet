@@ -126,8 +126,14 @@ describe("Sentry AI observability", () => {
     expect(JSON.stringify(spans)).not.toMatch(/sk-|password|BEGIN /);
   });
 
-  it("reports one actual error for repeated runtime errors and the failed completion of the same turn", () => {
-    const { sink, exceptions } = recordingSink();
+  it("reports one attributed actual error for repeated runtime errors and the failed completion of the same turn", () => {
+    configureTurnIdentity(() => ({
+      botId: "bot-1",
+      instanceId: "instance-1",
+      model: "model-1",
+      roomId: "room-1",
+    }));
+    const { sink, exceptions, contexts } = recordingSink();
     observeRuntimeEvent(base({ type: "turn.started" }), sink);
     observeRuntimeEvent(base({ type: "runtime.error", message: "upstream HTTP 500" }), sink);
     observeRuntimeEvent(base({ type: "runtime.error", message: "child exited after HTTP 500" }), sink);
@@ -135,6 +141,15 @@ describe("Sentry AI observability", () => {
 
     expect(exceptions).toHaveLength(1);
     expect(String(exceptions[0])).toContain("upstream HTTP 500");
+    expect(contexts[0]?.tags).toMatchObject({
+      "botfleet.bot.id": "bot-1",
+      "botfleet.instance.id": "instance-1",
+      "botfleet.room.id": "room-1",
+      "botfleet.provider": "openai-compat",
+      "botfleet.thread.id": "thread-1",
+      "gen_ai.provider.name": "openai-compat",
+      "gen_ai.request.model": "model-1",
+    });
   });
 
   it("does not carry runtime-error suppression into a later turn on the same thread", () => {

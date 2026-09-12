@@ -208,9 +208,15 @@ describe("renderer diagnostics refresh", () => {
     vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
     vi.stubEnv("VITE_SENTRY_ENV", "production");
     vi.stubEnv("VITE_SENTRY_TRACES_SAMPLE_RATE", "0.2");
+    vi.stubEnv("VITE_SENTRY_REPLAY_ENABLED", "false");
     initSentry();
     expect(sentry.record.inits).toHaveLength(1);
-    expect(sentry.record.inits[0]).toMatchObject({ dsn: BUILD_DSN });
+    expect(sentry.record.inits[0]).toMatchObject({
+      dsn: BUILD_DSN,
+      replayEnabled: false,
+      replaysSessionSampleRate: 0,
+      replaysOnErrorSampleRate: 0,
+    });
 
     harness.answer({ enabled: false, requestedEnabled: false, dsn: null });
     await initSentryFromRuntime();
@@ -226,7 +232,14 @@ describe("renderer diagnostics refresh", () => {
     await refreshSentryFromRuntime();
     expect(sentry.record.closes).toBe(2);
     expect(sentry.record.inits).toHaveLength(3);
-    expect(sentry.record.inits[2]).toMatchObject({ dsn: ROTATED_DSN, environment: "staging", tracesSampleRate: 0.5 });
+    expect(sentry.record.inits[2]).toMatchObject({
+      dsn: ROTATED_DSN,
+      environment: "staging",
+      tracesSampleRate: 0.5,
+      replayEnabled: false,
+      replaysSessionSampleRate: 0,
+      replaysOnErrorSampleRate: 0,
+    });
 
     harness.answer({ enabled: false, requestedEnabled: true, dsn: null });
     await refreshSentryFromRuntime();
