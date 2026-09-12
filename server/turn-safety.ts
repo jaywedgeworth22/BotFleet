@@ -83,6 +83,46 @@ export class ActiveTurnOwners {
   }
 }
 
+export interface ExactTurnLease {
+  readonly botId: string;
+  readonly threadId: string;
+  readonly dispatchId: number;
+}
+
+/** A resource marker owned by one exact dispatch.  A later turn may reuse the
+ * same bot and thread before an older asynchronous finalizer finishes, so a
+ * thread id alone is not an ownership token. */
+export class ExactTurnLeases {
+  private readonly byBot = new Map<string, ExactTurnLease>();
+
+  claim(botId: string, threadId: string, dispatchId: number): ExactTurnLease {
+    const lease = { botId, threadId, dispatchId };
+    this.byBot.set(botId, lease);
+    return lease;
+  }
+
+  forBot(botId: string): ExactTurnLease | undefined {
+    return this.byBot.get(botId);
+  }
+
+  hasBot(botId: string): boolean {
+    return this.byBot.has(botId);
+  }
+
+  release(lease: ExactTurnLease): boolean {
+    if (this.byBot.get(lease.botId) !== lease) return false;
+    return this.byBot.delete(lease.botId);
+  }
+
+  clearBot(botId: string): void {
+    this.byBot.delete(botId);
+  }
+
+  get size(): number {
+    return this.byBot.size;
+  }
+}
+
 export interface AutoFallbackCandidate {
   instanceId: string;
   enabled?: boolean;

@@ -59,6 +59,9 @@ export interface AcpConfig {
   fullAuto: boolean;
   /** Optional home for this instance's sessions. */
   workspace?: string;
+  /** Whole `session/prompt` deadline.  The default remains below the harness
+   * watchdog so the driver can cancel and settle its own process first. */
+  promptTimeoutMs?: number;
 }
 
 /** Per-harness specifics — everything that differs between Grok, Gemini, … */
@@ -173,6 +176,31 @@ const BOOT_MODEL_DISCOVERY_TIMEOUT_MS = 10_000;
 // cold starts with many servers configured.
 const NEW_SESSION_TIMEOUT = 120_000;
 const LOAD_SESSION_TIMEOUT = 120_000; // history replay on a long thread is slow
+const DEFAULT_PROMPT_TIMEOUT_MS = 18 * 60_000;
+const MIN_PROMPT_TIMEOUT_MS = 1_000;
+const MAX_PROMPT_TIMEOUT_MS = 20 * 60_000;
+const CANCEL_FLUSH_GRACE_MS = 50;
+const FORCE_EXIT_AFTER_MS = 2_000;
+
+class AcpRpcTimeoutError extends Error {
+  readonly method: string;
+
+  constructor(method: string) {
+    super(`${method} timed out`);
+    this.name = "AcpRpcTimeoutError";
+    this.method = method;
+  }
+}
+
+class AcpResumeError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super(
+      "The saved ACP session could not be resumed. Start a fresh task or rewind this conversation to replay its visible history.",
+      options,
+    );
+    this.name = "AcpResumeError";
+  }
+}
 
 /** One spelling for a turn's stop reason.
  *
@@ -195,10 +223,19 @@ export function normalizeStopReason(raw: unknown): string | undefined {
 function decodeAcpConfig(defaultCli: string) {
   return (raw: unknown): AcpConfig => {
     const o = (raw ?? {}) as Record<string, unknown>;
+    const promptTimeoutMs =
+      typeof o.promptTimeoutMs === "number" &&
+      Number.isFinite(o.promptTimeoutMs) &&
+      Number.isInteger(o.promptTimeoutMs) &&
+      o.promptTimeoutMs >= MIN_PROMPT_TIMEOUT_MS &&
+      o.promptTimeoutMs <= MAX_PROMPT_TIMEOUT_MS
+        ? o.promptTimeoutMs
+        : undefined;
     return {
       cli: typeof o.cli === "string" ? o.cli : defaultCli,
       fullAuto: o.fullAuto === true,
       workspace: typeof o.workspace === "string" ? o.workspace : undefined,
+      ...(promptTimeoutMs === undefined ? {} : { promptTimeoutMs }),
     };
   };
 }
@@ -387,7 +424,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           stdio: ["pipe", "pipe", "pipe"],
         });
 
-        const state = { settled: false, promptSent: false, text: "" };
+        const state = { settled: false, deadlineTerminating: false, promptSent: false, text: "" };
         const asks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>();
         let nextId = 1;
         let sessionId: string | null = null;
@@ -403,6 +440,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           } catch {}
           appendNative(threadId, { dir: "out", source: SOURCE, msg: obj });
         };
+        const sendAndFlush = (obj: unknown) =>
+          new Promise<void>((resolve) => {
+            try {
+              child.stdin.write(JSON.stringify(obj) + "\n", () => resolve());
+            } catch {
+              resolve();
+            }
+            appendNative(threadId, { dir: "out", source: SOURCE, msg: obj });
+          });
         const request = (method: string, params: unknown, timeoutMs?: number) =>
           new Promise<any>((resolve, reject) => {
             const id = nextId++;
@@ -410,7 +456,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             if (timeoutMs) {
               timer = setTimeout(() => {
                 rpcPending.delete(id);
-                reject(new Error(`${method} timed out`));
+                reject(new AcpRpcTimeoutError(method));
               }, timeoutMs);
               timer.unref?.();
             }
@@ -419,6 +465,29 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           });
 
         const stop = () => killCliTree(child);
+        const stopAndWaitForExit = async () => {
+          state.deadlineTerminating = true;
+          if (child.exitCode !== null || child.signalCode !== null) return;
+          await new Promise<void>((resolve) => {
+            let forceTimer: ReturnType<typeof setTimeout> | undefined;
+            const exited = () => {
+              if (forceTimer) clearTimeout(forceTimer);
+              resolve();
+            };
+            child.once("exit", exited);
+            stop();
+            forceTimer = setTimeout(() => {
+              const pid = child.pid;
+              try {
+                if (process.platform !== "win32" && pid) process.kill(-pid, "SIGKILL");
+                else child.kill("SIGKILL");
+              } catch {
+                // already gone
+              }
+            }, FORCE_EXIT_AFTER_MS);
+            forceTimer.unref?.();
+          });
+        };
 
         /** Emit buffered assistant text as its own item, then clear it. */
         const flushAssistantText = () => {
@@ -639,7 +708,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           settle(false, "spawn_error");
         });
         child.on("close", (code) => {
-          if (!state.settled) {
+          if (!state.settled && !state.deadlineTerminating) {
             emit({
               ...base(threadId, turnId),
               type: "runtime.error",
@@ -699,8 +768,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                   LOAD_SESSION_TIMEOUT,
                 );
                 sessionId = cursor;
-              } catch {
-                /* session gone, load unsupported, or too slow — start fresh */
+              } catch (error) {
+                // The harness withheld inline replay because this cursor said
+                // the native session held the conversation.  Starting empty
+                // here would silently discard everything before this prompt.
+                throw new AcpResumeError({ cause: error });
               }
             }
             if (!sessionId) {
@@ -775,10 +847,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               : turn.system
                 ? `${turn.system}\n\n${turn.text}`
                 : turn.text;
-            const result = await request("session/prompt", {
-              sessionId,
-              prompt: [{ type: "text", text }],
-            });
+            const result = await request(
+              "session/prompt",
+              {
+                sessionId,
+                prompt: [{ type: "text", text }],
+              },
+              turnConfig.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS,
+            );
             // opencode 1.18.18 reports usage at the result root; grok and
             // gemini put it under _meta. Read both rather than lose the count.
             const usage = result?.usage ?? result?._meta ?? {};
@@ -798,6 +874,17 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             if (!state.settled) {
               const message = e instanceof Error ? e.message : String(e);
               const code = support.classifyError?.(e);
+              const promptTimedOut = e instanceof AcpRpcTimeoutError && e.method === "session/prompt";
+              if (promptTimedOut && sessionId) {
+                // ACP cancellation is a notification.  Flush it to the child
+                // and give its event loop one bounded chance to handle it
+                // before terminal settlement kills the unresponsive process.
+                await Promise.race([
+                  sendAndFlush({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } }),
+                  new Promise<void>((resolve) => setTimeout(resolve, CANCEL_FLUSH_GRACE_MS)),
+                ]);
+                await stopAndWaitForExit();
+              }
               // Authentication setup is a user action, not a retry. The
               // classifier is preferred; loginNote remains a compatibility
               // fallback for existing ACP supports.
@@ -809,7 +896,16 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 message,
                 ...(needsAuth ? { setup: true } : {}),
               });
-              settle(false, needsAuth ? "auth_required" : "rpc_error");
+              settle(
+                false,
+                needsAuth
+                  ? "auth_required"
+                  : e instanceof AcpResumeError
+                    ? "resume_failed"
+                    : promptTimedOut
+                      ? "prompt_timeout"
+                      : "rpc_error",
+              );
             }
           }
         })();

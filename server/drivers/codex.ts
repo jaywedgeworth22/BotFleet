@@ -7,8 +7,8 @@
 // proxy or unix socket needed, unlike claude). Verified against
 // codex-cli 0.144.4 by agentcal.
 //
-// resumeCursor is the codex thread id; a later turn tries thread/resume
-// and falls back to a fresh thread/start.
+// resumeCursor is the codex thread id; a later turn tries thread/resume and
+// fails visibly when the native session cannot be restored.
 import { homedir } from "node:os";
 
 import { stripWorkspaceCredentialEnv } from "../config.ts";
@@ -38,6 +38,16 @@ import { appendNative } from "./native.ts";
 export { decodeCodexSelection, readCodexModelCatalog, STATIC_CODEX_MODELS } from "./codex-catalog.ts";
 
 const DRIVER_KIND = "codex";
+
+class CodexResumeError extends Error {
+  constructor(options?: { cause?: unknown }) {
+    super(
+      "The saved Codex session could not be resumed. Start a fresh task or rewind this conversation to replay its visible history.",
+      options,
+    );
+    this.name = "CodexResumeError";
+  }
+}
 
 export interface CodexConfig {
   cli: string;
@@ -540,8 +550,8 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
           try {
             const resumed = await request("thread/resume", { threadId: cursor });
             codexThreadId = resumed?.thread?.id ?? cursor;
-          } catch {
-            /* resume unsupported or thread gone — start fresh below */
+          } catch (error) {
+            throw new CodexResumeError({ cause: error });
           }
         }
         if (!codexThreadId) {
@@ -576,6 +586,11 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
         const failure = e instanceof Error ? e : { text: String(e) };
         const message = e instanceof Error ? e.message : String(e);
         const needsAuth = /(?:\b401\b|unauthorized|missing bearer|authentication required)/i.test(message);
+        if (!state.settled && e instanceof CodexResumeError) {
+          emit({ ...base(threadId, turnId), type: "runtime.error", message });
+          settle(false, "resume_failed");
+          return;
+        }
         const verdict = classifyError(failure);
         if (!state.settled && !needsAuth && verdict.transient && attempt < RETRY_MAX_ATTEMPTS - 1 && state.sawStreamDelta === false) {
           const delayMs = computeBackoff(attempt);

@@ -79,7 +79,10 @@ process.stdin.on("data", (chunk) => {
       continue;
     }
 
-    if (msg.method) calls.push({ method: msg.method, params: msg.params ?? null });
+    if (msg.method) {
+      calls.push({ method: msg.method, params: msg.params ?? null });
+      dump();
+    }
 
     switch (msg.method) {
       case "initialize":
