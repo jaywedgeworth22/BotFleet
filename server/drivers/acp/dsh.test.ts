@@ -216,11 +216,13 @@ describe("classifyDshError", () => {
 });
 
 describe("dshCredentialCandidates", () => {
-  it("honors DSH_HOME and keeps the platform fallback", () => {
-    expect(dshCredentialCandidates({ HOME: "/home/jay" })[0]).toBe(join("/home/jay", ".dsh", ".credentials.yaml"));
-    expect(dshCredentialCandidates({ HOME: "/home/jay", DSH_HOME: "/opt/dsh" })[0]).toBe(
+  it("recognizes only the credential file read by the published DSH package", () => {
+    expect(dshCredentialCandidates({ HOME: "/home/jay" })).toEqual([
+      join("/home/jay", ".dsh", ".credentials.yaml"),
+    ]);
+    expect(dshCredentialCandidates({ HOME: "/home/jay", DSH_HOME: "/opt/dsh" })).toEqual([
       join("/opt/dsh", ".credentials.yaml"),
-    );
+    ]);
     expect(dshCredentialCandidates({})[0]).toContain(".credentials.yaml");
   });
 });

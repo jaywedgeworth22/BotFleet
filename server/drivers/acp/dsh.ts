@@ -87,17 +87,13 @@ export const STATIC_DSH_MODELS: ModelCatalog = {
   ],
 };
 
-/** Candidate credential files, honoring the same DSH_HOME / HOME precedence the
- * `dsh` harness itself uses.  The `.deepseek` paths cover the platform API and
- * Code CLI logins so one authenticated DeepSeek seat still lights up this rail. */
+/** Candidate credential file, honoring the same DSH_HOME / HOME precedence the
+ * published `dsh` harness uses.  Other DeepSeek clients have separate stores
+ * that do not authenticate this CLI. */
 export function dshCredentialCandidates(env: Record<string, string | undefined>): string[] {
   const home = env.HOME || env.USERPROFILE || homedir();
   const dshHome = env.DSH_HOME || join(home, ".dsh");
-  return [
-    join(dshHome, ".credentials.yaml"),
-    join(home, ".deepseek", "credentials.json"),
-    join(home, ".deepseek-code", "credentials", "deepseek-code.json"),
-  ];
+  return [join(dshHome, ".credentials.yaml")];
 }
 
 /** Map DSH/DeepSeek failure text onto the canonical provider-error codes so the
