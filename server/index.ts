@@ -4579,14 +4579,11 @@ async function runGroupMemberTurn(
               signal: ask.signal,
             }),
           deps: {
-            // The same seven `/api/internal/` bodies the 1:1 dispatch passes.
-            // `AgentToolDeps` requires all of them: MM PR 7 (#366) added the
-            // last four while MM PR 8 (#365) was in flight, and the two merged
-            // without this call site being updated, which left `main` failing
-            // `tsc -p tsconfig.server.json`.  These are executors, not a
-            // catalog — what a room member is offered still comes from
-            // `buildTurnTools(integrations)` above — so this restores the
-            // build without widening any bot's tool set.
+            // The same seven `/api/internal/` bodies the 1:1 host is given.
+            // A room turn is the same bot running the same tools; only the
+            // thread it answers on differs, so withholding four of them here
+            // would give the same bot a smaller toolset in a room than in a
+            // direct message.
             executeListAgentsRequest,
             executeAskBotRequest,
             executeListRoutinesRequest,

@@ -155,15 +155,15 @@ function firstLineStart(fd: number, from: number, size: number): number | null {
  * has.  Idempotent — a file already within the cap is opened, stat'd and left
  * alone. */
 export function trimToTail(file: string, maxBytes: number): number {
-  let fd: number;
-  try {
-    fd = openSync(file, "r");
-  } catch {
-    return 0;
-  }
+  let fd: number | null = null;
   let tmp: string | null = null;
   let out: number | null = null;
   try {
+    try {
+      fd = openSync(file, "r");
+    } catch {
+      return 0;
+    }
     const stat = fstatSync(fd);
     if (stat.size <= maxBytes) return 0;
     const start = firstLineStart(fd, stat.size - maxBytes, stat.size);
@@ -181,6 +181,10 @@ export function trimToTail(file: string, maxBytes: number): number {
     fsyncSync(out);
     closeSync(out);
     out = null;
+    // Both handles are released before the rename: Windows refuses to replace
+    // a file something still holds open, and the read handle is ours.
+    closeSync(fd);
+    fd = null;
     renameSync(tmp, file);
     tmp = null;
     // The cached size belongs to the file that was just replaced; the next
@@ -188,7 +192,13 @@ export function trimToTail(file: string, maxBytes: number): number {
     liveSizes.delete(file);
     return start;
   } finally {
-    closeSync(fd);
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        /* best-effort cleanup */
+      }
+    }
     if (out !== null) {
       try {
         closeSync(out);
