@@ -67,6 +67,7 @@ function harness(
   const routines = new RoutineManager({
     file: join(dir, "routines.json"),
     now: () => clock.now,
+    timeZone: () => "Asia/Kolkata",
     botState: (botId) => (botId === "missing" ? "missing" : "busy"),
     createTask: () => null,
     startTurn: async () => {},
@@ -588,6 +589,49 @@ describe("RoutineRequestService", () => {
 
     await apply({ action: "delete", routineId: routine.id });
     expect(routines.listRoutines()).toHaveLength(0);
+  });
+
+  it("preserves a legacy recurrence as zone-less when a bot edits its schedule", async () => {
+    const { service, routines, store } = harness();
+    const routine = routines.create({
+      botId: "bot-a",
+      name: "Legacy local clock",
+      prompt: "Run on the harness clock",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] },
+    });
+    expect(routines.storedRoutineTimeZone(routine.id)).toBeUndefined();
+    expect(routines.listRoutines()[0]!.schedule).toMatchObject({ timeZone: "Asia/Kolkata" });
+
+    const proposed = await service.propose({
+      botId: "bot-a",
+      threadId: "thread-a",
+      proposal: {
+        action: "update",
+        routineId: routine.id,
+        changes: { schedule: { type: "weekly", time: "10:30", weekdays: ["tuesday"] } },
+      },
+    });
+    const message = store.messagesFor("thread-a")[0]!;
+    expect(message.card?.routineRequest?.operation).toMatchObject({
+      action: "update",
+      changes: { schedule: { type: "daily", time: "10:30", weekdays: [2] } },
+    });
+    if (message.card?.routineRequest?.operation.action !== "update") throw new Error("Expected update proposal");
+    expect(message.card.routineRequest.operation.changes.schedule).not.toHaveProperty("timeZone");
+
+    expect(service.resolve({
+      botId: "bot-a",
+      threadId: "thread-a",
+      requestId: proposed.requestId,
+      behavior: "allow",
+    }).state).toBe("applied");
+    expect(routines.storedRoutineTimeZone(routine.id)).toBeUndefined();
+    expect(routines.listRoutines()[0]!.schedule).toEqual({
+      type: "daily",
+      time: "10:30",
+      weekdays: [2],
+      timeZone: "Asia/Kolkata",
+    });
   });
 
   it("captures and enforces the routine revision for every manage confirmation", async () => {

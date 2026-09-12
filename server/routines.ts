@@ -373,6 +373,15 @@ export class RoutineManager {
     return this.routines.map((routine) => this.clientRoutine(routine, effectiveTimeZone));
   }
 
+  /** The explicit zone stored for a recurrence, without the client-facing
+   * effective host zone added by listRoutines.  Callers that replace a
+   * legacy schedule need this distinction so its host-local behavior stays
+   * host-local. */
+  storedRoutineTimeZone(id: string): string | undefined {
+    const schedule = this.routines.find((routine) => routine.id === id)?.schedule;
+    return schedule?.type === "daily" ? schedule.timeZone : undefined;
+  }
+
   listRuns(from?: number, to?: number): RoutineRun[] {
     return this.runs
       .filter((r) => (from == null || r.scheduledFor >= from) && (to == null || r.scheduledFor <= to))

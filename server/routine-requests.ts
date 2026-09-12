@@ -263,7 +263,7 @@ function duration(value: number | undefined): number {
   return normalized;
 }
 
-function normalizeSchedule(schedule: RoutineToolScheduleInput, now: number, defaultTimeZone: string): RoutineRequestSchedule {
+function normalizeSchedule(schedule: RoutineToolScheduleInput, now: number, defaultTimeZone: string | undefined): RoutineRequestSchedule {
   if (schedule.type === "once") {
     const parts = RFC3339_WITH_OFFSET.exec(schedule.at);
     if (!parts) {
@@ -307,11 +307,12 @@ function normalizeSchedule(schedule: RoutineToolScheduleInput, now: number, defa
     if (number === undefined) throw new RoutineRequestError(`Unsupported weekday: ${day}`);
     return number;
   });
+  const timeZone = schedule.timeZone ?? defaultTimeZone;
   return {
     type: "daily",
     time: schedule.time,
     weekdays: [...new Set(weekdays)].sort(),
-    timeZone: schedule.timeZone ?? defaultTimeZone,
+    ...(timeZone ? { timeZone } : {}),
   };
 }
 
@@ -325,7 +326,7 @@ function normalizeDefinition(input: RoutineToolDefinitionInput, now: number, def
   };
 }
 
-function normalizeChanges(input: RoutineToolChangesInput, now: number, defaultTimeZone: string): RoutineRequestChanges {
+function normalizeChanges(input: RoutineToolChangesInput, now: number, defaultTimeZone: string | undefined): RoutineRequestChanges {
   const changes: RoutineRequestChanges = {};
   if (input.name !== undefined) changes.name = text(input.name, "name", 80);
   if (input.instructions !== undefined) changes.instructions = text(input.instructions, "instructions", 20_000);
@@ -359,12 +360,12 @@ function normalizedOperation(
   if (!current) throw new RoutineRequestError("That routine does not exist", 404);
   if (validated.action === "update") {
     // A schedule edit that omits its optional zone means "keep this
-    // recurrence's zone", not "move it to the harness zone".  listRoutines
-    // supplies the effective harness zone for legacy zone-less routines, so
-    // both explicit and legacy recurrences retain the clock the operator has
-    // already been shown.
+    // recurrence's stored zone", not "move it to the harness zone".  Read
+    // through the raw accessor because listRoutines intentionally enriches a
+    // legacy zone-less schedule for clients; persisting that enrichment here
+    // would silently turn its host-local behavior into a fixed zone.
     const scheduleTimeZone = current.schedule.type === "daily"
-      ? current.schedule.timeZone ?? defaultTimeZone
+      ? manager.storedRoutineTimeZone(id)
       : defaultTimeZone;
     return {
       action: "update",
