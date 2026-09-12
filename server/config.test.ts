@@ -68,6 +68,9 @@ describe("configuration boundaries", () => {
   it("rejects malformed stored instances and API patches", () => {
     expect(() => parseStoredConfig({ instances: { claude: { driver: 42 } } })).toThrow("instances.claude.driver");
     expect(() => parseConfigPatch({ opencodeGo: { apiKey: 42 } })).toThrow("opencodeGo.apiKey");
+    expect(() => parseConfigPatch({ xai: { credentialStorage: "external" } })).toThrow(
+      "xai.credentialStorage is managed by the desktop credential store",
+    );
     expect(() => parseConfigPatch({ profile: [] })).toThrow("profile");
     expect(() => parseConfigPatch({ usage: { ingestUrl: "usage.example.com" } })).toThrow(
       "usage.ingestUrl must be an absolute http(s) URL",
