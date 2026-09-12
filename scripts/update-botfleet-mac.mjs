@@ -21,10 +21,12 @@ import { applyPreparedUpdate, prepareUpdate, runUpdate } from "./mac-update-tran
 const EXPECTED_TEAM_ID = "CC8UTF7ATG";
 const EXPECTED_BUNDLE_ID = "com.botfleet.app";
 const EXPECTED_SIGN_IDENTITY = "Developer ID Application: Jay Wedgeworth, LLC (CC8UTF7ATG)";
+const BUILDER_SIGN_SELECTOR = "Jay Wedgeworth, LLC (CC8UTF7ATG)";
 const BUILD_MANIFEST_RELATIVE = "Contents/Resources/server/build-identity.json";
 const GENERATED_PATHS = [
   "electron/resources/BotFleet Recorder.app/Contents/MacOS/recorder-helper",
   "electron/resources/BotFleet Speech.app/Contents/MacOS/speech-helper",
+  "electron/vendor/electron-updater.cjs",
 ];
 const TERMINAL_ROUTINE_STATES = new Set(["completed", "failed", "cancelled", "canceled", "interrupted", "missed", "skipped"]);
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
@@ -119,7 +121,7 @@ async function assertPrivateRegularFile(path, label) {
   if ((details.mode & 0o077) !== 0) throw new Error(`${label} must not be accessible by group or other users: ${path}`);
 }
 
-function run(command, args, { cwd, env, allowFailure = false, inherit = false } = {}) {
+export function run(command, args, { cwd, env, allowFailure = false, inherit = false } = {}) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(command, args, {
       cwd,
@@ -134,8 +136,15 @@ function run(command, args, { cwd, env, allowFailure = false, inherit = false } 
       child.stdout.on("data", (chunk) => { stdout += chunk; });
       child.stderr.on("data", (chunk) => { stderr += chunk; });
     }
-    child.on("error", rejectRun);
-    child.on("exit", (code, signal) => {
+    let settled = false;
+    child.once("error", (error) => {
+      if (settled) return;
+      settled = true;
+      rejectRun(error);
+    });
+    child.once("close", (code, signal) => {
+      if (settled) return;
+      settled = true;
       const result = { code: code ?? 128, signal, stdout, stderr };
       if (result.code === 0 || allowFailure) resolveRun(result);
       else rejectRun(new CommandError(command, args, result));
@@ -302,7 +311,32 @@ async function readOwner(dataDirectory) {
   }
 }
 
-async function strictRuntimePreflight(config, expectedBuild) {
+export function authenticatedRuntimeError(runtime, owner, expectedBuild, { requireIdle }) {
+  const activeWorkCount = runtime?.activeWorkCount ?? runtime?.activeWork?.count;
+  if (runtime?.app !== "botfleet" || runtime?.pid !== owner.pid ||
+      runtime?.dataOwner?.pid !== owner.pid || runtime?.dataOwner?.port !== owner.port) {
+    return "Authenticated runtime identity does not match the data owner";
+  }
+  if (typeof runtime.sourceCommit !== "string" || !/^[a-f0-9]{40}$/.test(runtime.sourceCommit)) {
+    return "Authenticated runtime did not report an exact source commit";
+  }
+  if (runtime.sourceDirty !== false) {
+    return "Authenticated runtime reports a dirty or unknown source checkout";
+  }
+  if (expectedBuild && runtime.sourceCommit !== expectedBuild.targetCommit) {
+    return `Harness is running ${runtime.sourceCommit.slice(0, 12)}, expected ${expectedBuild.targetCommit.slice(0, 12)}`;
+  }
+  if (expectedBuild && (runtime.version !== expectedBuild.version || runtime.apiVersion !== expectedBuild.apiVersion ||
+      (runtime.uiHash !== null && runtime.uiHash !== expectedBuild.uiHash))) {
+    return "Harness runtime identity does not match the prepared application build";
+  }
+  if (requireIdle && (runtime.safeToRestart !== true || activeWorkCount !== 0)) {
+    return `${Number.isInteger(activeWorkCount) ? activeWorkCount : "Unknown"} active operations prevent update`;
+  }
+  return null;
+}
+
+async function strictRuntimePreflight(config, expectedBuild, { requireIdle }) {
   const owner = await readOwner(config.dataDirectory);
   if (!owner) return null;
   const response = await requestJson(`http://127.0.0.1:${owner.port}/api/runtime`, {
@@ -312,26 +346,8 @@ async function strictRuntimePreflight(config, expectedBuild) {
   if (response.kind === "http" && response.status === 404) return null;
   if (response.kind !== "ok") return { safe: false, reason: "Authenticated runtime readiness could not be verified" };
   const runtime = response.body;
-  const activeWorkCount = runtime?.activeWorkCount ?? runtime?.activeWork?.count;
-  if (runtime?.app !== "botfleet" || runtime?.pid !== owner.pid ||
-      runtime?.dataOwner?.pid !== owner.pid || runtime?.dataOwner?.port !== owner.port) {
-    return { safe: false, reason: "Authenticated runtime identity does not match the data owner" };
-  }
-  if (typeof runtime.sourceCommit !== "string" || !/^[a-f0-9]{40}$/.test(runtime.sourceCommit)) {
-    return { safe: false, reason: "Authenticated runtime did not report an exact source commit" };
-  }
-  if (runtime.sourceDirty !== false) {
-    return { safe: false, reason: "Authenticated runtime reports a dirty or unknown source checkout" };
-  }
-  if (expectedBuild && runtime.sourceCommit !== expectedBuild.targetCommit) {
-    return { safe: false, reason: `Harness is running ${runtime.sourceCommit.slice(0, 12)}, expected ${expectedBuild.targetCommit.slice(0, 12)}` };
-  }
-  if (expectedBuild && (runtime.version !== expectedBuild.version || runtime.apiVersion !== expectedBuild.apiVersion)) {
-    return { safe: false, reason: "Harness runtime identity does not match the prepared application build" };
-  }
-  if (runtime.safeToRestart !== true || activeWorkCount !== 0) {
-    return { safe: false, reason: `${Number.isInteger(activeWorkCount) ? activeWorkCount : "Unknown"} active operations prevent update` };
-  }
+  const identityError = authenticatedRuntimeError(runtime, owner, expectedBuild, { requireIdle });
+  if (identityError) return { safe: false, reason: identityError };
   const topology = await healthTopology(config.ports);
   if (!topology.safe || topology.pid !== owner.pid) {
     return { safe: false, reason: topology.reason || "Health endpoints do not share the authenticated runtime owner" };
@@ -383,7 +399,7 @@ async function legacyPreflight(config) {
 }
 
 export async function runtimePreflight(config, expectedBuild) {
-  const strict = await strictRuntimePreflight(config, expectedBuild);
+  const strict = await strictRuntimePreflight(config, expectedBuild, { requireIdle: true });
   if (strict) return strict;
   if (expectedBuild) return { safe: false, reason: "Expected build does not expose authenticated runtime identity" };
   const first = await legacyPreflight(config);
@@ -398,6 +414,11 @@ export async function runtimePreflight(config, expectedBuild) {
   return second;
 }
 
+async function runtimeIdentityPreflight(config, expectedBuild) {
+  const strict = await strictRuntimePreflight(config, expectedBuild, { requireIdle: false });
+  return strict || { safe: false, reason: "Expected build does not expose authenticated runtime identity" };
+}
+
 async function signatureIdentity(bundlePath) {
   await run("codesign", ["--verify", "--deep", "--strict", bundlePath]);
   const details = await run("codesign", ["-dvv", bundlePath], { allowFailure: true });
@@ -408,12 +429,19 @@ async function signatureIdentity(bundlePath) {
     throw new Error(`BotFleet signature identity mismatch (team ${teamIdentifier || "missing"}, bundle ${identifier || "missing"})`);
   }
   const requirement = await run("codesign", ["-dr", "-", bundlePath], { allowFailure: true });
-  const designatedRequirement = `${requirement.stdout}\n${requirement.stderr}`.trim();
+  const designatedRequirement = designatedRequirementFromOutput(`${requirement.stdout}\n${requirement.stderr}`);
   if (!designatedRequirement.includes(`identifier "${EXPECTED_BUNDLE_ID}"`) ||
       !designatedRequirement.includes(`certificate leaf[subject.OU] = ${EXPECTED_TEAM_ID}`)) {
     throw new Error("BotFleet designated signing requirement is missing its stable bundle or team identity");
   }
   return { teamIdentifier, bundleIdentifier: identifier, designatedRequirement: sha256(designatedRequirement) };
+}
+
+export function designatedRequirementFromOutput(outputText) {
+  return outputText
+    .split("\n")
+    .find((line) => line.startsWith("designated => "))
+    ?.trim() || "";
 }
 
 export async function validateBuiltBundle(bundlePath, expectedCommit) {
@@ -618,7 +646,7 @@ function createOperations(config) {
         join(source.path, "scripts/with-sentry-dsn.sh"),
         "pnpm",
         "package:mac:local",
-        `-c.mac.identity=${EXPECTED_SIGN_IDENTITY}`,
+        `-c.mac.identity=${BUILDER_SIGN_SELECTOR}`,
         "-c.mac.timestamp=none",
       ];
       try {
@@ -815,7 +843,7 @@ function createOperations(config) {
       const deadline = Date.now() + config.startupTimeoutMs;
       let snapshot;
       while (Date.now() < deadline) {
-        snapshot = await runtimePreflight(config, prepared);
+        snapshot = await runtimeIdentityPreflight(config, prepared);
         if (snapshot.safe) return;
         await sleep(500);
       }
@@ -828,7 +856,7 @@ function createOperations(config) {
 
     verifySingleOwner: async (prepared) => {
       if (config.parsed.openApplication !== false) await sleep(2_000);
-      const snapshot = await runtimePreflight(config, prepared);
+      const snapshot = await runtimeIdentityPreflight(config, prepared);
       if (!snapshot.safe || snapshot.mode !== "authenticated") {
         throw new Error(snapshot.reason || "Updated application did not attach to the authenticated single data owner");
       }

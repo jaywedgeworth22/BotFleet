@@ -77,7 +77,7 @@ extraResources:
     to: android-platform-tools
 
 mac:
-  identity: "Developer ID Application: Jay Wedgeworth, LLC (CC8UTF7ATG)"
+  identity: "Jay Wedgeworth, LLC (CC8UTF7ATG)"
 
   # Two single-arch artifacts rather than one universal binary: the app is
   # ~177 MB per arch, and universal would make every user download both halves.

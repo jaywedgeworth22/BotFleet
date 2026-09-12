@@ -5,9 +5,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  authenticatedRuntimeError,
+  designatedRequirementFromOutput,
   isExpectedBotFleetProcess,
   loadPrepared,
   parseArguments,
+  run,
   swapPreparedFiles,
   validateBuiltBundle,
 } from "./update-botfleet-mac.mjs";
@@ -79,6 +82,24 @@ test("bundle validation rejects a symlink before trusting its contents", async (
   await assert.rejects(validateBuiltBundle(link, "b".repeat(40)), /must be a real directory/);
 });
 
+test("command results wait for output pipes to close", async () => {
+  const script = `
+    const { spawn } = require("node:child_process");
+    spawn(process.execPath, ["-e", "setTimeout(() => process.stdout.write('late\\\\n'), 40)"], { stdio: ["ignore", 1, 2] });
+    process.stdout.write("early\\n");
+  `;
+  const result = await run(process.execPath, ["-e", script]);
+  assert.equal(result.stdout, "early\nlate\n");
+});
+
+test("designated requirement comparison excludes the bundle-specific executable path", () => {
+  const requirement = 'designated => identifier "com.botfleet.app" and certificate leaf[subject.OU] = CC8UTF7ATG';
+  const installed = `Executable=/Applications/BotFleet.app/Contents/MacOS/BotFleet\n${requirement}\n`;
+  const candidate = `Executable=/Applications/.BotFleet.update-123.app/Contents/MacOS/BotFleet\n${requirement}\n`;
+  assert.equal(designatedRequirementFromOutput(installed), requirement);
+  assert.equal(designatedRequirementFromOutput(candidate), requirement);
+});
+
 test("production updater has no force-kill or unrelated desktop-process cleanup", async () => {
   const source = await readFile(join(scripts, "update-botfleet-mac.mjs"), "utf8");
   for (const forbidden of ["pkill", "killall", '"Dock"', '"Finder"', '"System Settings"']) {
@@ -106,10 +127,43 @@ test("process verification binds relative server commands to the live checkout c
   assert.equal(isExpectedBotFleetProcess("/Applications/BotFleet.app/Contents/MacOS/BotFleet", "/", config), true);
 });
 
+test("post-start identity accepts new work while the pre-install readiness gate still refuses it", () => {
+  const owner = { pid: 42, port: 8799 };
+  const prepared = {
+    targetCommit: "b".repeat(40),
+    version: "1.0.30",
+    apiVersion: 1,
+    uiHash: "c".repeat(64),
+  };
+  const runtime = {
+    app: "botfleet",
+    pid: owner.pid,
+    dataOwner: owner,
+    sourceCommit: prepared.targetCommit,
+    sourceDirty: false,
+    version: prepared.version,
+    apiVersion: prepared.apiVersion,
+    uiHash: null,
+    safeToRestart: false,
+    activeWorkCount: 1,
+  };
+  assert.match(authenticatedRuntimeError(runtime, owner, prepared, { requireIdle: true }), /active operations/);
+  assert.equal(authenticatedRuntimeError(runtime, owner, prepared, { requireIdle: false }), null);
+  assert.match(
+    authenticatedRuntimeError({ ...runtime, uiHash: "d".repeat(64) }, owner, prepared, { requireIdle: false }),
+    /does not match the prepared application build/,
+  );
+});
+
 test("packaged identity comes from the build output rather than an ambient label", async () => {
   const source = await readFile(join(scripts, "update-botfleet-mac.mjs"), "utf8");
+  const builder = await readFile(join(scripts, "../electron-builder.yml"), "utf8");
   assert.match(source, /Contents\/Resources\/server\/build-identity\.json/);
   assert.match(source, /build\.sourceDirty !== false/);
+  assert.match(source, /EXPECTED_SIGN_IDENTITY = "Developer ID Application: Jay Wedgeworth, LLC \(CC8UTF7ATG\)"/);
+  assert.match(source, /BUILDER_SIGN_SELECTOR = "Jay Wedgeworth, LLC \(CC8UTF7ATG\)"/);
+  assert.match(builder, /identity: "Jay Wedgeworth, LLC \(CC8UTF7ATG\)"/);
+  assert.doesNotMatch(builder, /identity: "Developer ID Application:/);
   assert.doesNotMatch(source, /BOTFLEET_SOURCE_COMMIT:/);
 });
 
