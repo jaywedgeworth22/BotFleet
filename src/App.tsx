@@ -247,6 +247,20 @@ function Shell() {
           </button>
         </div>
       )}
+      {state.hydration.error && (
+        <div
+          role="alert"
+          className="border-b border-warning/30 bg-warning/10 px-4 py-2 text-[13px] text-ink"
+        >
+          <span className="font-medium">Some saved data could not refresh.</span>{"\u00A0 "}
+          <span>{state.hydration.error}</span>{"\u00A0 "}
+          <span>
+            {state.hydration.retryAt
+              ? "The last loaded data stays visible.\u00A0 BotFleet will retry shortly."
+              : "The last loaded data stays visible.\u00A0 Reopen BotFleet to try again."}
+          </span>
+        </div>
+      )}
       <div className="relative flex min-h-0 flex-1">
       <button
         type="button"

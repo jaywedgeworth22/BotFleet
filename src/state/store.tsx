@@ -617,6 +617,11 @@ export interface AppState {
    * same message be focused twice in a row */
   focusMessage: { threadId: string; messageId: string; nonce: number; consumed: boolean } | null;
   connected: boolean;
+  hydration: {
+    status: "idle" | "loading" | "ready" | "failed";
+    error: string | null;
+    retryAt: number | null;
+  };
   error: string | null;
   mascotMotion: {
     botId: string;
@@ -653,6 +658,22 @@ export const INITIAL_PAGE = 200;
 export const PAGE_SIZE = 200;
 
 const MAX_CONSUMED_QUEUE_IDS = 64;
+
+/** A resumed stream covers its event gap, but it cannot repair a REST
+ * snapshot that previously failed. */
+export function shouldHydrateAfterHello(resumed: boolean, previousHydrationFailed: boolean): boolean {
+  return !resumed || previousHydrationFailed;
+}
+
+export async function runHydrationRequests(
+  requests: Array<{ label: string; request: Promise<unknown> }>,
+): Promise<void> {
+  const settled = await Promise.allSettled(requests.map(({ request }) => request));
+  const failed = settled.flatMap((result, index) =>
+    result.status === "rejected" ? [requests[index]!.label] : [],
+  );
+  if (failed.length) throw new Error(`Could not refresh ${failed.join(", ")}.`);
+}
 
 function rememberConsumedQueueId(consumed: Record<string, true>, queueId: string): Record<string, true> {
   const next = { ...consumed, [queueId]: true as const };
@@ -763,6 +784,9 @@ export type Action =
   | { type: "setModel"; botId: string; selection: ModelSelection }
   | { type: "interrupt"; botId: string }
   | { type: "connected"; value: boolean }
+  | { type: "hydrationStarted" }
+  | { type: "hydrationReady" }
+  | { type: "hydrationFailed"; message: string; retryAt: number | null }
   | { type: "error"; message: string | null }
   | { type: "toggleSettings"; open?: boolean }
   | { type: "togglePlugins"; open?: boolean }
@@ -1297,6 +1321,15 @@ export function reducer(state: AppState, action: Action): AppState {
         // the banner is stale.
         error: action.value && isHarnessUnreachableError(state.error) ? null : state.error,
       };
+    case "hydrationStarted":
+      return { ...state, hydration: { status: "loading", error: null, retryAt: null } };
+    case "hydrationReady":
+      return { ...state, hydration: { status: "ready", error: null, retryAt: null } };
+    case "hydrationFailed":
+      return {
+        ...state,
+        hydration: { status: "failed", error: action.message, retryAt: action.retryAt },
+      };
     case "error":
       return {
         ...(action.message && state.selectedId
@@ -1676,6 +1709,7 @@ export const initialState: AppState = {
   computerControl: {},
   focusMessage: null,
   connected: false,
+  hydration: { status: "idle", error: null, retryAt: null },
   error: null,
   mascotMotion: null,
   pendingQueued: {},
@@ -2317,10 +2351,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   // ── initial load + SSE fold ──────────────────────────────────────────
   useEffect(() => {
     let alive = true;
-    const loadAll = (botEpochAtFetch: Record<string, number>, groupEpochAtFetch: Record<string, number>) =>
-      Promise.all([
-        api(`/api/bots?messages=${INITIAL_PAGE}`)
-          .then(({ bots, groups, computerControl }) => {
+    const loadAll = async (botEpochAtFetch: Record<string, number>, groupEpochAtFetch: Record<string, number>) => {
+      const requests = [
+        {
+          label: "bots",
+          request: api(`/api/bots?messages=${INITIAL_PAGE}`).then(({ bots, groups, computerControl }) => {
             if (!alive) return;
             const overlays: Record<string, BotUpdatePatch> = {};
             for (const bot of bots ?? []) {
@@ -2336,24 +2371,38 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               botEpochAtFetch,
               groupEpochAtFetch,
             });
-          })
-          .catch(() => {}),
-        api("/api/instances")
-          .then(({ instances }) => alive && rawDispatch({ type: "instances", instances }))
-          .catch(() => {}),
-        api("/api/config")
-          .then((config) => alive && rawDispatch({ type: "configStatus", config }))
-          .catch(() => {}),
-        api("/api/routines")
-          .then(({ routines, runs }) => alive && rawDispatch({ type: "routinesHydrated", routines, runs }))
-          .catch(() => {}),
-        api("/api/webhooks")
-          .then(({ webhooks, attempts, ingress }) => alive && rawDispatch({ type: "webhooksHydrated", webhooks, attempts: attempts ?? [], ingress }))
-          .catch(() => {}),
-        api("/api/resource-triggers")
-          .then(({ triggers }) => alive && rawDispatch({ type: "resourceTriggersHydrated", triggers: triggers ?? [] }))
-          .catch(() => {}),
-      ]);
+          }),
+        },
+        {
+          label: "engines",
+          request: api("/api/instances")
+            .then(({ instances }) => alive && rawDispatch({ type: "instances", instances })),
+        },
+        {
+          label: "settings",
+          request: api("/api/config")
+            .then((config) => alive && rawDispatch({ type: "configStatus", config })),
+        },
+        {
+          label: "routines",
+          request: api("/api/routines")
+            .then(({ routines, runs }) => alive && rawDispatch({ type: "routinesHydrated", routines, runs })),
+        },
+        {
+          label: "webhooks",
+          request: api("/api/webhooks").then(
+            ({ webhooks, attempts, ingress }) =>
+              alive && rawDispatch({ type: "webhooksHydrated", webhooks, attempts: attempts ?? [], ingress }),
+          ),
+        },
+        {
+          label: "resource triggers",
+          request: api("/api/resource-triggers")
+            .then(({ triggers }) => alive && rawDispatch({ type: "resourceTriggersHydrated", triggers: triggers ?? [] })),
+        },
+      ];
+      await runHydrationRequests(requests);
+    };
 
     // A snapshot and the live fold have to meet at a defined boundary. Start
     // hydration only after the stream says hello, queue frames that arrive
@@ -2362,6 +2411,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // an eager request and the stream opening and disappear entirely.
     let hydrated = false;
     let hydrating = false;
+    let hydrationFailed = false;
+    let hydrationRetryAttempts = 0;
+    let hydrationRetry: ReturnType<typeof setTimeout> | null = null;
     let rehydrateRequested = false;
     const pendingFrames: any[] = [];
     let handleFrame: (frame: any) => void;
@@ -2372,21 +2424,44 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         rehydrateRequested = true;
         return;
       }
+      if (hydrationRetry) {
+        clearTimeout(hydrationRetry);
+        hydrationRetry = null;
+      }
       hydrating = true;
       hydrated = false;
+      rawDispatch({ type: "hydrationStarted" });
       const botEpochAtFetch = { ...stateRef.current.botEpoch };
       const groupEpochAtFetch = { ...stateRef.current.groupEpoch };
-      void loadAll(botEpochAtFetch, groupEpochAtFetch).finally(() => {
-        if (!alive) return;
-        hydrating = false;
-        if (rehydrateRequested) {
-          rehydrateRequested = false;
-          hydrate();
-          return;
-        }
-        hydrated = true;
-        for (const frame of pendingFrames.splice(0)) handleFrame(frame);
-      });
+      void loadAll(botEpochAtFetch, groupEpochAtFetch)
+        .then(() => {
+          hydrationFailed = false;
+          hydrationRetryAttempts = 0;
+          rawDispatch({ type: "hydrationReady" });
+        })
+        .catch((error) => {
+          if (!alive) return;
+          hydrationFailed = true;
+          const retryDelays = [1_000, 3_000, 10_000] as const;
+          const delay = retryDelays[hydrationRetryAttempts++] ?? null;
+          rawDispatch({
+            type: "hydrationFailed",
+            message: error instanceof Error ? error.message : "Could not refresh saved data.",
+            retryAt: delay === null ? null : Date.now() + delay,
+          });
+          if (delay !== null) hydrationRetry = setTimeout(hydrate, delay);
+        })
+        .finally(() => {
+          if (!alive) return;
+          hydrating = false;
+          if (rehydrateRequested) {
+            rehydrateRequested = false;
+            hydrate();
+            return;
+          }
+          hydrated = true;
+          for (const frame of pendingFrames.splice(0)) handleFrame(frame);
+        });
     };
     // If SSE is unavailable, the app should still show its saved state. A
     // later first hello hydrates again because it cannot prove there was no
@@ -2571,7 +2646,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // could not fill the gap, so queue subsequent frames behind a hydrate.
       if (frame.kind === "hello") {
         clearTimeout(hydrationFallback);
-        if (!frame.resumed) hydrate();
+        if (shouldHydrateAfterHello(frame.resumed === true, hydrationFailed)) hydrate();
         return;
       }
       if (hydrated) handleFrame(frame);
@@ -2580,6 +2655,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     return () => {
       alive = false;
       clearTimeout(hydrationFallback);
+      if (hydrationRetry) clearTimeout(hydrationRetry);
       es.close();
     };
   }, []);
