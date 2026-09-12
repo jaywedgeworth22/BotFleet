@@ -36,6 +36,8 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 ## In Progress
 
+- **2026-09-12 — CODEX — IN PROGRESS — Renderer hydration, settings-save, reconnect, and RAG status reliability (issues #266–#268; boards `62a56733`, `1ca6cb49`, `5ee62380`; branch `codex/renderer-reliability-20260912`, worktree `~/apps/botfleet-codex-renderer-reliability-20260912`).**  Preserve the last good renderer snapshot across partial hydration failure, retry boundedly after resumable reconnects, report update and Qdrant save failures without optimistic state drift, expose the selected RAG route and freshness with old-payload compatibility, announce failures accessibly, and stop attached-UI retries after the downstream response closes.  Focused validation: 56 renderer tests and 8 attached-shim Node tests passed; the local preview screenshot captures route, state, and freshness.  Source and local preview only; no deployed-process changes. <!-- wb-agent-report:62a567333ee945999c908620023e0318 -->
+
 - **2026-09-12 — CODEX — IN PROGRESS — Authenticated build/API identity and staged Mac update acceptance (#265/#274, boards e4190ce1 / 7e582b82).**  Worktree `~/apps/botfleet-codex-mac-20260912` @ `codex/mac-rollout-20260912`.  Coordinate #319 updater before changing live processes; verify actual running source and one data owner.  <!-- codex-mac-rollout-20260912 -->
 
 - **2026-09-11 — GROK — IN PROGRESS — Map Remote Access Test Connection pill to product copy (board `f3c03a10`, branch `grok/remote-access-test-copy`, worktree `~/apps/botfleet-designer-remote-access-copy`).**  Designer follow-up to #298.  Extra-ship no. <!-- wb-agent-report:f3c03a1060cd4be1b21c83b0b4ef4e67 -->

@@ -10,10 +10,64 @@ import {
   mergeHydrateGroups,
   openNotificationTarget,
   reducer,
+  runHydrationRequests,
+  shouldHydrateAfterHello,
   type Bot,
   type Group,
   type Message,
 } from "./store";
+
+describe("renderer hydration recovery", () => {
+  const retainedBot = {
+    id: "retained",
+    threadId: "retained-thread",
+    name: "Retained",
+    title: "",
+    description: "",
+    notifications: true,
+    color: "blue",
+    unread: false,
+    modelSelection: { instanceId: "codex", model: "gpt" },
+    messages: [],
+  } satisfies Bot;
+
+  it("keeps the last snapshot and reports hydration separately from a live transport", () => {
+    const connected = reducer({ ...initialState, bots: [retainedBot] }, { type: "connected", value: true });
+    const loading = reducer(connected, { type: "hydrationStarted" });
+    const failed = reducer(loading, {
+      type: "hydrationFailed",
+      message: "Could not refresh engines.",
+      retryAt: 2_000,
+    });
+
+    expect(failed.connected).toBe(true);
+    expect(failed.bots).toEqual([retainedBot]);
+    expect(failed.error).toBeNull();
+    expect(failed.hydration).toEqual({
+      status: "failed",
+      error: "Could not refresh engines.",
+      retryAt: 2_000,
+    });
+  });
+
+  it("rehydrates after a resumable hello when the preceding REST snapshot failed", () => {
+    expect(shouldHydrateAfterHello(true, true)).toBe(true);
+    expect(shouldHydrateAfterHello(true, false)).toBe(false);
+    expect(shouldHydrateAfterHello(false, false)).toBe(true);
+  });
+
+  it("applies successful snapshot slices while reporting a partial REST failure", async () => {
+    const botsLanded = vi.fn();
+    const botRequest = Promise.resolve().then(botsLanded);
+    const enginesRequest = Promise.reject(new Error("503"));
+
+    await expect(runHydrationRequests([
+      { label: "bots", request: botRequest },
+      { label: "engines", request: enginesRequest },
+    ])).rejects.toThrow("Could not refresh engines.");
+    expect(botsLanded).toHaveBeenCalledOnce();
+  });
+});
 
 describe("harness unreachable banner", () => {
   const banner = "BotFleet harness on port 8799 is not reachable";

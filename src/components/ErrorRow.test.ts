@@ -39,4 +39,12 @@ describe("ErrorRow recovery", () => {
     expect(html).toContain("Switch Model");
     expect(html).toContain("Add API Key");
   });
+
+  it("announces a new failure to assistive technology", () => {
+    const html = renderToStaticMarkup(createElement(ErrorRow, { message: "The task failed." }));
+
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('aria-live="assertive"');
+    expect(html).toContain("The task failed.");
+  });
 });
