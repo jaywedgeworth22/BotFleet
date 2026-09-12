@@ -49,7 +49,7 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
-import { ErrorRow, TurnErrorAnnouncement } from "./ErrorRow";
+import { ErrorRow, TurnErrorAnnouncement, latestTurnErrorMessage } from "./ErrorRow";
 import { ChatFindBar } from "./ChatFindBar";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
@@ -1020,9 +1020,9 @@ export function ChatView({ bot }: { bot: Bot }) {
   // thread with nothing queued is the normal case, so this was the normal
   // cost.
   const pendingQueued = state.pendingQueued[bot.threadId] ?? NO_QUEUE;
+  const serverMessages = useMemo(() => visibleMessages(bot), [bot]);
   const messages = useMemo(() => {
-    const visible = visibleMessages(bot);
-    if (!pendingQueued.length) return visible;
+    if (!pendingQueued.length) return serverMessages;
     const queued: Message[] = pendingQueued.map((entry) => ({
       id: entry.queueId,
       at: Date.now(),
@@ -1032,8 +1032,9 @@ export function ChatView({ bot }: { bot: Bot }) {
       queued: true,
       queueId: entry.queueId,
     }));
-    return [...visible, ...queued];
-  }, [bot, pendingQueued]);
+    return [...serverMessages, ...queued];
+  }, [serverMessages, pendingQueued]);
+  const latestServerError = useMemo(() => latestTurnErrorMessage(serverMessages), [serverMessages]);
   // Windowed transcript: only a tail of the thread mounts (screenshots make
   // full threads DOM-heavy). Count on-screen items, not raw rows — hidden
   // tool chips must not push the user prompt that started a long turn out
@@ -1400,7 +1401,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           today that's only ChatMarkdown's file-link menu backdrop, which
           still covers the whole transcript, just not the sidebar/header. */}
       <div className="relative min-h-0 flex-1 @container/chat">
-      <TurnErrorAnnouncement key={bot.threadId} latestMessage={messages.at(-1)} />
+      <TurnErrorAnnouncement key={bot.threadId} latestMessage={latestServerError} />
       <div
         ref={scrollRef}
         className="h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"

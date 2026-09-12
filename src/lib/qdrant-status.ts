@@ -27,10 +27,15 @@ export function qdrantStateLabel(status: QdrantStatus | null): string {
 
 export function qdrantLastSuccessLabel(status: QdrantStatus | null): string {
   if (status?.lastSuccessAt == null) return "None recorded";
-  return new Date(status.lastSuccessAt).toLocaleString(undefined, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  });
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(status.lastSuccessAt);
 }
 
 export async function settleQdrantSave<T>(operation: () => Promise<T>): Promise<

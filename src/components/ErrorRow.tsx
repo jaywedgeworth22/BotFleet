@@ -56,6 +56,14 @@ function turnErrorText(message: TurnErrorMessage | undefined): string | null {
   return message.tool.name.slice(6).trim();
 }
 
+export function latestTurnErrorMessage<T extends TurnErrorMessage>(messages: readonly T[]): T | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (turnErrorText(message)) return message;
+  }
+  return undefined;
+}
+
 function turnErrorSignature(message: TurnErrorMessage | undefined): string {
   return message ? `${message.id}\0${turnErrorText(message) ?? ""}` : "";
 }

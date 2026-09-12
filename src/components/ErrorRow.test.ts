@@ -8,6 +8,7 @@ import {
   advanceTurnErrorLiveState,
   isComputerDispatchError,
   isProviderError,
+  latestTurnErrorMessage,
   nextTurnErrorAnnouncement,
 } from "./ErrorRow";
 
@@ -72,6 +73,13 @@ describe("ErrorRow recovery", () => {
     expect(initialHtml).not.toContain("old failure");
     expect(initial.text).toBeNull();
     expect(fresh.text).toBe("new failure");
+  });
+
+  it("finds a new server error behind an optimistic queued message", () => {
+    const error = { id: "error", kind: "activity", tool: { name: "error: provider failed" } };
+    const queued = { id: "queued", kind: "text" };
+
+    expect(latestTurnErrorMessage([error, queued])).toBe(error);
   });
 
   it("changes the live-region node revision when consecutive failures have identical text", () => {

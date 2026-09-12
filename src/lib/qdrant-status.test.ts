@@ -21,7 +21,7 @@ describe("Qdrant RAG status copy", () => {
 
     expect(qdrantRouteLabel(status, "")).toBe("Recall service");
     expect(qdrantStateLabel(status)).toBe("Needs attention");
-    expect(qdrantLastSuccessLabel(status)).not.toBe("None recorded");
+    expect(qdrantLastSuccessLabel(status)).toBe("Sep 12, 2026, 4:30 AM CDT");
   });
 
   it("remains useful with the old status payload", () => {
