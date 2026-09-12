@@ -71,18 +71,32 @@ export function nextTurnErrorAnnouncement(
   };
 }
 
+export type TurnErrorLiveState = { text: string; nonce: number };
+
+export function advanceTurnErrorLiveState(
+  previous: TurnErrorLiveState,
+  text: string,
+): TurnErrorLiveState {
+  return { text, nonce: previous.nonce + 1 };
+}
+
 export function TurnErrorAnnouncement({ latestMessage }: { latestMessage: TurnErrorMessage | undefined }) {
   const initialSignature = turnErrorSignature(latestMessage);
   const previousSignature = useRef(initialSignature);
-  const [announcement, setAnnouncement] = useState("");
+  const [announcement, setAnnouncement] = useState<TurnErrorLiveState>({ text: "", nonce: 0 });
 
   useEffect(() => {
     const next = nextTurnErrorAnnouncement(previousSignature.current, latestMessage);
     previousSignature.current = next.signature;
-    if (next.text) setAnnouncement(next.text);
+    const text = next.text;
+    if (text) setAnnouncement((previous) => advanceTurnErrorLiveState(previous, text));
   }, [latestMessage?.id, latestMessage?.tool?.name]);
 
-  return <div className="sr-only" role="alert" aria-live="assertive">{announcement}</div>;
+  return (
+    <div className="sr-only" role="alert" aria-live="assertive">
+      <span key={announcement.nonce}>{announcement.text}</span>
+    </div>
+  );
 }
 
 function RecoveryButton({

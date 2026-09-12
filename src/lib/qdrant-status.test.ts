@@ -4,6 +4,7 @@ import {
   qdrantLastSuccessLabel,
   qdrantRouteLabel,
   qdrantStateLabel,
+  qdrantTestResultIfCurrent,
   settleQdrantSave,
   settleQdrantSaveWithStatusFence,
   waitForLatestQdrantSave,
@@ -70,5 +71,15 @@ describe("Qdrant RAG status copy", () => {
     await test;
 
     expect(events).toEqual(["status requested"]);
+  });
+
+  it("drops a connection result from before a newer save", () => {
+    let testRevision = 1;
+    const result = { ready: true };
+
+    testRevision += 1;
+
+    expect(qdrantTestResultIfCurrent(1, () => testRevision, result)).toBeNull();
+    expect(qdrantTestResultIfCurrent(2, () => testRevision, result)).toBe(result);
   });
 });

@@ -70,3 +70,11 @@ export async function waitForLatestQdrantSave(
     if (!latest || latest === pending) return true;
   }
 }
+
+export function qdrantTestResultIfCurrent<T>(
+  testRevision: number,
+  currentTestRevision: () => number,
+  result: T,
+): T | null {
+  return currentTestRevision() === testRevision ? result : null;
+}

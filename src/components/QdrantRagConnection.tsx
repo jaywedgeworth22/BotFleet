@@ -7,6 +7,7 @@ import {
   qdrantLastSuccessLabel,
   qdrantRouteLabel,
   qdrantStateLabel,
+  qdrantTestResultIfCurrent,
   settleQdrantSaveWithStatusFence,
   waitForLatestQdrantSave,
   type QdrantStatus,
@@ -133,6 +134,7 @@ export function QdrantRagConnection() {
   const save = (
     overrides: Parameters<typeof performSave>[0] = {},
   ): Promise<boolean> => {
+    testRevision.current += 1;
     const previous = pendingSave.current;
     const operation = previous
       ? previous.then(() => performSave(overrides), () => performSave(overrides))
@@ -151,13 +153,18 @@ export function QdrantRagConnection() {
       setTesting(false);
       return;
     }
-    testRevision.current += 1;
+    const currentTestRevision = ++testRevision.current;
     setTestResult(null);
     try {
       const data: QdrantStatus = await api("/api/qdrant/status");
-      setTestResult(data);
+      const current = qdrantTestResultIfCurrent(currentTestRevision, () => testRevision.current, data);
+      if (current) setTestResult(current);
     } catch (err) {
-      setTestResult({ ready: false, error: err instanceof Error ? err.message : String(err) });
+      const current = qdrantTestResultIfCurrent(currentTestRevision, () => testRevision.current, {
+        ready: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      if (current) setTestResult(current);
     } finally {
       setTesting(false);
     }

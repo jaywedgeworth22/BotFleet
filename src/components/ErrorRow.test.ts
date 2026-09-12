@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   ErrorRow,
   TurnErrorAnnouncement,
+  advanceTurnErrorLiveState,
   isComputerDispatchError,
   isProviderError,
   nextTurnErrorAnnouncement,
@@ -69,5 +70,13 @@ describe("ErrorRow recovery", () => {
     expect(initialHtml).not.toContain("old failure");
     expect(initial.text).toBeNull();
     expect(fresh.text).toBe("new failure");
+  });
+
+  it("changes the live-region node revision when consecutive failures have identical text", () => {
+    const first = advanceTurnErrorLiveState({ text: "", nonce: 0 }, "authentication failed");
+    const second = advanceTurnErrorLiveState(first, "authentication failed");
+
+    expect(second.text).toBe(first.text);
+    expect(second.nonce).toBe(first.nonce + 1);
   });
 });
