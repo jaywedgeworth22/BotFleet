@@ -201,6 +201,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     // MINIMAX_API_KEY, or point it at ~/.mmx/config.json (written by
     // `mmx auth login`, for anyone who already has that CLI for other
     // reasons). Neither requires Node or npm on this machine.
+    apiKeyOnly: true,
     signInCommand: `Set ${API_KEY_ENV} to a MiniMax API key, or run \`mmx auth login --api-key YOUR_MINIMAX_API_KEY\` to write one to ~/.mmx/config.json`,
     command: {
       darwin: `Get a MiniMax API key at https://platform.minimax.io and set ${API_KEY_ENV} (or run \`mmx auth login\` if you already use the mmx CLI — this driver just reads the config file it writes)`,

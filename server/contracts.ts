@@ -468,6 +468,12 @@ export interface EngineInstall {
   signInCommand?: string;
   /** `command` needs npm on PATH, so the UI can say so when Node is absent. */
   needsNode?: boolean;
+  /** This driver has no CLI and no interactive login — it authenticates with
+   * a bare credential (an API key), so `command` is guidance text ("get a
+   * key, then set this env var or config file"), not a shell one-liner.
+   * The setup UI reads this to say "add a key" instead of "install" or
+   * "sign in," and skips offering to paste the guidance into a terminal. */
+  apiKeyOnly?: boolean;
 }
 
 // ── driver SPI (upstream ProviderDriver — a plain record, not a service) ─
