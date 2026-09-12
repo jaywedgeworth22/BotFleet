@@ -25,7 +25,9 @@ Ten CODEX historical effort records were checked against the already completed c
 
 A second pass retired 48 exact effort mirrors as Duplicate.  Each had one `wb-agent-report` marker pointing to an existing canonical record and copied that record's task title.  This provenance establishes a duplicate view of the same task without inferring its completion; canonical statuses and ownership remained unchanged, including active work.  Ambiguous title-only or broader-scope entries remain review candidates.
 
-Seven owned live effort bullets were also placed under their actual In Progress/Completed sections without changing their text.  The synchronizer uses section headings, not the inline status words.  Appending an active claim below Changelog hides it from that parser; leaving a Completed paragraph under In Progress reopens its derivative.  All unrelated peer rows were retained.
+Two older GitHub requests were also reconciled to their already merged implementations.  Hosted iOS shipping #185 matches PR #203 (`61f2bc8e`) and successful hosted TestFlight run `34684368397`; its canonical board was already Completed.  Remote Access #226 matches PR #227 (`cf2a02fe`) and the current named-tunnel component/copy.  Its board `a4b7edb03bde406ab94bf8e386d59e79` and the separate result-copy board `f3c03a1060cd4be1b21c83b0b4ef4e67` were moved to Completed with original GROK ownership preserved; the latter matches PR #308 (`7d5a7cd8`).  These are source-scope closures, with fresh tunnel/physical-device acceptance retained in #274.
+
+Eight owned live effort bullets were also placed under their actual In Progress/Completed sections without changing their text.  The synchronizer uses section headings, not the inline status words.  Appending an active claim below Changelog hides it from that parser; leaving a Completed paragraph under In Progress reopens its derivative.  All unrelated peer rows were retained.
 
 ## Newly Revalidated Product Work
 
@@ -35,6 +37,6 @@ The review found existing reports that still match current source, so they now h
 
 Run `node scripts/audit-effort-board.mjs BOARD.json ISSUES.json MERGED_PRS.json [DEPLOYMENTS.json]`.  Inputs are explicit snapshots; the tool contains no network client, credentials, or writeback mode.  Optional deployment receipts must identify a board record, surface, observed time, commit, and receipt.  The report retains ownership, redacts URLs from titles, and rejects foreign-app or duplicate-ID snapshots.
 
-`node --test scripts/audit-effort-board.node-test.mjs` passes three behavior tests, including nonmutation, source-versus-deployment separation, and URL redaction.  The on-demand helper is registered in the Mac process inventory and its pinned Coding note.  Current PR/build receipts and physical-device acceptance must still be checked before further corrections.
+`pnpm test:board-audit`, included in the standard `pnpm test` and CI chain, passes three behavior tests, including nonmutation, source-versus-deployment separation, and URL redaction.  The on-demand helper is registered in the Mac process inventory and its pinned Coding note.  Current PR/build receipts and physical-device acceptance must still be checked before further corrections.
 
 The required local typecheck passed.  The full Vitest run passed 3,560 tests but two fixture servers missed their startup deadlines under heavy Mac load; both affected suites then passed alone (six tests), and every remaining chained suite passed.  These were empty-stderr startup failures, not product assertion failures.  Hosted acceptance remains pending.
