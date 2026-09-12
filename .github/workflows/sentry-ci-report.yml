@@ -56,6 +56,7 @@ name: Sentry CI Report
 # The reporter validates these keys against the real workflow names on every
 # run and raises a Sentry issue on drift, so a rename cannot silently kill a
 # monitor:
+#   CI -> "17 9 * * 1" (ci.yml)
 #   iOS TestFlight ship (GitHub-hosted macOS) -> "18,48 * * * *" (ios-ship.yml)
 #
 # Secret: `SENTRY_FLEET_DSN` (the fleet-infra project DSN) comes from

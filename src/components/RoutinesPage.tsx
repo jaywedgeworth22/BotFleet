@@ -27,6 +27,7 @@ import { cn } from "@/lib/cn";
 import { MAUS_COLORS, type MausState } from "@/lib/mascot";
 import type { Routine, RoutineInput, RoutineRun, RoutineRunOn, RoutineRunStatus } from "@/lib/routines";
 import { api, useStore, type Bot } from "@/state/store";
+import { routineOutcomeCode, routineOutcomeSummary, ROUTINE_OUTCOME_LABELS } from "../../shared/routine-outcomes";
 
 const HOUR_HEIGHT = 68;
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -472,7 +473,7 @@ export function RoutineEditor({
 }
 
 function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bot: Bot; onClose: () => void; onEdit: (routine: Routine) => void }) {
-  const { dispatch } = useStore();
+  const { state, dispatch } = useStore();
   const routine = item.routine;
   const run = item.run;
   const [working, setWorking] = useState(false);
@@ -480,6 +481,12 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
   const title = routine?.name ?? run?.routineName ?? "Routine";
   const webhookParts = run?.triggerSource === "webhook" ? webhookPromptParts(run.prompt) : null;
   const visibleInstructions = webhookParts?.instructions ?? routine?.prompt ?? run?.prompt;
+  const outcome = run ? routineOutcomeCode(run) : undefined;
+  const history = state.routineRuns.filter((candidate) => candidate.routineId === (routine?.id ?? run?.routineId));
+  const summary = routineOutcomeSummary(history, Date.now());
+  const outcomeTime = (at: number | null) => at === null ? "None recorded" : new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short",
+  }).format(at);
 
   const invoke = async (path: string, method = "POST") => {
     setWorking(true);
@@ -499,7 +506,7 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-5 backdrop-blur-sm" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="w-full max-w-[520px] overflow-hidden rounded-2xl border border-hairline/60 bg-panel shadow-2xl">
         <div className="relative overflow-hidden border-b border-hairline/40 px-5 py-5" style={{ background: `linear-gradient(135deg, color-mix(in srgb, ${MAUS_COLORS[bot.color]} 28%, #111), #111)` }}>
-          <button onClick={onClose} className="absolute right-3 top-3 rounded-lg p-2 text-white/60 hover:bg-white/10 hover:text-white"><X size={18} /></button>
+          <button onClick={onClose} aria-label="Close Routine Details" className="absolute right-3 top-3 rounded-lg p-2 text-white/60 hover:bg-white/10 hover:text-white"><X size={18} /></button>
           <div className="flex items-center gap-4 pr-10">
             <BotAvatar bot={bot} state={run ? statusState(run.status) : stateForBot(bot)} size={72} animated={run?.status === "running" || run?.status === "waiting"} label={bot.name} />
             <div className="min-w-0">
@@ -514,6 +521,10 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
           </div>
         </div>
         <div className="max-h-[55vh] space-y-4 overflow-y-auto p-5">
+          {run?.coalescedInto && <p className="text-[12px] text-ink-secondary">Combined with another delivery in this turn.{'\u00a0 '}All combined deliveries share its final outcome and cancellation.</p>}
+          {outcome && outcome !== "completed" && <p className="text-[12px] font-medium text-ink">{ROUTINE_OUTCOME_LABELS[outcome]}{run?.failurePhase ? ` · ${run.failurePhase}` : ""}</p>}
+          {run?.engineId && <p className="text-[12px] text-ink-secondary">Engine: {run.engineId}{run.model ? ` · ${run.model}` : ""}</p>}
+          {run?.error && <div className="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-3 text-[13px] text-danger"><CircleAlert size={16} className="mt-0.5 shrink-0" /><span>{run.error}</span></div>}
           {routine && (
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Schedule</div><div className="mt-1 text-[13px] text-ink">{scheduleLabel(routine)}</div></div>
@@ -531,7 +542,14 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
           {visibleInstructions && <div><div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-ink-secondary">Instructions</div><div className="whitespace-pre-wrap rounded-xl border border-hairline/40 bg-inset px-3.5 py-3 text-[13px] leading-relaxed text-ink">{visibleInstructions}</div></div>}
           {webhookParts?.eventData && <div><div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-ink-secondary">Webhook event data</div><pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-xl border border-accent/15 bg-accent/5 px-3.5 py-3 font-mono text-[11.5px] leading-relaxed text-ink-secondary">{webhookParts.eventData}</pre></div>}
           {run?.output && <div><div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-ink-secondary">Last output</div><div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-xl border border-success/20 bg-success/5 px-3.5 py-3 text-[13px] leading-relaxed text-ink">{run.output}</div></div>}
-          {run?.error && <div className="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-3 text-[13px] text-danger"><CircleAlert size={16} className="mt-0.5 shrink-0" /><span>{run.error}</span></div>}
+          <section aria-label="Routine outcomes" className="rounded-xl border border-hairline/40 bg-inset p-3.5 text-[12px] text-ink-secondary">
+            <h3 className="mb-2 text-[13px] font-semibold text-ink">Last 7 Days</h3>
+            <p>{summary.completed} completed · {summary.failed} failed · {summary.pending} pending</p>
+            <p className="mt-1">{summary.successRate === null ? "No finished executions" : `${Math.round(summary.successRate * 1000) / 10}% completed executions`}</p>
+            <p className="mt-1">{summary.cancelled} cancelled · {summary.denied} denied · {summary.missed} missed · {summary.combined} combined {summary.combined === 1 ? "delivery" : "deliveries"}</p>
+            <dl className="mt-3 grid gap-1"><div><dt className="inline">Last Completed: </dt><dd className="inline text-ink">{outcomeTime(summary.lastSuccessAt)}</dd></div><div><dt className="inline">Last Failed: </dt><dd className="inline text-ink">{outcomeTime(summary.lastFailureAt)}</dd></div></dl>
+            <p className="mt-2 text-[11px]">Based on retained history.{'\u00a0 '}Combined deliveries count once per execution; cancellations and denials are excluded from the completion rate.</p>
+          </section>
           {error && <div className="flex items-start gap-2 rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-3 text-[13px] text-danger"><CircleAlert size={16} className="mt-0.5 shrink-0" /><span>{error}</span></div>}
           {run?.status === "waiting" && <div className="rounded-xl border border-warning/30 bg-warning/10 px-3.5 py-3 text-[13px] text-warning">This bot needs your answer. Open its task to continue the run.</div>}
         </div>

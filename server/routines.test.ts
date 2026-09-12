@@ -97,6 +97,46 @@ describe("nextOccurrence", () => {
 });
 
 describe("RoutineManager", () => {
+  it.each([true, false])("keeps combined receipts pending until their owning execution settles (ok=%s)", async (ok) => {
+    const h = harness();
+    h.setBot("busy");
+    for (let i = 0; i < 3; i++) h.manager.enqueueWebhook({ webhookId: "combined-fixture", webhookName: "Combined fixture",
+      prompt: `Synthetic delivery ${i}`, botId: "maus-1", runOn: "maus", deliveryId: `delivery-${i}`, receivedAt: 1000 + i });
+    await h.manager.tick();
+    h.setBot("ready");
+    await h.manager.tick();
+    h.setBot("busy");
+    const pending = h.manager.listRuns();
+    expect(pending.map((run) => run.status)).toEqual(["running", "running", "running"]);
+    expect(pending.every((run) => run.finishedAt === undefined)).toBe(true);
+    const owner = pending.find((run) => !run.coalescedInto)!;
+    expect(pending.filter((run) => run.coalescedInto === owner.id)).toHaveLength(2);
+    const base = { eventId: "event", provider: "claude" as const, providerInstanceId: "claude-fixture", threadId: owner.threadId!, createdAt: new Date().toISOString() };
+    h.manager.handleRuntimeEvent({ ...base, type: "session.started", sessionId: "fixture", model: "fixture-model" });
+    h.manager.handleRuntimeEvent({ ...base, type: "turn.completed", ok, stopReason: ok ? "end_turn" : "prompt_timeout", cost: 0.02 });
+    const finished = h.manager.listRuns();
+    expect(finished.every((run) => run.status === (ok ? "completed" : "failed"))).toBe(true);
+    expect(finished.every((run) => run.outcomeCode === (ok ? "completed" : "timeout"))).toBe(true);
+    expect(finished.every((run) => run.engineId === "claude-fixture" && run.model === "fixture-model")).toBe(true);
+    expect(finished.reduce((sum, run) => sum + (run.cost ?? 0), 0)).toBe(0.02);
+    expect(h.failed).toHaveLength(ok ? 0 : 1);
+    expect(new RoutineManager(h.options).listRuns()).toEqual(finished);
+  });
+
+  it("cancels the owning execution and all combined deliveries when any combined receipt is cancelled", async () => {
+    const h = harness();
+    h.setBot("busy");
+    for (let i = 0; i < 2; i++) h.manager.enqueueWebhook({ webhookId: "combined-cancel", webhookName: "Cancel fixture",
+      prompt: "Synthetic delivery", botId: "maus-1", runOn: "maus", deliveryId: `cancel-${i}`, receivedAt: i });
+    await h.manager.tick();
+    h.setBot("ready");
+    await h.manager.tick();
+    const child = h.manager.listRuns().find((run) => run.coalescedInto)!;
+    await h.manager.cancelRun(child.id);
+    expect(h.manager.listRuns().every((run) => run.status === "cancelled" && run.outcomeCode === "cancelled")).toBe(true);
+    expect(h.failed).toHaveLength(0);
+  });
+
   it("preserves due work while scheduler admission is fenced", async () => {
     const h = harness();
     const routine = h.manager.create({
@@ -717,6 +757,30 @@ describe("RoutineManager", () => {
     expect(h.failed).toHaveLength(1);
   });
 
+  it("keeps a structured runtime failure when the terminal event has no reason", async () => {
+    const h = harness();
+    const routine = h.manager.create({ name: "Quota", prompt: "Fixture", botId: "bot", schedule: { type: "once", at: 1 } });
+    await h.manager.runNow(routine.id);
+    await h.manager.tick();
+    const base = { provider: "fake", threadId: "thread-1", createdAt: new Date().toISOString() };
+    h.manager.handleRuntimeEvent({ ...base, eventId: "error", type: "runtime.error", message: "quota_exhausted" });
+    h.manager.handleRuntimeEvent({ ...base, eventId: "done", type: "turn.completed", ok: false, stopReason: null });
+    expect(h.manager.listRuns()[0]).toMatchObject({ status: "failed", outcomeCode: "quota_exhausted", failurePhase: "execution" });
+  });
+
+  it.each(["throw", "callback"])("records a %s dispatch failure without parsing upstream text", async (failure) => {
+    const h = harness();
+    h.options.startTurn = async (_bot, _thread, _prompt, _runOn, _source, reject) => {
+      if (failure === "throw") throw new Error("opaque upstream failure");
+      reject("opaque upstream failure");
+    };
+    const routine = h.manager.create({ name: "Dispatch", prompt: "Fixture", botId: "bot", schedule: { type: "once", at: 1 } });
+    await h.manager.runNow(routine.id);
+    await h.manager.tick();
+    expect(h.manager.listRuns()[0]).toMatchObject({ status: "failed", outcomeCode: "dispatch_failed", failurePhase: "dispatch" });
+    expect(h.failed).toHaveLength(1);
+  });
+
   it("settles a run the stall watchdog stopped, and a late turn.completed cannot reopen it", async () => {
     const h = harness();
     const routine = h.manager.create({
@@ -731,10 +795,11 @@ describe("RoutineManager", () => {
 
     // the harness stopped a wedged turn: the same settle path the dispatch
     // failure uses, called from the watchdog instead of a provider event
-    h.manager.failThread("thread-1", "no activity for 20 minutes — the turn was stopped");
+    h.manager.failThread("thread-1", "no activity for 20 minutes — the turn was stopped", "timeout");
     expect(h.manager.listRuns()[0]).toMatchObject({
       status: "failed",
       error: "no activity for 20 minutes — the turn was stopped",
+      outcomeCode: "timeout", failurePhase: "execution",
     });
     // an interrupted provider usually answers with its own terminal event
     // afterwards; that must neither reopen the receipt nor report it twice
@@ -750,6 +815,7 @@ describe("RoutineManager", () => {
     expect(h.manager.listRuns()[0]).toMatchObject({
       status: "failed",
       error: "no activity for 20 minutes — the turn was stopped",
+      outcomeCode: "timeout", failurePhase: "execution",
     });
     expect(h.failed).toHaveLength(1);
   });

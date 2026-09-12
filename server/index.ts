@@ -1352,7 +1352,7 @@ const watchdog = new TurnWatchdog({
     stoppedTurns.add(`${turn.botId}:${turn.threadId}`);
     fallbackAttemptByTurn.delete(`${turn.botId}:${turn.threadId}`);
     finalizeDelegationWatch(turn.threadId, false, "", "Delegated turn stalled and was stopped");
-    routines?.failThread(turn.threadId, `no activity for ${minutes} minutes — the turn was stopped`);
+    routines?.failThread(turn.threadId, `no activity for ${minutes} minutes — the turn was stopped`, "timeout");
     roomStallCompletions.stall(turn.threadId);
     void interruptThreadEverywhere(turn.threadId).then((outcome) => {
       const retained = outcome.inspectionFailed || (!outcome.stopped && outcome.ownerCount > 0);
@@ -4911,7 +4911,7 @@ function settleInterruptedBots(
         kind: "activity",
         tool: { name: "error: turn interrupted — provider settings changed", ok: false },
       });
-      routines?.failThread(inflight, reason);
+      routines?.failThread(inflight, reason, "runtime_reconfigured");
       continue;
     }
     activeTurnOwners.clearThread(inflight);
@@ -4933,7 +4933,7 @@ function settleInterruptedBots(
       kind: "activity",
       tool: { name: "error: turn interrupted — provider settings changed", ok: false },
     });
-    routines?.failThread(inflight, reason);
+    routines?.failThread(inflight, reason, "runtime_reconfigured");
     const group = store.groupByThread(inflight);
     if (group?.busyBotId === b.id && groupSpeakers.get(inflight)?.botId === b.id) {
       groupSpeakers.delete(inflight);
@@ -4961,7 +4961,7 @@ async function runProviderReload() {
   // `cfg` happened to hold when the comparison ran.
   loadedCredentialFingerprint = credentialFingerprint(cfg);
   bus.attach(registry.instances());
-  for (const turn of killedTurns) routines?.failThread(turn.threadId, RELOAD_REASON);
+  for (const turn of killedTurns) routines?.failThread(turn.threadId, RELOAD_REASON, "runtime_reconfigured");
   // A killed turn's terminal events can die with the old fleet (dispose is
   // async under the hood), stranding the bot busy — and its screen poller —
   // forever. Settle the exact thread snapshot taken before teardown.

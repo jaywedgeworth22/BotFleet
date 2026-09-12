@@ -11,7 +11,7 @@ makes a PR easy to merge. Read it once before opening anything; it's short on pu
 - **Match the altitude.** This codebase is deliberately small and direct — plain Node, no frameworks
   on the server, one store, one event bus. Don't introduce a dependency where thirty lines of code
   will do. New runtime dependencies need a reason in the PR description.
-- **Keep it green.** `pnpm typecheck && pnpm test` must pass. Server changes need tests (see below).
+- **Keep it green.** `pnpm typecheck && pnpm test` must pass.  A diff confined to the explicit non-executable documentation allowlist in `scripts/ci-change-scope.mjs` may run `pnpm test:ci-scope` instead; every protected hosted check still reports a successful documentation-only fast path.  Server changes need tests (see below).
 - **UI changes need screenshots.** Before/after images in the PR body; video for anything animated.
   Match the existing palette and tone in [`src/styles.css`](src/styles.css).
 
