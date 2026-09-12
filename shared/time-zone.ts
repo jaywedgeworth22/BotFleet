@@ -140,6 +140,7 @@ export function nextWholeHourInTimeZone(after: number, timeZone: string): number
     ...nextDate,
     hour: (current.hour + 1) % 24,
     minute: 0,
+    second: 0,
   }, timeZone);
 }
 
