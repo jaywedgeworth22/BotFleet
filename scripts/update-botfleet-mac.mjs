@@ -315,7 +315,7 @@ async function sqliteHolders(dataDirectory) {
 }
 
 export function healthTopologyResult(results, { allowMultiple = false } = {}) {
-  if (results.some((item) => item.kind === "unavailable" || item.kind === "http")) {
+  if (results.some((item) => item.kind === "unavailable")) {
     return { safe: false, reason: "A BotFleet port returned an unavailable or ambiguous response" };
   }
   const botfleet = results.filter((item) => item.kind === "botfleet");
@@ -410,10 +410,15 @@ async function runtimeIdentityPreflight(config, expectedBuild) {
   return strict || { safe: false, reason: "Expected build does not expose authenticated runtime identity" };
 }
 
-export async function fenceRuntimeAdmission(config) {
-  const owner = await readOwner(config.dataDirectory);
+export async function fenceRuntimeAdmission(config, adapters = {}) {
+  const readRuntimeOwner = adapters.readOwner ?? readOwner;
+  const request = adapters.requestJson ?? requestJson;
+  const inspectTopology = adapters.healthTopology ?? healthTopology;
+  const inspectHolders = adapters.sqliteHolders ?? sqliteHolders;
+  const releaseAdmission = adapters.releaseRuntimeAdmission ?? releaseRuntimeAdmission;
+  const owner = await readRuntimeOwner(config.dataDirectory);
   if (!owner) return { safe: false, reason: "Authenticated runtime owner is unavailable for the admission fence" };
-  const response = await requestJson(`http://127.0.0.1:${owner.port}/api/runtime/quiesce`, {
+  const response = await request(`http://127.0.0.1:${owner.port}/api/runtime/quiesce`, {
     method: "POST",
     headers: { Authorization: `Bearer ${owner.nonce}` },
     accept: [200, 409],
@@ -424,7 +429,7 @@ export async function fenceRuntimeAdmission(config) {
   const refuseAfterFence = async (reason) => {
     if (!fenceHeld) return { safe: false, reason };
     try {
-      await releaseRuntimeAdmission(config);
+      await releaseAdmission(config);
       return { safe: false, reason };
     } catch (error) {
       return {
@@ -437,10 +442,16 @@ export async function fenceRuntimeAdmission(config) {
   if (identityError || !fenceHeld) {
     return refuseAfterFence(identityError || "Runtime refused the admission fence because work is active");
   }
-  const [topology, holders] = await Promise.all([
-    healthTopology(config.ports),
-    sqliteHolders(config.dataDirectory),
-  ]);
+  let topology;
+  let holders;
+  try {
+    [topology, holders] = await Promise.all([
+      inspectTopology(config.ports),
+      inspectHolders(config.dataDirectory),
+    ]);
+  } catch {
+    return refuseAfterFence("Runtime ownership could not be verified after the admission fence");
+  }
   if (!topology.safe || topology.pid !== owner.pid) {
     return refuseAfterFence(topology.reason || "Health endpoints do not share the fenced runtime owner");
   }

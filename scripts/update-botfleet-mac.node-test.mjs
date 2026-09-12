@@ -10,6 +10,7 @@ import {
   DEFAULT_PORTS,
   dependencyFingerprint,
   designatedRequirementFromOutput,
+  fenceRuntimeAdmission,
   healthTopologyResult,
   isExpectedBotFleetProcess,
   loadPrepared,
@@ -185,7 +186,30 @@ test("unused foreign fallback ports do not hide one valid BotFleet owner", () =>
     { safe: true, pid: 42, pids: [42], port: 18799, health: [owner] },
   );
   assert.match(healthTopologyResult([{ kind: "foreign" }, { kind: "none" }]).reason, /No BotFleet harness/);
+  assert.equal(healthTopologyResult([{ kind: "http", status: 404 }, owner]).safe, true);
   assert.match(healthTopologyResult([owner, { kind: "unavailable" }]).reason, /unavailable or ambiguous/);
+});
+
+test("a post-fence ownership exception releases runtime admission", async () => {
+  const releases = [];
+  const owner = { version: 1, pid: 42, port: 8799, nonce: "a".repeat(64) };
+  const result = await fenceRuntimeAdmission(
+    { dataDirectory: "/private/data", ports: [8799] },
+    {
+      readOwner: async () => owner,
+      requestJson: async () => ({ kind: "ok", status: 200, body: {
+        app: "botfleet", pid: 42, dataOwner: { pid: 42, port: 8799 },
+        sourceCommit: "b".repeat(40), sourceDirty: false,
+        safeToRestart: true, activeWorkCount: 0, quiescing: true,
+      } }),
+      healthTopology: async () => { throw new Error("injected topology failure"); },
+      sqliteHolders: async () => [42],
+      releaseRuntimeAdmission: async (config) => releases.push(config),
+    },
+  );
+  assert.equal(result.safe, false);
+  assert.match(result.reason, /could not be verified after the admission fence/);
+  assert.equal(releases.length, 1);
 });
 
 test("desktop verification requires one stable installed-application process after open", () => {
