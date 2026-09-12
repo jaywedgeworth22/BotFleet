@@ -68,7 +68,7 @@ describe("ResourceTriggerManager", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  function make(now: { t: number }, host: { current: HostSample }) {
+  function make(now: { t: number }, host: { current: HostSample }, admission = { open: true }) {
     const dir = mkdtempSync(join(tmpdir(), "bf-resource-"));
     dirs.push(dir);
     const queued: string[] = [];
@@ -77,14 +77,37 @@ describe("ResourceTriggerManager", () => {
       now: () => now.t,
       sample: () => host.current,
       botState: () => "ready",
+      admit: () => admission.open,
       enqueue: (input) => {
         queued.push(input.triggerId);
         return { id: `run-${queued.length}` };
       },
       pendingRuns: () => 0,
     });
-    return { manager, queued };
+    return { manager, queued, admission };
   }
+
+  it("preserves a trigger breach while scheduler admission is fenced", () => {
+    const now = { t: 1_000 };
+    const host = { current: sample({ diskFreeGb: 40 }) };
+    const { manager, queued, admission } = make(now, host, { open: false });
+    const trigger = manager.create({
+      name: "Disk low",
+      prompt: "Clean the disk",
+      botId: "housekeeper",
+      metric: "disk_free_gb",
+      cmp: "below",
+      threshold: 80,
+      cooldownMinutes: 45,
+      sustainSamples: 1,
+    });
+    expect(manager.tick()).toHaveLength(0);
+    expect(queued).toHaveLength(0);
+
+    admission.open = true;
+    expect(manager.tick()).toHaveLength(1);
+    expect(queued).toEqual([trigger.id]);
+  });
 
   it("fires once then respects cooldown", () => {
     const now = { t: 1_000 };

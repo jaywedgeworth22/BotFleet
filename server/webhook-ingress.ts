@@ -95,7 +95,10 @@ function eventName(req: IncomingMessage): string | undefined {
   )?.trim() || undefined;
 }
 
-export function createWebhookIngressHandler(manager: WebhookManager) {
+export function createWebhookIngressHandler(
+  manager: WebhookManager,
+  beginAdmission: () => (() => void) | null = () => () => {},
+) {
   return async (req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? "/", "http://localhost");
     if (req.method === "GET" && url.pathname === "/health") {
@@ -117,6 +120,7 @@ export function createWebhookIngressHandler(manager: WebhookManager) {
     if (!match) return json(res, 404, { error: "Unknown webhook endpoint" });
     if (req.method !== "POST") return json(res, 405, { error: "Webhooks accept POST requests" });
 
+    let releaseAdmission: (() => void) | null = null;
     try {
       const pathSecret = match[2] ? decodeURIComponent(match[2]) : "";
       const secret = pathSecret || bearerSecret(req);
@@ -129,6 +133,8 @@ export function createWebhookIngressHandler(manager: WebhookManager) {
         });
         return json(res, 401, { error: "Invalid webhook URL or secret" });
       }
+      releaseAdmission = beginAdmission();
+      if (!releaseAdmission) return json(res, 503, { error: "BotFleet is quiescing for an update" });
       const raw = await readRawBody(req);
       const contentType = header(req, "content-type")?.split(";")[0]?.trim().toLowerCase() ?? "text/plain";
       const payload = parsePayload(raw, contentType);
@@ -164,16 +170,18 @@ export function createWebhookIngressHandler(manager: WebhookManager) {
         });
       }
       return json(res, status, { error: message });
+    } finally {
+      releaseAdmission?.();
     }
   };
 }
 
 export async function listenWebhookIngress(
   manager: WebhookManager,
-  options: { host?: string; port: number },
+  options: { host?: string; port: number; beginAdmission?: () => (() => void) | null },
 ): Promise<WebhookIngress> {
   const host = options.host ?? "127.0.0.1";
-  const server = createServer(createWebhookIngressHandler(manager));
+  const server = createServer(createWebhookIngressHandler(manager, options.beginAdmission));
   await new Promise<void>((resolve, reject) => {
     const onError = (error: Error) => reject(error);
     server.once("error", onError);

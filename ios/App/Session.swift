@@ -895,6 +895,45 @@ final class Session: ObservableObject {
         }
     }
 
+    /// Fetch a post-resume snapshot before local-only Live Activities are
+    /// allowed to reappear.  A racing SSE frame invalidates the snapshot; retry
+    /// with bounded backoff until one lands without overwriting newer stream
+    /// state.  The caller cancels this quiet loop on the next background
+    /// transition.
+    func refreshLiveActivityState() async -> CompanionState? {
+        var retryBackoff = LiveActivityRefreshBackoff()
+        while !Task.isCancelled {
+            if client == nil, restorePending { restore() }
+            guard let requestClient = client else {
+                let delay = retryBackoff.takeNextDelay()
+                try? await Task.sleep(nanoseconds: delay)
+                continue
+            }
+            connect()
+            do {
+                switch try await hydrateSnapshot(using: requestClient) {
+                case .applied:
+                    return state
+                case .newerState:
+                    let delay = retryBackoff.takeNextDelay()
+                    try? await Task.sleep(nanoseconds: delay)
+                    continue
+                case .pairingChanged:
+                    continue
+                }
+            } catch is CancellationError {
+                return nil
+            } catch let error as APIError where error.isUnauthorized {
+                status = .unauthorized
+                return nil
+            } catch {
+                let delay = retryBackoff.takeNextDelay()
+                try? await Task.sleep(nanoseconds: delay)
+            }
+        }
+        return nil
+    }
+
     private func refreshAfterTaskConflict() async {
         do {
             _ = try await hydrateSnapshot()
