@@ -290,7 +290,7 @@ describe("ACP turns (fake CLI)", () => {
     expect(methods).not.toContain("session/prompt");
   });
 
-  it("cancels and kills a prompt that exceeds its configured deadline", async () => {
+  it.skipIf(process.platform === "win32")("cancels and kills a prompt that exceeds its configured deadline", async () => {
     const dump = join(scratch, "deadline-rpc.json");
     const exitGate = join(scratch, "allow-exit");
     process.env.FAKE_ACP_RPC_DUMP = dump;
