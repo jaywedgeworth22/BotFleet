@@ -166,8 +166,9 @@ export function ObservabilitySection() {
       dispatch({ type: "configStatus", config });
       setDsn("");
       await refreshStatus();
-      // No DSN left to report to: close this window's client too, rather
-      // than leaving it pointed at the key the operator just removed.
+      // Stop using the removed runtime key.  A packaged build returns to its
+      // baked default while the switch stays on; an explicit opt-out closes
+      // that client too.
       await refreshSentryFromRuntime();
     } catch (caught) {
       setSaveError(caught instanceof Error ? caught.message : String(caught));

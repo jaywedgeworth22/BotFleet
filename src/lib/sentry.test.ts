@@ -227,7 +227,13 @@ describe("renderer diagnostics refresh", () => {
     expect(sentry.record.closes).toBe(2);
     expect(sentry.record.inits).toHaveLength(3);
     expect(sentry.record.inits[2]).toMatchObject({ dsn: ROTATED_DSN, environment: "staging", tracesSampleRate: 0.5 });
-    expect(harness.calls()).toBe(3);
+
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null });
+    await refreshSentryFromRuntime();
+    expect(sentry.record.closes).toBe(3);
+    expect(sentry.record.inits).toHaveLength(4);
+    expect(sentry.record.inits[3]).toMatchObject({ dsn: BUILD_DSN });
+    expect(harness.calls()).toBe(4);
   });
 
   it("keeps a packaged client running when the runtime status is unavailable", async () => {
