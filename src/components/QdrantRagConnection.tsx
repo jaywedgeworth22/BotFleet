@@ -49,6 +49,7 @@ export function QdrantRagConnection() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<QdrantStatus | null>(null);
   const testRevision = useRef(0);
+  const enabledRevision = useRef(0);
   const pendingSave = useRef<Promise<boolean> | null>(null);
 
   useEffect(() => {
@@ -189,11 +190,13 @@ export function QdrantRagConnection() {
           role="switch"
           aria-checked={enabled}
           aria-label="Enable shared memory"
-          disabled={saving}
+          aria-busy={saving}
           onClick={async () => {
+            const previous = enabled;
             const next = !enabled;
+            const revision = ++enabledRevision.current;
             setEnabled(next);
-            if (!(await save({ enabled: next }))) setEnabled(enabled);
+            if (!(await save({ enabled: next })) && enabledRevision.current === revision) setEnabled(previous);
           }}
           className={cn(
             "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",

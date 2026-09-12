@@ -51,6 +51,11 @@ type TurnErrorMessage = {
   tool?: { name: string };
 };
 
+type BranchMessage = TurnErrorMessage & {
+  role: string;
+  parentId?: string | null;
+};
+
 function turnErrorText(message: TurnErrorMessage | undefined): string | null {
   if (message?.kind !== "activity" || !message.tool?.name.startsWith("error:")) return null;
   return message.tool.name.slice(6).trim();
@@ -62,6 +67,22 @@ export function latestTurnErrorMessage<T extends TurnErrorMessage>(messages: rea
     if (turnErrorText(message)) return message;
   }
   return undefined;
+}
+
+/** Identity of the selected forks, stable while new messages append to the
+ * same path.  A live region can key on this without silencing new errors. */
+export function turnErrorBranchKey(allMessages: readonly BranchMessage[], visibleMessages: readonly BranchMessage[]): string {
+  const siblings = new Map<string, number>();
+  const siblingKey = (message: BranchMessage) => `${message.role}\0${message.kind}\0${message.parentId ?? ""}`;
+  for (const message of allMessages) {
+    if ((message.role !== "user" && message.role !== "system") || message.kind !== "text") continue;
+    const key = siblingKey(message);
+    siblings.set(key, (siblings.get(key) ?? 0) + 1);
+  }
+  return visibleMessages
+    .filter((message) => (siblings.get(siblingKey(message)) ?? 0) > 1)
+    .map((message) => message.id)
+    .join("\0");
 }
 
 function turnErrorSignature(message: TurnErrorMessage | undefined): string {

@@ -49,7 +49,7 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
-import { ErrorRow, TurnErrorAnnouncement, latestTurnErrorMessage } from "./ErrorRow";
+import { ErrorRow, TurnErrorAnnouncement, latestTurnErrorMessage, turnErrorBranchKey } from "./ErrorRow";
 import { ChatFindBar } from "./ChatFindBar";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
@@ -1035,6 +1035,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     return [...serverMessages, ...queued];
   }, [serverMessages, pendingQueued]);
   const latestServerError = useMemo(() => latestTurnErrorMessage(serverMessages), [serverMessages]);
+  const errorBranchKey = useMemo(() => turnErrorBranchKey(bot.messages, serverMessages), [bot.messages, serverMessages]);
   // Windowed transcript: only a tail of the thread mounts (screenshots make
   // full threads DOM-heavy). Count on-screen items, not raw rows — hidden
   // tool chips must not push the user prompt that started a long turn out
@@ -1401,7 +1402,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           today that's only ChatMarkdown's file-link menu backdrop, which
           still covers the whole transcript, just not the sidebar/header. */}
       <div className="relative min-h-0 flex-1 @container/chat">
-      <TurnErrorAnnouncement key={bot.threadId} latestMessage={latestServerError} />
+      <TurnErrorAnnouncement key={`${bot.threadId}:${errorBranchKey}`} latestMessage={latestServerError} />
       <div
         ref={scrollRef}
         className="h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"

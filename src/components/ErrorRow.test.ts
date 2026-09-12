@@ -10,6 +10,7 @@ import {
   isProviderError,
   latestTurnErrorMessage,
   nextTurnErrorAnnouncement,
+  turnErrorBranchKey,
 } from "./ErrorRow";
 
 describe("ErrorRow recovery", () => {
@@ -80,6 +81,19 @@ describe("ErrorRow recovery", () => {
     const queued = { id: "queued", kind: "text" };
 
     expect(latestTurnErrorMessage([error, queued])).toBe(error);
+  });
+
+  it("changes the alert baseline for a fork switch but not a linear append", () => {
+    const root = { id: "root", role: "user", kind: "text", parentId: null };
+    const first = { id: "first", role: "user", kind: "text", parentId: "root" };
+    const second = { id: "second", role: "user", kind: "text", parentId: "root" };
+    const reply = { id: "reply", role: "bot", kind: "text", parentId: "first" };
+    const appended = { id: "appended", role: "bot", kind: "text", parentId: "reply" };
+    const all = [root, first, second, reply, appended];
+
+    expect(turnErrorBranchKey(all, [root, first, reply])).toBe("first");
+    expect(turnErrorBranchKey(all, [root, first, reply, appended])).toBe("first");
+    expect(turnErrorBranchKey(all, [root, second])).toBe("second");
   });
 
   it("changes the live-region node revision when consecutive failures have identical text", () => {
