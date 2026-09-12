@@ -6,6 +6,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import type { RuntimeEvent, RuntimeEventBase, TurnToolHost, TurnToolOutcome } from "../../contracts.ts";
+import { ProviderError } from "../../contracts.ts";
 import {
   DEFAULT_TURN_LOOP_BUDGET,
   STOP_REASON,
@@ -728,5 +729,63 @@ describe("the shipped budget", () => {
       wallClockMs: 900_000,
       toolConcurrency: 4,
     });
+  });
+});
+
+describe("runTurnLoop — typed provider errors (chat-completions/errors.ts)", () => {
+  it("a ProviderError('invalid_credentials', …) becomes stopReason error:invalid_credentials and setup:true on the chip", async () => {
+    const h = harness([
+      async () => {
+        throw new ProviderError("invalid_credentials", "HTTP 401: invalid api key");
+      },
+    ]);
+    const exit = await h.run();
+
+    expect(exit).toBe("provider_error");
+    const settled = terminals(h.events);
+    expect(settled).toHaveLength(1);
+    expect(settled[0].ok).toBe(false);
+    expect(settled[0].stopReason).toBe("error:invalid_credentials");
+    const errorEvent = h.events.find((e) => e.type === "runtime.error");
+    expect(errorEvent).toMatchObject({ message: "HTTP 401: invalid api key", setup: true });
+  });
+
+  it("a ProviderError('upstream_outage', …) becomes stopReason error:upstream_outage with no setup flag", async () => {
+    const h = harness([
+      async () => {
+        throw new ProviderError("upstream_outage", "HTTP 502: bad gateway");
+      },
+    ]);
+    await h.run();
+
+    const settled = terminals(h.events);
+    expect(settled[0].stopReason).toBe("error:upstream_outage");
+    const errorEvent = h.events.find((e) => e.type === "runtime.error");
+    expect(errorEvent).toMatchObject({ message: "HTTP 502: bad gateway" });
+    expect((errorEvent as { setup?: boolean } | undefined)?.setup).toBeUndefined();
+  });
+
+  it("a ProviderError('quota_or_region_restriction', …) becomes stopReason error:quota_or_region_restriction", async () => {
+    const h = harness([
+      async () => {
+        throw new ProviderError("quota_or_region_restriction", "HTTP 429: rate limited");
+      },
+    ]);
+    await h.run();
+
+    expect(terminals(h.events)[0].stopReason).toBe("error:quota_or_region_restriction");
+  });
+
+  it("an unclassified plain Error keeps today's bare 'error' stopReason and no setup flag", async () => {
+    const h = harness([
+      async () => {
+        throw new Error("HTTP 422: bad request");
+      },
+    ]);
+    await h.run();
+
+    expect(terminals(h.events)[0].stopReason).toBe("error");
+    const errorEvent = h.events.find((e) => e.type === "runtime.error");
+    expect((errorEvent as { setup?: boolean } | undefined)?.setup).toBeUndefined();
   });
 });

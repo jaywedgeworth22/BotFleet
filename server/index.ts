@@ -62,11 +62,14 @@ import {
   stopAntigravityQuotaPoller,
 } from "./antigravity-quota.ts";
 import {
+  AUTO_FALLBACK_PRIORITY,
   enableQuotaCooldownPersist,
   isQuotaOrCapText,
   lastTurnStartIndex,
   parseQuotaResetTime,
+  providerErrorCodeFromStopReason,
   quotaCooldowns,
+  quotaOrCapFromErrorCode,
   selectTurnFallback,
   shouldReplayPersistedStarter,
   bootRecoveryTurnOpts,
@@ -1959,7 +1962,17 @@ bus.subscribe((event: RuntimeEvent) => {
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
         const lastMsgText = afterUser.length > 0 ? (afterUser[afterUser.length - 1].text ?? "") : "";
         const quotaInfo = parseQuotaResetTime(reply) || parseQuotaResetTime(lastMsgText);
-        const quotaOrCap = quotaInfo.isQuotaOrCap || turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply);
+        // A chat-completions driver's loop reports a classified HTTP
+        // failure as an `error:<code>` stopReason (server/drivers/
+        // chat-completions/loop.ts).  When that structured code is
+        // present it decides quotaOrCap outright — real quota/cap or an
+        // outage consults the chain, invalid_credentials never does (the
+        // setup affordance handles that one).  A CLI engine has no such
+        // code, so `structuredQuotaOrCap` is undefined there and the
+        // existing chip-prose regexes decide exactly as they do today.
+        const structuredQuotaOrCap = quotaOrCapFromErrorCode(providerErrorCodeFromStopReason(event.stopReason));
+        const quotaOrCap = structuredQuotaOrCap
+          ?? (quotaInfo.isQuotaOrCap || turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply));
         const isTextError = sliceIsShortProviderError(afterUser) || quotaOrCap;
         const isOk = Boolean(event.ok) && !isTextError;
         if (isOk) {
@@ -2220,13 +2233,15 @@ bus.subscribe((event: RuntimeEvent) => {
  * still runs it through selectTurnFallback, so the produced / quota /
  * stop-reason rules apply exactly as they do for a configured chain. */
 async function autoFallbackChain(botId: string, currentInstanceId: string): Promise<ModelSelection[]> {
-  const priority = ["claude", "antigravity", "gemini", "codex", "openaiCompat", "grok"];
   try {
     const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
     return eligibleAutoFallbackChain(described, {
       botId,
       currentInstanceId,
-      priority,
+      // The fleet ladder itself lives in model-fallback.ts so the ordering
+      // is unit-testable without booting the server — minimax sits after
+      // codex and ahead of openaiCompat, per the PR 10 owner decision.
+      priority: AUTO_FALLBACK_PRIORITY,
       isCooling: (candidateBotId, instanceId, model) =>
         Boolean(quotaCooldowns.get(candidateBotId, instanceId, model)),
     });

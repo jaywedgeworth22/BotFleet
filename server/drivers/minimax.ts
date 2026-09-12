@@ -23,6 +23,7 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { toolFields } from "../tool-fields.ts";
+import { classifyHttpError, httpErrorFor, type HttpErrorClassification } from "./chat-completions/errors.ts";
 import { runTurnLoop, type ChatMessage, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
 import { costUsd, type ChatCompletionsPriceTable } from "./chat-completions/pricing.ts";
 import { genAiProvider, withChatSpan } from "../sentry-ai.ts";
@@ -31,6 +32,12 @@ const DRIVER_KIND = "minimax";
 const API_KEY_ENV = "MINIMAX_API_KEY";
 const DEFAULT_URL = "https://api.minimax.io/v1";
 const CN_URL = "https://api.minimaxi.com/v1";
+// The GET /models probe backing both `snapshot()` and `refreshModels()` is
+// cached for this long so a picker refresh (or the registry's periodic
+// describe()) does not hammer the API — and shares ONE fetch between the
+// two, per PR 10's "off the same fetch".
+const SNAPSHOT_CACHE_MS = 60_000;
+const SNAPSHOT_PROBE_TIMEOUT_MS = 8_000;
 
 const MODELS: ModelCatalog = {
   default: "MiniMax-M3",
@@ -194,6 +201,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     // MINIMAX_API_KEY, or point it at ~/.mmx/config.json (written by
     // `mmx auth login`, for anyone who already has that CLI for other
     // reasons). Neither requires Node or npm on this machine.
+    apiKeyOnly: true,
     signInCommand: `Set ${API_KEY_ENV} to a MiniMax API key, or run \`mmx auth login --api-key YOUR_MINIMAX_API_KEY\` to write one to ~/.mmx/config.json`,
     command: {
       darwin: `Get a MiniMax API key at https://platform.minimax.io and set ${API_KEY_ENV} (or run \`mmx auth login\` if you already use the mmx CLI — this driver just reads the config file it writes)`,
@@ -214,7 +222,11 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     // gateway or proxy never gets MiniMax's own tariff reported as its
     // authoritative spend.
     const pricesApply = isPricedMinimaxEndpoint(apiUrl);
-    const models = local.defaultModel && MODELS.options.some((model) => model.id === local.defaultModel)
+    // The live catalog `refreshModels` replaces from GET /models.  MODELS —
+    // the hand-maintained static table — stays the fallback for as long as
+    // that fetch has never succeeded, so a new model still needs no code
+    // change once the endpoint lists it.
+    let models = local.defaultModel && MODELS.options.some((model) => model.id === local.defaultModel)
       ? { ...MODELS, default: local.defaultModel }
       : MODELS;
 
@@ -275,7 +287,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
 
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        throw new Error(`MiniMax HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+        // A classified status becomes a ProviderError the loop keys off of
+        // (`error:<code>` stopReason; `setup: true` on invalid_credentials);
+        // an unmapped status stays a plain Error, exactly as before.
+        throw httpErrorFor(res.status, body);
       }
 
       if (!opts.stream) {
@@ -550,6 +565,70 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       return { turnId };
     };
 
+    // One GET /models fetch, cached for SNAPSHOT_CACHE_MS, shared by
+    // `snapshot()` and `refreshModels()` — "off the same fetch" per PR 10.
+    interface ModelsProbe {
+      ok: boolean;
+      status?: number;
+      classification?: HttpErrorClassification;
+      rows?: unknown[];
+    }
+    let cachedProbe: { at: number; result: Promise<ModelsProbe> } | null = null;
+    // The last snapshot a probe actually confirmed (reachable, whether
+    // capped or not).  Kept across a network failure so a transient DNS
+    // blip or timeout does not flip a working key to Unavailable in the
+    // picker — only a real 401/403 does that.
+    let lastGoodSnapshot: ProviderSnapshot | null = null;
+
+    const probeModels = (): Promise<ModelsProbe> => {
+      const now = Date.now();
+      if (cachedProbe && now - cachedProbe.at < SNAPSHOT_CACHE_MS) return cachedProbe.result;
+      const result = (async (): Promise<ModelsProbe> => {
+        try {
+          const res = await fetch(`${apiUrl}/models`, {
+            headers: { Authorization: `Bearer ${apiKey}` },
+            signal: AbortSignal.timeout(SNAPSHOT_PROBE_TIMEOUT_MS),
+          });
+          if (!res.ok) return { ok: false, status: res.status, classification: classifyHttpError(res.status) };
+          const json: unknown = await res.json().catch(() => null);
+          const rows: unknown[] = Array.isArray(json)
+            ? json
+            : Array.isArray((json as { data?: unknown })?.data)
+              ? ((json as { data: unknown[] }).data)
+              : [];
+          return { ok: true, status: res.status, rows };
+        } catch {
+          // network failure: DNS, offline, or past the 8s timeout ceiling
+          return { ok: false };
+        }
+      })();
+      cachedProbe = { at: now, result };
+      return result;
+    };
+
+    const refreshModels = async (): Promise<void> => {
+      if (!apiKey) return;
+      const probe = await probeModels();
+      // Keep the current catalog on anything but a clean 2xx list — MODELS
+      // stays the fallback for as long as the fetch has never succeeded.
+      if (!probe.ok || !probe.rows) return;
+      const seen = new Set<string>();
+      const options: ModelCatalog["options"] = [];
+      for (const row of probe.rows) {
+        const id = typeof (row as { id?: unknown })?.id === "string" ? (row as { id: string }).id : "";
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        // Preserve the hand-written label/contextWindow for a model MODELS
+        // already knows about; a genuinely new model gets its id as the
+        // label rather than nothing.
+        const known = MODELS.options.find((m) => m.id === id);
+        options.push({ id, label: known?.label ?? id, contextWindow: known?.contextWindow });
+      }
+      if (options.length === 0) return; // an empty or malformed list keeps the current catalog
+      const keptDefault = options.find((o) => o.id === models.default)?.id;
+      models = { default: keptDefault ?? options[0].id, options };
+    };
+
     const snapshot = async (): Promise<ProviderSnapshot> => {
       if (!apiKey) {
         return {
@@ -557,7 +636,34 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
           reason: `no MiniMax API key — run mmx auth login --api-key … or set ${API_KEY_ENV}`,
         };
       }
-      return { state: "available", authenticated: true, version: null, billing: "metered" };
+      const probe = await probeModels();
+      if (probe.ok) {
+        const fresh: ProviderSnapshot = { state: "available", authenticated: true, version: null, billing: "metered" };
+        lastGoodSnapshot = fresh;
+        return fresh;
+      }
+      if (probe.classification?.code === "invalid_credentials") {
+        return {
+          state: "unavailable",
+          reason: `MiniMax key rejected (HTTP ${probe.status}) — run mmx auth login --api-key … or update ${API_KEY_ENV}`,
+        };
+      }
+      if (probe.classification?.code === "quota_or_region_restriction") {
+        const capped: ProviderSnapshot = {
+          state: "available",
+          authenticated: true,
+          version: null,
+          billing: "metered",
+          quota: { capped: true },
+        };
+        lastGoodSnapshot = capped;
+        return capped;
+      }
+      // A 5xx, a 404, or the probe never reaching the network at all: never
+      // flip a working key to Unavailable on a blip.  Report the last state
+      // a probe actually confirmed, or the old optimistic default before
+      // the first probe has ever completed.
+      return lastGoodSnapshot ?? { state: "available", authenticated: true, version: null, billing: "metered" };
     };
 
     return {
@@ -565,7 +671,10 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       driverKind: DRIVER_KIND,
       displayName: input.displayName,
       enabled: input.enabled,
-      models,
+      get models() {
+        return models;
+      },
+      refreshModels,
       snapshot,
       adapter: {
         provider: DRIVER_KIND,

@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
-import type { ModelSelection } from "./contracts.ts";
+import type { ModelSelection, ProviderErrorCode } from "./contracts.ts";
 
 export interface FallbackScanMessage {
   role: string;
@@ -162,6 +162,57 @@ export function bootRecoveryTurnOpts(
 function sameEngine(a: { instanceId: string; model: string }, b: { instanceId: string; model: string }): boolean {
   return a.instanceId === b.instanceId && a.model === b.model;
 }
+
+// ── structured provider-error codes (chat-completions/errors.ts) ────────
+// A chat-completions driver's loop (server/drivers/chat-completions/loop.ts)
+// classifies an HTTP failure onto a ProviderErrorCode and reports it as an
+// `error:<code>` terminal stopReason.  CLI/ACP engines have no such code —
+// their turns end on a plain "error" or on chip prose the regexes above
+// already parse — so these two helpers are strictly ADDITIVE: they return
+// undefined whenever there is no structured code, and the caller is the one
+// that falls back to the regex path in that case.
+
+/** Parses the `error:<code>` stopReason a chat-completions driver's loop
+ *  emits back into the ProviderErrorCode it was classified from.
+ *  Undefined for every other stopReason, including a CLI engine's plain
+ *  "error" (no colon) — it has no structured code at all. */
+export function providerErrorCodeFromStopReason(stopReason: string | null | undefined): ProviderErrorCode | undefined {
+  if (!stopReason || !stopReason.startsWith("error:")) return undefined;
+  const code = stopReason.slice("error:".length).trim();
+  return code ? (code as ProviderErrorCode) : undefined;
+}
+
+/** Whether a STRUCTURED provider-error code should consult the fallback
+ *  chain.  True for a real quota/cap AND for an outage — model-fallback.ts's
+ *  QUOTA_OR_CAP regex has never covered a bare "HTTP 502", which is exactly
+ *  why a 5xx used to just fail instead of trying the next engine.
+ *  invalid_credentials is deliberately NOT included: that failure is
+ *  answered by the setup affordance (`runtime.error.setup`), not by
+ *  wandering to a different engine with the same bad key story.  Returns
+ *  undefined when there is no structured code, so the caller falls back to
+ *  the regex path rather than this turning INTO false and suppressing a CLI
+ *  engine's existing text-chip detection. */
+export function quotaOrCapFromErrorCode(code: ProviderErrorCode | undefined): boolean | undefined {
+  if (code === undefined) return undefined;
+  return code === "quota_or_region_restriction" || code === "upstream_outage";
+}
+
+// ── #90 auto-failover priority (server/index.ts's autoFallbackChain) ────
+// Most-preferred first, handed straight to turn-safety.ts's
+// eligibleAutoFallbackChain.  It lives here rather than inline in index.ts
+// so the ordering is unit-testable without booting the server.  minimax
+// sits after codex and ahead of openaiCompat — the owner-approved default:
+// the cheap metered lane a capped subscription engine should reach for
+// first.  An instanceId absent from this array sorts last.
+export const AUTO_FALLBACK_PRIORITY: readonly string[] = [
+  "claude",
+  "antigravity",
+  "gemini",
+  "codex",
+  "minimax",
+  "openaiCompat",
+  "grok",
+];
 
 /** Next saved fallback engine, or undefined when this turn must not fail over.
  * Quota/cap chips ignore prior tool activity.  Chain entries that match the

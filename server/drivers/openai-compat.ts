@@ -108,6 +108,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
   // No CLI to install — the "install" is getting a free API key.
   install: {
     docsUrl: "https://openrouter.ai/keys",
+    apiKeyOnly: true,
     signInCommand:
       "add {\"openaiCompat\":{\"key\":\"sk-or-v1-…\"}} to ~/.botfleet/config.json (or set OPENAI_COMPAT_API_KEY)",
     command: {
