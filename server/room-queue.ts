@@ -112,6 +112,13 @@ export function _queuedRoomCount(): number {
   return queues.size;
 }
 
+/** Whether the exact bot/thread round is still retained.  Runtime readiness
+ * uses this to avoid counting stale credential-wait bookkeeping after a
+ * cancelled, expired, or orphaned room round. */
+export function hasQueuedRoomRound(threadId: string, botId: string): boolean {
+  return queues.has(keyFor(threadId, botId));
+}
+
 /** Test seam: forget everything. */
 export function _resetRoomQueue(): void {
   queues.clear();

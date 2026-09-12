@@ -66,6 +66,7 @@ export async function applyPreparedUpdate(prepared, options, ops) {
     await ops.assertQuiesced(previous);
     await ops.advanceCheckout(prepared.targetCommit, previous);
     await ops.installCandidate(prepared, previous);
+    await ops.prepareCredentials(prepared, previous);
     await ops.startHarness(prepared, previous);
     await ops.verifyHarness(prepared, previous);
     await ops.startApplication(prepared, previous, options);
