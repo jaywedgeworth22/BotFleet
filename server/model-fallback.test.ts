@@ -15,6 +15,7 @@ import {
   shouldReplayPersistedStarter,
   sliceIsShortProviderError,
   turnHitQuotaOrCap,
+  turnQuotaOrCapEvidence,
   turnProducedAssistantOutput,
   type FallbackScanMessage,
 } from "./model-fallback.ts";
@@ -32,7 +33,7 @@ function decide(messagesAfterUser: FallbackScanMessage[], opts: {
   current?: { instanceId: string; model: string } | null;
 } = {}) {
   const textIsError = sliceIsShortProviderError(messagesAfterUser);
-  const quotaOrCap = turnHitQuotaOrCap(messagesAfterUser);
+  const quotaOrCap = Boolean(turnQuotaOrCapEvidence(messagesAfterUser, opts.ok ?? false));
   const produced = turnProducedAssistantOutput(messagesAfterUser, { textIsError: textIsError || quotaOrCap });
   return selectTurnFallback({
     ok: (opts.ok ?? false) && !textIsError && !quotaOrCap,
@@ -183,6 +184,51 @@ describe("quota and session-limit failover", () => {
     expect(hits.filter((text) => !isQuotaOrCapText(text))).toEqual([]);
     expect(isQuotaOrCapText("Approaching 5-hour limit.")).toBe(false);
     expect(isQuotaOrCapText("You've used 80% of your included usage")).toBe(false);
+  });
+
+  it("does not turn ordinary successful prose or quoted examples into provider failures", () => {
+    const prose = [
+      "The billing fix is merged.",
+      "The subscription accounting review is complete.",
+      "Capacity planning is documented.",
+      "I added coverage for quota exceeded and rate limit errors.",
+      "You've reached the end of the billing review.",
+      "Quota exceeded handling is documented.",
+      "Rate limit parsing is tested.",
+      "> Quota exceeded, please upgrade your plan.",
+      'The provider may say "You have reached your usage limit".',
+    ];
+    for (const text of prose) {
+      expect(isQuotaOrCapText(text), text).toBe(false);
+      expect(isShortProviderErrorText(text), text).toBe(false);
+      expect(turnQuotaOrCapEvidence([{ role: "bot", kind: "text", text }], true), text).toBeUndefined();
+      expect(decide([{ role: "bot", kind: "text", text }], { ok: true }), text).toBeUndefined();
+    }
+  });
+
+  it("binds quota status to the actual error activity instead of earlier assistant text", () => {
+    const afterUser: FallbackScanMessage[] = [
+      { role: "bot", kind: "text", text: "The billing review is complete." },
+      { role: "bot", kind: "activity", tool: { name: "error: API request failed: 429 rate limit reached · retry after 45s", ok: false } },
+    ];
+    expect(turnQuotaOrCapEvidence(afterUser, false)).toEqual({
+      text: "API request failed: 429 rate limit reached · retry after 45s",
+      source: "provider-error",
+    });
+    expect(parseQuotaResetTime("API request failed: 429 rate limit reached · retry after 45s", 1_000, true)).toEqual({
+      isQuotaOrCap: true,
+      resetsAt: 46_000,
+      rawTimeText: "retry after 45s",
+    });
+  });
+
+  it("does not revive an earlier retry error after the turn completes successfully", () => {
+    const afterUser: FallbackScanMessage[] = [
+      { role: "bot", kind: "activity", tool: { name: "error: 429 rate limit reached", ok: false } },
+      { role: "bot", kind: "activity", tool: { name: "retrying — attempt 2/3 in 1s — 429", ok: true } },
+      { role: "bot", kind: "text", text: "The retry completed the billing review." },
+    ];
+    expect(turnQuotaOrCapEvidence(afterUser, true)).toBeUndefined();
   });
 
   it("fails over after successful tools when the last text is a session-limit chip", () => {
@@ -519,6 +565,52 @@ describe("QuotaCooldownRegistry", () => {
     second.enablePersist(file, (_path, json) => writeFileSync(file, json));
     expect(second.get("bot", "antigravity", "claude-opus-4-6-thinking")?.error).toBe("exhausted");
     expect(second.get("bot", "grok", "grok-4.6")).toBeUndefined();
+  });
+
+  it("drops only legacy sourceless prose cooldowns while retaining terminal chips and named sources", () => {
+    const file = `${tmpdir()}/quota-cooldowns-prose-${Date.now()}.json`;
+    writeFileSync(file, JSON.stringify({
+      version: 1,
+      cooldowns: [
+        {
+          botId: "prose-bot",
+          instanceId: "grok",
+          model: "grok-4",
+          resetsAt: null,
+          error: "The subscription accounting review is complete.",
+          recordedAt: Date.now(),
+        },
+        {
+          botId: "chip-bot",
+          instanceId: "grok",
+          model: "grok-4",
+          resetsAt: null,
+          error: "You've hit your session limit · resets in 30 minutes",
+          recordedAt: Date.now(),
+        },
+        {
+          botId: "monitor-bot",
+          instanceId: "antigravity",
+          model: "gemini",
+          resetsAt: null,
+          error: "opaque provider telemetry",
+          recordedAt: Date.now(),
+          source: "antigravity-usage",
+        },
+      ],
+    }));
+    const writes: string[] = [];
+    const registry = new QuotaCooldownRegistry();
+    registry.enablePersist(file, (_path, json) => {
+      writes.push(json);
+      writeFileSync(file, json);
+    });
+
+    expect(registry.get("prose-bot", "grok", "grok-4")).toBeUndefined();
+    expect(registry.get("chip-bot", "grok", "grok-4")?.source).toBeUndefined();
+    expect(registry.get("monitor-bot", "antigravity", "gemini")?.source).toBe("antigravity-usage");
+    expect(writes).toHaveLength(1);
+    expect(JSON.parse(writes[0]).cooldowns).toHaveLength(2);
   });
 
   it("clearWhere removes a deleted instance's cooldowns even when they never expire, leaving other instances untouched", () => {

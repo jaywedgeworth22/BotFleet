@@ -63,7 +63,6 @@ import {
 } from "./antigravity-quota.ts";
 import {
   enableQuotaCooldownPersist,
-  isQuotaOrCapText,
   lastTurnStartIndex,
   parseQuotaResetTime,
   quotaCooldowns,
@@ -71,7 +70,7 @@ import {
   shouldReplayPersistedStarter,
   bootRecoveryTurnOpts,
   sliceIsShortProviderError,
-  turnHitQuotaOrCap,
+  turnQuotaOrCapEvidence,
   BOOT_RECOVERY_NOTICE,
   turnProducedAssistantOutput,
 } from "./model-fallback.ts";
@@ -1957,9 +1956,9 @@ bus.subscribe((event: RuntimeEvent) => {
         const lastUserIdx = lastTurnStartIndex(activeMsgs);
         const afterUser = lastUserIdx >= 0 ? activeMsgs.slice(lastUserIdx + 1) : [];
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
-        const lastMsgText = afterUser.length > 0 ? (afterUser[afterUser.length - 1].text ?? "") : "";
-        const quotaInfo = parseQuotaResetTime(reply) || parseQuotaResetTime(lastMsgText);
-        const quotaOrCap = quotaInfo.isQuotaOrCap || turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply);
+        const quotaEvidence = turnQuotaOrCapEvidence(afterUser, Boolean(event.ok));
+        const quotaInfo = parseQuotaResetTime(quotaEvidence?.text ?? "", Date.now(), Boolean(quotaEvidence));
+        const quotaOrCap = Boolean(quotaEvidence);
         const isTextError = sliceIsShortProviderError(afterUser) || quotaOrCap;
         const isOk = Boolean(event.ok) && !isTextError;
         if (isOk) {
@@ -1973,8 +1972,9 @@ bus.subscribe((event: RuntimeEvent) => {
             instanceId: actualSelection.instanceId,
             model: actualSelection.model,
             resetsAt: quotaInfo.resetsAt,
-            error: reply || lastMsgText || "quota exceeded",
+            error: quotaEvidence?.text ?? "quota exceeded",
             recordedAt: Date.now(),
+            source: quotaEvidence?.source,
           });
         }
         const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;

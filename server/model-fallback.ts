@@ -22,20 +22,41 @@ export interface TurnFallbackPick extends ModelSelection {
 }
 
 const SHORT_PROVIDER_ERROR =
-  /session limit|rate.?limit|too many requests|overloaded|capacity|internal server error|bad gateway|service unavailable|account_inactive|quota|usage cap|usage limit|credits exhausted|insufficient.?balance|out of (?:usage|credits)|resource_exhausted|slow pool|daily limit|\b429\b/i;
+  /^(?:error:\s*)?(?:internal server error|bad gateway|service unavailable|account_inactive|resource_exhausted|too many requests|(?:server|service|provider) (?:is )?(?:overloaded|at capacity)|capacity (?:reached|exceeded|unavailable)|(?:http\s*)?(?:402|429)\b)/i;
 
-// Official provider chips (docs + observed CLIs).  Keep this in sync with
-// the corpus in model-fallback.test.ts.  Do not match "approaching … limit"
-// warnings — those are near-cap, not a hit.
-const QUOTA_OR_CAP =
-  /session limit|hit your session limit|hit your usage limit|usage cap|usage limit|quota exceeded|insufficient.?quota|insufficient.?balance|insufficient.?funds|zero balance|resource.?exhausted|resource.{0,24}exhausted|resource_exhausted|exhausted your.*quota|daily quota|credits exhausted|credits? (?:are )?depleted|credits? (?:exhausted|depleted|empty|insufficient|zero)|out of (?:usage|credits)|credit balance (?:is )?(?:too )?low|message limit reached|messaging allowance|5-hour limit reached|reached your .{0,80}limit|monthly limit|weekly (?:\([^)]+\) )?usage limit|slow pool|upgrade (?:your )?plan|upgrade to (?:plus|pro)|\b402\b|\b429\b|\bbilling\b|\bsubscription\b|payment required|plan limit|tier limit|free tier limit|spend limit|budget exceeded|rate.?limit|rate_limit_error|usage_limit_exceeded|too many requests|overloaded|capacity|concurrency limit|account_inactive|enforced_spend_limit/i;
+// Standalone terminal provider chips (docs + observed CLIs).  These patterns
+// are deliberately anchored: a successful answer may discuss billing,
+// subscriptions, quotas, or capacity without becoming a provider failure.
+// Keep this in sync with the corpus in model-fallback.test.ts.  Do not match
+// "approaching … limit" warnings — those are near-cap, not a hit.
+const QUOTA_OR_CAP_TERMINAL = [
+  /^(?:you(?:'ve| have)?|you are|you're)\s+(?:hit|reached|exceeded|exhausted|out of)\b.{0,120}\b(?:session|usage|message|messaging|quota|limit|allowance|credits?|funds?|balance|plan|tier|spend|budget|requests?)\b/i,
+  /^your\s+(?:credit|prepayment|message|messaging|usage|quota|billing|subscription|plan|tier|spend|budget)\b.{0,120}\b(?:low|depleted|empty|exhausted|insufficient|exceeded|reached|limit|cap)\b/i,
+  /^this request would exceed\b/i,
+  /^(?:codex|claude|grok|cursor|deepseek|kimi|gemini|antigravity)\s+(?:session|usage|message)\s+(?:limit|cap|quota)\s+(?:reached|exceeded|exhausted)\b/i,
+  /^(?:session|usage|message|monthly|daily|plan|tier|free tier|spend|budget|concurrency)\s+(?:limit|cap|quota)(?:\s+(?:reached|exceeded|exhausted))?(?:\s+(?:for|on|in|until)\b.{0,120})?[.!]?$/i,
+  /^(?:session limit or usage cap reached|quota exceeded|daily quota exceeded)(?:\s*[.:,!·—-]|\s*$|\s+(?:for|please|retry|try|upgrade|check|on|at|because|due)\b)/i,
+  /^(?:insufficient.?quota|insufficient.?balance|insufficient.?funds|zero balance|credits exhausted|out of (?:usage|credits)|payment required)(?:\s*[.:,!·—-]|\s*$|\s+(?:for|to|please|on)\b)/i,
+  /^(?:resource.{0,24}exhausted|resource_exhausted|rate.?limit(?:_error|\s+(?:reached|exceeded|hit))|usage_limit_exceeded|enforced_spend_limit(?:_reached)?|account_inactive)\b/i,
+  /^(?:http\s*)?(?:402|429)\b/i,
+  /^5-hour limit reached\b/i,
+  /^increase limits for faster responses\b/i,
+  /^upgrade (?:your )?plan to continue\b/i,
+  /^upgrade to (?:plus|pro)\b/i,
+  /^we(?:'re| are) receiving too many requests\b/i,
+  /^(?:the )?(?:server|service|provider) (?:is )?(?:overloaded|at capacity)\b/i,
+  /^capacity (?:reached|exceeded|unavailable)\b/i,
+];
+
+const KNOWN_FAILURE_QUOTA_OR_CAP =
+  /session limit|hit your usage limit|usage cap|usage limit|quota exceeded|insufficient.?quota|insufficient.?balance|insufficient.?funds|zero balance|resource.?exhausted|credits exhausted|credits? (?:are )?depleted|out of (?:usage|credits)|credit balance (?:is )?(?:too )?low|message limit reached|messaging allowance|5-hour limit reached|monthly limit|weekly (?:\([^)]+\) )?usage limit|slow pool|payment required|plan limit|tier limit|free tier limit|spend limit|budget exceeded|rate.?limit|rate_limit_error|usage_limit_exceeded|too many requests|(?:server|service|provider) (?:is )?(?:overloaded|at capacity)|capacity (?:reached|exceeded|unavailable)|concurrency limit|account_inactive|enforced_spend_limit|\b402\b|\b429\b/i;
 
 const QUOTA_TEXT_MAX = 500;
 
 /** Short error-chip text that must not count as a real assistant reply. */
 export function isShortProviderErrorText(text: string): boolean {
   const trimmed = text.trim();
-  return SHORT_PROVIDER_ERROR.test(trimmed) && trimmed.length < 300;
+  return trimmed.length < 300 && (SHORT_PROVIDER_ERROR.test(trimmed) || isQuotaOrCapText(trimmed));
 }
 
 /** Quota, usage-cap, or session-limit chip — including Grok's
@@ -43,7 +64,41 @@ export function isShortProviderErrorText(text: string): boolean {
 export function isQuotaOrCapText(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.length >= QUOTA_TEXT_MAX) return false;
-  return QUOTA_OR_CAP.test(trimmed);
+  if (/^[>`"']/.test(trimmed)) return false;
+  return QUOTA_OR_CAP_TERMINAL.some((pattern) => pattern.test(trimmed));
+}
+
+export interface QuotaOrCapEvidence {
+  text: string;
+  source: "provider-error" | "terminal-chip";
+}
+
+/** Finds the exact provider evidence used for cooldown, reset parsing, and
+ * status.  Failed turns may use their explicit error activity; successful
+ * turns require a standalone terminal chip rather than arbitrary prose. */
+export function turnQuotaOrCapEvidence(
+  messagesAfterUser: FallbackScanMessage[],
+  turnOk: boolean,
+): QuotaOrCapEvidence | undefined {
+  if (!turnOk) {
+    for (let i = messagesAfterUser.length - 1; i >= 0; i--) {
+      const message = messagesAfterUser[i];
+      if (message.role !== "bot" || message.kind !== "activity") continue;
+      const name = message.tool?.name ?? "";
+      if (!/^error:/i.test(name)) continue;
+      const text = name.replace(/^error:\s*/i, "").trim();
+      if (text && KNOWN_FAILURE_QUOTA_OR_CAP.test(text)) return { text, source: "provider-error" };
+    }
+  }
+
+  const botTexts = messagesAfterUser.filter(
+    (message) => message.role === "bot" && message.kind === "text" && typeof message.text === "string",
+  );
+  const text = botTexts.at(-1)?.text?.trim();
+  if (!text) return undefined;
+  if (isQuotaOrCapText(text)) return { text, source: "terminal-chip" };
+  if (!turnOk && KNOWN_FAILURE_QUOTA_OR_CAP.test(text)) return { text, source: "provider-error" };
+  return undefined;
 }
 
 /** The last message that actually started a turn — a human's "user" message,
@@ -73,18 +128,7 @@ export function sliceIsShortProviderError(messagesAfterUser: FallbackScanMessage
 
 /** True when this turn ended on a quota / usage-cap / session-limit chip. */
 export function turnHitQuotaOrCap(messagesAfterUser: FallbackScanMessage[]): boolean {
-  const botTexts = messagesAfterUser.filter(
-    (message) => message.role === "bot" && message.kind === "text" && typeof message.text === "string",
-  );
-  if (botTexts.length > 0) {
-    const last = botTexts[botTexts.length - 1];
-    if (typeof last.text === "string" && isQuotaOrCapText(last.text)) return true;
-  }
-  return messagesAfterUser.some((message) => {
-    if (message.role !== "bot" || message.kind !== "activity") return false;
-    const name = message.tool?.name ?? "";
-    return /error:/i.test(name) && isQuotaOrCapText(name);
-  });
+  return Boolean(turnQuotaOrCapEvidence(messagesAfterUser, false));
 }
 
 /**
@@ -203,7 +247,7 @@ export interface BotQuotaCooldown {
   resetsAt?: number | null;
   error: string;
   recordedAt: number;
-  /** Who wrote this row: a provider chip, or `antigravity-usage`. */
+  /** Who wrote this row: a terminal chip, provider error, or quota poller. */
   source?: string;
 }
 
@@ -239,9 +283,11 @@ function computeNextOccurrence(targetHour: number, targetMinute: number, tz: str
   return date.getTime();
 }
 
-/** Parses quota reset time from provider error chips or text replies. */
-export function parseQuotaResetTime(text: string, now = Date.now()): QuotaResetInfo {
-  const isCap = isQuotaOrCapText(text);
+/** Parses quota reset time from provider error chips or text replies.  A
+ * caller that already proved the text came from a provider failure can keep
+ * that evidence while parsing a nested or prefixed reset message. */
+export function parseQuotaResetTime(text: string, now = Date.now(), knownQuota = false): QuotaResetInfo {
+  const isCap = knownQuota || isQuotaOrCapText(text);
   if (!isCap) return { isQuotaOrCap: false };
 
   // Relative duration: "resets in 35 minutes", "retry after 60s", "retry-after: 120"
@@ -317,12 +363,33 @@ export class QuotaCooldownRegistry {
       };
       if (!Array.isArray(parsed.cooldowns)) return;
       const now = Date.now();
+      let removed = false;
       for (const cd of parsed.cooldowns) {
         if (!cd || typeof cd !== "object") continue;
-        if (typeof cd.botId !== "string" || typeof cd.instanceId !== "string" || typeof cd.model !== "string") continue;
-        if (cd.resetsAt && now >= cd.resetsAt) continue;
+        if (
+          typeof cd.botId !== "string" ||
+          typeof cd.instanceId !== "string" ||
+          typeof cd.model !== "string" ||
+          typeof cd.error !== "string"
+        ) {
+          removed = true;
+          continue;
+        }
+        if (cd.resetsAt && now >= cd.resetsAt) {
+          removed = true;
+          continue;
+        }
+        // Older turn-completion rows had no source and could contain a normal
+        // successful reply selected by the former keyword matcher.  Retain
+        // only standalone provider chips; usage-monitor and other named
+        // producers already carry their own trusted source.
+        if (!cd.source && !isQuotaOrCapText(cd.error)) {
+          removed = true;
+          continue;
+        }
         this.cooldowns.set(`${cd.botId}:${cd.instanceId}:${cd.model}`, cd);
       }
+      if (removed) this.persist();
     } catch {
       /* corrupt file = empty registry */
     }
@@ -443,4 +510,3 @@ export const quotaCooldowns = new QuotaCooldownRegistry();
 export function enableQuotaCooldownPersist(path: string): void {
   quotaCooldowns.enablePersist(path);
 }
-
