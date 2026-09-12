@@ -22,6 +22,6 @@ A busy room now offers Interrupt and sends both the room ID and the task ID curr
 - `pnpm exec vitest run companion/test/routes.test.ts companion/test/proxy.test.ts` — 90 passed.
 - `cd ios && swift test` — 254 passed.
 - `pnpm typecheck` — passed.
-- Local unsigned `xcodebuild` could not select a destination because this Mac has no iOS Simulator runtime installed (`iOS 26.5 is not installed`).  Hosted unsigned Xcode CI is the app-target compile gate for this change.
+- Local unsigned `xcodebuild` could not select a destination because this Mac has no iOS Simulator runtime installed (`iOS 26.5 is not installed`).  A bounded official runtime download found iOS 26.5 (23F77), but transferred only 3.1 MB of 10.6 GB in roughly two minutes and was cancelled rather than left as a multi-day background job.  Hosted unsigned Xcode CI is the app-target compile gate for this change.
 
 No live pairing, physical-device acceptance, or signed Mac rollout was performed in this lane.  A simulator screenshot is unavailable for the same missing-runtime constraint; user-visible acceptance remains open until hosted compile succeeds and a device or simulator with an installed runtime exercises the updated sheets and room action.
