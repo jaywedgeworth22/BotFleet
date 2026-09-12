@@ -25,6 +25,7 @@ export interface Routine {
   runOn: RoutineRunOn;
   enabled: boolean;
   schedule: RoutineSchedule;
+  scheduleTimeZoneSource?: "stored" | "host";
   durationMinutes: number;
   nextRunAt: number | null;
   createdAt: number;

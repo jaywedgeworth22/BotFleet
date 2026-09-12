@@ -78,6 +78,9 @@ export interface Routine {
   runOn: RoutineRunOn;
   enabled: boolean;
   schedule: RoutineSchedule;
+  /** Whether a daily schedule's client-facing timezone was stored with the
+   * recurrence or supplied from the current harness for display only. */
+  scheduleTimeZoneSource?: "stored" | "host";
   durationMinutes: number;
   nextRunAt: number | null;
   createdAt: number;
@@ -1075,10 +1078,14 @@ export class RoutineManager {
   }
 
   private clientRoutine(routine: Routine, effectiveTimeZone?: string): Routine {
-    const schedule = routine.schedule.type === "daily" && !routine.schedule.timeZone && effectiveTimeZone
+    if (routine.schedule.type !== "daily") return { ...routine, schedule: { ...routine.schedule } };
+    if (routine.schedule.timeZone) {
+      return { ...routine, schedule: { ...routine.schedule }, scheduleTimeZoneSource: "stored" };
+    }
+    const schedule = effectiveTimeZone
       ? { ...routine.schedule, timeZone: effectiveTimeZone }
       : { ...routine.schedule };
-    return { ...routine, schedule };
+    return { ...routine, schedule, scheduleTimeZoneSource: "host" };
   }
 
   private emitRun(run: RoutineRun) {

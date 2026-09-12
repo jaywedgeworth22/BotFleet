@@ -103,7 +103,9 @@ export function createBotPackageExport(input: {
             type: "daily",
             time: routine.schedule.time,
             weekdays: [...routine.schedule.weekdays],
-            ...(routine.schedule.timeZone ? { timeZone: routine.schedule.timeZone } : {}),
+            ...(routine.schedule.timeZone && routine.scheduleTimeZoneSource !== "host"
+              ? { timeZone: routine.schedule.timeZone }
+              : {}),
           },
       durationMinutes: routine.durationMinutes,
       enabledAfterInstall: false as const,

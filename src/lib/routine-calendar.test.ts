@@ -4,6 +4,7 @@ import type { Routine } from "./routines";
 import {
   calendarDayLabel,
   calendarMinuteOfDay,
+  editedDailySchedule,
   nextCalendarRunLabel,
   projectedRoutineItems,
   routineScheduleLabel,
@@ -61,6 +62,26 @@ describe("routine calendar timezone", () => {
     expect(timeZoneLabel("America/Chicago", Date.parse("2026-07-01T12:00:00Z"))).toBe("Central Time (CDT)");
     const legacy = routine({ type: "daily", time: "09:00", weekdays: [1], timeZone: "Europe/Athens" });
     expect(routineScheduleLabel(legacy)).toMatch(/^Mon at 9:00 AM (GMT\+3|EEST)$/);
+  });
+
+  it("omits a display-only host zone when an existing legacy recurrence is edited", () => {
+    const legacy = {
+      ...routine({ type: "daily", time: "09:00", weekdays: [1], timeZone: "Europe/Athens" }),
+      scheduleTimeZoneSource: "host" as const,
+    };
+    const explicit = { ...legacy, scheduleTimeZoneSource: "stored" as const };
+
+    expect(editedDailySchedule(legacy, "10:00", [2], "Europe/Athens")).toEqual({
+      type: "daily",
+      time: "10:00",
+      weekdays: [2],
+    });
+    expect(editedDailySchedule(explicit, "10:00", [2], "Europe/Athens")).toEqual({
+      type: "daily",
+      time: "10:00",
+      weekdays: [2],
+      timeZone: "Europe/Athens",
+    });
   });
 
   it("labels the next run by the Central calendar date instead of the browser date", () => {

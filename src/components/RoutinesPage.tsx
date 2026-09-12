@@ -31,6 +31,7 @@ import {
   DAY_NAMES,
   calendarDayLabel,
   calendarMinuteOfDay,
+  editedDailySchedule,
   niceCalendarDate,
   niceCalendarTime,
   projectedRoutineItems,
@@ -302,7 +303,7 @@ export function RoutineEditor({
         schedule:
           kind === "once"
             ? { type: "once", at: epochFromInputDateTime(at, CENTRAL_TIME_ZONE) }
-            : { type: "daily", time, weekdays, timeZone },
+            : editedDailySchedule(routine, time, weekdays, timeZone),
       };
       const response = await api(routine ? `/api/routines/${routine.id}` : "/api/routines", {
         method: routine ? "PATCH" : "POST",

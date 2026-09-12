@@ -1,4 +1,4 @@
-import type { Routine, RoutineRun } from "./routines";
+import type { Routine, RoutineRun, RoutineSchedule } from "./routines";
 import {
   CENTRAL_TIME_ZONE,
   calendarDate,
@@ -56,6 +56,20 @@ export function scheduleTimeZone(routine: Routine): string {
   return routine.schedule.type === "daily"
     ? routine.schedule.timeZone ?? CENTRAL_TIME_ZONE
     : CENTRAL_TIME_ZONE;
+}
+
+export function editedDailySchedule(
+  routine: Routine | undefined,
+  time: string,
+  weekdays: number[],
+  timeZone: string,
+): RoutineSchedule {
+  return {
+    type: "daily",
+    time,
+    weekdays,
+    ...(routine?.scheduleTimeZoneSource === "host" ? {} : { timeZone }),
+  };
 }
 
 export function timeZoneLabel(timeZone: string, at = Date.now()): string {

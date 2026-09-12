@@ -159,7 +159,9 @@ describe("RoutineManager", () => {
       weekdays: [1],
       timeZone: "Europe/Athens",
     });
+    expect(h.manager.listRoutines()[0].scheduleTimeZoneSource).toBe("host");
     expect(h.emitted.at(-1)?.routine.schedule.timeZone).toBe("Europe/Athens");
+    expect(h.emitted.at(-1)?.routine.scheduleTimeZoneSource).toBe("host");
     const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
     expect(disk.routines[0].schedule.timeZone).toBeUndefined();
   });
@@ -173,7 +175,9 @@ describe("RoutineManager", () => {
       schedule: { type: "daily", time: "09:00", weekdays: [1], timeZone: "America/Chicago" },
     });
     expect(created.nextRunAt).toBe(Date.parse("2026-09-14T14:00:00.000Z"));
-    expect(new RoutineManager(h.options).listRoutines()[0].schedule).toMatchObject({ timeZone: "America/Chicago" });
+    const reloaded = new RoutineManager(h.options).listRoutines()[0];
+    expect(reloaded.schedule).toMatchObject({ timeZone: "America/Chicago" });
+    expect(reloaded.scheduleTimeZoneSource).toBe("stored");
     const updated = h.manager.update(created.id, {
       schedule: { type: "daily", time: "10:30", weekdays: [2] },
     });
