@@ -11,6 +11,7 @@ public enum LiveActivityLifecyclePhase: Sendable, Equatable {
 public enum LiveActivityLifecycleAction: Sendable, Equatable {
     case awaitFreshState
     case endAll
+    case resetAndAwaitFreshState
 }
 
 /// Keeps stale foreground work from landing after a background teardown.
@@ -46,6 +47,18 @@ public struct LiveActivityLifecycle: Sendable {
             updatesEnabled = false
             return .endAll
         }
+    }
+
+    /// A pairing identity change invalidates both ActivityKit state and any
+    /// hydration issued for the previous client.  A new foreground pairing
+    /// can hydrate immediately; elsewhere the next activation performs it.
+    public mutating func pairingChanged(isPaired: Bool) -> LiveActivityLifecycleAction {
+        generation += 1
+        updatesEnabled = false
+        freshStateRequired = true
+        guard isPaired, phase == .active else { return .endAll }
+        freshStateRequired = false
+        return .resetAndAwaitFreshState
     }
 
     public func permitsUpdates(from candidateGeneration: Int) -> Bool {

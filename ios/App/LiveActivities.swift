@@ -22,6 +22,7 @@ final class LiveActivityCoordinator {
     /// finishes before a rapid foreground return can recreate an activity.
     private var activityWork: Task<Void, Never>?
     private var resumeRefresh: Task<Void, Never>?
+    private var connectionCancellable: AnyCancellable?
     private weak var session: Session?
 
     func attach(to session: Session) {
@@ -33,33 +34,59 @@ final class LiveActivityCoordinator {
         cancellable = session.$state
             .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
             .sink { [weak self] state in self?.scheduleSync(state) }
+        connectionCancellable = session.$connection
+            .map { $0?.id }
+            .removeDuplicates()
+            .dropFirst()
+            .sink { [weak self] connectionId in
+                self?.handlePairingChange(isPaired: connectionId != nil)
+            }
     }
 
     func transition(to phase: LiveActivityLifecyclePhase) {
-        switch lifecycle.transition(to: phase) {
+        handle(lifecycle.transition(to: phase))
+    }
+
+    private func handlePairingChange(isPaired: Bool) {
+        handle(lifecycle.pairingChanged(isPaired: isPaired))
+    }
+
+    private func handle(_ action: LiveActivityLifecycleAction?) {
+        switch action {
         case .awaitFreshState:
-            let generation = lifecycle.generation
-            resumeRefresh?.cancel()
-            guard let session else { return }
-            resumeRefresh = Task { [weak self, weak session] in
-                guard let freshState = await session?.refreshLiveActivityState() else { return }
-                guard !Task.isCancelled, let self,
-                      self.lifecycle.acceptFreshState(for: generation)
-                else { return }
-                self.scheduleSync(freshState)
-            }
+            awaitFreshState()
         case .endAll:
-            resumeRefresh?.cancel()
-            resumeRefresh = nil
-            lastSent.removeAll()
-            since.removeAll()
-            enqueueActivityWork {
-                for activity in Activity<BotActivityAttributes>.activities {
-                    await activity.end(nil, dismissalPolicy: .immediate)
-                }
-            }
+            endAll()
+        case .resetAndAwaitFreshState:
+            endAll()
+            awaitFreshState()
         case nil:
             break
+        }
+    }
+
+    private func awaitFreshState() {
+        let generation = lifecycle.generation
+        resumeRefresh?.cancel()
+        guard let session else { return }
+        resumeRefresh = Task { [weak self, weak session] in
+            guard let freshState = await session?.refreshLiveActivityState() else { return }
+            guard !Task.isCancelled, let self,
+                  self.lifecycle.acceptFreshState(for: generation)
+            else { return }
+            self.scheduleSync(freshState)
+        }
+    }
+
+    private func endAll() {
+        resumeRefresh?.cancel()
+        resumeRefresh = nil
+        lastSent.removeAll()
+        since.removeAll()
+        enqueueActivityWork {
+            for activity in Activity<BotActivityAttributes>.activities {
+                await activity.end(nil, dismissalPolicy: .immediate)
+            }
         }
     }
 

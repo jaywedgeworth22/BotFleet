@@ -48,4 +48,19 @@ final class LiveActivityLifecycleTests: XCTestCase {
         XCTAssertEqual(lifecycle.generation, foregroundGeneration)
         XCTAssertTrue(lifecycle.permitsUpdates(from: foregroundGeneration))
     }
+
+    func testForegroundRepairingResetsActivitiesAndRestartsFreshHydration() {
+        var lifecycle = LiveActivityLifecycle()
+        XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
+        let oldPairingGeneration = lifecycle.generation
+        XCTAssertTrue(lifecycle.acceptFreshState(for: oldPairingGeneration))
+
+        XCTAssertEqual(lifecycle.pairingChanged(isPaired: false), .endAll)
+        XCTAssertFalse(lifecycle.permitsUpdates(from: oldPairingGeneration))
+        XCTAssertEqual(lifecycle.pairingChanged(isPaired: true), .resetAndAwaitFreshState)
+        let newPairingGeneration = lifecycle.generation
+        XCTAssertFalse(lifecycle.acceptFreshState(for: oldPairingGeneration))
+        XCTAssertTrue(lifecycle.acceptFreshState(for: newPairingGeneration))
+        XCTAssertTrue(lifecycle.permitsUpdates(from: newPairingGeneration))
+    }
 }
