@@ -396,6 +396,15 @@ export interface ProviderAdapter {
      * `SendTurnInput.toolHost` only to such a driver, and dispatches it on
      * the same one-line path it uses for a CLI engine. */
     toolLoop?: boolean;
+    /** True when the driver builds its own message history from
+     * `SendTurnInput.transcript` every turn — every chat-completions driver
+     * does this, the way a CLI driver replays its own native session.  A
+     * driver that lacks this flag gets the transcript INLINED into the
+     * turn text as well, which is correct only because such a driver never
+     * also expands `transcript` itself.  Absent = inline (today's CLI
+     * default); a driver that sets this and also inlines the transcript
+     * would send it twice. */
+    replaysTranscript?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
