@@ -5,8 +5,6 @@ const ROOT_DOCUMENTS = new Set([
   "AGENTS.md",
   "CODE_OF_CONDUCT.md",
   "CONTRIBUTING.md",
-  "LICENSE",
-  "NOTICE",
   "README.md",
   "SECURITY.md",
 ]);

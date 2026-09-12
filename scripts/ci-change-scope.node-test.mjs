@@ -22,6 +22,8 @@ test("only the explicit non-executable documentation paths take the fast path", 
     "ios/project.yml",
     "package.json",
     "pnpm-lock.yaml",
+    "LICENSE",
+    "NOTICE",
     ".github/workflows/ci.yml",
     "scripts/release.mjs",
   ]) {
