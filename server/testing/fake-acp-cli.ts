@@ -5,7 +5,7 @@
 // session/prompt, and streams session/update notifications for a scripted
 // turn. Failure modes mirror how real ACP agents misbehave:
 //
-//   FAKE_ACP_MODE   happy (default) | empty-reply | exit-early | fail-after-text | hang | hang-exit-gated | cancel-exits | resume-fails | no-auth | auth-required | permission
+//   FAKE_ACP_MODE   happy (default) | empty-reply | exit-early | fail-after-text | hang | hang-exit-gated | cancel-exits | cancel-exits-with-child | resume-fails | no-auth | auth-required | permission
 //                   | interleave (message → tool → message → tool → message)
 //                   | no-session-config (reject session/set_mode + set_model
 //                     with -32601, i.e. an agent predating those methods)
@@ -38,6 +38,16 @@ import { spawn } from "node:child_process";
 import { existsSync, writeFileSync } from "node:fs";
 
 const mode = process.env.FAKE_ACP_MODE ?? "happy";
+if (mode === "cancel-exits-with-child") {
+  const descendant = spawn(
+    process.execPath,
+    ["-e", "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000)"],
+    { stdio: "ignore" },
+  );
+  if (process.env.FAKE_ACP_DESCENDANT_PID && descendant.pid) {
+    writeFileSync(process.env.FAKE_ACP_DESCENDANT_PID, String(descendant.pid));
+  }
+}
 // opencode-shaped surface: the session carries its own model catalog and the
 // model is chosen with session/set_config_option, because `opencode acp` takes
 // no -m. Off unless FAKE_ACP_MODELS is set, so every existing mode is byte-
@@ -371,7 +381,12 @@ function handle(msg: any) {
       break;
     }
     case "session/prompt": {
-      if (mode === "hang" || mode === "hang-exit-gated" || mode === "cancel-exits") {
+      if (
+        mode === "hang" ||
+        mode === "hang-exit-gated" ||
+        mode === "cancel-exits" ||
+        mode === "cancel-exits-with-child"
+      ) {
         // never resolve the prompt — lets tests exercise interrupt
         setInterval(() => {}, 1_000);
         return;
@@ -520,7 +535,7 @@ function handle(msg: any) {
     }
     case "session/cancel":
       // the interrupted prompt resolves as cancelled
-      if (mode === "cancel-exits") process.exit(0);
+      if (mode === "cancel-exits" || mode === "cancel-exits-with-child") process.exit(0);
       break;
     default:
       if (msg.id !== undefined) out({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });

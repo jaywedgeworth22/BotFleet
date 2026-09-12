@@ -224,6 +224,7 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.FAKE_ACP_DUMP;
     delete process.env.FAKE_ACP_RPC_DUMP;
     delete process.env.FAKE_ACP_EXIT_GATE;
+    delete process.env.FAKE_ACP_DESCENDANT_PID;
     delete process.env.XAI_API_KEY;
     delete process.env.OPENCODE_API_KEY;
     delete process.env.CURSOR_API_KEY;
@@ -326,6 +327,24 @@ describe("ACP turns (fake CLI)", () => {
     expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
     expect(recorder.events.filter((event) => event.type === "runtime.error")).toHaveLength(1);
     expect(instance.adapter.hasSession("t-cancel-exits")).toBe(false);
+  });
+
+  it.skipIf(process.platform === "win32")("kills an MCP descendant after the timed-out CLI leader exits", async () => {
+    const descendantPidFile = join(scratch, "descendant.pid");
+    process.env.FAKE_ACP_DESCENDANT_PID = descendantPidFile;
+    await create(GrokAgentDriver, "cancel-exits-with-child", { promptTimeoutMs: 1_000 });
+    await instance.adapter.sendTurn({ threadId: "t-cancel-child", text: "never finishes" });
+    await vi.waitFor(() => {
+      expect(() => readFileSync(descendantPidFile, "utf8")).not.toThrow();
+    });
+    const descendantPid = Number(readFileSync(descendantPidFile, "utf8"));
+
+    const done = await recorder.until((event) => event.type === "turn.completed", 3_000);
+    expect(done).toMatchObject({ ok: false, stopReason: "prompt_timeout" });
+
+    await vi.waitFor(() => {
+      expect(() => process.kill(descendantPid, 0)).toThrow();
+    }, { timeout: 4_000 });
   });
 
   it("emits each assistant text block before the tool that follows it", async () => {

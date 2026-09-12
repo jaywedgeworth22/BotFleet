@@ -467,24 +467,25 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         const stop = () => killCliTree(child);
         const stopAndWaitForExit = async () => {
           state.deadlineTerminating = true;
-          if (child.exitCode !== null || child.signalCode !== null) return;
+          const pid = child.pid;
+          const forceExit = () => {
+            try {
+              if (process.platform !== "win32" && pid) process.kill(-pid, "SIGKILL");
+              else child.kill("SIGKILL");
+            } catch {
+              // already gone
+            }
+          };
+          if (child.exitCode !== null || child.signalCode !== null) {
+            forceExit();
+            return;
+          }
           await new Promise<void>((resolve) => {
-            let forceTimer: ReturnType<typeof setTimeout> | undefined;
-            const exited = () => {
-              if (forceTimer) clearTimeout(forceTimer);
-              resolve();
-            };
-            child.once("exit", exited);
+            child.once("exit", resolve);
             stop();
-            forceTimer = setTimeout(() => {
-              const pid = child.pid;
-              try {
-                if (process.platform !== "win32" && pid) process.kill(-pid, "SIGKILL");
-                else child.kill("SIGKILL");
-              } catch {
-                // already gone
-              }
-            }, FORCE_EXIT_AFTER_MS);
+            // Keep the process-group kill armed after the CLI leader exits:
+            // an MCP descendant can ignore SIGTERM and outlive its parent.
+            const forceTimer = setTimeout(forceExit, FORCE_EXIT_AFTER_MS);
             forceTimer.unref?.();
           });
         };
