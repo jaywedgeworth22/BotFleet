@@ -22,6 +22,7 @@ const EXPECTED_TEAM_ID = "CC8UTF7ATG";
 const EXPECTED_BUNDLE_ID = "com.botfleet.app";
 const EXPECTED_SIGN_IDENTITY = "Developer ID Application: Jay Wedgeworth, LLC (CC8UTF7ATG)";
 const BUILDER_SIGN_SELECTOR = "Jay Wedgeworth, LLC (CC8UTF7ATG)";
+export const DEFAULT_PORTS = [8799, 18799, 28799];
 const BUILD_MANIFEST_RELATIVE = "Contents/Resources/server/build-identity.json";
 const GENERATED_PATHS = [
   "electron/resources/BotFleet Recorder.app/Contents/MacOS/recorder-helper",
@@ -492,6 +493,14 @@ export function isExpectedBotFleetProcess(command, cwd, config) {
   return isNode && serverArgument && cwd === config.checkout;
 }
 
+export function stableApplicationProcessError(firstPids, secondPids, openApplication) {
+  if (!openApplication) return null;
+  if (firstPids.length !== 1 || secondPids.length !== 1 || firstPids[0] !== secondPids[0]) {
+    return "Updated BotFleet application did not remain running as one exact installed-bundle process";
+  }
+  return null;
+}
+
 async function waitForExit(pids, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let remaining = pids.filter(processIsAlive);
@@ -559,7 +568,7 @@ function createConfig(parsed) {
     domain: `gui/${process.getuid()}`,
     lockDirectory: resolve(process.env.BOTFLEET_UPDATE_LOCK || join(home, "Library/Caches/BotFleet/update.lock")),
     updatesDirectory: resolve(process.env.BOTFLEET_UPDATE_ROOT || join(home, "Library/Caches/BotFleet/updates")),
-    ports: (process.env.BOTFLEET_UPDATE_PORTS || "8799,18799").split(",").map(Number),
+    ports: (process.env.BOTFLEET_UPDATE_PORTS || DEFAULT_PORTS.join(",")).split(",").map(Number),
     legacySettleMs: Number(process.env.BOTFLEET_LEGACY_SETTLE_MS || 2_000),
     gracefulExitMs: Number(process.env.BOTFLEET_GRACEFUL_EXIT_MS || 20_000),
     termExitMs: Number(process.env.BOTFLEET_TERM_EXIT_MS || 20_000),
@@ -855,7 +864,20 @@ function createOperations(config) {
     },
 
     verifySingleOwner: async (prepared) => {
-      if (config.parsed.openApplication !== false) await sleep(2_000);
+      let firstAppPids = [];
+      let secondAppPids = [];
+      if (config.parsed.openApplication !== false) {
+        await sleep(2_000);
+        firstAppPids = await exactAppPids(config.appPath);
+        await sleep(1_000);
+        secondAppPids = await exactAppPids(config.appPath);
+      }
+      const appError = stableApplicationProcessError(
+        firstAppPids,
+        secondAppPids,
+        config.parsed.openApplication !== false,
+      );
+      if (appError) throw new Error(appError);
       const snapshot = await runtimeIdentityPreflight(config, prepared);
       if (!snapshot.safe || snapshot.mode !== "authenticated") {
         throw new Error(snapshot.reason || "Updated application did not attach to the authenticated single data owner");

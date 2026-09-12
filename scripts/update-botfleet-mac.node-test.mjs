@@ -6,11 +6,13 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
   authenticatedRuntimeError,
+  DEFAULT_PORTS,
   designatedRequirementFromOutput,
   isExpectedBotFleetProcess,
   loadPrepared,
   parseArguments,
   run,
+  stableApplicationProcessError,
   swapPreparedFiles,
   validateBuiltBundle,
 } from "./update-botfleet-mac.mjs";
@@ -125,6 +127,17 @@ test("process verification binds relative server commands to the live checkout c
   assert.equal(isExpectedBotFleetProcess("/usr/bin/python3 server/index.ts", config.checkout, config), false);
   assert.equal(isExpectedBotFleetProcess("/Applications/Other.app/Contents/MacOS/BotFleet", "/", config), false);
   assert.equal(isExpectedBotFleetProcess("/Applications/BotFleet.app/Contents/MacOS/BotFleet", "/", config), true);
+});
+
+test("the updater covers every desktop harness fallback port", () => {
+  assert.deepEqual(DEFAULT_PORTS, [8799, 18799, 28799]);
+});
+
+test("desktop verification requires one stable installed-application process after open", () => {
+  assert.equal(stableApplicationProcessError([41], [41], true), null);
+  assert.match(stableApplicationProcessError([], [], true), /did not remain running/);
+  assert.match(stableApplicationProcessError([41], [42], true), /did not remain running/);
+  assert.equal(stableApplicationProcessError([], [], false), null);
 });
 
 test("post-start identity accepts new work while the pre-install readiness gate still refuses it", () => {
