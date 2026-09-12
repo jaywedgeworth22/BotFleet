@@ -36,4 +36,16 @@ final class LiveActivityLifecycleTests: XCTestCase {
         XCTAssertTrue(lifecycle.permitsUpdates(from: currentResumeGeneration))
         XCTAssertFalse(lifecycle.permitsUpdates(from: staleResumeGeneration))
     }
+
+    func testInactiveOnlyInterruptionRetainsCurrentUpdatePolicy() {
+        var lifecycle = LiveActivityLifecycle()
+        XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
+        let foregroundGeneration = lifecycle.generation
+        XCTAssertTrue(lifecycle.acceptFreshState(for: foregroundGeneration))
+
+        XCTAssertNil(lifecycle.transition(to: .inactive))
+        XCTAssertNil(lifecycle.transition(to: .active))
+        XCTAssertEqual(lifecycle.generation, foregroundGeneration)
+        XCTAssertTrue(lifecycle.permitsUpdates(from: foregroundGeneration))
+    }
 }

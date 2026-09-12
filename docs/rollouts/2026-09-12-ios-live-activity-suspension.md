@@ -1,4 +1,4 @@
-# 2026-09-12 — iOS Live Activity suspension policy
+# 2026-09-12 — iOS Live Activity Suspension Policy
 
 Issue #294.  Board `699ea1ae`.  Branch `codex/ios-live-activity-suspend-20260912`.
 
@@ -8,7 +8,7 @@ BotFleet uses local ActivityKit updates and does not register Live Activity push
 
 The inactive phase keeps the current update policy because it also covers short system interruptions such as Control Center.  Only the background transition disables updates and starts teardown.
 
-## Race handling
+## Race Handling
 
 ActivityKit mutations run through one ordered task chain.  Each foreground update carries the generation that scheduled it and rechecks that generation around suspension points.  A stale update therefore cannot recreate an activity after background teardown, while a rapid foreground return waits for both teardown and a post-resume snapshot before rebuilding.  Snapshot application uses the same pairing-generation and state-revision guards as other companion hydration paths; transient failures retry quietly while the app remains active.
 

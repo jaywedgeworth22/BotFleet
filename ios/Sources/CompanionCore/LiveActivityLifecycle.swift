@@ -17,12 +17,14 @@ public enum LiveActivityLifecycleAction: Sendable, Equatable {
 ///
 /// `.inactive` is a transition on the way to system UI or background.  It
 /// retains the preceding update policy; only `.background` disables updates
-/// and ends activities.  The next `.active` transition starts a fresh
-/// generation, but updates stay disabled until a post-resume snapshot lands.
+/// and ends activities.  Initial activation and the first `.active` after
+/// `.background` start a fresh generation, but updates stay disabled until a
+/// post-resume snapshot lands.
 public struct LiveActivityLifecycle: Sendable {
     public private(set) var phase: LiveActivityLifecyclePhase = .inactive
     public private(set) var generation = 0
     public private(set) var updatesEnabled = false
+    private var freshStateRequired = true
 
     public init() {}
 
@@ -31,12 +33,15 @@ public struct LiveActivityLifecycle: Sendable {
         phase = next
         switch next {
         case .active:
+            guard freshStateRequired else { return nil }
+            freshStateRequired = false
             generation += 1
             updatesEnabled = false
             return .awaitFreshState
         case .inactive:
             return nil
         case .background:
+            freshStateRequired = true
             generation += 1
             updatesEnabled = false
             return .endAll
