@@ -1,6 +1,7 @@
 // BotFleet server — the harness host. Clients hold no transports
 // (upstream rule): the React app dispatches typed commands over HTTP and
 // folds one SSE event stream; every provider process runs here.
+import { matchesLocalAutoConsent } from "../shared/local-auto-consent.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {  readFileSync, unlinkSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -7179,8 +7180,8 @@ const server = createServer(async (req, res) => {
       // exactly like that route claims it, so two requests cannot both
       // pass the check.
       const localVmTarget = perBotLocalVmTarget(bot.id);
-      if (localVmLifecycleBusy.has(localVmTarget.key)) {
-        return json(res, 409, { error: "this bot's Local VM setup action is still running — retry the delete after it finishes" });
+      if (localVmModeChangeBusy || localVmLifecycleBusy.has(localVmTarget.key)) {
+        return json(res, 409, { error: "a Local VM setup action is still running — retry the delete after it finishes" });
       }
       localVmLifecycleBusy.add(localVmTarget.key);
       try {
@@ -8620,14 +8621,19 @@ const server = createServer(async (req, res) => {
       // `resolveGrants` handed an already-unattended, already-autoApprove
       // bot host control the moment the operator later loosened the
       // allowlist again, with no acknowledgement ever having been asked.
-      const needsAcknowledgement = store.bots
+      const pendingLocalAutoConsent = () => store.bots
         .filter(
           (bot) =>
-            localAutoAcknowledgementError(bot, persisted, bot.autoApprove === true, acknowledged) !== null,
+            localAutoAcknowledgementError(bot, persisted, bot.autoApprove === true, false) !== null,
         )
         .map((bot) => ({ id: bot.id, name: bot.name }));
-      if (persisted.length > 0 && needsAcknowledgement.length > 0) {
-        return json(res, 400, {
+      const consentRequired = () => {
+        const bots = pendingLocalAutoConsent();
+        return bots.length > 0 && !(acknowledged && matchesLocalAutoConsent(body.acknowledgedBots, bots)) ? bots : null;
+      };
+      const needsAcknowledgement = consentRequired();
+      if (needsAcknowledgement) {
+        return json(res, acknowledged ? 409 : 400, {
           error: LOCAL_AUTO_ACK_ERROR,
           needsAcknowledgement,
         });
@@ -8637,6 +8643,12 @@ const server = createServer(async (req, res) => {
         // driver that takes a second to answer a cancel would otherwise add
         // that second once per bot to a single click.
         await Promise.allSettled(store.bots.map((bot) => interruptIfHostRevoked(bot, next)));
+        // Bots may have been created, renamed, or changed while cancellation
+        // awaited a driver.  Recheck before any grant or default is persisted.
+        const changedConsent = consentRequired();
+        if (changedConsent) {
+          return json(res, 409, { error: LOCAL_AUTO_ACK_ERROR, needsAcknowledgement: changedConsent });
+        }
         for (const bot of store.bots) {
           const patched = store.patchBot(bot.id, { computers: next });
           if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });

@@ -48,8 +48,11 @@ export function BotComputerDefaults() {
   // Set when the server refuses an apply with `needsAcknowledgement` — the
   // named bots would gain This Computer + Auto with nobody having seen the
   // warning.  Non-null shows the shared confirm dialog; confirming resubmits
-  // the SAME apply with `acknowledgeLocalAuto: true`.
-  const [pendingAck, setPendingAck] = useState<{ id: string; name: string }[] | null>(null);
+  // the same defaults and the exact identities shown in the warning.
+  const [pendingAck, setPendingAck] = useState<{
+    bots: { id: string; name: string }[];
+    defaults: { computers: Destination[]; cloudBackend: Backend };
+  } | null>(null);
   const vpsConfigured = Boolean(state.config?.vps?.configured);
 
   useEffect(() => {
@@ -84,14 +87,15 @@ export function BotComputerDefaults() {
       .finally(() => setSaving(false));
   };
 
-  const applyDefaults = (opts: { acknowledge?: boolean } = {}) => {
+  const applyDefaults = (confirmation: typeof pendingAck = null) => {
+    const defaults = confirmation?.defaults ?? { computers, cloudBackend: backend };
     setApplying(true);
     setError(null);
     api("/api/bots/apply-defaults", {
       method: "POST",
       body: JSON.stringify({
-        botDefaults: { computers, cloudBackend: backend },
-        ...(opts.acknowledge ? { acknowledgeLocalAuto: true } : {}),
+        botDefaults: defaults,
+        ...(confirmation ? { acknowledgeLocalAuto: true, acknowledgedBots: confirmation.bots } : {}),
       }),
     })
       .then((response: { applied: number; config: ConfigStatus }) => {
@@ -106,7 +110,7 @@ export function BotComputerDefaults() {
       // plain error nothing on this page could ever act on.
       .catch((e) => {
         if (e instanceof ApiError && Array.isArray(e.body?.needsAcknowledgement) && e.body.needsAcknowledgement.length > 0) {
-          setPendingAck(e.body.needsAcknowledgement);
+          setPendingAck({ bots: e.body.needsAcknowledgement, defaults });
         } else {
           setError(e.message);
         }
@@ -251,7 +255,9 @@ export function BotComputerDefaults() {
       <LocalComputerAutoWarning
         open={pendingAck !== null}
         onCancel={() => setPendingAck(null)}
-        onConfirm={() => applyDefaults({ acknowledge: true })}
+        bots={pendingAck?.bots}
+        busy={applying}
+        onConfirm={() => pendingAck && applyDefaults(pendingAck)}
       />
     </>
   );
