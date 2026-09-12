@@ -38,6 +38,8 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 (mirror: docs/EFFORT-LOG.md in the repo). As of 2026-08-29.
 
 ## In Progress
+
+- **2026-09-12 — CODEX — VALIDATED — Preserve active routine receipt groups (#336, board f34fe9d7).**  Worktree `~/apps/botfleet-codex-routine-retention-20260912` @ `codex/routine-retention-20260912`.  Retain active groups and unsettled confirmation results outside the 2,000-record terminal tail, pruning by terminal time after settlement.  Peer review and the full local gate passed: 3,588 Vitest tests, 19 skipped, plus every chained suite.  Hosted CI, merge, and signed rollout remain pending.  <!-- codex-routine-retention-20260912 -->
 - **2026-09-12 — CODEX — IN PROGRESS — Make local BotFleet updates preserve active work and support rollback (issue #319, PR #325, board `e296144327fc4cdab5960e6cff0f7ae5`, branch `codex/safe-mac-updater-20260912`, worktree `/Users/jay/apps/botfleet-codex-safe-updater-20260912`).**  Building a repo-managed prepare/apply transaction with isolated staging, authenticated runtime readiness, graceful exact-owner shutdown, recoverable app and checkout rollback, and fault-injection tests.  This source lane will not update, stop, install, or restart the live Mac application or harness. <!-- wb-agent-report:e296144327fc4cdab5960e6cff0f7ae5 -->
 
 - **2026-09-12 — BF-DESIGNER — IN PROGRESS — iOS roster keeps Bot Chats separate from user rooms (board `bf86a7bf`, branch `grok/ios-bot-chats`, worktree `~/apps/botfleet-designer-ios-bot-chats`).**  `group.dm` rooms leave the Channels/Rooms section and sit in Bot Chats at the bottom, default collapsed, matching Mac.  Extra-ship no.  No TestFlight.  <!-- wb-agent-report:bf86a7bff1e345dda62ab689bb3bf249 -->
@@ -290,4 +292,3 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 - **2026-09-12 — CODEX — COMPLETED — Correct Antigravity quota routing (#283, PR #338, board 09d689cb).**  Merged as `abe978c6`.  Maps live opaque model labels to exact catalog identities, preserves conservative reset bounds, and clears recovered aliases.  Full gate passed 3,554 Vitest tests plus chained suites; 84 focused tests passed after peer corrections.  Installed Mac acceptance remains in #274.  <!-- codex-quota-routing-20260912 -->
 
-- **2026-09-12 — CODEX — IN PROGRESS — Preserve active routine receipt groups (#336, board f34fe9d7).**  Worktree `~/apps/botfleet-codex-routine-retention-20260912` @ `codex/routine-retention-20260912`.  Retain active work plus bounded terminal history, pruning by terminal time after shared settlement.  No admission-policy changes.  <!-- codex-routine-retention-20260912 -->
