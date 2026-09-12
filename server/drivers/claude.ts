@@ -836,7 +836,17 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
         // A settled turn owns no retry budget. Retained CLI sessions may run
         // many later turns on this thread, and each must start fresh.
         retryState.delete(threadId);
-        emit({ ...base(threadId, t.turnId), type: "turn.completed", ok, stopReason, cost, ...(usage ? { usage } : {}) });
+        emit({
+          ...base(threadId, t.turnId),
+          type: "turn.completed",
+          ok,
+          stopReason,
+          cost,
+          // Claude CLI login uses subscription billing.  Its reported
+          // total_cost_usd is the equivalent API price, not a cash charge.
+          ...(cost != null ? { billingMode: "estimated" as const } : {}),
+          ...(usage ? { usage } : {}),
+        });
         if (session.child.exitCode === null && !session.closing) armIdle(threadId);
       };
       const currentTurnId = () => session.turn?.turnId ?? turnId;

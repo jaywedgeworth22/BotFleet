@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -76,6 +76,43 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+it("persists queued receipts while pruning more than 2,000 terminal records", () => {
+  const h = harness();
+  h.setAdmitting(false);
+  const input = { runOn: "maus" as const, webhookId: "retention-hook", webhookName: "Retention", prompt: "Fixture", botId: "bot", receivedAt: 1 };
+  const queued = h.manager.enqueueWebhook({ ...input, deliveryId: "queued" });
+  const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+  disk.runs = [queued, ...Array.from({ length: 2001 }, (_, i) => ({ ...queued, id: `history-${i}`, deliveryId: `history-${i}`, status: "completed", createdAt: i + 2, finishedAt: i + 3 }))];
+  writeFileSync(h.options.file!, JSON.stringify(disk));
+  const reloaded = new RoutineManager(h.options);
+  const second = reloaded.enqueueWebhook({ ...input, deliveryId: "new-queued" });
+  const persisted = JSON.parse(readFileSync(h.options.file!, "utf8"));
+  expect(persisted.runs).toHaveLength(2002);
+  expect(persisted.runs.filter((run: { status: string }) => run.status === "queued").map((run: { id: string }) => run.id)).toEqual([queued.id, second.id]);
+  expect(persisted.runs.some((run: { id: string }) => run.id === "history-0")).toBe(false);
+});
+
+it("retains the exact result of an unsettled run-now confirmation until its card settles", () => {
+  const h = harness();
+  h.setAdmitting(false);
+  const routine = h.manager.create({ name: "Fixture", prompt: "Check", botId: "bot", schedule: { type: "daily", time: "09:00", weekdays: [1] } });
+  const request = { requestId: "retained-request", messageId: "message", botId: "bot", threadId: "thread", action: "run_now" as const, fingerprintVersion: 1 as const, fingerprint: "a".repeat(64) };
+  const committed = h.manager.runNow(routine.id, request)!;
+  const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+  const terminal = { ...committed, status: "completed", finishedAt: 1 };
+  disk.runs = [terminal, ...Array.from({ length: 2001 }, (_, i) => ({ ...terminal, id: `later-${i}`, createdAt: i + 2, finishedAt: i + 3 }))];
+  writeFileSync(h.options.file!, JSON.stringify(disk));
+  const reloaded = new RoutineManager(h.options);
+  reloaded.update(routine.id, { name: "Prune history" });
+  const afterPruning = new RoutineManager(h.options);
+  expect(afterPruning.runNow(routine.id, request)).toMatchObject({ id: committed.id, status: "completed" });
+  expect(afterPruning.listRuns()).toHaveLength(2001);
+  afterPruning.forgetRoutineRequestReceipt(request);
+  const settled = new RoutineManager(h.options);
+  expect(settled.listRuns()).toHaveLength(2000);
+  expect(settled.listRuns().some((run) => run.id === committed.id)).toBe(false);
 });
 
 describe("nextOccurrence", () => {

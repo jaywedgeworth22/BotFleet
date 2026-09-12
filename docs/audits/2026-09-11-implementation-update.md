@@ -1,8 +1,8 @@
 # BotFleet Audit Implementation Update
 
-Updated 2026-09-11T16:12:10-05:00 (Central Time).
+Updated 2026-09-12T05:38:59-05:00 (Central Time).
 
-This batch implements 11 of the original 35 findings across five pull requests, plus dependency issue #311.  The other 24 findings remain explicitly tracked below.  The [September 9 audit](2026-09-09-end-to-end-audit.md) and its [original evidence ledger](2026-09-09-findings.json) remain unchanged.  The [structured addendum](2026-09-11-implementation-update.json) preserves a finding-by-finding link to that baseline.
+This addendum now implements 12 of the original 35 findings across six pull requests, plus dependency issue #311.  The other 23 findings remain explicitly tracked below.  The [September 9 audit](2026-09-09-end-to-end-audit.md) and its [original evidence ledger](2026-09-09-findings.json) remain unchanged.  The [structured addendum](2026-09-11-implementation-update.json) preserves a finding-by-finding link to that baseline.
 
 ## Implemented Changes
 
@@ -11,6 +11,7 @@ This batch implements 11 of the original 35 findings across five pull requests, 
 - [PR #314](https://github.com/jaywedgeworth22/BotFleet/pull/314): Isolate bot MCP configuration and tool-free one-shot Claude helpers, cache strict-MCP capability probes, and remove duplicated Grok request context.  Merged as `86410c70`.
 - [PR #315](https://github.com/jaywedgeworth22/BotFleet/pull/315): Track the actual turn owner, select healthy fallbacks, retain busy fences until cancellation succeeds, serialize provider reloads against new work, and protect pending completion folds and newer turns from stale cleanup.  Preserve terminal failure events and prior cursor ownership when Claude capability checks prevent launch; route approval replies to their actual request owner; retain room fallback selections through requeue; guard asynchronous setup and cleanup by exact dispatch identity; and drain deferred work after either reload outcome.  Contained in this PR.
 - [PR #316](https://github.com/jaywedgeworth22/BotFleet/pull/316): Update packaging, test, and docs dependencies and adapt the builder schema; validate generated artifacts on clean hosted operating systems.  Merged as `7ae5c8c1`.
+- [PR #344](https://github.com/jaywedgeworth22/BotFleet/pull/344): Classify Claude subscription-equivalent prices as estimates, preserve them as telemetry metadata, and exclude them from persisted and Usage Monitor actual-spend totals.  Contained in this PR.
 
 ## Validation And Operational Boundaries
 
@@ -51,7 +52,7 @@ The next source priorities are paired-companion profile permissions (#93), expli
 | EN-05 | P1 | [#279](https://github.com/jaywedgeworth22/BotFleet/issues/279) | [#314](https://github.com/jaywedgeworth22/BotFleet/pull/314) — merged | Verify a deployed Grok multi-turn/tool exchange without duplicated context; source request-body regressions cover the construction. |
 | EN-06 | P2 | [#280](https://github.com/jaywedgeworth22/BotFleet/issues/280) | Open follow-up | Preserve resume failure explicitly instead of silently starting a fresh ACP/Codex conversation. |
 | EN-07 | P2 | [#281](https://github.com/jaywedgeworth22/BotFleet/issues/281) | Open follow-up | Add a bounded ACP prompt deadline and cancellation regression. |
-| EN-08 | P2 | [#282](https://github.com/jaywedgeworth22/BotFleet/issues/282) | Open follow-up | Separate subscription-equivalent estimates from actual billed spend throughout telemetry and UI. |
+| EN-08 | P2 | [#282](https://github.com/jaywedgeworth22/BotFleet/issues/282) | [#344](https://github.com/jaywedgeworth22/BotFleet/pull/344) — in this PR | Verify the deployed Usage Monitor retains the equivalent as estimate metadata without adding it to actual spend. |
 | EN-09 | P1 | [#188](https://github.com/jaywedgeworth22/BotFleet/issues/188) | Open follow-up | Coordinate with the CLAUDE-owned DSH launch lane (#188); validate setup/auth and first-class dispatch. |
 | EN-10 | P1 | [#283](https://github.com/jaywedgeworth22/BotFleet/issues/283) | Open follow-up | Coordinate with the GROK quota lane; normalize Antigravity quota groups to catalog routing. |
 | R7 | P1 | [#284](https://github.com/jaywedgeworth22/BotFleet/issues/284) | Open follow-up | Collect current routine failure samples and distinguish setup, provider, watchdog, and receipt outcomes. |

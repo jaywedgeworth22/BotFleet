@@ -213,7 +213,13 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const done = recorder.events.at(-1)!;
     // usage on the settle is the turn total from the result message, so
     // the harness has one figure to bank per turn
-    expect(done).toMatchObject({ type: "turn.completed", ok: true, cost: 0.01, usage: { input: 12, output: 5, cachedInput: 2 } });
+    expect(done).toMatchObject({
+      type: "turn.completed",
+      ok: true,
+      cost: 0.01,
+      billingMode: "estimated",
+      usage: { input: 12, output: 5, cachedInput: 2 },
+    });
     expect(instance.adapter.hasSession("t-happy")).toBe(false);
   });
 
