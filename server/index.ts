@@ -4558,6 +4558,11 @@ async function runGroupMemberTurn(
               signal: ask.signal,
             }),
           deps: {
+            // The same seven `/api/internal/` bodies the 1:1 host is given.
+            // A room turn is the same bot running the same tools; only the
+            // thread it answers on differs, so withholding four of them here
+            // would give the same bot a smaller toolset in a room than in a
+            // direct message.
             executeListAgentsRequest,
             executeAskBotRequest,
             executeListRoutinesRequest,
