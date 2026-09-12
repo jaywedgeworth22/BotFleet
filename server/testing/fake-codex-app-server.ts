@@ -5,7 +5,8 @@
 // real app-server, it never exits on its own — the driver kills it.
 //
 //   FAKE_CODEX_MODE   happy (default) | approval | resume | stream | windows-command |
-//                     mcp-elicitation | logged-in-stdout | logged-out | unauthorized
+//                     mcp-elicitation | logged-in-stdout | logged-out | unauthorized |
+//                     resume-unauthorized | resume-transient
 //   FAKE_CODEX_DUMP   path to write {argv, env, calls, decision} as JSON
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
@@ -79,7 +80,10 @@ process.stdin.on("data", (chunk) => {
       continue;
     }
 
-    if (msg.method) calls.push({ method: msg.method, params: msg.params ?? null });
+    if (msg.method) {
+      calls.push({ method: msg.method, params: msg.params ?? null });
+      dump();
+    }
 
     switch (msg.method) {
       case "initialize":
@@ -114,6 +118,28 @@ process.stdin.on("data", (chunk) => {
       case "thread/resume":
         if (mode === "resume") {
           out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId } } });
+        } else if (mode === "resume-unauthorized") {
+          out({
+            jsonrpc: "2.0",
+            id: msg.id,
+            error: { code: -32603, message: "unexpected status 401 Unauthorized: Missing bearer" },
+          });
+        } else if (mode === "resume-transient" && process.env.FAKE_CODEX_STATE) {
+          let launched = 0;
+          try {
+            launched = Number(readFileSync(process.env.FAKE_CODEX_STATE, "utf8")) || 0;
+          } catch {}
+          writeFileSync(process.env.FAKE_CODEX_STATE, String(launched + 1));
+          const quota = Number(process.env.FAKE_CODEX_TRANSIENTS) || 1;
+          if (launched < quota) {
+            out({
+              jsonrpc: "2.0",
+              id: msg.id,
+              error: { code: -32603, message: "provider returned 503: upstream capacity exceeded" },
+            });
+          } else {
+            out({ jsonrpc: "2.0", id: msg.id, result: { thread: { id: msg.params?.threadId } } });
+          }
         } else {
           out({ jsonrpc: "2.0", id: msg.id, error: { code: -1, message: "no such thread" } });
         }

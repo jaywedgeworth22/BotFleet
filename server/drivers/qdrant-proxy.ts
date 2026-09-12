@@ -1,4 +1,4 @@
-// Agent RAG & recall MCP proxy — spawned as an MCP server inside bot processes
+// Bot RAG & recall MCP proxy — spawned as an MCP server inside bot processes
 // (via the "qdrant" integration). Connects BotFleet bots to whatever shared
 // vector memory service the operator configures (lessons, preferences,
 // infrastructure runbooks, and decisions). There is no built-in endpoint and
@@ -15,15 +15,11 @@
 //
 // Speaks raw JSON-RPC 2.0 over stdio matching BotFleet proxy conventions.
 import readline from "node:readline";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
-
 import { accessHeaders, accessLoginHint, type AccessTokenHeaders } from "../recall-access.ts";
-
-const execFileAsync = promisify(execFile);
+import { executeRecallCli, fetchRecall, findRecallCli, probeRecallService, recallStatus,
+  RECALL_TOOL_TIMEOUT_MS } from "../recall-transport.ts";
+import { describeCliFailure } from "../cli-failure.ts";
+import { redactSecretsInText } from "../redact.ts";
 
 // No default endpoint ships with BotFleet: the operator points this at their
 // own service in Settings (or via env), and an empty value means "off".
@@ -86,29 +82,10 @@ const DEFAULT_COLLECTION = (
 const COLLECTION_LABEL = DEFAULT_COLLECTION || "agent memory";
 
 export const NOT_CONFIGURED_MESSAGE =
-  "Agent RAG is not configured — set a Service URL in Settings";
+  "Bot RAG is not configured — set a Service URL in Settings";
 
 const BOT_NAME = process.env.OMB_BOT_NAME || "Bot";
 const AGENT_SEAT = process.env.AGENT_SEAT || BOT_NAME.toUpperCase();
-
-/** A `recall` CLI on this host, if there is one: an explicit RECALL_CLI_PATH
- * first, then the generic install locations. Nothing here is specific to any
- * one operator's layout. */
-function findRecallCli(): string | null {
-  if (process.env.RECALL_CLI_PATH && existsSync(process.env.RECALL_CLI_PATH)) {
-    return process.env.RECALL_CLI_PATH;
-  }
-  const home = homedir();
-  const candidates = [
-    join(home, ".local", "bin", "recall"),
-    "/opt/homebrew/bin/recall",
-    "/usr/local/bin/recall",
-  ];
-  for (const c of candidates) {
-    if (existsSync(c)) return c;
-  }
-  return null;
-}
 
 /** With no local CLI and no configured service there is nothing to call, so
  * every tool says so instead of firing a request at a placeholder host. */
@@ -147,24 +124,20 @@ function formatHits(hits: HitRecord[], mode?: string): string {
   return `Found ${hits.length} hit(s) in agent memory [${COLLECTION_LABEL}]${modeLabel}:\n\n${formatted}`;
 }
 
-async function executeRecallCli(subcommand: string, args: string[]): Promise<string> {
+async function runCli(subcommand: string, args: string[]): Promise<string> {
   const cli = findRecallCli();
   if (!cli) throw new Error("recall CLI not found on host");
+  return executeRecallCli(cli, [subcommand, ...args], DEFAULT_COLLECTION, RECALL_TOOL_TIMEOUT_MS);
+}
 
-  const fullArgs = [subcommand, ...args];
-  const { stdout, stderr } = await execFileAsync(cli, fullArgs, {
-    timeout: 30_000,
-    maxBuffer: 4 * 1024 * 1024,
-    env: {
-      ...process.env,
-      PATH: `${join(homedir(), ".local", "bin")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
-    },
-  });
+/** The service owns one corpus; verify it before sending a query or contribution. */
+async function verifyCollection(signal: AbortSignal): Promise<void> {
+  if (!DEFAULT_COLLECTION) return;
+  await probeRecallService(RECALL_URL, recallHttpHeaders(), DEFAULT_COLLECTION, signal);
+}
 
-  if (stderr && !stdout) {
-    throw new Error(stderr.trim());
-  }
-  return stdout.trim();
+function safeError(error: unknown): string {
+  return redactSecretsInText(error instanceof Error ? error.message : String(error)).slice(0, 400);
 }
 
 const TOOLS = [
@@ -290,8 +263,8 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
   const sinceDays = args.since_days ? Number(args.since_days) : undefined;
   const perDoc = args.per_doc ? Number(args.per_doc) : undefined;
 
-  // 1. Try local CLI first (handles near-duplicate, reciprocal rank fusion, cross-encoder rerank)
-  if (findRecallCli()) {
+  // An explicit service URL always wins over the host CLI.
+  if (!RECALL_URL) {
     try {
       const cliArgs = ["search", query, "--limit", String(limit), "--json"];
       if (category) cliArgs.push("--category", category);
@@ -301,18 +274,20 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
       if (sinceDays) cliArgs.push("--since-days", String(sinceDays));
       if (perDoc) cliArgs.push("--per-doc", String(perDoc));
 
-      const raw = await executeRecallCli("search", cliArgs.slice(1));
+      const raw = await runCli("search", cliArgs.slice(1));
       const data = JSON.parse(raw);
       return formatHits(data.hits || [], data.mode);
-    } catch {
-      // Fall through to HTTP endpoint if CLI fails
+    } catch (error) {
+      return `Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
     }
   }
 
-  // 2. HTTP fallback to the configured recall service
+  // Use only the configured HTTP service; never retry writes on another transport.
   if (!RECALL_URL) return NOT_CONFIGURED_MESSAGE;
   try {
     const headers = recallHttpHeaders();
+    const signal = AbortSignal.timeout(RECALL_TOOL_TIMEOUT_MS);
+    await verifyCollection(signal);
 
     const payload: Record<string, unknown> = { query, limit };
     if (category) payload.category = category;
@@ -320,30 +295,26 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
     if (source) payload.source = source;
     if (seat) payload.seat = seat;
     if (sinceDays) payload.since_days = sinceDays;
+    if (perDoc) payload.per_doc = perDoc;
 
-    const res = await fetch(`${RECALL_URL}/recall/search`, {
+    const res = await fetchRecall(`${RECALL_URL}/recall/search`, {
       method: "POST",
       headers,
-      // Followed, so a benign same-host redirect (an http:// -> https://
-      // upgrade, a trailing-slash normalisation) just works instead of being
-      // misread as a login gate.  accessLoginHint still catches a real Access
-      // login page here — it checks the followed response's final URL and
-      // content type, and that check runs before any JSON parsing below.
-      redirect: "follow",
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(15_000),
+      signal,
     });
 
     const gate = accessLoginHint(res);
-    if (gate) return `Agent RAG search failed: ${gate}.`;
+    if (gate) return `Bot RAG search failed: ${gate}.`;
     if (res.ok) {
-      const data = (await res.json()) as { hits?: HitRecord[]; mode?: string };
-      return formatHits(data.hits || [], data.mode);
+      const data = (await res.json()) as { hits?: HitRecord[]; mode?: string; ok?: boolean; error?: unknown };
+      if (data.ok === false || data.error || !Array.isArray(data.hits)) throw new Error("the service returned an invalid search result");
+      return formatHits(data.hits, data.mode);
     }
     const errText = await res.text().catch(() => "");
-    return `Agent RAG search error (${res.status}): ${errText || res.statusText}`;
+    return `Bot RAG search error (${res.status}): ${safeError(errText || res.statusText)}`;
   } catch (err) {
-    return `Failed to query agent RAG at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
+    return `Failed to query agent RAG at ${RECALL_URL}: ${safeError(err)}`;
   }
 }
 
@@ -360,99 +331,67 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
   const url = args.url ? String(args.url).trim() : undefined;
   const force = Boolean(args.force);
 
-  // 1. Try local CLI first
-  if (findRecallCli()) {
+  // Use the local corpus only when no service URL was selected.
+  if (!RECALL_URL) {
     try {
       const cliArgs = [text, "--category", category, "--app", app, "--seat", seat, "--json"];
       if (title) cliArgs.push("--title", title);
       if (url) cliArgs.push("--url", url);
       if (force) cliArgs.push("--force");
 
-      const raw = await executeRecallCli("contribute", cliArgs);
+      const raw = await runCli("contribute", cliArgs);
       const data = JSON.parse(raw);
       if (data.status === "duplicate") {
         return `Contribution duplicate: ${data.message || "A similar lesson already exists"}`;
       }
       return `Stored in ${COLLECTION_LABEL} [doc_id: ${data.doc_id || data.id}]: ${title ? `"${title}"` : text.slice(0, 80)}`;
-    } catch {
-      // Fall through to HTTP endpoint if CLI fails
+    } catch (error) {
+      return `Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
     }
   }
 
-  // 2. HTTP fallback to the configured recall service
+  // Use only the configured HTTP service; never retry writes on another transport.
   if (!RECALL_URL) return NOT_CONFIGURED_MESSAGE;
   try {
     const headers = recallHttpHeaders();
+    const signal = AbortSignal.timeout(RECALL_TOOL_TIMEOUT_MS);
+    await verifyCollection(signal);
 
-    const res = await fetch(`${RECALL_URL}/recall/contribute`, {
+    const res = await fetchRecall(`${RECALL_URL}/recall/contribute`, {
       method: "POST",
       headers,
-      // See the matching comment in recallSearch above: followed, so a
-      // benign same-host redirect just works.
-      redirect: "follow",
       body: JSON.stringify({ text, category, app, seat, title, url, force }),
-      signal: AbortSignal.timeout(15_000),
+      signal,
     });
 
     const gate = accessLoginHint(res);
-    if (gate) return `Agent RAG contribute failed: ${gate}.`;
+    if (gate) return `Bot RAG contribute failed: ${gate}.`;
     if (res.ok) {
-      const data = (await res.json()) as { doc_id?: string; id?: string };
+      const data = (await res.json()) as { doc_id?: string; id?: string; ok?: boolean; error?: unknown; status?: string };
+      if (data.ok === false || data.error) throw new Error("the service rejected the contribution");
+      if (data.status === "duplicate") return "Contribution duplicate: a similar lesson already exists.";
+      if (!data.doc_id && !data.id) throw new Error("the service did not confirm a contribution ID; check before retrying");
       return `Successfully contributed to ${COLLECTION_LABEL} [id: ${data.doc_id || data.id}]`;
     }
     const errText = await res.text().catch(() => "");
-    return `Agent RAG contribute error (${res.status}): ${errText || res.statusText}`;
+    return `Bot RAG contribute error (${res.status}): ${safeError(errText || res.statusText)}`;
   } catch (err) {
-    return `Failed to contribute to agent RAG at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
+    return `Failed to contribute to agent RAG at ${RECALL_URL}: ${safeError(err)}`;
   }
 }
 
 async function recallStats(): Promise<string> {
-  if (unconfigured()) return NOT_CONFIGURED_MESSAGE;
-
-  // 1. Try local CLI first
-  if (findRecallCli()) {
-    try {
-      const raw = await executeRecallCli("stats", ["--json"]);
-      const data = JSON.parse(raw);
-      const points = data.points ? Number(data.points).toLocaleString() : "unknown";
-      const status = data.status || "ready";
-      const embedder = data.embedder_healthy ? "healthy" : "unreachable";
-      return `Agent RAG status [${data.collection || COLLECTION_LABEL}]:\n- Status: ${status}\n- Points: ${points}\n- Embedder: ${embedder}`;
-    } catch {
-      // Fall through to HTTP
-    }
-  }
-
-  // 2. HTTP fallback
-  if (!RECALL_URL) return NOT_CONFIGURED_MESSAGE;
-  try {
-    const healthRes = await fetch(`${RECALL_URL}/health`, {
-      headers: recallHttpHeaders(),
-      // See the matching comment in recallSearch above: followed, so a
-      // benign same-host redirect just works.
-      redirect: "follow",
-      signal: AbortSignal.timeout(6_000),
-    });
-    const gate = accessLoginHint(healthRes);
-    if (gate) return `Agent RAG status check failed: ${gate}.`;
-    if (healthRes.ok) {
-      const data = (await healthRes.json()) as {
-        collection?: string;
-        points?: number;
-        backend_ok?: boolean;
-        version?: string;
-      };
-      const points = data.points ? data.points.toLocaleString() : "connected";
-      return `Agent RAG status [${data.collection || COLLECTION_LABEL}]:\n- Backend: ${data.backend_ok ? "healthy" : "unknown"}\n- Points: ${points}\n- Service Version: ${data.version || "1.0.0"}`;
-    }
-    return `Agent RAG endpoint returned HTTP ${healthRes.status}: ${healthRes.statusText}`;
-  } catch (err) {
-    return `Agent RAG unreachable at ${RECALL_URL}: ${err instanceof Error ? err.message : String(err)}`;
-  }
+  const status = await recallStatus({ url: RECALL_URL, apiKey: RECALL_API_KEY, collection: DEFAULT_COLLECTION,
+    accessClientId: ACCESS_CLIENT_ID, accessClientSecret: ACCESS_CLIENT_SECRET });
+  if (!status.configured) return NOT_CONFIGURED_MESSAGE;
+  if (!status.ready) return `Bot RAG status check failed: ${status.error}.`;
+  return `Bot RAG status [${status.collection}]:\n- Source: ${status.source}\n- Backend: healthy\n- Points: ${status.pointsCount?.toLocaleString()}\n- Checked: ${new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", dateStyle: "medium", timeStyle: "short" }).format(status.checkedAt)} CT`;
 }
 
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
+  if (args.collection && String(args.collection) !== DEFAULT_COLLECTION) {
+    return "Bot RAG cannot select a different collection for one call; select the service and collection in Settings.";
+  }
   switch (name) {
     case "recall_search":
     case "qdrant_search":
@@ -541,7 +480,7 @@ rl.on("line", async (line) => {
       });
     } catch (err) {
       return ok(id, {
-        content: [{ type: "text", text: `Tool error: ${err instanceof Error ? err.message : String(err)}` }],
+        content: [{ type: "text", text: `Tool error: ${safeError(err)}` }],
         isError: true,
       });
     }

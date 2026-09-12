@@ -35,7 +35,7 @@ const PROXY_ENV_KEYS = [
   "CF_ACCESS_CLIENT_SECRET",
 ] as const;
 
-const NOT_CONFIGURED = "Agent RAG is not configured — set a Service URL in Settings";
+const NOT_CONFIGURED = "Bot RAG is not configured — set a Service URL in Settings";
 
 /** The tool arguments these tests send — a named contract, not a bag. */
 interface ToolArgs {
@@ -151,6 +151,22 @@ describe("Agent RAG proxy with nothing configured", () => {
 });
 
 describe("Agent RAG proxy with a configured service", () => {
+  it.each(["recall_search", "recall_contribute"])("blocks %s before sending content to the wrong corpus", async (tool) => {
+    const paths: string[] = [];
+    const server = createServer((req, res) => {
+      paths.push(req.url ?? "");
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ collection: "different-corpus", points: 2, backend_ok: true }));
+    });
+    stub = server;
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    const { callTool } = launch({ OMB_QDRANT_URL: `http://127.0.0.1:${port}`, OMB_QDRANT_COLLECTION: "selected-corpus" });
+    const text = await callTool(tool, { query: "private query", text: "private contribution" });
+    expect(text).toContain("different collection");
+    expect(paths).toEqual(["/health", "/recall/stats"]);
+  });
+
   it("calls the configured endpoint and only that endpoint", async () => {
     const seen: string[] = [];
     const server = createServer((req, res) => {
@@ -159,7 +175,7 @@ describe("Agent RAG proxy with a configured service", () => {
       req.on("data", (chunk) => (body += chunk));
       req.on("end", () => {
         res.setHeader("content-type", "application/json");
-        res.end(JSON.stringify({ hits: [{ text: "a stored lesson", score: 0.9 }], mode: "hybrid" }));
+        res.end(JSON.stringify({ hits: [{ text: "a stored lesson", score: 0.9 }], mode: "hybrid", collection: "agent-memory", points: 1, backend_ok: true }));
       });
     });
     stub = server;
@@ -174,7 +190,7 @@ describe("Agent RAG proxy with a configured service", () => {
     });
     const text = await callTool("recall_search", { query: "how do we deploy" });
 
-    expect(seen).toEqual(["POST /recall/search"]);
+    expect(seen).toEqual(["GET /health", "GET /recall/stats", "POST /recall/search"]);
     expect(text).toContain("a stored lesson");
     expect(text).toContain("agent-memory");
   });
@@ -210,7 +226,7 @@ describe("Agent RAG proxy behind Cloudflare Access", () => {
 
   const okJson = (res: import("node:http").ServerResponse) => {
     res.setHeader("content-type", "application/json");
-    res.end(JSON.stringify({ hits: [{ text: "a stored lesson", score: 0.9 }], doc_id: "doc-1", collection: "agent-memory" }));
+    res.end(JSON.stringify({ hits: [{ text: "a stored lesson", score: 0.9 }], doc_id: "doc-1", collection: "agent-memory", points: 1, backend_ok: true }));
   };
 
   it("sends the Access service token alongside the bearer on search and contribute", async () => {
@@ -230,7 +246,7 @@ describe("Agent RAG proxy behind Cloudflare Access", () => {
       category: "lesson",
     });
 
-    expect(service.seen.map((hit) => hit.path)).toEqual(["/recall/search", "/recall/contribute"]);
+    expect(service.seen.map((hit) => hit.path)).toEqual(["/health", "/recall/stats", "/recall/search", "/health", "/recall/stats", "/recall/contribute"]);
     for (const hit of service.seen) {
       expect(hit.accessId).toBe("fixture-client.access");
       expect(hit.accessSecret).toBe("fixture-access-secret");
@@ -271,7 +287,7 @@ describe("Agent RAG proxy behind Cloudflare Access", () => {
     // (/cdn-cgi/access/login/...), which is what a real Access gateway always
     // sends regardless of which host answers it — so this stays hermetic
     // (same origin as the stub, no live DNS/network dependency) while still
-    // exercising the real "follow, then recognise" path a genuine Access
+    // exercising the real "restrict redirects, then recognise" path a genuine Access
     // redirect takes.
     const service = await startRecordingService((req, res) => {
       if ((req.url ?? "").startsWith("/cdn-cgi/access/login/")) {
@@ -370,10 +386,10 @@ describe("Agent RAG proxy follows benign same-host redirects", () => {
         }
         res.writeHead(200, { "content-type": "application/json" });
         if (url === "/recall/search/canonical") {
-          res.end(JSON.stringify({ hits: [{ text: "a stored lesson", score: 0.9 }], mode: "hybrid" }));
+          res.end(JSON.stringify({ hits: [{ text: "a stored lesson", score: 0.9 }], mode: "hybrid", collection: "agent-memory", points: 1, backend_ok: true }));
           return;
         }
-        res.end(JSON.stringify({ doc_id: "doc-99", collection: "agent-memory" }));
+        res.end(JSON.stringify({ doc_id: "doc-99", collection: "agent-memory", points: 1, backend_ok: true }));
       });
     });
     stub = server;
