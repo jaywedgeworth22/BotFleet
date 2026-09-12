@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { retainRoutineRuns } from "./routine-retention";
+import { retainRoutineRuns, stripStalePromptSnapshots } from "./routine-retention";
 
 it("keeps an old active execution and its receipts beyond 2,000 newer terminal records", () => {
   const owner = { id: "owner", status: "running", createdAt: 1 };
@@ -29,4 +29,44 @@ it("preserves a referenced owner and every queued or waiting receipt without exp
     { id: "new", status: "failed", createdAt: 5 },
   ];
   expect(retainRoutineRuns(runs, 1).map((run) => run.id)).toEqual(["owner", "child", "queued", "new"]);
+});
+
+it("drops prompt snapshots from settled runs beyond the newest N and leaves everything else intact", () => {
+  const runs = [
+    { id: "running", status: "running", createdAt: 1, prompt: "keep: active" },
+    { id: "queued", status: "queued", createdAt: 2, prompt: "keep: queued" },
+    { id: "old", status: "completed", createdAt: 3, finishedAt: 10, prompt: "drop: oldest settled" },
+    { id: "mid", status: "failed", createdAt: 4, finishedAt: 20, prompt: "keep: second newest" },
+    { id: "new", status: "completed", createdAt: 5, finishedAt: 30, prompt: "keep: newest" },
+    { id: "receipt", status: "completed", createdAt: 0, finishedAt: 1, prompt: "keep: run_now receipt" },
+    { id: "bare", status: "cancelled", createdAt: 6, finishedAt: 40 },
+  ];
+  expect(stripStalePromptSnapshots(runs, 2, ["receipt"])).toBe(1);
+  expect(runs).toHaveLength(7);
+  expect(runs.find((run) => run.id === "old")).toEqual({ id: "old", status: "completed", createdAt: 3, finishedAt: 10 });
+  expect(runs.filter((run) => run.prompt !== undefined).map((run) => run.id)).toEqual(["running", "queued", "mid", "new", "receipt"]);
+});
+
+it("orders settled runs by finish time, falls back to creation, and rejects a negative limit", () => {
+  const runs = [
+    { id: "a", status: "completed", createdAt: 100, prompt: "a" },
+    { id: "b", status: "completed", createdAt: 1, finishedAt: 50, prompt: "b" },
+    { id: "c", status: "completed", createdAt: 2, finishedAt: 200, prompt: "c" },
+  ];
+  expect(stripStalePromptSnapshots(runs, 1)).toBe(2);
+  expect(runs.filter((run) => run.prompt !== undefined).map((run) => run.id)).toEqual(["c"]);
+  expect(stripStalePromptSnapshots(runs, 0)).toBe(1);
+  expect(runs.every((run) => run.prompt === undefined)).toBe(true);
+  expect(stripStalePromptSnapshots(runs, 0)).toBe(0);
+  expect(() => stripStalePromptSnapshots(runs, -1)).toThrow(RangeError);
+});
+
+it("keeps the prompt on a settled owner while a waiting run still folds into it", () => {
+  const runs = [
+    { id: "owner", status: "completed", createdAt: 1, finishedAt: 1, prompt: "owner" },
+    { id: "child", status: "waiting", createdAt: 2, coalescedInto: "owner", prompt: "child" },
+    { id: "later", status: "completed", createdAt: 3, finishedAt: 3, prompt: "later" },
+  ];
+  expect(stripStalePromptSnapshots(runs, 0)).toBe(1);
+  expect(runs.map((run) => run.prompt)).toEqual(["owner", "child", undefined]);
 });

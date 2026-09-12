@@ -421,7 +421,7 @@ test("a live data owner pins discovery even while its health port is not listeni
     spawn: async () => { throw new Error("duplicate spawn"); }, sleep: noSleep,
   });
   assert.deepEqual(ports, [37999, 37999]);
-  assert.deepEqual(result, { mode: "failed", conflictOnly: false });
+  assert.deepEqual(result, { mode: "failed", conflictOnly: false, unresponsiveOwner: { pid: 12, port: 37999 } });
 });
 
 test("ownership challenge rejects a matching PID without proof of the data root", async () => {
@@ -442,6 +442,42 @@ test("production discovery refuses legacy or wrong-root harnesses without owners
     ports: [8799, 18799], owner: () => null,
     probe: async () => ({ kind: "botfleet", pid: 12, static: true }),
     spawn: async () => { throw new Error("duplicate spawn"); }, sleep: noSleep,
+  });
+  assert.deepEqual(result, { mode: "failed", conflictOnly: false });
+});
+
+test("a live data owner that never answers is named in the failure and logged, and nothing is spawned", async () => {
+  const lines = [];
+  const result = await resolvePackagedServer({
+    ports: [8799, 18799],
+    owner: () => ({ version: 1, pid: 4242, port: 8799, nonce: "ab".repeat(32) }),
+    probe: async () => ({ kind: "unavailable" }),
+    spawn: async () => { throw new Error("duplicate spawn"); },
+    sleep: noSleep,
+    log: (line) => lines.push(line),
+  });
+  assert.deepEqual(result, { mode: "failed", conflictOnly: false, unresponsiveOwner: { pid: 4242, port: 8799 } });
+  assert.ok(lines.some((line) => line.includes("pid 4242") && line.includes("did not answer health checks on port 8799")));
+  assert.ok(lines.some((line) => line.includes("never answered")));
+});
+
+test("a live data owner that is not listening yet is reported the same way, still without spawning", async () => {
+  const result = await resolvePackagedServer({
+    ports: [8799],
+    owner: () => ({ version: 1, pid: 4242, port: 8799, nonce: "ab".repeat(32) }),
+    probe: async () => ({ kind: "none" }),
+    spawn: async () => { throw new Error("duplicate spawn"); },
+    sleep: noSleep,
+  });
+  assert.deepEqual(result, { mode: "failed", conflictOnly: false, unresponsiveOwner: { pid: 4242, port: 8799 } });
+});
+
+test("a failure with no live owner keeps the two-field shape older callers expect", async () => {
+  const result = await resolvePackagedServer({
+    ports: [8799],
+    probe: async () => ({ kind: "unavailable" }),
+    spawn: async () => { throw new Error("duplicate spawn"); },
+    sleep: noSleep,
   });
   assert.deepEqual(result, { mode: "failed", conflictOnly: false });
 });
