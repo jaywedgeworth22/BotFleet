@@ -46,8 +46,16 @@ registry[globalKey] = trackedChildren;
 // Only children this module itself made a process-group leader (see
 // `spawnDetached`) go in here — `endChild` uses membership as its proof that
 // a `-pid` group signal is safe to send, so it can never land on an
-// unrelated process group by pid coincidence.
-const groupLeaders = new WeakSet<ChildProcess>();
+// unrelated process group by pid coincidence. On `globalThis` for the same
+// reason as `trackedChildren` above: a module-scoped `const` here would give
+// each test file its own empty WeakSet, and the process-`exit` guard only
+// ever installs once (see `guardKey` below) — so its closure would keep
+// reading whichever file's WeakSet happened to load first, and every later
+// file's children would look like non-leaders to it and fall back to a
+// single-pid kill, leaving their grandchildren behind.
+const groupLeaderKey = "__botfleetTestGroupLeaders";
+const groupLeaders: WeakSet<ChildProcess> = (registry[groupLeaderKey] as WeakSet<ChildProcess> | undefined) ?? new WeakSet();
+registry[groupLeaderKey] = groupLeaders;
 
 if (!registry[guardKey]) {
   registry[guardKey] = true;

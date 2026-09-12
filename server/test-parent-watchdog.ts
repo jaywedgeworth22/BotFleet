@@ -47,17 +47,33 @@ function isAlive(pid: number): boolean {
  * parent's pid would sit there unchanged forever and this would never fire.
  * A direct liveness probe on the recorded pid gives the same answer on both.
  *
- * Returns the interval so a caller that wants to stop watching (tests do)
- * can `clearInterval` it. Production never needs to: the process either
- * notices its parent died, or is asked to stop by that same parent first.
+ * Fires `onOrphaned` at most once: the interval is cleared the moment the
+ * parent is found gone, and a boolean guard backs that up in case a tick was
+ * already queued when it fired. `server/index.ts`'s `onOrphaned` re-sends
+ * itself SIGTERM, and that handler is not itself guarded against re-entry —
+ * without this, a still-alive-but-slow `registry.disposeAll()` would see a
+ * second SIGTERM before the first shutdown finished, since nothing here
+ * would otherwise stop checking (a dead parent does not come back) and
+ * `onOrphaned` would fire again on every subsequent tick.
+ *
+ * Returns the interval so a caller that wants to stop watching early (tests
+ * do) can `clearInterval` it. Production never needs to: the process either
+ * notices its parent died — at which point this has already cleared itself —
+ * or is asked to stop by that same parent first.
  */
 export function installTestParentWatchdog(
   parentPidAtBoot: number,
   onOrphaned: () => void,
   intervalMs: number = DEFAULT_CHECK_INTERVAL_MS,
 ): ReturnType<typeof setInterval> {
-  const timer = setInterval(() => {
-    if (!isAlive(parentPidAtBoot)) onOrphaned();
+  let fired = false;
+  const timer: ReturnType<typeof setInterval> = setInterval(() => {
+    if (fired) return;
+    if (!isAlive(parentPidAtBoot)) {
+      fired = true;
+      clearInterval(timer);
+      onOrphaned();
+    }
   }, intervalMs);
   timer.unref?.();
   return timer;
