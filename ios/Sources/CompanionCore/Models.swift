@@ -334,6 +334,9 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
 
     /// Older harnesses expose only `busyBotId`; current ones send `working`.
     public var isWorking: Bool { working ?? (busyBotId != nil) }
+
+    /// Bot-to-bot DMs are not user rooms.  They belong under Bot Chats.
+    public var isBotToBot: Bool { dm == true }
 }
 
 // MARK: - Responses
