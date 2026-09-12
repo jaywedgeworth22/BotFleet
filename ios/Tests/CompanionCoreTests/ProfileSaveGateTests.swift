@@ -3,28 +3,31 @@ import XCTest
 
 final class ProfileSaveGateTests: XCTestCase {
     @MainActor
-    func testFailedSaveKeepsDraftAndDoesNotDismiss() async {
+    func testFailedSaveKeepsDraftForSuccessfulRetry() async {
         var draft = "edited name"
+        var attempts = 0
 
-        let shouldDismiss = await ProfileSaveGate.run(
-            save: { Optional<String>.none },
+        let failedSaveShouldDismiss = await ProfileSaveGate.run(
+            save: {
+                attempts += 1
+                return Optional<String>.none
+            },
             accept: { draft = $0 }
         )
 
-        XCTAssertFalse(shouldDismiss)
+        XCTAssertFalse(failedSaveShouldDismiss)
         XCTAssertEqual(draft, "edited name")
-    }
 
-    @MainActor
-    func testSuccessfulSaveAcceptsServerValueAndDismisses() async {
-        var draft = "edited name"
-
-        let shouldDismiss = await ProfileSaveGate.run(
-            save: { "normalized name" },
+        let retryShouldDismiss = await ProfileSaveGate.run(
+            save: {
+                attempts += 1
+                return "normalized name"
+            },
             accept: { draft = $0 }
         )
 
-        XCTAssertTrue(shouldDismiss)
+        XCTAssertTrue(retryShouldDismiss)
         XCTAssertEqual(draft, "normalized name")
+        XCTAssertEqual(attempts, 2)
     }
 }
