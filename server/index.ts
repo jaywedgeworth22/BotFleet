@@ -152,6 +152,7 @@ import {
 import { buildTurnTools } from "./turn-tools.ts";
 import { isToolCallsStopReason, sendTurnWithToolLoop } from "./tool-executor.ts";
 import { createTurnToolHost } from "./tools/host.ts";
+import { createPermissionBroker, type ApprovalAnswerSource } from "./tools/approvals.ts";
 import { listAgentsResponse } from "./tools/agents.ts";
 import { toolsFor } from "./tools/registry.ts";
 import {
@@ -374,6 +375,15 @@ utilityParentPort?.on("message", (event) => {
 const bus = new EventBus();
 export { bus };
 bus.attach(registry.instances());
+// The in-process permission broker.  A CLI engine asks for permission over
+// its own protocol; a chat-completions driver runs its tool rounds in this
+// process and has no protocol to ask over, so this publishes the SAME
+// `request.opened` on the SAME bus and waits for the answer.  Everything
+// downstream — auto mode, always-allow, the destructive and sensitive
+// guards, the unattended block, auto-review, the decision log, the
+// notification, the watchdog's waiting-on-human exemption — is the existing
+// fold, reached rather than reimplemented.
+const permissionBroker = createPermissionBroker({ publish: (event) => bus.publish(event) });
 // Diagnostics resolve the way telemetry does: a getter over the live config,
 // so a DSN saved in Settings takes effect on the next request rather than the
 // next restart.  The boot line names the ingest host and the project id; the
@@ -1014,6 +1024,31 @@ const askMessageByRequest = new Map<string, string>(); // threadId:requestId -> 
 // model selection can still name the primary after this turn fell back.
 const askInstanceByRequest = new Map<string, string>(); // threadId:requestId -> instanceId
 
+/** The ONE indirection an answer gets: try the in-process broker, and fall
+ * through to the engine's own adapter when the broker does not own this
+ * request.  `respond()` returns null for every CLI requestId, so a CLI
+ * engine's approval takes exactly the path it always took — which is why
+ * the existing approval suites pass unmodified, and why that is the
+ * acceptance criterion for this change.
+ *
+ * The HTTP drivers keep `respondToRequest -> "unavailable"`.  That used to
+ * be a gap (nothing on that lane ever asked); it is now simply correct,
+ * because a request an HTTP bot opened is always the broker's. */
+async function deliverDecision(
+  threadId: string,
+  requestId: string,
+  answer: { behavior: "allow" | "deny" | "answer"; message?: string; source?: ApprovalAnswerSource },
+  instance: ProviderInstance | null | undefined,
+): Promise<RequestOutcome> {
+  const brokered = permissionBroker.respond(threadId, requestId, answer);
+  if (brokered !== null) return brokered;
+  if (!instance) return "unavailable";
+  return await instance.adapter.respondToRequest(threadId, requestId, {
+    behavior: answer.behavior,
+    message: answer.message,
+  });
+}
+
 /** Deliver a person's answer to the engine that asked, and tell the truth
  * about what happened. `unavailable` — the turn ended, the ask timed out,
  * the engine has no asks — is fail-closed: the action was never run. The
@@ -1042,12 +1077,10 @@ async function answerRequest(
   const card = cardMessage?.card;
   const instance = registry.get(askInstanceByRequest.get(requestKey) ?? instanceId);
   let outcome: RequestOutcome = "unavailable";
-  if (instance) {
-    try {
-      outcome = await instance.adapter.respondToRequest(threadId, requestId, { behavior, message });
-    } catch {
-      outcome = "unavailable";
-    }
+  try {
+    outcome = await deliverDecision(threadId, requestId, { behavior, message }, instance);
+  } catch {
+    outcome = "unavailable";
   }
   if (outcome !== "unavailable") askInstanceByRequest.delete(requestKey);
   // The human's verdict, recorded only when it actually reached the engine:
@@ -1098,6 +1131,11 @@ function closeOpenApprovals(threadId: string): void {
   // Peer approvals also hold an in-memory promise. Resolve those first; merely
   // patching their cards would leave the delegation queue waiting 15 minutes.
   cancelPeerApprovalsForThread(threadId);
+  // So does an HTTP-lane tool ask: the tool is sitting inside
+  // `runtime.requestApproval`, and a stopped turn that left that promise
+  // pending would hang the loop behind a card nobody can answer. Settled
+  // as `unavailable`, which the host reads as a deny — the tool never ran.
+  permissionBroker.abandonThread(threadId, "interrupted");
   for (const message of store.messagesFor(threadId)) {
     const card = message.card;
     if (!card?.requestId || card.answered || card.dismissed) continue;
@@ -1446,7 +1484,14 @@ async function reviewPermissionCard(args: {
   if (!card || card.answered) return false;
   let outcome: RequestOutcome = "unavailable";
   try {
-    outcome = await args.instance.adapter.respondToRequest(args.threadId, args.requestId, { behavior: "allow" });
+    // Not a person's click, so the card must not show as one — the reviewer
+    // approved it.
+    outcome = await deliverDecision(
+      args.threadId,
+      args.requestId,
+      { behavior: "allow", source: "auto" },
+      args.instance,
+    );
   } catch {
     return false;
   }
@@ -1478,6 +1523,20 @@ bus.subscribe((event: RuntimeEvent) => {
     if (!isToolCallsStopReason(event.stopReason)) watchdog.settle(event.threadId);
   }
   else watchdog.touch(event.threadId);
+});
+
+// Turn teardown: the second of the three ways a pending ask can be
+// abandoned (Stop is the first, via closeOpenApprovals; a fleet dispose is
+// the third, via latchInterruptedTurns).  A turn that settled for ANY
+// reason — the wall clock, a provider error, a driver that gave up — can
+// no longer consume an answer, so anything still open on its thread is
+// resolved `unavailable` here rather than waiting on a person forever.
+// Idempotent with the other two: whichever arrives first settles the ask.
+// Deliberately unguarded on stopReason: a broker ask is only ever awaited
+// from INSIDE a tool call, so by the time any terminal event names this
+// thread there is no tool left to consume an answer.
+bus.subscribe((event: RuntimeEvent) => {
+  if (event.type === "turn.completed") permissionBroker.abandonThread(event.threadId, "teardown");
 });
 
 // Bots currently working with nobody at the keyboard — a webhook turn, or a
@@ -1708,9 +1767,19 @@ bus.subscribe((event: RuntimeEvent) => {
         // answered — and if the provider is gone entirely, forever.
         void (async () => {
           try {
-            if (!instance) throw new Error("provider unavailable");
-            const outcome = await instance.adapter.respondToRequest(event.threadId, requestId, { behavior: "allow" });
-            if (outcome === "unavailable") throw new Error("the ask is no longer open");
+            // The broker answers its own requests whether or not the
+            // instance lookup found anything; an engine's request still
+            // needs its engine.  `deliverDecision` is the one place that
+            // distinction lives.
+            const outcome = await deliverDecision(
+              event.threadId,
+              requestId,
+              { behavior: "allow", source: "auto" },
+              instance,
+            );
+            if (outcome === "unavailable") {
+              throw new Error(instance ? "the ask is no longer open" : "provider unavailable");
+            }
             pushMessage({
               role: "bot",
               kind: "activity",
@@ -3189,6 +3258,21 @@ async function startTurn(
               botId: bot.id,
               threadId,
               commsDepth,
+              // Bound to THIS turn's bot and thread in the same closure
+              // caller identity lives in, and for the same reason: a card
+              // must name the bot that actually asked, and the answer must
+              // come back to the turn that is waiting.  Nothing downstream
+              // supplies either from the model's arguments.
+              requestApproval: (ask) =>
+                permissionBroker.request({
+                  threadId,
+                  botId: bot.id,
+                  provider: instance.driverKind,
+                  providerInstanceId: instance.instanceId,
+                  tool: ask.tool,
+                  summary: ask.summary,
+                  signal: ask.signal,
+                }),
               deps: {
                 // The `/api/internal/` bodies themselves — not reimplementations
                 // of them.  A MiniMax bot and a Claude bot run the same code
@@ -5026,6 +5110,11 @@ function activeInterruptedTurns(instanceId?: string): InterruptedTurn[] {
 
 function latchInterruptedTurns(turns: readonly InterruptedTurn[]): void {
   for (const turn of turns) {
+    // The third abandon source: the fleet these turns are running on is
+    // about to be disposed.  Settled here, BEFORE `registry.disposeAll`,
+    // so an HTTP-lane tool waiting on a card is released while the loop
+    // that would read its answer still exists.
+    permissionBroker.abandonThread(turn.threadId, "disposed");
     stoppedTurns.add(`${turn.botId}:${turn.threadId}`);
     fallbackAttemptByTurn.delete(`${turn.botId}:${turn.threadId}`);
     pendingMemberFallback.delete(turn.threadId);

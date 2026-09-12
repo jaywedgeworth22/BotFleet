@@ -319,9 +319,12 @@ export interface TurnToolRuntime {
   /** Aborted when the turn is interrupted, swept, or torn down.  A tool that
    *  makes a network call must pass this through so Stop reaches it. */
   signal: AbortSignal;
-  /** Ask a person.  Resolves `"unavailable"` when no broker is mounted —
-   *  fail-closed, and the caller treats it as a deny.  The real broker
-   *  arrives with the permission work; until then every host stubs it. */
+  /** Ask a person.  Resolves `"allowed-once"` only when somebody actually
+   *  allowed it; `"unavailable"` — no broker mounted, or the turn ended
+   *  under an open card — is fail-closed and the caller treats it as a
+   *  deny.  The driver's loop supplies this: it pauses the per-tool clock
+   *  for as long as the card is open, then delegates to the harness's
+   *  permission broker (`TurnToolHost.requestApproval`). */
   requestApproval(ask: { tool: string; summary: string }): Promise<RequestOutcome>;
 }
 
@@ -338,6 +341,19 @@ export interface TurnToolHost {
   /** Hard ceiling on model-to-tool rounds for this turn.  Absent = the
    *  driver's own default. */
   maxRounds?: number;
+  /** The harness's permission broker for THIS turn, bound at dispatch to
+   *  the turn's own bot — the same closure that owns caller identity, for
+   *  the same reason.  A driver that runs its own tool loop hands this to
+   *  the loop, which pauses its per-tool clock around the ask and passes it
+   *  back in as `TurnToolRuntime.requestApproval`.  Absent means no broker
+   *  is mounted and every ask is fail-closed `"unavailable"`. */
+  requestApproval?(ask: {
+    tool: string;
+    summary: string;
+    /** The tool call's own signal, so an interrupted turn settles the ask
+     *  instead of leaving a card nobody can answer. */
+    signal?: AbortSignal;
+  }): Promise<RequestOutcome>;
 }
 
 export interface TurnStartResult {

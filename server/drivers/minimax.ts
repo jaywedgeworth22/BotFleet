@@ -541,6 +541,13 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         runRound,
         messages,
         toolHost: turn.toolHost,
+        // The harness's permission broker, carried across on the same
+        // per-turn service object caller identity rides on.  The driver
+        // does nothing with it but hand it over: the loop owns the clock
+        // and the host owns the policy.
+        requestApproval: turn.toolHost?.requestApproval
+          ? (ask) => turn.toolHost!.requestApproval!(ask)
+          : undefined,
         signal: abort.signal,
         startedToolIds: started,
         onSettled: () => active.delete(threadId),
