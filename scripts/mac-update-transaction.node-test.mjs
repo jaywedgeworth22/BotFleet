@@ -195,3 +195,28 @@ test("a staging build failure cannot reach any live operation", async () => {
   );
   assert.deepEqual(calls, ["assertStagingSource", "installDependencies", "buildBundle", "releaseSource", "unlock"]);
 });
+
+test("a staging-source cleanup failure still releases the updater lock", async () => {
+  const calls = [];
+  await assert.rejects(
+    prepareUpdate(
+      {},
+      {
+        acquireLock: async () => ({ release: async () => calls.push("unlock") }),
+        resolveTarget: async () => "b".repeat(40),
+        prepareSource: async () => ({ path: "/stage/source", temporary: true }),
+        assertStagingSource: async () => {},
+        installDependencies: async () => {},
+        buildBundle: async () => "/stage/source/release/mac-arm64/BotFleet.app",
+        validateBundle: async () => ({ teamIdentifier: "CC8UTF7ATG" }),
+        persistPrepared: async () => prepared,
+        releaseSource: async () => {
+          calls.push("releaseSource");
+          throw new Error("source cleanup failed");
+        },
+      },
+    ),
+    /source cleanup failed/,
+  );
+  assert.deepEqual(calls, ["releaseSource", "unlock"]);
+});

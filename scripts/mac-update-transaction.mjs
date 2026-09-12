@@ -36,8 +36,11 @@ export async function prepareUpdate(plan, ops) {
       identity,
     });
   } finally {
-    if (source) await ops.releaseSource(source);
-    await lock.release();
+    try {
+      if (source) await ops.releaseSource(source);
+    } finally {
+      await lock.release();
+    }
   }
 }
 

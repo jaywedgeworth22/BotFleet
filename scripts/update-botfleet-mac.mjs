@@ -416,8 +416,12 @@ async function signatureIdentity(bundlePath) {
   return { teamIdentifier, bundleIdentifier: identifier, designatedRequirement: sha256(designatedRequirement) };
 }
 
-async function validateBuiltBundle(bundlePath, expectedCommit) {
+export async function validateBuiltBundle(bundlePath, expectedCommit) {
   if (!(await exists(bundlePath))) throw new Error(`Packaged app is missing: ${bundlePath}`);
+  const details = await lstat(bundlePath);
+  if (!details.isDirectory() || details.isSymbolicLink()) {
+    throw new Error(`Packaged app must be a real directory: ${bundlePath}`);
+  }
   const build = await parseJsonFile(join(bundlePath, BUILD_MANIFEST_RELATIVE), "Packaged build manifest");
   if (build?.sourceCommit !== expectedCommit || !/^[a-f0-9]{40}$/.test(build?.sourceCommit || "")) {
     throw new Error("Packaged app does not contain the expected source commit");

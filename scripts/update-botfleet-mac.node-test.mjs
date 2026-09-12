@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import { isExpectedBotFleetProcess, loadPrepared, parseArguments, swapPreparedFiles } from "./update-botfleet-mac.mjs";
+import {
+  isExpectedBotFleetProcess,
+  loadPrepared,
+  parseArguments,
+  swapPreparedFiles,
+  validateBuiltBundle,
+} from "./update-botfleet-mac.mjs";
 
 const scripts = dirname(fileURLToPath(import.meta.url));
 
@@ -61,6 +67,16 @@ test("prepared stages reject symlink directories and public manifests", async (t
   await writeFile(manifest, "{}\n", { mode: 0o600 });
   await chmod(manifest, 0o644);
   await assert.rejects(loadPrepared(stage), /must not be accessible by group or other users/);
+});
+
+test("bundle validation rejects a symlink before trusting its contents", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "botfleet-update-bundle-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bundle = join(root, "BotFleet.app");
+  const link = join(root, "BotFleet-link.app");
+  await mkdir(bundle);
+  await symlink(bundle, link);
+  await assert.rejects(validateBuiltBundle(link, "b".repeat(40)), /must be a real directory/);
 });
 
 test("production updater has no force-kill or unrelated desktop-process cleanup", async () => {
