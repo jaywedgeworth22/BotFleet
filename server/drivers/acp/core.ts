@@ -881,11 +881,20 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 // ACP cancellation is a notification.  Flush it to the child
                 // and give its event loop one bounded chance to handle it
                 // before terminal settlement kills the unresponsive process.
+                const cancelFlush = sendAndFlush({
+                  jsonrpc: "2.0",
+                  method: "session/cancel",
+                  params: { sessionId },
+                });
+                // Windows has no process group signal.  Queue cancellation,
+                // then start taskkill while the leader can still identify its
+                // descendant tree; POSIX keeps the short graceful interval.
+                const windowsExit = process.platform === "win32" ? stopAndWaitForExit() : undefined;
                 await Promise.race([
-                  sendAndFlush({ jsonrpc: "2.0", method: "session/cancel", params: { sessionId } }),
+                  cancelFlush,
                   new Promise<void>((resolve) => setTimeout(resolve, CANCEL_FLUSH_GRACE_MS)),
                 ]);
-                await stopAndWaitForExit();
+                await (windowsExit ?? stopAndWaitForExit());
               }
               // Authentication setup is a user action, not a retry. The
               // classifier is preferred; loginNote remains a compatibility

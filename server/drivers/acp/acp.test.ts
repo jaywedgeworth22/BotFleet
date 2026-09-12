@@ -329,7 +329,7 @@ describe("ACP turns (fake CLI)", () => {
     expect(instance.adapter.hasSession("t-cancel-exits")).toBe(false);
   });
 
-  it.skipIf(process.platform === "win32")("kills an MCP descendant after the timed-out CLI leader exits", async () => {
+  it("kills an MCP descendant after a timed-out prompt", async () => {
     const descendantPidFile = join(scratch, "descendant.pid");
     process.env.FAKE_ACP_DESCENDANT_PID = descendantPidFile;
     await create(GrokAgentDriver, "cancel-exits-with-child", { promptTimeoutMs: 1_000 });
