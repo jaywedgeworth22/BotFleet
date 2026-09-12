@@ -501,6 +501,13 @@ export function stableApplicationProcessError(firstPids, secondPids, openApplica
   return null;
 }
 
+export function applicationAttachmentError(snapshot, openApplication) {
+  if (!openApplication) return null;
+  const health = Array.isArray(snapshot?.health) ? snapshot.health : [];
+  if (health.some((item) => item?.static === true) || health.length >= 2) return null;
+  return "Updated BotFleet application stayed open but did not expose its bundled UI through the verified harness";
+}
+
 async function waitForExit(pids, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let remaining = pids.filter(processIsAlive);
@@ -882,6 +889,8 @@ function createOperations(config) {
       if (!snapshot.safe || snapshot.mode !== "authenticated") {
         throw new Error(snapshot.reason || "Updated application did not attach to the authenticated single data owner");
       }
+      const attachmentError = applicationAttachmentError(snapshot, config.parsed.openApplication !== false);
+      if (attachmentError) throw new Error(attachmentError);
     },
 
     finish: async (prepared, previous) => {

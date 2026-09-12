@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
+  applicationAttachmentError,
   authenticatedRuntimeError,
   DEFAULT_PORTS,
   designatedRequirementFromOutput,
@@ -138,6 +139,13 @@ test("desktop verification requires one stable installed-application process aft
   assert.match(stableApplicationProcessError([], [], true), /did not remain running/);
   assert.match(stableApplicationProcessError([41], [42], true), /did not remain running/);
   assert.equal(stableApplicationProcessError([], [], false), null);
+});
+
+test("desktop attachment requires a static harness or a second same-owner UI endpoint", () => {
+  assert.equal(applicationAttachmentError({ health: [{ port: 8799, static: true }] }, true), null);
+  assert.equal(applicationAttachmentError({ health: [{ port: 8799 }, { port: 18799 }] }, true), null);
+  assert.match(applicationAttachmentError({ health: [{ port: 8799, static: false }] }, true), /did not expose its bundled UI/);
+  assert.equal(applicationAttachmentError({ health: [{ port: 8799, static: false }] }, false), null);
 });
 
 test("post-start identity accepts new work while the pre-install readiness gate still refuses it", () => {
