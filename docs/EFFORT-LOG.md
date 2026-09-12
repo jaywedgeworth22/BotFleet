@@ -278,3 +278,5 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 - 2026-08-29 — Deployed always-on iMessage bidirectional relay for 12 BotFleet bots (AG).
 - 2026-08-28 — bootstrapped by onboard-new-app.sh.
 - **2026-09-04 - MINIMAX - COMPLETED - settings-rev2-B: engines enable/disable, Antigravity collapse, weekly+5h window surfacing, DeepSeek balance, Cursor monthly cap end-to-end.  PR #218 squash `f6e75930`.  Board `0ad2b059`.  Lane B of the settings revamp.**
+
+- **2026-09-12 — CODEX — IN PROGRESS — Fleet RAG routing and readiness (#271/#272, boards 2d627f55 / 432930fc).**  Worktree `~/apps/botfleet-codex-recall-20260912` @ `codex/recall-readiness-20260912`.  Backend and proxy fixes pass the full local typecheck/test gate; source-level CF-only stats and semantic search pass.  Renderer route/freshness display and deployed acceptance remain in progress.  <!-- codex-recall-readiness-20260912 -->

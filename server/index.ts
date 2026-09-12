@@ -228,8 +228,8 @@ import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
-import { accessHeaders, accessLoginHint, hasAccessServiceToken, type AccessTokenHeaders } from "./recall-access.ts";
-import { RECALL_CLI_TIMEOUT_MS, describeCliFailure } from "./cli-failure.ts";
+import { hasAccessServiceToken } from "./recall-access.ts";
+import { recallStatus } from "./recall-transport.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { RoutineRequestService } from "./routine-requests.ts";
@@ -425,39 +425,6 @@ function connectedAppsIntegration(botId: string, threadId: string) {
 }
 
 export const RECALL_NOT_CONFIGURED = "Agent RAG is not configured — set a Service URL in Settings";
-
-/** Whether a real recall route lets this caller through.  A public /health
- * says nothing about the routes a bot actually calls — on a service behind
- * Cloudflare Access, /health is commonly the one bypass while /recall/* is
- * gated — so the probe asks a gated route before reporting success.  Returns
- * a reason, or null when the route answered (or does not exist). */
-async function recallRouteGate(
-  url: string,
-  headers: AccessTokenHeaders & { Authorization?: string },
-): Promise<string | null> {
-  try {
-    const probe = await fetch(`${url}/recall/stats`, {
-      headers,
-      // Followed, so a benign same-host redirect (an http:// -> https://
-      // upgrade, a trailing-slash normalisation) just works instead of being
-      // misread as a login gate.  accessLoginHint still catches a real Access
-      // login page here — it checks the followed response's final URL and
-      // content type, and that check runs before status is inspected below.
-      redirect: "follow",
-      signal: AbortSignal.timeout(4000),
-    });
-    const gate = accessLoginHint(probe);
-    if (gate) return gate;
-    if (probe.status === 401 || probe.status === 403) {
-      return `the recall route answered HTTP ${probe.status} — check the API key, or add a Cloudflare Access service token if this host is published behind Access`;
-    }
-    return null;
-  } catch {
-    // A service without that route, or a transient failure, is not evidence
-    // of a login gate: /health already answered for this host.
-    return null;
-  }
-}
 
 /** The RAG service the operator configured, if any. BotFleet ships no
  * endpoint and no collection name: with nothing set, the proxy falls back to
@@ -8067,187 +8034,7 @@ const server = createServer(async (req, res) => {
       });
     }
     if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {
-      const { url, apiKey, collection, accessClientId, accessClientSecret } = recallSettings();
-      // Every outbound probe carries the bearer AND the Cloudflare Access
-      // service token when both are configured — some deployments gate at
-      // the edge, some at the origin, some at both, and sending only one of
-      // the two is exactly how a healthy service reads as unreachable.
-      const access = accessHeaders(accessClientId, accessClientSecret);
-      const recallHeaders: AccessTokenHeaders & { Authorization?: string } = { ...access };
-      if (apiKey) recallHeaders.Authorization = `Bearer ${apiKey}`;
-
-      // 1. Check a local recall CLI if there is one (fastest and most
-      // accurate on the host running BotFleet)
-      let cliFound = false;
-      let cliProblem = "";
-      try {
-        const { execFile } = await import("node:child_process");
-        const { promisify } = await import("node:util");
-        const { existsSync } = await import("node:fs");
-        const { join } = await import("node:path");
-        const { homedir } = await import("node:os");
-        const execFileAsync = promisify(execFile);
-        const explicit = process.env.RECALL_CLI_PATH;
-        const candidates = [
-          ...(explicit ? [explicit] : []),
-          join(homedir(), ".local", "bin", "recall"),
-          "/opt/homebrew/bin/recall",
-          "/usr/local/bin/recall",
-        ];
-        const cli = candidates.find((c) => existsSync(c));
-        cliFound = Boolean(cli);
-        if (cli) {
-          const { stdout } = await execFileAsync(cli, ["stats", "--json"], {
-            timeout: RECALL_CLI_TIMEOUT_MS,
-            env: {
-              ...process.env,
-              PATH: `${join(homedir(), ".local", "bin")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
-            },
-          });
-          const stats = JSON.parse(stdout);
-          if (stats.status === "unreachable" || stats.error) {
-            return json(res, 200, {
-              ready: false,
-              configured: true,
-              source: "recall-cli",
-              url: url || null,
-              collection: stats.collection || collection || null,
-              error: stats.error
-                ? `Local recall CLI reached Qdrant and it said: ${String(stats.error)}`
-                : "Local recall CLI could not reach the configured collection.",
-            });
-          }
-          return json(res, 200, {
-            ready: true,
-            configured: true,
-            source: "recall-cli",
-            url: url || null,
-            collection: stats.collection || collection,
-            pointsCount: stats.points ?? 0,
-            embedderHealthy: stats.embedder_healthy ?? true,
-            status: stats.status || "green",
-          });
-        }
-      } catch (err) {
-        // Keep WHY.  A timeout, a missing credential, a non-zero exit and
-        // unparseable output used to collapse into one fixed sentence, which
-        // told the person nothing they could act on.
-        cliProblem = describeCliFailure(err, RECALL_CLI_TIMEOUT_MS);
-      }
-
-      // Nothing configured and no working local CLI: say so rather than
-      // probing a host nobody asked for.
-      if (!url) {
-        return json(res, 200, {
-          ready: false,
-          configured: false,
-          url: null,
-          collection: collection || null,
-          error: cliFound
-            ? `Ran the local recall CLI (recall stats --json) and ${cliProblem || "it returned nothing"}.  Fix the CLI, or set a Service URL in Settings.`
-            : RECALL_NOT_CONFIGURED,
-        });
-      }
-
-      // 2. HTTP probe: a recall-style /health first (its own try, so a
-      // service without that route still gets the Qdrant probe below), then
-      // the Qdrant collections API.
-      let gateProblem: string | null = null;
-      try {
-        const healthRes = await fetch(`${url}/health`, {
-          headers: recallHeaders,
-          // Followed, so a benign same-host redirect just works instead of
-          // being misread as a login gate.  accessLoginHint still catches a
-          // real Access login page — the check below runs before any JSON
-          // parsing, on the followed response's final URL and content type.
-          redirect: "follow",
-          signal: AbortSignal.timeout(4000),
-        });
-        gateProblem = accessLoginHint(healthRes);
-        if (!gateProblem && healthRes.ok) {
-          const healthData = (await healthRes.json()) as {
-            collection?: string;
-            points?: number;
-            backend_ok?: boolean;
-            version?: string;
-          };
-          // /health is usually the one route left open to the public, so a
-          // healthy answer there does not prove a bot can actually search.
-          // Ask a real recall route before calling this connection ready.
-          gateProblem = await recallRouteGate(url, recallHeaders);
-          if (!gateProblem) {
-            return json(res, 200, {
-              ready: true,
-              configured: true,
-              source: "recall-service",
-              url,
-              collection: healthData.collection || collection,
-              pointsCount: healthData.points ?? 0,
-              backendOk: healthData.backend_ok ?? true,
-              version: healthData.version,
-            });
-          }
-        }
-      } catch {
-        // Not a recall-style service (or it is down) — try Qdrant directly.
-      }
-
-      if (gateProblem) {
-        return json(res, 200, {
-          ready: false,
-          configured: true,
-          url,
-          collection,
-          accessGated: true,
-          error: `The service is reachable but ${gateProblem}.`,
-        });
-      }
-
-      try {
-        const headers: Record<string, string> = { "Content-Type": "application/json", ...access };
-        if (apiKey) headers["api-key"] = apiKey;
-        // Followed, for the same reason as the /health probe above.
-        const resList = await fetch(`${url}/collections`, { headers, redirect: "follow", signal: AbortSignal.timeout(4000) });
-        const listGate = accessLoginHint(resList);
-        if (listGate) {
-          return json(res, 200, { ready: false, configured: true, url, collection, accessGated: true, error: `The service is reachable but ${listGate}.` });
-        }
-        if (!resList.ok) {
-          return json(res, 200, { ready: false, configured: true, url, collection, error: `HTTP ${resList.status}: ${resList.statusText}` });
-        }
-        const data = (await resList.json()) as { result?: { collections?: Array<{ name: string }> } };
-        const collections = (data.result?.collections || []).map((c) => c.name);
-        let pointsCount = 0;
-        if (collections.includes(collection)) {
-          const resColl = await fetch(`${url}/collections/${collection}`, { headers, signal: AbortSignal.timeout(4000) });
-          if (resColl.ok) {
-            const collData = (await resColl.json()) as { result?: { points_count?: number } };
-            pointsCount = collData.result?.points_count || 0;
-          }
-        }
-        return json(res, 200, {
-          ready: true,
-          configured: true,
-          url,
-          collection,
-          collections,
-          pointsCount,
-        });
-      } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
-        return json(res, 200, {
-          ready: false,
-          configured: true,
-          url,
-          collection,
-          // A fetch failure can quote the request it tried, and the local
-          // CLI failure below can quote whatever the child printed, so both
-          // go through the same redaction the chat cards use.
-          error: redactSecretsInText(
-            cliFound && cliProblem ? `${detail} (the local recall CLI also failed: ${cliProblem})` : detail,
-          ),
-        });
-      }
+      return json(res, 200, await recallStatus(recallSettings()));
     }
     if (method === "GET" && path === "/.well-known/apple-app-site-association") {
       return json(res, 200, {
