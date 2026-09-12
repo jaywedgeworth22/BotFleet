@@ -129,6 +129,20 @@ export function startOfWeekInTimeZone(at: number, timeZone: string): number {
   return epochForZonedDateTime({ ...addCalendarDays(date, -mondayOffset), hour: 0, minute: 0 }, timeZone);
 }
 
+/** The next whole wall-clock hour in an IANA timezone.  Deriving the hour
+ * from zoned parts keeps fractional-offset browser timezones out of defaults. */
+export function nextWholeHourInTimeZone(after: number, timeZone: string): number {
+  const current = zonedDateTime(after, timeZone);
+  const nextDate = current.hour === 23
+    ? addCalendarDays(current, 1)
+    : current;
+  return epochForZonedDateTime({
+    ...nextDate,
+    hour: (current.hour + 1) % 24,
+    minute: 0,
+  }, timeZone);
+}
+
 export function epochAtWallTime(day: number, time: string, timeZone: string): number {
   const match = /^(\d{2}):(\d{2})$/.exec(time);
   if (!match) throw new RangeError("Time must use HH:MM");

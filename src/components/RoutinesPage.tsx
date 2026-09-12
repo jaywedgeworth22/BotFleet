@@ -45,6 +45,7 @@ import {
   addDaysInTimeZone,
   epochFromInputDateTime,
   inputDateTimeInTimeZone,
+  nextWholeHourInTimeZone,
   shortTimeZoneName,
   startOfDayInTimeZone,
   startOfWeekInTimeZone,
@@ -119,9 +120,7 @@ function statusTone(status: RoutineRunStatus) {
 }
 
 function nextHour() {
-  const date = new Date(Date.now() + 60 * 60_000);
-  date.setMinutes(0, 0, 0);
-  return date.getTime();
+  return nextWholeHourInTimeZone(Date.now(), CENTRAL_TIME_ZONE);
 }
 
 function webhookPromptParts(prompt?: string) {

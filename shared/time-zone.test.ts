@@ -7,6 +7,7 @@ import {
   epochForZonedDateTime,
   epochFromInputDateTime,
   inputDateTimeInTimeZone,
+  nextWholeHourInTimeZone,
   nextZonedOccurrence,
   startOfDayInTimeZone,
   startOfWeekInTimeZone,
@@ -40,6 +41,15 @@ describe("IANA wall-clock conversion", () => {
     expect(epochFromInputDateTime(input, CENTRAL_TIME_ZONE)).toBe(at);
     expect(() => epochFromInputDateTime("2026-02-30T09:00", CENTRAL_TIME_ZONE))
       .toThrow("Choose a valid date and time");
+  });
+
+  it("rounds a new one-time default in Central rather than a fractional-offset browser zone", () => {
+    // 19:00 in Kolkata is 08:30 in Chicago.  The next Central wall-clock hour
+    // must be 09:00, never the browser-rounded 08:30.
+    const now = Date.parse("2026-09-12T13:30:00.000Z");
+    const next = nextWholeHourInTimeZone(now, CENTRAL_TIME_ZONE);
+    expect(inputDateTimeInTimeZone(next, CENTRAL_TIME_ZONE)).toBe("2026-09-12T09:00");
+    expect(next).toBe(Date.parse("2026-09-12T14:00:00.000Z"));
   });
 });
 
