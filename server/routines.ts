@@ -169,7 +169,7 @@ export interface RoutineManagerOptions {
   admit?: () => boolean;
   /** Per-run readiness gate.  False leaves the durable run queued; callers
    * invoke tick() again when the missing runtime prerequisite arrives. */
-  canStart?: (botId: string, threadId?: string) => boolean;
+  canStart?: (botId: string, threadId: string | undefined, runOn: RoutineRunOn) => boolean;
   /** Minutes this run's trigger must stay quiet after it activates.  Absent
    * or 0 runs every delivery as it lands. */
   minGapMinutes?: (run: RoutineRun) => number | undefined;
@@ -833,7 +833,7 @@ export class RoutineManager {
         // Gate before creating, activating, or stamping a task.  A missing
         // runtime credential may take many scheduler ticks to arrive; those
         // retries must not mint duplicate empty tasks as a side effect.
-        if (this.options.canStart?.(run.botId, threadId) === false) continue;
+        if (this.options.canStart?.(run.botId, threadId, run.runOn) === false) continue;
         if (stampResolvedThread && threadId) this.options.stampKey?.(run.botId, threadId, key);
         if (!threadId) {
           const task = this.options.createTask(

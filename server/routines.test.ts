@@ -138,6 +138,27 @@ describe("RoutineManager", () => {
     expect(h.started).toHaveLength(1);
   });
 
+  it("does not apply a local engine prerequisite to a cloud routine", async () => {
+    const h = harness();
+    const admittedTargets: string[] = [];
+    h.options.canStart = (_botId, _threadId, runOn) => {
+      admittedTargets.push(runOn);
+      return runOn === "cloud";
+    };
+    const routine = h.manager.create({
+      name: "Cloud run",
+      prompt: "Run in the cloud",
+      botId: "maus-1",
+      runOn: "cloud",
+      schedule: { type: "once", at: new Date(2026, 7, 17, 8, 5).getTime() },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    expect(admittedTargets).toContain("cloud");
+    expect(h.manager.listRuns()).toMatchObject([{ status: "running", runOn: "cloud" }]);
+    expect(h.started).toHaveLength(1);
+  });
+
   it("persists definitions separately from permanent run receipts", async () => {
     const h = harness();
     const routine = h.manager.create({

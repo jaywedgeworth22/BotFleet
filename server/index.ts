@@ -3226,7 +3226,8 @@ routines = new RoutineManager({
   // queued routine receipts durable while the registry is being rebuilt,
   // then tick them after the authenticated credential has landed.
   admit: () => !runtimeQuiescing && !providerConfigBusy,
-  canStart: (botId, threadId) => {
+  canStart: (botId, threadId, runOn) => {
+    if (runOn === "cloud") return true;
     const bot = store.bot(botId);
     const task = bot && threadId ? store.taskByThread(bot.id, threadId) : undefined;
     if (!bot) return true;
