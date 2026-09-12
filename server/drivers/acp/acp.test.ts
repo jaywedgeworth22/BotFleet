@@ -339,12 +339,20 @@ describe("ACP turns (fake CLI)", () => {
     });
     const descendantPid = Number(readFileSync(descendantPidFile, "utf8"));
 
-    const done = await recorder.until((event) => event.type === "turn.completed", 3_000);
-    expect(done).toMatchObject({ ok: false, stopReason: "prompt_timeout" });
+    try {
+      const done = await recorder.until((event) => event.type === "turn.completed", 3_000);
+      expect(done).toMatchObject({ ok: false, stopReason: "prompt_timeout" });
 
-    await vi.waitFor(() => {
-      expect(() => process.kill(descendantPid, 0)).toThrow();
-    }, { timeout: 4_000 });
+      await vi.waitFor(() => {
+        expect(() => process.kill(descendantPid, 0)).toThrow();
+      }, { timeout: 4_000 });
+    } finally {
+      try {
+        process.kill(descendantPid, "SIGKILL");
+      } catch {
+        // expected once the deadline cleanup has reaped it
+      }
+    }
   });
 
   it("emits each assistant text block before the tool that follows it", async () => {
