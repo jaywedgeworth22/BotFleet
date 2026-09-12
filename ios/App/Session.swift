@@ -1518,7 +1518,7 @@ enum Chat: Identifiable, Hashable {
     var busy: Bool {
         switch self {
         case let .bot(bot): return bot.busy ?? false
-        case let .room(room): return room.busyBotId != nil
+        case let .room(room): return room.isWorking
         }
     }
 

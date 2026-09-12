@@ -18,7 +18,7 @@ Image uploads and reads share a PNG, JPEG, GIF, and WebP display contract.  Nati
 
 Native engine edits preserve reasoning effort for the primary selection and every fallback.  The picker is populated from the server's advertised effort levels, and an unknown saved value remains in the model until the person explicitly selects a supported replacement.
 
-A busy room now offers Interrupt and sends both the room ID and the task ID currently on screen.  The sidecar admits the exact room-interrupt route, and the harness returns a conflict rather than interrupting when the room switched tasks first.
+A working room now offers Interrupt across setup, responder handoff, and active-provider phases, and sends both the room ID and the task ID currently on screen.  The sidecar admits the exact room-interrupt route, and the harness returns a conflict rather than interrupting when the room switched tasks first.
 
 ## Verification
 

@@ -326,8 +326,14 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var cwd: String?
     public var extraCwds: [String]?
     public var busyBotId: String?
+    /// Covers the whole room operation, including setup and handoff windows
+    /// where no individual responder owns the provider turn yet.
+    public var working: Bool?
     public var messages: [Message]?
     public var hasMore: Bool?
+
+    /// Older harnesses expose only `busyBotId`; current ones send `working`.
+    public var isWorking: Bool { working ?? (busyBotId != nil) }
 }
 
 // MARK: - Responses

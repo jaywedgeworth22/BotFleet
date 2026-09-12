@@ -95,6 +95,20 @@ final class DecodingTests: XCTestCase {
         XCTAssertNotEqual(live.queued, true)
     }
 
+    func testRoomWorkingFlagCoversSetupWithoutABusyResponder() throws {
+        let room = try JSONDecoder().decode(
+            Room.self,
+            from: Data(#"{"id":"room-1","threadId":"task-1","name":"Setup","memberIds":["bot-1"],"defaultResponder":{"kind":"everyone"},"bulletin":"","unread":false,"createdAt":1,"busyBotId":null,"working":true}"#.utf8)
+        )
+        XCTAssertTrue(room.isWorking)
+
+        let legacy = try JSONDecoder().decode(
+            Room.self,
+            from: Data(#"{"id":"room-2","threadId":"task-2","name":"Legacy","memberIds":["bot-1"],"defaultResponder":{"kind":"everyone"},"bulletin":"","unread":false,"createdAt":1,"busyBotId":"bot-1"}"#.utf8)
+        )
+        XCTAssertTrue(legacy.isWorking)
+    }
+
     func testDrainedUserLineKeepsQueueId() throws {
         let message = try JSONDecoder().decode(
             Message.self,
