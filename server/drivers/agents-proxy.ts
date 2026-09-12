@@ -77,6 +77,10 @@ const ROUTINE_SCHEDULE_SCHEMA = {
       items: { type: "string", enum: WEEKDAYS },
       description: "Only for type weekly: which days the routine runs, in the computer's local timezone.",
     },
+    timeZone: {
+      type: "string",
+      description: "Optional IANA timezone for a weekly or daily schedule, for example America/Chicago. Omit it to use the computer timezone returned by list_routines.",
+    },
   },
   required: ["type"],
 } as const;
@@ -151,7 +155,8 @@ function normalizeScheduleInput(args: Json): NormalizedSchedule {
       if (!full) return { error: `Unsupported weekday "${String(day)}". Use full names: ${WEEKDAYS.join(", ")}.` };
       if (!normalized.includes(full)) normalized.push(full);
     }
-    return { schedule: { type: "weekly", time, weekdays: normalized } };
+    const timeZone = typeof raw.timeZone === "string" && raw.timeZone.trim() ? raw.timeZone.trim() : undefined;
+    return { schedule: { type: "weekly", time, weekdays: normalized, ...(timeZone ? { timeZone } : {}) } };
   }
   if (type === "interval" || type === "cron" || type === "hourly" || type === "minutes") {
     return { error: `Routines cannot run on sub-day intervals. ${SUPPORTED_SCHEDULES} Pick the closest daily or weekly time and tell the user about this limit.` };
