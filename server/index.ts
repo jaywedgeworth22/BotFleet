@@ -247,7 +247,7 @@ import { hasAccessServiceToken } from "./recall-access.ts";
 import { recallStatus } from "./recall-transport.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
-import { RoutineRequestService } from "./routine-requests.ts";
+import { RoutineRequestError, RoutineRequestService } from "./routine-requests.ts";
 import { fetchBotDirectory, matchDirectoryBots, type MatchedDirectoryBot } from "./bot-directory.ts";
 import { scoutProject, suggestTeam } from "./project-scout.ts";
 import { fetchGithubTeam, fetchLibraryTeam, fetchTeamCatalog } from "./team-library.ts";
@@ -3233,7 +3233,12 @@ async function startTurn(
       // host will actually run.  Deriving both from the same call is what
       // keeps a hallucinated tool from finding an executor that would run it
       // for a bot whose comms are gated off this turn.
-      const turnTools = buildTurnTools(integrations);
+      // `chiefOfStaff` here is what lets create_bot appear at all: the
+      // registry gates it on `ctx.agents && ctx.chiefOfStaff`, and without
+      // this the catalog would always see `chiefOfStaff: false` and a real
+      // Chief's HTTP-lane turn would never be offered the tool its own
+      // prompt (chiefOfStaffSystemPrompt) tells it it has.
+      const turnTools = buildTurnTools(integrations, { chiefOfStaff: Boolean(bot.chiefOfStaff) });
       const turnInput = {
         threadId,
         text: turnText,
@@ -3258,6 +3263,11 @@ async function startTurn(
               botId: bot.id,
               threadId,
               commsDepth,
+              // Read here, not derived from the catalog above: this is what
+              // gates create_bot inside the host's own executor (the cap and
+              // the chiefOfStaff check both live there), independent of
+              // whatever the model was actually offered this turn.
+              chiefOfStaff: Boolean(bot.chiefOfStaff),
               // Bound to THIS turn's bot and thread in the same closure
               // caller identity lives in, and for the same reason: a card
               // must name the bot that actually asked, and the answer must
@@ -3280,6 +3290,10 @@ async function startTurn(
                 executeListAgentsRequest,
                 executeAskBotRequest,
                 executeListRoutinesRequest,
+                executeDelegateBotRequest,
+                executeCreateBotRequest,
+                executeRequestCredentialRequest,
+                executeRoutineRequestRequest,
               },
             })
           : undefined,
@@ -3950,6 +3964,239 @@ export async function executeAskBotRequest(input: {
   const reply = await askBotAndWait(toBotId, prefixed, depth, fromBotId);
   mirrorReply(commsBus, currentTarget, reply, channel);
   return { status: 200, body: { botName: currentTarget.name, text: reply } };
+}
+
+/** The `POST /api/internal/delegate-bot` body, factored the same way as
+ * `executeAskBotRequest`: the MCP proxy reaches it over the loopback hop,
+ * the HTTP lane's tool host calls it directly.  Async handoff — queues the
+ * message and returns immediately; the peer's own turn runs after the
+ * caller's current turn finishes. */
+export function executeDelegateBotRequest(input: {
+  fromBotId: string;
+  toBotId: string;
+  message: string;
+  depth: number;
+  fromThreadId?: string;
+  reason?: string;
+}): { status: number; body: Record<string, unknown> } {
+  const fromBotId = input.fromBotId;
+  const toBotId = input.toBotId;
+  const message = input.message;
+  const reason = input.reason;
+  const depth = input.depth;
+  if (!toBotId || !message) return { status: 400, body: { error: "toBotId and message required" } };
+  const from = store.bot(fromBotId);
+  if (!from) return { status: 404, body: { error: "no such bot" } };
+  const target = store.bot(toBotId);
+  if (!target) return { status: 404, body: { error: "no such bot" } };
+  if (sectionKey(from.section) !== sectionKey(target.section)) {
+    return { status: 403, body: { error: "that bot belongs to a different section" } };
+  }
+  const fromThreadId = String(input.fromThreadId ?? from.threadId);
+  if (!store.taskByThread(from.id, fromThreadId)) {
+    return { status: 403, body: { error: "source thread does not belong to sender" } };
+  }
+  const result = queueDelegation(
+    commsBus,
+    from,
+    { toBotId, message, reason, depth },
+    MAX_COMMS_DEPTH,
+    fromThreadId,
+  );
+  if (result !== "ok") {
+    // the agent reads this string — a bare enum ("too_deep") tells it
+    // nothing about what to do instead
+    const said: Record<Exclude<QueueResult, "ok">, string> = {
+      self: "a bot cannot delegate to itself",
+      too_deep: "delegation chains are limited to one hop — do this one yourself",
+      no_target: "no such bot",
+      too_many: "too many delegations queued on this turn — finish some first",
+    };
+    return { status: 200, body: { error: said[result] } };
+  }
+  const targetName = store.bot(toBotId)?.name ?? toBotId;
+  return {
+    status: 200,
+    body: {
+      queued: true,
+      message: from.approvePeerComms
+        ? `Queued for review — @${targetName} will only pick it up if the user approves after your turn finishes.`
+        : `Delegation queued — @${targetName} will pick it up after your current turn finishes.`,
+    },
+  };
+}
+
+/** The `POST /api/internal/create-bot` body, factored the same way.  The
+ * chiefOfStaff gate and `MAX_WORKSPACE_BOTS` live here, unchanged; the
+ * per-turn creation cap does NOT — it moved to a closure that is scoped to
+ * one turn on each lane (`agents-proxy.ts`'s own process-lifetime counter
+ * for MCP, `agents.ts#createAgentTools`'s fresh closure for HTTP), which is
+ * what makes it turn-scoped on the HTTP lane for the first time. */
+export function executeCreateBotRequest(input: {
+  fromBotId: string;
+  fromThreadId?: string;
+  name: string;
+  role: string;
+  instructions: string;
+}): { status: number; body: Record<string, unknown> } {
+  const chief = store.bot(input.fromBotId);
+  if (!chief) return { status: 403, body: { error: "unknown sender" } };
+  const fromThreadId = String(input.fromThreadId ?? chief.threadId);
+  if (!store.taskByThread(chief.id, fromThreadId)) {
+    return { status: 403, body: { error: "source thread does not belong to sender" } };
+  }
+  if (!chief.chiefOfStaff) {
+    return { status: 403, body: { error: "only a section's Chief of Staff can create operator bots" } };
+  }
+  if (store.bots.length >= MAX_WORKSPACE_BOTS) {
+    return { status: 409, body: { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` } };
+  }
+  const name = input.name.trim();
+  const role = input.role.trim();
+  const instructions = input.instructions.trim();
+  if (!name || !role || !instructions) {
+    return { status: 400, body: { error: "name, role, and instructions are required" } };
+  }
+  if (name.length > 80) return { status: 400, body: { error: "name must be at most 80 characters" } };
+  if (role.length > 120) return { status: 400, body: { error: "role must be at most 120 characters" } };
+  if (instructions.length > 1_000) {
+    return { status: 400, body: { error: "instructions must be at most 1000 characters" } };
+  }
+  const duplicate = store.bots.find(
+    (candidate) =>
+      !candidate.hidden &&
+      sectionKey(candidate.section) === sectionKey(chief.section) &&
+      candidate.name.trim().toLowerCase() === name.toLowerCase(),
+  );
+  if (duplicate) {
+    return { status: 409, body: { error: `@${duplicate.name} already exists in this section; use list_bots` } };
+  }
+  const created = store.createBot(
+    {
+      name,
+      title: role,
+      description: instructions,
+      modelSelection: { ...chief.modelSelection },
+      section: chief.section,
+    },
+    { seedMessages: false },
+  );
+  const safeBot = store.patchBot(created.id, {
+    composio: false,
+    autoApprove: false,
+    approvePeerComms: false,
+  })!;
+  return {
+    status: 201,
+    body: {
+      id: safeBot.id,
+      name: safeBot.name,
+      title: safeBot.title,
+      section: safeBot.section || "General",
+      model: safeBot.modelSelection.model,
+    },
+  };
+}
+
+/** The `POST /api/internal/request-credential` body, factored the same
+ * way.  Never returns the secret — Electron saves it through the OS-backed
+ * store, and this only ever produces a card asking for one, or confirms one
+ * is already configured. */
+export function executeRequestCredentialRequest(input: {
+  fromBotId: string;
+  fromThreadId?: string;
+  credentialId: string;
+  reason?: string;
+}): { status: number; body: Record<string, unknown> } {
+  const from = store.bot(input.fromBotId);
+  if (!from) return { status: 403, body: { error: "unknown sender" } };
+  const fromThreadId = String(input.fromThreadId ?? from.threadId);
+  const owner = connectorThread(from.id, fromThreadId);
+  if (!owner) return { status: 403, body: { error: "source conversation does not belong to sender" } };
+  if (!isCredentialTargetId(input.credentialId)) {
+    return { status: 400, body: { error: "unsupported credential id" } };
+  }
+  const credentialId: CredentialTargetId = input.credentialId;
+  const target = CREDENTIAL_TARGETS[credentialId];
+  if (credentialIsConfigured(cfg, credentialId)) {
+    return { status: 200, body: { alreadyConfigured: true, label: target.label } };
+  }
+  const existing = store.messagesFor(fromThreadId).find((message) =>
+    isReusableCredentialRequest(message, credentialId, from.id, Boolean(owner.group))
+  );
+  if (existing) {
+    return { status: 200, body: { messageId: existing.id, label: target.label } };
+  }
+  const reason = typeof input.reason === "string" ? input.reason.trim().slice(0, 240) : "";
+  const message = store.appendMessage(fromThreadId, {
+    role: "bot",
+    kind: "secret",
+    ...(owner.group ? { from: { botId: from.id, name: from.name, color: from.color } } : {}),
+    secret: {
+      target: credentialId,
+      label: target.label,
+      description: reason ? `${target.description} ${reason}` : target.description,
+      placeholder: target.placeholder,
+      helpUrl: target.helpUrl,
+      requestKey: randomUUID(),
+    },
+  });
+  return { status: 201, body: { messageId: message.id, label: target.label } };
+}
+
+/** The `POST /api/internal/routine-requests` body, factored the same way.
+ * One shape for both `propose_routine` (action `create`) and
+ * `propose_routine_action` (every other action) — `routineRequests.propose`
+ * and the decision-log row it triggers stay the same regardless of which
+ * tool called this. */
+export async function executeRoutineRequestRequest(input: {
+  fromBotId: string;
+  fromThreadId: string;
+  action: "create" | "update" | "pause" | "resume" | "run_now" | "delete";
+  routine?: unknown;
+  routineId?: unknown;
+  changes?: unknown;
+}): Promise<{ status: number; body: Record<string, unknown> }> {
+  const from = store.bot(input.fromBotId);
+  if (!from) return { status: 403, body: { error: "unknown sender" } };
+  const fromThreadId = input.fromThreadId;
+  const owner = connectorThread(from.id, fromThreadId);
+  if (!owner) return { status: 403, body: { error: "source conversation does not belong to sender" } };
+  const persistence = routineProposalPersistence(from.id, fromThreadId);
+  if (!persistence.ok) {
+    return { status: persistence.status, body: { error: persistence.error } };
+  }
+  const proposedInput = input.action === "create"
+    ? { action: input.action, routine: input.routine }
+    : input.action === "update"
+      ? { action: input.action, routineId: input.routineId, changes: input.changes }
+      : { action: input.action, routineId: input.routineId };
+  try {
+    const proposed = await routineRequests.propose({
+      botId: from.id,
+      threadId: fromThreadId,
+      proposal: proposedInput,
+      from: owner.group ? { botId: from.id, name: from.name, color: from.color } : undefined,
+    });
+    const proposedCard = store.messagesFor(fromThreadId).find((message) => message.id === proposed.messageId)?.card;
+    appendDecision(DATA_DIR, {
+      threadId: fromThreadId,
+      requestId: proposed.requestId,
+      botId: from.id,
+      botName: from.name,
+      tool: proposedCard?.tool,
+      // Audit what the human was actually shown, not the shorter tool
+      // response returned to the model.
+      summary: proposedCard?.subtitle ?? proposed.summary,
+      decision: "card-shown",
+      source: "routine",
+    });
+    return { status: 201, body: proposed as unknown as Record<string, unknown> };
+  } catch (error) {
+    const status = error instanceof RoutineRequestError ? error.status : 400;
+    const message = error instanceof Error ? error.message : String(error);
+    return { status, body: { error: message } };
+  }
 }
 
 // Approvals live only in memory, so any peer card still open on disk is one
@@ -5626,41 +5873,25 @@ const server = createServer(async (req, res) => {
         const parsed = routineRequestEnvelopeSchema.safeParse(await readBody(req));
         if (!parsed.success) return json(res, 400, { error: "invalid routine proposal" });
         const body = parsed.data;
-        const fromBotId = body.fromBotId;
-        const from = store.bot(fromBotId);
-        if (!from) return json(res, 403, { error: "unknown sender" });
-        const fromThreadId = body.fromThreadId;
-        const owner = connectorThread(from.id, fromThreadId);
-        if (!owner) return json(res, 403, { error: "source conversation does not belong to sender" });
-        const persistence = routineProposalPersistence(from.id, fromThreadId);
-        if (!persistence.ok) {
-          return json(res, persistence.status, { error: persistence.error });
-        }
-        const proposedInput = body.action === "create"
-          ? { action: body.action, routine: body.routine }
-          : body.action === "update"
-            ? { action: body.action, routineId: body.routineId, changes: body.changes }
-            : { action: body.action, routineId: body.routineId };
-        const proposed = await routineRequests.propose({
-          botId: from.id,
-          threadId: fromThreadId,
-          proposal: proposedInput,
-          from: owner.group ? { botId: from.id, name: from.name, color: from.color } : undefined,
-        });
-        const proposedCard = store.messagesFor(fromThreadId).find((message) => message.id === proposed.messageId)?.card;
-        appendDecision(DATA_DIR, {
-          threadId: fromThreadId,
-          requestId: proposed.requestId,
-          botId: from.id,
-          botName: from.name,
-          tool: proposedCard?.tool,
-          // Audit what the human was actually shown, not the shorter tool
-          // response returned to the model.
-          summary: proposedCard?.subtitle ?? proposed.summary,
-          decision: "card-shown",
-          source: "routine",
-        });
-        return json(res, 201, proposed);
+        const result = await executeRoutineRequestRequest(
+          body.action === "create"
+            ? { fromBotId: body.fromBotId, fromThreadId: body.fromThreadId, action: body.action, routine: body.routine }
+            : body.action === "update"
+              ? {
+                  fromBotId: body.fromBotId,
+                  fromThreadId: body.fromThreadId,
+                  action: body.action,
+                  routineId: body.routineId,
+                  changes: body.changes,
+                }
+              : {
+                  fromBotId: body.fromBotId,
+                  fromThreadId: body.fromThreadId,
+                  action: body.action,
+                  routineId: body.routineId,
+                },
+        );
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/ask-bot") {
         const body = await readBody(req);
@@ -5678,144 +5909,36 @@ const server = createServer(async (req, res) => {
       // turn.completed. Returns immediately (the caller does not wait).
       if (method === "POST" && path === "/api/internal/delegate-bot") {
         const body = await readBody(req);
-        const fromBotId = String(body.fromBotId ?? "");
-        const toBotId = String(body.toBotId ?? "");
-        const message = String(body.message ?? "").trim();
-        const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : undefined;
-        const depth = Number(body.depth ?? 0) || 0;
-        if (!toBotId || !message) return json(res, 400, { error: "toBotId and message required" });
-        const from = store.bot(fromBotId);
-        if (!from) return json(res, 404, { error: "no such bot" });
-        const target = store.bot(toBotId);
-        if (!target) return json(res, 404, { error: "no such bot" });
-        if (sectionKey(from.section) !== sectionKey(target.section)) {
-          return json(res, 403, { error: "that bot belongs to a different section" });
-        }
-        const fromThreadId = String(body.fromThreadId ?? from.threadId);
-        if (!store.taskByThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source thread does not belong to sender" });
-        }
-        const result = queueDelegation(
-          commsBus,
-          from,
-          { toBotId, message, reason, depth },
-          MAX_COMMS_DEPTH,
-          fromThreadId,
-        );
-        if (result !== "ok") {
-          // the agent reads this string — a bare enum ("too_deep") tells it
-          // nothing about what to do instead
-          const said: Record<Exclude<QueueResult, "ok">, string> = {
-            self: "a bot cannot delegate to itself",
-            too_deep: "delegation chains are limited to one hop — do this one yourself",
-            no_target: "no such bot",
-            too_many: "too many delegations queued on this turn — finish some first",
-          };
-          return json(res, 200, { error: said[result] });
-        }
-        const targetName = store.bot(toBotId)?.name ?? toBotId;
-        return json(res, 200, {
-          queued: true,
-          message: from.approvePeerComms
-            ? `Queued for review — @${targetName} will only pick it up if the user approves after your turn finishes.`
-            : `Delegation queued — @${targetName} will pick it up after your current turn finishes.`,
+        const result = executeDelegateBotRequest({
+          fromBotId: String(body.fromBotId ?? ""),
+          toBotId: String(body.toBotId ?? ""),
+          message: String(body.message ?? "").trim(),
+          reason: typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : undefined,
+          depth: Number(body.depth ?? 0) || 0,
+          fromThreadId: typeof body.fromThreadId === "string" ? body.fromThreadId : undefined,
         });
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/create-bot") {
         const body = await readBody(req);
-        const fromBotId = String(body.fromBotId ?? "");
-        const chief = store.bot(fromBotId);
-        if (!chief) return json(res, 403, { error: "unknown sender" });
-        const fromThreadId = String(body.fromThreadId ?? chief.threadId);
-        if (!store.taskByThread(chief.id, fromThreadId)) {
-          return json(res, 403, { error: "source thread does not belong to sender" });
-        }
-        if (!chief.chiefOfStaff) {
-          return json(res, 403, { error: "only a section's Chief of Staff can create operator bots" });
-        }
-        if (store.bots.length >= MAX_WORKSPACE_BOTS) {
-          return json(res, 409, { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` });
-        }
-        const name = String(body.name ?? "").trim();
-        const role = String(body.role ?? "").trim();
-        const instructions = String(body.instructions ?? "").trim();
-        if (!name || !role || !instructions) {
-          return json(res, 400, { error: "name, role, and instructions are required" });
-        }
-        if (name.length > 80) return json(res, 400, { error: "name must be at most 80 characters" });
-        if (role.length > 120) return json(res, 400, { error: "role must be at most 120 characters" });
-        if (instructions.length > 1_000) {
-          return json(res, 400, { error: "instructions must be at most 1000 characters" });
-        }
-        const duplicate = store.bots.find(
-          (candidate) =>
-            !candidate.hidden &&
-            sectionKey(candidate.section) === sectionKey(chief.section) &&
-            candidate.name.trim().toLowerCase() === name.toLowerCase(),
-        );
-        if (duplicate) {
-          return json(res, 409, { error: `@${duplicate.name} already exists in this section; use list_bots` });
-        }
-        const created = store.createBot(
-          {
-            name,
-            title: role,
-            description: instructions,
-            modelSelection: { ...chief.modelSelection },
-            section: chief.section,
-          },
-          { seedMessages: false },
-        );
-        const safeBot = store.patchBot(created.id, {
-          composio: false,
-          autoApprove: false,
-          approvePeerComms: false,
-        })!;
-        return json(res, 201, {
-          id: safeBot.id,
-          name: safeBot.name,
-          title: safeBot.title,
-          section: safeBot.section || "General",
-          model: safeBot.modelSelection.model,
+        const result = executeCreateBotRequest({
+          fromBotId: String(body.fromBotId ?? ""),
+          fromThreadId: typeof body.fromThreadId === "string" ? body.fromThreadId : undefined,
+          name: String(body.name ?? ""),
+          role: String(body.role ?? ""),
+          instructions: String(body.instructions ?? ""),
         });
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/request-credential") {
         const body = await readBody(req);
-        const fromBotId = String(body.fromBotId ?? "");
-        const from = store.bot(fromBotId);
-        if (!from) return json(res, 403, { error: "unknown sender" });
-        const fromThreadId = String(body.fromThreadId ?? from.threadId);
-        const owner = connectorThread(from.id, fromThreadId);
-        if (!owner) return json(res, 403, { error: "source conversation does not belong to sender" });
-        if (!isCredentialTargetId(body.credentialId)) {
-          return json(res, 400, { error: "unsupported credential id" });
-        }
-        const credentialId: CredentialTargetId = body.credentialId;
-        const target = CREDENTIAL_TARGETS[credentialId];
-        if (credentialIsConfigured(cfg, credentialId)) {
-          return json(res, 200, { alreadyConfigured: true, label: target.label });
-        }
-        const existing = store.messagesFor(fromThreadId).find((message) =>
-          isReusableCredentialRequest(message, credentialId, from.id, Boolean(owner.group))
-        );
-        if (existing) {
-          return json(res, 200, { messageId: existing.id, label: target.label });
-        }
-        const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 240) : "";
-        const message = store.appendMessage(fromThreadId, {
-          role: "bot",
-          kind: "secret",
-          ...(owner.group ? { from: { botId: from.id, name: from.name, color: from.color } } : {}),
-          secret: {
-            target: credentialId,
-            label: target.label,
-            description: reason ? `${target.description} ${reason}` : target.description,
-            placeholder: target.placeholder,
-            helpUrl: target.helpUrl,
-            requestKey: randomUUID(),
-          },
+        const result = executeRequestCredentialRequest({
+          fromBotId: String(body.fromBotId ?? ""),
+          fromThreadId: typeof body.fromThreadId === "string" ? body.fromThreadId : undefined,
+          credentialId: body.credentialId,
+          reason: typeof body.reason === "string" ? body.reason : undefined,
         });
-        return json(res, 201, { messageId: message.id, label: target.label });
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/connectors/mcp") {
         const body = await readBody(req);

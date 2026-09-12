@@ -188,6 +188,238 @@ const ASK_BOT: HarnessTool = {
   },
 };
 
+/** Only a chief may build a team, and it is still a peer-comms-shaped
+ *  permission — a bot whose depth or driver never mounted the agents
+ *  integration must not see it either.  Not the peer-hop ceiling, though:
+ *  building a team is not a hop, so `commsDepth` plays no part, the same
+ *  reasoning `list_routines` uses for the recursion cap. */
+const chiefOnly = (ctx: ToolGateContext) => ctx.agents && ctx.chiefOfStaff;
+
+/** Not a peer hop either, and not chief-gated: any bot with the agents
+ *  integration mounted may ask for a credential or manage its own
+ *  routines. */
+const anyAgentsBot = (ctx: ToolGateContext) => ctx.agents;
+
+const DELEGATE_BOT: HarnessTool = {
+  name: "delegate_bot",
+  description:
+    "Hand a task to another bot ASYNCHRONOUSLY: returns immediately and the peer runs after your current turn finishes. Use this when you want to keep working or hand off a long-running subtask without waiting. The user sees the peer's reply as its own turn; you do NOT receive the reply inline.",
+  schema: {
+    type: "object",
+    properties: {
+      bot_id: { type: "string", description: "The target bot's id (from list_bots)." },
+      message: { type: "string", description: "What the peer should do / answer." },
+      reason: {
+        type: "string",
+        description: "Optional one-line reason for the delegation (shown to the user as a chip).",
+      },
+    },
+    required: ["bot_id", "message"],
+  },
+  surfaces: { mcp: true, http: true },
+  gate: peerComms,
+  sideEffect: "write",
+  settles: "immediate",
+  promptFragment:
+    "Use delegate_bot to hand a task to a peer asynchronously when you do not need its reply inline; the user sees the peer's reply as its own turn.",
+  // Starting a peer's turn spends its tokens, same as ask_bot — and unlike
+  // ask_bot, this one runs after the current turn ends, so a denied
+  // delegation must never have been queued in the first place.
+  approval: {
+    policy: "ask",
+    summary: (args) => {
+      const target = typeof args.bot_id === "string" ? args.bot_id : "another bot";
+      const raw = typeof args.message === "string" ? args.message : "";
+      const text = raw.replace(/\s+/g, " ").trim();
+      return text ? `delegate to ${target}: ${text.slice(0, 120)}` : `delegate to ${target}`;
+    },
+  },
+};
+
+const CREATE_BOT: HarnessTool = {
+  name: "create_bot",
+  description:
+    "Create a specialist bot in your section. Only a section's Chief of Staff may use this. The new bot inherits the Chief's engine, starts with connected apps and automatic approvals disabled, and can then receive work through delegate_bot. Create only the smallest useful team (maximum four per turn).",
+  schema: {
+    type: "object",
+    properties: {
+      name: { type: "string", description: "Short, unique display name for the specialist." },
+      role: { type: "string", description: "The specialist's job title or role." },
+      instructions: {
+        type: "string",
+        description: "What this specialist is responsible for and how it should work.",
+      },
+    },
+    required: ["name", "role", "instructions"],
+  },
+  surfaces: { mcp: true, http: true },
+  gate: chiefOnly,
+  sideEffect: "write",
+  settles: "immediate",
+  promptFragment:
+    "If you are the Chief of Staff, use create_bot to add a specialist to your team (up to four per turn), then delegate_bot to assign it work.",
+};
+
+/** Mirrors `CREDENTIAL_TARGETS` in `shared/credential-request.ts`.
+ *  Duplicated rather than imported: this file has to stay import-free
+ *  (`registry.test.ts` asserts it, because `agents-proxy.ts` loads it inside
+ *  a bare child process before the harness exists), so the one place that
+ *  needs the real allowlist as DATA cannot reach it.  `registry.test.ts`
+ *  also diffs this list against the real one so the two id sets cannot
+ *  drift silently. */
+export const CREDENTIAL_TARGET_IDS = [
+  "xaiApiKey",
+  "deepseekApiKey",
+  "boxToken",
+  "opencodeGoApiKey",
+  "ttsKey",
+  "openaiImageApiKey",
+] as const;
+
+const REQUEST_CREDENTIAL: HarnessTool = {
+  name: "request_credential",
+  description:
+    "Ask the user for a supported API key through BotFleet's secure credential card. Use this instead of asking them to paste a secret into chat. The secret is saved by the desktop app and is never returned to you. After calling this tool, end the turn; BotFleet resumes the task after the user saves or declines.",
+  schema: {
+    type: "object",
+    properties: {
+      credential_id: {
+        type: "string",
+        enum: [...CREDENTIAL_TARGET_IDS],
+        description: "The credential the current task requires.",
+      },
+      reason: {
+        type: "string",
+        description: "Optional short, non-sensitive explanation of why the task needs it.",
+      },
+    },
+    required: ["credential_id"],
+  },
+  surfaces: { mcp: true, http: true },
+  gate: anyAgentsBot,
+  sideEffect: "write",
+  settles: "suspend",
+  promptFragment:
+    "If a supported API key is missing, use request_credential to show the secure in-app card. Never ask the user to paste credentials into chat.",
+};
+
+const WEEKDAYS_ENUM = [
+  "monday",
+  "tuesday",
+  "wednesday",
+  "thursday",
+  "friday",
+  "saturday",
+  "sunday",
+] as const;
+
+// One flat object, deliberately free of oneOf/const/format: several agent
+// CLIs flatten or drop JSON-Schema composition keywords when converting MCP
+// tools into their provider's function-call format, and a model that never
+// saw the branches guesses shapes forever.  The per-type rules live in
+// descriptions and are enforced with guiding errors by
+// `schedule.ts#normalizeScheduleInput`, which this schema describes but
+// (being import-free) cannot reference directly.
+const ROUTINE_SCHEDULE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  description:
+    'Either {"type":"once","at":RFC3339} for one future run, {"type":"weekly","time":"HH:MM","weekdays":[...]} for chosen days, or {"type":"daily","time":"HH:MM"} to run every day. Sub-day intervals (every N minutes/hours) are not supported.',
+  properties: {
+    type: {
+      type: "string",
+      enum: ["once", "weekly", "daily"],
+      description: "once = a single future run; weekly = chosen weekdays; daily = every day of the week.",
+    },
+    at: {
+      type: "string",
+      description:
+        "Only for type once: future RFC3339 date-time with an explicit timezone offset, for example 2026-09-01T09:00:00+05:30 or 2026-09-01T03:30:00Z.",
+    },
+    time: {
+      type: "string",
+      description: "For type weekly or daily: local computer time in 24-hour HH:MM format, for example 09:00.",
+    },
+    weekdays: {
+      type: "array",
+      items: { type: "string", enum: WEEKDAYS_ENUM },
+      description: "Only for type weekly: which days the routine runs, in the computer's local timezone.",
+    },
+  },
+  required: ["type"],
+} as const;
+
+const ROUTINE_FIELDS_SCHEMA = {
+  name: { type: "string", minLength: 1, maxLength: 80, description: "Short name shown in Routines." },
+  instructions: {
+    type: "string",
+    minLength: 1,
+    maxLength: 20_000,
+    description: "The complete instructions the bot should follow each time the routine runs.",
+  },
+  schedule: ROUTINE_SCHEDULE_SCHEMA,
+  run_on: {
+    type: "string",
+    enum: ["maus", "cloud"],
+    description: "Where the routine runs. Defaults to maus (this BotFleet setup).",
+  },
+  duration_minutes: {
+    type: "integer",
+    minimum: 15,
+    maximum: 240,
+    description: "Maximum run duration in minutes. Defaults to 30.",
+  },
+} as const;
+
+const PROPOSE_ROUTINE: HarnessTool = {
+  name: "propose_routine",
+  description:
+    "Prepare a new routine after the user explicitly asks to schedule recurring or future work. Call list_routines first for relative dates or times so you use its authoritative current time and timezone. This only creates a durable confirmation card; it does NOT enable the routine. Resolve ambiguous dates, times, timezone, destination, or instructions with the user first, and always give one-time schedules an explicit RFC3339 offset. After calling it, end the turn and do not claim the routine exists until the user confirms the card.",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: ROUTINE_FIELDS_SCHEMA,
+    required: ["name", "instructions", "schedule"],
+  },
+  surfaces: { mcp: true, http: true },
+  gate: anyAgentsBot,
+  sideEffect: "write",
+  settles: "suspend",
+  promptFragment:
+    "If the user explicitly asks to schedule, run, or change routines, use list_routines and propose_routine or propose_routine_action. A proposal is not applied until the user confirms its in-app card, so never claim the action completed before that confirmation.",
+};
+
+const PROPOSE_ROUTINE_ACTION: HarnessTool = {
+  name: "propose_routine_action",
+  description:
+    "Prepare a user-requested change to one of this bot's existing routines. This only creates a durable confirmation card; it does NOT apply the change. Use list_routines first to get the routine id. After calling it, end the turn and do not claim the action completed until the user confirms the card.",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      routine_id: { type: "string", minLength: 1, description: "Routine id from list_routines." },
+      action: {
+        type: "string",
+        enum: ["update", "pause", "resume", "run_now", "delete"],
+        description: "The requested action. Supply changes only for update.",
+      },
+      changes: {
+        type: "object",
+        additionalProperties: false,
+        properties: ROUTINE_FIELDS_SCHEMA,
+        description: "Fields to change when action is update. Omit for every other action.",
+      },
+    },
+    required: ["routine_id", "action"],
+  },
+  surfaces: { mcp: true, http: true },
+  gate: anyAgentsBot,
+  sideEffect: "write",
+  settles: "suspend",
+  promptFragment:
+    "Use propose_routine_action (after list_routines) to pause, resume, run now, update, or delete an existing routine. It only shows a confirmation card; the change applies when the user confirms it.",
+};
+
 const LIST_ROUTINES: HarnessTool = {
   name: "list_routines",
   description:
@@ -197,17 +429,36 @@ const LIST_ROUTINES: HarnessTool = {
   // Not a peer hop, so the recursion ceiling does not apply: a bot four
   // hops deep can still be asked what it has scheduled.  It rides the
   // agents integration because that is the surface the tools are mounted on.
-  gate: (ctx) => ctx.agents,
+  gate: anyAgentsBot,
   sideEffect: "read",
   settles: "immediate",
   promptFragment:
     "Use list_routines to read this bot's scheduled work, and treat the current time it returns as authoritative for relative dates.",
 };
 
-/** Every tool the registry owns, in the order the MCP lane publishes them.
- *  The five write tools still defined inside `agents-proxy.ts` join this
- *  list in a later PR; until then the proxy splices them in by name. */
-export const HARNESS_TOOLS: readonly HarnessTool[] = [LIST_BOTS, ASK_BOT, LIST_ROUTINES];
+/** The `create_bot` per-turn cap, shared so the two lanes cannot drift on
+ *  the number even though they enforce it in two different places:
+ *  `agents-proxy.ts` keeps its own per-process counter (it is a bare child
+ *  process — it cannot share a JS closure with the harness), and
+ *  `agents.ts#createAgentTools` closes over a fresh counter every time it is
+ *  built, which is once per HTTP turn.  That is what makes the HTTP lane's
+ *  cap turn-scoped rather than process-scoped: a new turn gets a new host,
+ *  gets a new call to `createAgentTools`, gets a new counter. */
+export const MAX_CREATED_BOTS_PER_TURN = 4;
+
+/** Every tool the registry owns, in the order the MCP lane publishes them —
+ *  spelled out here, not derived, so reordering this array is a deliberate
+ *  edit rather than something that silently reorders the MCP wire list. */
+export const HARNESS_TOOLS: readonly HarnessTool[] = [
+  LIST_BOTS,
+  ASK_BOT,
+  DELEGATE_BOT,
+  CREATE_BOT,
+  REQUEST_CREDENTIAL,
+  LIST_ROUTINES,
+  PROPOSE_ROUTINE,
+  PROPOSE_ROUTINE_ACTION,
+];
 
 const BY_NAME = new Map(HARNESS_TOOLS.map((tool) => [tool.name, tool]));
 

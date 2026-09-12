@@ -34,15 +34,31 @@ function deps(over: Partial<TurnToolHostDeps> = {}): TurnToolHostDeps {
       status: 200,
       body: { now: "2026-09-12T10:00:00.000Z", timeZone: "UTC", routines: [] },
     }),
+    executeDelegateBotRequest: vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 200, body: { queued: true, message: "Delegation queued." } }),
+    ),
+    executeCreateBotRequest: vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { id: "bot-new", name: "Pixel", section: "Work" } }),
+    ),
+    executeRequestCredentialRequest: vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { messageId: "msg-1", label: "OpenCode API key" } }),
+    ),
+    executeRoutineRequestRequest: vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { summary: "Weekdays at 09:00" } }),
+    ),
     ...over,
   };
 }
 
-const hostFor = (over: Partial<TurnToolHostDeps> = {}, ctx: { commsDepth?: number } = {}) =>
+const hostFor = (
+  over: Partial<TurnToolHostDeps> = {},
+  ctx: { commsDepth?: number; chiefOfStaff?: boolean } = {},
+) =>
   createTurnToolHost({
     botId: "bot-self",
     threadId: "thread-1",
     commsDepth: ctx.commsDepth ?? 0,
+    chiefOfStaff: ctx.chiefOfStaff,
     deps: deps(over),
   });
 
@@ -190,11 +206,106 @@ describe("the host's contract", () => {
   });
 
   it("refuses a tool that exists but was never in this turn's catalog", async () => {
-    // The write tools land in a later PR.  Until they do, a model that
-    // hallucinates one must not find an executor waiting for it.
+    // create_bot's executor exists now, but its registry gate requires
+    // chiefOfStaff, and this turn's default context does not carry it — a
+    // non-chief bot must not find an executor waiting for a tool it was
+    // never offered.
     const outcome = await hostFor().execute({ id: "1", name: "create_bot", arguments: {} }, runtime);
     expect(outcome.kind).toBe("error");
     expect(outcome.content).toContain("is not available to this bot");
+  });
+
+  it("still refuses a genuinely unknown name outright", async () => {
+    const outcome = await hostFor().execute({ id: "1", name: "delete_everything", arguments: {} }, runtime);
+    expect(outcome.kind).toBe("error");
+    expect(outcome.content).toContain("delete_everything");
+  });
+});
+
+describe("the six tools PR 7 added", () => {
+  it("offers create_bot to an actual Chief of Staff and runs it", async () => {
+    const executeCreateBotRequest = vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { id: "bot-new", name: "Pixel", section: "Work" } }),
+    );
+    const host = hostFor({ executeCreateBotRequest }, { chiefOfStaff: true });
+    const outcome = await host.execute(
+      { id: "1", name: "create_bot", arguments: { name: "Pixel", role: "Designer", instructions: "Design." } },
+      runtime,
+    );
+    expect(outcome.kind).toBe("result");
+    expect(executeCreateBotRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives create_bot's per-turn cap a fresh count on a second turn's host", async () => {
+    let created = 0;
+    const executeCreateBotRequest = vi.fn(async (): Promise<AgentRequestResult> => {
+      created += 1;
+      return { status: 201, body: { id: `bot-${created}`, name: `Bot${created}`, section: "Work" } };
+    });
+    const args = { name: "N", role: "R", instructions: "I" };
+    const firstTurnHost = hostFor({ executeCreateBotRequest }, { chiefOfStaff: true });
+    for (let i = 0; i < 4; i++) {
+      const outcome = await firstTurnHost.execute({ id: String(i), name: "create_bot", arguments: args }, runtime);
+      expect(outcome.kind, `create #${i + 1}`).toBe("result");
+    }
+    const capped = await firstTurnHost.execute({ id: "5", name: "create_bot", arguments: args }, runtime);
+    expect(capped.kind).toBe("error");
+    expect(capped.content).toMatch(/at most 4 bots/);
+
+    // A brand-new `createTurnToolHost` call — what dispatching a SECOND
+    // turn does — must not remember the first turn's count.
+    const secondTurnHost = hostFor({ executeCreateBotRequest }, { chiefOfStaff: true });
+    const fresh = await secondTurnHost.execute({ id: "6", name: "create_bot", arguments: args }, runtime);
+    expect(fresh.kind).toBe("result");
+  });
+
+  it("delegate_bot asks before it runs, carrying the target and the first 120 chars", async () => {
+    const executeDelegateBotRequest = vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 200, body: { queued: true, message: "Delegation queued." } }),
+    );
+    const asking = askingRuntime("allowed-once");
+    const longTask = "x".repeat(200);
+    const outcome = await hostFor({ executeDelegateBotRequest }).execute(
+      { id: "1", name: "delegate_bot", arguments: { bot_id: "bot-peer", message: longTask } },
+      asking.runtime,
+    );
+    expect(asking.asks).toHaveLength(1);
+    expect(asking.asks[0].tool).toBe("delegate_bot");
+    expect(asking.asks[0].summary).toContain("bot-peer");
+    expect(asking.asks[0].summary.length).toBeLessThan(longTask.length);
+    expect(outcome.kind).toBe("result");
+    expect(executeDelegateBotRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("a denied delegate_bot never reaches the endpoint — nothing is queued", async () => {
+    const executeDelegateBotRequest = vi.fn(async (): Promise<AgentRequestResult> => ({ status: 200, body: {} }));
+    const asking = askingRuntime("rejected");
+    const outcome = await hostFor({ executeDelegateBotRequest }).execute(
+      { id: "1", name: "delegate_bot", arguments: { bot_id: "bot-peer", message: "do it" } },
+      asking.runtime,
+    );
+    expect(executeDelegateBotRequest).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ kind: "error", detail: "denied" });
+  });
+
+  it("request_credential's suspend outcome passes through the host untouched", async () => {
+    const outcome = await hostFor().execute(
+      { id: "1", name: "request_credential", arguments: { credential_id: "opencodeGoApiKey" } },
+      runtime,
+    );
+    expect(outcome).toMatchObject({ kind: "suspend", stopReason: "awaiting_human" });
+  });
+
+  it("propose_routine's suspend outcome passes through the host untouched", async () => {
+    const outcome = await hostFor().execute(
+      {
+        id: "1",
+        name: "propose_routine",
+        arguments: { name: "Brief", instructions: "x", schedule: { type: "daily", time: "09:00" } },
+      },
+      runtime,
+    );
+    expect(outcome).toMatchObject({ kind: "suspend", stopReason: "awaiting_human" });
   });
 });
 

@@ -36,13 +36,40 @@ import { freePortBlock } from "./testing/ports.ts";
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const posixOnly = describe.skipIf(process.platform === "win32");
 
-/** One round that asks for `ask_bot` — the registry's only write tool, and
- *  so the only one that carries an `approval` record today. */
+/** One round that asks for `ask_bot` — the registry's only write tool with
+ *  an `approval` record before PR 7 added a second one. */
 const asksToDelegate = (task: string) => ({
   kind: "sse" as const,
   frames: [
     `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"ask_bot","arguments":${JSON.stringify(
       JSON.stringify({ bot_id: "@peer", task }),
+    )}}}]}}]}`,
+    '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}',
+    "[DONE]",
+  ],
+});
+
+/** PR 7's second approval-gated write tool: same shape as `asksToDelegate`,
+ *  a different tool name and argument (`message`, not `task` — delegate_bot
+ *  has no declared wire deviation). */
+const asksToDelegateBot = (message: string, reason?: string) => ({
+  kind: "sse" as const,
+  frames: [
+    `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_delegate","function":{"name":"delegate_bot","arguments":${JSON.stringify(
+      JSON.stringify({ bot_id: "@peer", message, ...(reason ? { reason } : {}) }),
+    )}}}]}}]}`,
+    '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}',
+    "[DONE]",
+  ],
+});
+
+/** PR 7's suspend-class tool: no approval card, but the turn still has to
+ *  end here — `request_credential`'s outcome is `{ kind: "suspend" }`. */
+const asksForCredential = (credentialId: string, reason?: string) => ({
+  kind: "sse" as const,
+  frames: [
+    `{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_credential","function":{"name":"request_credential","arguments":${JSON.stringify(
+      JSON.stringify({ credential_id: credentialId, ...(reason ? { reason } : {}) }),
     )}}}]}}]}`,
     '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}',
     "[DONE]",
@@ -280,6 +307,107 @@ posixOnly("approvals reach an HTTP-lane bot", () => {
     90_000,
   );
 
+  // PR 7: delegate_bot is the second registry tool to carry an `approval`
+  // record.  Its summary has to name the target and the first 120 chars —
+  // that is what a person approving it actually reads — and a deny must
+  // leave the async handoff genuinely unqueued, not merely refused.
+  it(
+    "cards delegate_bot with the target and the first 120 chars, and a deny queues nothing",
+    async () => {
+      const peer = await makeBot({ name: "delegate-peer" });
+      const bot = await makeBot({ name: "delegator", autoApprove: false });
+      expect(peer.id).not.toBe(bot.id);
+
+      const longTask = "Please rotate the nightly build credentials and confirm the new expiry date. ".repeat(3);
+      engine.queueCompletion(asksToDelegateBot(longTask, "rotation"));
+      engine.queueCompletion(says("I was not allowed to delegate that."));
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "delegate this" })).status).toBe(202);
+
+      const card = await waitForCard(bot.id);
+      expect(card, `no approval card appeared. stderr:\n${stderr}`).not.toBeNull();
+      expect(card.card.tool).toBe("delegate_bot");
+      expect(card.card.subtitle).toContain("@peer");
+      expect(card.card.subtitle).toContain(longTask.slice(0, 100).trim());
+      // The full 200-char task must not have been copied verbatim onto the
+      // card — that is the "first 120 chars" contract, not "the whole task".
+      expect(card.card.subtitle.length).toBeLessThan(longTask.length);
+
+      const answered = await api("POST", `/api/bots/${bot.id}/respond`, {
+        requestId: card.card.requestId,
+        behavior: "deny",
+      });
+      expect(answered.status).toBe(200);
+      expect(answered.body.outcome).toBe("rejected");
+
+      const row = await waitForDecision((r) => r.tool === "delegate_bot" && r.decision === "user-denied");
+      expect(row, "the decision log never recorded the deny").not.toBeNull();
+
+      // The side effect never ran: nothing was queued for the peer to pick up.
+      const teamMap = await api("GET", "/api/team-map");
+      const queuedForPeer = (teamMap.body.queued ?? []).filter(
+        (q: { sourceBotId: string; targetBotId: string }) => q.sourceBotId === bot.id && q.targetBotId === peer.id,
+      );
+      expect(queuedForPeer).toHaveLength(0);
+
+      expect(await waitForIdle(bot.id)).toBeTruthy();
+      const round2 = engine.requests.filter((r) => r.url.includes("/chat/completions")).at(-1);
+      const toolMessage = (round2?.body as { messages?: Array<{ role: string; content: string }> })?.messages?.find(
+        (m) => m.role === "tool",
+      );
+      expect(String(toolMessage?.content)).toContain("was not approved");
+    },
+    90_000,
+  );
+
+  // PR 7: request_credential is the first registry tool that SETTLES the
+  // turn rather than feeding a result back — `{ kind: "suspend" }` all the
+  // way through the loop.  Dismissing the card is enough to prove the whole
+  // chain: the turn ends with exactly one settle, the bot goes idle, and the
+  // existing secret-resume drain dispatches a genuinely fresh turn once the
+  // card is answered — no new state machine, per PR 6/7's design.
+  it(
+    "request_credential suspends the turn and the existing resume drain answers it",
+    async () => {
+      const bot = await makeBot({ name: "credential-asker" });
+      // A baseline, not an absolute count: `engine.requests` accumulates
+      // across every test in this file, so only the DELTA this test causes
+      // is meaningful.
+      const chatRequests = () => engine.requests.filter((r) => r.url.includes("/chat/completions")).length;
+      const before = chatRequests();
+
+      engine.queueCompletion(asksForCredential("opencodeGoApiKey", "needed for the task"));
+      engine.queueCompletion(says("Continuing without it."));
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "do the task" })).status).toBe(202);
+
+      // Suspends: the bot goes idle with a secret card visible, and the
+      // fake engine was called exactly once for this turn so far.
+      expect(await waitForIdle(bot.id)).toBeTruthy();
+      const afterSuspend = await api("GET", "/api/bots");
+      const suspendedBot = (afterSuspend.body.bots ?? []).find((b: { id: string }) => b.id === bot.id);
+      const card = (suspendedBot?.messages ?? []).find(
+        (m: { kind: string; secret?: { target?: string } }) => m.kind === "secret" && m.secret?.target === "opencodeGoApiKey",
+      );
+      expect(card, `no secret card appeared. stderr:\n${stderr}`).toBeTruthy();
+      expect(chatRequests() - before, "more than one round ran before the card was even shown").toBe(1);
+
+      const dismissed = await api("POST", `/api/bots/${bot.id}/secret-cards/${card.id}/dismiss`, {
+        threadId: bot.threadId,
+      });
+      expect(dismissed.status).toBe(200);
+
+      // Resumes: a fresh turn ran against the fake engine and settled.
+      const deadline = Date.now() + 30_000;
+      for (;;) {
+        if (chatRequests() - before >= 2) break;
+        if (Date.now() > deadline) break;
+        await new Promise((r) => setTimeout(r, 200));
+      }
+      expect(chatRequests() - before, "the secret-resume drain never re-dispatched a turn").toBe(2);
+      expect(await waitForIdle(bot.id)).toBeTruthy();
+    },
+    90_000,
+  );
+
   it(
     "the unattended gate still stops a webhook turn, auto mode or not",
     async () => {
@@ -321,4 +449,5 @@ posixOnly("approvals reach an HTTP-lane bot", () => {
     },
     90_000,
   );
+
 });

@@ -7,11 +7,13 @@
 // whose only tool surface is the harness catalog — no vendor CLI, no MCP
 // mount — got the exact same sentences as a CLI bot, even though
 // request_credential, propose_routine, propose_routine_action, create_bot
-// and delegate_bot are still legacy tools `agents-proxy.ts` splices into the
-// MCP lane only (see registry.ts's own comment), ahead of their PR 7
-// registry entries.  So a MiniMax bot was told to call tools it did not
-// have, and its Chief-of-Staff bots were told they could build a team they
-// could not build.
+// and delegate_bot were legacy tools `agents-proxy.ts` spliced into the MCP
+// lane only (see registry.ts's own comment), ahead of their PR 7 registry
+// entries.  So a MiniMax bot was told to call tools it did not have, and
+// its Chief-of-Staff bots were told they could build a team they could not
+// build.  PR 7 gave all five a registry entry on both surfaces, so
+// `LEGACY_MCP_AGENT_TOOLS` below is now empty — kept, not deleted, as the
+// record of what the splice used to cover and where its replacement lives.
 //
 // This module is deliberately dependency-light, like registry.ts: it holds
 // pure functions over plain data, so every one of them is testable without
@@ -32,16 +34,14 @@ export function promptFragmentsFor(tools: readonly HarnessTool[]): string {
     .join("");
 }
 
-/** The five agents tools `agents-proxy.ts` still defines directly (named in
- *  registry.ts's own comment) — reachable on the MCP lane only, until PR 7
- *  gives them registry entries the HTTP lane can render too. */
-export const LEGACY_MCP_AGENT_TOOLS = [
-  "create_bot",
-  "delegate_bot",
-  "request_credential",
-  "propose_routine",
-  "propose_routine_action",
-] as const;
+/** The agents tools `agents-proxy.ts` used to define directly, reachable on
+ *  the MCP lane only.  PR 7 gave every one of them a registry entry on both
+ *  surfaces, so `toolsFor("mcp", ctx)` now returns them for an MCP-surfaced
+ *  turn the same way it returns `list_bots` and `ask_bot` — the splice
+ *  below has nothing left to add.  Left as an empty (not deleted) list so
+ *  `availableAgentToolNames`'s `mcpSurface` branch stays meaningful if a
+ *  future MCP-only tool ever needs the same bridge. */
+export const LEGACY_MCP_AGENT_TOOLS: readonly string[] = [];
 
 /** Every agents-tool name this bot's turn can actually call this turn: the
  *  registry names for whichever surface it uses, plus the legacy MCP splice

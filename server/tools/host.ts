@@ -55,8 +55,10 @@ export interface TurnToolHostContext {
   threadId: string;
   /** How many peer hops deep this turn already is. */
   commsDepth: number;
-  /** This bot is its section's Chief of Staff.  No tool gates on it yet;
-   *  the write tools that do arrive in a later PR. */
+  /** This bot is its section's Chief of Staff.  Gates `create_bot`, both in
+   *  the catalog this host advertises (see `gate` below) and in the
+   *  registry's own gate function — feeding it here is what makes the two
+   *  agree. */
   chiefOfStaff?: boolean;
   deps: TurnToolHostDeps;
   /** Ceiling on model-to-tool rounds; absent = the driver's default. */
