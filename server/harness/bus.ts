@@ -112,6 +112,7 @@ export class EventBus {
           turnId: event.turnId,
           type: "runtime.error",
           message: INCOMPLETE_LOG_MESSAGE,
+          raw: { source: "botfleet.event-log", payload: { kind: "write-failed" } },
         };
         this.pendingLogWarnings.set(event.threadId, warning);
         console.error("bus: canonical event log write failed", error);

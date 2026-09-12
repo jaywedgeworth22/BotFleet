@@ -165,6 +165,22 @@ describe("Sentry AI observability", () => {
     expect(String(exceptions[1])).toContain("bot turn failed: exit code 2");
   });
 
+  it("does not let an event-log warning hide the provider failure for the same turn", () => {
+    const { sink, exceptions } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({
+      type: "runtime.error",
+      message: "Canonical event history is incomplete",
+      raw: { source: "botfleet.event-log", payload: { kind: "write-failed" } },
+    }), sink);
+    observeRuntimeEvent(base({ type: "runtime.error", message: "provider process exited" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "exit code 1" }), sink);
+
+    expect(exceptions).toHaveLength(2);
+    expect(String(exceptions[0])).toContain("event history is incomplete");
+    expect(String(exceptions[1])).toContain("provider process exited");
+  });
+
   it("clears an unterminated turn's error boundary when its session exits", () => {
     const { sink, exceptions } = recordingSink();
     observeRuntimeEvent(base({ type: "turn.started" }), sink);

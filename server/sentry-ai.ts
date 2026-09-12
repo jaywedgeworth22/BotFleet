@@ -452,12 +452,16 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         break;
       }
       const turn = turns.get(key);
-      if (!turn?.errorReported) {
+      // EventBus reports canonical-log I/O separately from the provider
+      // turn.  Capture that infrastructure failure, but do not let it consume
+      // the provider turn's one-error boundary.
+      const providerTurnFailure = event.raw?.source !== "botfleet.event-log";
+      if (!providerTurnFailure || !turn?.errorReported) {
         sink.captureException(
           new Error(event.message.slice(0, 500)),
           turn ? { tags: failureTags(event, provider, turn) } : undefined,
         );
-        if (turn) turn.errorReported = true;
+        if (turn && providerTurnFailure) turn.errorReported = true;
       }
       break;
     }
