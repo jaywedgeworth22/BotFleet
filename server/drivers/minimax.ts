@@ -684,7 +684,15 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
         // emits exactly one turn.started / turn.completed pair per user turn,
         // the way every CLI driver does — so the harness hands it a toolHost
         // and dispatches it on the same one line it uses for Claude.
-        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true, toolLoop: true },
+        // replaysTranscript: this driver builds its OpenAI messages array
+        // from `turn.transcript` every round, so the harness must not also
+        // inline the same history into the turn text — see turn-context.ts.
+        capabilities: {
+          sessionModelSwitch: "in-session",
+          agentsMcp: true,
+          toolLoop: true,
+          replaysTranscript: true,
+        },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         // Insurance the single try/finally should make unreachable: if this

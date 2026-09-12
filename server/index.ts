@@ -153,6 +153,13 @@ import { buildTurnTools } from "./turn-tools.ts";
 import { isToolCallsStopReason, sendTurnWithToolLoop } from "./tool-executor.ts";
 import { createTurnToolHost } from "./tools/host.ts";
 import { listAgentsResponse } from "./tools/agents.ts";
+import { toolsFor } from "./tools/registry.ts";
+import {
+  availableAgentToolNames,
+  credentialPromptFor,
+  hasFileTools,
+  routinePromptFor,
+} from "./tools/prompts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import {
   ActiveTurnOwners,
@@ -2713,7 +2720,13 @@ async function startTurn(
     transcript,
     rewound,
     fresh,
-    replaysNatively: instance.driverKind === "grok",
+    // Every chat-completions driver (minimax, openai-compat, grok) rebuilds
+    // its own message history from `turnInput.transcript` each round, same
+    // as a CLI driver replaying its own native session — so inlining the
+    // same history into `turnText` here would send it twice. Driven off the
+    // capability rather than a driverKind string so a new chat-completions
+    // driver gets this for free by declaring it.
+    replaysNatively: instance.adapter.capabilities.replaysTranscript === true,
   });
 
   const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
@@ -3087,22 +3100,38 @@ async function startTurn(
             sectionPeers,
           )
         : [];
+      // A driver whose ONLY tool surface is the harness catalog (declares
+      // capabilities.toolLoop) has no MCP mount, so it never gets the five
+      // write tools agents-proxy.ts still splices in ahead of their PR 7
+      // registry entries — its agents tools are exactly the registry's
+      // http-surface set. Computed once here and reused below so the
+      // credential/routine/Chief prompts can never name a tool this turn
+      // cannot actually call.
+      const httpOnlyToolSurface = instance.adapter.capabilities.toolLoop === true;
+      const availableAgentTools = availableAgentToolNames({
+        hasAgentsIntegration: Boolean(integrations.agents),
+        mcpSurface: !httpOnlyToolSurface,
+        registryToolNames: integrations.agents
+          ? toolsFor(httpOnlyToolSurface ? "http" : "mcp", {
+              agents: true,
+              commsDepth,
+              maxCommsDepth: MAX_COMMS_DEPTH,
+              chiefOfStaff: Boolean(bot.chiefOfStaff),
+            }).map((registryTool) => registryTool.name)
+          : [],
+      });
       const coordinationPrompt = bot.chiefOfStaff
         ? chiefOfStaffSystemPrompt(
             bot.id,
             store.bots,
-            Boolean(integrations.agents),
+            availableAgentTools,
             botFleetStatusSystemPrompt(),
           )
         : integrations.agents && sectionPeers.length > 0
           ? "You can work with the other bots in your section through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
           : "";
-      const credentialPrompt = integrations.agents
-        ? " If a supported API key is missing, use request_credential to show the secure in-app card. Never ask the user to paste credentials into chat."
-        : "";
-      const routinePrompt = integrations.agents
-        ? " If the user explicitly asks to list or review, schedule, run, or change routines, use list_routines and propose_routine or propose_routine_action. A proposal is not applied until the user confirms its in-app card, so never claim the action completed before that confirmation."
-        : "";
+      const credentialPrompt = credentialPromptFor(availableAgentTools);
+      const routinePrompt = routinePromptFor(availableAgentTools);
 
       // (activeVpsThreads was already claimed above, before the provision or
       // reuse await, so the backend guards saw this turn the whole time.)
@@ -3187,7 +3216,9 @@ async function startTurn(
           credentialPrompt +
           routinePrompt +
           sectionContextSystemPrompt(bot.section) +
-          (privateWorkspace ? memorySystemPrompt(bot.id) + skillsSystemPrompt(bot.id) : "") +
+          (hasFileTools(worksInWorkspace, httpOnlyToolSurface)
+            ? memorySystemPrompt(bot.id) + skillsSystemPrompt(bot.id)
+            : "") +
           skillInstructions +
           packagePlaybooks +
           (opts?.automationSource === "webhook"
@@ -4018,6 +4049,22 @@ async function runGroupMemberTurn(
   if (hop < MAX_COMMS_DEPTH && instance.adapter.capabilities.agentsMcp === true) {
     integrations.agents = agentsIntegration(bot.id, threadId, hop);
   }
+  // Same rule as the 1:1 dispatch: a toolLoop driver's agents tools are
+  // exactly the registry's http-surface set, with none of the five write
+  // tools agents-proxy.ts still splices into the MCP lane ahead of PR 7.
+  const httpOnlyToolSurface = instance.adapter.capabilities.toolLoop === true;
+  const availableAgentTools = availableAgentToolNames({
+    hasAgentsIntegration: Boolean(integrations.agents),
+    mcpSurface: !httpOnlyToolSurface,
+    registryToolNames: integrations.agents
+      ? toolsFor(httpOnlyToolSurface ? "http" : "mcp", {
+          agents: true,
+          commsDepth: hop,
+          maxCommsDepth: MAX_COMMS_DEPTH,
+          chiefOfStaff: Boolean(bot.chiefOfStaff),
+        }).map((registryTool) => registryTool.name)
+      : [],
+  });
   const selectedSkills = selectBundledSkills(
     serializeRoomContext(threadId, userName),
     instance.adapter.capabilities.phoneMcp === true ? ["phoneMcp"] : [],
@@ -4115,10 +4162,8 @@ async function runGroupMemberTurn(
       `Associated Workspace Repositories / Folders:\n- Primary: ${group.cwd || "default"}\n${group.extraCwds.map((c) => `- Auxiliary: ${c}`).join("\n")}`,
     "Format replies with clean Github-Flavored Markdown (headers, code fences with language tags, bullet lists, tables, bold/italic). When referencing local files on this Mac, use absolute paths or file links (e.g. `file:///path/to/file`) so they are directly clickable in the UI.",
     `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.`,
-    integrations.agents &&
-      "If a supported API key is missing, use request_credential to show the secure in-app card. Never ask the user to paste credentials into chat.",
-    integrations.agents &&
-      "If the user explicitly asks to list or review, schedule, run, or change routines, use list_routines and propose_routine or propose_routine_action. A proposal is not applied until the user confirms its in-app card, so never claim the action completed before that confirmation.",
+    credentialPromptFor(availableAgentTools).trim(),
+    routinePromptFor(availableAgentTools).trim(),
   ]
     .filter(Boolean)
     .join("\n");
@@ -4141,7 +4186,9 @@ async function runGroupMemberTurn(
   const roomSystem =
     system +
     sectionContextSystemPrompt(bot.section) +
-    (workspace ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}` : "") +
+    (hasFileTools(worksInWorkspace, httpOnlyToolSurface)
+      ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}`
+      : "") +
     renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) +
     installedPlaybookInstructions(text, bot.playbooks);
 

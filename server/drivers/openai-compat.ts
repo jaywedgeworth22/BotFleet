@@ -561,7 +561,10 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         provider: DRIVER_KIND,
         // no MCP server is mounted in this file and respondToRequest answers
         // "unavailable": localComputerMcp would be a knob nothing can turn
-        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true },
+        // replaysTranscript: this driver builds its OpenAI messages array
+        // from `turn.transcript` every round, so the harness must not also
+        // inline the same history into the turn text — see turn-context.ts.
+        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true, replaysTranscript: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const,
