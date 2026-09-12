@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   ActiveTurnOwners,
+  ExactTurnLeases,
   eligibleAutoFallbackChain,
   inspectThreadOwners,
   interruptThreadOwners,
@@ -12,6 +13,7 @@ import {
   type StalledReleaseDecision,
   type ThreadRuntimeInstance,
 } from "./turn-safety.ts";
+import { vpsAliasChangeError, VPS_ALIAS_CHANGE_ERROR } from "./cloud-backend.ts";
 
 const candidate = (
   instanceId: string,
@@ -79,6 +81,21 @@ describe("active turn ownership", () => {
       owners: [],
       inspectionFailed: false,
     })).toBe(false);
+  });
+});
+
+describe("exact turn leases", () => {
+  it("does not let an older finalizer release a successor on the same bot and thread", () => {
+    const leases = new ExactTurnLeases();
+    const oldLease = leases.claim("bot-1", "thread-1", 1);
+    const releaseOldFinalScreenshot = () => leases.release(oldLease);
+    const successor = leases.claim("bot-1", "thread-1", 2);
+
+    expect(releaseOldFinalScreenshot()).toBe(false);
+    expect(leases.forBot("bot-1")).toBe(successor);
+    expect(vpsAliasChangeError("old-vps", "new-vps", leases.size > 0)).toBe(VPS_ALIAS_CHANGE_ERROR);
+    expect(leases.release(successor)).toBe(true);
+    expect(leases.size).toBe(0);
   });
 });
 
