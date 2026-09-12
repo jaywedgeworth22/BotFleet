@@ -2,11 +2,14 @@
 
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import {
   chmod,
   lstat,
   mkdir,
+  readdir,
   readFile,
+  readlink,
   realpath,
   rename,
   rm,
@@ -20,6 +23,7 @@ import { applyPreparedUpdate, prepareUpdate, runUpdate } from "./mac-update-tran
 
 const EXPECTED_TEAM_ID = "CC8UTF7ATG";
 const EXPECTED_BUNDLE_ID = "com.botfleet.app";
+const PREPARED_SCHEMA_VERSION = 2;
 const EXPECTED_SIGN_IDENTITY = "Developer ID Application: Jay Wedgeworth, LLC (CC8UTF7ATG)";
 const BUILDER_SIGN_SELECTOR = "Jay Wedgeworth, LLC (CC8UTF7ATG)";
 export const DEFAULT_PORTS = [8799, 18799, 28799];
@@ -29,7 +33,6 @@ const GENERATED_PATHS = [
   "electron/resources/BotFleet Speech.app/Contents/MacOS/speech-helper",
   "electron/vendor/electron-updater.cjs",
 ];
-const TERMINAL_ROUTINE_STATES = new Set(["completed", "failed", "cancelled", "canceled", "interrupted", "missed", "skipped"]);
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 export class CommandError extends Error {
@@ -165,14 +168,40 @@ function pathsOverlap(left, right) {
   return left === right || left.startsWith(`${right}${sep}`) || right.startsWith(`${left}${sep}`);
 }
 
-async function dependencyFingerprint(nodeModulesPath) {
+export async function dependencyFingerprint(nodeModulesPath) {
   const details = await lstat(nodeModulesPath);
   if (!details.isDirectory() || details.isSymbolicLink()) {
     throw new Error(`Staged dependency root must be a real directory: ${nodeModulesPath}`);
   }
-  const modules = await readFile(join(nodeModulesPath, ".modules.yaml"));
-  const virtualLock = await readFile(join(nodeModulesPath, ".pnpm/lock.yaml"));
-  return sha256(Buffer.concat([modules, Buffer.from([0]), virtualLock]));
+  const digest = createHash("sha256");
+  const frame = (kind, relativePath, value = "") => {
+    digest.update(`${kind}\0${Buffer.byteLength(relativePath)}\0${relativePath}\0${Buffer.byteLength(value)}\0${value}\0`);
+  };
+  const walk = async (directory, relativeDirectory = "") => {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => Buffer.from(left.name).compare(Buffer.from(right.name)));
+    for (const entry of entries) {
+      const relativePath = relativeDirectory ? `${relativeDirectory}/${entry.name}` : entry.name;
+      const path = join(directory, entry.name);
+      const entryDetails = await lstat(path);
+      const mode = String(entryDetails.mode & 0o777);
+      if (entryDetails.isSymbolicLink()) {
+        frame("link", relativePath, `${mode}\0${await readlink(path)}`);
+      } else if (entryDetails.isDirectory()) {
+        frame("directory", relativePath, mode);
+        await walk(path, relativePath);
+      } else if (entryDetails.isFile()) {
+        frame("file", relativePath, `${mode}\0${entryDetails.size}`);
+        for await (const chunk of createReadStream(path)) digest.update(chunk);
+        digest.update("\0");
+      } else {
+        throw new Error(`Unsupported entry in staged dependency tree: ${path}`);
+      }
+    }
+  };
+  frame("root", "", String(details.mode & 0o777));
+  await walk(nodeModulesPath);
+  return digest.digest("hex");
 }
 
 async function assertDependenciesMatchSource(nodeModulesPath, sourcePath) {
@@ -360,59 +389,10 @@ async function strictRuntimePreflight(config, expectedBuild, { requireIdle }) {
   return { safe: true, mode: "authenticated", pid: owner.pid, port: owner.port, runtime, holders, health: topology.health };
 }
 
-async function legacyPreflight(config) {
-  const topology = await healthTopology(config.ports, { allowMultiple: true });
-  if (!topology.safe) return topology;
-  const snapshots = await Promise.all(topology.health.map(async ({ port }) => {
-    const base = `http://127.0.0.1:${port}`;
-    const [fleet, map, routines] = await Promise.all([
-      requestJson(`${base}/api/bots?messages=0`),
-      requestJson(`${base}/api/team-map`),
-      requestJson(`${base}/api/routines`),
-    ]);
-    return { port, fleet, map, routines };
-  }));
-  if (snapshots.some(({ fleet, map, routines }) => [fleet, map, routines].some((item) => item.kind !== "ok"))) {
-    return { safe: false, reason: "Legacy runtime cannot prove every owner has idle bots, queues, and routines" };
-  }
-  let activeWorkCount = 0;
-  for (const { fleet, map, routines } of snapshots) {
-    const bots = Array.isArray(fleet.body?.bots) ? fleet.body.bots : null;
-    const groups = Array.isArray(fleet.body?.groups) ? fleet.body.groups : null;
-    const queued = Array.isArray(map.body?.queued) ? map.body.queued : null;
-    const running = Array.isArray(map.body?.running) ? map.body.running : null;
-    const runs = Array.isArray(routines.body?.runs) ? routines.body.runs : null;
-    if (!bots || !groups || !queued || !running || !runs) {
-      return { safe: false, reason: "Legacy idle-state payload is incomplete" };
-    }
-    const activeRoutineRuns = runs.filter((item) => !TERMINAL_ROUTINE_STATES.has(String(item?.status || "").toLowerCase()));
-    activeWorkCount += bots.filter((item) => item?.busy).length +
-      groups.filter((item) => item?.working || item?.busyBotId).length + queued.length + running.length + activeRoutineRuns.length;
-  }
-  if (activeWorkCount !== 0) return { safe: false, reason: `${activeWorkCount} legacy active operations prevent update` };
-  const holders = await sqliteHolders(config.dataDirectory);
-  const expectedPids = [...topology.pids].sort((left, right) => left - right);
-  const holderPids = [...holders].sort((left, right) => left - right);
-  if (holderPids.length !== expectedPids.length || holderPids.some((pid, index) => pid !== expectedPids[index])) {
-    return { safe: false, reason: `Legacy database ownership is ambiguous (${holders.length} live holders)` };
-  }
-  return { safe: true, mode: "legacy", pid: topology.pid, pids: topology.pids, port: topology.port, holders, health: topology.health };
-}
-
 export async function runtimePreflight(config, expectedBuild) {
   const strict = await strictRuntimePreflight(config, expectedBuild, { requireIdle: true });
   if (strict) return strict;
-  if (expectedBuild) return { safe: false, reason: "Expected build does not expose authenticated runtime identity" };
-  const first = await legacyPreflight(config);
-  if (!first.safe) return first;
-  await sleep(config.legacySettleMs);
-  const second = await legacyPreflight(config);
-  const firstPids = [...(first.pids || [first.pid])].sort((left, right) => left - right);
-  const secondPids = [...(second.pids || [second.pid])].sort((left, right) => left - right);
-  if (!second.safe || firstPids.length !== secondPids.length || firstPids.some((pid, index) => pid !== secondPids[index])) {
-    return { safe: false, reason: second.reason || "Legacy runtime owner changed during readiness settle" };
-  }
-  return second;
+  return { safe: false, reason: "Runtime does not expose complete authenticated readiness; manual first adoption is required" };
 }
 
 async function runtimeIdentityPreflight(config, expectedBuild) {
@@ -508,6 +488,15 @@ export function applicationAttachmentError(snapshot, openApplication) {
   return "Updated BotFleet application stayed open but did not expose its bundled UI through the verified harness";
 }
 
+export function rollbackReadinessError(runningProcessCount, snapshot) {
+  if (runningProcessCount === 0 || snapshot?.safe === true) return null;
+  return snapshot?.reason || "Current BotFleet work state is unavailable";
+}
+
+export function pendingRecoveryReceiptPath(prepared) {
+  return join(prepared.stageDirectory, "pending-recovery.json");
+}
+
 async function waitForExit(pids, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let remaining = pids.filter(processIsAlive);
@@ -576,7 +565,6 @@ function createConfig(parsed) {
     lockDirectory: resolve(process.env.BOTFLEET_UPDATE_LOCK || join(home, "Library/Caches/BotFleet/update.lock")),
     updatesDirectory: resolve(process.env.BOTFLEET_UPDATE_ROOT || join(home, "Library/Caches/BotFleet/updates")),
     ports: (process.env.BOTFLEET_UPDATE_PORTS || DEFAULT_PORTS.join(",")).split(",").map(Number),
-    legacySettleMs: Number(process.env.BOTFLEET_LEGACY_SETTLE_MS || 2_000),
     gracefulExitMs: Number(process.env.BOTFLEET_GRACEFUL_EXIT_MS || 20_000),
     termExitMs: Number(process.env.BOTFLEET_TERM_EXIT_MS || 20_000),
     startupTimeoutMs: Number(process.env.BOTFLEET_STARTUP_TIMEOUT_MS || 90_000),
@@ -701,7 +689,7 @@ function createOperations(config) {
         throw new Error("Staged dependency tree does not match the packaged source dependencies");
       }
       const manifest = {
-        schemaVersion: 1,
+        schemaVersion: PREPARED_SCHEMA_VERSION,
         sourceCommit: targetCommit,
         version: identity.version,
         apiVersion: identity.apiVersion,
@@ -908,7 +896,50 @@ function createOperations(config) {
       console.log(`Recoverable prior checkout commit: ${previous.checkoutCommit}`);
     },
 
-    rollback: async (_prepared, previous) => {
+    rollback: async (prepared, previous, originalError) => {
+      const [holders, appPids, health] = await Promise.all([
+        sqliteHolders(config.dataDirectory),
+        exactAppPids(config.appPath),
+        Promise.all(config.ports.map(probeHealth)),
+      ]);
+      const runtimePids = health.filter((item) => item.kind === "botfleet").map((item) => item.pid);
+      const runningPids = [...new Set([...holders, ...appPids, ...runtimePids])];
+      let readiness = { safe: true };
+      if (runningPids.length) {
+        try {
+          readiness = await runtimePreflight(config);
+        } catch (error) {
+          readiness = { safe: false, reason: error instanceof Error ? error.message : String(error) };
+        }
+      }
+      const refusal = rollbackReadinessError(runningPids.length, readiness);
+      if (refusal) {
+        const receiptPath = pendingRecoveryReceiptPath(prepared);
+        try {
+          await atomicJson(receiptPath, {
+            schemaVersion: 1,
+            status: "pending-recovery",
+            reason: refusal,
+            updateError: originalError instanceof Error ? originalError.message : String(originalError),
+            replacementCommit: prepared.targetCommit,
+            previousCommit: previous.checkoutCommit,
+            installedApp: config.appPath,
+            rollbackBundle: previous.rollbackPath,
+            liveDependencies: join(config.checkout, "node_modules"),
+            rollbackDependencies: previous.rollbackDependencies,
+            liveCheckout: config.checkout,
+            runningPids,
+            observedAt: new Date().toISOString(),
+          });
+        } catch (receiptError) {
+          throw new AggregateError(
+            [new Error(refusal), receiptError],
+            "Replacement may own active work; rollback was deferred and its recovery receipt could not be written",
+          );
+        }
+        throw new Error(`Replacement may own active work; rollback was deferred without interrupting it.  Recovery receipt: ${receiptPath}`);
+      }
+
       const stopErrors = [];
       const recordStop = async (operation) => {
         try { await operation(); } catch (error) { stopErrors.push(error); }
@@ -986,7 +1017,7 @@ export async function loadPrepared(stageDirectory) {
   const manifestPath = join(stageDirectory, "prepared.json");
   await assertPrivateRegularFile(manifestPath, "Prepared update manifest");
   const manifest = await parseJsonFile(manifestPath, "Prepared update manifest");
-  if (manifest?.schemaVersion !== 1 || !/^[a-f0-9]{40}$/.test(manifest?.sourceCommit || "") ||
+  if (manifest?.schemaVersion !== PREPARED_SCHEMA_VERSION || !/^[a-f0-9]{40}$/.test(manifest?.sourceCommit || "") ||
       manifest?.teamIdentifier !== EXPECTED_TEAM_ID || manifest?.bundleIdentifier !== EXPECTED_BUNDLE_ID ||
       !Number.isInteger(manifest?.apiVersion) || !/^[a-f0-9]{64}$/.test(manifest?.uiHash || "") ||
       typeof manifest?.designatedRequirement !== "string" || manifest?.bundleName !== "BotFleet.app" ||

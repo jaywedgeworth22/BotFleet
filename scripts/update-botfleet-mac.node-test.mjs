@@ -8,10 +8,13 @@ import {
   applicationAttachmentError,
   authenticatedRuntimeError,
   DEFAULT_PORTS,
+  dependencyFingerprint,
   designatedRequirementFromOutput,
   isExpectedBotFleetProcess,
   loadPrepared,
   parseArguments,
+  pendingRecoveryReceiptPath,
+  rollbackReadinessError,
   run,
   stableApplicationProcessError,
   swapPreparedFiles,
@@ -85,6 +88,27 @@ test("bundle validation rejects a symlink before trusting its contents", async (
   await assert.rejects(validateBuiltBundle(link, "b".repeat(40)), /must be a real directory/);
 });
 
+test("dependency fingerprints cover package contents and symlink targets", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "botfleet-update-dependencies-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const dependencies = join(root, "node_modules");
+  await mkdir(join(dependencies, ".pnpm"), { recursive: true });
+  await mkdir(join(dependencies, "package"));
+  await writeFile(join(dependencies, ".modules.yaml"), "layoutVersion: 5\n");
+  await writeFile(join(dependencies, ".pnpm/lock.yaml"), "lockfileVersion: '9.0'\n");
+  await writeFile(join(dependencies, "package/index.js"), "export const value = 1;\n");
+  await symlink("package", join(dependencies, "package-link"));
+
+  const original = await dependencyFingerprint(dependencies);
+  await writeFile(join(dependencies, "package/index.js"), "export const value = 2;\n");
+  const contentChanged = await dependencyFingerprint(dependencies);
+  assert.notEqual(contentChanged, original);
+
+  await rm(join(dependencies, "package-link"));
+  await symlink("other-package", join(dependencies, "package-link"));
+  assert.notEqual(await dependencyFingerprint(dependencies), contentChanged);
+});
+
 test("command results wait for output pipes to close", async () => {
   const script = `
     const { spawn } = require("node:child_process");
@@ -113,6 +137,9 @@ test("production updater has no force-kill or unrelated desktop-process cleanup"
   assert.match(source, /runtime\.safeToRestart !== true/);
   assert.match(source, /runtime\.sourceCommit !== expectedBuild\.targetCommit/);
   assert.match(source, /Database ownership is ambiguous/);
+  assert.match(source, /manual first adoption is required/);
+  assert.match(source, /rollback was deferred without interrupting it/);
+  assert.doesNotMatch(source, /legacyPreflight/);
 });
 
 test("process verification binds relative server commands to the live checkout cwd", () => {
@@ -146,6 +173,13 @@ test("desktop attachment requires a static harness or a second same-owner UI end
   assert.equal(applicationAttachmentError({ health: [{ port: 8799 }, { port: 18799 }] }, true), null);
   assert.match(applicationAttachmentError({ health: [{ port: 8799, static: false }] }, true), /did not expose its bundled UI/);
   assert.equal(applicationAttachmentError({ health: [{ port: 8799, static: false }] }, false), null);
+});
+
+test("rollback refuses to interrupt an active or unprovable replacement", () => {
+  assert.equal(rollbackReadinessError(0, { safe: false, reason: "no runtime" }), null);
+  assert.equal(rollbackReadinessError(1, { safe: true }), null);
+  assert.equal(rollbackReadinessError(1, { safe: false, reason: "1 active operation" }), "1 active operation");
+  assert.match(pendingRecoveryReceiptPath({ stageDirectory: "/private/stage" }), /pending-recovery\.json$/);
 });
 
 test("post-start identity accepts new work while the pre-install readiness gate still refuses it", () => {
@@ -183,6 +217,7 @@ test("packaged identity comes from the build output rather than an ambient label
   assert.match(source, /build\.sourceDirty !== false/);
   assert.match(source, /EXPECTED_SIGN_IDENTITY = "Developer ID Application: Jay Wedgeworth, LLC \(CC8UTF7ATG\)"/);
   assert.match(source, /BUILDER_SIGN_SELECTOR = "Jay Wedgeworth, LLC \(CC8UTF7ATG\)"/);
+  assert.match(source, /PREPARED_SCHEMA_VERSION = 2/);
   assert.match(builder, /identity: "Jay Wedgeworth, LLC \(CC8UTF7ATG\)"/);
   assert.doesNotMatch(builder, /identity: "Developer ID Application:/);
   assert.doesNotMatch(source, /BOTFLEET_SOURCE_COMMIT:/);
