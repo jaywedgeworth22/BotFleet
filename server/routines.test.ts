@@ -27,11 +27,13 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   const emitted: any[] = [];
   const failed: any[] = [];
   let live = true;
+  let admitting = true;
   const options: RoutineManagerOptions = {
     file: tempFile(),
     now: () => now,
     emit: (payload) => emitted.push(payload),
     botState: () => bot,
+    admit: () => admitting,
     turnLive: () => live,
     createTask: (_botId, title, activate = false, automationKey) => {
       taskActivations.push(activate);
@@ -67,6 +69,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     setNow: (value: number) => (now = value),
     setBot: (value: typeof bot) => (bot = value),
     setLive: (value: boolean) => (live = value),
+    setAdmitting: (value: boolean) => (admitting = value),
   };
 }
 
@@ -91,6 +94,26 @@ describe("nextOccurrence", () => {
 });
 
 describe("RoutineManager", () => {
+  it("preserves due work while scheduler admission is fenced", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Deferred update-boundary run",
+      prompt: "Run after admission resumes",
+      botId: "maus-1",
+      schedule: { type: "once", at: new Date(2026, 7, 17, 8, 5).getTime() },
+    });
+    h.setNow(routine.nextRunAt!);
+    h.setAdmitting(false);
+    await h.manager.tick();
+    expect(h.manager.listRuns()).toHaveLength(0);
+    expect(h.started).toHaveLength(0);
+
+    h.setAdmitting(true);
+    await h.manager.tick();
+    expect(h.manager.listRuns()).toHaveLength(1);
+    expect(h.started).toHaveLength(1);
+  });
+
   it("persists definitions separately from permanent run receipts", async () => {
     const h = harness();
     const routine = h.manager.create({

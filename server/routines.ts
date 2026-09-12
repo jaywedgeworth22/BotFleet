@@ -165,6 +165,8 @@ export interface RoutineManagerOptions {
    * is what lets the server number and replay them. */
   emit?: (payload: Record<string, unknown>) => void;
   botState: (botId: string) => "ready" | "busy" | "missing";
+  /** Synchronous admission fence used during an update boundary. */
+  admit?: () => boolean;
   /** Minutes this run's trigger must stay quiet after it activates.  Absent
    * or 0 runs every delivery as it lands. */
   minGapMinutes?: (run: RoutineRun) => number | undefined;
@@ -723,6 +725,7 @@ export class RoutineManager {
   }
 
   async tick(): Promise<void> {
+    if (this.options.admit?.() === false) return;
     if (this.ticking) return;
     this.ticking = true;
     try {

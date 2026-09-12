@@ -12,6 +12,8 @@ let endpointId: string;
 let secret: string;
 let manager: WebhookManager;
 const queued: Array<Record<string, unknown>> = [];
+let admitting = true;
+let activeAdmissions = 0;
 
 beforeAll(async () => {
   dir = mkdtempSync(join(tmpdir(), "omb-webhook-ingress-"));
@@ -26,7 +28,14 @@ beforeAll(async () => {
   const created = manager.create({ name: "Build event", prompt: "Review the build", botId: "maus-1" });
   endpointId = created.webhook.endpointId;
   secret = created.secret;
-  ingress = await listenWebhookIngress(manager, { port: 0 });
+  ingress = await listenWebhookIngress(manager, {
+    port: 0,
+    beginAdmission: () => {
+      if (!admitting) return null;
+      activeAdmissions += 1;
+      return () => { activeAdmissions -= 1; };
+    },
+  });
 });
 
 afterAll(async () => {
@@ -57,6 +66,7 @@ describe("webhook-only ingress", () => {
     expect(await retry.json()).toMatchObject({ accepted: true, duplicate: true, runId: "run-1" });
     expect(queued).toHaveLength(1);
     expect(queued[0]?.prompt).toContain("Event: push");
+    expect(activeAdmissions).toBe(0);
   });
 
   it("also accepts a bearer secret without putting it in the URL", async () => {
@@ -67,6 +77,23 @@ describe("webhook-only ingress", () => {
     });
     expect(response.status).toBe(202);
     expect(queued.at(-1)?.prompt).toContain('"ticket": "42"');
+  });
+
+  it("refuses new deliveries while the runtime admission fence is held", async () => {
+    admitting = false;
+    try {
+      const before = queued.length;
+      const response = await fetch(webhookCredential(ingress.baseUrl, endpointId, secret).url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ task: "must wait" }),
+      });
+      expect(response.status).toBe(503);
+      expect(queued).toHaveLength(before);
+      expect(activeAdmissions).toBe(0);
+    } finally {
+      admitting = true;
+    }
   });
 
   it("does not deduplicate separate requests that reuse a generic payload id", async () => {
