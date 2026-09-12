@@ -286,6 +286,35 @@ export function ensureAntigravityMcp(
   };
 }
 
+/** Remove lingering botfleet-* MCP servers from ~/.gemini/config/mcp_config.json.
+ * Called on engine creation / harness startup so stale entries from crashed
+ * or interrupted runs cannot leak into the user's sessions or surface 401s. */
+export function cleanStaleAntigravityMcp(
+  env: Record<string, string | undefined> = process.env,
+): void {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  const path = join(home, ".gemini", "config", "mcp_config.json");
+  if (!existsSync(path)) return;
+  try {
+    const raw = readFileSync(path, "utf8");
+    const parsed = mcpConfigFileSchema.safeParse(JSON.parse(raw));
+    if (!parsed.success) return;
+    const currentServers = { ...parsed.data.mcpServers };
+    let hasChanges = false;
+    for (const key of Object.keys(currentServers)) {
+      if (key.startsWith("botfleet-")) {
+        delete currentServers[key];
+        hasChanges = true;
+      }
+    }
+    if (hasChanges) {
+      const newConfig = { ...parsed.data, mcpServers: currentServers };
+      writeFileSync(path, JSON.stringify(newConfig, null, 2), { mode: 0o600 });
+      try { chmodSync(path, 0o600); } catch {}
+    }
+  } catch {}
+}
+
 function decodeConfig(raw: unknown): AntigravityConfig {
   const o = (raw ?? {}) as Record<string, unknown>;
   if (o.cli !== undefined && typeof o.cli !== "string") {
@@ -396,6 +425,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       }
     };
     await refreshModels();
+    cleanStaleAntigravityMcp(catalogEnv);
     const listeners = new Set<RuntimeEventListener>();
     // one active turn per thread; a second send while busy is a caller bug
     const active = new Map<string, { stop: () => void; turnId: string }>();

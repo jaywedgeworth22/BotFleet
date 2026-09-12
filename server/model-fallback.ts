@@ -28,9 +28,11 @@ const SHORT_PROVIDER_ERROR =
 // the corpus in model-fallback.test.ts.  Do not match "approaching … limit"
 // warnings — those are near-cap, not a hit.
 const QUOTA_OR_CAP =
-  /session limit|hit your session limit|hit your usage limit|usage cap|usage limit|quota exceeded|insufficient.?quota|insufficient.?balance|insufficient.?funds|zero balance|resource.?exhausted|resource.{0,24}exhausted|resource_exhausted|exhausted your.*quota|daily quota|credits exhausted|credits? (?:are )?depleted|credits? (?:exhausted|depleted|empty|insufficient|zero)|out of (?:usage|credits)|credit balance (?:is )?(?:too )?low|message limit reached|messaging allowance|5-hour limit reached|reached your .{0,80}limit|monthly limit|weekly (?:\([^)]+\) )?usage limit|slow pool|upgrade (?:your )?plan|upgrade to (?:plus|pro)|\b402\b|\b429\b|\bbilling\b|\bsubscription\b|payment required|plan limit|tier limit|free tier limit|spend limit|budget exceeded|rate.?limit|rate_limit_error|usage_limit_exceeded|too many requests|overloaded|capacity|concurrency limit|account_inactive|enforced_spend_limit/i;
+  /session limit|hit your session limit|hit your usage limit|usage cap|usage limit|(?:individual\s+)?quota reached|quota exceeded|insufficient.?quota|insufficient.?balance|insufficient.?funds|zero balance|resource.?exhausted|resource.{0,24}exhausted|resource_exhausted|(?:exhausted|exceeded) your.*quota|daily quota|credits exhausted|credits? (?:are )?depleted|credits? (?:exhausted|depleted|empty|insufficient|zero)|out of (?:usage|credits)|credit balance (?:is )?(?:too )?low|message limit reached|messaging allowance|5-hour limit reached|reached your .{0,80}limit|monthly limit|weekly (?:\([^)]+\) )?usage limit|slow pool|upgrade (?:your )?(?:plan|subscription)|upgrade to (?:plus|pro)|\b402\b|\b429\b|payment required|plan limit|tier limit|free tier limit|spend limit|budget exceeded|rate.?limit|rate_limit_error|usage_limit_exceeded|too many requests|overloaded|(?:server|service|provider) (?:is )?(?:overloaded|at capacity)|capacity (?:reached|exceeded|unavailable)|concurrency limit|account_inactive|enforced_spend_limit/i;
 
 const QUOTA_TEXT_MAX = 500;
+
+export const DEFAULT_QUOTA_COOLDOWN_TTL_MS = 15 * 60 * 1000;
 
 /** Short error-chip text that must not count as a real assistant reply. */
 export function isShortProviderErrorText(text: string): boolean {
@@ -43,7 +45,11 @@ export function isShortProviderErrorText(text: string): boolean {
 export function isQuotaOrCapText(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.length >= QUOTA_TEXT_MAX) return false;
-  return QUOTA_OR_CAP.test(trimmed);
+  const stripped = trimmed.replace(
+    /^(?:error:\s*)?(?:(?:antigravity|grok|claude|codex|gemini|cursor|deepseek|openai):\s*)?/i,
+    "",
+  );
+  return QUOTA_OR_CAP.test(stripped);
 }
 
 /** The last message that actually started a turn — a human's "user" message,
@@ -358,6 +364,15 @@ export class QuotaCooldownRegistry {
     }
   }
 
+  private isExpired(cd: BotQuotaCooldown, now: number): boolean {
+    if (cd.resetsAt === null) return false;
+    if (typeof cd.resetsAt === "number" && cd.resetsAt > 0) {
+      return now >= cd.resetsAt;
+    }
+    const recorded = typeof cd.recordedAt === "number" && cd.recordedAt > 0 ? cd.recordedAt : now;
+    return now >= recorded + DEFAULT_QUOTA_COOLDOWN_TTL_MS;
+  }
+
   private load(): void {
     if (!this.persistPath) return;
     try {
@@ -371,7 +386,7 @@ export class QuotaCooldownRegistry {
       for (const cd of parsed.cooldowns) {
         if (!cd || typeof cd !== "object") continue;
         if (typeof cd.botId !== "string" || typeof cd.instanceId !== "string" || typeof cd.model !== "string") continue;
-        if (cd.resetsAt && now >= cd.resetsAt) continue;
+        if (this.isExpired(cd, now)) continue;
         this.cooldowns.set(`${cd.botId}:${cd.instanceId}:${cd.model}`, cd);
       }
     } catch {
@@ -380,7 +395,10 @@ export class QuotaCooldownRegistry {
   }
 
   record(cooldown: BotQuotaCooldown): void {
-    this.cooldowns.set(`${cooldown.botId}:${cooldown.instanceId}:${cooldown.model}`, cooldown);
+    const recordedAt = cooldown.recordedAt ?? Date.now();
+    const resetsAt = cooldown.resetsAt !== undefined ? cooldown.resetsAt : (recordedAt + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
+    const normalized: BotQuotaCooldown = { ...cooldown, recordedAt, resetsAt };
+    this.cooldowns.set(`${normalized.botId}:${normalized.instanceId}:${normalized.model}`, normalized);
     this.persist();
   }
 
@@ -389,13 +407,15 @@ export class QuotaCooldownRegistry {
     model = "*",
     opts: { resetsAt?: number | null; error?: string; source?: string } = {},
   ): void {
+    const recordedAt = Date.now();
+    const resetsAt = opts.resetsAt !== undefined ? opts.resetsAt : (recordedAt + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
     const cd: BotQuotaCooldown = {
       botId: "*",
       instanceId,
       model,
-      resetsAt: opts.resetsAt ?? null,
+      resetsAt,
       error: opts.error ?? "Session limit or usage cap reached",
-      recordedAt: Date.now(),
+      recordedAt,
       source: opts.source,
     };
     this.cooldowns.set(`*:${instanceId}:${model}`, cd);
@@ -406,7 +426,7 @@ export class QuotaCooldownRegistry {
     const key = `${botId}:${instanceId}:${model}`;
     const cd = this.cooldowns.get(key) ?? this.cooldowns.get(`*:${instanceId}:${model}`) ?? this.cooldowns.get(`*:${instanceId}:*`);
     if (!cd) return undefined;
-    if (cd.resetsAt && now >= cd.resetsAt) {
+    if (this.isExpired(cd, now)) {
       if (this.cooldowns.get(key) === cd) this.cooldowns.delete(key);
       if (this.cooldowns.get(`*:${instanceId}:${model}`) === cd) this.cooldowns.delete(`*:${instanceId}:${model}`);
       if (this.cooldowns.get(`*:${instanceId}:*`) === cd) this.cooldowns.delete(`*:${instanceId}:*`);
@@ -420,7 +440,7 @@ export class QuotaCooldownRegistry {
     const active: BotQuotaCooldown[] = [];
     let expired = false;
     for (const [key, cd] of [...this.cooldowns.entries()]) {
-      if (cd.resetsAt && now >= cd.resetsAt) {
+      if (this.isExpired(cd, now)) {
         this.cooldowns.delete(key);
         expired = true;
       } else {
