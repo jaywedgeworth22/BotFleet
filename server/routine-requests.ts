@@ -358,11 +358,19 @@ function normalizedOperation(
   const current = ownedRoutine(manager, id, botId);
   if (!current) throw new RoutineRequestError("That routine does not exist", 404);
   if (validated.action === "update") {
+    // A schedule edit that omits its optional zone means "keep this
+    // recurrence's zone", not "move it to the harness zone".  listRoutines
+    // supplies the effective harness zone for legacy zone-less routines, so
+    // both explicit and legacy recurrences retain the clock the operator has
+    // already been shown.
+    const scheduleTimeZone = current.schedule.type === "daily"
+      ? current.schedule.timeZone ?? defaultTimeZone
+      : defaultTimeZone;
     return {
       action: "update",
       routineId: id,
       expectedUpdatedAt: current.updatedAt,
-      changes: normalizeChanges(validated.changes, now, defaultTimeZone),
+      changes: normalizeChanges(validated.changes, now, scheduleTimeZone),
     };
   }
   if (validated.action === "resume" && nextOccurrence(current.schedule, now) === null) {

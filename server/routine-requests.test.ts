@@ -534,6 +534,19 @@ describe("RoutineRequestService", () => {
       durationMinutes: 45,
     });
 
+    const rescheduled = await apply({
+      action: "update",
+      routineId: routine.id,
+      changes: { schedule: { type: "weekly", time: "11:30", weekdays: ["tuesday"] } },
+    });
+    expect(rescheduled.card.summary).toContain("Tuesday at 11:30 (America/Chicago)");
+    expect(routines.listRoutines()[0]!.schedule).toEqual({
+      type: "daily",
+      time: "11:30",
+      weekdays: [2],
+      timeZone: "America/Chicago",
+    });
+
     await apply({ action: "pause", routineId: routine.id });
     expect(routines.listRoutines()[0]!.enabled).toBe(false);
     await apply({ action: "resume", routineId: routine.id });
