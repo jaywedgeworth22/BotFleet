@@ -64,11 +64,11 @@ APP = "botfleet"
 # Keyed by the workflow's DISPLAY NAME (its `name:`), mirroring each
 # schedule-triggered workflow's own `schedule:` block so a missed check-in
 # raises a Sentry Crons alert instead of going unnoticed.  `ios-ship.yml`
-# ("iOS TestFlight ship (GitHub-hosted macOS)") is the only workflow in this
-# repo that defines `schedule:` (`'18,48 * * * *'`); it replaced the deleted
-# `ios-testflight.yml` ("iOS TestFlight Release") on 2026-09-04, which is why
-# FLEET-INFRA-CM's old key for that name is stale.
+# ("iOS TestFlight ship (GitHub-hosted macOS)") runs twice hourly.  `ci.yml`
+# also runs its full matrix weekly so documentation-only fast paths cannot
+# conceal dependency or runner drift between code changes.
 CRON_SCHEDULES = {
+    "CI": "17 9 * * 1",
     "iOS TestFlight ship (GitHub-hosted macOS)": "18,48 * * * *",
 }
 
@@ -83,6 +83,9 @@ CRON_SCHEDULES = {
 # in a couple of minutes; override per-workflow below for anything slower.
 DEFAULT_CHECKIN_MARGIN_MINUTES = 15
 CRON_CHECKIN_MARGIN_OVERRIDES = {
+    # ci.yml's longest job has timeout-minutes: 25; +20 for queueing, the
+    # classifier, and this reporter's own dispatch/run time.
+    "CI": 45,
     # ios-ship.yml's job sets `timeout-minutes: 90`; +15 for queueing and
     # this reporter's own dispatch/run time.
     "iOS TestFlight ship (GitHub-hosted macOS)": 105,

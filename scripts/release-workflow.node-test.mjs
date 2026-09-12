@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { buildMacFeed, regenerateMacFeed } from "./regenerate-mac-feed.mjs";
 import { verifyReleaseAssets } from "./verify-release-assets.mjs";
+import { verifyReleaseTag } from "./verify-release-tag.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const VERSION = "1.0.31";
@@ -123,6 +124,42 @@ test("release workflow defaults to artifacts and requires explicit release mutat
   assert.match(workflow, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(workflow, /group: release-\$\{\{ needs\.prepare\.outputs\.version \}\}/);
   assert.match(workflow, /--target "\$SHA"/);
+  assert.match(workflow, /node scripts\/verify-release-tag\.mjs\n\s+cd assets/);
   assert.match(workflow, /existing draft targets \$existing_target, not pinned \$SHA/);
   assert.match(workflow, /node scripts\/verify-release-assets\.mjs uploaded "\$VERSION"/);
+});
+
+test("release tags must resolve to the pinned build, including nested annotated tags", async () => {
+  const sha = "a".repeat(40);
+  const annotation = "b".repeat(40);
+  const nested = "c".repeat(40);
+  const identity = { repo: "jaywedgeworth22/BotFleet", tag: `v${VERSION}`, sha };
+  const commit = (value) => ({ status: 200, body: { object: { type: "commit", sha: value } } });
+  assert.deepEqual(await verifyReleaseTag({ ...identity, request: async () => commit(sha) }), { exists: true });
+  await assert.rejects(verifyReleaseTag({ ...identity, request: async () => commit("d".repeat(40)) }), /different commit/);
+  const calls = [];
+  const request = async (path) => {
+    calls.push(path);
+    if (path.endsWith(`/tags/${nested}`)) return commit(sha);
+    return { status: 200, body: { object: { type: "tag", sha: path.endsWith(`/tags/${annotation}`) ? nested : annotation } } };
+  };
+  assert.deepEqual(await verifyReleaseTag({ ...identity, request }), { exists: true });
+  assert.deepEqual(calls, [
+    `repos/${identity.repo}/git/ref/tags/${identity.tag}`,
+    `repos/${identity.repo}/git/tags/${annotation}`,
+    `repos/${identity.repo}/git/tags/${nested}`,
+  ]);
+});
+
+test("only a missing ref permits tag creation; failed queries and broken chains fail closed", async () => {
+  const identity = { repo: "jaywedgeworth22/BotFleet", tag: `v${VERSION}`, sha: "a".repeat(40) };
+  assert.deepEqual(await verifyReleaseTag({ ...identity, request: async () => ({ status: 404 }) }), { exists: false });
+  for (const status of [401, 403, 429, 500]) {
+    await assert.rejects(verifyReleaseTag({ ...identity, request: async () => ({ status }) }), /Cannot verify release tag/);
+  }
+  let calls = 0;
+  await assert.rejects(verifyReleaseTag({ ...identity, request: async () => ++calls === 1
+    ? { status: 200, body: { object: { type: "tag", sha: "b".repeat(40) } } }
+    : { status: 404 } }), /Cannot peel release tag/);
+  await assert.rejects(verifyReleaseTag({ ...identity, request: async () => ({ status: 200, body: { object: { type: "tag", sha: "b".repeat(40) } } }) }), /Invalid release tag chain/);
 });

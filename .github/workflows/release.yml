@@ -537,6 +537,7 @@ jobs:
           VERSION: ${{ needs.prepare.outputs.version }}
           SHA: ${{ needs.prepare.outputs.sha }}
         run: |
+          node scripts/verify-release-tag.mjs
           cd assets
           tag="v$VERSION"
           notes="Draft assembled by the release workflow from $RELEASES_REPO@$SHA.  Edit these notes, then publish."

@@ -11,6 +11,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import { augmentedPath } from "./env-path.ts";
+import { stripWorkspaceCredentialEnv } from "./config.ts";
+import { antigravityQuotaCatalogId } from "./antigravity-models.ts";
 import {
   quotaCooldowns,
   type QuotaCooldownRegistry,
@@ -154,14 +156,47 @@ export function resetAtMs(model: AntigravityUsageModel, now = Date.now()): numbe
   return null;
 }
 
+/** Retain original diagnostic keys and add known catalog aliases for routing.
+ * Unknown labels remain unmapped; they must not disable an unrelated model. */
+function routingRows(snapshot: AntigravityUsageSnapshot, now: number): AntigravityUsageModel[] {
+  const rows = new Map<string, AntigravityUsageModel>();
+  for (const reported of snapshot.models) {
+    if (reported.isAutocompleteOnly) continue;
+    // Relative countdowns belong to the sample time, not each later picker read.
+    const sampleAt = Date.parse(snapshot.timestamp);
+    const relativeReset = (Number.isFinite(sampleAt) ? sampleAt : now) + (reported.timeUntilResetMs ?? 0);
+    const model = (!reported.resetTime || !Number.isFinite(Date.parse(reported.resetTime))) &&
+      (reported.timeUntilResetMs ?? 0) > 0 && Number.isFinite(relativeReset) && Math.abs(relativeReset) <= 8.64e15
+      ? { ...reported, resetTime: new Date(relativeReset).toISOString() } : reported;
+    const catalogId = antigravityQuotaCatalogId(model);
+    for (const modelId of new Set([model.modelId, ...(catalogId ? [catalogId] : [])])) {
+      const prior = rows.get(modelId);
+      // Duplicate alias reports use the most restrictive observed reading.
+      const capped = isAntigravityModelCapped(model);
+      const priorCapped = prior && isAntigravityModelCapped(prior);
+      if (!prior || (capped && !priorCapped) || (capped && priorCapped &&
+          (resetAtMs(model, now) ?? Infinity) > (resetAtMs(prior, now) ?? Infinity)) ||
+          (!capped && !priorCapped && (model.remainingPercentage ?? 0) < (prior.remainingPercentage ?? 0))) {
+        rows.set(modelId, { ...model, modelId });
+      }
+    }
+  }
+  return [...rows.values()];
+}
+
+function activeQuotaCap(model: AntigravityUsageModel, now: number): boolean {
+  const reset = resetAtMs(model, now);
+  return isAntigravityModelCapped(model) && !(reset !== null && reset <= now);
+}
+
 export function applyAntigravityUsageToRegistry(
   snapshot: AntigravityUsageSnapshot,
   registry: QuotaCooldownRegistry = quotaCooldowns,
   now = Date.now(),
 ): { capped: string[]; cleared: string[] } {
-  const turnModels = snapshot.models.filter((model) => !model.isAutocompleteOnly);
+  const turnModels = routingRows(snapshot, now);
   const cappedIds = new Set(
-    turnModels.filter(isAntigravityModelCapped).map((model) => model.modelId),
+    turnModels.filter((model) => activeQuotaCap(model, now)).map((model) => model.modelId),
   );
   const knownIds = new Set(turnModels.map((model) => model.modelId));
 
@@ -179,7 +214,7 @@ export function applyAntigravityUsageToRegistry(
 
   const capped: string[] = [];
   for (const model of turnModels) {
-    if (!isAntigravityModelCapped(model)) continue;
+    if (!activeQuotaCap(model, now)) continue;
     const remaining = remainingPercentDisplay(model);
     const remainingText = remaining === 0 ? "exhausted" : `${remaining}% remaining`;
     registry.recordInstanceCap(ANTIGRAVITY_INSTANCE_ID, model.modelId, {
@@ -205,13 +240,13 @@ export function quotaModelsFromSnapshot(
 ): Record<string, AntigravityModelQuota> {
   const models: Record<string, AntigravityModelQuota> = {};
   if (!snapshot) return models;
-  for (const model of snapshot.models) {
-    if (model.isAutocompleteOnly) continue;
+  for (const model of routingRows(snapshot, now)) {
+    const reset = resetAtMs(model, now);
     models[model.modelId] = {
-      capped: isAntigravityModelCapped(model),
-      remainingPercent: remainingPercentDisplay(model),
+      capped: activeQuotaCap(model, now),
+      remainingPercent: reset !== null && reset <= now ? null : remainingPercentDisplay(model),
       resetsAt: resetAtMs(model, now),
-      ...(isAntigravityModelCapped(model)
+      ...(activeQuotaCap(model, now)
         ? { error: `${model.label} quota exhausted (antigravity-usage)` }
         : {}),
     };
@@ -233,6 +268,7 @@ export async function defaultAntigravityUsageExec(args: string[], refresh: boole
   const bin = findAntigravityUsageBin();
   const cliArgs = ["quota", "--json", ...args, ...(refresh ? ["--refresh"] : [])];
   const env: NodeJS.ProcessEnv = { ...process.env, PATH: augmentedPath(), NO_COLOR: "1" };
+  stripWorkspaceCredentialEnv(env);
   delete env.FORCE_COLOR;
   const { stdout } = await execFileAsync(bin ?? "antigravity-usage", cliArgs, {
     encoding: "utf8",
