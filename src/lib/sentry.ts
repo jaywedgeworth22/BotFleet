@@ -1,13 +1,11 @@
 /**
  * Sentry client observability for BotFleet.
  *
- * Two ways in, and they do not mix.  `initSentry()` uses VITE_SENTRY_DSN,
- * inlined by Vite at build time — that is the public release path, it wins,
- * and it is never re-configured at runtime: a shipped build reports to the
- * DSN it was built with for the life of the window.  Everything else (the
- * desktop app, dev, an attached webview) has no inlined DSN and asks the
- * harness instead, through `initSentryFromRuntime()` at boot and
- * `refreshSentryFromRuntime()` after Settings > Observability changes.
+ * `initSentry()` starts promptly from a VITE_SENTRY_DSN inlined at build
+ * time.  The renderer then asks the harness through
+ * `initSentryFromRuntime()` at boot and `refreshSentryFromRuntime()` after
+ * Settings > Observability changes, so the operator's runtime switch stays
+ * authoritative.  A failed runtime read leaves the current client alone.
  * Completely inert in dev/CI when neither path finds a DSN.
  *
  * Replay stays 100% on error / 10% session with mask-all privacy.
@@ -43,6 +41,7 @@ export interface SentryBrowserPort {
  * on the response is deliberately ignored here. */
 export interface RuntimeObservability {
   enabled?: boolean;
+  requestedEnabled?: boolean;
   dsn?: string | null;
   environment?: string;
   tracesSampleRate?: number;
@@ -99,17 +98,15 @@ let readObservability: ObservabilityReader = harnessReader;
 
 /** A client is running, whichever path started it. */
 let initialized = false;
+/** The current client is using the packaged default configuration. */
+let buildTimeClientActive = false;
+/** The packaged default stays available if an explicit opt-out is reversed. */
+let buildTimeOptions: SentryClientOptions | null = null;
+/** Monotonic read fence so a slow boot response cannot undo a newer Save. */
+let observabilityReadGeneration = 0;
 /**
- * The build-time DSN won, so the runtime path must not touch the SDK.
- * Release and package workflows bake VITE_SENTRY_DSN in; reconfiguring that
- * client from `GET /api/observability` would let a harness setting silently
- * redirect or silence a shipped build's own reporting.  Settings governs the
- * harness, and this flag is what keeps the two apart.
- */
-let buildTimeDsnActive = false;
-/**
- * DSN, environment and trace rate of the client the *runtime* path started,
- * or null when it has none running.  Compared on every refresh so an
+ * DSN, environment and trace rate of the client this module started, or null
+ * when it has none running.  Compared on every refresh so an
  * unchanged answer from the harness leaves the client alone instead of
  * tearing one down and rebuilding it on every save.  Renderer-local and
  * never logged; it lives in the process that already holds the DSN.
@@ -137,18 +134,20 @@ export function initSentry(): void {
   const replaysSessionSampleRate = Number(viteEnvText(import.meta.env.VITE_SENTRY_REPLAY_SESSION_SAMPLE_RATE) ?? "0.1");
   const replaysOnErrorSampleRate = Number(viteEnvText(import.meta.env.VITE_SENTRY_REPLAY_ERROR_SAMPLE_RATE) ?? "1.0");
 
-  sentryPort.init({
+  const options: SentryClientOptions = {
     dsn,
     environment: env,
     tracesSampleRate: Number.isFinite(tracesSampleRate) ? Math.min(Math.max(tracesSampleRate, 0), 1) : 0.2,
     replayEnabled: !replayDisabled,
     replaysSessionSampleRate: !replayDisabled && Number.isFinite(replaysSessionSampleRate) ? replaysSessionSampleRate : 0,
     replaysOnErrorSampleRate: !replayDisabled && Number.isFinite(replaysOnErrorSampleRate) ? replaysOnErrorSampleRate : 0,
-  });
+  };
+  sentryPort.init(options);
 
   initialized = true;
-  // Pin the runtime path off for the life of this window.  See the flag.
-  buildTimeDsnActive = true;
+  runtimeIdentity = runtimeIdentityOf(options.dsn, options.environment, options.tracesSampleRate);
+  buildTimeOptions = options;
+  buildTimeClientActive = true;
 }
 
 export const SentryErrorBoundary = Sentry.ErrorBoundary;
@@ -163,13 +162,13 @@ function runtimeIdentityOf(dsn: string, environment: string, tracesSampleRate: n
 }
 
 /**
- * Stop the client the runtime path started, so nothing more leaves this
+ * Stop the client this module started, so nothing more leaves this
  * window.  The close is deliberately not awaited: this runs on a Settings
  * click, and a hung flush must not hold the card open.  State drops first,
  * so a follow-up refresh sees "nothing running" whether the flush lands
  * or not.
  */
-function closeRuntimeClient(): void {
+function closeClient(): void {
   runtimeIdentity = null;
   initialized = false;
   try {
@@ -203,19 +202,47 @@ function startRuntimeClient(dsn: string, environment: string, tracesSampleRate: 
 
 /**
  * Bring the renderer's client in line with one `GET /api/observability`
- * answer.  Three outcomes, and only three: a changed DSN, environment or
- * trace rate closes the old client and starts a new one; diagnostics turned
- * off (or a DSN removed) closes the client and starts nothing; an unchanged
- * answer does nothing at all.
+ * answer.  An explicit opt-out closes every client; a usable runtime DSN
+ * starts or replaces one; an unconfigured harness keeps or restores the
+ * packaged default; and an unchanged answer does nothing.
  */
 function applyRuntimeObservability(data: RuntimeObservability | null): void {
-  if (buildTimeDsnActive) return;
-
-  const dsn = data?.dsn?.trim();
-  if (!data || !data.enabled || !dsn) {
-    if (runtimeIdentity) closeRuntimeClient();
+  // A missing/malformed answer is not an opt-out.  Keep the current client
+  // until the harness returns an explicit status.
+  if (!data) return;
+  if (data.requestedEnabled === false) {
+    buildTimeClientActive = false;
+    if (runtimeIdentity) closeClient();
     return;
   }
+
+  const dsn = data.dsn?.trim();
+  if (!data.enabled || !dsn) {
+    // An unconfigured harness has no DSN of its own, but that is not an
+    // operator opt-out.  Keep a packaged build's client until the explicit
+    // switch above says false.
+    if (buildTimeClientActive) return;
+    if (data.requestedEnabled === true && buildTimeOptions) {
+      const identity = runtimeIdentityOf(
+        buildTimeOptions.dsn,
+        buildTimeOptions.environment,
+        buildTimeOptions.tracesSampleRate,
+      );
+      if (runtimeIdentity === identity) {
+        buildTimeClientActive = true;
+        return;
+      }
+      if (runtimeIdentity) closeClient();
+      sentryPort.init(buildTimeOptions);
+      runtimeIdentity = identity;
+      initialized = true;
+      buildTimeClientActive = true;
+      return;
+    }
+    if (runtimeIdentity) closeClient();
+    return;
+  }
+  buildTimeClientActive = false;
 
   const environment = data.environment?.trim() || "production";
   const reportedRate = data.tracesSampleRate;
@@ -223,28 +250,24 @@ function applyRuntimeObservability(data: RuntimeObservability | null): void {
   const tracesSampleRate = Math.min(Math.max(resolvedRate, 0), 1);
 
   if (runtimeIdentity === runtimeIdentityOf(dsn, environment, tracesSampleRate)) return;
-  if (runtimeIdentity) closeRuntimeClient();
+  if (runtimeIdentity) closeClient();
   startRuntimeClient(dsn, environment, tracesSampleRate);
 }
 
 /**
- * Runtime fallback for the desktop app and dev/attached windows, where no
- * build-time VITE_SENTRY_DSN was inlined: ask the harness what it resolved
- * (env or ~/.botfleet/config.json) over `GET /api/observability` and start
- * the same browser SDK with that DSN.
- *
- * A no-op when `initSentry()` above already started the SDK from a
- * build-time DSN — public releases keep that path and never call the
- * harness. Swallows every failure; a harness that is unreachable, a 404
- * from an older harness, or a malformed response all leave the renderer
- * exactly as inert as it is today.
+ * Resolve the harness's live settings over `GET /api/observability`.  A
+ * build-time client keeps reporting while that read is unavailable, but a
+ * successful answer can disable or reconfigure it.  Without a build-time
+ * client, the same answer starts the browser SDK from the runtime DSN.
  */
 export async function initSentryFromRuntime(): Promise<void> {
-  if (initialized || !globalThis.window) return;
+  if (!globalThis.window || (initialized && !buildTimeClientActive)) return;
+  const generation = ++observabilityReadGeneration;
 
   try {
     const data = await readObservability();
-    if (initialized) return;
+    if (generation !== observabilityReadGeneration) return;
+    if (initialized && !buildTimeClientActive) return;
     applyRuntimeObservability(data);
   } catch {
     /* the harness may be unreachable (dev, or Settings > Observability
@@ -260,15 +283,16 @@ export async function initSentryFromRuntime(): Promise<void> {
  * next launch.  The Observability card calls it after a successful Save and
  * after Remove Diagnostics Key.
  *
- * Never touches a client started from a build-time VITE_SENTRY_DSN: that
- * one is pinned to the DSN the release was built with.  Swallows every
- * failure for the same reason `initSentryFromRuntime()` does.
+ * Swallows every failure for the same reason `initSentryFromRuntime()` does.
  */
 export async function refreshSentryFromRuntime(): Promise<void> {
-  if (buildTimeDsnActive || !globalThis.window) return;
+  if (!globalThis.window) return;
+  const generation = ++observabilityReadGeneration;
 
   try {
-    applyRuntimeObservability(await readObservability());
+    const data = await readObservability();
+    if (generation !== observabilityReadGeneration) return;
+    applyRuntimeObservability(data);
   } catch {
     /* a harness that will not answer leaves the client exactly as it is */
   }
@@ -288,7 +312,9 @@ export function setObservabilityReaderForTests(reader: ObservabilityReader | nul
 
 export function resetSentryForTests(): void {
   initialized = false;
-  buildTimeDsnActive = false;
+  buildTimeClientActive = false;
+  buildTimeOptions = null;
+  observabilityReadGeneration = 0;
   runtimeIdentity = null;
   sentryPort = browserPort;
   readObservability = harnessReader;

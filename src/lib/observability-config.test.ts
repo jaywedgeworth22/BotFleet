@@ -51,7 +51,7 @@ describe("buildObservabilityConfigPatch", () => {
   it("omits a blank DSN so Save cannot wipe a stored key", () => {
     expect(buildObservabilityConfigPatch(base)).toEqual({
       ok: true,
-      patch: { enabled: true, tracesSampleRate: 0.2, logsEnabled: true },
+      patch: { enabled: true, environment: "", tracesSampleRate: 0.2, logsEnabled: true },
     });
   });
 
@@ -63,6 +63,7 @@ describe("buildObservabilityConfigPatch", () => {
       patch: {
         sentryDsn: "https://abc123@o0.ingest.sentry.io/1",
         enabled: true,
+        environment: "",
         tracesSampleRate: 0.2,
         logsEnabled: true,
       },
@@ -103,6 +104,13 @@ describe("buildObservabilityConfigPatch", () => {
     });
   });
 
+  it("sends a blank environment explicitly while keeping a blank DSN write-only", () => {
+    expect(buildObservabilityConfigPatch({ ...base, environment: "   " })).toEqual({
+      ok: true,
+      patch: { enabled: true, environment: "", tracesSampleRate: 0.2, logsEnabled: true },
+    });
+  });
+
   it("rejects a sample rate outside 0..1", () => {
     expect(buildObservabilityConfigPatch({ ...base, tracesSampleRate: 1.5 })).toEqual({
       ok: false,
@@ -124,7 +132,7 @@ describe("buildObservabilityConfigPatch", () => {
   it("carries enabled: false and logsEnabled: false through untouched", () => {
     expect(buildObservabilityConfigPatch({ ...base, enabled: false, logsEnabled: false })).toEqual({
       ok: true,
-      patch: { enabled: false, tracesSampleRate: 0.2, logsEnabled: false },
+      patch: { enabled: false, environment: "", tracesSampleRate: 0.2, logsEnabled: false },
     });
   });
 });
@@ -133,6 +141,11 @@ describe("initialSendDiagnostics", () => {
   it("shows the switch on when no DSN is configured yet, so the first Save does not turn diagnostics off", () => {
     expect(initialSendDiagnostics(undefined)).toBe(true);
     expect(initialSendDiagnostics({ configured: false, enabled: false })).toBe(true);
+  });
+
+  it("keeps an explicit packaged-build opt-out visible even without a runtime DSN", () => {
+    expect(initialSendDiagnostics({ configured: false, enabled: false, requestedEnabled: false })).toBe(false);
+    expect(initialSendDiagnostics({ configured: false, enabled: false, requestedEnabled: true })).toBe(true);
   });
 
   it("follows the stored flag once a DSN is configured", () => {

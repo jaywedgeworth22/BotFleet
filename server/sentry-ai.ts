@@ -70,6 +70,7 @@ type AgentTurn = {
   provider: string;
   identity: TurnIdentity | null;
   tools: Map<string, SpanLike>;
+  errorReported: boolean;
 };
 
 const turns = new Map<string, AgentTurn>();
@@ -301,7 +302,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       });
       const model = clean(identity?.model);
       if (model) span.setAttribute("gen_ai.request.model", model);
-      turns.set(key, { span, provider, identity, model, tools: new Map() });
+      turns.set(key, { span, provider, identity, model, tools: new Map(), errorReported: false });
       break;
     }
     case "session.started": {
@@ -433,10 +434,15 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         });
         break;
       }
-      sink.captureException(new Error(event.message.slice(0, 500)));
+      const turn = turns.get(key);
+      if (!turn?.errorReported) {
+        sink.captureException(new Error(event.message.slice(0, 500)));
+        if (turn) turn.errorReported = true;
+      }
       break;
     }
     case "turn.completed": {
+      const runtimeErrorReported = turns.get(key)?.errorReported === true;
       if (!event.ok) {
         // A failed turn is the thing an operator wants an Issue for.  Most
         // drivers report the failure only here — they never emit
@@ -452,7 +458,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
             level: "warning",
             data: { provider: event.provider, threadId: event.threadId },
           });
-        } else {
+        } else if (!runtimeErrorReported) {
           const turn = turns.get(key);
           const identity = turn?.identity ?? identityFor(event.threadId);
           const tags: TurnFailureTags = {

@@ -665,6 +665,10 @@ describe("saveConfig section merge", () => {
     expect(sentryDsnConfigured(loadConfig())).toBe(SENTINEL_DSN);
     expect(observabilityEnabled(loadConfig())).toBe(false);
 
+    saveConfig({ observability: { environment: "" } });
+    expect(loadConfig().observability?.environment).toBe("");
+    expect(observabilitySettings(loadConfig()).environment).toBe(process.env.NODE_ENV || "production");
+
     // and clearing is explicit: an empty string is the documented remove path
     saveConfig({ observability: { sentryDsn: "" } });
     expect(sentryDsnConfigured(loadConfig())).toBeNull();

@@ -4733,6 +4733,7 @@ function configStatus() {
     observability: {
       configured: diagnostics.configured,
       enabled: diagnostics.enabled,
+      requestedEnabled: diagnostics.requestedEnabled,
       hasDsn: diagnostics.configured,
       host: diagnostics.host,
       source: diagnostics.source,

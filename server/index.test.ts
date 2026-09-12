@@ -2979,7 +2979,13 @@ describe("harness HTTP API", () => {
     try {
       const before = await api("GET", "/api/observability");
       expect(before.status).toBe(200);
-      expect(before.body).toMatchObject({ configured: false, enabled: false, source: "none", dsn: null });
+      expect(before.body).toMatchObject({
+        configured: false,
+        enabled: false,
+        requestedEnabled: true,
+        source: "none",
+        dsn: null,
+      });
 
       const unconfigured = await api("POST", "/api/observability/test");
       expect(unconfigured.status).toBe(200);
@@ -3019,6 +3025,7 @@ describe("harness HTTP API", () => {
       expect(off.body.observability).toMatchObject({ configured: true, hasDsn: true, enabled: false });
       const afterOff = await api("GET", "/api/observability");
       expect(afterOff.body.enabled).toBe(false);
+      expect(afterOff.body.requestedEnabled).toBe(false);
       const refused = await api("POST", "/api/observability/test");
       expect(refused.body.ok).toBe(false);
       expect(String(refused.body.error)).toMatch(/turned off/i);

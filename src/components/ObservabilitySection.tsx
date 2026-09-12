@@ -58,7 +58,7 @@ export function ObservabilitySection() {
   }, [observabilityConfig?.tracesSampleRate]);
   React.useEffect(() => {
     setEnabled(initialSendDiagnostics(observabilityConfig));
-  }, [observabilityConfig?.configured, observabilityConfig?.enabled]);
+  }, [observabilityConfig?.configured, observabilityConfig?.enabled, observabilityConfig?.requestedEnabled]);
   React.useEffect(() => {
     if (observabilityConfig?.logsEnabled !== undefined) setLogsEnabled(observabilityConfig.logsEnabled);
   }, [observabilityConfig?.logsEnabled]);

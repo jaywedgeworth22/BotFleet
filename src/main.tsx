@@ -6,9 +6,9 @@ import { initSentry, initSentryFromRuntime } from "./lib/sentry";
 import "./styles.css";
 
 initSentry();
-// Runtime fallback for the desktop app and dev/attached windows, where no
-// DSN was inlined at build time: ask the harness what it resolved. A no-op
-// when initSentry() above already started the SDK from a build-time DSN.
+// Ask the harness for the live switch and destination.  A packaged build
+// starts promptly from its inlined DSN, then this applies the operator's
+// current runtime choice once the harness answers.
 void initSentryFromRuntime();
 
 // Before the first paint, not inside a component: stamping the skin during

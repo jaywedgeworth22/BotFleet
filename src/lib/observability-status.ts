@@ -3,6 +3,7 @@
  * to start the browser SDK.  Nothing in this module ever reads or returns it. */
 export type ObservabilityStatusView = {
   enabled?: boolean;
+  requestedEnabled?: boolean;
   /** A DSN is on file, whether or not diagnostics are currently enabled. */
   configured?: boolean;
   /** `"infisical"` is the fourth answer the Sentry lane never had: the SDK
