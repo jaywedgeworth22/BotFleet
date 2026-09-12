@@ -174,6 +174,15 @@ describe("RoutineManager", () => {
     });
     expect(created.nextRunAt).toBe(Date.parse("2026-09-14T14:00:00.000Z"));
     expect(new RoutineManager(h.options).listRoutines()[0].schedule).toMatchObject({ timeZone: "America/Chicago" });
+    const updated = h.manager.update(created.id, {
+      schedule: { type: "daily", time: "10:30", weekdays: [2] },
+    });
+    expect(updated?.schedule).toEqual({
+      type: "daily",
+      time: "10:30",
+      weekdays: [2],
+      timeZone: "America/Chicago",
+    });
     expect(() => h.manager.update(created.id, {
       schedule: { type: "daily", time: "09:00", weekdays: [1], timeZone: "Mars/Olympus" },
     })).toThrow("Choose a valid timezone");

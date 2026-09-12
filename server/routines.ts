@@ -498,13 +498,24 @@ export class RoutineManager {
     const routine = this.routines.find((r) => r.id === id);
     if (!routine) return null;
     const now = this.now();
+    const replacementSchedule = patch.schedule;
+    const nextSchedule = replacementSchedule?.type === "daily" &&
+        routine.schedule.type === "daily" &&
+        replacementSchedule.timeZone === undefined &&
+        routine.schedule.timeZone !== undefined
+      ? { ...replacementSchedule, timeZone: routine.schedule.timeZone }
+      : replacementSchedule ?? routine.schedule;
     const clean = sanitizeInput({
       name: patch.name ?? routine.name,
       prompt: patch.prompt ?? routine.prompt,
       botId: patch.botId ?? routine.botId,
       runOn: patch.runOn ?? routine.runOn,
       enabled: patch.enabled ?? routine.enabled,
-      schedule: patch.schedule ?? routine.schedule,
+      // Older clients replace time/weekdays without sending the newer zone
+      // field.  Omission preserves an explicit stored zone; it does not
+      // convert the recurrence to the harness clock.  A legacy zone-less
+      // routine remains zone-less because there is no zone to carry forward.
+      schedule: nextSchedule,
       durationMinutes: patch.durationMinutes ?? routine.durationMinutes,
     });
     if (this.options.botState(clean.botId) === "missing") throw new Error("That bot no longer exists");
