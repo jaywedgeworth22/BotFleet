@@ -3699,6 +3699,17 @@ describe("harness HTTP API", () => {
       expect(editedLegacy.schedule).toMatchObject({ time: "10:30" });
       expect(editedLegacy.scheduleTimeZoneSource).toBe("host");
 
+      // The public representation is itself safe to round-trip.  A generic
+      // client can PATCH its copied routine without persisting the effective
+      // display zone as a new explicit recurrence zone.
+      const echoedLegacy = await api("PATCH", `/api/routines/${legacyRoutineId}`, {
+        ...editedLegacy,
+        schedule: { ...editedLegacy.schedule, time: "10:45" },
+      });
+      expect(echoedLegacy.status).toBe(200);
+      expect(echoedLegacy.body.routine.schedule).toMatchObject({ time: "10:45" });
+      expect(echoedLegacy.body.routine.scheduleTimeZoneSource).toBe("host");
+
       const wrongThread = await fetch(`${BASE}/api/internal/routine-requests`, {
         method: "POST",
         headers: internalHeaders,

@@ -153,6 +153,7 @@ export interface RoutineInput {
   runOn?: RoutineRunOn;
   enabled?: boolean;
   schedule: RoutineSchedule;
+  scheduleTimeZoneSource?: "stored" | "host";
   durationMinutes?: number;
 }
 
@@ -292,13 +293,16 @@ function sanitizeInput(input: RoutineInput): Omit<Routine, "id" | "createdAt" | 
   if (!botId) throw new Error("Choose a bot");
   const runOn = input.runOn ?? "maus";
   if (runOn !== "maus" && runOn !== "cloud") throw new Error("Choose where this routine runs");
+  const schedule = input.schedule.type === "daily" && input.scheduleTimeZoneSource === "host"
+    ? { type: "daily" as const, time: input.schedule.time, weekdays: input.schedule.weekdays }
+    : input.schedule;
   return {
     name,
     prompt,
     botId,
     runOn,
     enabled: input.enabled !== false,
-    schedule: cleanSchedule(input.schedule),
+    schedule: cleanSchedule(schedule),
     durationMinutes: Math.min(240, Math.max(15, Math.round(Number(input.durationMinutes) || 30))),
   };
 }
@@ -501,7 +505,9 @@ export class RoutineManager {
     const routine = this.routines.find((r) => r.id === id);
     if (!routine) return null;
     const now = this.now();
-    const replacementSchedule = patch.schedule;
+    const replacementSchedule = patch.schedule?.type === "daily" && patch.scheduleTimeZoneSource === "host"
+      ? { type: "daily" as const, time: patch.schedule.time, weekdays: patch.schedule.weekdays }
+      : patch.schedule;
     const nextSchedule = replacementSchedule?.type === "daily" &&
         routine.schedule.type === "daily" &&
         replacementSchedule.timeZone === undefined &&

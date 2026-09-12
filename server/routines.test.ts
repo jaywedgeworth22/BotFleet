@@ -164,6 +164,15 @@ describe("RoutineManager", () => {
     expect(h.emitted.at(-1)?.routine.scheduleTimeZoneSource).toBe("host");
     const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
     expect(disk.routines[0].schedule.timeZone).toBeUndefined();
+
+    const clientCopy = h.manager.listRoutines()[0];
+    if (clientCopy.schedule.type !== "daily") throw new Error("Expected a daily routine");
+    const echoed = h.manager.update(created.id, {
+      ...clientCopy,
+      schedule: { ...clientCopy.schedule, time: "10:15" },
+    });
+    expect(echoed?.schedule).toEqual({ type: "daily", time: "10:15", weekdays: [1] });
+    expect(h.manager.storedRoutineTimeZone(created.id)).toBeUndefined();
   });
 
   it("persists an explicit schedule zone and rejects an invalid one", () => {
