@@ -16,7 +16,7 @@
 // this module for it; server/test-parent-watchdog.ts is the third, for the
 // case where nothing in this process ever gets to run again either.
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { rmSync } from "node:fs";
 
 /** How `waitForExit` should end the child, and how long to allow. */
@@ -63,11 +63,34 @@ if (!registry[guardKey]) {
  * made, a plain per-pid `child.kill` otherwise. `waitForExit` and the exit
  * guard both end children through here so a driver CLI or MCP proxy the
  * harness itself spawned dies along with it, not just the top-level process.
+ *
+ * Windows has no POSIX process group at all — `detached`/`-pid` are POSIX-only
+ * concepts, and `child.kill()` there only ever terminates the single process
+ * Node knows about, not whatever it spawned. `taskkill /T` walks the same
+ * parent-child tree Windows itself tracks, so it is the tree-kill regardless
+ * of whether `spawnDetached` happened to set `detached` for this child.
+ * `spawnSync`, not `execFile`, because this also has to run to completion
+ * from the synchronous `exit` guard below, where an async call could be
+ * abandoned mid-flight when the process finishes exiting anyway.
  */
 function endChild(child: ChildProcess, signal: NodeJS.Signals): void {
   const pid = child.pid;
   if (!pid) return;
-  if (process.platform !== "win32" && groupLeaders.has(child)) {
+  if (process.platform === "win32") {
+    const result = spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true });
+    // A non-zero exit here just means taskkill itself found nothing to do —
+    // already gone, or another /T pass already swept it — not a failure.
+    // Only fall back if taskkill could not even be launched.
+    if (result.error) {
+      try {
+        child.kill(signal);
+      } catch {
+        /* already gone */
+      }
+    }
+    return;
+  }
+  if (groupLeaders.has(child)) {
     try {
       process.kill(-pid, signal);
       return;
@@ -98,10 +121,13 @@ function endChild(child: ChildProcess, signal: NodeJS.Signals): void {
  *  - The child is tracked for the exit guard above, and untracked as soon as
  *    it actually closes.
  *
- * Windows gets none of the process-group handling (there is no POSIX
- * process group there — see server/procs.ts's own win32 branch) but still
- * gets the env markers and tracking, matching what `waitForExit` already
- * did for every caller before this existed.
+ * Windows has no POSIX process group to make this a leader of — `detached`
+ * is skipped there entirely, and it is not tracked in `groupLeaders` either,
+ * since `endChild` above takes the `taskkill /T` tree-kill path for every
+ * Windows child regardless of that membership (see server/procs.ts's own
+ * win32 branch, which does the same for driver CLIs). It still gets the env
+ * markers and exit-guard tracking, matching what `waitForExit` already did
+ * for every caller before this existed.
  */
 export function spawnDetached(command: string, args: readonly string[], options: SpawnOptions): ChildProcess {
   const child = spawn(command, args, {

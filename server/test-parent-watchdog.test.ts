@@ -13,6 +13,7 @@
 // un-interceptable SIGKILL, never the group helper this suite uses
 // everywhere else — is what "the parent gives up" means in practice; there
 // is deliberately no group signal reaching the stand-in harness at all.
+import { spawnSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -35,12 +36,16 @@ function alive(pid: number): boolean {
 
 // Stands in for the real harness: installs the exact watchdog server/index.ts
 // wires up, at a short interval so the test does not sit around waiting for
-// the production 2 s cadence. On "orphaned," it kills its own process group —
+// the production 2 s cadence. On "orphaned," it takes down its own tree —
 // the same shape of action index.ts takes by re-sending itself SIGTERM,
-// simplified here to a direct group kill since there is no graceful-shutdown
-// path to reuse in a two-line fixture.
+// simplified here to a direct tree-kill since there is no graceful-shutdown
+// path to reuse in a two-line fixture. POSIX has a real process group to
+// signal with one negative pid; Windows has no such thing (there is no
+// process group at all — see server/testing/cleanup.ts's own win32 branch
+// in `endChild`), so it reaches for the same `taskkill /T` tree-kill on
+// itself instead.
 const FIXTURE_CHILD_SOURCE = `
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 const { installTestParentWatchdog } = await import(pathToFileURL(process.argv[2]).href);
@@ -51,7 +56,11 @@ console.log(JSON.stringify({ child: process.pid, grandchild: grandchild.pid }));
 const parentPidAtBoot = Number(process.env.BOTFLEET_TEST_PARENT_PID);
 installTestParentWatchdog(parentPidAtBoot, () => {
   try {
-    process.kill(-process.pid, "SIGKILL");
+    if (process.platform === "win32") {
+      spawnSync("taskkill", ["/PID", String(process.pid), "/T", "/F"], { windowsHide: true });
+    } else {
+      process.kill(-process.pid, "SIGKILL");
+    }
   } catch {
     process.exit(1);
   }
@@ -79,7 +88,7 @@ setInterval(() => {}, 1000);
 `;
 
 describe("installTestParentWatchdog", () => {
-  it("takes its whole process group down when its recorded parent is gone, even though nothing signalled it", async () => {
+  it("takes its whole process tree down when its recorded parent is gone, even though nothing signalled it", async () => {
     const dir = mkdtempSync(join(tmpdir(), "botfleet-watchdog-test-"));
     const fixtureChildPath = join(dir, "fixture-child.mjs");
     const fakeParentPath = join(dir, "fake-parent.mjs");
@@ -118,19 +127,38 @@ describe("installTestParentWatchdog", () => {
       expect(fakeParent.pid).toBeDefined();
       process.kill(fakeParent.pid!, "SIGKILL");
 
+      // This part is the actual bug fix and must hold on every platform CI
+      // runs: the harness stand-in notices its parent is gone and cleans up
+      // both itself and the grandchild it spawned, with nobody signalling
+      // either of them from the outside. `process.kill(pid, 0)` is a plain
+      // existence probe Node supports the same way on POSIX and Windows, so
+      // this polling loop already proves "taskkill /T left no child" on
+      // Windows too — no separate `tasklist` shell-out needed for that.
       const deadline = Date.now() + 10_000;
       while ((alive(child) || alive(grandchild)) && Date.now() < deadline) {
         await new Promise((resolve) => setTimeout(resolve, 25));
       }
       expect(alive(child)).toBe(false);
       expect(alive(grandchild)).toBe(false);
-      // Not just "no live members I happened to check" — signalling the
-      // group at all must now fail.
-      expect(() => process.kill(-child, 0)).toThrow();
+
+      if (process.platform === "win32") {
+        // No POSIX process group on Windows to assert is "gone" — there is
+        // no negative-pid form of `process.kill` there, and the two
+        // liveness checks above already cover what `taskkill /T` promises
+        // (the process plus the tree it spawned). Nothing further to check.
+      } else {
+        // Not just "no live members I happened to check" — signalling the
+        // group at all must now fail.
+        expect(() => process.kill(-child, 0)).toThrow();
+      }
     } finally {
       if (child && alive(child)) {
         try {
-          process.kill(-child, "SIGKILL");
+          if (process.platform === "win32") {
+            spawnSync("taskkill", ["/PID", String(child), "/T", "/F"], { windowsHide: true });
+          } else {
+            process.kill(-child, "SIGKILL");
+          }
         } catch {
           /* already gone */
         }

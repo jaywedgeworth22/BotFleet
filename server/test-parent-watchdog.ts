@@ -14,15 +14,38 @@
 // about production behavior, where the parent legitimately is launchd for
 // the whole life of the process.
 
-/** How often to check in production. `process.ppid` is a cached field read,
- * not a syscall, so this can afford to be frequent without measurable cost. */
+/** How often to check in production. A liveness probe (`process.kill(pid,
+ * 0)`) is cheap on every platform Node supports, so this can afford to be
+ * frequent without measurable cost. */
 const DEFAULT_CHECK_INTERVAL_MS = 2_000;
 
 /**
- * Poll `process.ppid` against the pid recorded at spawn time and call
- * `onOrphaned` the moment it changes — a reparent to launchd/init (pid 1 on
- * this Mac) is the observable proof the original parent is gone, whether it
- * exited cleanly or was SIGKILLed outright.
+ * True if `pid` still names a live process. `process.kill(pid, 0)` sends no
+ * signal — it only asks the OS whether the target exists — and Node
+ * implements that existence probe the same way on POSIX and Windows.
+ */
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Poll whether the pid recorded at spawn time is still alive and call
+ * `onOrphaned` the moment it is not — proof the original parent is gone,
+ * whether it exited cleanly or was SIGKILLed outright.
+ *
+ * This checks liveness of the recorded pid directly rather than comparing
+ * `process.ppid` against it, because the two platforms disagree on what a
+ * changed `ppid` even means: POSIX reparents an orphan to launchd/init the
+ * moment its parent dies, so a live `process.ppid` read reflects that right
+ * away, but Windows has no reparenting at all — `InheritedFromUniqueProcessId`
+ * is fixed at process creation and never updated by the OS, so a dead
+ * parent's pid would sit there unchanged forever and this would never fire.
+ * A direct liveness probe on the recorded pid gives the same answer on both.
  *
  * Returns the interval so a caller that wants to stop watching (tests do)
  * can `clearInterval` it. Production never needs to: the process either
@@ -34,7 +57,7 @@ export function installTestParentWatchdog(
   intervalMs: number = DEFAULT_CHECK_INTERVAL_MS,
 ): ReturnType<typeof setInterval> {
   const timer = setInterval(() => {
-    if (process.ppid !== parentPidAtBoot) onOrphaned();
+    if (!isAlive(parentPidAtBoot)) onOrphaned();
   }, intervalMs);
   timer.unref?.();
   return timer;
