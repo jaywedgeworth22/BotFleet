@@ -41,7 +41,15 @@ describe("buildTurnTools", () => {
 
   it("applies the recursion ceiling when the caller passes real numbers", () => {
     const capped = buildTurnTools({ agents: {} }, { commsDepth: 1, maxCommsDepth: 1 });
-    expect(capped.map((t) => t.name)).toEqual(["list_routines"]);
+    const names = capped.map((t) => t.name);
+    // The peer-hop tools drop at the ceiling; the read/write tools that are
+    // not a hop (list_routines, and PR 7's request_credential and the two
+    // routine-proposal tools — create_bot excluded here since chiefOfStaff
+    // is false) do not.
+    expect(names).not.toContain("list_bots");
+    expect(names).not.toContain("ask_bot");
+    expect(names).not.toContain("delegate_bot");
+    expect(names).toEqual(["request_credential", "list_routines", "propose_routine", "propose_routine_action"]);
   });
 
   it("does not expose Composio or computer-use tools on the HTTP lane", () => {

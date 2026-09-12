@@ -22,6 +22,10 @@ import {
   type AgentToolCallContext,
   type AgentToolDeps,
   type AskBotRequestInput,
+  type CreateBotRequestInput,
+  type DelegateBotRequestInput,
+  type RequestCredentialRequestInput,
+  type RoutineRequestInput,
 } from "./agents.ts";
 
 const bots: AgentBot[] = [
@@ -49,6 +53,30 @@ const deps = (over: Partial<AgentToolDeps> = {}): AgentToolDeps => ({
     }),
   ),
   executeListRoutinesRequest: () => ({ status: 200, body: { ...routinesBody } }),
+  executeDelegateBotRequest: vi.fn(
+    async (_input: DelegateBotRequestInput): Promise<AgentRequestResult> => ({
+      status: 200,
+      body: { queued: true, message: "Delegation queued." },
+    }),
+  ),
+  executeCreateBotRequest: vi.fn(
+    async (_input: CreateBotRequestInput): Promise<AgentRequestResult> => ({
+      status: 201,
+      body: { id: "bot-new", name: "Pixel", section: "Work" },
+    }),
+  ),
+  executeRequestCredentialRequest: vi.fn(
+    async (_input: RequestCredentialRequestInput): Promise<AgentRequestResult> => ({
+      status: 201,
+      body: { messageId: "msg-1", label: "OpenCode API key" },
+    }),
+  ),
+  executeRoutineRequestRequest: vi.fn(
+    async (_input: RoutineRequestInput): Promise<AgentRequestResult> => ({
+      status: 201,
+      body: { requestId: "req-1", summary: "Weekdays at 09:00" },
+    }),
+  ),
   ...over,
 });
 
@@ -240,5 +268,267 @@ describe("list_routines", () => {
     const outcome = await tools.list_routines(call("list_routines"), ctx(), runtime);
     expect(outcome.kind).toBe("error");
     expect(JSON.parse(outcome.content).error).toMatch(/does not belong to sender/);
+  });
+});
+
+describe("delegate_bot", () => {
+  it("queues the handoff with the turn's own identity, never the model's", async () => {
+    const executeDelegateBotRequest = vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 200, body: { queued: true, message: "Delegation queued." } }),
+    );
+    const tools = createAgentTools(deps({ executeDelegateBotRequest }));
+    const outcome = await tools.delegate_bot(
+      call("delegate_bot", { bot_id: "bot-peer", message: "take this", reason: "follow-up", fromBotId: "bot-other" }),
+      ctx({ commsDepth: 1 }),
+      runtime,
+    );
+    expect(executeDelegateBotRequest).toHaveBeenCalledWith({
+      fromBotId: "bot-self",
+      toBotId: "bot-peer",
+      message: "take this",
+      depth: 1,
+      fromThreadId: "thread-1",
+      reason: "follow-up",
+    });
+    expect(outcome).toMatchObject({ kind: "result", content: "Delegation queued." });
+  });
+
+  it("requires both bot_id and message", async () => {
+    const tools = createAgentTools(deps());
+    const outcome = await tools.delegate_bot(call("delegate_bot", { bot_id: "bot-peer" }), ctx(), runtime);
+    expect(outcome.kind).toBe("error");
+    expect(JSON.parse(outcome.content).error).toMatch(/requires both/);
+  });
+
+  it("surfaces a queue refusal as an error the model can act on", async () => {
+    const tools = createAgentTools(
+      deps({
+        executeDelegateBotRequest: async () => ({
+          status: 200,
+          body: { error: "delegation chains are limited to one hop — do this one yourself" },
+        }),
+      }),
+    );
+    const outcome = await tools.delegate_bot(call("delegate_bot", { bot_id: "bot-peer", message: "x" }), ctx(), runtime);
+    expect(outcome.kind).toBe("error");
+    expect(JSON.parse(outcome.content).error).toMatch(/one hop/);
+  });
+});
+
+describe("create_bot enforces its per-turn cap in this closure", () => {
+  it("creates a bot and reports its section", async () => {
+    const tools = createAgentTools(deps());
+    const outcome = await tools.create_bot(
+      call("create_bot", { name: "Pixel", role: "Designer", instructions: "Do design work." }),
+      ctx(),
+      runtime,
+    );
+    expect(outcome).toMatchObject({ kind: "result" });
+    expect(outcome.content).toContain("Created @Pixel in Work");
+  });
+
+  it("requires name, role and instructions", async () => {
+    const tools = createAgentTools(deps());
+    const outcome = await tools.create_bot(call("create_bot", { name: "Pixel" }), ctx(), runtime);
+    expect(outcome.kind).toBe("error");
+    expect(JSON.parse(outcome.content).error).toMatch(/needs name, role/);
+  });
+
+  it("stops at MAX_CREATED_BOTS_PER_TURN within one createAgentTools call", async () => {
+    let created = 0;
+    const executeCreateBotRequest = vi.fn(async (): Promise<AgentRequestResult> => {
+      created += 1;
+      return { status: 201, body: { id: `bot-${created}`, name: `Bot${created}`, section: "Work" } };
+    });
+    const tools = createAgentTools(deps({ executeCreateBotRequest }));
+    const args = { name: "N", role: "R", instructions: "I" };
+    for (let i = 0; i < 4; i++) {
+      const outcome = await tools.create_bot(call("create_bot", args), ctx(), runtime);
+      expect(outcome.kind, `create #${i + 1}`).toBe("result");
+    }
+    const fifth = await tools.create_bot(call("create_bot", args), ctx(), runtime);
+    expect(fifth.kind).toBe("error");
+    expect(JSON.parse(fifth.content).error).toMatch(/at most 4 bots/);
+    // The cap ran BEFORE the fifth network call, not after a rejection from it.
+    expect(executeCreateBotRequest).toHaveBeenCalledTimes(4);
+  });
+
+  it("gives a fresh cap to a new createAgentTools call — a new turn's host", async () => {
+    const executeCreateBotRequest = vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { id: "bot-x", name: "X", section: "Work" } }),
+    );
+    const args = { name: "N", role: "R", instructions: "I" };
+    const firstTurnTools = createAgentTools(deps({ executeCreateBotRequest }));
+    for (let i = 0; i < 4; i++) {
+      await firstTurnTools.create_bot(call("create_bot", args), ctx(), runtime);
+    }
+    expect((await firstTurnTools.create_bot(call("create_bot", args), ctx(), runtime)).kind).toBe("error");
+
+    // A second `createAgentTools` call — what a second HTTP turn's host
+    // does — must not remember the first turn's count.
+    const secondTurnTools = createAgentTools(deps({ executeCreateBotRequest }));
+    const outcome = await secondTurnTools.create_bot(call("create_bot", args), ctx(), runtime);
+    expect(outcome.kind).toBe("result");
+  });
+
+  it("does not increment the cap on a failed create", async () => {
+    const executeCreateBotRequest = vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 403, body: { error: "only a section's Chief of Staff can create operator bots" } }),
+    );
+    const tools = createAgentTools(deps({ executeCreateBotRequest }));
+    const args = { name: "N", role: "R", instructions: "I" };
+    for (let i = 0; i < 5; i++) {
+      const outcome = await tools.create_bot(call("create_bot", args), ctx(), runtime);
+      expect(outcome.kind).toBe("error");
+      expect(JSON.parse(outcome.content).error).toMatch(/Chief of Staff/);
+    }
+    // Every one of the five reached the endpoint — none were cap-refused,
+    // because none of them ever succeeded.
+    expect(executeCreateBotRequest).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe("request_credential", () => {
+  it("shows a secure card and suspends the turn", async () => {
+    const tools = createAgentTools(deps());
+    const outcome = await tools.request_credential(
+      call("request_credential", { credential_id: "opencodeGoApiKey", reason: "needed" }),
+      ctx(),
+      runtime,
+    );
+    expect(outcome.kind).toBe("suspend");
+    expect(outcome).toMatchObject({ stopReason: "awaiting_human" });
+    expect(outcome.content).toContain("OpenCode API key");
+    expect(outcome.content).toContain("End this turn");
+  });
+
+  it("continues the turn instead of suspending when already configured", async () => {
+    const tools = createAgentTools(
+      deps({
+        executeRequestCredentialRequest: async () => ({
+          status: 200,
+          body: { alreadyConfigured: true, label: "OpenCode API key" },
+        }),
+      }),
+    );
+    const outcome = await tools.request_credential(
+      call("request_credential", { credential_id: "opencodeGoApiKey" }),
+      ctx(),
+      runtime,
+    );
+    expect(outcome.kind).toBe("result");
+    expect(outcome.content).toContain("already configured");
+  });
+
+  it("requires a credential_id", async () => {
+    const tools = createAgentTools(deps());
+    const outcome = await tools.request_credential(call("request_credential", {}), ctx(), runtime);
+    expect(outcome.kind).toBe("error");
+  });
+
+  it("surfaces the endpoint's allowlist refusal", async () => {
+    const tools = createAgentTools(
+      deps({
+        executeRequestCredentialRequest: async () => ({ status: 400, body: { error: "unsupported credential id" } }),
+      }),
+    );
+    const outcome = await tools.request_credential(
+      call("request_credential", { credential_id: "not-a-real-one" }),
+      ctx(),
+      runtime,
+    );
+    expect(outcome.kind).toBe("error");
+    expect(JSON.parse(outcome.content).error).toBe("unsupported credential id");
+  });
+});
+
+describe("propose_routine and propose_routine_action settle suspend", () => {
+  it("normalises the schedule and suspends with a confirmation card", async () => {
+    const executeRoutineRequestRequest = vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { summary: "Weekdays at 09:00" } }),
+    );
+    const tools = createAgentTools(deps({ executeRoutineRequestRequest }));
+    const outcome = await tools.propose_routine(
+      call("propose_routine", {
+        name: "Morning brief",
+        instructions: "Summarize priorities.",
+        schedule: { type: "daily", time: "09:00" },
+      }),
+      ctx(),
+      runtime,
+    );
+    expect(outcome.kind).toBe("suspend");
+    expect(outcome).toMatchObject({ stopReason: "awaiting_human" });
+    expect(outcome.content).toContain("has not been applied");
+    expect(executeRoutineRequestRequest).toHaveBeenCalledWith({
+      fromBotId: "bot-self",
+      fromThreadId: "thread-1",
+      action: "create",
+      routine: {
+        name: "Morning brief",
+        instructions: "Summarize priorities.",
+        schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"] },
+      },
+    });
+  });
+
+  it("rejects an unsupported schedule before calling the endpoint", async () => {
+    const executeRoutineRequestRequest = vi.fn();
+    const tools = createAgentTools(deps({ executeRoutineRequestRequest }));
+    const outcome = await tools.propose_routine(
+      call("propose_routine", { name: "N", instructions: "I", schedule: { type: "hourly" } }),
+      ctx(),
+      runtime,
+    );
+    expect(outcome.kind).toBe("error");
+    expect(JSON.parse(outcome.content).error).toMatch(/sub-day intervals/);
+    expect(executeRoutineRequestRequest).not.toHaveBeenCalled();
+  });
+
+  it("propose_routine_action forwards the action and routine id", async () => {
+    const executeRoutineRequestRequest = vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: {} }),
+    );
+    const tools = createAgentTools(deps({ executeRoutineRequestRequest }));
+    const outcome = await tools.propose_routine_action(
+      call("propose_routine_action", { routine_id: "routine-1", action: "pause" }),
+      ctx(),
+      runtime,
+    );
+    expect(outcome.kind).toBe("suspend");
+    expect(executeRoutineRequestRequest).toHaveBeenCalledWith({
+      fromBotId: "bot-self",
+      fromThreadId: "thread-1",
+      action: "pause",
+      routineId: "routine-1",
+    });
+  });
+
+  it("requires at least one field in changes for an update", async () => {
+    const tools = createAgentTools(deps());
+    const outcome = await tools.propose_routine_action(
+      call("propose_routine_action", { routine_id: "routine-1", action: "update", changes: {} }),
+      ctx(),
+      runtime,
+    );
+    expect(outcome.kind).toBe("error");
+  });
+
+  it("surfaces the endpoint's refusal", async () => {
+    const tools = createAgentTools(
+      deps({
+        executeRoutineRequestRequest: async () => ({
+          status: 409,
+          body: { error: "confirm or cancel an existing routine proposal first" },
+        }),
+      }),
+    );
+    const outcome = await tools.propose_routine(
+      call("propose_routine", { name: "N", instructions: "I", schedule: { type: "once", at: "2026-09-01T09:00:00Z" } }),
+      ctx(),
+      runtime,
+    );
+    expect(outcome.kind).toBe("error");
+    expect(JSON.parse(outcome.content).error).toMatch(/confirm or cancel/);
   });
 });

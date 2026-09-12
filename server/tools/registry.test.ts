@@ -9,8 +9,11 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { CREDENTIAL_TARGETS } from "../../shared/credential-request.ts";
 import {
+  CREDENTIAL_TARGET_IDS,
   HARNESS_TOOLS,
+  MAX_CREATED_BOTS_PER_TURN,
   descriptionFor,
   harnessTool,
   httpToolDefinitions,
@@ -128,6 +131,43 @@ describe("both lanes derive from the same records", () => {
     expect(schemaFor(tool, "http").required!.length).toBe(schemaFor(tool, "mcp").required!.length);
     expect(descriptionFor(tool, "mcp")).not.toBe(descriptionFor(tool, "http"));
   });
+
+  it("declares no wire deviation for any of the five PR 7 tools — one schema, both lanes", () => {
+    for (const name of [
+      "delegate_bot",
+      "create_bot",
+      "request_credential",
+      "propose_routine",
+      "propose_routine_action",
+    ]) {
+      const tool = harnessTool(name)!;
+      expect(tool.wire, name).toBeUndefined();
+    }
+  });
+});
+
+describe("request_credential's allowlist cannot drift from the real one", () => {
+  // registry.ts cannot import `shared/credential-request.ts` (it must stay
+  // import-free — see the last describe block), so it keeps its own copy of
+  // the id list.  This is what keeps the copy honest.
+  it("matches CREDENTIAL_TARGETS exactly", () => {
+    expect([...CREDENTIAL_TARGET_IDS].sort()).toEqual(Object.keys(CREDENTIAL_TARGETS).sort());
+  });
+
+  it("is exactly the enum request_credential advertises on both lanes", () => {
+    const tool = harnessTool("request_credential")!;
+    const mcpEnum = (schemaFor(tool, "mcp").properties as any).credential_id.enum;
+    const httpEnum = (schemaFor(tool, "http").properties as any).credential_id.enum;
+    expect(mcpEnum).toEqual([...CREDENTIAL_TARGET_IDS]);
+    expect(httpEnum).toEqual([...CREDENTIAL_TARGET_IDS]);
+  });
+});
+
+describe("create_bot's per-turn cap", () => {
+  it("is a small positive number both lanes can share", () => {
+    expect(MAX_CREATED_BOTS_PER_TURN).toBeGreaterThan(0);
+    expect(MAX_CREATED_BOTS_PER_TURN).toBeLessThanOrEqual(10);
+  });
 });
 
 describe("gating", () => {
@@ -137,28 +177,51 @@ describe("gating", () => {
     expect(httpToolDefinitions(ctx)).toEqual([]);
   });
 
-  it("drops the peer-comms tools at the recursion cap but keeps the read-only one", () => {
+  it("drops the peer-comms tools at the recursion cap but keeps the rest", () => {
     const ctx = gate({ commsDepth: 1, maxCommsDepth: 1 });
     const names = mcpToolDefinitions(ctx).map((t) => t.name);
     expect(names).not.toContain("list_bots");
     expect(names).not.toContain("ask_bot");
-    // list_routines is not a hop, so the ceiling does not apply to it.
+    expect(names).not.toContain("delegate_bot");
+    // None of these are a hop, so the ceiling does not apply to them.
     expect(names).toContain("list_routines");
+    expect(names).toContain("create_bot");
+    expect(names).toContain("request_credential");
+    expect(names).toContain("propose_routine");
+    expect(names).toContain("propose_routine_action");
   });
 
-  it("does not gate any of today's tools on chiefOfStaff", () => {
-    // create_bot will; until it lands the flag must change nothing, and this
-    // records that so the first gate on it is a deliberate edit.
+  it("gates only create_bot on chiefOfStaff", () => {
+    // PR 7's deliberate edit: create_bot is the one tool a non-chief must
+    // never see, and every other tool must be unaffected by the flag.
     const withChief = toolsFor("mcp", gate({ chiefOfStaff: true })).map((t) => t.name);
     const without = toolsFor("mcp", gate({ chiefOfStaff: false })).map((t) => t.name);
-    expect(without).toEqual(withChief);
+    expect(withChief.filter((name) => !without.includes(name))).toEqual(["create_bot"]);
+    expect(without.filter((name) => !withChief.includes(name))).toEqual([]);
   });
 
-  it("offers the full set to a depth-0 bot with comms on", () => {
+  it("offers the full set to a depth-0 chief bot with comms on", () => {
     expect(mcpToolDefinitions(gate()).map((t) => t.name)).toEqual([
       "list_bots",
       "ask_bot",
+      "delegate_bot",
+      "create_bot",
+      "request_credential",
       "list_routines",
+      "propose_routine",
+      "propose_routine_action",
+    ]);
+  });
+
+  it("offers everything but create_bot to a depth-0 non-chief bot with comms on", () => {
+    expect(mcpToolDefinitions(gate({ chiefOfStaff: false })).map((t) => t.name)).toEqual([
+      "list_bots",
+      "ask_bot",
+      "delegate_bot",
+      "request_credential",
+      "list_routines",
+      "propose_routine",
+      "propose_routine_action",
     ]);
   });
 });

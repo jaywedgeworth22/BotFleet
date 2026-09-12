@@ -17,6 +17,8 @@
 
 import type { TurnToolCall, TurnToolOutcome, TurnToolRuntime } from "../contracts.ts";
 import { sectionKey } from "../store.ts";
+import { MAX_CREATED_BOTS_PER_TURN } from "./registry.ts";
+import { routineFields } from "./schedule.ts";
 
 /** The slice of a bot record the agents tools read.  Structural on purpose,
  *  so this module never has to know what a full bot is. */
@@ -103,6 +105,47 @@ export interface ListRoutinesRequestInput {
   fromThreadId?: string;
 }
 
+export interface DelegateBotRequestInput {
+  fromBotId: string;
+  toBotId: string;
+  message: string;
+  depth: number;
+  fromThreadId?: string;
+  reason?: string;
+}
+
+export interface CreateBotRequestInput {
+  fromBotId: string;
+  fromThreadId?: string;
+  name: string;
+  role: string;
+  instructions: string;
+}
+
+export interface RequestCredentialRequestInput {
+  fromBotId: string;
+  fromThreadId?: string;
+  credentialId: string;
+  reason?: string;
+}
+
+/** One shape for both `propose_routine` (action `create`) and
+ *  `propose_routine_action` (every other action) — the same envelope
+ *  `POST /api/internal/routine-requests` has always accepted, so the two
+ *  tools stay one body with two callers. */
+export interface RoutineRequestInput {
+  fromBotId: string;
+  // Required, unlike the other endpoints here: `propose_routine` and
+  // `propose_routine_action` have never defaulted this to the bot's own
+  // thread — the source envelope schema in index.ts has always required it
+  // outright, and this keeps that rule visible at the type.
+  fromThreadId: string;
+  action: "create" | "update" | "pause" | "resume" | "run_now" | "delete";
+  routine?: Record<string, unknown>;
+  routineId?: string;
+  changes?: Record<string, unknown>;
+}
+
 /** Every dependency the agents tools have, named.  Each one is an
  *  `/api/internal/` endpoint body exported from `index.ts`, so the tool a
  *  MiniMax bot runs in-process and the tool a Claude bot runs over the
@@ -113,6 +156,14 @@ export interface AgentToolDeps {
   executeListRoutinesRequest(
     input: ListRoutinesRequestInput,
   ): AgentRequestResult | Promise<AgentRequestResult>;
+  executeDelegateBotRequest(
+    input: DelegateBotRequestInput,
+  ): AgentRequestResult | Promise<AgentRequestResult>;
+  executeCreateBotRequest(input: CreateBotRequestInput): AgentRequestResult | Promise<AgentRequestResult>;
+  executeRequestCredentialRequest(
+    input: RequestCredentialRequestInput,
+  ): AgentRequestResult | Promise<AgentRequestResult>;
+  executeRoutineRequestRequest(input: RoutineRequestInput): AgentRequestResult | Promise<AgentRequestResult>;
 }
 
 /** Who is calling.  Constructible only inside the turn tool host: this is
@@ -132,7 +183,15 @@ export type AgentToolExecutor = (
 
 /** The names this module implements.  They are the registry's names, and
  *  `registry.test.ts` is what keeps the two lists in step. */
-export type AgentToolName = "list_bots" | "ask_bot" | "list_routines";
+export type AgentToolName =
+  | "list_bots"
+  | "ask_bot"
+  | "delegate_bot"
+  | "create_bot"
+  | "request_credential"
+  | "list_routines"
+  | "propose_routine"
+  | "propose_routine_action";
 
 /** One executor per name — a named contract rather than an open dictionary,
  *  so adding a tool to the registry without implementing it is a type error
@@ -156,9 +215,43 @@ const failed = (content: string, detail?: string): TurnToolOutcome =>
 const errorText = (body: Record<string, unknown>, fallback: string): string =>
   typeof body.error === "string" && body.error ? body.error : fallback;
 
+function jsonRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+type RoutineAction = "update" | "pause" | "resume" | "run_now" | "delete";
+
+function routineAction(value: unknown): RoutineAction | null {
+  return value === "update" || value === "pause" || value === "resume" || value === "run_now" || value === "delete"
+    ? value
+    : null;
+}
+
+/** `propose_routine` and `propose_routine_action` both end the same way: the
+ *  proposal endpoint made a card, the turn has to end here, and the model
+ *  must not claim the change already happened.  One function so the two
+ *  tools cannot say it differently. */
+function routineSuspendOutcome(body: Record<string, unknown>, fallback: string): TurnToolOutcome {
+  const summary = typeof body.summary === "string" && body.summary.trim() ? `\n\n${body.summary.trim()}` : "";
+  return {
+    kind: "suspend",
+    content: `A confirmation card is now visible to the user for ${fallback}.${summary}\n\nThis change has not been applied yet. End this turn and wait for the user to confirm or deny the card; do not claim the routine was created or changed before confirmation.`,
+    stopReason: "awaiting_human",
+  };
+}
+
 /** Build the agents tools' executors.  Keyed by the registry name, so the
  *  host can look up exactly what the catalog advertised and nothing else. */
 export function createAgentTools(deps: AgentToolDeps): AgentTools {
+  // `create_bot`'s per-turn cap.  A closure variable, not module state: this
+  // function runs once per `createTurnToolHost` call, which is once per HTTP
+  // turn, so a fresh call gets a fresh counter — the turn-scoping the MCP
+  // lane gets for free from being a fresh child process, and the HTTP lane
+  // never had until now.  See `MAX_CREATED_BOTS_PER_TURN`'s own comment in
+  // `registry.ts` for why the MCP lane keeps a separate counter instead of
+  // sharing this one.
+  let createdThisTurn = 0;
+
   async function roster(ctx: AgentToolCallContext): Promise<Roster | string> {
     const result = await deps.executeListAgentsRequest({ selfId: ctx.botId });
     if (result.status !== 200 || !Array.isArray(result.body.bots)) {
@@ -231,6 +324,109 @@ export function createAgentTools(deps: AgentToolDeps): AgentTools {
       return ok(`${name} replied:\n${reply}`, `@${name} replied`);
     },
 
+    async delegate_bot(call, ctx): Promise<TurnToolOutcome> {
+      const target = String(call.arguments.bot_id ?? "").trim();
+      const message = String(call.arguments.message ?? "").trim();
+      const reason = typeof call.arguments.reason === "string" ? call.arguments.reason.trim() : "";
+      if (!target || !message) {
+        return failed(
+          JSON.stringify({ error: "delegate_bot requires both `bot_id` and `message`" }),
+          "bad arguments",
+        );
+      }
+      // Async handoff: the harness queues it and returns immediately. Every
+      // guard that matters — section, thread ownership, depth, the queue
+      // cap — lives in executeDelegateBotRequest, same as ask_bot's hop.
+      const result = await deps.executeDelegateBotRequest({
+        fromBotId: ctx.botId,
+        toBotId: target,
+        message,
+        depth: ctx.commsDepth,
+        fromThreadId: ctx.threadId,
+        ...(reason ? { reason } : {}),
+      });
+      if (result.body.error) {
+        const errorMessage = String(result.body.error);
+        return failed(JSON.stringify({ error: errorMessage }), errorMessage);
+      }
+      const text = typeof result.body.message === "string" ? result.body.message : "Delegation queued.";
+      return ok(text);
+    },
+
+    async create_bot(call, ctx): Promise<TurnToolOutcome> {
+      const name = String(call.arguments.name ?? "").trim();
+      const role = String(call.arguments.role ?? "").trim();
+      const instructions = String(call.arguments.instructions ?? "").trim();
+      if (!name || !role || !instructions) {
+        return failed(
+          JSON.stringify({ error: "create_bot needs name, role, and instructions" }),
+          "bad arguments",
+        );
+      }
+      // The cap this closure owns — see its declaration above and
+      // `MAX_CREATED_BOTS_PER_TURN`'s comment in registry.ts.  Checked
+      // before the call, incremented only after it actually created a bot,
+      // matching the pre-registry behaviour in agents-proxy.ts exactly.
+      if (createdThisTurn >= MAX_CREATED_BOTS_PER_TURN) {
+        const message = `You can create at most ${MAX_CREATED_BOTS_PER_TURN} bots in one turn. Use the team you have before adding more.`;
+        return failed(JSON.stringify({ error: message }), "per-turn cap reached");
+      }
+      const result = await deps.executeCreateBotRequest({
+        fromBotId: ctx.botId,
+        fromThreadId: ctx.threadId,
+        name,
+        role,
+        instructions,
+      });
+      if (result.status !== 201) {
+        const message = errorText(result.body, "that bot could not be created");
+        return failed(JSON.stringify({ error: message }), message);
+      }
+      createdThisTurn += 1;
+      const createdName = typeof result.body.name === "string" ? result.body.name : name;
+      const section = typeof result.body.section === "string" ? result.body.section : "General";
+      return ok(`Created @${createdName} in ${section} [id: ${result.body.id}]. Assign work with delegate_bot.`);
+    },
+
+    async request_credential(call, ctx): Promise<TurnToolOutcome> {
+      const credentialId = call.arguments.credential_id;
+      if (typeof credentialId !== "string" || !credentialId) {
+        return failed(
+          JSON.stringify({ error: "request_credential needs a supported credential_id" }),
+          "bad arguments",
+        );
+      }
+      const reason =
+        typeof call.arguments.reason === "string" ? call.arguments.reason.trim().slice(0, 240) : "";
+      // The allowlist itself is enforced by executeRequestCredentialRequest
+      // — the one place both lanes reach it — so this stays free of the
+      // credential target list.
+      const result = await deps.executeRequestCredentialRequest({
+        fromBotId: ctx.botId,
+        fromThreadId: ctx.threadId,
+        credentialId,
+        ...(reason ? { reason } : {}),
+      });
+      if (result.status >= 400) {
+        const message = errorText(result.body, "that credential is not supported");
+        return failed(JSON.stringify({ error: message }), message);
+      }
+      const label = typeof result.body.label === "string" ? result.body.label : "That credential";
+      if (result.body.alreadyConfigured) {
+        // Nothing to show, nothing to wait for — the loop keeps going.
+        return ok(`${label} is already configured. Continue the task.`);
+      }
+      // The turn ends here: a card is now visible, and the existing secret
+      // resume drain dispatches a fresh turn once the user saves or
+      // declines — the CLI lane's "end this turn" contract, now enforced by
+      // the loop rather than trusted from the model's own text.
+      return {
+        kind: "suspend",
+        content: `A secure ${label} card is now visible to the user. End this turn; BotFleet will resume the task after they save or decline. Never ask them to paste the key into chat.`,
+        stopReason: "awaiting_human",
+      };
+    },
+
     async list_routines(_call, ctx): Promise<TurnToolOutcome> {
       const result = await deps.executeListRoutinesRequest({
         fromBotId: ctx.botId,
@@ -249,6 +445,71 @@ export function createAgentTools(deps: AgentToolDeps): AgentTools {
         }),
         routines.length === 1 ? "1 routine" : `${routines.length} routines`,
       );
+    },
+
+    async propose_routine(call, ctx): Promise<TurnToolOutcome> {
+      const { fields: routine, error: scheduleError } = routineFields(call.arguments);
+      if (scheduleError) return failed(JSON.stringify({ error: scheduleError }), scheduleError);
+      if (!routine.name || !routine.instructions || !routine.schedule) {
+        return failed(
+          JSON.stringify({ error: "propose_routine needs name, instructions, and schedule" }),
+          "bad arguments",
+        );
+      }
+      const result = await deps.executeRoutineRequestRequest({
+        fromBotId: ctx.botId,
+        fromThreadId: ctx.threadId,
+        action: "create",
+        routine,
+      });
+      if (result.status >= 400) {
+        const message = errorText(result.body, "that routine could not be prepared");
+        return failed(JSON.stringify({ error: message }), message);
+      }
+      return routineSuspendOutcome(result.body, `the new routine "${String(routine.name)}"`);
+    },
+
+    async propose_routine_action(call, ctx): Promise<TurnToolOutcome> {
+      const routineId = String(call.arguments.routine_id ?? "").trim();
+      const action = routineAction(call.arguments.action);
+      if (!routineId || !action) {
+        return failed(
+          JSON.stringify({ error: "propose_routine_action needs a routine_id and supported action" }),
+          "bad arguments",
+        );
+      }
+      let changes: Record<string, unknown> | undefined;
+      if (action === "update") {
+        if (!jsonRecord(call.arguments.changes)) {
+          return failed(
+            JSON.stringify({ error: "The update action needs at least one field in changes" }),
+            "bad arguments",
+          );
+        }
+        const { fields, error: scheduleError } = routineFields(call.arguments.changes);
+        if (scheduleError) return failed(JSON.stringify({ error: scheduleError }), scheduleError);
+        if (!Object.keys(fields).length) {
+          return failed(
+            JSON.stringify({ error: "The update action needs at least one supported field in changes" }),
+            "bad arguments",
+          );
+        }
+        changes = fields;
+      } else if (call.arguments.changes !== undefined) {
+        return failed(JSON.stringify({ error: `The ${action} action does not accept changes` }), "bad arguments");
+      }
+      const result = await deps.executeRoutineRequestRequest({
+        fromBotId: ctx.botId,
+        fromThreadId: ctx.threadId,
+        action,
+        routineId,
+        ...(changes ? { changes } : {}),
+      });
+      if (result.status >= 400) {
+        const message = errorText(result.body, "that change could not be prepared");
+        return failed(JSON.stringify({ error: message }), message);
+      }
+      return routineSuspendOutcome(result.body, `${action.replace("_", " ")} on routine ${routineId}`);
     },
   };
 }

@@ -27,172 +27,34 @@
 import readline from "node:readline";
 
 import { CREDENTIAL_TARGETS, isCredentialTargetId } from "../../shared/credential-request.ts";
-import { mcpToolDefinitions } from "../tools/registry.ts";
+import { MAX_CREATED_BOTS_PER_TURN, mcpToolDefinitions } from "../tools/registry.ts";
+import { routineFields } from "../tools/schedule.ts";
 
 const HARNESS = process.env.OMB_HARNESS_URL ?? "http://127.0.0.1:8799";
 const BOT_ID = process.env.OMB_BOT_ID ?? "";
 const THREAD_ID = process.env.OMB_THREAD_ID ?? "";
 const TOKEN = process.env.OMB_COMMS_TOKEN ?? "";
 const DEPTH = Number(process.env.OMB_TURN_DEPTH ?? "0") || 0;
-const MAX_CREATED_PER_TURN = 4;
+// This proxy is a bare child process, so it cannot share a JS closure with
+// the harness the way `server/tools/agents.ts#createAgentTools` does for
+// the HTTP lane — see `MAX_CREATED_BOTS_PER_TURN`'s own comment in
+// registry.ts.  This process's own lifetime is this lane's turn scope, so a
+// local counter is still the right mechanism here; only the NUMBER is
+// shared now, so the two lanes cannot drift on it.
 let createdThisTurn = 0;
 
-const WEEKDAYS = [
-  "monday",
-  "tuesday",
-  "wednesday",
-  "thursday",
-  "friday",
-  "saturday",
-  "sunday",
-] as const;
-
-// One flat object, deliberately free of oneOf/const/format: several agent
-// CLIs flatten or drop JSON-Schema composition keywords when converting MCP
-// tools into their provider's function-call format, and a model that never
-// saw the branches guesses shapes forever (the 0.1.38 field failure). The
-// per-type rules live in descriptions and are enforced with guiding errors
-// in normalizeScheduleInput below.
-const ROUTINE_SCHEDULE_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  description:
-    'Either {"type":"once","at":RFC3339} for one future run, {"type":"weekly","time":"HH:MM","weekdays":[...]} for chosen days, or {"type":"daily","time":"HH:MM"} to run every day. Sub-day intervals (every N minutes/hours) are not supported.',
-  properties: {
-    type: {
-      type: "string",
-      enum: ["once", "weekly", "daily"],
-      description: "once = a single future run; weekly = chosen weekdays; daily = every day of the week.",
-    },
-    at: {
-      type: "string",
-      description:
-        "Only for type once: future RFC3339 date-time with an explicit timezone offset, for example 2026-09-01T09:00:00+05:30 or 2026-09-01T03:30:00Z.",
-    },
-    time: {
-      type: "string",
-      description: "For type weekly or daily: local computer time in 24-hour HH:MM format, for example 09:00.",
-    },
-    weekdays: {
-      type: "array",
-      items: { type: "string", enum: WEEKDAYS },
-      description: "Only for type weekly: which days the routine runs, in the computer's local timezone.",
-    },
-  },
-  required: ["type"],
-} as const;
-
-const SHORT_WEEKDAYS = {
-  mon: "monday",
-  tue: "tuesday",
-  tues: "tuesday",
-  wed: "wednesday",
-  thu: "thursday",
-  thur: "thursday",
-  thurs: "thursday",
-  fri: "friday",
-  sat: "saturday",
-  sun: "sunday",
-} as const satisfies Record<string, (typeof WEEKDAYS)[number]>;
-
-const SUPPORTED_SCHEDULES =
-  'Supported schedules: {"type":"once","at":"2026-09-01T09:00:00+05:30"} (future RFC3339 with explicit offset), ' +
-  '{"type":"weekly","time":"09:00","weekdays":["monday","friday"]}, or {"type":"daily","time":"09:00"} for every day.';
-
-/** The outcome of coercing a model-sent schedule: the harness-dialect
- * schedule, or a message telling the model exactly what to send instead. */
-interface NormalizedSchedule {
-  schedule?: Json;
-  error?: string;
-}
-
-/** A schedule as the harness accepts it, or a message telling the model
- * exactly what to send instead. Coercion first, error second: models
- * routinely stringify nested objects, say "daily", or shorten weekday
- * names, and each of those has one obvious meaning. */
-function normalizeScheduleInput(args: Json): NormalizedSchedule {
-  let raw = args.schedule;
-  if (typeof raw === "string") {
-    // Some models deliver nested objects as JSON strings.
-    try {
-      raw = JSON.parse(raw);
-    } catch {
-      return { error: `The schedule must be a JSON object, not text. ${SUPPORTED_SCHEDULES}` };
-    }
-  }
-  if (!jsonRecord(raw)) return { error: `The schedule must be a JSON object. ${SUPPORTED_SCHEDULES}` };
-  const type = typeof raw.type === "string" ? raw.type.trim().toLowerCase() : "";
-  if (type === "once") {
-    if (typeof raw.at !== "string" || !raw.at.trim()) {
-      return { error: `A once schedule needs "at": a future RFC3339 date-time with an explicit offset, for example 2026-09-01T09:00:00+05:30.` };
-    }
-    return { schedule: { type: "once", at: raw.at.trim() } };
-  }
-  if (type === "weekly" || type === "daily") {
-    const time = typeof raw.time === "string" ? raw.time.trim() : "";
-    if (!time) return { error: `A ${type} schedule needs "time" in 24-hour HH:MM, for example 09:00.` };
-    let weekdays: string[];
-    if (type === "daily") {
-      // daily = weekly on all seven days; an explicit weekdays list narrows it.
-      weekdays = Array.isArray(raw.weekdays) && raw.weekdays.length ? raw.weekdays : [...WEEKDAYS];
-    } else {
-      if (!Array.isArray(raw.weekdays) || raw.weekdays.length === 0) {
-        return { error: `A weekly schedule needs "weekdays", for example ["monday","friday"] — or use {"type":"daily"} to run every day.` };
-      }
-      weekdays = raw.weekdays;
-    }
-    const normalized: string[] = [];
-    for (const day of weekdays) {
-      const lower = String(day).trim().toLowerCase();
-      const full = (WEEKDAYS as readonly string[]).includes(lower)
-        ? lower
-        : Object.hasOwn(SHORT_WEEKDAYS, lower)
-          ? SHORT_WEEKDAYS[lower as keyof typeof SHORT_WEEKDAYS]
-          : undefined;
-      if (!full) return { error: `Unsupported weekday "${String(day)}". Use full names: ${WEEKDAYS.join(", ")}.` };
-      if (!normalized.includes(full)) normalized.push(full);
-    }
-    return { schedule: { type: "weekly", time, weekdays: normalized } };
-  }
-  if (type === "interval" || type === "cron" || type === "hourly" || type === "minutes") {
-    return { error: `Routines cannot run on sub-day intervals. ${SUPPORTED_SCHEDULES} Pick the closest daily or weekly time and tell the user about this limit.` };
-  }
-  return { error: `Unknown schedule type "${type || "(missing)"}". ${SUPPORTED_SCHEDULES}` };
-}
-
-const ROUTINE_FIELDS_SCHEMA = {
-  name: { type: "string", minLength: 1, maxLength: 80, description: "Short name shown in Routines." },
-  instructions: {
-    type: "string",
-    minLength: 1,
-    maxLength: 20_000,
-    description: "The complete instructions the bot should follow each time the routine runs.",
-  },
-  schedule: ROUTINE_SCHEDULE_SCHEMA,
-  run_on: {
-    type: "string",
-    enum: ["maus", "cloud"],
-    description: "Where the routine runs. Defaults to maus (this BotFleet setup).",
-  },
-  duration_minutes: {
-    type: "integer",
-    minimum: 15,
-    maximum: 240,
-    description: "Maximum run duration in minutes. Defaults to 30.",
-  },
-} as const;
-
-/** One definition per tool, rendered — not restated.  `server/tools/registry.ts`
- *  owns `list_bots`, `ask_bot` and `list_routines`; this proxy renders them
- *  onto the MCP wire instead of keeping a second copy that can drift from
- *  the HTTP lane's.  The five write tools below have not moved yet.
+/** Every tool's wire definition now comes from the registry — `list_bots`,
+ *  `ask_bot` and `list_routines` since PR 4, the remaining five as of this
+ *  PR.  This proxy renders them onto the MCP wire instead of keeping a
+ *  second copy that can drift from the HTTP lane's; `callTool` below still
+ *  owns EXECUTION for every one of them, because this process reaches the
+ *  harness only over the loopback + COMMS_TOKEN hop and has no in-process
+ *  host to hand the call to.
  *
  *  The gate is deliberately wide open: the harness decides whether to mount
  *  this proxy at all, and by the time the process exists the bot has peer
  *  comms.  Every guard that matters is enforced by the `/api/internal/`
  *  endpoint each tool calls, not by what `tools/list` advertises. */
-type McpTool = { name: string; description: string; inputSchema: unknown };
-
 const REGISTRY_TOOLS = mcpToolDefinitions({
   agents: true,
   commsDepth: 0,
@@ -200,94 +62,9 @@ const REGISTRY_TOOLS = mcpToolDefinitions({
   chiefOfStaff: true,
 });
 
-const UNMIGRATED_TOOLS = [
-  {
-    name: "delegate_bot",
-    description:
-      "Hand a task to another bot ASYNCHRONOUSLY: returns immediately and the peer runs after your current turn finishes. Use this when you want to keep working or hand off a long-running subtask without waiting. The user sees the peer's reply as its own turn; you do NOT receive the reply inline.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        bot_id: { type: "string", description: "The target bot's id (from list_bots)." },
-        message: { type: "string", description: "What the peer should do / answer." },
-        reason: { type: "string", description: "Optional one-line reason for the delegation (shown to the user as a chip)." },
-      },
-      required: ["bot_id", "message"],
-    },
-  },
-  {
-    name: "create_bot",
-    description:
-      "Create a specialist bot in your section. Only a section's Chief of Staff may use this. The new bot inherits the Chief's engine, starts with connected apps and automatic approvals disabled, and can then receive work through delegate_bot. Create only the smallest useful team (maximum four per turn).",
-    inputSchema: {
-      type: "object",
-      properties: {
-        name: { type: "string", description: "Short, unique display name for the specialist." },
-        role: { type: "string", description: "The specialist's job title or role." },
-        instructions: { type: "string", description: "What this specialist is responsible for and how it should work." },
-      },
-      required: ["name", "role", "instructions"],
-    },
-  },
-  {
-    name: "request_credential",
-    description:
-      "Ask the user for a supported API key through BotFleet's secure credential card. Use this instead of asking them to paste a secret into chat. The secret is saved by the desktop app and is never returned to you. After calling this tool, end the turn; BotFleet resumes the task after the user saves or declines.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        credential_id: {
-          type: "string",
-          enum: Object.keys(CREDENTIAL_TARGETS),
-          description: "The credential the current task requires.",
-        },
-        reason: {
-          type: "string",
-          description: "Optional short, non-sensitive explanation of why the task needs it.",
-        },
-      },
-      required: ["credential_id"],
-    },
-  },
-  {
-    name: "propose_routine",
-    description:
-      "Prepare a new routine after the user explicitly asks to schedule recurring or future work. Call list_routines first for relative dates or times so you use its authoritative current time and timezone. This only creates a durable confirmation card; it does NOT enable the routine. Resolve ambiguous dates, times, timezone, destination, or instructions with the user first, and always give one-time schedules an explicit RFC3339 offset. After calling it, end the turn and do not claim the routine exists until the user confirms the card.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: ROUTINE_FIELDS_SCHEMA,
-      required: ["name", "instructions", "schedule"],
-    },
-  },
-  {
-    name: "propose_routine_action",
-    description:
-      "Prepare a user-requested change to one of this bot's existing routines. This only creates a durable confirmation card; it does NOT apply the change. Use list_routines first to get the routine id. After calling it, end the turn and do not claim the action completed until the user confirms the card.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {
-        routine_id: { type: "string", minLength: 1, description: "Routine id from list_routines." },
-        action: {
-          type: "string",
-          enum: ["update", "pause", "resume", "run_now", "delete"],
-          description: "The requested action. Supply changes only for update.",
-        },
-        changes: {
-          type: "object",
-          additionalProperties: false,
-          properties: ROUTINE_FIELDS_SCHEMA,
-          description: "Fields to change when action is update. Omit for every other action.",
-        },
-      },
-      required: ["routine_id", "action"],
-    },
-  },
-];
-
 // The publication order shipped CLI engines already see.  Spelled out so
-// migrating a tool into the registry cannot silently reorder the list.
+// reordering the registry's own array cannot silently reorder this wire
+// list too.
 const MCP_TOOL_ORDER = [
   "list_bots",
   "ask_bot",
@@ -299,16 +76,13 @@ const MCP_TOOL_ORDER = [
   "propose_routine_action",
 ];
 
-const TOOLS_BY_NAME = new Map<string, McpTool>(
-  [...REGISTRY_TOOLS, ...(UNMIGRATED_TOOLS as McpTool[])].map((tool) => [tool.name, tool]),
-);
+const TOOLS_BY_NAME = new Map(REGISTRY_TOOLS.map((tool) => [tool.name, tool]));
 
 const TOOLS = MCP_TOOL_ORDER.map((name) => {
   const tool = TOOLS_BY_NAME.get(name);
   if (!tool) throw new Error(`agents-proxy: no definition for ${name}`);
   return tool;
 });
-
 
 type Json = Record<string, unknown>;
 type RoutineAction = "update" | "pause" | "resume" | "run_now" | "delete";
@@ -337,20 +111,6 @@ function routineAction(value: unknown): RoutineAction | null {
   return value === "update" || value === "pause" || value === "resume" || value === "run_now" || value === "delete"
     ? value
     : null;
-}
-
-function routineFields(args: Json): { fields: Json; error?: string } {
-  const fields: Json = {};
-  if (typeof args.name === "string") fields.name = args.name.trim();
-  if (typeof args.instructions === "string") fields.instructions = args.instructions.trim();
-  if (args.schedule !== undefined && args.schedule !== null) {
-    const normalized = normalizeScheduleInput(args);
-    if (normalized.error) return { fields, error: normalized.error };
-    fields.schedule = normalized.schedule;
-  }
-  if (typeof args.run_on === "string") fields.runOn = args.run_on;
-  if (typeof args.duration_minutes === "number") fields.durationMinutes = args.duration_minutes;
-  return { fields };
 }
 
 function confirmationResult(r: Json, fallback: string): { text: string } {
@@ -410,8 +170,8 @@ async function callTool(name: string, args: Json): Promise<{ text: string; isErr
     if (!botName || !role || !instructions) {
       return { text: "create_bot needs name, role, and instructions.", isError: true };
     }
-    if (createdThisTurn >= MAX_CREATED_PER_TURN) {
-      return { text: `You can create at most ${MAX_CREATED_PER_TURN} bots in one turn. Use the team you have before adding more.`, isError: true };
+    if (createdThisTurn >= MAX_CREATED_BOTS_PER_TURN) {
+      return { text: `You can create at most ${MAX_CREATED_BOTS_PER_TURN} bots in one turn. Use the team you have before adding more.`, isError: true };
     }
     const r = await api(`/api/internal/create-bot`, {
       method: "POST",
