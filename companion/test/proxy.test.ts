@@ -319,6 +319,39 @@ describe("the sidecar in front of an unmodified harness", () => {
     expect((await device("PATCH", `/api/groups/not-a-room`, { body: { unread: false } })).status).toBe(404);
   });
 
+  it("enforces the paired profile field boundary before forwarding", async () => {
+    const fleet = await device("GET", "/api/bots");
+    const botId = fleet.body.bots[0].id;
+
+    const safe = await device("PATCH", `/api/bots/${botId}/profile`, {
+      body: { title: "Paired title", notifications: false },
+    });
+    expect(safe.status).toBe(200);
+    expect(safe.body.bot).toMatchObject({ title: "Paired title", notifications: false });
+
+    for (const field of ["autoApprove", "composio", "computers", "cwd", "userNotes"]) {
+      const denied = await device("PATCH", `/api/bots/${botId}/profile`, {
+        body: { title: "must not apply", [field]: true },
+      });
+      expect(denied.status, field).toBe(403);
+      expect(denied.body.error, field).toContain("on your computer");
+    }
+
+    const unchanged = await device("GET", "/api/bots");
+    expect(unchanged.body.bots.find((bot: { id: string }) => bot.id === botId).title).toBe("Paired title");
+  });
+
+  it("rejects non-object profile bodies at the sidecar boundary", async () => {
+    const fleet = await device("GET", "/api/bots");
+    const botId = fleet.body.bots[0].id;
+
+    for (const body of ["title", ["title"]]) {
+      const denied = await device("PATCH", `/api/bots/${botId}/profile`, { body });
+      expect(denied.status).toBe(400);
+      expect(denied.body.error).toContain("JSON object");
+    }
+  });
+
   it("lets a device answer an approval, and manage its own chats", async () => {
     // The approval path is the product: a card raised on the computer,
     // answered on the phone, and the bot carries on. What is checked here is
@@ -342,6 +375,27 @@ describe("the sidecar in front of an unmodified harness", () => {
       expect(res.status, `${method} ${path} was blocked by the sidecar`).not.toBe(403);
       expect(res.status, `${method} ${path} never reached the harness`).not.toBe(404);
     }
+  });
+
+  it("carries a room interrupt task guard through the sidecar", async () => {
+    const fleet = await device("GET", "/api/bots");
+    const bot = fleet.body.bots[0];
+    const created = await device("POST", "/api/groups", {
+      body: { name: "Interrupt safety", memberIds: [bot.id] },
+    });
+    expect(created.status).toBe(201);
+    const room = created.body.group;
+
+    const stale = await device("POST", `/api/groups/${room.id}/interrupt`, {
+      body: { threadId: "stale-room-task" },
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error).toContain("switched tasks");
+
+    const exact = await device("POST", `/api/groups/${room.id}/interrupt`, {
+      body: { threadId: room.threadId },
+    });
+    expect(exact.status).toBe(200);
   });
 
   it("does not let a phone widen Auto, but does carry a connector authorize to the harness", async () => {

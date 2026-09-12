@@ -152,6 +152,29 @@ final class TaskSafetyClientTests: XCTestCase {
         XCTAssertEqual(try json(request.body), ["threadId": "task-visible"])
     }
 
+    func testRoomInterruptBindsTheDisplayedTask() async throws {
+        try await client.interrupt(groupId: "room-1", threadId: "room-task-visible")
+
+        let request = try XCTUnwrap(TaskSafetyRequestStub.captured().only)
+        XCTAssertEqual(request.path, "/api/groups/room-1/interrupt")
+        XCTAssertEqual(try json(request.body), ["threadId": "room-task-visible"])
+    }
+
+    func testRoomInterruptConflictIsReturnedWithoutRetrying() async throws {
+        TaskSafetyRequestStub.reset(
+            statusCode: 409,
+            responseBody: Data(#"{"error":"the channel switched tasks before it could be interrupted"}"#.utf8)
+        )
+
+        do {
+            try await client.interrupt(groupId: "room-1", threadId: "stale-room-task")
+            XCTFail("expected task conflict")
+        } catch let error as APIError {
+            XCTAssertTrue(error.isConflict)
+        }
+        XCTAssertEqual(TaskSafetyRequestStub.captured().count, 1)
+    }
+
     func testLostSendResponseRetriesOnceWithTheSameIdempotencyKey() async throws {
         TaskSafetyRequestStub.reset(failFirstTransport: true)
 

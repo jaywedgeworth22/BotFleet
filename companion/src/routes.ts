@@ -44,6 +44,37 @@ export function isCloudDesktopJoin(method: string, path: string): boolean {
   return method === CLOUD_DESKTOP_JOIN_ROUTE.method && CLOUD_DESKTOP_JOIN_ROUTE.path.test(path);
 }
 
+/** The profile fields a paired phone owns.  Engine choice is deliberately
+ * included: the native model picker is a companion feature.  Execution
+ * policy, connected apps, computer grants, and host paths remain Mac-only. */
+export const COMPANION_PROFILE_PATCH_FIELDS = [
+  "name",
+  "title",
+  "description",
+  "notifications",
+  "avatarUrl",
+  "avatarCrop",
+  "voice",
+  "speakReplies",
+  "modelSelection",
+] as const;
+
+const COMPANION_PROFILE_PATCH_FIELD_SET = new Set<string>(COMPANION_PROFILE_PATCH_FIELDS);
+
+export function isCompanionProfilePatch(method: string, path: string): boolean {
+  return method === "PATCH" && /^\/api\/bots\/[\w-]+\/profile$/.test(path);
+}
+
+/** Validate the paired-device field boundary before a profile body reaches
+ * the broader loopback harness route.  Reject the whole request rather than
+ * silently stripping a field the person expected to save. */
+export function companionProfilePatchDenial(body: Record<string, unknown>): Denial | null {
+  const unsupported = Object.keys(body).find((field) => !COMPANION_PROFILE_PATCH_FIELD_SET.has(field));
+  return unsupported
+    ? { status: 403, error: `${unsupported} can only be changed in BotFleet on your computer` }
+    : null;
+}
+
 /** Every request the iOS app makes, and nothing else.
  *
  * Ids are `[\w-]+`, matching the harness's own route patterns. The paths
@@ -81,8 +112,8 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/tasks\/[\w-]+$/ },
   { method: "PATCH", path: /^\/api\/bots\/[\w-]+\/tasks\/[\w-]+$/ },
   { method: "DELETE", path: /^\/api\/bots\/[\w-]+\/tasks\/[\w-]+$/ },
-  // Paired-safe profile subset. The harness route itself rejects fields
-  // outside identity, avatar, notifications, and voice preferences.
+  // Paired-safe profile subset. The proxy validates the JSON field set
+  // before forwarding it to the broader harness route.
   { method: "PATCH", path: /^\/api\/bots\/[\w-]+\/profile$/ },
   { method: "POST", path: /^\/api\/bots\/[\w-]+\/avatar\/generate$/ },
   // Full cloud desktop access. The route is narrow and the proxy applies a
@@ -93,6 +124,7 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "POST", path: /^\/api\/groups$/ },
   { method: "PATCH", path: /^\/api\/groups\/[\w-]+$/ },
   { method: "POST", path: /^\/api\/groups\/[\w-]+\/messages$/ },
+  { method: "POST", path: /^\/api\/groups\/[\w-]+\/interrupt$/ },
   { method: "POST", path: /^\/api\/groups\/[\w-]+\/read$/ },
   { method: "POST", path: /^\/api\/groups\/[\w-]+\/tasks$/ },
   { method: "POST", path: /^\/api\/groups\/[\w-]+\/tasks\/[\w-]+$/ },

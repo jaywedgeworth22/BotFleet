@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import CompanionCore
+import UIKit
 
 struct GroupProfileView: View {
     let room: Room
@@ -236,7 +237,7 @@ struct GroupProfileView: View {
         busy = true
         defer { busy = false; photo = nil }
         guard let data = try? await item.loadTransferable(type: Data.self),
-              let mime = imageMIME(data)
+              let mime = ChatAttachments.sniffImageMIME(data)
         else {
             session.actionError = "Choose a PNG, JPEG, GIF, or WebP image."
             return
@@ -245,17 +246,16 @@ struct GroupProfileView: View {
             session.actionError = "That image is larger than 10 MB."
             return
         }
-        await session.uploadRoomAvatar(id: room.id, data: data, mime: mime)
-    }
-
-    private func imageMIME(_ data: Data) -> String? {
-        let bytes = [UInt8](data.prefix(12))
-        if bytes.starts(with: [0x89, 0x50, 0x4e, 0x47]) { return "image/png" }
-        if bytes.starts(with: [0xff, 0xd8, 0xff]) { return "image/jpeg" }
-        if bytes.starts(with: Array("GIF8".utf8)) { return "image/gif" }
-        if bytes.count >= 12,
-           String(bytes: bytes[0..<4], encoding: .ascii) == "RIFF",
-           String(bytes: bytes[8..<12], encoding: .ascii) == "WEBP" { return "image/webp" }
-        return nil
+        var uploadData = data
+        var uploadMIME = mime
+        if !ChatAttachments.isDisplayImageMIME(mime) {
+            guard let image = UIImage(data: data), let jpeg = image.jpegData(compressionQuality: 0.9) else {
+                session.actionError = "That image could not be converted to PNG, JPEG, GIF, or WebP."
+                return
+            }
+            uploadData = jpeg
+            uploadMIME = "image/jpeg"
+        }
+        await session.uploadRoomAvatar(id: room.id, data: uploadData, mime: uploadMIME)
     }
 }

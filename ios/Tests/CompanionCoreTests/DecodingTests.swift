@@ -46,6 +46,23 @@ final class DecodingTests: XCTestCase {
         let room = try XCTUnwrap(fleet.groups.first)
         XCTAssertEqual(room.messages?.count, 3)
         XCTAssertEqual(room.hasMore, true)
+        XCTAssertFalse(room.isBotToBot)
+    }
+
+    func testDmTrueMarksABotToBotRoom() throws {
+        let data = Data(#"""
+        {"id":"g1","threadId":"t1","name":"Fixer \u21c4 Designer","memberIds":["a","b"],"defaultResponder":{"kind":"mentions"},"bulletin":"","unread":false,"createdAt":1,"dm":true}
+        """#.utf8)
+        let room = try JSONDecoder().decode(Room.self, from: data)
+        XCTAssertTrue(room.isBotToBot)
+    }
+
+    func testMissingDmIsAUserRoom() throws {
+        let data = Data(#"""
+        {"id":"g2","threadId":"t2","name":"Work","memberIds":["a"],"defaultResponder":{"kind":"mentions"},"bulletin":"","unread":false,"createdAt":1}
+        """#.utf8)
+        let room = try JSONDecoder().decode(Room.self, from: data)
+        XCTAssertFalse(room.isBotToBot)
     }
 
     func testDecodesTheFullFleetToo() throws {
@@ -93,6 +110,20 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(live.ok, true)
         XCTAssertNil(live.queueId)
         XCTAssertNotEqual(live.queued, true)
+    }
+
+    func testRoomWorkingFlagCoversSetupWithoutABusyResponder() throws {
+        let room = try JSONDecoder().decode(
+            Room.self,
+            from: Data(#"{"id":"room-1","threadId":"task-1","name":"Setup","memberIds":["bot-1"],"defaultResponder":{"kind":"everyone"},"bulletin":"","unread":false,"createdAt":1,"busyBotId":null,"working":true}"#.utf8)
+        )
+        XCTAssertTrue(room.isWorking)
+
+        let legacy = try JSONDecoder().decode(
+            Room.self,
+            from: Data(#"{"id":"room-2","threadId":"task-2","name":"Legacy","memberIds":["bot-1"],"defaultResponder":{"kind":"everyone"},"bulletin":"","unread":false,"createdAt":1,"busyBotId":"bot-1"}"#.utf8)
+        )
+        XCTAssertTrue(legacy.isWorking)
     }
 
     func testDrainedUserLineKeepsQueueId() throws {
@@ -329,9 +360,9 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(card.responseBehavior(for: "Always allow"), "allow")
         XCTAssertEqual(card.responseBehavior(for: "Deny"), "deny")
         XCTAssertEqual(card.responseBehavior(for: " deny "), "deny")
-        XCTAssertTrue(card.shouldRememberPermission(for: "Always allow"))
-        XCTAssertFalse(card.shouldRememberPermission(for: "Allow"))
-        XCTAssertFalse(card.shouldRememberPermission(for: " deny "))
+        XCTAssertEqual(card.displayChoice(for: "Always allow"), "Allow once")
+        XCTAssertEqual(card.displayChoice(for: "Allow"), "Allow")
+        XCTAssertEqual(card.displayChoice(for: " deny "), " deny ")
 
         var answered = card
         answered.answered = "Allow"
@@ -347,7 +378,7 @@ final class DecodingTests: XCTestCase {
         let card = try XCTUnwrap(message.card)
         XCTAssertFalse(card.isPermission)
         XCTAssertEqual(card.responseBehavior(for: "Anything"), "answer")
-        XCTAssertFalse(card.shouldRememberPermission(for: "Always allow"))
+        XCTAssertEqual(card.displayChoice(for: "Always allow"), "Always allow")
     }
 
     func testDecodesAMessageThatGainedAFieldWeDoNotKnow() throws {
@@ -439,6 +470,20 @@ final class DecodingTests: XCTestCase {
         // server's own fallback decides it.
         XCTAssertEqual(config.tts?.provider, "elevenlabs")
         XCTAssertEqual(config.voiceProvider, .elevenlabs)
+    }
+
+    func testDecodesEngineReasoningCapabilitiesAndOlderPayloads() throws {
+        let current = try JSONDecoder().decode(
+            Instance.self,
+            from: Data(#"{"instanceId":"codex","driverKind":"codex","snapshot":{"state":"available"},"models":{"default":"gpt-6","options":[]},"capabilities":{"effortLevels":["low","high","xhigh"]}}"#.utf8)
+        )
+        XCTAssertEqual(current.capabilities?.effortLevels, ["low", "high", "xhigh"])
+
+        let old = try JSONDecoder().decode(
+            Instance.self,
+            from: Data(#"{"instanceId":"legacy","driverKind":"legacy","snapshot":{"state":"available"},"models":{"default":"default","options":[]}}"#.utf8)
+        )
+        XCTAssertNil(old.capabilities)
     }
 
     // MARK: - Frames

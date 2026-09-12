@@ -46,7 +46,9 @@ final class LiveActivityCoordinator {
                 headline: liveActivityHeadline(bot.name, kind: update.kind),
                 line: update.line.isEmpty ? (update.card?.title ?? "") : update.line,
                 requestId: update.card?.isPending == true ? update.card?.requestId : nil,
-                options: update.card?.isPending == true ? (update.card?.options ?? []) : [],
+                options: update.card?.isPending == true
+                    ? (update.card?.options.map { update.card?.displayChoice(for: $0) ?? $0 } ?? [])
+                    : [],
                 isPermission: update.card?.isPermission ?? false,
                 since: since[bot.id]?.at ?? Date()
             )

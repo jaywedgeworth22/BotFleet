@@ -36,6 +36,8 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 
 ## In Progress
 
+- **2026-09-12 — BF-DESIGNER — IN PROGRESS — iOS roster keeps Bot Chats separate from user rooms (board `bf86a7bf`, branch `grok/ios-bot-chats`, worktree `~/apps/botfleet-designer-ios-bot-chats`).**  `group.dm` rooms leave the Channels/Rooms section and sit in Bot Chats at the bottom, default collapsed, matching Mac.  Extra-ship no.  No TestFlight.  <!-- wb-agent-report:bf86a7bff1e345dda62ab689bb3bf249 -->
+
 - **2026-09-12 — CODEX — IN PROGRESS — Authenticated build/API identity and staged Mac update acceptance (#265/#274, boards e4190ce1 / 7e582b82).**  Worktree `~/apps/botfleet-codex-mac-20260912` @ `codex/mac-rollout-20260912`.  Coordinate #319 updater before changing live processes; verify actual running source and one data owner.  <!-- codex-mac-rollout-20260912 -->
 
 - **2026-09-11 — GROK — IN PROGRESS — Map Remote Access Test Connection pill to product copy (board `f3c03a10`, branch `grok/remote-access-test-copy`, worktree `~/apps/botfleet-designer-remote-access-copy`).**  Designer follow-up to #298.  Extra-ship no. <!-- wb-agent-report:f3c03a1060cd4be1b21c83b0b4ef4e67 -->

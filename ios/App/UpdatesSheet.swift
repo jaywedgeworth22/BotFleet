@@ -102,7 +102,7 @@ private struct UpdateRow: View {
                                         answering = false
                                     }
                                 } label: {
-                                    Text(option)
+                                    Text(card.displayChoice(for: option))
                                         .font(.system(size: 13, weight: .semibold))
                                         .foregroundStyle(CardStyle.isRefusal(option) ? Color.primary : .white)
                                         .padding(.horizontal, 14)

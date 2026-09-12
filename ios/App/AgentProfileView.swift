@@ -2,6 +2,7 @@ import AVFAudio
 import CompanionCore
 import PhotosUI
 import SwiftUI
+import UIKit
 
 /// The paired-safe subset of an agent profile. Shared provider keys remain on
 /// the computer; the phone sees only configured/not-configured status and the
@@ -20,18 +21,8 @@ struct AgentProfileView: View {
     @State private var speakReplies: Bool
     @State private var instanceId: String
     @State private var modelId: String
+    @State private var effort: String?
     @State private var fallbacks: [ModelSelection]
-    @State private var computers: Set<String>
-    @State private var chiefOfStaff: Bool
-    @State private var approvePeerComms: Bool
-    @State private var autoApprove: Bool
-    @State private var autoReview: String
-    @State private var composio: Bool
-    @State private var cloudBackend: String
-    @State private var autoStartVps: Bool
-    @State private var cwd: String
-    @State private var extraCwdsText: String
-    @State private var userNotes: String
     @State private var photo: PhotosPickerItem?
     @State private var prompt = ""
     @State private var voices: [Voice] = []
@@ -56,18 +47,8 @@ struct AgentProfileView: View {
         _speakReplies = State(initialValue: bot.speakReplies == true)
         _instanceId = State(initialValue: bot.modelSelection.instanceId)
         _modelId = State(initialValue: bot.modelSelection.model)
+        _effort = State(initialValue: bot.modelSelection.effort)
         _fallbacks = State(initialValue: bot.modelSelection.fallbacks ?? [])
-        _computers = State(initialValue: Set(bot.computers ?? []))
-        _chiefOfStaff = State(initialValue: bot.chiefOfStaff == true)
-        _approvePeerComms = State(initialValue: bot.approvePeerComms == true)
-        _autoApprove = State(initialValue: bot.autoApprove == true)
-        _autoReview = State(initialValue: bot.autoReview ?? "off")
-        _composio = State(initialValue: bot.composio ?? true)
-        _cloudBackend = State(initialValue: bot.cloudBackend ?? "box")
-        _autoStartVps = State(initialValue: bot.autoStartVps == true)
-        _cwd = State(initialValue: bot.cwd ?? "")
-        _extraCwdsText = State(initialValue: bot.extraCwds?.joined(separator: "\n") ?? "")
-        _userNotes = State(initialValue: bot.userNotes ?? "")
         _baseline = State(initialValue: ProfileFormSnapshot(bot: bot))
     }
 
@@ -163,6 +144,9 @@ struct AgentProfileView: View {
                                 if !instance.models.options.contains(where: { $0.id == modelId }) {
                                     modelId = instance.models.default
                                 }
+                                if let effort, !(instance.capabilities?.effortLevels ?? []).contains(effort) {
+                                    self.effort = nil
+                                }
                             }
                         }
 
@@ -173,6 +157,8 @@ struct AgentProfileView: View {
                                 }
                             }
                             .pickerStyle(.navigationLink)
+
+                            effortPicker(selection: $effort, instance: selectedInstance)
                         }
                     }
 
@@ -185,6 +171,10 @@ struct AgentProfileView: View {
                                     if let inst = instances.first(where: { $0.id == newInstanceId }) {
                                         if !inst.models.options.contains(where: { $0.id == fallbacks[index].model }) {
                                             fallbacks[index].model = inst.models.default
+                                        }
+                                        if let effort = fallbacks[index].effort,
+                                           !(inst.capabilities?.effortLevels ?? []).contains(effort) {
+                                            fallbacks[index].effort = nil
                                         }
                                     }
                                 }
@@ -207,6 +197,14 @@ struct AgentProfileView: View {
                                     }
                                 }
                                 .pickerStyle(.navigationLink)
+
+                                effortPicker(
+                                    selection: Binding(
+                                        get: { fallbacks[index].effort },
+                                        set: { fallbacks[index].effort = $0 }
+                                    ),
+                                    instance: fallbackInstance
+                                )
                             }
 
                             Button("Remove Fallback", role: .destructive) {
@@ -224,75 +222,6 @@ struct AgentProfileView: View {
                                 fallbacks.append(ModelSelection(instanceId: instId, model: mdl))
                             }
                         }
-                    }
-                }
-
-                Section("Coordination") {
-                    Toggle("Chief of Staff", isOn: $chiefOfStaff)
-                    Toggle("Ask before contacting peers", isOn: $approvePeerComms)
-                    Toggle("Connected apps (Composio)", isOn: $composio)
-                }
-
-                Section("Autonomous Execution") {
-                    Toggle("Auto mode", isOn: $autoApprove)
-                    Picker("Routine reviews", selection: $autoReview) {
-                        Text("Off").tag("off")
-                        Text("Shadow").tag("shadow")
-                        Text("Enforce").tag("enforce")
-                    }
-                }
-
-                Section("Computers & Environment") {
-                    ForEach(["local", "cloud", "vm"], id: \.self) { comp in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Toggle(destinationLabel(comp), isOn: Binding(
-                                get: { computers.contains(comp) },
-                                set: { isOn in
-                                    if isOn {
-                                        computers.insert(comp)
-                                    } else {
-                                        computers.remove(comp)
-                                    }
-                                }
-                            ))
-                            Text(destinationCaption(comp))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-
-                    // Unset `bot.computers` is Auto mode: the harness still
-                    // reads `cloudBackend` / `autoStartVps` to inspect and
-                    // provision a VPS.  Hide these only when Cloud is
-                    // explicitly off.
-                    if computers.contains("cloud") || computers.isEmpty {
-                        Picker("Cloud provider", selection: $cloudBackend) {
-                            Text("ASCII.dev Box").tag("box")
-                            Text("My VPS").tag("vps")
-                        }
-
-                        if cloudBackend == "vps" {
-                            Toggle("Start VPS automatically", isOn: $autoStartVps)
-                        }
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        TextField("Working directory (cwd)", text: $cwd)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Text("Where this bot's shell and file tools run, on the machine hosting BotFleet.  Remote desktops always use their own workspace folder.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        TextField("Additional repos (one per line)", text: $extraCwdsText, axis: .vertical)
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                            .lineLimit(2...5)
-                        Text("Extra folders on the same BotFleet host machine this bot can also work in, alongside the working directory above.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
                     }
                 }
 
@@ -352,11 +281,6 @@ struct AgentProfileView: View {
                     } else {
                         Text("The voice choice belongs to this agent. Workspace default uses the shared voice selected on your computer.")
                     }
-                }
-
-                Section("Memory & Notes") {
-                    TextField("Custom instructions & persistent notes", text: $userNotes, axis: .vertical)
-                        .lineLimit(4...10)
                 }
 
                 if let tasks = current.tasks, !tasks.isEmpty {
@@ -450,12 +374,52 @@ struct AgentProfileView: View {
         instancesLoaded = true
     }
 
+    @ViewBuilder
+    private func effortPicker(selection: Binding<String?>, instance: Instance) -> some View {
+        let levels = instance.capabilities?.effortLevels ?? []
+        let saved = selection.wrappedValue
+        if !levels.isEmpty {
+            Picker("Reasoning", selection: Binding(
+                get: { selection.wrappedValue.flatMap { levels.contains($0) ? $0 : nil } },
+                set: { selection.wrappedValue = $0 }
+            )) {
+                Text("Engine default").tag(String?.none)
+                ForEach(levels, id: \.self) { level in
+                    Text(effortLabel(level)).tag(Optional(level))
+                }
+            }
+            .pickerStyle(.navigationLink)
+
+            if let saved, !levels.contains(saved) {
+                Text("Saved reasoning “\(saved)” is kept until you choose a supported level.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else if let saved {
+            LabeledContent("Reasoning", value: "Saved: \(saved)")
+        }
+    }
+
+    private func effortLabel(_ effort: String) -> String {
+        switch effort {
+        case "none": return "None"
+        case "low": return "Low"
+        case "medium": return "Medium"
+        case "high": return "High"
+        case "xhigh": return "Extra High"
+        case "max": return "Maximum"
+        default: return effort
+        }
+    }
+
     private func profilePatch() -> BotProfilePatch {
         let savedSpeakReplies = config.map { $0.canSpeak(agentVoice: voice) && speakReplies } ?? speakReplies
-        let newModelSelection = ModelSelection(instanceId: instanceId, model: modelId, fallbacks: fallbacks.isEmpty ? nil : fallbacks)
-        let newComputers = Array(computers).sorted()
-        let baselineComputers = (baseline.computers ?? []).sorted()
-        let splitExtraCwds = extraCwdsText.isEmpty ? nil : extraCwdsText.components(separatedBy: .newlines).filter({ !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+        let newModelSelection = ModelSelection(
+            instanceId: instanceId,
+            model: modelId,
+            effort: effort,
+            fallbacks: fallbacks.isEmpty ? nil : fallbacks
+        )
         return BotProfilePatch(
             name: name == baseline.name ? nil : name.trimmingCharacters(in: .whitespacesAndNewlines),
             title: title == baseline.title ? nil : title.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -465,18 +429,7 @@ struct AgentProfileView: View {
             avatarCrop: crop == baseline.crop ? nil : crop,
             voice: voice == baseline.voice ? nil : voice,
             speakReplies: savedSpeakReplies == baseline.speakReplies ? nil : savedSpeakReplies,
-            modelSelection: newModelSelection == baseline.modelSelection ? nil : newModelSelection,
-            computers: newComputers == baselineComputers ? nil : newComputers,
-            chiefOfStaff: chiefOfStaff == baseline.chiefOfStaff ? nil : chiefOfStaff,
-            approvePeerComms: approvePeerComms == baseline.approvePeerComms ? nil : approvePeerComms,
-            autoApprove: autoApprove == baseline.autoApprove ? nil : autoApprove,
-            autoReview: autoReview == baseline.autoReview ? nil : autoReview,
-            composio: composio == baseline.composio ? nil : composio,
-            cloudBackend: cloudBackend == baseline.cloudBackend ? nil : cloudBackend,
-            autoStartVps: autoStartVps == baseline.autoStartVps ? nil : autoStartVps,
-            cwd: cwd == baseline.cwd ? nil : cwd.trimmingCharacters(in: .whitespacesAndNewlines),
-            extraCwds: splitExtraCwds == baseline.extraCwds ? nil : splitExtraCwds,
-            userNotes: userNotes == baseline.userNotes ? nil : userNotes
+            modelSelection: newModelSelection == baseline.modelSelection ? nil : newModelSelection
         )
     }
 
@@ -504,17 +457,27 @@ struct AgentProfileView: View {
         busy = true
         defer { busy = false; photo = nil }
         guard let data = try? await item.loadTransferable(type: Data.self),
-              let mime = Self.imageMIME(data)
+              let mime = ChatAttachments.sniffImageMIME(data)
         else {
-            session.actionError = "Choose a PNG, JPEG, GIF, WebP, HEIC, BMP, or SVG image."
+            session.actionError = "Choose a PNG, JPEG, GIF, or WebP image."
             return
         }
         if data.count > 10 * 1_024 * 1_024 {
             session.actionError = "That image is larger than 10 MB."
             return
         }
+        var uploadData = data
+        var uploadMIME = mime
+        if !ChatAttachments.isDisplayImageMIME(mime) {
+            guard let image = UIImage(data: data), let jpeg = image.jpegData(compressionQuality: 0.9) else {
+                session.actionError = "That image could not be converted to PNG, JPEG, GIF, or WebP."
+                return
+            }
+            uploadData = jpeg
+            uploadMIME = "image/jpeg"
+        }
         let intendedCrop = crop == .mascot ? AvatarCrop.circle : crop
-        if let updated = await session.uploadAvatar(data, mime: mime, for: current, crop: intendedCrop) {
+        if let updated = await session.uploadAvatar(uploadData, mime: uploadMIME, for: current, crop: intendedCrop) {
             crop = updated.avatarCrop ?? intendedCrop
             baseline.crop = crop
         }
@@ -566,39 +529,11 @@ struct AgentProfileView: View {
         }
     }
 
-    private static func imageMIME(_ data: Data) -> String? {
-        ChatAttachments.sniffImageMIME(data)
-    }
-
     private var availableInstances: [Instance] {
         instances.filter { inst in
             (inst.snapshot.state == "available" || inst.id == instanceId) &&
             inst.snapshot.reason != "Disabled in settings" &&
             (inst.id != "kimi" || (inst.snapshot.state == "available" && inst.snapshot.authenticated != false))
-        }
-    }
-
-    /// Label for a computer destination toggle.  A named function instead of
-    /// a nested ternary so the "vm" / "cloud" mapping can't be silently
-    /// re-inverted again the way it was until this fix: the toggle labelled
-    /// "VPS" was granting `vm` (the Local VM, on this Mac) while the toggle
-    /// labelled "Cloud VM" granted `cloud` (the real remote desktop).
-    private func destinationLabel(_ id: String) -> String {
-        switch id {
-        case "local": return "This Mac"
-        case "cloud": return "Cloud desktop"
-        case "vm": return "Local VM"
-        default: return id
-        }
-    }
-
-    /// Short explanation shown under each destination toggle above.
-    private func destinationCaption(_ id: String) -> String {
-        switch id {
-        case "local": return "Your Mac, full access"
-        case "cloud": return "A remote Linux desktop \u{2014} see Cloud provider below"
-        case "vm": return "An isolated sandbox container on this Mac"
-        default: return ""
         }
     }
 
@@ -620,18 +555,8 @@ struct AgentProfileView: View {
         speakReplies = bot.speakReplies == true
         instanceId = bot.modelSelection.instanceId
         modelId = bot.modelSelection.model
+        effort = bot.modelSelection.effort
         fallbacks = bot.modelSelection.fallbacks ?? []
-        computers = Set(bot.computers ?? [])
-        chiefOfStaff = bot.chiefOfStaff == true
-        approvePeerComms = bot.approvePeerComms == true
-        autoApprove = bot.autoApprove == true
-        autoReview = bot.autoReview ?? "off"
-        composio = bot.composio ?? true
-        cloudBackend = bot.cloudBackend ?? "box"
-        autoStartVps = bot.autoStartVps == true
-        cwd = bot.cwd ?? ""
-        extraCwdsText = bot.extraCwds?.joined(separator: "\n") ?? ""
-        userNotes = bot.userNotes ?? ""
         baseline = ProfileFormSnapshot(bot: bot)
     }
 }
@@ -645,17 +570,6 @@ private struct ProfileFormSnapshot {
     var voice: String
     var speakReplies: Bool
     var modelSelection: ModelSelection
-    var computers: [String]?
-    var chiefOfStaff: Bool
-    var approvePeerComms: Bool
-    var autoApprove: Bool
-    var autoReview: String
-    var composio: Bool
-    var cloudBackend: String
-    var autoStartVps: Bool
-    var cwd: String
-    var extraCwds: [String]?
-    var userNotes: String
 
     init(bot: Bot) {
         name = bot.name
@@ -666,17 +580,6 @@ private struct ProfileFormSnapshot {
         voice = bot.voice ?? ""
         speakReplies = bot.speakReplies == true
         modelSelection = bot.modelSelection
-        computers = bot.computers
-        chiefOfStaff = bot.chiefOfStaff == true
-        approvePeerComms = bot.approvePeerComms == true
-        autoApprove = bot.autoApprove == true
-        autoReview = bot.autoReview ?? "off"
-        composio = bot.composio ?? true
-        cloudBackend = bot.cloudBackend ?? "box"
-        autoStartVps = bot.autoStartVps == true
-        cwd = bot.cwd ?? ""
-        extraCwds = bot.extraCwds
-        userNotes = bot.userNotes ?? ""
     }
 }
 
@@ -690,4 +593,3 @@ private extension AvatarCrop {
         }
     }
 }
-
