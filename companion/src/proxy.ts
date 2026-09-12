@@ -19,7 +19,12 @@ import {
   MAX_COMPANION_ENDPOINTS,
   type CompanionEndpoint,
 } from "./endpoints.ts";
-import { denyReason, isCloudDesktopJoin } from "./routes.ts";
+import {
+  companionProfilePatchDenial,
+  denyReason,
+  isCloudDesktopJoin,
+  isCompanionProfilePatch,
+} from "./routes.ts";
 import { createSseScrubber, isJson, scrub } from "./wire.ts";
 
 /** What the forwarding handler needs from the process around it. */
@@ -96,7 +101,11 @@ const readJson = (req: IncomingMessage, limit = 64 * 1024): Promise<Record<strin
       if (!text) return resolve({});
       try {
         const parsed: unknown = JSON.parse(text);
-        resolve(parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {});
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          reject(new Error("body must be a JSON object"));
+          return;
+        }
+        resolve(parsed as Record<string, unknown>);
       } catch {
         reject(new Error("invalid JSON body"));
       }
@@ -220,7 +229,7 @@ const forwardHeaders = (req: IncomingMessage): Record<string, string> => {
  * the token, then replay the request to the harness over loopback and scrub
  * what comes back. Pairing is the one route that stops here. */
 export function createProxyHandler(options: ProxyOptions) {
-  return function handle(req: IncomingMessage, res: ServerResponse): void {
+  return async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const path = (req.url ?? "/").split("?")[0];
     const method = req.method ?? "GET";
 
@@ -314,6 +323,23 @@ export function createProxyHandler(options: ProxyOptions) {
         (error: Error) => sendJson(res, 400, { error: error.message }),
       );
       return;
+    }
+
+    let forwardedBody: Buffer | undefined;
+    if (isCompanionProfilePatch(method, path)) {
+      let body: Record<string, unknown>;
+      try {
+        body = await readJson(req);
+      } catch (error) {
+        sendJson(res, 400, { error: error instanceof Error ? error.message : "invalid JSON body" });
+        return;
+      }
+      const profileDenial = companionProfilePatchDenial(body);
+      if (profileDenial) {
+        sendJson(res, profileDenial.status, { error: profileDenial.error });
+        return;
+      }
+      forwardedBody = Buffer.from(JSON.stringify(body));
     }
 
     const upstream = httpRequest(
@@ -598,6 +624,7 @@ export function createProxyHandler(options: ProxyOptions) {
           : { error: "BotFleet is not running on this computer" },
       );
     });
-    req.pipe(upstream);
+    if (forwardedBody) upstream.end(forwardedBody);
+    else req.pipe(upstream);
   };
 }

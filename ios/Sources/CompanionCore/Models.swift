@@ -58,12 +58,13 @@ public struct OptionCard: Codable, Hashable, Sendable {
             .caseInsensitiveCompare("Deny") == .orderedSame
     }
 
-    /// A provider may include the standing grant as an option of its own.
-    /// Only remember it when the server supplied the narrow grant key.
-    public func shouldRememberPermission(for choice: String) -> Bool {
-        guard isPermission, allowKey != nil else { return false }
+    /// A provider can call its positive choice "Always allow", but the paired
+    /// route supports only the current request.  Keep the provider's wire
+    /// choice for the response while giving every phone surface honest copy.
+    public func displayChoice(for choice: String) -> String {
+        guard isPermission else { return choice }
         let normalized = choice.trimmingCharacters(in: .whitespacesAndNewlines)
-        return normalized.caseInsensitiveCompare("Always allow") == .orderedSame
+        return normalized.caseInsensitiveCompare("Always allow") == .orderedSame ? "Allow once" : choice
     }
 }
 
@@ -203,11 +204,15 @@ public struct SendMessageResult: Codable, Hashable, Sendable {
 public struct ModelSelection: Codable, Hashable, Sendable {
     public var instanceId: String
     public var model: String
+    /// Kept as a string so a newer server's saved value still round-trips
+    /// through an older phone until the person explicitly changes it.
+    public var effort: String?
     public var fallbacks: [ModelSelection]?
 
-    public init(instanceId: String, model: String, fallbacks: [ModelSelection]? = nil) {
+    public init(instanceId: String, model: String, effort: String? = nil, fallbacks: [ModelSelection]? = nil) {
         self.instanceId = instanceId
         self.model = model
+        self.effort = effort
         self.fallbacks = fallbacks
     }
 }
@@ -529,12 +534,17 @@ public struct ModelCatalog: Codable, Hashable, Sendable {
     public var options: [ModelOption]
 }
 
+public struct InstanceCapabilities: Codable, Hashable, Sendable {
+    public var effortLevels: [String]?
+}
+
 public struct Instance: Codable, Hashable, Identifiable, Sendable {
     public var instanceId: String
     public var driverKind: String
     public var displayName: String?
     public var snapshot: ProviderSnapshot
     public var models: ModelCatalog
+    public var capabilities: InstanceCapabilities?
 
     public var id: String { instanceId }
 }
@@ -672,17 +682,6 @@ public struct BotProfilePatch: Encodable, Sendable {
     public var voice: String?
     public var speakReplies: Bool?
     public var modelSelection: ModelSelection?
-    public var computers: [String]?
-    public var chiefOfStaff: Bool?
-    public var approvePeerComms: Bool?
-    public var autoApprove: Bool?
-    public var autoReview: String?
-    public var composio: Bool?
-    public var cloudBackend: String?
-    public var autoStartVps: Bool?
-    public var cwd: String?
-    public var extraCwds: [String]?
-    public var userNotes: String?
 
     /// `avatarUrl` needs three wire states: omitted, a stored path, or JSON
     /// null to clear. A nested optional would technically represent that, but
@@ -701,18 +700,7 @@ public struct BotProfilePatch: Encodable, Sendable {
         avatarCrop: AvatarCrop? = nil,
         voice: String? = nil,
         speakReplies: Bool? = nil,
-        modelSelection: ModelSelection? = nil,
-        computers: [String]? = nil,
-        chiefOfStaff: Bool? = nil,
-        approvePeerComms: Bool? = nil,
-        autoApprove: Bool? = nil,
-        autoReview: String? = nil,
-        composio: Bool? = nil,
-        cloudBackend: String? = nil,
-        autoStartVps: Bool? = nil,
-        cwd: String? = nil,
-        extraCwds: [String]? = nil,
-        userNotes: String? = nil
+        modelSelection: ModelSelection? = nil
     ) {
         self.name = name
         self.title = title
@@ -723,22 +711,10 @@ public struct BotProfilePatch: Encodable, Sendable {
         self.voice = voice
         self.speakReplies = speakReplies
         self.modelSelection = modelSelection
-        self.computers = computers
-        self.chiefOfStaff = chiefOfStaff
-        self.approvePeerComms = approvePeerComms
-        self.autoApprove = autoApprove
-        self.autoReview = autoReview
-        self.composio = composio
-        self.cloudBackend = cloudBackend
-        self.autoStartVps = autoStartVps
-        self.cwd = cwd
-        self.extraCwds = extraCwds
-        self.userNotes = userNotes
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection, computers
-        case chiefOfStaff, approvePeerComms, autoApprove, autoReview, composio, cloudBackend, autoStartVps, cwd, extraCwds, userNotes
+        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -757,17 +733,6 @@ public struct BotProfilePatch: Encodable, Sendable {
         try values.encodeIfPresent(voice, forKey: .voice)
         try values.encodeIfPresent(speakReplies, forKey: .speakReplies)
         try values.encodeIfPresent(modelSelection, forKey: .modelSelection)
-        try values.encodeIfPresent(computers, forKey: .computers)
-        try values.encodeIfPresent(chiefOfStaff, forKey: .chiefOfStaff)
-        try values.encodeIfPresent(approvePeerComms, forKey: .approvePeerComms)
-        try values.encodeIfPresent(autoApprove, forKey: .autoApprove)
-        try values.encodeIfPresent(autoReview, forKey: .autoReview)
-        try values.encodeIfPresent(composio, forKey: .composio)
-        try values.encodeIfPresent(cloudBackend, forKey: .cloudBackend)
-        try values.encodeIfPresent(autoStartVps, forKey: .autoStartVps)
-        try values.encodeIfPresent(cwd, forKey: .cwd)
-        try values.encodeIfPresent(extraCwds, forKey: .extraCwds)
-        try values.encodeIfPresent(userNotes, forKey: .userNotes)
     }
 }
 

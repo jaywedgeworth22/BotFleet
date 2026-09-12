@@ -127,7 +127,7 @@ struct NeedsYouIsland: View {
                                             dismiss()
                                         }
                                     } label: {
-                                        Text(option)
+                                        Text(card.displayChoice(for: option))
                                             .font(.system(size: 15, weight: .semibold))
                                             .foregroundStyle(CardStyle.isRefusal(option) ? .white : .white)
                                             .frame(maxWidth: .infinity)

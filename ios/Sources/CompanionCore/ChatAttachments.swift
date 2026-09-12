@@ -61,6 +61,11 @@ public struct SplitChatAttachments: Sendable, Equatable {
 public enum ChatAttachments {
     public static let imageMaxBytes = 10 * 1_024 * 1_024
     public static let fileMaxBytes = 25 * 1_024 * 1_024
+    /// Formats that both the companion GET route and UIImage-backed views
+    /// render.  Other image uploads must be converted before they are sent.
+    public static let displayImageMIME: Set<String> = [
+        "image/png", "image/jpeg", "image/gif", "image/webp",
+    ]
 
     /// Mimes the harness POST /api/attachments accepts.
     public static let allowedMIME: Set<String> = [
@@ -92,11 +97,15 @@ public enum ChatAttachments {
         allowedMIME.contains(normalizeMIME(mime))
     }
 
+    public static func isDisplayImageMIME(_ mime: String) -> Bool {
+        displayImageMIME.contains(normalizeMIME(mime))
+    }
+
     public static func maxBytes(forMIME mime: String) -> Int {
         isImageMIME(mime) ? imageMaxBytes : fileMaxBytes
     }
 
-    /// Magic-byte sniff for the raster types avatars already accept, plus HEIC.
+    /// Magic-byte sniff for every image type the harness accepts.
     public static func sniffImageMIME(_ data: Data) -> String? {
         let bytes = [UInt8](data.prefix(12))
         if bytes.starts(with: [0x89, 0x50, 0x4e, 0x47]) { return "image/png" }
@@ -238,7 +247,7 @@ public enum ChatAttachments {
             (48...57).contains($0) || (65...90).contains($0) ||
                 (97...122).contains($0) || $0 == 45
         }) else { return false }
-        return ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "avif", "bmp", "svg"].contains(ext)
+        return ["png", "jpg", "jpeg", "gif", "webp"].contains(ext)
     }
 
     public static func formatSize(_ bytes: Int) -> String {

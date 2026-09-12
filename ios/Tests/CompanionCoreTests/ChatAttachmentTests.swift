@@ -83,9 +83,25 @@ final class ChatAttachmentTests: XCTestCase {
             "/api/attachments/abc-123.png"
         )
         XCTAssertNil(ChatAttachments.fetchPath(forDiskPath: "/tmp/notes.txt"))
-        XCTAssertEqual(ChatAttachments.fetchPath(forDiskPath: "/tmp/avatar.svg"), "/api/attachments/avatar.svg")
+        XCTAssertNil(ChatAttachments.fetchPath(forDiskPath: "/tmp/avatar.svg"))
         XCTAssertNil(ChatAttachments.fetchPath(forDiskPath: "/tmp/avatar.html"))
         XCTAssertNil(ChatAttachments.fetchPath(forDiskPath: "C:\\\\data\\\\attachments\\\\abc.png.exe"))
+    }
+
+    func testDisplayImageContractMatchesTheSidecarAllowlist() {
+        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            XCTAssertTrue(ChatAttachments.isDisplayImageMIME(mime), mime)
+        }
+        for mime in ["image/heic", "image/heif", "image/avif", "image/bmp", "image/svg+xml"] {
+            XCTAssertFalse(ChatAttachments.isDisplayImageMIME(mime), mime)
+        }
+
+        for name in ["photo.png", "photo.jpg", "photo.jpeg", "photo.gif", "photo.webp"] {
+            XCTAssertTrue(ChatAttachments.isRenderableImageName(name), name)
+        }
+        for name in ["photo.heic", "photo.heif", "photo.avif", "photo.bmp", "photo.svg"] {
+            XCTAssertFalse(ChatAttachments.isRenderableImageName(name), name)
+        }
     }
 
     func testSniffImageMagicBytes() {
@@ -201,6 +217,26 @@ final class ChatAttachmentClientTests: XCTestCase {
         let bytes = Data([0x89, 0x50, 0x4e, 0x47])
         let url = try await client.uploadAvatar(data: bytes, mime: "image/png")
         XCTAssertEqual(url, "/api/attachments/abc.png")
+    }
+
+    func testUploadAvatarAcceptsOnlyRoundTripDisplayMimes() async throws {
+        let bytes = Data([1, 2, 3, 4])
+        for mime in ["image/png", "image/jpeg", "image/gif", "image/webp"] {
+            AttachmentRequestStub.capturedRequest = nil
+            _ = try await client.uploadAvatar(data: bytes, mime: mime)
+            XCTAssertEqual(AttachmentRequestStub.capturedRequest?.value(forHTTPHeaderField: "Content-Type"), mime)
+        }
+
+        for mime in ["image/heic", "image/heif", "image/avif", "image/bmp", "image/svg+xml"] {
+            AttachmentRequestStub.capturedRequest = nil
+            do {
+                _ = try await client.uploadAvatar(data: bytes, mime: mime)
+                XCTFail("expected \(mime) to require conversion")
+            } catch let error as APIError {
+                XCTAssertTrue(error.localizedDescription.contains("PNG, JPEG, GIF, or WebP"))
+            }
+            XCTAssertNil(AttachmentRequestStub.capturedRequest)
+        }
     }
 
     func testRegisterPushTokenPostsHexToCompanionRoute() async throws {

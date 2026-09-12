@@ -329,9 +329,9 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(card.responseBehavior(for: "Always allow"), "allow")
         XCTAssertEqual(card.responseBehavior(for: "Deny"), "deny")
         XCTAssertEqual(card.responseBehavior(for: " deny "), "deny")
-        XCTAssertTrue(card.shouldRememberPermission(for: "Always allow"))
-        XCTAssertFalse(card.shouldRememberPermission(for: "Allow"))
-        XCTAssertFalse(card.shouldRememberPermission(for: " deny "))
+        XCTAssertEqual(card.displayChoice(for: "Always allow"), "Allow once")
+        XCTAssertEqual(card.displayChoice(for: "Allow"), "Allow")
+        XCTAssertEqual(card.displayChoice(for: " deny "), " deny ")
 
         var answered = card
         answered.answered = "Allow"
@@ -347,7 +347,7 @@ final class DecodingTests: XCTestCase {
         let card = try XCTUnwrap(message.card)
         XCTAssertFalse(card.isPermission)
         XCTAssertEqual(card.responseBehavior(for: "Anything"), "answer")
-        XCTAssertFalse(card.shouldRememberPermission(for: "Always allow"))
+        XCTAssertEqual(card.displayChoice(for: "Always allow"), "Always allow")
     }
 
     func testDecodesAMessageThatGainedAFieldWeDoNotKnow() throws {
@@ -439,6 +439,20 @@ final class DecodingTests: XCTestCase {
         // server's own fallback decides it.
         XCTAssertEqual(config.tts?.provider, "elevenlabs")
         XCTAssertEqual(config.voiceProvider, .elevenlabs)
+    }
+
+    func testDecodesEngineReasoningCapabilitiesAndOlderPayloads() throws {
+        let current = try JSONDecoder().decode(
+            Instance.self,
+            from: Data(#"{"instanceId":"codex","driverKind":"codex","snapshot":{"state":"available"},"models":{"default":"gpt-6","options":[]},"capabilities":{"effortLevels":["low","high","xhigh"]}}"#.utf8)
+        )
+        XCTAssertEqual(current.capabilities?.effortLevels, ["low", "high", "xhigh"])
+
+        let old = try JSONDecoder().decode(
+            Instance.self,
+            from: Data(#"{"instanceId":"legacy","driverKind":"legacy","snapshot":{"state":"available"},"models":{"default":"default","options":[]}}"#.utf8)
+        )
+        XCTAssertNil(old.capabilities)
     }
 
     // MARK: - Frames
