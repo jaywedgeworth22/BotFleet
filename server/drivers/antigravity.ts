@@ -17,10 +17,9 @@
 // Engines row spells out, never a default a fresh bot inherits.
 //
 // Computer use: agy has no per-turn MCP flag, so the bot's computer (cloud
-// box / Local VM / VPS) is mounted by upserting one key into the global
-// `~/.gemini/config/mcp_config.json` before each spawn — see
-// ensureAntigravityComputerMcp below. Full-auto instances only; the host
-// desktop stays off (no approval channel in print mode, ever).
+// box / Local VM / VPS / local computer) is mounted by upserting keys into the
+// global `~/.gemini/config/mcp_config.json` before each spawn — see
+// ensureAntigravityMcp below.
 import { describeSpawnFailure, execCli, killCliTree, spawnCli } from "../procs.ts";
 import { stderrExcerpt } from "../stderr-excerpt.ts";
 import { chmodSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
@@ -488,19 +487,21 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost, ...(usage ? { usage } : {}) });
       };
 
-      // agy's print mode is argv-only, so a prompt beyond ARG_MAX would fail the
-      // spawn with E2BIG. Reject oversized prompts up front with a clear error
-      // instead of a cryptic spawn failure.
-      if (Buffer.byteLength(prompt) > 256 * 1024) {
+      // agy accepts prompts either via `--print <prompt>` on argv or via stdin.
+      // Prompts <= 64KB pass on argv for backward compatibility with CLI stubs;
+      // larger prompts pipe via stdin to avoid OS ARG_MAX / E2BIG limits.
+      const MAX_PROMPT_BYTES = 20 * 1024 * 1024; // 20MB safety ceiling
+      if (Buffer.byteLength(prompt) > MAX_PROMPT_BYTES) {
         emit({
           ...base(threadId, turnId),
           type: "runtime.error",
-          message: `prompt too large for Antigravity's argv-only print mode (${Buffer.byteLength(prompt)} bytes)`,
+          message: `prompt too large (${Buffer.byteLength(prompt)} bytes, max ${MAX_PROMPT_BYTES} bytes)`,
         });
         settle(false, "prompt_too_large");
         pending.delete(threadId);
         return { turnId };
       }
+      const useStdin = Buffer.byteLength(prompt) > 64 * 1024;
 
       // agy's config is global, so every turn — including one without a
       // computer — owns the mount for its complete child lifetime. This keeps
@@ -531,7 +532,6 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       }
 
       const args = [
-        "--print", prompt, // print mode reads the prompt from this argv value
         "--output-format", "stream-json",
         "--print-timeout", "10m",
         "--add-dir", cwd,
@@ -540,6 +540,9 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         config.fullAuto ? "--dangerously-skip-permissions" : "--mode",
       ];
       if (!config.fullAuto) args.push("accept-edits");
+      if (!useStdin) {
+        args.unshift("--print", prompt);
+      }
       if (turn.model) args.push("--model", injectedApiModel(turn.model) ?? turn.model);
       if (resumeCursor) args.push("--conversation", resumeCursor);
 
@@ -550,8 +553,12 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         child = spawnCli(config.cli, args, {
           cwd,
           env,
-          stdio: ["ignore", "pipe", "pipe"], // prompt is on argv; stdin is unused
+          stdio: [useStdin ? "pipe" : "ignore", "pipe", "pipe"],
         });
+        if (useStdin && child.stdin) {
+          child.stdin.on("error", () => {});
+          child.stdin.end(prompt);
+        }
       } catch (error) {
         try {
           restoreMcp();
@@ -838,10 +845,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
           sessionModelSwitch: "in-session",
           images: true,
           computerMcp: true,
-          // Print mode has no approval channel (see the header), so there is
-          // no way to broker a click on the user's real desktop. The harness
-          // runs a "This computer" turn without the mount and says so.
-          localComputerMcp: false,
+          localComputerMcp: true,
           agentsMcp: true,
           composioMcp: true,
           phoneMcp: true,

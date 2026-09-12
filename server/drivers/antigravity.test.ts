@@ -550,13 +550,13 @@ describe("Antigravity computer MCP config", () => {
     });
     try {
       expect(fullAuto.adapter.capabilities.computerMcp).toBe(true);
-      expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(false);
+      expect(fullAuto.adapter.capabilities.localComputerMcp).toBe(true);
       expect(fullAuto.adapter.capabilities.agentsMcp).toBe(true);
       expect(fullAuto.adapter.capabilities.composioMcp).toBe(true);
       expect(fullAuto.adapter.capabilities.phoneMcp).toBe(true);
       expect(fullAuto.adapter.capabilities.qdrantMcp).toBe(true);
       expect(acceptEdits.adapter.capabilities.computerMcp).toBe(true);
-      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBe(false);
+      expect(acceptEdits.adapter.capabilities.localComputerMcp).toBe(true);
       expect(acceptEdits.adapter.capabilities.agentsMcp).toBe(true);
     } finally {
       await fullAuto.dispose();
@@ -755,4 +755,31 @@ describe("Antigravity computer MCP config", () => {
       rmSync(home, { recursive: true, force: true });
     }
   }, 10_000);
+
+  it("pipes prompts larger than 64KB via stdin without argv overflow", async () => {
+    ensureDirs();
+    chmodSync(FAKE_CLI, 0o755);
+    const instance = await AntigravityDriver.create({
+      instanceId: "agy-large-prompt",
+      displayName: undefined,
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: true },
+    });
+    const recorder = recordEvents(instance.adapter);
+    try {
+      // 100KB prompt — exceeds the 64KB argv threshold and pipes via stdin
+      const largeText = "x".repeat(100 * 1024);
+      const { turnId } = await instance.adapter.sendTurn({
+        threadId: "t-large-prompt",
+        text: largeText,
+      });
+      expect(turnId).toBeTruthy();
+      const completed = await recorder.until((e) => e.type === "turn.completed");
+      expect(completed).toMatchObject({ type: "turn.completed", ok: true });
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+    }
+  });
 });
