@@ -81,7 +81,13 @@ export function selectPeerBots(selfId: string, all: readonly AgentBot[]): AgentP
 export function listAgentsResponse(selfId: string, all: readonly AgentBot[]): AgentRequestResult {
   const bots = selectPeerBots(selfId, all);
   if (!bots) return { status: 403, body: { error: "unknown sender" } };
-  return { status: 200, body: { bots } };
+  // `section` rides along because the pre-registry `list_bots` payload
+  // carried it and in-flight conversations quote it back.  It is the
+  // CALLER's own section — every row in `bots` is in it by construction —
+  // so restoring it here, not in the tool, keeps the one-implementation
+  // rule: the `/api/internal/agents` body and the host see the same field.
+  const section = all.find((bot) => bot.id === selfId)?.section ?? "";
+  return { status: 200, body: { section, bots } };
 }
 
 export interface AskBotRequestInput {
@@ -133,6 +139,14 @@ export type AgentToolName = "list_bots" | "ask_bot" | "list_routines";
  *  rather than an "unknown tool" string a user discovers at runtime. */
 export type AgentTools = Record<AgentToolName, AgentToolExecutor>;
 
+/** The peer roster as the tools read it: the caller's own section plus the
+ *  rows in it.  One record so `list_bots` can re-emit `section` without a
+ *  second trip to the endpoint. */
+interface Roster {
+  section: string;
+  rows: AgentPeerRow[];
+}
+
 const ok = (content: string, detail?: string): TurnToolOutcome =>
   detail ? { kind: "result", content, detail } : { kind: "result", content };
 
@@ -145,25 +159,30 @@ const errorText = (body: Record<string, unknown>, fallback: string): string =>
 /** Build the agents tools' executors.  Keyed by the registry name, so the
  *  host can look up exactly what the catalog advertised and nothing else. */
 export function createAgentTools(deps: AgentToolDeps): AgentTools {
-  async function roster(ctx: AgentToolCallContext): Promise<AgentPeerRow[] | string> {
+  async function roster(ctx: AgentToolCallContext): Promise<Roster | string> {
     const result = await deps.executeListAgentsRequest({ selfId: ctx.botId });
     if (result.status !== 200 || !Array.isArray(result.body.bots)) {
       return errorText(result.body, "the peer roster is unavailable");
     }
     // SAFETY: `executeListAgentsRequest` is `listAgentsResponse`, whose only
-    // 200 body is `{ bots: AgentPeerRow[] }` built by `selectPeerBots`.  The
-    // `Array.isArray` guard above rules out the 403 shape.
-    return result.body.bots as AgentPeerRow[];
+    // 200 body is `{ section, bots: AgentPeerRow[] }` built by
+    // `selectPeerBots`.  The `Array.isArray` guard above rules out the 403
+    // shape.
+    return {
+      section: typeof result.body.section === "string" ? result.body.section : "",
+      rows: result.body.bots as AgentPeerRow[],
+    };
   }
 
   return {
     async list_bots(_call, ctx): Promise<TurnToolOutcome> {
-      const rows = await roster(ctx);
-      if (typeof rows === "string") {
-        return failed(JSON.stringify({ error: rows }), rows);
+      const list = await roster(ctx);
+      if (typeof list === "string") {
+        return failed(JSON.stringify({ error: list }), list);
       }
+      const { section, rows } = list;
       return ok(
-        JSON.stringify({ bots: rows }),
+        JSON.stringify({ section, bots: rows }),
         rows.length === 1 ? "1 peer" : `${rows.length} peers`,
       );
     },
@@ -180,11 +199,11 @@ export function createAgentTools(deps: AgentToolDeps): AgentTools {
           "bad arguments",
         );
       }
-      const rows = await roster(ctx);
-      if (typeof rows === "string") return failed(JSON.stringify({ error: rows }), rows);
+      const list = await roster(ctx);
+      if (typeof list === "string") return failed(JSON.stringify({ error: list }), list);
       // Resolved against the roster the model was actually shown, so a bot
       // it cannot see is a bot it cannot reach.
-      const peer = rows.find((row) => row.id === target || `@${row.name}` === target);
+      const peer = list.rows.find((row) => row.id === target || `@${row.name}` === target);
       if (!peer) return failed(JSON.stringify({ error: `no bot matches ${target}` }), "no such bot");
       // Every guard that matters — depth cap, section, thread ownership,
       // approvePeerComms, mirroring — lives in executeAskBotRequest, which

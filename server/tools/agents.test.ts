@@ -91,6 +91,18 @@ describe("list_bots is the same implementation on both lanes", () => {
     expect(JSON.parse(outcome.content).bots).toEqual(listAgentsResponse("bot-self", bots).body.bots);
   });
 
+  it("still carries `section`, which the pre-registry payload had", async () => {
+    // Regression: the refactor out of `host.ts` dropped `section` from the
+    // payload.  It is wire-visible — in-flight conversations quote it back —
+    // so `{ section, bots }` is the shape, not `{ bots }`.
+    const tools = createAgentTools(deps());
+    const outcome = await tools.list_bots(call("list_bots"), ctx(), runtime);
+    const payload = JSON.parse(outcome.content);
+    expect(payload.section).toBe("ops");
+    expect(payload.section).toBe(listAgentsResponse("bot-self", bots).body.section);
+    expect(Object.keys(payload)).toEqual(["section", "bots"]);
+  });
+
   it("excludes the caller — a bot asking itself for help is a wasted round", async () => {
     const tools = createAgentTools(deps());
     const outcome = await tools.list_bots(call("list_bots"), ctx(), runtime);

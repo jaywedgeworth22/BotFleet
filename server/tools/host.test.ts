@@ -62,6 +62,16 @@ describe("the host runs what the catalog advertised", () => {
     expect(JSON.parse(outcome.content).bots).toEqual(listAgentsResponse("bot-self", bots).body.bots);
   });
 
+  it("serves `section` alongside the rows, as it did before the registry", async () => {
+    // The host is the lane that regressed: `host.ts` used to build
+    // `{ section, bots }` inline.  Pinned here as well as in
+    // `agents.test.ts` so neither side can drop it alone.
+    const outcome = await hostFor().execute({ id: "1", name: "list_bots", arguments: {} }, runtime);
+    const payload = JSON.parse(outcome.content);
+    expect(payload.section).toBe("ops");
+    expect(payload.section).toBe(listAgentsResponse("bot-self", bots).body.section);
+  });
+
   it("excludes the caller and reports busy — the two facts that save a round", async () => {
     const outcome = await hostFor().execute({ id: "1", name: "list_bots", arguments: {} }, runtime);
     const rows: Array<{ id: string; busy: boolean }> = JSON.parse(outcome.content).bots;
