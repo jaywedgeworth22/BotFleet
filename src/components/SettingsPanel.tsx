@@ -14,6 +14,7 @@ import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import { VoiceSettings } from "./VoiceSettings";
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
+import { requiresLocalAutoConsent } from "../../shared/local-auto-consent";
 
 function Field({
   label,
@@ -321,6 +322,11 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const localSelectable = localComputerSelectable({ capabilities, providerSupportsLocal });
   const [localAutoWarning, setLocalAutoWarning] = useState<"auto" | "local" | null>(null);
   const localDisabledReason = localComputerDisabledReason({ capabilities, providerSupportsLocal });
+  const autoWouldUseLocal = requiresLocalAutoConsent(
+    bot.computers,
+    state.config?.botDefaults?.computers,
+    state.config?.botDefaults?.allowedComputers,
+  );
   // The server refuses an unsupported destination at turn time; the picker
   // should not have offered it.  See computerDestinationDisabledReason.
   const destinationDisabled = (mode: "cloud" | "vm" | "local" | "off"): string | null => {
@@ -673,6 +679,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                     }
                     if (mode === "local" && bot.autoApprove) {
                       setLocalAutoWarning("local");
+                      return;
                     }
                     const cur = bot.computers ?? [];
                     const nxt = cur.includes(mode as any) ? cur.filter(c => c !== mode) : [...cur, mode as any];
@@ -771,7 +778,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               aria-checked={Boolean(bot.autoApprove)}
               aria-label="Auto Mode"
               onClick={() => {
-                if (!bot.autoApprove && (bot.computers ?? []).includes("local")) setLocalAutoWarning("auto");
+                if (!bot.autoApprove && autoWouldUseLocal) setLocalAutoWarning("auto");
                 else patch({ autoApprove: !bot.autoApprove });
               }}
               className={cn(

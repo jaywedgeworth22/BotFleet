@@ -18,6 +18,17 @@ import { cn } from "@/lib/cn";
 
 type Destination = "cloud" | "vm" | "local";
 type Backend = "box" | "vps";
+type DefaultsRequest = {
+  computers: Destination[];
+  cloudBackend: Backend;
+  allowedComputers?: Destination[] | null;
+};
+type ConsentRequest = {
+  kind: "save" | "apply";
+  method: "PUT" | "POST";
+  path: "/api/config" | "/api/bots/apply-defaults";
+  body: { botDefaults: DefaultsRequest };
+};
 
 const DESTINATION_LABEL: Record<Destination, string> = {
   cloud: "ASCII.dev Box (VM)",
@@ -51,7 +62,7 @@ export function BotComputerDefaults() {
   // the same defaults and the exact identities shown in the warning.
   const [pendingAck, setPendingAck] = useState<{
     bots: { id: string; name: string }[];
-    defaults: { computers: Destination[]; cloudBackend: Backend };
+    request: ConsentRequest;
   } | null>(null);
   const vpsConfigured = Boolean(state.config?.vps?.configured);
 
@@ -61,61 +72,73 @@ export function BotComputerDefaults() {
     setAllowed(saved?.allowedComputers ?? null);
   }, [saved?.computers, saved?.cloudBackend, saved?.allowedComputers]);
 
+  const restoreSavedDefaults = () => {
+    setComputers(saved?.computers ?? []);
+    setBackend(saved?.cloudBackend ?? "box");
+    setAllowed(saved?.allowedComputers ?? null);
+  };
+
+  const submit = (request: ConsentRequest, acknowledgedBots?: { id: string; name: string }[]) => {
+    if (request.kind === "save") setSaving(true);
+    else setApplying(true);
+    setError(null);
+    api(request.path, {
+      method: request.method,
+      body: JSON.stringify({
+        ...request.body,
+        ...(acknowledgedBots ? { acknowledgeLocalAuto: true, acknowledgedBots } : {}),
+      }),
+    })
+      .then((response: ConfigStatus | { applied: number; config: ConfigStatus }) => {
+        setPendingAck(null);
+        const config = "config" in response ? response.config : response;
+        dispatch({ type: "configStatus", config });
+      })
+      .catch((e) => {
+        if (e instanceof ApiError && Array.isArray(e.body?.needsAcknowledgement) && e.body.needsAcknowledgement.length > 0) {
+          setPendingAck({ bots: e.body.needsAcknowledgement, request });
+        } else {
+          setPendingAck(null);
+          setError(e.message);
+          if (request.kind === "save") restoreSavedDefaults();
+        }
+      })
+      .finally(() => {
+        if (request.kind === "save") setSaving(false);
+        else setApplying(false);
+      });
+  };
+
   const save = (
     next: { computers?: Destination[]; backend?: Backend; allowed?: Destination[] | null },
   ) => {
-    const nextComputers = next.computers ?? computers;
+    const nextComputers = [...(next.computers ?? computers)];
     const nextBackend = next.backend ?? backend;
     const nextAllowed = next.allowed === undefined ? allowed : next.allowed;
     setComputers(nextComputers);
     setBackend(nextBackend);
     setAllowed(nextAllowed);
-    setSaving(true);
-    setError(null);
-    api("/api/config", {
+    submit({
+      kind: "save",
       method: "PUT",
-      body: JSON.stringify({
+      path: "/api/config",
+      body: {
         botDefaults: {
           computers: nextComputers,
           cloudBackend: nextBackend,
           allowedComputers: allowedForWire(nextAllowed),
         },
-      }),
-    })
-      .then((status: ConfigStatus) => dispatch({ type: "configStatus", config: status }))
-      .catch((e) => setError(e.message))
-      .finally(() => setSaving(false));
+      },
+    });
   };
 
-  const applyDefaults = (confirmation: typeof pendingAck = null) => {
-    const defaults = confirmation?.defaults ?? { computers, cloudBackend: backend };
-    setApplying(true);
-    setError(null);
-    api("/api/bots/apply-defaults", {
+  const applyDefaults = () => {
+    submit({
+      kind: "apply",
       method: "POST",
-      body: JSON.stringify({
-        botDefaults: defaults,
-        ...(confirmation ? { acknowledgeLocalAuto: true, acknowledgedBots: confirmation.bots } : {}),
-      }),
-    })
-      .then((response: { applied: number; config: ConfigStatus }) => {
-        setPendingAck(null);
-        dispatch({ type: "configStatus", config: response.config });
-      })
-      // The apply is all or nothing.  Handing "This Computer" to a bot that
-      // already runs unattended needs the same acknowledged warning the
-      // per-bot picker asks for, and the server refuses the whole call until
-      // it has one, naming the bots in `needsAcknowledgement` — open the
-      // same confirm dialog the picker uses rather than dead-ending on a
-      // plain error nothing on this page could ever act on.
-      .catch((e) => {
-        if (e instanceof ApiError && Array.isArray(e.body?.needsAcknowledgement) && e.body.needsAcknowledgement.length > 0) {
-          setPendingAck({ bots: e.body.needsAcknowledgement, defaults });
-        } else {
-          setError(e.message);
-        }
-      })
-      .finally(() => setApplying(false));
+      path: "/api/bots/apply-defaults",
+      body: { botDefaults: { computers: [...computers], cloudBackend: backend } },
+    });
   };
 
   const destinations: Destination[] = ["cloud", "vm", "local"];
@@ -254,10 +277,13 @@ export function BotComputerDefaults() {
       {error && <div className="mt-2 text-[11.5px] text-danger">{error}</div>}
       <LocalComputerAutoWarning
         open={pendingAck !== null}
-        onCancel={() => setPendingAck(null)}
+        onCancel={() => {
+          if (pendingAck?.request.kind === "save") restoreSavedDefaults();
+          setPendingAck(null);
+        }}
         bots={pendingAck?.bots}
-        busy={applying}
-        onConfirm={() => pendingAck && applyDefaults(pendingAck)}
+        busy={applying || saving}
+        onConfirm={() => pendingAck && submit(pendingAck.request, pendingAck.bots)}
       />
     </>
   );

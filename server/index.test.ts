@@ -5494,6 +5494,75 @@ describe("PATCH /api/terminology", () => {
   });
 });
 
+describe("local Auto consent for inherited and discovered computers", () => {
+  it("guards config defaults and per-bot Auto while preserving explicit Off", async () => {
+    expect((await api("PUT", "/api/config", {
+      botDefaults: { computers: ["cloud"], allowedComputers: null },
+    })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots", { name: "Inherited Auto" })).body.bot;
+    try {
+      // A cloud-only inherited default has no host path, so Auto itself is
+      // harmless and gives the config route a clean before-state.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
+
+      // An empty default restores automatic discovery, including the host
+      // fallback.  The config write must bind consent to the exact fleet and
+      // leave the prior default untouched on refusal.
+      const discovered = await api("PUT", "/api/config", {
+        botDefaults: { computers: [], allowedComputers: null },
+        profile: { name: "Must Not Persist Before Consent" },
+      });
+      expect(discovered.status).toBe(400);
+      expect(discovered.body.needsAcknowledgement).toEqual(expect.arrayContaining([
+        { id: bot.id, name: "Inherited Auto" },
+      ]));
+      const refusedConfig = (await api("GET", "/api/config")).body;
+      expect(refusedConfig.botDefaults.computers).toEqual(["cloud"]);
+      expect(refusedConfig.profile?.name).not.toBe("Must Not Persist Before Consent");
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { computers: [], allowedComputers: null },
+        acknowledgeLocalAuto: true,
+        acknowledgedBots: [],
+      })).status).toBe(409);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { computers: [], allowedComputers: null },
+        acknowledgeLocalAuto: true,
+        acknowledgedBots: discovered.body.needsAcknowledgement,
+      })).status).toBe(200);
+
+      // With Auto off, inheriting an explicit Local default is allowed; the
+      // later Auto toggle is the transition that creates the pair.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: false })).status).toBe(200);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { computers: ["local"], allowedComputers: null },
+      })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        autoApprove: true,
+        acknowledgeLocalAuto: true,
+      })).status).toBe(200);
+
+      // Explicit Off wins over both the workspace default and automatic
+      // discovery, so enabling Auto cannot grant this bot a computer.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computers: [],
+        autoApprove: false,
+      })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
+      const stored = (await api("GET", "/api/bots")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(stored.computers).toEqual([]);
+      expect(stored.autoApprove).toBe(true);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { computers: ["cloud"], allowedComputers: null },
+      })).status).toBe(200);
+    }
+  });
+});
+
 describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
   it("applies the workspace default to every bot, filtered through the allowlist", async () => {
     const ada = (await api("POST", "/api/bots", { name: "Ada Apply" })).body.bot;
