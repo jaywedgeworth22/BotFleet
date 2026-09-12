@@ -34,6 +34,29 @@ export function workspaceRestorePayload(credentials) {
   }));
 }
 
+/** Persist only the fact that an existing custom engine has a key in the
+ * desktop's encrypted store.  The marker lets a standalone harness refuse a
+ * keyless dispatch after restart; no credential value crosses this boundary. */
+export function markExternalInstanceCredentials(config, instanceIds) {
+  const next = structuredClone(config ?? {});
+  const instances = next?.instances;
+  if (!instances || typeof instances !== "object" || Array.isArray(instances)) {
+    return { config: next, changed: false };
+  }
+  let changed = false;
+  for (const id of instanceIds ?? []) {
+    const entry = instances[id];
+    if (!entry || typeof entry !== "object" || Array.isArray(entry) || entry.driver !== "openai-compat") continue;
+    const current = entry.config && typeof entry.config === "object" && !Array.isArray(entry.config)
+      ? entry.config
+      : {};
+    if (current.credentialStorage === "external") continue;
+    entry.config = { ...current, credentialStorage: "external" };
+    changed = true;
+  }
+  return { config: next, changed };
+}
+
 /** The owner proof precedes every credential-bearing request.  Redirects
  * and response bodies can never leak credentials through diagnostics. */
 export async function restoreWorkspaceCredentials({ port, owner, credentials, verifyOwner, fetchImpl = fetch }) {

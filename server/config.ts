@@ -1054,7 +1054,7 @@ function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedCon
 export function patchInstanceConfig(
   cfg: AppConfig,
   instanceId: string,
-  patch: { cli?: string; fullAuto?: boolean; enabled?: boolean; key?: string },
+  patch: { cli?: string; fullAuto?: boolean; enabled?: boolean; key?: string; externalCredential?: boolean },
 ): InstanceCliUpdate {
   const next: AppConfig = structuredClone(cfg);
   const map = instanceConfigs(next);
@@ -1099,6 +1099,11 @@ export function patchInstanceConfig(
     } else {
       delete nextConfig.key;
     }
+  }
+
+  if (patch.externalCredential !== undefined) {
+    if (patch.externalCredential) nextConfig.credentialStorage = "external";
+    else delete nextConfig.credentialStorage;
   }
 
   // `enabled` lives on the entry envelope, not in `entry.config` — same shape

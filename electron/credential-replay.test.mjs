@@ -15,12 +15,20 @@ import { readFileSync } from "node:fs";
 const MAIN_SOURCE = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
 
 describe("custom-engine credential replay on boot", () => {
+  it("migrates encrypted-key markers before server startup and stops if that migration fails", () => {
+    const migration = MAIN_SOURCE.indexOf("if (!secureInstanceCredentialMarkers()) {");
+    const startup = MAIN_SOURCE.indexOf("serverReady = await startServerPackaged()");
+    expect(migration).toBeGreaterThan(-1);
+    expect(startup).toBeGreaterThan(migration);
+    expect(MAIN_SOURCE.slice(migration, startup)).toMatch(/app\.quit\(\);\s+return;/);
+  });
+
   it("replays stored instance credentials on the SPAWN path (startServerOn's ready branch)", () => {
     const match = MAIN_SOURCE.match(
       /if \(identity\.outcome === "ready"\) \{([\s\S]*?)\n {4}\}/,
     );
     expect(match, "startServerOn's ready branch not found").not.toBeNull();
-    expect(match[1]).toMatch(/void replayAttachedWorkspaceCredentials\(port,/);
+    expect(match[1]).toMatch(/await replayAttachedWorkspaceCredentials\(port,/);
   });
 
   it("also replays stored instance credentials on the ATTACH path (startServerPackaged's attached branch)", () => {
@@ -34,7 +42,7 @@ describe("custom-engine credential replay on boot", () => {
     const startIdx = MAIN_SOURCE.indexOf('if (result.mode === "attached") {');
     expect(startIdx, 'startServerPackaged\'s attached branch not found').toBeGreaterThan(-1);
     const attachedBranchSource = MAIN_SOURCE.slice(startIdx, startIdx + 800);
-    expect(attachedBranchSource).toMatch(/void replayAttachedWorkspaceCredentials\(SERVER_PORT, expectedBuild\);/);
+    expect(attachedBranchSource).toMatch(/await replayAttachedWorkspaceCredentials\(SERVER_PORT, expectedBuild\);/);
   });
 
   it("declares credential:set-instance as a sibling of credential:set, not folded into its fixed CREDENTIAL_PATCH union", () => {

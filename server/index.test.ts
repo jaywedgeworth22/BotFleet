@@ -4748,6 +4748,7 @@ describe("instance CLI override API", () => {
       const persistedEntry = (onDisk.instances ?? {})[instanceId];
       expect(persistedEntry).toBeDefined();
       expect(JSON.stringify(persistedEntry)).not.toContain("sk-should-never-touch-disk");
+      expect(persistedEntry.config?.credentialStorage).toBe("external");
 
       // A later cli-only PATCH (no key in the body) must not silently drop
       // the live-only override that's already in effect.
@@ -4755,6 +4756,23 @@ describe("instance CLI override API", () => {
       expect(cliPatch.status).toBe(200);
       const onDiskAfter = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
       expect(JSON.stringify((onDiskAfter.instances ?? {})[instanceId])).not.toContain("sk-should-never-touch-disk");
+      expect((onDiskAfter.instances ?? {})[instanceId].config?.credentialStorage).toBe("external");
+
+      const cleared = await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, { key: "" });
+      expect(cleared.status).toBe(200);
+      const onDiskCleared = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect((onDiskCleared.instances ?? {})[instanceId].config?.credentialStorage).toBeUndefined();
+
+      const anonymous = (await api("POST", "/api/bots")).body.bot;
+      try {
+        expect((await api("PATCH", `/api/bots/${anonymous.id}`, {
+          modelSelection: { instanceId, model: "encrypted-model" },
+        })).status).toBe(200);
+        expect((await api("POST", `/api/bots/${anonymous.id}/messages`, { text: "anonymous endpoint" })).status).toBe(202);
+      } finally {
+        await api("POST", `/api/bots/${anonymous.id}/interrupt`, { threadId: anonymous.threadId });
+        await api("DELETE", `/api/bots/${anonymous.id}`);
+      }
     } finally {
       await api("DELETE", `/api/instances/${instanceId}`);
     }

@@ -315,6 +315,9 @@ await registry.load(instanceConfigs(cfg));
 // unreachable — the fingerprint rule inverted into a guarantee that nothing
 // can ever act on a rotation.
 let loadedCredentialFingerprint = credentialFingerprint(cfg);
+// Runtime-only keys restored from the desktop's encrypted store.  Declared
+// before any recovery drain can call startTurn during module initialization.
+const instanceKeyOverrides = new Map<string, string>();
 // Warm the engine probe in the background.  The first describe() costs tens
 // of seconds on a machine with many CLIs installed; doing it now means the
 // first client to ask — often the phone, which waits 20 s and no longer —
@@ -2578,6 +2581,9 @@ async function startTurn(
   const fallbackPolicy = task.modelSelection ?? bot.modelSelection;
   const selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
+  if (opts?.runOn !== "cloud" && externalCredentialPending(selection.instanceId)) {
+    throw externalCredentialPendingError(selection.instanceId);
+  }
   // A fresh user turn re-arms both the saved chain and the stop latch; the
   // fallback dispatch (which carries modelSelection) is a continuation of the
   // turn that just settled, so it must inherit them instead.
@@ -3216,7 +3222,17 @@ async function startTurn(
 // only owner of provider sessions, approvals, tools, computers and messages.
 routines = new RoutineManager({
   emit: broadcast,
-  admit: () => !runtimeQuiescing,
+  // A restore route sets providerConfigBusy before its first await.  Keep
+  // queued routine receipts durable while the registry is being rebuilt,
+  // then tick them after the authenticated credential has landed.
+  admit: () => !runtimeQuiescing && !providerConfigBusy,
+  canStart: (botId, threadId) => {
+    const bot = store.bot(botId);
+    const task = bot && threadId ? store.taskByThread(bot.id, threadId) : undefined;
+    if (!bot) return true;
+    const policy = task?.modelSelection ?? bot.modelSelection;
+    return !externalCredentialPending(quotaCooldowns.resolveModel(bot.id, policy).selection.instanceId);
+  },
   botState: (botId) => {
     const bot = store.bot(botId);
     return !bot ? "missing" : bot.busy ? "busy" : "ready";
@@ -3753,67 +3769,90 @@ _loadPending();
   for (const threadId of leftover) drainDelegations(commsBus, approvalBus, threadId, runDelegatedTurn);
 }
 
-// Auto-resume only when a previous process died mid-turn. Transcript shape
-// is not a crash signal (Stop, a tool-only turn, and a crash can all end
-// on a user or activity message). inflightThreadId is written at dispatch
-// and cleared when the turn settles, so it is the durable crash marker.
-{
-  setTimeout(() => {
-    for (const bot of store.bots) {
-      if (bot.hidden) continue;
-      const threadId = bot.inflightThreadId;
-      if (!threadId) continue;
-      const activeMsgs = store.activePath(threadId);
+// Auto-resume only when a previous process died mid-turn.  An external-only
+// custom credential can arrive after the standalone harness starts; keep that
+// crash marker durable and retry the same recovery after authenticated restore.
+const deferredBootRecoveries = new Set<string>();
 
-      // Orphan sweep: tear down any pending permission cards before we re-dispatch,
-      // so the bot doesn't hang waiting for an old card, or double-execute.
-      for (const msg of activeMsgs) {
-        if (msg.kind === "options" && msg.card && !msg.card.answered && !msg.card.dismissed && msg.card.requestId) {
-          store.patchMessage(threadId, msg.id, { card: { ...msg.card, answered: "cancel" } });
-        }
-      }
-
-      // A turn-starter can be a person's message OR an auto-delivered
-      // routine/webhook/resource instruction stored as role="system" —
-      // and it is not necessarily the LAST row: a webhook/resource turn
-      // that got as far as an activity chip or a permission card before
-      // the process died leaves those rows after it.  Scanning only the
-      // final message would miss the system prompt entirely, discard the
-      // automation attribution, and repersist the recovery notice as a
-      // fabricated human bubble.
-      const turnStartIdx = lastTurnStartIndex(activeMsgs);
-      const resumeUser = turnStartIdx >= 0 ? activeMsgs[turnStartIdx] : undefined;
-      // Connector/secret continuation is ephemeral (`cardContinuation`), so a
-      // crash mid-resume would otherwise replay the previous completed
-      // prompt.  Replay the persisted starter's exact TEXT only when that
-      // turn never produced bot text (a completed tool call means whatever
-      // ran already ran — replaying the same prompt could repeat it).
-      const replay = shouldReplayPersistedStarter(activeMsgs, turnStartIdx);
-      const prompt = replay && resumeUser
-        ? (resumeUser.text || "Please resume.")
-        : BOOT_RECOVERY_NOTICE;
-      // Whether the resumed turn is unattended is a SEPARATE question from
-      // whether its exact prompt text is replayed: a webhook/resource turn
-      // that already completed a tool before the crash is still that same
-      // externally-triggered turn continuing, not a person now at the
-      // keyboard.  Gating this on `replay` too would both let an
-      // autoApprove grant wrongly authorize a resumed unattended request
-      // AND (since `unattendedBots` is memory-only and empty right after
-      // restart) persist BOOT_RECOVERY_NOTICE as a fabricated `role: "user"`
-      // bubble instead of a `system` continuation — the exact bug this
-      // whole boot-recovery path exists to fix.
-      console.log(`boot recovery: auto-resuming in-flight thread ${threadId} for ${bot.name}`);
-      void startTurn(bot.id, prompt, {
-        threadId,
-        userMessage: replay ? resumeUser : undefined,
-        ...bootRecoveryTurnOpts(resumeUser, replay),
-      }).catch((err) => {
-        console.error(`boot recovery failed for ${bot.name} (${threadId}):`, err);
-        store.patchBot(bot.id, { inflightThreadId: undefined });
-      });
-    }
-  }, 2500);
+function turnExternalCredentialPending(bot: NonNullable<ReturnType<typeof store.bot>>, threadId: string): boolean {
+  const task = store.taskByThread(bot.id, threadId);
+  if (!task) return false;
+  const policy = task.modelSelection ?? bot.modelSelection;
+  return externalCredentialPending(quotaCooldowns.resolveModel(bot.id, policy).selection.instanceId);
 }
+
+function recoverInflightTurn(botId: string): void {
+  deferredBootRecoveries.delete(botId);
+  const bot = store.bot(botId);
+  if (!bot || bot.hidden || bot.busy) return;
+  const threadId = bot.inflightThreadId;
+  if (!threadId) return;
+  if (turnExternalCredentialPending(bot, threadId)) {
+    deferredBootRecoveries.add(bot.id);
+    console.log(`boot recovery: waiting for encrypted credential for ${bot.name}`);
+    return;
+  }
+  const activeMsgs = store.activePath(threadId);
+
+  // Orphan sweep: tear down any pending permission cards before we re-dispatch,
+  // so the bot doesn't hang waiting for an old card, or double-execute.
+  for (const msg of activeMsgs) {
+    if (msg.kind === "options" && msg.card && !msg.card.answered && !msg.card.dismissed && msg.card.requestId) {
+      store.patchMessage(threadId, msg.id, { card: { ...msg.card, answered: "cancel" } });
+    }
+  }
+
+  // A turn-starter can be a person's message OR an auto-delivered
+  // routine/webhook/resource instruction stored as role="system" —
+  // and it is not necessarily the LAST row: a webhook/resource turn
+  // that got as far as an activity chip or a permission card before
+  // the process died leaves those rows after it.  Scanning only the
+  // final message would miss the system prompt entirely, discard the
+  // automation attribution, and repersist the recovery notice as a
+  // fabricated human bubble.
+  const turnStartIdx = lastTurnStartIndex(activeMsgs);
+  const resumeUser = turnStartIdx >= 0 ? activeMsgs[turnStartIdx] : undefined;
+  // Connector/secret continuation is ephemeral (`cardContinuation`), so a
+  // crash mid-resume would otherwise replay the previous completed
+  // prompt.  Replay the persisted starter's exact TEXT only when that
+  // turn never produced bot text (a completed tool call means whatever
+  // ran already ran — replaying the same prompt could repeat it).
+  const replay = shouldReplayPersistedStarter(activeMsgs, turnStartIdx);
+  const prompt = replay && resumeUser
+    ? (resumeUser.text || "Please resume.")
+    : BOOT_RECOVERY_NOTICE;
+  // Whether the resumed turn is unattended is a SEPARATE question from
+  // whether its exact prompt text is replayed: a webhook/resource turn
+  // that already completed a tool before the crash is still that same
+  // externally-triggered turn continuing, not a person now at the
+  // keyboard.  Gating this on `replay` too would both let an
+  // autoApprove grant wrongly authorize a resumed unattended request
+  // AND (since `unattendedBots` is memory-only and empty right after
+  // restart) persist BOOT_RECOVERY_NOTICE as a fabricated `role: "user"`
+  // bubble instead of a `system` continuation — the exact bug this
+  // whole boot-recovery path exists to fix.
+  console.log(`boot recovery: auto-resuming in-flight thread ${threadId} for ${bot.name}`);
+  void startTurn(bot.id, prompt, {
+    threadId,
+    userMessage: replay ? resumeUser : undefined,
+    ...bootRecoveryTurnOpts(resumeUser, replay),
+  }).catch((error) => {
+    if (isExternalCredentialPendingError(error)) {
+      deferredBootRecoveries.add(bot.id);
+      return;
+    }
+    console.error(`boot recovery failed for ${bot.name} (${threadId}):`, error);
+    store.patchBot(bot.id, { inflightThreadId: undefined });
+  });
+}
+
+function drainDeferredBootRecoveries(): void {
+  for (const botId of [...deferredBootRecoveries]) recoverInflightTurn(botId);
+}
+
+setTimeout(() => {
+  for (const bot of store.bots) recoverInflightTurn(bot.id);
+}, 2500);
 
 async function runGroupMemberTurn(
   groupId: string,
@@ -5022,11 +5061,31 @@ let providerConfigBusy = false;
 // (?secretStorage=external on PATCH /api/instances/:id): the key never
 // touches config.json, so it lives ONLY here for the life of this process —
 // re-applied to the live registry entry every time that instance reloads,
-// and dropped when the instance is deleted. A relaunch starts this map
-// empty; the instance then boots keyless (the same, already-supported state
-// as a deliberately-keyless local engine) until the desktop shell replays
-// its encrypted store back through this same PATCH route.
-const instanceKeyOverrides = new Map<string, string>();
+// and dropped when the instance is deleted.  A persisted nonsecret marker
+// distinguishes that empty-on-relaunch state from an intentionally anonymous
+// custom engine: until replay restores the marked key, only turns targeting
+// that instance stay queued/refused.
+function externalCredentialPending(instanceId: string): boolean {
+  if (instanceKeyOverrides.has(instanceId)) return false;
+  const entry = instanceConfigs(cfg)[instanceId];
+  if (!entry || entry.driver !== "openai-compat") return false;
+  const config = entry.config && typeof entry.config === "object" && !Array.isArray(entry.config)
+    ? entry.config as Record<string, unknown>
+    : {};
+  if (config.credentialStorage !== "external") return false;
+  return !config.key && !entry.environment?.OPENAI_COMPAT_API_KEY;
+}
+
+function externalCredentialPendingError(instanceId: string): Error & { status: number; code: string } {
+  return Object.assign(
+    new Error(`provider instance "${instanceId}" is waiting for its encrypted credential`),
+    { status: 409, code: "external_credential_pending" },
+  );
+}
+
+function isExternalCredentialPendingError(error: unknown): boolean {
+  return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "external_credential_pending");
+}
 
 /** Merge every live-only instance-key override into a freshly built
  * instanceConfigs(cfg) map before it becomes (part of) the live registry.
@@ -5157,7 +5216,7 @@ function isLoopbackAddress(address: string | undefined): boolean {
   return isLoopbackHost(bare.includes(":") ? `[${bare}]` : bare);
 }
 
-function currentRuntimeReadiness(ownAdmissionActive = false) {
+function currentRuntimeReadiness(ownAdmissionActive = false, allowQueuedRoutines = false) {
   return runtimeReadiness({
     // Restore routes may exclude only their own still-held HTTP admission.
     // Other requests, including ones still reading a body, remain blockers.
@@ -5175,7 +5234,9 @@ function currentRuntimeReadiness(ownAdmissionActive = false) {
     localVmChanges: Number(localVmImageBusy) + Number(localVmProvisionBusy) + Number(localVmModeChangeBusy),
     restores: checkpointRestoreLeases.size,
     reloads: pendingProviderReloads + Number(providerConfigBusy),
-    routineRuns: routines?.listRuns().filter((run) => ["queued", "running", "waiting"].includes(run.status)).length ?? 0,
+    routineRuns: routines?.listRuns().filter((run) =>
+      (allowQueuedRoutines ? ["running", "waiting"] : ["queued", "running", "waiting"]).includes(run.status)
+    ).length ?? 0,
   });
 }
 
@@ -7990,7 +8051,7 @@ const server = createServer(async (req, res) => {
       if (!plan.restored.length && credentialFingerprint(cfg) === loadedCredentialFingerprint) {
         return json(res, 200, { restored: [], retained: plan.retained });
       }
-      if (!currentRuntimeReadiness(ownAdmissionActive).safeToRestart) {
+      if (!currentRuntimeReadiness(ownAdmissionActive, true).safeToRestart) {
         return json(res, 409, { error: "Credential restoration waits for current work to finish" });
       }
       // Fence dispatch synchronously before the first await.  Restoration
@@ -8012,6 +8073,10 @@ const server = createServer(async (req, res) => {
           infisical.setPendingProviderReload(false);
         });
         broadcast({ kind: "config", ...configStatus() });
+        queueMicrotask(() => {
+          drainDeferredBootRecoveries();
+          void routines?.tick();
+        });
         return json(res, 200, { restored: plan.restored, retained: plan.retained });
       } catch {
         // No exception detail: provider errors can contain credential input.
@@ -8257,7 +8322,7 @@ const server = createServer(async (req, res) => {
         return json(res, 415, { error: "content-type must be application/json" });
       }
       const body = await readBody(req);
-      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean; key?: string } = {};
+      const patchOptions: { cli?: string; fullAuto?: boolean; enabled?: boolean; key?: string; externalCredential?: boolean } = {};
 
       if (body?.cli !== undefined) {
         if (typeof body.cli !== "string") return json(res, 400, { error: "cli must be a string" });
@@ -8293,12 +8358,16 @@ const server = createServer(async (req, res) => {
         }
         const configuredKey = current.config && typeof current.config === "object" && "key" in current.config ? current.config.key : undefined;
         if (configuredKey || current.environment?.OPENAI_COMPAT_API_KEY) return json(res, 200, { retained: true });
-        if (!currentRuntimeReadiness(ownAdmissionActive).safeToRestart) return json(res, 409, { error: "Credential restoration waits for current work to finish" });
+        if (!currentRuntimeReadiness(ownAdmissionActive, true).safeToRestart) return json(res, 409, { error: "Credential restoration waits for current work to finish" });
         providerConfigBusy = true;
         try {
           await serializeProviderReload(async () => {
             instanceKeyOverrides.set(id, patchOptions.key!.trim());
             await runInstanceProviderReload(id, withInstanceKeyOverrides(instanceConfigs(cfg))[id]);
+          });
+          queueMicrotask(() => {
+            drainDeferredBootRecoveries();
+            void routines?.tick();
           });
           return json(res, 200, { restored: true });
         } catch {
@@ -8324,6 +8393,7 @@ const server = createServer(async (req, res) => {
           const trimmedKey = patchOptions.key.trim();
           if (trimmedKey) instanceKeyOverrides.set(instanceId, trimmedKey);
           else instanceKeyOverrides.delete(instanceId);
+          patchOptions.externalCredential = Boolean(trimmedKey);
           delete patchOptions.key;
         }
         const result = patchInstanceConfig(cfg, instanceId, patchOptions);
@@ -8345,6 +8415,10 @@ const server = createServer(async (req, res) => {
         // with the pre-reset cache
         resetPathCache();
         const instances = await registry.describeWithFreshInstance(instanceId);
+        queueMicrotask(() => {
+          drainDeferredBootRecoveries();
+          void routines?.tick();
+        });
         return json(res, 200, { instances });
       } finally {
         providerConfigBusy = false;

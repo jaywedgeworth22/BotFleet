@@ -1,7 +1,20 @@
 import { describe, expect, it, vi } from "vitest";
-import { planCredentialRestore, restoreInstanceCredentials, restoreWorkspaceCredentials, workspaceRestorePayload } from "./credential-restore.mjs";
+import { markExternalInstanceCredentials, planCredentialRestore, restoreInstanceCredentials, restoreWorkspaceCredentials, workspaceRestorePayload } from "./credential-restore.mjs";
 
 describe("attached workspace credential restoration", () => {
+  it("migrates only matching custom engines to a nonsecret external-credential marker", () => {
+    const source = { instances: {
+      custom: { driver: "openai-compat", config: { url: "https://example.test/v1" } },
+      claude: { driver: "claudeAgent" },
+    } };
+    const marked = markExternalInstanceCredentials(source, ["custom", "claude", "gone"]);
+    expect(marked).toEqual({ changed: true, config: { instances: {
+      custom: { driver: "openai-compat", config: { url: "https://example.test/v1", credentialStorage: "external" } },
+      claude: { driver: "claudeAgent" },
+    } } });
+    expect(source.instances.custom.config).not.toHaveProperty("credentialStorage");
+    expect(markExternalInstanceCredentials(marked.config, ["custom"]).changed).toBe(false);
+  });
   it("retains current config or vault values and restores only absent credentials", () => {
     const result = planCredentialRestore({ xaiApiKey: "old", composioApiKey: "saved", infisicalClientSecret: "unlock" }, {
       xai: { key: "canonical" }, composio: { userId: "existing-user", sessionId: "existing-session" },

@@ -3,3 +3,7 @@ export function planCredentialRestore(values: unknown, config: object): {
   restored: string[];
   retained: string[];
 };
+export function markExternalInstanceCredentials(config: object, instanceIds: string[]): {
+  config: object;
+  changed: boolean;
+};

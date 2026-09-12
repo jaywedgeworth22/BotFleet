@@ -20,7 +20,7 @@ import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { readConfigFile, updateConfigFile } from "./config-file-lock.mjs";
 import { buildDiagnosticsReport, decodeLogTail, diagnosticsFileName } from "./diagnostics.mjs";
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
-import { restoreWorkspaceCredentials, restoreInstanceCredentials } from "./credential-restore.mjs";
+import { markExternalInstanceCredentials, restoreWorkspaceCredentials, restoreInstanceCredentials } from "./credential-restore.mjs";
 import { activateExistingWindow } from "./single-instance.mjs";
 import { pollServerIdentity, probeHarness, resolvePackagedServer } from "./server-boot-probe.mjs";
 import { readPackagedBuildIdentity } from "./runtime-identity.mjs";
@@ -349,6 +349,25 @@ async function secureWorkspaceConfig() {
     });
   } catch (error) {
     if (error?.code !== "ENOENT") slog(`credential migration failed: ${error?.message ?? error}`);
+  }
+}
+
+/** Upgrade encrypted custom-engine keys created before config carried the
+ * nonsecret external-storage marker.  This runs before attach-or-spawn, so a
+ * fresh standalone harness can gate those exact engines from its first turn. */
+function secureInstanceCredentialMarkers() {
+  if (credentialStoreUnavailable) return true;
+  const ids = Object.keys(secureCredentials?.instanceKeys ?? {});
+  if (!ids.length) return true;
+  try {
+    updateConfigFile(desktopConfigPath(), (config) => {
+      const migrated = markExternalInstanceCredentials(config, ids);
+      return migrated.changed ? migrated.config : null;
+    });
+    return true;
+  } catch (error) {
+    slog(`custom credential marker migration failed: ${error?.message ?? error}`);
+    return false;
   }
 }
 
@@ -789,7 +808,7 @@ async function startServerOn(port) {
   if (identity.outcome === "ready") {
     // Restore missing encrypted credentials once the child is idle.  The
     // same authenticated path also handles attaching to an existing owner.
-    void replayAttachedWorkspaceCredentials(port, readPackagedBuildIdentity(path.join(process.resourcesPath, "server")));
+    await replayAttachedWorkspaceCredentials(port, readPackagedBuildIdentity(path.join(process.resourcesPath, "server")));
     return { proc };
   }
   if (identity.outcome === "exited") {
@@ -874,7 +893,7 @@ async function startServerPackaged() {
     SERVER_PORT = result.port;
     // An independently restarted harness has no memory of keys held in the
     // desktop's encrypted store.  Restore missing values after attachment.
-    void replayAttachedWorkspaceCredentials(SERVER_PORT, expectedBuild);
+    await replayAttachedWorkspaceCredentials(SERVER_PORT, expectedBuild);
     if (result.static) {
       rendererBase = `http://127.0.0.1:${SERVER_PORT}`;
       return true;
@@ -2016,6 +2035,14 @@ app.whenReady().then(async () => {
   if (app.isPackaged) {
     await secureComposioConfig();
     await secureWorkspaceConfig();
+    if (!secureInstanceCredentialMarkers()) {
+      dialog.showErrorBox(
+        "BotFleet could not protect saved custom-engine credentials",
+        "BotFleet could not update its local credential metadata.  Close other BotFleet processes and reopen the app.",
+      );
+      app.quit();
+      return;
+    }
   }
   // Boot migrations above are deliberately sequential. From this point on,
   // every account/API-key writer must use the shared serialized state.
