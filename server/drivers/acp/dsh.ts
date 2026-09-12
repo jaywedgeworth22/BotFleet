@@ -146,7 +146,7 @@ const support: AcpSupport = {
       linux: "npm install -g @deepseek-ai/dsh@latest",
       win32: "npm install -g @deepseek-ai/dsh@latest",
     },
-    docsUrl: "https://github.com/deepseek-ai/dsh",
+    docsUrl: "https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/bundle/acp-app",
     needsNode: true,
   },
 
