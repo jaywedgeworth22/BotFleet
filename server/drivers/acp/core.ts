@@ -873,8 +873,12 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             else settle(false, reason ?? "failed");
           } catch (e) {
             if (!state.settled) {
-              const message = e instanceof Error ? e.message : String(e);
-              const code = support.classifyError?.(e);
+              const resumeFailure = e instanceof AcpResumeError;
+              const classifiedFailure = resumeFailure && e.cause !== undefined ? e.cause : e;
+              const classifiedMessage = classifiedFailure instanceof Error
+                ? classifiedFailure.message
+                : String(classifiedFailure);
+              const code = support.classifyError?.(classifiedFailure);
               const promptTimedOut = e instanceof AcpRpcTimeoutError && e.method === "session/prompt";
               if (promptTimedOut && sessionId) {
                 state.deadlineTerminating = true;
@@ -900,7 +904,11 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               // classifier is preferred; loginNote remains a compatibility
               // fallback for existing ACP supports.
               const needsAuth = code === "invalid_credentials" || code === "inactive_subscription"
-                || message === support.loginNote;
+                || classifiedMessage === support.loginNote;
+              const baseMessage = e instanceof Error ? e.message : String(e);
+              const message = resumeFailure && needsAuth && classifiedMessage !== baseMessage
+                ? `${baseMessage}  ${classifiedMessage}`
+                : baseMessage;
               emit({
                 ...base(threadId, turnId),
                 type: "runtime.error",

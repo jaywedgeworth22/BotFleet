@@ -327,6 +327,10 @@ function handle(msg: any) {
         out({ jsonrpc: "2.0", id: msg.id, error: { code: -32001, message: "saved session is gone" } });
         break;
       }
+      if (mode === "resume-auth") {
+        out({ jsonrpc: "2.0", id: msg.id, error: { code: -32000, message: "authentication required" } });
+        break;
+      }
       const opts = configOptions();
       const mdls = sessionModels();
       result(msg.id, { ...(opts ? { configOptions: opts } : {}), ...(mdls ? { models: mdls } : {}) });

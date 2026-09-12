@@ -290,6 +290,25 @@ describe("ACP turns (fake CLI)", () => {
     expect(methods).not.toContain("session/prompt");
   });
 
+  it("classifies authentication rejected during ACP resume as setup", async () => {
+    await create(ClassifiedErrorDriver, "resume-auth");
+
+    await instance.adapter.sendTurn({
+      threadId: "t-resume-auth",
+      text: "continue",
+      resumeCursor: "saved-session",
+    });
+    const error = await recorder.until((event) => event.type === "runtime.error");
+    const done = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(error).toMatchObject({
+      setup: true,
+      message: expect.stringMatching(/authentication required/),
+    });
+    expect(done).toMatchObject({ ok: false, stopReason: "auth_required" });
+    expect(recorder.events.some((event) => event.type === "session.started")).toBe(false);
+  });
+
   it.skipIf(process.platform === "win32")("cancels and kills a prompt that exceeds its configured deadline", async () => {
     const dump = join(scratch, "deadline-rpc.json");
     const exitGate = join(scratch, "allow-exit");
