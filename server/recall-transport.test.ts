@@ -57,6 +57,7 @@ describe("Recall readiness evidence", () => {
     const success = await first;
     expect(success).toMatchObject({ ready: true, state: "ready", pointsCount: 0, source: "recall-service" });
     expect(statsCalls).toBe(1);
+    expect((await recallStatus({ ...settings, apiKey: "second-configuration-fixture" })).ready).toBe(true);
     unhealthy = true;
     expect(await recallStatus(settings)).toMatchObject({ ready: false, state: "degraded", lastSuccessAt: success.lastSuccessAt });
   });

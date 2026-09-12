@@ -1,4 +1,4 @@
-// Agent RAG & recall MCP proxy — spawned as an MCP server inside bot processes
+// Bot RAG & recall MCP proxy — spawned as an MCP server inside bot processes
 // (via the "qdrant" integration). Connects BotFleet bots to whatever shared
 // vector memory service the operator configures (lessons, preferences,
 // infrastructure runbooks, and decisions). There is no built-in endpoint and
@@ -82,7 +82,7 @@ const DEFAULT_COLLECTION = (
 const COLLECTION_LABEL = DEFAULT_COLLECTION || "agent memory";
 
 export const NOT_CONFIGURED_MESSAGE =
-  "Agent RAG is not configured — set a Service URL in Settings";
+  "Bot RAG is not configured — set a Service URL in Settings";
 
 const BOT_NAME = process.env.OMB_BOT_NAME || "Bot";
 const AGENT_SEAT = process.env.AGENT_SEAT || BOT_NAME.toUpperCase();
@@ -278,7 +278,7 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
       const data = JSON.parse(raw);
       return formatHits(data.hits || [], data.mode);
     } catch (error) {
-      return `Agent RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
+      return `Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
     }
   }
 
@@ -305,14 +305,14 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
     });
 
     const gate = accessLoginHint(res);
-    if (gate) return `Agent RAG search failed: ${gate}.`;
+    if (gate) return `Bot RAG search failed: ${gate}.`;
     if (res.ok) {
       const data = (await res.json()) as { hits?: HitRecord[]; mode?: string; ok?: boolean; error?: unknown };
       if (data.ok === false || data.error || !Array.isArray(data.hits)) throw new Error("the service returned an invalid search result");
       return formatHits(data.hits, data.mode);
     }
     const errText = await res.text().catch(() => "");
-    return `Agent RAG search error (${res.status}): ${safeError(errText || res.statusText)}`;
+    return `Bot RAG search error (${res.status}): ${safeError(errText || res.statusText)}`;
   } catch (err) {
     return `Failed to query agent RAG at ${RECALL_URL}: ${safeError(err)}`;
   }
@@ -346,7 +346,7 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
       }
       return `Stored in ${COLLECTION_LABEL} [doc_id: ${data.doc_id || data.id}]: ${title ? `"${title}"` : text.slice(0, 80)}`;
     } catch (error) {
-      return `Agent RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
+      return `Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
     }
   }
 
@@ -365,7 +365,7 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
     });
 
     const gate = accessLoginHint(res);
-    if (gate) return `Agent RAG contribute failed: ${gate}.`;
+    if (gate) return `Bot RAG contribute failed: ${gate}.`;
     if (res.ok) {
       const data = (await res.json()) as { doc_id?: string; id?: string; ok?: boolean; error?: unknown; status?: string };
       if (data.ok === false || data.error) throw new Error("the service rejected the contribution");
@@ -374,7 +374,7 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
       return `Successfully contributed to ${COLLECTION_LABEL} [id: ${data.doc_id || data.id}]`;
     }
     const errText = await res.text().catch(() => "");
-    return `Agent RAG contribute error (${res.status}): ${safeError(errText || res.statusText)}`;
+    return `Bot RAG contribute error (${res.status}): ${safeError(errText || res.statusText)}`;
   } catch (err) {
     return `Failed to contribute to agent RAG at ${RECALL_URL}: ${safeError(err)}`;
   }
@@ -384,13 +384,13 @@ async function recallStats(): Promise<string> {
   const status = await recallStatus({ url: RECALL_URL, apiKey: RECALL_API_KEY, collection: DEFAULT_COLLECTION,
     accessClientId: ACCESS_CLIENT_ID, accessClientSecret: ACCESS_CLIENT_SECRET });
   if (!status.configured) return NOT_CONFIGURED_MESSAGE;
-  if (!status.ready) return `Agent RAG status check failed: ${status.error}.`;
-  return `Agent RAG status [${status.collection}]:\n- Source: ${status.source}\n- Backend: healthy\n- Points: ${status.pointsCount?.toLocaleString()}\n- Checked: ${new Date(status.checkedAt).toISOString()}`;
+  if (!status.ready) return `Bot RAG status check failed: ${status.error}.`;
+  return `Bot RAG status [${status.collection}]:\n- Source: ${status.source}\n- Backend: healthy\n- Points: ${status.pointsCount?.toLocaleString()}\n- Checked: ${new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", dateStyle: "medium", timeStyle: "short" }).format(status.checkedAt)} CT`;
 }
 
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
   if (args.collection && String(args.collection) !== DEFAULT_COLLECTION) {
-    return "Agent RAG cannot select a different collection for one call; select the service and collection in Settings.";
+    return "Bot RAG cannot select a different collection for one call; select the service and collection in Settings.";
   }
   switch (name) {
     case "recall_search":

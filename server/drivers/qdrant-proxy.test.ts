@@ -35,7 +35,7 @@ const PROXY_ENV_KEYS = [
   "CF_ACCESS_CLIENT_SECRET",
 ] as const;
 
-const NOT_CONFIGURED = "Agent RAG is not configured — set a Service URL in Settings";
+const NOT_CONFIGURED = "Bot RAG is not configured — set a Service URL in Settings";
 
 /** The tool arguments these tests send — a named contract, not a bag. */
 interface ToolArgs {

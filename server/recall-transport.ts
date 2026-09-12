@@ -159,20 +159,22 @@ export interface RecallStatus {
   error?: string;
 }
 
-let lastSuccess: { key: string; at: number } | null = null;
-let pending: { key: string; promise: Promise<RecallStatus> } | null = null;
+const lastSuccesses = new Map<string, number>();
+const pending = new Map<string, Promise<RecallStatus>>();
+const MAX_SUCCESS_HISTORY = 64;
 
 /** Coalesce simultaneous settings probes without caching failure as a permanent result. */
 export function recallStatus(settings: RecallSettings): Promise<RecallStatus> {
   const cli = settings.url ? null : findRecallCli();
   const source = selectRecallTransport(settings.url, cli);
   const key = createHash("sha256").update(JSON.stringify([settings, cli])).digest("hex");
-  if (pending?.key === key) return pending.promise;
+  const existing = pending.get(key);
+  if (existing) return existing;
   const run = async (): Promise<RecallStatus> => {
     const base = { source, configured: source !== "unconfigured", url: settings.url || null,
-      collection: settings.collection || null, checkedAt: Date.now(), lastSuccessAt: lastSuccess?.key === key ? lastSuccess.at : null };
+      collection: settings.collection || null, checkedAt: Date.now(), lastSuccessAt: lastSuccesses.get(key) ?? null };
     if (source === "unconfigured") return { ...base, ready: false, state: "unconfigured",
-      error: "Agent RAG is not configured — set a Service URL in Settings" };
+      error: "Bot RAG is not configured — set a Service URL in Settings" };
     try {
       let stats: RecallStats;
       if (source === "recall-cli" && cli) {
@@ -188,7 +190,9 @@ export function recallStatus(settings: RecallSettings): Promise<RecallStatus> {
         stats = await probeRecallService(settings.url, headers, settings.collection, AbortSignal.timeout(RECALL_STATUS_TIMEOUT_MS));
       }
       const at = Date.now();
-      lastSuccess = { key, at };
+      lastSuccesses.delete(key);
+      lastSuccesses.set(key, at);
+      if (lastSuccesses.size > MAX_SUCCESS_HISTORY) lastSuccesses.delete(lastSuccesses.keys().next().value!);
       return { ...base, ready: true, state: "ready", checkedAt: at, lastSuccessAt: at,
         collection: stats.collection, pointsCount: stats.points, backendOk: true,
         ...(stats.embedder_healthy !== undefined ? { embedderHealthy: stats.embedder_healthy } : {}) };
@@ -198,7 +202,7 @@ export function recallStatus(settings: RecallSettings): Promise<RecallStatus> {
         error: redactSecretsInText(error instanceof Error ? error.message : String(error)).slice(0, 400) };
     }
   };
-  const promise = run().finally(() => { if (pending?.promise === promise) pending = null; });
-  pending = { key, promise };
+  const promise = run().finally(() => { if (pending.get(key) === promise) pending.delete(key); });
+  pending.set(key, promise);
   return promise;
 }
