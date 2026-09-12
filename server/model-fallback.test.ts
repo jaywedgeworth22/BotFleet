@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import type { ModelSelection } from "./contracts.ts";
 import {
   AUTO_FALLBACK_PRIORITY,
+  DEFAULT_QUOTA_COOLDOWN_TTL_MS,
   bootRecoveryTurnOpts,
   isQuotaOrCapText,
   isShortProviderErrorText,
@@ -685,5 +686,22 @@ describe("QuotaCooldownRegistry", () => {
     expect(remaining.length).toBe(1);
     expect(remaining[0].instanceId).toBe("codex");
     expect(registry.forInstance("custom-ollama")).toBeUndefined();
+  });
+
+  it("assigns default 15-minute cooldown TTL when resetsAt is null or undefined for non-usage sources", () => {
+    const registry = new QuotaCooldownRegistry();
+    const now = Date.now();
+    registry.record({
+      botId: "bot1",
+      instanceId: "antigravity",
+      model: "gemini-3.8-flash-high",
+      resetsAt: null,
+      error: "quota exceeded",
+      recordedAt: now,
+    });
+    const cd = registry.get("bot1", "antigravity", "gemini-3.8-flash-high", now);
+    expect(cd).toBeDefined();
+    expect(cd?.resetsAt).toBe(now + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
+    expect(registry.get("bot1", "antigravity", "gemini-3.8-flash-high", now + DEFAULT_QUOTA_COOLDOWN_TTL_MS + 1)).toBeUndefined();
   });
 });

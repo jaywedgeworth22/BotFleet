@@ -365,10 +365,10 @@ export class QuotaCooldownRegistry {
   }
 
   private isExpired(cd: BotQuotaCooldown, now: number): boolean {
-    if (cd.resetsAt === null) return false;
     if (typeof cd.resetsAt === "number" && cd.resetsAt > 0) {
       return now >= cd.resetsAt;
     }
+    if (cd.resetsAt === null && cd.source === "antigravity-usage") return false;
     const recorded = typeof cd.recordedAt === "number" && cd.recordedAt > 0 ? cd.recordedAt : now;
     return now >= recorded + DEFAULT_QUOTA_COOLDOWN_TTL_MS;
   }
@@ -396,7 +396,7 @@ export class QuotaCooldownRegistry {
 
   record(cooldown: BotQuotaCooldown): void {
     const recordedAt = cooldown.recordedAt ?? Date.now();
-    const resetsAt = cooldown.resetsAt !== undefined ? cooldown.resetsAt : (recordedAt + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
+    const resetsAt = cooldown.resetsAt != null ? cooldown.resetsAt : (recordedAt + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
     const normalized: BotQuotaCooldown = { ...cooldown, recordedAt, resetsAt };
     this.cooldowns.set(`${normalized.botId}:${normalized.instanceId}:${normalized.model}`, normalized);
     this.persist();
@@ -408,7 +408,9 @@ export class QuotaCooldownRegistry {
     opts: { resetsAt?: number | null; error?: string; source?: string } = {},
   ): void {
     const recordedAt = Date.now();
-    const resetsAt = opts.resetsAt !== undefined ? opts.resetsAt : (recordedAt + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
+    const resetsAt = opts.source === "antigravity-usage"
+      ? (opts.resetsAt ?? null)
+      : (opts.resetsAt != null ? opts.resetsAt : (recordedAt + DEFAULT_QUOTA_COOLDOWN_TTL_MS));
     const cd: BotQuotaCooldown = {
       botId: "*",
       instanceId,
