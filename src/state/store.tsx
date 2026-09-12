@@ -512,6 +512,8 @@ export interface EngineInstall {
   docsUrl?: string;
   signInCommand?: string;
   needsNode?: boolean;
+  /** No CLI, no interactive login — authenticates with a bare API key. */
+  apiKeyOnly?: boolean;
 }
 
 /** One row of GET /api/instances — the model picker's data. */

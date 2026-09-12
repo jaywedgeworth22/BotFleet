@@ -98,6 +98,10 @@ describe("MinimaxDriver", () => {
     expect(MinimaxDriver.metadata.access).toBeUndefined();
   });
 
+  it("marks its install descriptor apiKeyOnly, so the setup UI never says install or sign in", () => {
+    expect(MinimaxDriver.install?.apiKeyOnly).toBe(true);
+  });
+
   it("offers only current official text models", () => {
     expect(MinimaxDriver.models).toEqual({
       default: "MiniMax-M3",
