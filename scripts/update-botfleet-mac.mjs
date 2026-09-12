@@ -20,6 +20,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { applyPreparedUpdate, prepareUpdate, runUpdate } from "./mac-update-transaction.mjs";
+import { validUpdateCredentialReceipt } from "../electron/update-credential-preparation.mjs";
 
 const EXPECTED_TEAM_ID = "CC8UTF7ATG";
 const EXPECTED_BUNDLE_ID = "com.botfleet.app";
@@ -571,6 +572,10 @@ export function pendingRecoveryReceiptPath(prepared) {
   return join(prepared.stageDirectory, "pending-recovery.json");
 }
 
+export function credentialPreparationReceiptPath(prepared) {
+  return join(prepared.stageDirectory, "credential-migration.json");
+}
+
 async function waitForExit(pids, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
   let remaining = pids.filter(processIsAlive);
@@ -913,6 +918,18 @@ function createOperations(config) {
       await run("touch", [config.appPath]);
       const register = "/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister";
       await run(register, ["-f", config.appPath], { allowFailure: true });
+    },
+
+    prepareCredentials: async (prepared) => {
+      const receiptPath = credentialPreparationReceiptPath(prepared);
+      await rm(receiptPath, { force: true });
+      const executable = join(config.appPath, "Contents/MacOS/BotFleet");
+      await run(executable, [`--prepare-update-credentials=${receiptPath}`]);
+      await assertPrivateRegularFile(receiptPath, "Credential migration receipt");
+      const receipt = await parseJsonFile(receiptPath, "Credential migration receipt");
+      if (!validUpdateCredentialReceipt(receipt, prepared.targetCommit)) {
+        throw new Error("Installed candidate did not prove durable credential marker preparation");
+      }
     },
 
     startHarness: async () => {

@@ -17,6 +17,76 @@ export const WORKSPACE_CREDENTIALS = [
   { section: "infisical", field: "clientSecret", name: "infisicalClientSecret", env: "INFISICAL_CLIENT_SECRET" },
 ];
 
+/** Every fixed credential held in credentials.bin.  Composio has its own
+ * legacy migration, but it needs the same durable external-storage marker. */
+export const EXTERNAL_WORKSPACE_CREDENTIALS = [
+  ...WORKSPACE_CREDENTIALS,
+  { section: "composio", field: "apiKey", name: "composioApiKey", env: "COMPOSIO_API_KEY" },
+];
+
+/** Persist only which fixed credentials the desktop must replay.  Values
+ * stay in the OS-encrypted document; the marker is safe in config.json. */
+export function markExternalWorkspaceCredentials(config, credentials) {
+  const next = structuredClone(config ?? {});
+  let changed = false;
+  for (const { section, name } of EXTERNAL_WORKSPACE_CREDENTIALS) {
+    const value = credentials?.[name];
+    if (typeof value !== "string" || !value.trim()) continue;
+    const current = next[section] && typeof next[section] === "object" && !Array.isArray(next[section])
+      ? next[section]
+      : {};
+    if (current.credentialStorage === "external") continue;
+    next[section] = { ...current, credentialStorage: "external" };
+    changed = true;
+  }
+  return { config: next, changed };
+}
+
+/** Prove that every encrypted fixed credential has a durable nonsecret
+ * marker in config.json.  A preparation receipt must never omit a missing
+ * marker and still claim the migration completed. */
+export function assertExternalWorkspaceCredentialMarkers(config, credentials) {
+  const markerNames = [];
+  for (const { section, name } of EXTERNAL_WORKSPACE_CREDENTIALS) {
+    const value = credentials?.[name];
+    if (typeof value !== "string" || !value.trim()) continue;
+    if (config?.[section]?.credentialStorage !== "external") {
+      throw new Error(`Workspace credential marker was not durably written for ${name}`);
+    }
+    markerNames.push(name);
+  }
+  return markerNames;
+}
+
+/** A marker without a resolved value means the encrypted desktop replay has
+ * not reached this harness yet. */
+export function workspaceCredentialPending(config, name) {
+  const field = EXTERNAL_WORKSPACE_CREDENTIALS.find((candidate) => candidate.name === name);
+  if (!field) return false;
+  const section = config?.[field.section];
+  return section?.credentialStorage === "external" &&
+    (typeof section[field.field] !== "string" || !section[field.field].trim());
+}
+
+/** Apply the marker for one explicit settings save.  A non-empty encrypted
+ * value adds it; an explicit clear removes it so anonymous operation remains
+ * valid.  The secret itself is never copied into the returned config. */
+export function setWorkspaceCredentialMarker(config, name, present) {
+  const field = EXTERNAL_WORKSPACE_CREDENTIALS.find((candidate) => candidate.name === name);
+  if (!field) throw new Error("Unsupported workspace credential marker");
+  const next = structuredClone(config ?? {});
+  const current = next[field.section] && typeof next[field.section] === "object" && !Array.isArray(next[field.section])
+    ? next[field.section]
+    : {};
+  if (present) next[field.section] = { ...current, credentialStorage: "external" };
+  else if (current.credentialStorage === "external") {
+    const updated = { ...current };
+    delete updated.credentialStorage;
+    next[field.section] = updated;
+  }
+  return next;
+}
+
 /** One boot-time sweep of config.json: move every plaintext workspace secret
  * into the encrypted store and DELETE the plaintext field.
  *
