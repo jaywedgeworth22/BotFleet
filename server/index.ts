@@ -2048,16 +2048,19 @@ bus.subscribe((event: RuntimeEvent) => {
         // code, so `structuredQuotaOrCap` is undefined there and the
         // existing chip-prose regexes decide exactly as they do today.
         const structuredQuotaOrCap = quotaOrCapFromErrorCode(providerErrorCodeFromStopReason(event.stopReason));
+        const isShortChip = sliceIsShortProviderError(afterUser);
+        const textIsCandidateForQuota = !event.ok || isShortChip;
+        const replyQuota = textIsCandidateForQuota && (quotaInfo.isQuotaOrCap || isQuotaOrCapText(reply));
         const quotaOrCap = structuredQuotaOrCap
-          ?? (quotaInfo.isQuotaOrCap || turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply));
-        const isTextError = sliceIsShortProviderError(afterUser) || quotaOrCap;
+          ?? (turnHitQuotaOrCap(afterUser) || replyQuota);
+        const isTextError = (textIsCandidateForQuota && isShortChip) || (!event.ok && quotaOrCap);
         const isOk = Boolean(event.ok) && !isTextError;
         if (isOk) {
           fallbackAttemptByTurn.delete(fallbackKey);
           pendingMemberFallback.delete(event.threadId);
           quotaCooldowns.clear(fallbackBot.id, actualSelection.instanceId, actualSelection.model);
         }
-        if (quotaOrCap) {
+        if (quotaOrCap && textIsCandidateForQuota) {
           quotaCooldowns.record({
             botId: fallbackBot.id,
             instanceId: actualSelection.instanceId,
