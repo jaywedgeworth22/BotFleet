@@ -202,7 +202,6 @@ export function applyAntigravityUsageToRegistry(
 
   const cleared: string[] = [];
   registry.clearWhere((cd) => {
-    if (cd.source !== ANTIGRAVITY_USAGE_SOURCE) return false;
     if (cd.instanceId !== ANTIGRAVITY_INSTANCE_ID) return false;
     if (cappedIds.has(cd.model)) return false;
     if (knownIds.has(cd.model) || cd.model === "*") {
