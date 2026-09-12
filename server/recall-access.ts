@@ -78,15 +78,9 @@ export interface ProbedResponse {
  *   - a followed redirect that landed on an Access host,
  *   - a 2xx of HTML where a JSON API was asked for.
  *
- * Every call site in this codebase uses `redirect: "follow"` and relies on
- * the last two tells.  A bare 3xx with a same-host Location — an
- * http:// -> https:// upgrade, a trailing-slash normalisation — is not
- * evidence of a gateway; `fetch` resolves it transparently under "follow"
- * and this function never sees the intermediate redirect at all.  The first
- * tell exists for a hypothetical `redirect: "manual"` caller and is
- * exercised directly by this file's tests, but a real "manual" caller would
- * misdiagnose that same benign redirect — see git history on this file for
- * the bug that motivated switching every caller to "follow".
+ * Recall requests follow only same-origin redirects (and same-host HTTPS
+ * upgrades) before this check.  A redirect to an external origin or an Access
+ * login path stays manual so custom service-token headers cannot leak.
  */
 export function accessLoginHint(res: ProbedResponse): string | null {
   const location = res.headers?.get("location") ?? "";

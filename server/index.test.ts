@@ -5140,8 +5140,7 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
   // The recall fixture is a POSIX shell script.  Windows cannot execute it, so
   // the two tests about the CLI's own behaviour self-skip there, the same deal
   // the other process-shaped tests in this file get.  The HTTP tests below
-  // still run everywhere: a CLI that will not start falls through to exactly
-  // the probe they exercise.
+  // still run everywhere: an explicit service URL bypasses the local CLI.
   const posixOnly = it.skipIf(process.platform === "win32");
 
   posixOnly("waits for a slow local recall CLI instead of calling it dead at six seconds", async () => {
@@ -5180,7 +5179,7 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
   });
 
   it("names Cloudflare Access when the service answers with a login redirect", async () => {
-    setRecallMode("fail");
+    setRecallMode("ok");
     const stub = await startGatedRecall(null);
     const clear = await configureRecall({ url: stub.url, collection: "fake-corpus" });
     try {
@@ -5200,7 +5199,7 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
   });
 
   it("sends the Access service token headers alongside the bearer when one is configured", async () => {
-    setRecallMode("fail");
+    setRecallMode("ok");
     const token = { id: "fixture-client.access", secret: "fixture-access-secret" };
     const stub = await startGatedRecall(token);
     const clear = await configureRecall({
@@ -5243,7 +5242,7 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
     // trailing-slash normalisation on the operator's own host produced the
     // same "behind Cloudflare Access — add a service token" message this
     // block's earlier tests pin for a real gateway.
-    setRecallMode("fail");
+    setRecallMode("ok");
     const server = createServer((req, res) => {
       if (req.url === "/health") {
         res.writeHead(301, { location: "/health-canonical" });
