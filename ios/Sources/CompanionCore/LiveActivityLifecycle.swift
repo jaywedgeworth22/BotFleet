@@ -9,7 +9,7 @@ public enum LiveActivityLifecyclePhase: Sendable, Equatable {
 
 /// Work the ActivityKit coordinator must perform after a lifecycle change.
 public enum LiveActivityLifecycleAction: Sendable, Equatable {
-    case sync
+    case awaitFreshState
     case endAll
 }
 
@@ -17,8 +17,8 @@ public enum LiveActivityLifecycleAction: Sendable, Equatable {
 ///
 /// `.inactive` is a transition on the way to system UI or background.  It
 /// retains the preceding update policy; only `.background` disables updates
-/// and ends activities, while the next `.active` transition starts a fresh
-/// generation and reconciles the current state.
+/// and ends activities.  The next `.active` transition starts a fresh
+/// generation, but updates stay disabled until a post-resume snapshot lands.
 public struct LiveActivityLifecycle: Sendable {
     public private(set) var phase: LiveActivityLifecyclePhase = .inactive
     public private(set) var generation = 0
@@ -32,8 +32,8 @@ public struct LiveActivityLifecycle: Sendable {
         switch next {
         case .active:
             generation += 1
-            updatesEnabled = true
-            return .sync
+            updatesEnabled = false
+            return .awaitFreshState
         case .inactive:
             return nil
         case .background:
@@ -45,5 +45,11 @@ public struct LiveActivityLifecycle: Sendable {
 
     public func permitsUpdates(from candidateGeneration: Int) -> Bool {
         updatesEnabled && candidateGeneration == generation
+    }
+
+    public mutating func acceptFreshState(for candidateGeneration: Int) -> Bool {
+        guard phase == .active, candidateGeneration == generation else { return false }
+        updatesEnabled = true
+        return true
     }
 }

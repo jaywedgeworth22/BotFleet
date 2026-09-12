@@ -21,8 +21,11 @@ final class LiveActivityCoordinator {
     /// ActivityKit mutations run in order.  Background teardown therefore
     /// finishes before a rapid foreground return can recreate an activity.
     private var activityWork: Task<Void, Never>?
+    private var resumeRefresh: Task<Void, Never>?
+    private weak var session: Session?
 
     func attach(to session: Session) {
+        self.session = session
         // Answer from the island: the intent runs in this process.
         AnswerApprovalIntent.handler = { [weak session] threadId, requestId, choice, isPermission in
             await session?.answer(threadId: threadId, requestId: requestId, choice: choice, isPermission: isPermission)
@@ -32,11 +35,22 @@ final class LiveActivityCoordinator {
             .sink { [weak self] state in self?.scheduleSync(state) }
     }
 
-    func transition(to phase: LiveActivityLifecyclePhase, state: CompanionState) {
+    func transition(to phase: LiveActivityLifecyclePhase) {
         switch lifecycle.transition(to: phase) {
-        case .sync:
-            scheduleSync(state)
+        case .awaitFreshState:
+            let generation = lifecycle.generation
+            resumeRefresh?.cancel()
+            guard let session else { return }
+            resumeRefresh = Task { [weak self, weak session] in
+                guard let freshState = await session?.refreshLiveActivityState() else { return }
+                guard !Task.isCancelled, let self,
+                      self.lifecycle.acceptFreshState(for: generation)
+                else { return }
+                self.scheduleSync(freshState)
+            }
         case .endAll:
+            resumeRefresh?.cancel()
+            resumeRefresh = nil
             lastSent.removeAll()
             since.removeAll()
             enqueueActivityWork {

@@ -4,13 +4,13 @@ Issue #294.  Board `699ea1ae`.  Branch `codex/ios-live-activity-suspend-20260912
 
 ## Behavior
 
-BotFleet uses local ActivityKit updates and does not register Live Activity push tokens.  When the app enters the background, it invalidates queued foreground updates, clears its activity snapshot, and requests immediate teardown of every BotFleet Live Activity.  Returning to the foreground creates a new lifecycle generation and reconciles the current companion state only after teardown finishes.
+BotFleet uses local ActivityKit updates and does not register Live Activity push tokens.  When the app enters the background, it invalidates queued foreground updates, clears its activity snapshot, and requests immediate teardown of every BotFleet Live Activity.  Returning to the foreground creates a new lifecycle generation, keeps updates disabled while a guarded post-resume snapshot loads, and reconciles that fresh state only after teardown finishes.
 
 The inactive phase keeps the current update policy because it also covers short system interruptions such as Control Center.  Only the background transition disables updates and starts teardown.
 
 ## Race handling
 
-ActivityKit mutations run through one ordered task chain.  Each foreground update carries the generation that scheduled it and rechecks that generation around suspension points.  A stale update therefore cannot recreate an activity after background teardown, while a rapid foreground return waits for teardown and then rebuilds from current state.
+ActivityKit mutations run through one ordered task chain.  Each foreground update carries the generation that scheduled it and rechecks that generation around suspension points.  A stale update therefore cannot recreate an activity after background teardown, while a rapid foreground return waits for both teardown and a post-resume snapshot before rebuilding.  Snapshot application uses the same pairing-generation and state-revision guards as other companion hydration paths; transient failures retry quietly while the app remains active.
 
 ## Validation
 

@@ -38,11 +38,11 @@ struct CompanionApp: App {
                     session.connect()
                     session.registerForRemoteNotificationsIfAllowed()
                     liveActivities.attach(to: session)
-                    liveActivities.transition(to: liveActivityPhase(scenePhase), state: session.state)
+                    liveActivities.transition(to: liveActivityPhase(scenePhase))
                 }
                 .onOpenURL { session.receiveOpenURL($0) }
                 .onChange(of: scenePhase) { _, phase in
-                    liveActivities.transition(to: liveActivityPhase(phase), state: session.state)
+                    liveActivities.transition(to: liveActivityPhase(phase))
                     switch phase {
                     case .active:
                         session.connect()

@@ -6,8 +6,10 @@ final class LiveActivityLifecycleTests: XCTestCase {
         var lifecycle = LiveActivityLifecycle()
         XCTAssertFalse(lifecycle.updatesEnabled)
 
-        XCTAssertEqual(lifecycle.transition(to: .active), .sync)
+        XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
         let foregroundGeneration = lifecycle.generation
+        XCTAssertFalse(lifecycle.permitsUpdates(from: foregroundGeneration))
+        XCTAssertTrue(lifecycle.acceptFreshState(for: foregroundGeneration))
         XCTAssertTrue(lifecycle.permitsUpdates(from: foregroundGeneration))
 
         XCTAssertNil(lifecycle.transition(to: .inactive))
@@ -15,18 +17,23 @@ final class LiveActivityLifecycleTests: XCTestCase {
 
         XCTAssertEqual(lifecycle.transition(to: .background), .endAll)
         XCTAssertFalse(lifecycle.permitsUpdates(from: foregroundGeneration))
+        XCTAssertFalse(lifecycle.acceptFreshState(for: foregroundGeneration))
         XCTAssertNil(lifecycle.transition(to: .background), "repeat notifications must not enqueue duplicate teardown")
     }
 
-    func testForegroundReturnCreatesANewGenerationAndResyncs() {
+    func testForegroundReturnAcceptsOnlyItsOwnFreshSnapshot() {
         var lifecycle = LiveActivityLifecycle()
+        XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
+        let staleResumeGeneration = lifecycle.generation
         XCTAssertEqual(lifecycle.transition(to: .background), .endAll)
-        let backgroundGeneration = lifecycle.generation
 
         XCTAssertNil(lifecycle.transition(to: .inactive))
-        XCTAssertEqual(lifecycle.transition(to: .active), .sync)
-        XCTAssertGreaterThan(lifecycle.generation, backgroundGeneration)
-        XCTAssertTrue(lifecycle.permitsUpdates(from: lifecycle.generation))
-        XCTAssertFalse(lifecycle.permitsUpdates(from: backgroundGeneration))
+        XCTAssertEqual(lifecycle.transition(to: .active), .awaitFreshState)
+        let currentResumeGeneration = lifecycle.generation
+        XCTAssertFalse(lifecycle.permitsUpdates(from: lifecycle.generation))
+        XCTAssertFalse(lifecycle.acceptFreshState(for: staleResumeGeneration))
+        XCTAssertTrue(lifecycle.acceptFreshState(for: currentResumeGeneration))
+        XCTAssertTrue(lifecycle.permitsUpdates(from: currentResumeGeneration))
+        XCTAssertFalse(lifecycle.permitsUpdates(from: staleResumeGeneration))
     }
 }
