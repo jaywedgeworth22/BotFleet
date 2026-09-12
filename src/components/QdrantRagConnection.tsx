@@ -8,6 +8,7 @@ import {
   qdrantRouteLabel,
   qdrantStateLabel,
   settleQdrantSaveWithStatusFence,
+  waitForLatestQdrantSave,
   type QdrantStatus,
 } from "@/lib/qdrant-status";
 
@@ -47,6 +48,7 @@ export function QdrantRagConnection() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<QdrantStatus | null>(null);
   const testRevision = useRef(0);
+  const pendingSave = useRef<Promise<boolean> | null>(null);
 
   useEffect(() => {
     if (qdrant) {
@@ -57,7 +59,7 @@ export function QdrantRagConnection() {
     }
   }, [qdrant]);
 
-  const save = async (
+  const performSave = async (
     overrides: {
       enabled?: boolean;
       url?: string;
@@ -128,9 +130,28 @@ export function QdrantRagConnection() {
     return true;
   };
 
+  const save = (
+    overrides: Parameters<typeof performSave>[0] = {},
+  ): Promise<boolean> => {
+    const previous = pendingSave.current;
+    const operation = previous
+      ? previous.then(() => performSave(overrides), () => performSave(overrides))
+      : performSave(overrides);
+    pendingSave.current = operation;
+    const clear = () => {
+      if (pendingSave.current === operation) pendingSave.current = null;
+    };
+    void operation.then(clear, clear);
+    return operation;
+  };
+
   const runTest = async () => {
-    testRevision.current += 1;
     setTesting(true);
+    if (!(await waitForLatestQdrantSave(() => pendingSave.current))) {
+      setTesting(false);
+      return;
+    }
+    testRevision.current += 1;
     setTestResult(null);
     try {
       const data: QdrantStatus = await api("/api/qdrant/status");

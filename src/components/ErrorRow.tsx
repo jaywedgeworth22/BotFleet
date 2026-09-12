@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { InstanceInfo } from "@/state/store";
 
 import { AlertTriangle, RefreshCw, Play, Send, Zap, RotateCcw, Download, Terminal, Laptop, Monitor } from "lucide-react";
@@ -44,6 +45,46 @@ export function isProviderError(message: string): boolean {
   );
 }
 
+type TurnErrorMessage = {
+  id: string;
+  kind: string;
+  tool?: { name: string };
+};
+
+function turnErrorText(message: TurnErrorMessage | undefined): string | null {
+  if (message?.kind !== "activity" || !message.tool?.name.startsWith("error:")) return null;
+  return message.tool.name.slice(6).trim();
+}
+
+function turnErrorSignature(message: TurnErrorMessage | undefined): string {
+  return message ? `${message.id}\0${turnErrorText(message) ?? ""}` : "";
+}
+
+export function nextTurnErrorAnnouncement(
+  previousSignature: string,
+  latestMessage: TurnErrorMessage | undefined,
+): { signature: string; text: string | null } {
+  const signature = turnErrorSignature(latestMessage);
+  return {
+    signature,
+    text: signature !== previousSignature ? turnErrorText(latestMessage) : null,
+  };
+}
+
+export function TurnErrorAnnouncement({ latestMessage }: { latestMessage: TurnErrorMessage | undefined }) {
+  const initialSignature = turnErrorSignature(latestMessage);
+  const previousSignature = useRef(initialSignature);
+  const [announcement, setAnnouncement] = useState("");
+
+  useEffect(() => {
+    const next = nextTurnErrorAnnouncement(previousSignature.current, latestMessage);
+    previousSignature.current = next.signature;
+    if (next.text) setAnnouncement(next.text);
+  }, [latestMessage?.id, latestMessage?.tool?.name]);
+
+  return <div className="sr-only" role="alert" aria-live="assertive">{announcement}</div>;
+}
+
 function RecoveryButton({
   icon: Icon,
   label,
@@ -83,7 +124,7 @@ function ErrorRow({
   botId?: string;
 }) {
   return (
-    <div className="flex justify-start" role="alert" aria-live="assertive">
+    <div className="flex justify-start">
       <div className="w-fit max-w-[min(42rem,78%)] rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13.5px] text-danger">
         <div className="flex items-start gap-2">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />

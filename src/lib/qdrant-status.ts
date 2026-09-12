@@ -58,3 +58,15 @@ export async function settleQdrantSaveWithStatusFence<T>(
     clearTestResult: currentTestRevision() === testRevisionAtStart,
   };
 }
+
+export async function waitForLatestQdrantSave(
+  currentSave: () => Promise<boolean> | null,
+): Promise<boolean> {
+  while (true) {
+    const pending = currentSave();
+    if (!pending) return true;
+    if (!(await pending)) return false;
+    const latest = currentSave();
+    if (!latest || latest === pending) return true;
+  }
+}

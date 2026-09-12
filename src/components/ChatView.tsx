@@ -49,7 +49,7 @@ import { ChatMarkdown } from "./ChatMarkdown";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
-import { ErrorRow } from "./ErrorRow";
+import { ErrorRow, TurnErrorAnnouncement } from "./ErrorRow";
 import { ChatFindBar } from "./ChatFindBar";
 import { ReplyQuote } from "./ReplyQuote";
 import { ConnectorCard } from "./ConnectorCard";
@@ -1400,6 +1400,7 @@ export function ChatView({ bot }: { bot: Bot }) {
           today that's only ChatMarkdown's file-link menu backdrop, which
           still covers the whole transcript, just not the sidebar/header. */}
       <div className="relative min-h-0 flex-1 @container/chat">
+      <TurnErrorAnnouncement key={bot.threadId} latestMessage={messages.at(-1)} />
       <div
         ref={scrollRef}
         className="h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
@@ -1691,4 +1692,3 @@ function ChatHeaderOverflowMenu({ bot }: { bot: Bot }) {
     </div>
   );
 }
-

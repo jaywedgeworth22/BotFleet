@@ -2,7 +2,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
-import { ErrorRow, isComputerDispatchError, isProviderError } from "./ErrorRow";
+import {
+  ErrorRow,
+  TurnErrorAnnouncement,
+  isComputerDispatchError,
+  isProviderError,
+  nextTurnErrorAnnouncement,
+} from "./ErrorRow";
 
 describe("ErrorRow recovery", () => {
   it("classifies computer-dispatch failures before generic model copy", () => {
@@ -40,11 +46,28 @@ describe("ErrorRow recovery", () => {
     expect(html).toContain("Add API Key");
   });
 
-  it("announces a new failure to assistive technology", () => {
+  it("keeps historical failure rows out of assertive live regions", () => {
     const html = renderToStaticMarkup(createElement(ErrorRow, { message: "The task failed." }));
 
-    expect(html).toContain('role="alert"');
-    expect(html).toContain('aria-live="assertive"');
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain('aria-live="assertive"');
     expect(html).toContain("The task failed.");
+  });
+
+  it("announces only an error that arrives after the live region mounts", () => {
+    const historical = { id: "old", kind: "activity", tool: { name: "error: old failure" } };
+    const initialHtml = renderToStaticMarkup(createElement(TurnErrorAnnouncement, { latestMessage: historical }));
+    const initial = nextTurnErrorAnnouncement("old\0old failure", historical);
+    const fresh = nextTurnErrorAnnouncement(initial.signature, {
+      id: "new",
+      kind: "activity",
+      tool: { name: "error: new failure" },
+    });
+
+    expect(initialHtml).toContain('role="alert"');
+    expect(initialHtml).toContain('aria-live="assertive"');
+    expect(initialHtml).not.toContain("old failure");
+    expect(initial.text).toBeNull();
+    expect(fresh.text).toBe("new failure");
   });
 });

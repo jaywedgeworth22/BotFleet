@@ -6,6 +6,7 @@ import {
   qdrantStateLabel,
   settleQdrantSave,
   settleQdrantSaveWithStatusFence,
+  waitForLatestQdrantSave,
 } from "./qdrant-status";
 
 describe("Qdrant RAG status copy", () => {
@@ -48,5 +49,26 @@ describe("Qdrant RAG status copy", () => {
     finishSave("saved");
 
     await expect(result).resolves.toEqual({ ok: true, value: "saved", clearTestResult: false });
+  });
+
+  it("waits for the latest field save before starting a connection test", async () => {
+    let finishSave!: (saved: boolean) => void;
+    let pending: Promise<boolean> | null = new Promise<boolean>((resolve) => {
+      finishSave = resolve;
+    });
+    const events: string[] = [];
+    const test = waitForLatestQdrantSave(() => pending).then((saved) => {
+      if (saved) events.push("status requested");
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual([]);
+    const completing = pending;
+    finishSave(true);
+    pending = null;
+    await completing;
+    await test;
+
+    expect(events).toEqual(["status requested"]);
   });
 });

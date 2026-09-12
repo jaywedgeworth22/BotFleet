@@ -23,7 +23,7 @@ import { normalizeState } from "@/lib/mascot";
 import { effectiveDefaultResponder, groupResponseHint } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
 import { Composer } from "./Composer";
-import { ErrorRow } from "./ErrorRow";
+import { ErrorRow, TurnErrorAnnouncement } from "./ErrorRow";
 import { ChatFindBar } from "./ChatFindBar";
 import { GroupThreadTabs } from "./ThreadTabs";
 import { ReplyQuote } from "./ReplyQuote";
@@ -1412,6 +1412,7 @@ export function GroupView({ group }: { group: Group }) {
       })()}
 
       <div className="relative min-h-0 flex-1">
+      <TurnErrorAnnouncement key={group.threadId} latestMessage={group.messages.at(-1)} />
       <div
         ref={scrollRef}
         className="h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"
