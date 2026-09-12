@@ -40,6 +40,7 @@ import type {
   TurnToolHost,
   TurnToolOutcome,
 } from "../../contracts.ts";
+import { ProviderError } from "../../contracts.ts";
 import { parseToolArguments, toolFields } from "../../tool-fields.ts";
 
 /** Every way a turn can end.  Closed on purpose: `STOP_REASON` and
@@ -281,6 +282,14 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
   let exit: TurnLoopExit = "internal_error";
   let stopReasonOverride: string | null = null;
   let errorMessage: string | null = null;
+  // Set only when a round rejects with a `ProviderError` (chat-completions/
+  // errors.ts classifyHttpError, thrown by the driver's HTTP call) — a
+  // classified failure gets `error:<code>` as its stopReason and, for
+  // invalid_credentials, `setup: true` on the runtime.error chip so a
+  // revoked key reaches the setup affordance instead of idling behind a
+  // red chip.  An unclassified provider_error (a plain Error) leaves this
+  // unset and keeps today's bare "error" stopReason.
+  let errorSetup = false;
 
   const emitToolStarted = (call: ChatToolCall) => {
     if (!call.id || announced.has(call.id)) return;
@@ -467,6 +476,10 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
         } else {
           exit = "provider_error";
           errorMessage = error.message;
+          if (error instanceof ProviderError) {
+            stopReasonOverride = `error:${error.code}`;
+            errorSetup = error.code === "invalid_credentials";
+          }
         }
         break;
       } finally {
@@ -560,7 +573,12 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
     // saying what happened, because "the bot went idle for no stated
     // reason" is the failure mode this whole file exists to end.
     if (errorMessage && exit !== "interrupted") {
-      deps.emit({ ...deps.base(), type: "runtime.error", message: errorMessage });
+      deps.emit({
+        ...deps.base(),
+        type: "runtime.error",
+        message: errorMessage,
+        ...(errorSetup ? { setup: true } : {}),
+      });
     }
     const completed = {
       ...deps.base(),

@@ -130,12 +130,15 @@ describe("MinimaxDriver", () => {
     });
   });
 
-  it("skips blank environment credentials and does not probe on snapshot", async () => {
+  it("skips blank environment credentials and falls to the local mmx config, which DOES get probed on snapshot", async () => {
     const dir = join(home, ".mmx");
     mkdirSync(dir);
     writeFileSync(join(dir, "config.json"), JSON.stringify({ api_key: "local-key" }));
     process.env.MINIMAX_API_KEY = "   ";
-    const fetchMock = vi.fn();
+    const fetchMock = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(
+      JSON.stringify({ data: [] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
     vi.stubGlobal("fetch", fetchMock);
 
     const instance = await MinimaxDriver.create({
@@ -146,8 +149,256 @@ describe("MinimaxDriver", () => {
       environment: { MINIMAX_API_KEY: "" },
     });
 
+    // resolveMinimaxCredentials skipped the blank env values and landed on
+    // the local config's key, so — unlike a truly keyless instance — there
+    // IS a key to probe with, and snapshot() now does.
     await expect(instance.snapshot()).resolves.toMatchObject({ state: "available", authenticated: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ headers: { Authorization: "Bearer local-key" } });
+    await instance.dispose();
+  });
+
+  it("a truly keyless instance (no env, no local config) reads unavailable without ever probing", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-keyless",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: {},
+    });
+
+    await expect(instance.snapshot()).resolves.toMatchObject({ state: "unavailable" });
     expect(fetchMock).not.toHaveBeenCalled();
+    await instance.dispose();
+  });
+
+  it("probes GET /models and reports available for a valid key", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      expect(String(input)).toContain("/models");
+      return new Response(JSON.stringify({ data: [{ id: "MiniMax-M3" }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-snapshot-ok",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+
+    await expect(instance.snapshot()).resolves.toEqual({
+      state: "available",
+      authenticated: true,
+      version: null,
+      billing: "metered",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await instance.dispose();
+  });
+
+  it("a 401 on the models probe reads unavailable with a reason, not Available-until-a-turn-fails", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("unauthorized", { status: 401 })));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-snapshot-401",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "revoked" },
+    });
+
+    const result = await instance.snapshot();
+    expect(result.state).toBe("unavailable");
+    expect(result.reason).toMatch(/rejected|401/i);
+    await instance.dispose();
+  });
+
+  it("a 429 on the models probe stays available but capped", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("rate limited", { status: 429 })));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-snapshot-429",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "capped" },
+    });
+
+    await expect(instance.snapshot()).resolves.toMatchObject({
+      state: "available",
+      authenticated: true,
+      quota: { capped: true },
+    });
+    await instance.dispose();
+  });
+
+  it("a network failure on the probe keeps the last good state instead of flipping to unavailable", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await MinimaxDriver.create({
+        instanceId: "minimax-snapshot-network",
+        displayName: "MiniMax",
+        enabled: true,
+        config: MinimaxDriver.defaultConfig(),
+        environment: { MINIMAX_API_KEY: "secret" },
+      });
+
+      const first = await instance.snapshot();
+      expect(first.state).toBe("available");
+
+      // past the 60s cache window, and the network is down this time
+      fetchMock.mockImplementationOnce(() => Promise.reject(new Error("getaddrinfo ENOTFOUND")));
+      await vi.advanceTimersByTimeAsync(61_000);
+      const second = await instance.snapshot();
+
+      expect(second).toEqual(first);
+      await instance.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("respects the 60s probe cache — a second snapshot() inside the window does not re-fetch", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async () => new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await MinimaxDriver.create({
+        instanceId: "minimax-snapshot-cache",
+        displayName: "MiniMax",
+        enabled: true,
+        config: MinimaxDriver.defaultConfig(),
+        environment: { MINIMAX_API_KEY: "secret" },
+      });
+
+      await instance.snapshot();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await instance.snapshot();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      await instance.snapshot();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      await instance.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("gives the probe an 8s ceiling, and an aborted probe keeps the last good state rather than failing the instance", async () => {
+    vi.useFakeTimers();
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const requestedMs: number[] = [];
+    let hangingController: AbortController | null = null;
+    const timeoutStub = vi.fn((ms: number) => {
+      requestedMs.push(ms);
+      // The first probe wants a real, unfired signal; the second stands in
+      // for one whose 8s ceiling has elapsed, which the test fires by hand
+      // because AbortSignal.timeout does not run on vitest's fake clock.
+      if (requestedMs.length === 1) return realTimeout(ms);
+      hangingController = new AbortController();
+      return hangingController.signal;
+    });
+    vi.stubGlobal("AbortSignal", Object.assign(Object.create(AbortSignal), AbortSignal, { timeout: timeoutStub }));
+    try {
+      const fetchMock = vi.fn(async (_input: unknown, init?: { signal?: AbortSignal }) => {
+        const signal = init?.signal;
+        if (signal && signal === hangingController?.signal) {
+          return await new Promise<Response>((_resolve, reject) => {
+            signal.addEventListener("abort", () => reject(new Error("The operation was aborted due to timeout")));
+          });
+        }
+        return new Response(JSON.stringify({ data: [{ id: "MiniMax-M3" }] }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const instance = await MinimaxDriver.create({
+        instanceId: "minimax-snapshot-timeout",
+        displayName: "MiniMax",
+        enabled: true,
+        config: MinimaxDriver.defaultConfig(),
+        environment: { MINIMAX_API_KEY: "secret" },
+      });
+
+      const first = await instance.snapshot();
+      expect(first.state).toBe("available");
+      expect(requestedMs[0]).toBe(8_000);
+
+      // past the 60s cache window; this probe never answers
+      await vi.advanceTimersByTimeAsync(61_000);
+      const pending = instance.snapshot();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(requestedMs[1]).toBe(8_000);
+      hangingController!.abort();
+
+      await expect(pending).resolves.toEqual(first);
+      await instance.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("refreshModels replaces the static catalog from GET /models, off the same fetch snapshot() uses", async () => {
+    const fetchMock = vi.fn(async () => new Response(
+      JSON.stringify({ data: [{ id: "MiniMax-M3" }, { id: "MiniMax-Next" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-refresh",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+
+    await instance.refreshModels?.();
+    expect(instance.models.options.map((o) => o.id)).toEqual(["MiniMax-M3", "MiniMax-Next"]);
+    // a model already in the static catalog keeps its hand-written label
+    expect(instance.models.options.find((o) => o.id === "MiniMax-M3")?.label).toBe("MiniMax M3");
+    // a genuinely new model gets its id as the label rather than nothing
+    expect(instance.models.options.find((o) => o.id === "MiniMax-Next")?.label).toBe("MiniMax-Next");
+
+    // one call already spent by refreshModels; snapshot() reuses the cached
+    // probe rather than firing a second GET /models
+    await instance.snapshot();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    await instance.dispose();
+  });
+
+  it("keeps the static catalog when the models fetch has never succeeded", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("server error", { status: 500 })));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-refresh-bad",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+
+    await instance.refreshModels?.();
+    expect(instance.models).toEqual({
+      default: "MiniMax-M3",
+      options: [
+        { id: "MiniMax-M3", label: "MiniMax M3", contextWindow: 1_000_000 },
+        { id: "MiniMax-M2.7", label: "MiniMax M2.7", contextWindow: 204_800 },
+        { id: "MiniMax-M2.7-highspeed", label: "MiniMax M2.7 Highspeed", contextWindow: 204_800 },
+      ],
+    });
     await instance.dispose();
   });
 
@@ -205,6 +456,46 @@ describe("MinimaxDriver", () => {
     expect(error).toMatchObject({ message: "MiniMax returned no response body" });
     expect(completed).toMatchObject({ ok: false, stopReason: "error" });
     expect(instance.adapter.hasSession("thread")).toBe(false);
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("a 401 from chat/completions settles error:invalid_credentials with a setup chip, not a red chip mid-turn", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("invalid api key", { status: 401 })));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-401",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "revoked" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hi" });
+    const error = await recorder.until((event) => event.type === "runtime.error");
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(error).toMatchObject({ setup: true });
+    expect(completed).toMatchObject({ ok: false, stopReason: "error:invalid_credentials" });
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("a 502 from chat/completions settles error:upstream_outage, so the fallback chain is consulted", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("bad gateway", { status: 502 })));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-502",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread", text: "hi" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({ ok: false, stopReason: "error:upstream_outage" });
     recorder.stop();
     await instance.dispose();
   });
