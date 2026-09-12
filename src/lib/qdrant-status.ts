@@ -34,14 +34,27 @@ export function qdrantLastSuccessLabel(status: QdrantStatus | null): string {
 }
 
 export async function settleQdrantSave<T>(operation: () => Promise<T>): Promise<
-  { ok: true; value: T } | { ok: false; error: string }
+  { ok: true; value: T; clearTestResult: boolean } | { ok: false; error: string }
 > {
   try {
-    return { ok: true, value: await operation() };
+    return { ok: true, value: await operation(), clearTestResult: true };
   } catch (error) {
     return {
       ok: false,
       error: error instanceof Error ? error.message : "Could not save shared memory settings.",
     };
   }
+}
+
+export async function settleQdrantSaveWithStatusFence<T>(
+  operation: () => Promise<T>,
+  testRevisionAtStart: number,
+  currentTestRevision: () => number,
+): Promise<{ ok: true; value: T; clearTestResult: boolean } | { ok: false; error: string }> {
+  const result = await settleQdrantSave(operation);
+  if (!result.ok) return result;
+  return {
+    ...result,
+    clearTestResult: currentTestRevision() === testRevisionAtStart,
+  };
 }

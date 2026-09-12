@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle, Database, RefreshCw, XCircle } from "lucide-react";
 import { api, useSecretSources, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
@@ -7,7 +7,7 @@ import {
   qdrantLastSuccessLabel,
   qdrantRouteLabel,
   qdrantStateLabel,
-  settleQdrantSave,
+  settleQdrantSaveWithStatusFence,
   type QdrantStatus,
 } from "@/lib/qdrant-status";
 
@@ -46,6 +46,7 @@ export function QdrantRagConnection() {
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<QdrantStatus | null>(null);
+  const testRevision = useRef(0);
 
   useEffect(() => {
     if (qdrant) {
@@ -108,21 +109,27 @@ export function QdrantRagConnection() {
 
     setSaving(true);
     setSaveError(null);
-    const result = await settleQdrantSave<ConfigStatus>(() => api("/api/config", {
+    const testRevisionAtStart = testRevision.current;
+    const result = await settleQdrantSaveWithStatusFence<ConfigStatus>(
+      () => api("/api/config", {
         method: "PATCH",
         body: JSON.stringify(patchBody),
-      }));
+      }),
+      testRevisionAtStart,
+      () => testRevision.current,
+    );
     setSaving(false);
     if (!result.ok) {
       setSaveError(result.error);
       return false;
     }
-    setTestResult(null);
+    if (result.clearTestResult) setTestResult(null);
     dispatch({ type: "configStatus", config: result.value });
     return true;
   };
 
   const runTest = async () => {
+    testRevision.current += 1;
     setTesting(true);
     setTestResult(null);
     try {

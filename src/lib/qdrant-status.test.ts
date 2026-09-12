@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 
-import { qdrantLastSuccessLabel, qdrantRouteLabel, qdrantStateLabel, settleQdrantSave } from "./qdrant-status";
+import {
+  qdrantLastSuccessLabel,
+  qdrantRouteLabel,
+  qdrantStateLabel,
+  settleQdrantSave,
+  settleQdrantSaveWithStatusFence,
+} from "./qdrant-status";
 
 describe("Qdrant RAG status copy", () => {
   it("uses the server-selected route and last successful check", () => {
@@ -28,5 +34,19 @@ describe("Qdrant RAG status copy", () => {
       ok: false,
       error: "settings are locked",
     });
+  });
+
+  it("does not clear a connection result started while a field save is pending", async () => {
+    let finishSave!: (value: string) => void;
+    const save = new Promise<string>((resolve) => {
+      finishSave = resolve;
+    });
+    let testRevision = 0;
+    const result = settleQdrantSaveWithStatusFence(() => save, testRevision, () => testRevision);
+
+    testRevision += 1;
+    finishSave("saved");
+
+    await expect(result).resolves.toEqual({ ok: true, value: "saved", clearTestResult: false });
   });
 });
