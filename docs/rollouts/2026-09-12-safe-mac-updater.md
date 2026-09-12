@@ -38,6 +38,6 @@ The live checkout, application bundle, and dependency tree move only after stagi
 
 ## Rollout Ownership
 
-This source change does not execute the updater or touch `/Applications/BotFleet.app`, `/Users/jay/apps/botfleet-server`, launchd, or a live BotFleet process.  After merge, the Mac rollout owner installs the wrapper at `/Users/jay/apps/update-botfleet.sh`, updates the on-demand helper row in `/Users/jay/apps/MAC-LOCAL-PROCESSES.md`, refreshes the pinned `Background Jobs Master List` Coding note, and performs the staged rollout only after active work is clear.
+This source change does not execute the updater or touch `/Applications/BotFleet.app`, `/Users/jay/apps/botfleet-server`, launchd, or a live BotFleet process.  After merge, the Mac rollout owner must install the wrapper at `/Users/jay/apps/update-botfleet.sh`, update the on-demand helper row in `/Users/jay/apps/MAC-LOCAL-PROCESSES.md`, and refresh the pinned `Background Jobs Master List` Coding note as one deployment change before the new helper is runnable.  The staged rollout may proceed only after active work is clear.
 
 Signed release/feed acceptance remains separate from this local on-demand update transaction.
