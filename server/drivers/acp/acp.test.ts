@@ -915,11 +915,10 @@ describe("ACP turns (fake CLI)", () => {
     await create(GrokAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toEqual(["low", "medium", "high"]);
 
-    // DSH declared four and read `turn.effort` nowhere — its spawn args
-    // carry only --mcp pairs — so the picker offered a control that changed
-    // nothing.  contracts.ts: never show a knob the driver cannot turn.
+    // Native DSH exposes the exact model's off/high/max options through ACP.
+    // BotFleet calls its no-reasoning choice "none" and maps it on the wire.
     await create(DshAgentDriver);
-    expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
+    expect(instance.adapter.capabilities.effortLevels).toEqual(["none", "high", "max"]);
 
     await create(KimiAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toBeUndefined();

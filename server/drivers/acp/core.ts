@@ -107,13 +107,25 @@ export interface AcpSupport {
   install?: EngineInstall;
   /** CLI argv AFTER the binary name to enter ACP stdio mode. */
   spawnArgs(config: AcpConfig, turn: SendTurnInput): string[];
+  /** Resume RPC used by this ACP server.  Most older harnesses implement
+   * `session/load`; current ACP v1 servers may expose `session/resume`. */
+  resumeMethod?: "session/load" | "session/resume";
+  /** Reject an installed stock CLI whose reported version cannot satisfy the
+   * protocol contract this support relies on.  A custom wrapper can choose
+   * its own compatibility policy by inspecting `config.cli`. */
+  versionCompatibilityReason?(version: string, config: AcpConfig): string | null;
   /** Provider credential variables this ACP child is allowed to inherit. */
   credentialEnv?: readonly string[];
   /** Select the model through a session config option instead of argv, for
    *  harnesses whose ACP subcommand takes no -m (opencode). The agent must
    *  CONFIRM the requested model before we prompt: silently running a model
    *  other than the one the picker shows is the failure this guards. */
-  selectModel?: { configId: string };
+  selectModel?: {
+    configId: string;
+    /** Translate the picker model into the option's opaque ACP wire value.
+     * The UI-facing session event keeps the picker id. */
+    valueForModel?(model: string): string;
+  };
   /** Mutate the child env in place: strip a key, inject a policy. Receives the
    *  instance config so a support can vary with fullAuto. */
   transformEnv?(env: Record<string, string | undefined>, config: AcpConfig): void;
@@ -764,7 +776,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             if (cursor) {
               try {
                 sessionResult = await request(
-                  "session/load",
+                  support.resumeMethod ?? "session/load",
                   { sessionId: cursor, cwd, mcpServers },
                   LOAD_SESSION_TIMEOUT,
                 );
@@ -796,27 +808,34 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
             try {
               if (support.selectModel) {
-                const { configId } = support.selectModel;
+                const { configId, valueForModel } = support.selectModel;
                 const currentOf = (r: any) =>
                   (Array.isArray(r?.configOptions) ? r.configOptions : []).find((o: any) => o?.id === configId)
                     ?.currentValue ?? null;
-                selectedModel = currentOf(sessionResult);
-                if (cliTurn.model && cliTurn.model !== selectedModel) {
-                  selectedModel = currentOf(
+                let selectedValue = currentOf(sessionResult);
+                const requestedValue = cliTurn.model
+                  ? (valueForModel?.(cliTurn.model) ?? cliTurn.model)
+                  : null;
+                if (requestedValue && requestedValue !== selectedValue) {
+                  selectedValue = currentOf(
                     await request(
                       "session/set_config_option",
-                      { sessionId, configId, value: cliTurn.model },
+                      { sessionId, configId, value: requestedValue },
                       INIT_TIMEOUT,
                     ),
                   );
                   // an agent that answers OK but keeps its old model is worse than
                   // one that errors: it burns a paid turn on the wrong thing
-                  if (selectedModel !== cliTurn.model) {
+                  if (selectedValue !== requestedValue) {
                     throw new Error(
-                      `${DRIVER_KIND} did not switch to ${cliTurn.model} (still ${selectedModel ?? "unknown"})`,
+                      `${DRIVER_KIND} did not switch to ${cliTurn.model} (still ${selectedValue ?? "unknown"})`,
                     );
                   }
                 }
+                // Opaque option values are protocol details.  Persist the
+                // picker id in the task so resume and usage attribution keep
+                // the same model identity the user selected.
+                selectedModel = cliTurn.model ?? selectedValue;
               }
 
               if (support.configureSession) {
@@ -940,6 +959,8 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           );
         });
         if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
+        const incompatible = support.versionCompatibilityReason?.(version, config);
+        if (incompatible) return { state: "unavailable", reason: incompatible, version };
         return { state: "available", version, authenticated: await support.isAuthenticated(env, config) };
       };
 
