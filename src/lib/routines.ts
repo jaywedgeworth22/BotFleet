@@ -1,3 +1,5 @@
+import type { RoutineOutcomeCode, RoutineFailurePhase } from "../../shared/routine-outcomes";
+
 export type RoutineSchedule =
   | { type: "once"; at: number }
   | { type: "daily"; time: string; weekdays: number[] };
@@ -52,6 +54,12 @@ export interface RoutineRun {
   denials?: string[];
   createdAt: number;
   seenAt?: number;
+  coalescedInto?: string;
+  outcomeCode?: RoutineOutcomeCode;
+  failurePhase?: RoutineFailurePhase;
+  engineId?: string;
+  driver?: string;
+  model?: string;
 }
 
 export interface RoutineInput {
