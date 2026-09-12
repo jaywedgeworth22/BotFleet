@@ -5576,6 +5576,15 @@ describe("local Auto consent for inherited and discovered computers", () => {
         acknowledgedBots: discovered.body.needsAcknowledgement,
       })).status).toBe(200);
 
+      // The per-bot route must see the same automatic host fallback when
+      // Auto is enabled after the default has already become empty.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: false })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        autoApprove: true,
+        acknowledgeLocalAuto: true,
+      })).status).toBe(200);
+
       // With Auto off, inheriting an explicit Local default is allowed; the
       // later Auto toggle is the transition that creates the pair.
       expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: false })).status).toBe(200);
