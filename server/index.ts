@@ -4276,6 +4276,48 @@ async function runGroupMemberTurn(
     renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) +
     installedPlaybookInstructions(text, bot.playbooks);
 
+  // The SAME catalog and the SAME host the 1:1 dispatch builds, from the
+  // same two calls — `buildTurnTools` for what the model is told it has,
+  // `createTurnToolHost` for what will actually run.  Until now this path
+  // called `sendTurn` bare, so a room was the one place a driver-loop bot
+  // was handed a prompt naming list_bots and ask_bot with no way to call
+  // either.  A CLI engine is unaffected: it ignores `tools` here exactly as
+  // it does on the 1:1 path, and never gets a host at all.
+  const roomTurnTools = buildTurnTools(integrations);
+  // `commsDepth: hop` — the room's own hop, not zero.  The catalog above
+  // already gated on `hop < MAX_COMMS_DEPTH`, and this is the depth the
+  // peer hop is charged at, so an ask_bot from a room member is counted
+  // where the MCP lane counts it (`agentsIntegration(bot.id, threadId, hop)`
+  // hands the proxy the same number).
+  const roomToolHost =
+    instance.adapter.capabilities.toolLoop === true && roomTurnTools.length > 0
+      ? createTurnToolHost({
+          botId: bot.id,
+          threadId,
+          commsDepth: hop,
+          // Bound to THIS room turn's bot and thread in the same closure
+          // caller identity lives in.  The card must name the member that
+          // asked and land on the room thread — which is also what lets the
+          // waiter's request.opened / request.resolved handling hold the
+          // room deadline instead of burning it under an open card.
+          requestApproval: (ask) =>
+            permissionBroker.request({
+              threadId,
+              botId: bot.id,
+              provider: instance.driverKind,
+              providerInstanceId: instance.instanceId,
+              tool: ask.tool,
+              summary: ask.summary,
+              signal: ask.signal,
+            }),
+          deps: {
+            executeListAgentsRequest,
+            executeAskBotRequest,
+            executeListRoutinesRequest,
+          },
+        })
+      : undefined;
+
   // run the turn and wait for it to settle, folding the reply text so a
   // chained @mention can be routed afterwards
   let replyText = "";
@@ -4322,6 +4364,8 @@ async function runGroupMemberTurn(
         system: roomSystem,
         cwd,
         integrations,
+        tools: roomTurnTools,
+        toolHost: roomToolHost,
         ...memberTurnSelection(selection),
       })
       .catch((err) => {
