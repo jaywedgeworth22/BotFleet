@@ -1,3 +1,4 @@
+import { useEffect, useRef, useState } from "react";
 import { InstanceInfo } from "@/state/store";
 
 import { AlertTriangle, RefreshCw, Play, Send, Zap, RotateCcw, Download, Terminal, Laptop, Monitor } from "lucide-react";
@@ -44,6 +45,105 @@ export function isProviderError(message: string): boolean {
   );
 }
 
+type TurnErrorMessage = {
+  id: string;
+  kind: string;
+  tool?: { name: string };
+};
+
+type BranchMessage = TurnErrorMessage & {
+  role: string;
+  parentId?: string | null;
+};
+
+function turnErrorText(message: TurnErrorMessage | undefined): string | null {
+  if (message?.kind !== "activity" || !message.tool?.name.startsWith("error:")) return null;
+  return message.tool.name.slice(6).trim();
+}
+
+export function latestTurnErrorMessage<T extends TurnErrorMessage>(messages: readonly T[]): T | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (turnErrorText(message)) return message;
+  }
+  return undefined;
+}
+
+/** Identity of the selected forks, stable while new messages append to the
+ * same path.  A live region can key on this without silencing new errors. */
+export function turnErrorBranchKey(allMessages: readonly BranchMessage[], visibleMessages: readonly BranchMessage[]): string {
+  const siblings = new Map<string, number>();
+  const siblingKey = (message: BranchMessage) => `${message.role}\0${message.kind}\0${message.parentId ?? ""}`;
+  for (const message of allMessages) {
+    if ((message.role !== "user" && message.role !== "system") || message.kind !== "text") continue;
+    const key = siblingKey(message);
+    siblings.set(key, (siblings.get(key) ?? 0) + 1);
+  }
+  return visibleMessages
+    .filter((message) => (siblings.get(siblingKey(message)) ?? 0) > 1)
+    .map((message) => message.id)
+    .join("\0");
+}
+
+function turnErrorSignature(message: TurnErrorMessage | undefined): string {
+  return message ? `${message.id}\0${turnErrorText(message) ?? ""}` : "";
+}
+
+export function nextTurnErrorAnnouncement(
+  previousSignature: string,
+  latestMessage: TurnErrorMessage | undefined,
+  stream?: { previousTailId: string | undefined; currentTailId: string | undefined },
+): { signature: string; text: string | null } {
+  const signature = turnErrorSignature(latestMessage);
+  return {
+    signature,
+    // Loading an older page changes the newest known error without changing
+    // the stream tail.  Keep that historical row out of the live region.
+    text: signature !== previousSignature && (!stream || stream.currentTailId !== stream.previousTailId)
+      ? turnErrorText(latestMessage)
+      : null,
+  };
+}
+
+export type TurnErrorLiveState = { text: string; nonce: number };
+
+export function advanceTurnErrorLiveState(
+  previous: TurnErrorLiveState,
+  text: string,
+): TurnErrorLiveState {
+  return { text, nonce: previous.nonce + 1 };
+}
+
+export function TurnErrorAnnouncement({
+  latestMessage,
+  streamTailId,
+}: {
+  latestMessage: TurnErrorMessage | undefined;
+  streamTailId?: string;
+}) {
+  const initialSignature = turnErrorSignature(latestMessage);
+  const previousSignature = useRef(initialSignature);
+  const previousTailId = useRef(streamTailId);
+  const [announcement, setAnnouncement] = useState<TurnErrorLiveState>({ text: "", nonce: 0 });
+
+  useEffect(() => {
+    const next = nextTurnErrorAnnouncement(previousSignature.current, latestMessage, {
+      previousTailId: previousTailId.current,
+      currentTailId: streamTailId,
+    });
+    previousSignature.current = next.signature;
+    previousTailId.current = streamTailId;
+    const text = next.text;
+    if (text) setAnnouncement((previous) => advanceTurnErrorLiveState(previous, text));
+  }, [latestMessage?.id, latestMessage?.tool?.name, streamTailId]);
+
+  return (
+    <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
+      <span key={announcement.nonce}>{announcement.text}</span>
+    </div>
+  );
+}
+
 function RecoveryButton({
   icon: Icon,
   label,
@@ -83,7 +183,7 @@ function ErrorRow({
   botId?: string;
 }) {
   return (
-    <div className="flex justify-start">
+    <div className="flex justify-start" aria-live="off">
       <div className="w-fit max-w-[min(42rem,78%)] rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13.5px] text-danger">
         <div className="flex items-start gap-2">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />
