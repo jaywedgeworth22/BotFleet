@@ -38,9 +38,11 @@ struct CompanionApp: App {
                     session.connect()
                     session.registerForRemoteNotificationsIfAllowed()
                     liveActivities.attach(to: session)
+                    liveActivities.transition(to: liveActivityPhase(scenePhase), state: session.state)
                 }
                 .onOpenURL { session.receiveOpenURL($0) }
                 .onChange(of: scenePhase) { _, phase in
+                    liveActivities.transition(to: liveActivityPhase(phase), state: session.state)
                     switch phase {
                     case .active:
                         session.connect()
@@ -50,6 +52,15 @@ struct CompanionApp: App {
                     @unknown default: break
                     }
                 }
+        }
+    }
+
+    private func liveActivityPhase(_ phase: ScenePhase) -> LiveActivityLifecyclePhase {
+        switch phase {
+        case .active: return .active
+        case .inactive: return .inactive
+        case .background: return .background
+        @unknown default: return .inactive
         }
     }
 }

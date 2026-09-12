@@ -4,9 +4,8 @@
 // or has an unread message — started, updated and ended from the same
 // `updates` the pill reads. Tapping the lock-screen card opens that bot's
 // thread. The stream is foreground-only and there is no push path yet, so
-// the island is exact while the app is alive and goes quiet with it; iOS
-// keeps the last state on screen for a while, then the activity is ended
-// on the next launch if the bot has moved on.
+// the background lifecycle transition requests immediate teardown.  Activities
+// are rebuilt from current state when the app becomes active again.
 import ActivityKit
 import Combine
 import Foundation
@@ -18,6 +17,10 @@ final class LiveActivityCoordinator {
     private var lastSent: [String: BotActivityAttributes.ContentState] = [:]
     /// When each bot's current kind began, so an update does not reset the clock.
     private var since: [String: (kind: String, at: Date)] = [:]
+    private var lifecycle = LiveActivityLifecycle()
+    /// ActivityKit mutations run in order.  Background teardown therefore
+    /// finishes before a rapid foreground return can recreate an activity.
+    private var activityWork: Task<Void, Never>?
 
     func attach(to session: Session) {
         // Answer from the island: the intent runs in this process.
@@ -26,15 +29,51 @@ final class LiveActivityCoordinator {
         }
         cancellable = session.$state
             .debounce(for: .milliseconds(400), scheduler: DispatchQueue.main)
-            .sink { [weak self] state in self?.sync(state) }
+            .sink { [weak self] state in self?.scheduleSync(state) }
     }
 
-    private func sync(_ state: CompanionState) {
+    func transition(to phase: LiveActivityLifecyclePhase, state: CompanionState) {
+        switch lifecycle.transition(to: phase) {
+        case .sync:
+            scheduleSync(state)
+        case .endAll:
+            lastSent.removeAll()
+            since.removeAll()
+            enqueueActivityWork {
+                for activity in Activity<BotActivityAttributes>.activities {
+                    await activity.end(nil, dismissalPolicy: .immediate)
+                }
+            }
+        case nil:
+            break
+        }
+    }
+
+    private func scheduleSync(_ state: CompanionState) {
+        let generation = lifecycle.generation
+        guard lifecycle.permitsUpdates(from: generation) else { return }
+        enqueueActivityWork { [weak self] in
+            guard let self, self.lifecycle.permitsUpdates(from: generation) else { return }
+            await self.sync(state, generation: generation)
+        }
+    }
+
+    private func enqueueActivityWork(_ work: @escaping @MainActor () async -> Void) {
+        let previous = activityWork
+        activityWork = Task {
+            await previous?.value
+            await work()
+        }
+    }
+
+    private func sync(_ state: CompanionState, generation: Int) async {
+        guard lifecycle.permitsUpdates(from: generation) else { return }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
         let wanted = state.updates.filter { if case .bot = $0.chat { return true } else { return false } }
         var wantedIds = Set<String>()
 
         for update in wanted {
+            guard lifecycle.permitsUpdates(from: generation) else { return }
             guard case let .bot(bot) = update.chat else { continue }
             wantedIds.insert(bot.id)
             let face = MausState.forBot(bot, last: state.visibleTranscript(forThread: bot.threadId).last)
@@ -52,8 +91,13 @@ final class LiveActivityCoordinator {
                 isPermission: update.card?.isPermission ?? false,
                 since: since[bot.id]?.at ?? Date()
             )
-            if lastSent[bot.id] == content { continue }
-            defer { lastSent[bot.id] = content }
+            let previousContent = lastSent[bot.id]
+            let existingActivity = Activity<BotActivityAttributes>.activities.first {
+                $0.attributes.botId == bot.id
+            }
+            if previousContent == content, existingActivity?.attributes.threadId == bot.threadId {
+                continue
+            }
 
             // A bot stopping for you is worth an alert: the island pops open
             // on its own and the lock screen lights up. Working and unread
@@ -65,40 +109,74 @@ final class LiveActivityCoordinator {
                     sound: .default
                 )
                 : nil
-            if let activity = Activity<BotActivityAttributes>.activities.first(where: { $0.attributes.botId == bot.id }) {
+            if let activity = existingActivity {
                 if activity.attributes.threadId != bot.threadId {
-                    Task { await activity.end(nil, dismissalPolicy: .immediate) }
-                    requestActivity(bot: bot, content: content, alert: nil)
+                    await activity.end(nil, dismissalPolicy: .immediate)
+                    guard lifecycle.permitsUpdates(from: generation) else { return }
+                    await requestActivity(
+                        bot: bot,
+                        content: content,
+                        alert: nil,
+                        shouldAlert: false,
+                        generation: generation
+                    )
+                    guard lifecycle.permitsUpdates(from: generation) else { return }
+                    lastSent[bot.id] = content
                     continue
                 }
-                let newAsk = update.kind == .needsYou && lastSent[bot.id] != nil && lastSent[bot.id]?.requestId != content.requestId
-                Task { await activity.update(.init(state: content, staleDate: nil), alertConfiguration: newAsk ? alert : nil) }
+                let newAsk = update.kind == .needsYou
+                    && previousContent != nil
+                    && previousContent?.requestId != content.requestId
+                await activity.update(.init(state: content, staleDate: nil), alertConfiguration: newAsk ? alert : nil)
             } else {
-                requestActivity(bot: bot, content: content, alert: alert)
+                let newAsk = update.kind == .needsYou
+                    && previousContent != nil
+                    && previousContent?.requestId != content.requestId
+                await requestActivity(
+                    bot: bot,
+                    content: content,
+                    alert: alert,
+                    shouldAlert: newAsk,
+                    generation: generation
+                )
             }
+            guard lifecycle.permitsUpdates(from: generation) else { return }
+            lastSent[bot.id] = content
         }
 
         // bots that went quiet or whose unread was opened: let the island go
         for activity in Activity<BotActivityAttributes>.activities where !wantedIds.contains(activity.attributes.botId) {
+            guard lifecycle.permitsUpdates(from: generation) else { return }
             lastSent.removeValue(forKey: activity.attributes.botId)
             since.removeValue(forKey: activity.attributes.botId)
-            Task { await activity.end(nil, dismissalPolicy: .immediate) }
+            await activity.end(nil, dismissalPolicy: .immediate)
+            guard lifecycle.permitsUpdates(from: generation) else { return }
         }
     }
 
     private func requestActivity(
         bot: Bot,
         content: BotActivityAttributes.ContentState,
-        alert: AlertConfiguration?
-    ) {
+        alert: AlertConfiguration?,
+        shouldAlert: Bool,
+        generation: Int
+    ) async {
+        guard lifecycle.permitsUpdates(from: generation) else { return }
         let attributes = BotActivityAttributes(botId: bot.id, threadId: bot.threadId, name: bot.name, color: bot.color)
         // Closed-app push is not in this version; keep the activity local.
-        _ = try? Activity.request(attributes: attributes, content: .init(state: content, staleDate: nil), pushType: nil)
+        guard let activity = try? Activity.request(
+            attributes: attributes,
+            content: .init(state: content, staleDate: nil),
+            pushType: nil
+        ) else { return }
+        guard lifecycle.permitsUpdates(from: generation) else {
+            await activity.end(nil, dismissalPolicy: .immediate)
+            return
+        }
         // a fresh activity cannot alert on request; one immediate alerting update does it.
         // We only do this if it is a genuinely new ask, not a pre-existing state from app launch.
-        let newAsk = content.kind == "needsYou" && lastSent[bot.id] != nil && lastSent[bot.id]?.requestId != content.requestId
-        if newAsk, let alert, let activity = Activity<BotActivityAttributes>.activities.first(where: { $0.attributes.botId == bot.id }) {
-            Task { await activity.update(.init(state: content, staleDate: nil), alertConfiguration: alert) }
+        if shouldAlert, let alert {
+            await activity.update(.init(state: content, staleDate: nil), alertConfiguration: alert)
         }
     }
 }
