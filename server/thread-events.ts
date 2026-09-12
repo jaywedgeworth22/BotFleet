@@ -42,6 +42,9 @@ const DEFAULT_LIMIT = 300;
 const MAX_LIMIT = 2000;
 const READ_CHUNK = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
+/** Ceiling on the single-record fallback below.  Matches the largest a log
+ * can be after retention (server/transcript-retention.ts). */
+const MAX_RECORD_BYTES = 64 * 1024 * 1024;
 
 interface LineCount {
   dev: number;
@@ -104,9 +107,16 @@ type RecordGuard<T> = (value: unknown) => value is T;
 
 /** What one log file contributes to a page: its newest valid records, and how
  * many lines it holds in total. */
-interface LogTail<T> {
+interface LogPage<T> {
   lines: T[];
   total: number;
+}
+
+interface LogTail<T> extends LogPage<T> {
+  /** True when the backward scan reached byte zero — every line in the file
+   * was considered.  False when it stopped at the tail window, which means
+   * there are older records in THIS file that the page does not show. */
+  exhausted: boolean;
 }
 
 function parseRecent<T>(text: string, includeFirst: boolean, limit: number, valid: RecordGuard<T>): T[] {
@@ -129,22 +139,22 @@ function parseRecent<T>(text: string, includeFirst: boolean, limit: number, vali
 /** The newest `limit` valid records of ONE file, plus its line count.  A
  * `limit` of zero counts without parsing, which is how the rotated generation
  * is counted when the live file already filled the page. */
-function readTail<T>(file: string, limit: number, valid: RecordGuard<T>): LogTail<T> {
+function readTail<T>(file: string, limit: number, valid: RecordGuard<T>, maxTailBytes: number): LogTail<T> {
   let fd: number;
   try {
     fd = openSync(file, "r");
   } catch {
-    return { lines: [], total: 0 };
+    return { lines: [], total: 0, exhausted: true };
   }
   try {
     const stat = fstatSync(fd);
     const total = countLines(fd, file, stat);
-    if (limit <= 0) return { lines: [], total };
+    if (limit <= 0) return { lines: [], total, exhausted: stat.size === 0 };
     let position = stat.size;
     let bytes = Buffer.alloc(0);
     let lines: T[] = [];
-    while (position > 0 && bytes.length < MAX_TAIL_BYTES) {
-      const remaining = MAX_TAIL_BYTES - bytes.length;
+    while (position > 0 && bytes.length < maxTailBytes) {
+      const remaining = maxTailBytes - bytes.length;
       const start = Math.max(0, position - Math.min(READ_CHUNK, remaining));
       const length = position - start;
       const chunk = Buffer.allocUnsafe(length);
@@ -164,9 +174,53 @@ function readTail<T>(file: string, limit: number, valid: RecordGuard<T>): LogTai
     if (lines.length === 0 && bytes.length > 0) {
       lines = parseRecent(bytes.toString("utf8"), position === 0, limit, valid);
     }
-    return { lines, total };
+    // A record wider than the window leaves the scan above with no newline to
+    // cut on, so it returns nothing at all against a nonzero total — the
+    // panel goes blank for the one thread whose newest message is the reason
+    // anyone opened it.  Walk back past the window to that record's own
+    // boundary instead.
+    if (lines.length === 0 && position > 0) lines = readNewestRecord(fd, stat.size, valid);
+    return { lines, total, exhausted: position === 0 };
   } finally {
     closeSync(fd);
+  }
+}
+
+/** The newest complete record of a file, whatever its width — the fallback
+ * for a record too wide for the tail window.  Bounded by MAX_RECORD_BYTES:
+ * a log is capped at 64 MB by server/transcript-retention.ts, and a single
+ * record wider than that is the one shape nothing here can help. */
+function readNewestRecord<T>(fd: number, size: number, valid: RecordGuard<T>): T[] {
+  if (size === 0) return [];
+  const scan = Buffer.allocUnsafe(READ_CHUNK);
+  // the record ends at the final newline, or at EOF when the last write was
+  // torn before its terminator
+  let end = size;
+  if (readSync(fd, scan, 0, 1, size - 1) === 1 && scan[0] === 0x0a) end = size - 1;
+  if (end === 0) return [];
+  let position = end;
+  let start = 0;
+  while (position > 0 && end - position < MAX_RECORD_BYTES) {
+    const from = Math.max(0, position - READ_CHUNK);
+    const read = readSync(fd, scan, 0, position - from, from);
+    if (read <= 0) return [];
+    const index = scan.subarray(0, read).lastIndexOf(0x0a);
+    if (index !== -1) {
+      start = from + index + 1;
+      break;
+    }
+    position = from;
+  }
+  const length = end - start;
+  if (length <= 0 || length > MAX_RECORD_BYTES) return [];
+  const record = Buffer.allocUnsafe(length);
+  const read = readSync(fd, record, 0, length, start);
+  if (read <= 0) return [];
+  try {
+    const value: unknown = JSON.parse(record.subarray(0, read).toString("utf8"));
+    return valid(value) ? [value] : [];
+  } catch {
+    return [];
   }
 }
 
@@ -175,10 +229,20 @@ function readTail<T>(file: string, limit: number, valid: RecordGuard<T>): LogTai
  * what keeps either from growing without bound, so the panel reads across the
  * seam — the newest lines come from the live file, and the rotated one both
  * completes a short page and keeps the "showing 200 of 1,687" count honest
- * about what is still on disk. */
-function readRecentLines<T>(file: string, limit: number, valid: RecordGuard<T>): LogTail<T> {
-  const live = readTail(file, limit, valid);
-  const rotated = readTail(rotatedPath(file), limit - live.lines.length, valid);
+ * about what is still on disk.
+ *
+ * The rotated file is spliced on ONLY when the live file was read to its
+ * first byte.  A live file short of `limit` for any other reason — it hit the
+ * tail window, or its own records failed the guard — still holds records
+ * between what came back and where the rotated file ends, and splicing across
+ * that would hand the panel a page with a silent gap in the middle of it,
+ * looking for all the world like a contiguous history. */
+function readRecentLines<T>(file: string, limit: number, valid: RecordGuard<T>, maxTailBytes: number): LogPage<T> {
+  const live = readTail(file, limit, valid, maxTailBytes);
+  const need = live.exhausted ? limit - live.lines.length : 0;
+  // `need` of zero still counts the rotated file's lines, so the footer
+  // describes the history that exists rather than the page that was built.
+  const rotated = readTail(rotatedPath(file), need, valid, maxTailBytes);
   return { lines: [...rotated.lines, ...live.lines], total: live.total + rotated.total };
 }
 
@@ -276,14 +340,19 @@ export function readThreadEvents(input: {
   nativeDir: string;
   threadId: string;
   limit?: number;
+  /** How far back either file is read before the page is called done.
+   * Defaults to MAX_TAIL_BYTES; tests set it small so the window's edge can
+   * be exercised without an 8 MB fixture. */
+  maxTailBytes?: number;
 }): InspectorPage {
   const { eventsDir, nativeDir, threadId } = input;
   assertThreadId(threadId);
   const requested = input.limit ?? DEFAULT_LIMIT;
   const limit = Number.isFinite(requested) ? Math.max(1, Math.min(Math.trunc(requested), MAX_LIMIT)) : DEFAULT_LIMIT;
+  const window = Number.isFinite(input.maxTailBytes) ? Math.max(1, Math.trunc(input.maxTailBytes!)) : MAX_TAIL_BYTES;
 
-  const runtime = readRecentLines(join(eventsDir, `${threadId}.ndjson`), limit, isRuntimeEvent);
-  const native = readRecentLines(join(nativeDir, `${threadId}.ndjson`), limit, isNativeRecord);
+  const runtime = readRecentLines(join(eventsDir, `${threadId}.ndjson`), limit, isRuntimeEvent, window);
+  const native = readRecentLines(join(nativeDir, `${threadId}.ndjson`), limit, isNativeRecord, window);
 
   // cap each log on its own, then merge: the native tee is several times
   // chattier than the runtime stream, and one shared cap would leave the

@@ -2,13 +2,14 @@
 // the cap displaces is still readable until the generation after next. The
 // caps themselves are 64 MB and 16 MB in production; every test here passes
 // its own small cap, so the behaviour is pinned without writing megabytes.
-import { type appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { type appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, readSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
   appendBounded,
+  removeTranscriptLogs,
   EVENTS_LOG_MAX_BYTES,
   NATIVE_LOG_MAX_BYTES,
   describeSweep,
@@ -166,7 +167,7 @@ describe("sweepTranscriptLogs", () => {
     writeFileSync(join(dir, "notes.txt"), body);
 
     const result = sweepTranscriptLogs(dir, width * 2 + Math.floor(width / 2));
-    expect(result).toEqual({ scanned: 3, trimmed: 2, bytesReclaimed: width * 8 * 2, failed: 0 });
+    expect(result).toEqual({ scanned: 3, trimmed: 2, bytesReclaimed: width * 8 * 2, tempRemoved: 0, failed: 0 });
     expect(ns(readFileSync(join(dir, "a.ndjson"), "utf8"))).toEqual([9, 10]);
     expect(ns(readFileSync(join(dir, "a.ndjson.1"), "utf8"))).toEqual([9, 10]);
     expect(readFileSync(join(dir, "b.ndjson"), "utf8")).toBe(record(1));
@@ -186,8 +187,8 @@ describe("sweepTranscriptLogs", () => {
     const once = readFileSync(join(dir, "a.ndjson"), "utf8");
     // a second and third pass find a file already inside the cap: no trim, no
     // rewrite, and — the part the boot sweep depends on — no growth in state
-    expect(sweepTranscriptLogs(dir, cap)).toEqual({ scanned: 1, trimmed: 0, bytesReclaimed: 0, failed: 0 });
-    expect(sweepTranscriptLogs(dir, cap)).toEqual({ scanned: 1, trimmed: 0, bytesReclaimed: 0, failed: 0 });
+    expect(sweepTranscriptLogs(dir, cap)).toEqual({ scanned: 1, trimmed: 0, bytesReclaimed: 0, tempRemoved: 0, failed: 0 });
+    expect(sweepTranscriptLogs(dir, cap)).toEqual({ scanned: 1, trimmed: 0, bytesReclaimed: 0, tempRemoved: 0, failed: 0 });
     expect(readFileSync(join(dir, "a.ndjson"), "utf8")).toBe(once);
   });
 
@@ -195,17 +196,149 @@ describe("sweepTranscriptLogs", () => {
     const dir = tmp();
     const file = join(dir, "live.ndjson");
     appendBounded(file, record(1), 1024);
-    expect(sweepTranscriptLogs(dir, 1)).toEqual({ scanned: 0, trimmed: 0, bytesReclaimed: 0, failed: 0 });
+    expect(sweepTranscriptLogs(dir, 1)).toEqual({ scanned: 0, trimmed: 0, bytesReclaimed: 0, tempRemoved: 0, failed: 0 });
     expect(readFileSync(file, "utf8")).toBe(record(1));
   });
 
   it("says nothing when there was nothing to do", () => {
-    expect(describeSweep({ scanned: 4, trimmed: 0, bytesReclaimed: 0, failed: 0 })).toBeNull();
-    expect(describeSweep({ scanned: 4, trimmed: 2, bytesReclaimed: 3 * 1024 * 1024, failed: 1 })).toContain("3.0 MB");
+    expect(describeSweep({ scanned: 4, trimmed: 0, bytesReclaimed: 0, tempRemoved: 0, failed: 0 })).toBeNull();
+    expect(describeSweep({ scanned: 4, trimmed: 2, bytesReclaimed: 3 * 1024 * 1024, tempRemoved: 0, failed: 1 })).toContain("3.0 MB");
+    // a sweep that only reaped a killed trim's leftovers still has something to say
+    expect(describeSweep({ scanned: 4, trimmed: 0, bytesReclaimed: 0, tempRemoved: 2, failed: 0 })).toContain("2 stale temp files");
   });
 
   it("survives a directory that does not exist", () => {
-    expect(sweepTranscriptLogs(join(tmp(), "nope"), 10)).toEqual({ scanned: 0, trimmed: 0, bytesReclaimed: 0, failed: 0 });
+    expect(sweepTranscriptLogs(join(tmp(), "nope"), 10)).toEqual({ scanned: 0, trimmed: 0, bytesReclaimed: 0, tempRemoved: 0, failed: 0 });
+  });
+});
+
+describe("trimToTail on a file much larger than the cap", () => {
+  /** A line of exactly 64 bytes, so a cap in bytes is a count of records. */
+  const wide = (i: number) => {
+    const body = JSON.stringify({ i });
+    return body + " ".repeat(63 - body.length) + "\n";
+  };
+
+  it("keeps the newest whole lines and reads only the tail it keeps", () => {
+    const dir = tmp();
+    const file = join(dir, "big.ndjson");
+    const count = 65_536;
+    const parts: string[] = [];
+    for (let i = 0; i < count; i++) parts.push(wide(i));
+    writeFileSync(file, parts.join(""));
+    const size = statSync(file).size;
+    expect(size).toBe(count * 64);
+
+    // counts the bytes that actually leave the disk, so "seeks to size minus
+    // cap, never reads the whole file" is asserted rather than commented
+    let bytesRead = 0;
+    const cap = 256 * 1024;
+    const reclaimed = trimToTail(file, cap, (fd, buffer, offset, length, position) => {
+      const read = readSync(fd, buffer, offset, length, position);
+      bytesRead += Math.max(0, read);
+      return read;
+    });
+
+    const kept = lines(readFileSync(file, "utf8"));
+    // the window opens on a record boundary, so the first whole record after
+    // it is the 4,096th from the end minus that one
+    expect(kept).toHaveLength(4095);
+    expect(Number(JSON.parse(kept[0]!).i)).toBe(count - 4095);
+    expect(Number(JSON.parse(kept.at(-1)!).i)).toBe(count - 1);
+    expect(statSync(file).size).toBeLessThanOrEqual(cap);
+    expect(reclaimed).toBe(size - 4095 * 64);
+
+    // one chunk to find the line boundary, then the kept tail — nothing like
+    // the 4 MB the file holds.  The lower bound is what keeps this honest: a
+    // counter that never saw a read would satisfy the upper one trivially.
+    expect(bytesRead).toBeGreaterThanOrEqual(4095 * 64);
+    expect(bytesRead).toBeLessThanOrEqual(cap + 64 * 1024);
+    expect(bytesRead).toBeLessThan(size / 4);
+  });
+});
+
+describe("stale temp files", () => {
+  const tempName = (log: string, pid: number) => `${log}.${pid}.123e4567-e89b-42d3-a456-426614174000.tmp`;
+
+  it("reaps a temp file whose writer is gone, and one too old to be in flight", () => {
+    const dir = tmp();
+    const dead = join(dir, tempName("t1.ndjson", 2_147_480_000));
+    const old = join(dir, tempName("t2.ndjson.1", process.pid));
+    const mine = join(dir, tempName("t3.ndjson", process.pid));
+    for (const file of [dead, old, mine]) writeFileSync(file, "half a tail\n");
+    const hoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000);
+    utimesSync(old, hoursAgo, hoursAgo);
+
+    const result = sweepTranscriptLogs(dir, 1024);
+    expect(result.tempRemoved).toBe(2);
+    expect(existsSync(dead)).toBe(false);
+    expect(existsSync(old)).toBe(false);
+    // a live writer's fresh temp file is a trim in flight, not litter
+    expect(existsSync(mine)).toBe(true);
+    // and a temp file is never counted as a log to trim
+    expect(result.scanned).toBe(0);
+  });
+
+  it("leaves a file that only looks like one alone", () => {
+    const dir = tmp();
+    const decoy = join(dir, "notes.tmp");
+    const unowned = join(dir, "t1.ndjson.tmp");
+    for (const file of [decoy, unowned]) writeFileSync(file, "keep me\n");
+    expect(sweepTranscriptLogs(dir, 1024).tempRemoved).toBe(0);
+    expect(existsSync(decoy)).toBe(true);
+    expect(existsSync(unowned)).toBe(true);
+  });
+
+  it("trims logs and reaps temps in the same pass", () => {
+    const dir = tmp();
+    const width = Buffer.byteLength(record(1));
+    let body = "";
+    for (let n = 1; n <= 10; n++) body += record(n);
+    writeFileSync(join(dir, "a.ndjson"), body);
+    writeFileSync(join(dir, tempName("a.ndjson", 2_147_480_000)), "orphan\n");
+
+    const result = sweepTranscriptLogs(dir, width * 3 + Math.floor(width / 2));
+    expect(result.trimmed).toBe(1);
+    expect(result.tempRemoved).toBe(1);
+    expect(readdirSync(dir)).toEqual(["a.ndjson"]);
+  });
+});
+
+describe("removeTranscriptLogs", () => {
+  it("removes both generations and any temp file, for every thread it is given", () => {
+    const dir = tmp();
+    for (const name of [
+      "t1.ndjson",
+      "t1.ndjson.1",
+      `t1.ndjson.${process.pid}.123e4567-e89b-42d3-a456-426614174000.tmp`,
+      "t2.ndjson",
+      "keep.ndjson",
+      "keep.ndjson.1",
+    ]) writeFileSync(join(dir, name), "x\n");
+
+    expect(removeTranscriptLogs(dir, ["t1", "t2"])).toBe(4);
+    expect(readdirSync(dir).sort()).toEqual(["keep.ndjson", "keep.ndjson.1"]);
+  });
+
+  it("does not mind a thread with nothing on disk, or a directory that is gone", () => {
+    const dir = tmp();
+    expect(removeTranscriptLogs(dir, ["never-written"])).toBe(0);
+    expect(removeTranscriptLogs(join(dir, "nope"), ["t1"])).toBe(0);
+  });
+
+  it("forgets the cached size, so a thread id that comes back starts from disk", () => {
+    const dir = tmp();
+    const file = join(dir, "t1.ndjson");
+    const width = Buffer.byteLength(record(1));
+    appendBounded(file, record(1), width * 2);
+    appendBounded(file, record(2), width * 2);
+    removeTranscriptLogs(dir, ["t1"]);
+
+    // with a stale counter still at two records, this append would rotate an
+    // empty file instead of starting one
+    appendBounded(file, record(3), width * 2);
+    expect(existsSync(rotatedPath(file))).toBe(false);
+    expect(ns(readFileSync(file, "utf8"))).toEqual([3]);
   });
 });
 

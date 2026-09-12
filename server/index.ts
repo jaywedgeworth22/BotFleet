@@ -140,7 +140,7 @@ import {
   describeSweep,
   startTranscriptRetentionSweeps,
   sweepTranscriptRetention,
-  transcriptLogPaths,
+  removeTranscriptLogs,
 } from "./transcript-retention.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { findCliCandidates, resetPathCache } from "./env-path.ts";
@@ -7231,17 +7231,10 @@ const server = createServer(async (req, res) => {
       const threadIds = new Set([group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]);
       for (const threadId of threadIds) lastReply.delete(threadId);
       store.deleteGroup(group.id);
-      for (const threadId of threadIds) {
-        for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-          // Both generations: a rotated `.ndjson.1` left behind would outlive
-          // the room it belonged to (server/transcript-retention.ts).
-          for (const file of transcriptLogPaths(dir, threadId)) {
-            try {
-              unlinkSync(file);
-            } catch {}
-          }
-        }
-      }
+      // Both generations and any temp file, for every task this room had: a
+      // `.ndjson.1` or a killed trim's `.tmp` left behind would outlive the
+      // room it belonged to (server/transcript-retention.ts).
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, threadIds);
       return json(res, 200, { ok: true });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/messages$/);
@@ -7697,6 +7690,8 @@ const server = createServer(async (req, res) => {
       // container — orphaning it forever.  Claimed before the first await,
       // exactly like that route claims it, so two requests cannot both
       // pass the check.
+      // Read off the record while it still exists, not after the delete.
+      const botThreadIds = new Set([bot.threadId, ...(bot.tasks ?? []).map((task) => task.threadId)]);
       const localVmTarget = perBotLocalVmTarget(bot.id);
       if (localVmLifecycleBusy.has(localVmTarget.key)) {
         return json(res, 409, { error: "this bot's Local VM setup action is still running — retry the delete after it finishes" });
@@ -7730,13 +7725,12 @@ const server = createServer(async (req, res) => {
       } finally {
         localVmLifecycleBusy.delete(localVmTarget.key);
       }
-      for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-        for (const file of transcriptLogPaths(dir, bot.threadId)) {
-          try {
-            unlinkSync(file);
-          } catch {}
-        }
-      }
+      // Every task is its own thread with its own pair of logs, and
+      // `bot.threadId` names only the active one — deleting just that left
+      // every other task's transcript on disk forever, which was already true
+      // on `main` for the single generation it knew about.  Same set
+      // `store.deleteBot` uses to drop the message records.
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, botThreadIds);
       return json(res, 200, { ok: true });
     }
 

@@ -56,7 +56,20 @@ export const EVENTS_LOG_MAX_BYTES = 16 * 1024 * 1024;
 export const ROTATED_SUFFIX = ".1";
 
 const COPY_CHUNK = 64 * 1024;
+
+/** The positional five-argument `readSync`, the only form this module uses.
+ * Named so the seam below is one concrete signature rather than the whole
+ * overloaded builtin. */
+type ReadAt = (fd: number, buffer: Buffer, offset: number, length: number, position: number) => number;
 const DAILY_SWEEP_MS = 24 * 60 * 60 * 1000;
+
+/** A trim writes its kept tail to `<file>.<pid>.<uuid>.tmp` and renames it
+ * over the original.  A SIGKILL or a power loss between those two steps
+ * leaves the temp file behind with nothing to reclaim it, so the sweep does:
+ * a temp file whose writer is gone, or that is older than an hour, is not a
+ * trim in flight. */
+const TEMP_NAME = /^(?:.+)\.ndjson(?:\.1)?\.(\d+)\.[0-9a-f-]{36}\.tmp$/;
+const STALE_TEMP_MS = 60 * 60 * 1000;
 
 /** Live byte counts, so the cap costs an arithmetic compare per append rather
  * than a stat(2) per line.  The first append to a path pays one stat; every
@@ -77,11 +90,64 @@ export function rotatedPath(file: string): string {
   return `${file}${ROTATED_SUFFIX}`;
 }
 
-/** Both generations of a thread's log, newest first — what a delete has to
- * remove for the thread to leave nothing behind. */
+/** Both generations of a thread's log, newest first. */
 export function transcriptLogPaths(dir: string, threadId: string): string[] {
   const live = join(dir, `${threadId}.ndjson`);
   return [live, rotatedPath(live)];
+}
+
+/** True when `pid` names a process that still exists.  EPERM means it exists
+ * and belongs to someone else, which is still alive. */
+function isProcessAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // SAFETY: `process.kill` rejects only with a system error, whose `code` is
+    // the string libuv set — reading it off a non-Error would give undefined,
+    // which answers "not alive" rather than throwing.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/** Everything a thread owns in `dir` — both generations, plus any temp file a
+ * trim of either left behind — so a deleted bot or room leaves nothing on
+ * disk.  Best-effort per file: a delete never fails because a log was not
+ * there.  Returns how many files were removed. */
+export function removeTranscriptLogs(dir: string, threadIds: Iterable<string>): number {
+  const ids = [...threadIds];
+  let removed = 0;
+  for (const threadId of ids) {
+    for (const file of transcriptLogPaths(dir, threadId)) {
+      liveSizes.delete(file);
+      try {
+        unlinkSync(file);
+        removed += 1;
+      } catch {
+        // not there, which is the ordinary case for a rotated generation
+      }
+    }
+  }
+  // One listing for every thread being removed, not one per thread: a room
+  // with many tasks deletes them all at once.
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return removed;
+  }
+  const prefixes = ids.map((threadId) => `${threadId}.ndjson`);
+  for (const name of names) {
+    if (!TEMP_NAME.test(name) || !prefixes.some((prefix) => name.startsWith(prefix))) continue;
+    try {
+      unlinkSync(join(dir, name));
+      removed += 1;
+    } catch {
+      /* best-effort cleanup */
+    }
+  }
+  return removed;
 }
 
 function currentSize(file: string): number {
@@ -130,15 +196,15 @@ export function appendBounded(
 
 /** Offset of the first byte after the first newline at or after `from`, or
  * null when there is none — meaning no whole line can be kept. */
-function firstLineStart(fd: number, from: number, size: number): number | null {
+function firstLineStart(fd: number, from: number, size: number, read: ReadAt): number | null {
   const buffer = Buffer.allocUnsafe(COPY_CHUNK);
   let offset = from;
   while (offset < size) {
-    const read = readSync(fd, buffer, 0, Math.min(COPY_CHUNK, size - offset), offset);
-    if (read <= 0) return null;
-    const index = buffer.subarray(0, read).indexOf(0x0a);
+    const scanned = read(fd, buffer, 0, Math.min(COPY_CHUNK, size - offset), offset);
+    if (scanned <= 0) return null;
+    const index = buffer.subarray(0, scanned).indexOf(0x0a);
     if (index !== -1) return offset + index + 1;
-    offset += read;
+    offset += scanned;
   }
   return null;
 }
@@ -153,8 +219,13 @@ function firstLineStart(fd: number, from: number, size: number): number | null {
  * itself larger than the cap is left exactly as it is: there is no line
  * boundary to cut on, and emptying it would throw away the only record it
  * has.  Idempotent — a file already within the cap is opened, stat'd and left
- * alone. */
-export function trimToTail(file: string, maxBytes: number): number {
+ * alone.
+ *
+ * `read` is the same seam `appendBounded` has for its writer: it is
+ * `readSync` in production, and a counting wrapper in the test that asserts
+ * the bytes leaving the disk are bounded by the cap rather than by the size
+ * of the file. */
+export function trimToTail(file: string, maxBytes: number, read: ReadAt = readSync): number {
   let fd: number | null = null;
   let tmp: string | null = null;
   let out: number | null = null;
@@ -166,17 +237,17 @@ export function trimToTail(file: string, maxBytes: number): number {
     }
     const stat = fstatSync(fd);
     if (stat.size <= maxBytes) return 0;
-    const start = firstLineStart(fd, stat.size - maxBytes, stat.size);
+    const start = firstLineStart(fd, stat.size - maxBytes, stat.size, read);
     if (start === null || start >= stat.size) return 0;
     tmp = `${file}.${process.pid}.${randomUUID()}.tmp`;
     out = openSync(tmp, "w", 0o600);
     const buffer = Buffer.allocUnsafe(COPY_CHUNK);
     let offset = start;
     while (offset < stat.size) {
-      const read = readSync(fd, buffer, 0, Math.min(COPY_CHUNK, stat.size - offset), offset);
-      if (read <= 0) break;
-      writeFileSync(out, buffer.subarray(0, read));
-      offset += read;
+      const copied = read(fd, buffer, 0, Math.min(COPY_CHUNK, stat.size - offset), offset);
+      if (copied <= 0) break;
+      writeFileSync(out, buffer.subarray(0, copied));
+      offset += copied;
     }
     fsyncSync(out);
     closeSync(out);
@@ -220,6 +291,8 @@ export interface SweepResult {
   scanned: number;
   trimmed: number;
   bytesReclaimed: number;
+  /** stale temp files from a trim that was killed mid-copy */
+  tempRemoved: number;
   failed: number;
 }
 
@@ -233,8 +306,8 @@ const isTranscriptLogName = (name: string) => name.endsWith(".ndjson") || name.e
  * and trimming under the writer would drop whatever landed between the copy
  * and the rename.  At startup nothing is being appended to yet, which is when
  * the sweep that matters runs. */
-export function sweepTranscriptLogs(dir: string, maxBytes: number): SweepResult {
-  const result: SweepResult = { scanned: 0, trimmed: 0, bytesReclaimed: 0, failed: 0 };
+export function sweepTranscriptLogs(dir: string, maxBytes: number, now: number = Date.now()): SweepResult {
+  const result: SweepResult = { scanned: 0, trimmed: 0, bytesReclaimed: 0, tempRemoved: 0, failed: 0 };
   let names: string[];
   try {
     names = readdirSync(dir);
@@ -242,6 +315,11 @@ export function sweepTranscriptLogs(dir: string, maxBytes: number): SweepResult 
     return result;
   }
   for (const name of names) {
+    const temp = TEMP_NAME.exec(name);
+    if (temp) {
+      if (reapStaleTemp(join(dir, name), Number(temp[1]), now)) result.tempRemoved += 1;
+      continue;
+    }
     if (!isTranscriptLogName(name)) continue;
     const file = join(dir, name);
     if (liveSizes.has(file)) continue;
@@ -261,6 +339,21 @@ export function sweepTranscriptLogs(dir: string, maxBytes: number): SweepResult 
   return result;
 }
 
+/** Remove one temp file when the trim that wrote it cannot still be running.
+ * A live harness cannot meet its own temp file here — a trim is synchronous
+ * and the ownership fence keeps a second harness off this directory — but the
+ * rule is "its writer is gone, or it is older than an hour" rather than "any
+ * temp file I find", so a future concurrent writer is not robbed mid-copy. */
+function reapStaleTemp(file: string, pid: number, now: number): boolean {
+  try {
+    if (isProcessAlive(pid) && now - statSync(file).mtimeMs < STALE_TEMP_MS) return false;
+    unlinkSync(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export interface TranscriptDirs {
   eventsDir: string;
   nativeDir: string;
@@ -274,16 +367,18 @@ export function sweepTranscriptRetention(dirs: TranscriptDirs): SweepResult {
     scanned: events.scanned + native.scanned,
     trimmed: events.trimmed + native.trimmed,
     bytesReclaimed: events.bytesReclaimed + native.bytesReclaimed,
+    tempRemoved: events.tempRemoved + native.tempRemoved,
     failed: events.failed + native.failed,
   };
 }
 
 /** One line for the boot log, or null when there was nothing to say. */
 export function describeSweep(result: SweepResult): string | null {
-  if (result.trimmed === 0 && result.failed === 0) return null;
+  if (result.trimmed === 0 && result.failed === 0 && result.tempRemoved === 0) return null;
   const mb = (result.bytesReclaimed / (1024 * 1024)).toFixed(1);
+  const temps = result.tempRemoved > 0 ? `, ${result.tempRemoved} stale temp files removed` : "";
   const failed = result.failed > 0 ? `, ${result.failed} could not be trimmed` : "";
-  return `[transcripts] trimmed ${result.trimmed} of ${result.scanned} thread logs to their size cap, reclaiming ${mb} MB${failed}`;
+  return `[transcripts] trimmed ${result.trimmed} of ${result.scanned} thread logs to their size cap, reclaiming ${mb} MB${temps}${failed}`;
 }
 
 /** Re-run the sweep once a day, for a harness that stays up long enough to
