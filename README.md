@@ -87,7 +87,7 @@ See the [OpenMausBot repository](https://github.com/milind-soni/OpenMausBot) for
 | **Windows** (x64) | Not published yet | The Windows installer is built by the release workflow but no Windows build has shipped.  Watch the [releases page](https://github.com/jaywedgeworth22/BotFleet/releases) or build from source below. |
 | **Ubuntu 24.04** (x64) | Not published yet | Ubuntu packages are built by the release workflow but no Ubuntu build has shipped.  See the [Ubuntu Desktop guide](docs/linux-desktop.md) to build one from source. |
 
-In-app **Check for updates** reads `latest-mac.yml` plus the macOS zips on the GitHub release.  v0.1.38 shipped DMGs only; 1.0.30 is the first cut that is supposed to carry the feed.
+In-app **Check for updates** reads `latest-mac.yml` plus the macOS zips on the GitHub release.  v0.1.38 shipped DMGs only; 1.0.31 is the first desktop cut prepared with the complete feed.
 
 See the [Ubuntu Desktop guide](docs/linux-desktop.md) for installation, capabilities, and troubleshooting.
 
