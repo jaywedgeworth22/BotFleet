@@ -112,6 +112,7 @@ const dumpEnv = Object.fromEntries(
     "FAKE_ACP_RPC_DUMP",
     "TEST_POLICY",
     "OPENCODE_API_KEY",
+    "DEEPSEEK_API_KEY",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -135,6 +136,10 @@ if (process.env.FAKE_ACP_DUMP) {
   writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify({ argv, env: dumpEnv }, null, 2));
 }
 if (argv.includes("--version")) {
+  const gate = process.env.FAKE_ACP_VERSION_GATE_FILE;
+  while (gate && !existsSync(gate)) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
   console.log(process.env.FAKE_ACP_VERSION ?? "fake-acp 1.0.0");
   process.exit(0);
 }

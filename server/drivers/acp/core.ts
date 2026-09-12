@@ -16,6 +16,7 @@
 import { homedir } from "node:os";
 
 import { PROVIDER_CREDENTIAL_ENV, WORKSPACE_CREDENTIAL_ENV } from "../../config.ts";
+import { cliProbeEnvironment } from "../../cli-probe-env.ts";
 import { decodeInjectId } from "../local-inject.ts";
 import { toolFields } from "../../tool-fields.ts";
 import { describeResult } from "../../../shared/tool-activity.ts";
@@ -320,13 +321,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         asks: Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>;
       }
       const active = new Map<string, Turn>();
+      let disposed = false;
 
       const emit = (event: RuntimeEvent) => {
         for (const l of [...listeners]) l(event);
       };
       const cliVersion = (effective: AcpConfig, env: Record<string, string | undefined>) =>
         new Promise<string | null>((resolve) => {
-          execCli(effective.cli, ["--version"], { timeout: 8000, env }, (err, stdout) =>
+          execCli(effective.cli, ["--version"], { timeout: 8000, env: cliProbeEnvironment(env) }, (err, stdout) =>
             resolve(err ? null : stdout.trim()),
           );
         });
@@ -404,6 +406,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
+        if (disposed) throw new Error("provider instance is disposed");
         // Host control means the user's real desktop (the Local VM and a VPS
         // also arrive as `localComputer`, but they are isolated and carry no
         // scope). A full-auto instance keeps its yolo switch for everything
@@ -418,31 +421,70 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         const turnId = newId();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
         const env = childEnv(turnConfig);
+        let preflightCancelled = false;
+        const preflightAsks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>();
+        const cancelPreflight = () => {
+          preflightCancelled = true;
+        };
+        active.set(threadId, {
+          stop: cancelPreflight,
+          interrupt: cancelPreflight,
+          turnId,
+          asks: preflightAsks,
+        });
+        emit({ ...base(threadId, turnId), type: "turn.started" });
+
+        const finishBeforeDispatch = (
+          ok: boolean,
+          stopReason: string,
+          error?: { message: string; setup?: boolean },
+        ) => {
+          if (active.get(threadId)?.turnId === turnId) active.delete(threadId);
+          if (error) emit({ ...base(threadId, turnId), type: "runtime.error", ...error });
+          emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
+          return { turnId, dispatched: false as const };
+        };
+        const cancelledBeforeDispatch = () =>
+          preflightCancelled || disposed
+            ? finishBeforeDispatch(true, "cancelled")
+            : null;
+
         // Snapshot status is advisory and callers can dispatch directly.  A
         // provider that requires a minimum stock CLI must enforce that same
         // contract at the last boundary before spawning a paid turn.
         if (support.versionCompatibilityReason && turnConfig.cli === support.defaultCli) {
-          const version = await cliVersion(turnConfig, env);
+          let version: string | null;
+          try {
+            version = await cliVersion(turnConfig, env);
+          } catch (error) {
+            if (active.get(threadId)?.turnId === turnId) active.delete(threadId);
+            throw error;
+          }
+          const cancelled = cancelledBeforeDispatch();
+          if (cancelled) return cancelled;
           const incompatible = version
             ? support.versionCompatibilityReason(version, turnConfig)
             : `\`${turnConfig.cli}\` CLI not found`;
           if (incompatible) {
-            emit({ ...base(threadId, turnId), type: "turn.started" });
-            emit({ ...base(threadId, turnId), type: "runtime.error", message: incompatible, setup: true });
-            emit({ ...base(threadId, turnId), type: "turn.completed", ok: false, stopReason: "setup_required", cost: null });
-            return { turnId, dispatched: false };
+            return finishBeforeDispatch(false, "setup_required", { message: incompatible, setup: true });
           }
         }
-        if (
-          support.requireAuthenticationBeforeSpawn
-          && !skipSubscriptionAuthForLocalInject(turn.model)
-          && !(await support.isAuthenticated(env, turnConfig))
-        ) {
-          emit({ ...base(threadId, turnId), type: "turn.started" });
-          emit({ ...base(threadId, turnId), type: "runtime.error", message: support.loginNote, setup: true });
-          emit({ ...base(threadId, turnId), type: "turn.completed", ok: false, stopReason: "auth_required", cost: null });
-          return { turnId };
+        if (support.requireAuthenticationBeforeSpawn && !skipSubscriptionAuthForLocalInject(turn.model)) {
+          let authenticated: boolean;
+          try {
+            authenticated = await support.isAuthenticated(env, turnConfig);
+          } catch (error) {
+            if (active.get(threadId)?.turnId === turnId) active.delete(threadId);
+            throw error;
+          }
+          const cancelled = cancelledBeforeDispatch();
+          if (cancelled) return cancelled;
+          if (!authenticated) {
+            return finishBeforeDispatch(false, "auth_required", { message: support.loginNote, setup: true });
+          }
         }
+        const cancelled = cancelledBeforeDispatch();
+        if (cancelled) return cancelled;
         const resolvedModel = support.resolveTurnModel?.(turn.model, env);
         support.applyTurnEnv?.(env, { model: resolvedModel, requestedModel: turn.model });
         const cliTurn =
@@ -451,11 +493,20 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             : turn;
         const mcpServers = acpMcpServers(turn);
 
-        const child = spawnCli(config.cli, support.spawnArgs(turnConfig, cliTurn), {
-          cwd,
-          env,
-          stdio: ["pipe", "pipe", "pipe"],
-        });
+        let child;
+        try {
+          child = spawnCli(config.cli, support.spawnArgs(turnConfig, cliTurn), {
+            cwd,
+            env,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+        } catch (error) {
+          const failure = describeSpawnFailure(error instanceof Error ? error : new Error(String(error)), config.cli);
+          return finishBeforeDispatch(false, "spawn_error", {
+            message: failure.message,
+            ...(failure.setup ? { setup: true } : {}),
+          });
+        }
 
         const state = { settled: false, deadlineTerminating: false, promptSent: false, text: "" };
         const asks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>();
@@ -760,7 +811,6 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           interruptTimer.unref?.();
         };
         active.set(threadId, { stop, interrupt, turnId, asks });
-        emit({ ...base(threadId, turnId), type: "turn.started" });
 
         (async () => {
           try {
@@ -1027,6 +1077,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           },
         },
         dispose: async () => {
+          disposed = true;
           for (const { stop } of active.values()) stop();
           listeners.clear();
         },

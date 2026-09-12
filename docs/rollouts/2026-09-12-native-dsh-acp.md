@@ -13,3 +13,5 @@ The upstream [ACP profile guide](https://github.com/deepseek-ai/deepseek-harness
 The fake native ACP process covers exact spawn arguments, standard MCP transport, model and reasoning confirmation, resume without transcript replay, permission requests, semantic text/tool updates, cancellation, and error classification.  Focused DSH plus shared ACP tests passed 64/64 after current-main integration, including the stock CLI dispatch gate.
 
 This Mac has no `dsh` executable on `PATH`, so no real installed-binary handshake or paid model turn was claimed.  Installing or changing the live DSH runtime remains outside this source lane.  The final full BotFleet gate, hosted CI, merge, and live setup acceptance remain pending.
+
+Live adoption must replace the existing custom `dsh-acp` bridge with the compatible stock package and profile in one coordinated configuration change.  Leaving the old bridge path selected would keep its previous model, resume, and MCP limits even after this source ships.
