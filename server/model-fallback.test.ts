@@ -589,6 +589,14 @@ describe("QuotaCooldownRegistry", () => {
           recordedAt: Date.now(),
         },
         {
+          botId: "prefixed-cap-bot",
+          instanceId: "grok",
+          model: "grok-4",
+          resetsAt: null,
+          error: "API request failed: 429 rate limit reached",
+          recordedAt: Date.now(),
+        },
+        {
           botId: "monitor-bot",
           instanceId: "antigravity",
           model: "gemini",
@@ -608,9 +616,10 @@ describe("QuotaCooldownRegistry", () => {
 
     expect(registry.get("prose-bot", "grok", "grok-4")).toBeUndefined();
     expect(registry.get("chip-bot", "grok", "grok-4")?.source).toBeUndefined();
+    expect(registry.get("prefixed-cap-bot", "grok", "grok-4")?.source).toBeUndefined();
     expect(registry.get("monitor-bot", "antigravity", "gemini")?.source).toBe("antigravity-usage");
     expect(writes).toHaveLength(1);
-    expect(JSON.parse(writes[0]).cooldowns).toHaveLength(2);
+    expect(JSON.parse(writes[0]).cooldowns).toHaveLength(3);
   });
 
   it("clearWhere removes a deleted instance's cooldowns even when they never expire, leaving other instances untouched", () => {

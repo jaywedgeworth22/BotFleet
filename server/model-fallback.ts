@@ -51,6 +51,8 @@ const QUOTA_OR_CAP_TERMINAL = [
 const KNOWN_FAILURE_QUOTA_OR_CAP =
   /session limit|hit your usage limit|usage cap|usage limit|quota exceeded|insufficient.?quota|insufficient.?balance|insufficient.?funds|zero balance|resource.?exhausted|credits exhausted|credits? (?:are )?depleted|out of (?:usage|credits)|credit balance (?:is )?(?:too )?low|message limit reached|messaging allowance|5-hour limit reached|monthly limit|weekly (?:\([^)]+\) )?usage limit|slow pool|payment required|plan limit|tier limit|free tier limit|spend limit|budget exceeded|rate.?limit|rate_limit_error|usage_limit_exceeded|too many requests|(?:server|service|provider) (?:is )?(?:overloaded|at capacity)|capacity (?:reached|exceeded|unavailable)|concurrency limit|account_inactive|enforced_spend_limit|\b402\b|\b429\b/i;
 
+const LEGACY_AMBIGUOUS_QUOTA_TERM = /\b(?:billing|subscription|capacity)\b/i;
+
 const QUOTA_TEXT_MAX = 500;
 
 /** Short error-chip text that must not count as a real assistant reply. */
@@ -66,6 +68,15 @@ export function isQuotaOrCapText(text: string): boolean {
   if (!trimmed || trimmed.length >= QUOTA_TEXT_MAX) return false;
   if (/^[>`"']/.test(trimmed)) return false;
   return QUOTA_OR_CAP_TERMINAL.some((pattern) => pattern.test(trimmed));
+}
+
+function isLegacyProseCooldown(text: string): boolean {
+  const trimmed = text.trim();
+  return (
+    LEGACY_AMBIGUOUS_QUOTA_TERM.test(trimmed) &&
+    !isQuotaOrCapText(trimmed) &&
+    !KNOWN_FAILURE_QUOTA_OR_CAP.test(trimmed)
+  );
 }
 
 export interface QuotaOrCapEvidence {
@@ -383,7 +394,7 @@ export class QuotaCooldownRegistry {
         // successful reply selected by the former keyword matcher.  Retain
         // only standalone provider chips; usage-monitor and other named
         // producers already carry their own trusted source.
-        if (!cd.source && !isQuotaOrCapText(cd.error)) {
+        if (!cd.source && !cd.resetsAt && isLegacyProseCooldown(cd.error)) {
           removed = true;
           continue;
         }
