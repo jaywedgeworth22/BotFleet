@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import {
+  generationBelongsToApp,
   prunablePath,
   resolveRollbackPlacement,
   rollbackGenerationStatus,
@@ -96,6 +97,28 @@ test("pruning keeps one verified generation and never touches an unverified one"
     rollbackGenerationsToPrune([generations[2]], { appPath: "/Applications/BotFleet.app" }),
     [],
   );
+});
+
+test("a receipt naming no app path is claimed only by the installation that could have written it", () => {
+  const legacy = { rollbackBundle: "/Applications/.BotFleet.rollback-1757600000000-2246f19e9de8.app" };
+  assert.equal(generationBelongsToApp(legacy, "/Applications/BotFleet.app"), true);
+  // A second installation sharing /Applications under another name must not
+  // claim the copies the primary install left there.
+  assert.equal(generationBelongsToApp(legacy, "/Applications/BotFleet Beta.app"), false);
+  // Nor may an install elsewhere claim them by basename alone.
+  assert.equal(generationBelongsToApp(legacy, "/Users/test/Applications/BotFleet.app"), false);
+  assert.equal(generationBelongsToApp({ rollbackBundle: "/Applications/something-else.app" }, "/Applications/BotFleet.app"), false);
+  // A receipt that names its app path is matched on that alone.
+  assert.equal(generationBelongsToApp({ appPath: "/Applications/BotFleet Beta.app", rollbackBundle: "/x" }, "/Applications/BotFleet Beta.app"), true);
+  assert.equal(generationBelongsToApp({ appPath: "/Applications/BotFleet Beta.app", rollbackBundle: "/x" }, "/Applications/BotFleet.app"), false);
+});
+
+test("a co-existing installation's legacy rollback copies are never pruned", () => {
+  const generations = [
+    { receiptPath: "/Applications/.BotFleet.rollback-old.app.json", receipt: { rollbackBundle: "/Applications/.BotFleet.rollback-old.app", installedAt: "2026-09-11T21:01:00.000Z" } },
+    { receiptPath: "/updates/new/rollback/BotFleet Beta.app.json", receipt: { appPath: "/Applications/BotFleet Beta.app", rollbackBundle: "/updates/new/rollback/BotFleet Beta.app", installedAt: "2026-09-12T11:31:00.000Z" } },
+  ];
+  assert.deepEqual(rollbackGenerationsToPrune(generations, { appPath: "/Applications/BotFleet Beta.app" }), []);
 });
 
 test("prune refuses any receipt path outside the directories the updater owns", () => {

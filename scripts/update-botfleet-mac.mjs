@@ -182,12 +182,27 @@ export function rollbackGenerationStatus(receipt) {
 }
 
 /**
+ * Receipts written before placement was recorded name no app path.  The only
+ * bundle that earlier code could produce was a hidden `.BotFleet.rollback-….app`
+ * beside a `BotFleet.app`, so claim one only when all of that holds: a second
+ * installation sharing the folder under another name keeps its own copies.
+ */
+export function generationBelongsToApp(receipt, appPath) {
+  if (!appPath) return true;
+  if (receipt?.appPath) return receipt.appPath === appPath;
+  return basename(appPath) === "BotFleet.app" &&
+    typeof receipt?.rollbackBundle === "string" &&
+    dirname(receipt.rollbackBundle) === dirname(appPath) &&
+    basename(receipt.rollbackBundle).startsWith(".BotFleet.rollback-");
+}
+
+/**
  * Keep exactly one rollback generation per installed app path.  An unverified
  * or still-installing generation is never a prune candidate and never counts
  * as the generation being kept: its bundle may be the only way back.
  */
 export function rollbackGenerationsToPrune(generations, { appPath, keepReceiptPath } = {}) {
-  const mine = generations.filter((item) => !appPath || !item.receipt?.appPath || item.receipt.appPath === appPath);
+  const mine = generations.filter((item) => generationBelongsToApp(item.receipt, appPath));
   const verified = mine.filter((item) => rollbackGenerationStatus(item.receipt) === "verified");
   const ordered = [...verified].sort((left, right) =>
     String(right.receipt?.installedAt || "").localeCompare(String(left.receipt?.installedAt || "")));
