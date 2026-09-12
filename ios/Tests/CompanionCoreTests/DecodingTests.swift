@@ -46,6 +46,23 @@ final class DecodingTests: XCTestCase {
         let room = try XCTUnwrap(fleet.groups.first)
         XCTAssertEqual(room.messages?.count, 3)
         XCTAssertEqual(room.hasMore, true)
+        XCTAssertFalse(room.isBotToBot)
+    }
+
+    func testDmTrueMarksABotToBotRoom() throws {
+        let data = Data(#"""
+        {"id":"g1","threadId":"t1","name":"Fixer \u21c4 Designer","memberIds":["a","b"],"defaultResponder":{"kind":"mentions"},"bulletin":"","unread":false,"createdAt":1,"dm":true}
+        """#.utf8)
+        let room = try JSONDecoder().decode(Room.self, from: data)
+        XCTAssertTrue(room.isBotToBot)
+    }
+
+    func testMissingDmIsAUserRoom() throws {
+        let data = Data(#"""
+        {"id":"g2","threadId":"t2","name":"Work","memberIds":["a"],"defaultResponder":{"kind":"mentions"},"bulletin":"","unread":false,"createdAt":1}
+        """#.utf8)
+        let room = try JSONDecoder().decode(Room.self, from: data)
+        XCTAssertFalse(room.isBotToBot)
     }
 
     func testDecodesTheFullFleetToo() throws {

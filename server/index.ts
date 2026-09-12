@@ -149,6 +149,7 @@ import { createTurnToolHost } from "./tools/host.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import {
   ActiveTurnOwners,
+  ExactTurnLeases,
   eligibleAutoFallbackChain,
   inspectThreadOwners,
   interruptThreadOwners,
@@ -1321,7 +1322,10 @@ function releaseStalledTurnIfUnowned(
   const bot = store.bot(turn.botId);
   if (!bot?.busy || (bot.inflightThreadId && bot.inflightThreadId !== turn.threadId)) return "release";
   stopScreenPoller(bot.id);
-  if (activeVpsThreads.get(bot.id) === turn.threadId) activeVpsThreads.delete(bot.id);
+  const vpsLease = activeVpsThreads.forBot(bot.id);
+  if (vpsLease?.threadId === turn.threadId && vpsLease.dispatchId === stalledDispatchId) {
+    activeVpsThreads.release(vpsLease);
+  }
   store.setActivity(bot.id, "idle");
   store.patchBot(bot.id, { inflightThreadId: undefined });
   // This grace fallback replaces a missing turn.completed event.  Release
@@ -1527,7 +1531,7 @@ const localVmActiveThreads = new Map<string, string>();
 let localVmImageBusy = false;
 let localVmProvisionBusy = false;
 let localVmModeChangeBusy = false;
-const activeVpsThreads = new Map<string, string>();
+const activeVpsThreads = new ExactTurnLeases();
 // A restore mutates and cleans a project work tree. Claim the bot across the
 // entire async Git operation so a turn cannot start in that folder midway.
 const checkpointRestoreLeases = new Set<string>();
@@ -2074,9 +2078,11 @@ bus.subscribe((event: RuntimeEvent) => {
       // turns are tallied here.  Usage Monitor hears about both: the room
       // branch below reports the same turn tagged with the room it ran in.
       if (bot) {
-        const vpsTurn = activeVpsThreads.get(bot.id) === event.threadId;
+        const vpsLease = activeVpsThreads.forBot(bot.id);
+        const vpsTurn =
+          vpsLease?.threadId === event.threadId && vpsLease.dispatchId === settledOwner?.dispatchId;
         const clearVpsTurn = () => {
-          if (activeVpsThreads.get(bot.id) === event.threadId) activeVpsThreads.delete(bot.id);
+          if (vpsLease) activeVpsThreads.release(vpsLease);
         };
         // bank what this turn spent before the bot broadcast carries the
         // task list to every window
@@ -2715,6 +2721,7 @@ async function startTurn(
 
   void (async () => {
     let observedReloadGeneration = providerReloadGeneration;
+    let vpsLease: ReturnType<ExactTurnLeases["claim"]> | undefined;
     const dispatchStillCurrent = (): boolean => {
       const owner = activeTurnOwners.forEvent(threadId, instanceId);
       if (owner?.dispatchId !== dispatchOwner.dispatchId) return false;
@@ -2906,7 +2913,7 @@ async function startTurn(
         if (unsupported && wantsCloud) throw new Error(unsupported);
         if (unsupported && autoCloud) autoVpsProblem = unsupported;
         if (!unsupported) {
-          activeVpsThreads.set(bot.id, threadId);
+          vpsLease = activeVpsThreads.claim(bot.id, threadId, dispatchOwner.dispatchId);
           const remote = wantsCloud || bot.autoStartVps
             ? await vps.vpsComputerAction("provision", cfg, bot.id)
             : await vps.inspectVpsForAuto(cfg, bot.id);
@@ -2927,7 +2934,7 @@ async function startTurn(
             });
             previewCapture = () => vps.vpsComputerScreenshot(targetCfg, bot.id);
           } else {
-            activeVpsThreads.delete(bot.id);
+            activeVpsThreads.release(vpsLease);
             if (wantsCloud) {
               throw new Error(remote?.problem ?? "the VPS computer could not be created or reached");
             }
@@ -3205,7 +3212,7 @@ async function startTurn(
       if (activeTurnOwners.forEvent(threadId, instanceId)?.dispatchId !== dispatchOwner.dispatchId) return;
       activeTurnOwners.settle(threadId, instanceId);
       releaseLocalVmThread(threadId);
-      if (activeVpsThreads.get(bot.id) === threadId) activeVpsThreads.delete(bot.id);
+      if (vpsLease) activeVpsThreads.release(vpsLease);
       watchdog.settle(threadId);
       turnUsage.delete(threadId);
       const message = e instanceof Error ? e.message : String(e);
@@ -4918,7 +4925,7 @@ function settleInterruptedBots(
     )?.[0];
     if (vmThread) releaseLocalVmThread(vmThread);
     stopScreenPoller(b.id);
-    activeVpsThreads.delete(b.id);
+    activeVpsThreads.clearBot(b.id);
     finalizeDelegationWatch(
       inflight,
       false,
@@ -7021,7 +7028,7 @@ const server = createServer(async (req, res) => {
         return json(res, 400, { error: "chiefOfStaff must be true or false" });
       }
       if (body.cloudBackend !== undefined) {
-        const backendError = cloudBackendChangeError(Boolean(existingBot?.busy), activeVpsThreads.has(m[1]));
+        const backendError = cloudBackendChangeError(Boolean(existingBot?.busy), activeVpsThreads.hasBot(m[1]));
         if (backendError) return json(res, 409, { error: backendError });
       }
       if (body.cwd !== undefined) {
@@ -7136,7 +7143,7 @@ const server = createServer(async (req, res) => {
         // a running turn dies with its bot
         await registry.get(bot.modelSelection.instanceId)?.adapter.interruptTurn(bot.threadId).catch(() => {});
         stopScreenPoller(bot.id);
-        activeVpsThreads.delete(bot.id);
+        activeVpsThreads.clearBot(bot.id);
         routines!.disableForBot(bot.id);
         webhooks.disableForBot(bot.id);
         resourceTriggers.disableForBot(bot.id);
@@ -9428,7 +9435,7 @@ const server = createServer(async (req, res) => {
         if (m[2] === "provision" && !bot.computers?.includes("cloud") && !bot.autoStartVps) {
           return json(res, 409, { error: "Auto may start this VPS only after Start VPS automatically is enabled" });
         }
-        if ((m[2] === "sleep" || m[2] === "remove") && (bot.busy || activeVpsThreads.has(botId))) {
+        if ((m[2] === "sleep" || m[2] === "remove") && (bot.busy || activeVpsThreads.hasBot(botId))) {
           return json(res, 409, { error: "the VPS computer is being used by this bot — interrupt the turn first" });
         }
         if (m[2] === "join") {
