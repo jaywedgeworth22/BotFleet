@@ -1501,6 +1501,12 @@ enum Chat: Identifiable, Hashable {
         return false
     }
 
+    /// Bot-to-bot DMs, not a user room.  Matches Mac Bot Chats.
+    var isBotToBot: Bool {
+        if case let .room(room) = self { return room.isBotToBot }
+        return false
+    }
+
     var subtitle: String {
         switch self {
         case let .bot(bot): return bot.title
