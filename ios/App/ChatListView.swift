@@ -1,7 +1,8 @@
 // The roster.
 //
-// Messages-shaped: a glass header, collapsible room and bot sections with
-// equal prominence, unread dots in each bot's own colour at the left edge,
+// Messages-shaped: a glass header, collapsible room, bot, and Bot Chats
+// sections.  Bot-to-bot DMs stay out of user rooms, matching the Mac sidebar.
+// Unread dots in each bot's own colour at the left edge,
 // and a glass bar floating at the bottom. The bar's pill is Updates — only
 // the chats that need you, are working, or have something you have not
 // read — beside round search and new-bot buttons. Everything scrolls under
@@ -27,6 +28,8 @@ struct ChatListView: View {
     @State private var showingCompose = false
     @AppStorage("companion.chats.roomsExpanded") private var roomsExpanded = true
     @AppStorage("companion.chats.botsExpanded") private var botsExpanded = true
+    /// Mac Bot Chats is default-collapsed.  Same first-open on the phone.
+    @AppStorage("companion.chats.botChatsExpanded") private var botChatsExpanded = false
     @FocusState private var searchFocused: Bool
 
     /// Room for the floating bar, so the last row can scroll clear of it.
@@ -176,7 +179,7 @@ struct ChatListView: View {
                                             at: summary.lastActivity,
                                             state: MausState.forChat(summary.chat, in: session.state),
                                             waiting: waitingChats.contains(summary.chat.id),
-                                            last: index == roomSummaries.count - 1 && !botsExpanded
+                                            last: index == roomSummaries.count - 1 && !botsExpanded && !showingBotChats
                                         )
                                     }
                                 }
@@ -231,7 +234,7 @@ struct ChatListView: View {
                                     at: summary.lastActivity,
                                     state: MausState.forChat(summary.chat, in: session.state),
                                     waiting: waitingChats.contains(summary.chat.id),
-                                    last: index == rows.count - 1 && nestedTasks(for: summary.chat).isEmpty
+                                    last: index == rows.count - 1 && nestedTasks(for: summary.chat).isEmpty && !showingBotChats
                                 )
                             }
                             if session.config?.allowsMultipleBotThreads == true {
@@ -245,13 +248,36 @@ struct ChatListView: View {
                                 }
                             }
                         }
+
+                        if query.isEmpty, !botChatSummaries.isEmpty {
+                            sectionToggle(
+                                title: "Bot Chats",
+                                count: botChatSummaries.count,
+                                expanded: $botChatsExpanded
+                            )
+                            .padding(.top, 14)
+                            if botChatsExpanded {
+                                ForEach(Array(botChatSummaries.enumerated()), id: \.element.id) { index, summary in
+                                    chatOpener(for: summary.chat) {
+                                        ChatRow(
+                                            chat: summary.chat,
+                                            preview: summary.preview,
+                                            at: summary.lastActivity,
+                                            state: MausState.forChat(summary.chat, in: session.state),
+                                            waiting: waitingChats.contains(summary.chat.id),
+                                            last: index == botChatSummaries.count - 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
                     }
                     .padding(.bottom, Self.barClearance)
                 }
                 .refreshable { await session.refresh() }
                 .overlay {
                     if query.isEmpty
-                        ? botSummaries.isEmpty && roomSummaries.isEmpty && searchHits.isEmpty
+                        ? botSummaries.isEmpty && roomSummaries.isEmpty && botChatSummaries.isEmpty && searchHits.isEmpty
                         : chats.isEmpty && searchHits.isEmpty
                     {
                         ContentUnavailableView(
@@ -448,8 +474,20 @@ struct ChatListView: View {
         session.state.chatSummaries.filter { if case .bot = $0.chat { return true } else { return false } }
     }
 
+    /// User rooms only.  Bot-to-bot DMs sit in Bot Chats, like the Mac sidebar.
     private var roomSummaries: [ChatSummary] {
-        session.state.chatSummaries.filter { if case .room = $0.chat { return true } else { return false } }
+        session.state.chatSummaries.filter {
+            if case .room = $0.chat { return !$0.chat.isBotToBot }
+            return false
+        }
+    }
+
+    private var botChatSummaries: [ChatSummary] {
+        session.state.chatSummaries.filter(\.chat.isBotToBot)
+    }
+
+    private var showingBotChats: Bool {
+        query.isEmpty && botChatsExpanded && !botChatSummaries.isEmpty
     }
 
     private func nestedTasks(for chat: Chat) -> [BotTask] {
