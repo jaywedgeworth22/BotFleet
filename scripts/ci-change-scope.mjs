@@ -9,8 +9,10 @@ const ROOT_DOCUMENTS = new Set([
   "SECURITY.md",
 ]);
 
+const FULL_CI_DOCUMENTS = new Set(["docs/secrets.md"]);
+
 export function isDocumentationPath(path) {
-  return ROOT_DOCUMENTS.has(path) || path.startsWith("docs/");
+  return !FULL_CI_DOCUMENTS.has(path) && (ROOT_DOCUMENTS.has(path) || path.startsWith("docs/"));
 }
 
 export function classifyCIPaths(paths) {
