@@ -5,7 +5,7 @@
 // session/prompt, and streams session/update notifications for a scripted
 // turn. Failure modes mirror how real ACP agents misbehave:
 //
-//   FAKE_ACP_MODE   happy (default) | empty-reply | exit-early | fail-after-text | hang | hang-exit-gated | resume-fails | no-auth | auth-required | permission
+//   FAKE_ACP_MODE   happy (default) | empty-reply | exit-early | fail-after-text | hang | hang-exit-gated | cancel-exits | resume-fails | no-auth | auth-required | permission
 //                   | interleave (message → tool → message → tool → message)
 //                   | no-session-config (reject session/set_mode + set_model
 //                     with -32601, i.e. an agent predating those methods)
@@ -371,7 +371,7 @@ function handle(msg: any) {
       break;
     }
     case "session/prompt": {
-      if (mode === "hang" || mode === "hang-exit-gated") {
+      if (mode === "hang" || mode === "hang-exit-gated" || mode === "cancel-exits") {
         // never resolve the prompt — lets tests exercise interrupt
         setInterval(() => {}, 1_000);
         return;
@@ -520,6 +520,7 @@ function handle(msg: any) {
     }
     case "session/cancel":
       // the interrupted prompt resolves as cancelled
+      if (mode === "cancel-exits") process.exit(0);
       break;
     default:
       if (msg.id !== undefined) out({ jsonrpc: "2.0", id: msg.id, error: { code: -32601, message: "method not found" } });

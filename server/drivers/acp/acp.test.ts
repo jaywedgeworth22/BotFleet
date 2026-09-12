@@ -316,6 +316,18 @@ describe("ACP turns (fake CLI)", () => {
     expect(instance.adapter.hasSession("t-deadline")).toBe(false);
   });
 
+  it("reports a prompt timeout when cancellation makes the child exit immediately", async () => {
+    await create(GrokAgentDriver, "cancel-exits", { promptTimeoutMs: 1_000 });
+
+    await instance.adapter.sendTurn({ threadId: "t-cancel-exits", text: "never finishes" });
+    const done = await recorder.until((event) => event.type === "turn.completed", 3_000);
+
+    expect(done).toMatchObject({ ok: false, stopReason: "prompt_timeout" });
+    expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.filter((event) => event.type === "runtime.error")).toHaveLength(1);
+    expect(instance.adapter.hasSession("t-cancel-exits")).toBe(false);
+  });
+
   it("emits each assistant text block before the tool that follows it", async () => {
     await create(GrokAgentDriver, "interleave");
     await instance.adapter.sendTurn({ threadId: "t-interleave", text: "go", model: "grok-4.5" });

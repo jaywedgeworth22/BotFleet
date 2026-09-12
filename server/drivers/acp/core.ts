@@ -876,6 +876,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
               const code = support.classifyError?.(e);
               const promptTimedOut = e instanceof AcpRpcTimeoutError && e.method === "session/prompt";
               if (promptTimedOut && sessionId) {
+                state.deadlineTerminating = true;
                 // ACP cancellation is a notification.  Flush it to the child
                 // and give its event loop one bounded chance to handle it
                 // before terminal settlement kills the unresponsive process.
