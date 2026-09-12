@@ -41,6 +41,7 @@ import { openBotFleetDesktop } from "./desktop-open.ts";
 import { IdempotencyCache } from "./idempotency.ts";
 import { initializeHarnessOwnership, harnessOwnerProof } from "../electron/harness-ownership.mjs";
 import { authorizedRuntime } from "../electron/runtime-identity.mjs";
+import { planCredentialRestore } from "../electron/credential-restore.mjs";
 import { runtimeBuildIdentity, runtimeReadiness } from "./runtime-identity.ts";
 import {
   avatarGenerationRequestSchema,
@@ -5175,9 +5176,11 @@ function isLoopbackAddress(address: string | undefined): boolean {
   return isLoopbackHost(bare.includes(":") ? `[${bare}]` : bare);
 }
 
-function currentRuntimeReadiness() {
+function currentRuntimeReadiness(ownAdmissionActive = false) {
   return runtimeReadiness({
-    admissions: activeUpdateAdmissions,
+    // Restore routes may exclude only their own still-held HTTP admission.
+    // Other requests, including ones still reading a body, remain blockers.
+    admissions: activeUpdateAdmissions - Number(ownAdmissionActive),
     turns: store.bots.filter((bot) => bot.busy).length,
     completions: completionFolds.size,
     groupOperations: groupTurnOperations.size,
@@ -5254,11 +5257,17 @@ const server = createServer(async (req, res) => {
     }
     const mutatingApiRequest = path.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(method) &&
       path !== "/api/runtime/quiesce";
+    let ownAdmissionActive = false;
     if (mutatingApiRequest) {
       const releaseAdmission = beginUpdateAdmission();
       if (!releaseAdmission) return json(res, 503, { error: "BotFleet is quiescing for an update" });
-      res.once("finish", releaseAdmission);
-      res.once("close", releaseAdmission);
+      ownAdmissionActive = true;
+      const finishAdmission = () => {
+        ownAdmissionActive = false;
+        releaseAdmission();
+      };
+      res.once("finish", finishAdmission);
+      res.once("close", finishAdmission);
     }
     // ── internal peer-agent comms (localhost + shared token only) ──────
     // The agents-proxy (spawned inside a bot's agent process) calls these to
@@ -7990,6 +7999,46 @@ const server = createServer(async (req, res) => {
       });
     }
 
+    if (method === "POST" && path === "/api/runtime/credentials") {
+      if (!isLoopbackAddress(req.socket.remoteAddress) || !authorizedRuntime(harnessOwner, req.headers.authorization)) {
+        return json(res, 401, { error: "unauthorized" });
+      }
+      let plan;
+      try { plan = planCredentialRestore(await readBody(req), cfg); }
+      catch { return json(res, 400, { error: "Invalid credential restore payload" }); }
+      if (!plan.restored.length && credentialFingerprint(cfg) === loadedCredentialFingerprint) {
+        return json(res, 200, { restored: [], retained: plan.retained });
+      }
+      if (!currentRuntimeReadiness(ownAdmissionActive).safeToRestart) {
+        return json(res, 409, { error: "Credential restoration waits for current work to finish" });
+      }
+      // Fence dispatch synchronously before the first await.  Restoration
+      // never writes config or Infisical and never interrupts an active turn.
+      providerConfigBusy = true;
+      try {
+        await serializeProviderReload(async () => {
+          Object.assign(process.env, plan.env);
+          Object.assign(cfg, loadConfig());
+          if (plan.restored.includes("infisicalClientSecret")) {
+            // Timer semantics refresh the canonical snapshot without nesting
+            // a provider reload inside the mutation already holding its fence.
+            await infisical.refresh("timer");
+            Object.assign(cfg, loadConfig());
+            infisical.start();
+          }
+          observability.apply();
+          if (credentialFingerprint(cfg) !== loadedCredentialFingerprint) await runProviderReload();
+          infisical.setPendingProviderReload(false);
+        });
+        broadcast({ kind: "config", ...configStatus() });
+        return json(res, 200, { restored: plan.restored, retained: plan.retained });
+      } catch {
+        // No exception detail: provider errors can contain credential input.
+        return json(res, 503, { error: "Credential restoration could not refresh provider readiness" });
+      } finally {
+        providerConfigBusy = false;
+      }
+    }
     if ((method === "GET" && path === "/api/runtime") ||
         ((method === "POST" || method === "DELETE") && path === "/api/runtime/quiesce")) {
       if (!isLoopbackAddress(req.socket.remoteAddress) || !authorizedRuntime(harnessOwner, req.headers.authorization)) {
@@ -8251,6 +8300,31 @@ const server = createServer(async (req, res) => {
         patchOptions.key = body.key;
       }
 
+      if (url.searchParams.get("restore") === "1") {
+        if (!isLoopbackAddress(req.socket.remoteAddress) || !authorizedRuntime(harnessOwner, req.headers.authorization)) {
+          return json(res, 401, { error: "unauthorized" });
+        }
+        const id = instancePatch[1];
+        const current = withInstanceKeyOverrides(instanceConfigs(cfg))[id];
+        if (!current) return json(res, 404, { error: "Instance no longer exists" });
+        if (current.driver !== "openai-compat" || !body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "key") || !patchOptions.key?.trim() || patchOptions.key.length > 16_384) {
+          return json(res, 400, { error: "Invalid instance credential restore payload" });
+        }
+        const configuredKey = current.config && typeof current.config === "object" && "key" in current.config ? current.config.key : undefined;
+        if (configuredKey || current.environment?.OPENAI_COMPAT_API_KEY) return json(res, 200, { retained: true });
+        if (!currentRuntimeReadiness(ownAdmissionActive).safeToRestart) return json(res, 409, { error: "Credential restoration waits for current work to finish" });
+        providerConfigBusy = true;
+        try {
+          await serializeProviderReload(async () => {
+            instanceKeyOverrides.set(id, patchOptions.key!.trim());
+            await runInstanceProviderReload(id, withInstanceKeyOverrides(instanceConfigs(cfg))[id]);
+          });
+          return json(res, 200, { restored: true });
+        } catch {
+          instanceKeyOverrides.delete(id);
+          return json(res, 503, { error: "Instance credential restoration could not refresh provider readiness" });
+        } finally { providerConfigBusy = false; }
+      }
       if (providerConfigBusy) return json(res, 409, { error: "provider settings are already being updated" });
       providerConfigBusy = true;
       try {

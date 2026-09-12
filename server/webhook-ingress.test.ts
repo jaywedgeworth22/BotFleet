@@ -96,6 +96,37 @@ describe("webhook-only ingress", () => {
     }
   });
 
+  it("deduplicates configured Sentry issue Request-ID deliveries while preserving distinct actions", async () => {
+    const credential = webhookCredential(ingress.baseUrl, endpointId, secret);
+    const before = queued.length;
+    // Header names and Request-ID shape were verified in the configured
+    // internal app's failed-delivery log.  IDs and payload below are synthetic.
+    const send = (requestId: string, action: string) => fetch(credential.url, {
+      method: "POST",
+      headers: { "content-type": "application/json", "request-id": requestId, "sentry-hook-resource": "issue" },
+      body: JSON.stringify({ action, data: { issue: { id: "fixture-issue" } } }),
+    });
+    const first = await send("a".repeat(32), "resolved");
+    expect(await first.json()).toMatchObject({ accepted: true, duplicate: false });
+    expect(await (await send("a".repeat(32), "resolved")).json()).toMatchObject({ accepted: true, duplicate: true });
+    expect(await (await send("b".repeat(32), "unresolved")).json()).toMatchObject({ accepted: true, duplicate: false });
+    expect(await (await send("c".repeat(32), "resolved")).json()).toMatchObject({ accepted: true, duplicate: false });
+    expect(queued).toHaveLength(before + 3);
+  });
+
+  it("retains PagerDuty x-webhook-id precedence and does not treat generic request IDs as deliveries", async () => {
+    const credential = webhookCredential(ingress.baseUrl, endpointId, secret);
+    const before = queued.length;
+    const send = (headers: Record<string, string>) => fetch(credential.url, {
+      method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ event: { id: "pd-fixture" } }),
+    });
+    expect(await (await send({ "x-webhook-id": "pd-delivery", "request-id": "d".repeat(32) })).json()).toMatchObject({ duplicate: false });
+    expect(await (await send({ "x-webhook-id": "pd-delivery", "request-id": "e".repeat(32) })).json()).toMatchObject({ duplicate: true });
+    expect(await (await send({ "request-id": "f".repeat(32) })).json()).toMatchObject({ duplicate: false });
+    expect(await (await send({ "request-id": "f".repeat(32) })).json()).toMatchObject({ duplicate: false });
+    expect(queued).toHaveLength(before + 3);
+  });
+
   it("does not deduplicate separate requests that reuse a generic payload id", async () => {
     const credential = webhookCredential(ingress.baseUrl, endpointId, secret);
     const before = queued.length;

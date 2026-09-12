@@ -439,6 +439,122 @@ afterAll(async () => {
 });
 
 describe("harness HTTP API", () => {
+  it("restores encrypted workspace credentials only through authenticated runtime memory", async () => {
+    const owner = JSON.parse(readFileSync(join(home, ".botfleet", "harness-owner.json"), "utf8"));
+    const restore = (body: unknown, nonce = owner.nonce) => fetch(`${BASE}/api/runtime/credentials`, {
+      method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${nonce}` },
+      body: JSON.stringify(body),
+    });
+    const configPath = join(home, ".botfleet", "config.json");
+    const before = readFileSync(configPath, "utf8");
+    expect((await restore({ xaiApiKey: "restore-sentinel" }, "wrong-owner")).status).toBe(401);
+    expect((await restore({ PATH: "forbidden" })).status).toBe(400);
+    expect(readFileSync(configPath, "utf8")).toBe(before);
+    try {
+      const response = await restore({ xaiApiKey: "restore-sentinel" });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ restored: ["xaiApiKey"], retained: [] });
+      expect((await api("GET", "/api/config")).body.xai.configured).toBe(true);
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+      const repeated = await restore({ xaiApiKey: "older-sentinel" });
+      expect(await repeated.json()).toEqual({ restored: [], retained: ["xaiApiKey"] });
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+      expect(stderr).not.toContain("restore-sentinel");
+    } finally {
+      await api("PUT", "/api/config?secretStorage=external", { xai: { key: "" } });
+    }
+  });
+
+  it("refuses workspace credential restoration without interrupting active work", async () => {
+    const owner = JSON.parse(readFileSync(join(home, ".botfleet", "harness-owner.json"), "utf8"));
+    const claude = (await api("GET", "/api/instances")).body.instances.find((i: { instanceId: string }) => i.instanceId === "claude");
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "claude", model: claude.models.default } });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hold this fixture turn" })).status).toBe(202);
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots.find((b: { id: string }) => b.id === bot.id)?.busy).toBe(true);
+      const before = readFileSync(join(home, ".botfleet", "config.json"), "utf8");
+      const response = await fetch(`${BASE}/api/runtime/credentials`, { method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${owner.nonce}` },
+        body: JSON.stringify({ deepseekApiKey: "busy-sentinel" }) });
+      expect(response.status).toBe(409);
+      expect((await api("GET", "/api/config")).body.deepseek.configured).toBe(false);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.find((b: { id: string }) => b.id === bot.id)?.busy).toBe(true);
+      expect(readFileSync(join(home, ".botfleet", "config.json"), "utf8")).toBe(before);
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId });
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("counts other admissions and respects the update fence during workspace credential restoration", async () => {
+    const owner = JSON.parse(readFileSync(join(home, ".botfleet", "harness-owner.json"), "utf8"));
+    const authorization = { authorization: `Bearer ${owner.nonce}` };
+    const created = await api("POST", "/api/instances", { name: "Admission restore", endpoint: "http://localhost:11498/v1", models: ["fixture"] });
+    expect(created.status).toBe(201);
+    const id = created.body.instanceId;
+    const held = request({ hostname: "127.0.0.1", port: PORT, path: "/api/runtime/credentials", method: "POST",
+      headers: { ...authorization, "content-type": "application/json", "content-length": "2" } });
+    held.on("error", () => {});
+    held.write("{");
+    const restore = (path: string, body: unknown) => fetch(`${BASE}${path}`, {
+      method: path.includes("instances") ? "PATCH" : "POST", headers: { ...authorization, "content-type": "application/json" }, body: JSON.stringify(body),
+    });
+    const runtime = async () => (await fetch(`${BASE}/api/runtime`, { headers: authorization })).json() as Promise<{ activeWorkCount: number }>;
+    try {
+      await expect.poll(async () => (await runtime()).activeWorkCount).toBe(1);
+      expect((await restore("/api/runtime/credentials", { deepseekApiKey: "blocked-sentinel" })).status).toBe(409);
+      expect((await restore(`/api/instances/${id}?restore=1`, { key: "blocked-custom" })).status).toBe(409);
+      expect((await fetch(`${BASE}/api/runtime/quiesce`, { method: "POST", headers: authorization })).status).toBe(409);
+      held.destroy();
+      await expect.poll(async () => (await runtime()).activeWorkCount).toBe(0);
+      expect((await fetch(`${BASE}/api/runtime/quiesce`, { method: "POST", headers: authorization })).status).toBe(200);
+      expect((await restore("/api/runtime/credentials", { deepseekApiKey: "blocked-sentinel" })).status).toBe(503);
+      expect((await restore(`/api/instances/${id}?restore=1`, { key: "blocked-custom" })).status).toBe(503);
+    } finally {
+      held.destroy();
+      await fetch(`${BASE}/api/runtime/quiesce`, { method: "DELETE", headers: authorization });
+      await api("DELETE", `/api/instances/${id}`);
+    }
+  });
+
+  it("restores encrypted custom credentials only when idle without writing config or replacing a current key", async () => {
+    const owner = JSON.parse(readFileSync(join(home, ".botfleet", "harness-owner.json"), "utf8"));
+    const created = await api("POST", "/api/instances", { name: "Restore fixture", endpoint: "http://localhost:11498/v1", models: ["fixture"] });
+    expect(created.status).toBe(201);
+    const id = created.body.instanceId;
+    const restore = (body: unknown, nonce = owner.nonce, instanceId = id) => fetch(`${BASE}/api/instances/${instanceId}?secretStorage=external&restore=1`, {
+      method: "PATCH", headers: { "content-type": "application/json", authorization: `Bearer ${nonce}` }, body: JSON.stringify(body),
+    });
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const claude = (await api("GET", "/api/instances")).body.instances.find((i: { instanceId: string }) => i.instanceId === "claude");
+      await api("PATCH", `/api/bots/${bot.id}`, { modelSelection: { instanceId: "claude", model: claude.models.default } });
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "hold this custom restore fixture" })).status).toBe(202);
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots.find((b: { id: string }) => b.id === bot.id)?.busy).toBe(true);
+      const configPath = join(home, ".botfleet", "config.json");
+      const before = readFileSync(configPath, "utf8");
+      expect((await restore({ key: "custom-restore-sentinel" }, "wrong-owner")).status).toBe(401);
+      expect((await restore({ key: "custom-restore-sentinel" }, owner.nonce, "missing-instance")).status).toBe(404);
+      expect((await restore({ key: "custom-restore-sentinel", ignored: true })).status).toBe(400);
+      expect((await restore({ key: "custom-restore-sentinel" })).status).toBe(409);
+      expect((await api("GET", "/api/bots?messages=0")).body.bots.find((b: { id: string }) => b.id === bot.id)?.busy).toBe(true);
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+      await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId });
+      await expect.poll(async () => (await api("GET", "/api/bots?messages=0")).body.bots.find((b: { id: string }) => b.id === bot.id)?.busy).toBe(false);
+      const restored = await restore({ key: "custom-restore-sentinel" });
+      expect(restored.status).toBe(200);
+      expect(await restored.json()).toEqual({ restored: true });
+      expect(await (await restore({ key: "older-copy" })).json()).toEqual({ retained: true });
+      expect(readFileSync(configPath, "utf8")).toBe(before);
+      expect(stderr).not.toContain("custom-restore-sentinel");
+    } finally {
+      await api("POST", `/api/bots/${bot.id}/interrupt`, { threadId: bot.threadId });
+      await api("DELETE", `/api/bots/${bot.id}`);
+      await api("DELETE", `/api/instances/${id}`);
+    }
+  });
+
   it("rejects non-loopback authorities while accepting IPv4 and IPv6 loopback forms", async () => {
     expect(await statusWithHeaders({ host: "example.com" })).toBe(403);
     expect(await statusWithHeaders({ origin: "https://example.com" })).toBe(403);

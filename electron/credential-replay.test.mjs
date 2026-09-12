@@ -20,7 +20,7 @@ describe("custom-engine credential replay on boot", () => {
       /if \(identity\.outcome === "ready"\) \{([\s\S]*?)\n {4}\}/,
     );
     expect(match, "startServerOn's ready branch not found").not.toBeNull();
-    expect(match[1]).toMatch(/await replayInstanceCredentials\(port\);/);
+    expect(match[1]).toMatch(/void replayAttachedWorkspaceCredentials\(port,/);
   });
 
   it("also replays stored instance credentials on the ATTACH path (startServerPackaged's attached branch)", () => {
@@ -34,7 +34,7 @@ describe("custom-engine credential replay on boot", () => {
     const startIdx = MAIN_SOURCE.indexOf('if (result.mode === "attached") {');
     expect(startIdx, 'startServerPackaged\'s attached branch not found').toBeGreaterThan(-1);
     const attachedBranchSource = MAIN_SOURCE.slice(startIdx, startIdx + 800);
-    expect(attachedBranchSource).toMatch(/await replayInstanceCredentials\(SERVER_PORT\);/);
+    expect(attachedBranchSource).toMatch(/void replayAttachedWorkspaceCredentials\(SERVER_PORT, expectedBuild\);/);
   });
 
   it("declares credential:set-instance as a sibling of credential:set, not folded into its fixed CREDENTIAL_PATCH union", () => {
@@ -46,16 +46,14 @@ describe("custom-engine credential replay on boot", () => {
     expect(MAIN_SOURCE).toMatch(/credential:set-instance[\s\S]{0,400}\/\^\[\\w\.-\]\+\$\//);
   });
 
-  it("never writes a replayed or newly-set instance key to config.json — only PATCHes with ?secretStorage=external", () => {
+  it("sends newly-set instance keys with external secret storage", () => {
     const startIdx = MAIN_SOURCE.indexOf('ipcMain.handle("credential:set-instance"');
     expect(startIdx).toBeGreaterThan(-1);
     const handlerSource = MAIN_SOURCE.slice(startIdx, startIdx + 2000);
     expect(handlerSource).toMatch(/secretStorage=external/);
 
-    const replayIdx = MAIN_SOURCE.indexOf("async function replayInstanceCredentials");
-    expect(replayIdx).toBeGreaterThan(-1);
-    const replaySource = MAIN_SOURCE.slice(replayIdx, replayIdx + 1200);
-    expect(replaySource).toMatch(/secretStorage=external/);
+    // Restore transport, owner proof, and disk non-persistence are exercised
+    // behaviorally in credential-restore.test.mjs and the harness API tests.
   });
 
   it("declares credential:clear-instance as a delete-time-only encrypted-store purge, with no live fetch/PATCH of its own", () => {
@@ -84,10 +82,11 @@ describe("custom-engine credential replay on boot", () => {
     // that id 404s (nothing to apply it to) — treat that as the signal to
     // drop the stale entry right then, before a differently-created engine
     // could ever reuse the same instance id and inherit it.
-    const replayIdx = MAIN_SOURCE.indexOf("async function replayInstanceCredentials");
+    const replayIdx = MAIN_SOURCE.indexOf("async function replayAttachedWorkspaceCredentials");
     expect(replayIdx).toBeGreaterThan(-1);
-    const replaySource = MAIN_SOURCE.slice(replayIdx, replayIdx + 1800);
-    expect(replaySource).toMatch(/response\.status === 404/);
+    const replaySource = MAIN_SOURCE.slice(replayIdx, MAIN_SOURCE.indexOf("async function startServerPackaged", replayIdx));
+    expect(replaySource).toMatch(/restoreInstanceCredentials/);
+    expect(replaySource).toMatch(/for \(const id of instances\.missing\) delete credentials\.instanceKeys\[id\]/);
     expect(replaySource).toMatch(/updateSecureCredentialDocument/);
   });
 });

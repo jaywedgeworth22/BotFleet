@@ -20,6 +20,7 @@ import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { readConfigFile, updateConfigFile } from "./config-file-lock.mjs";
 import { buildDiagnosticsReport, decodeLogTail, diagnosticsFileName } from "./diagnostics.mjs";
 import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
+import { restoreWorkspaceCredentials, restoreInstanceCredentials } from "./credential-restore.mjs";
 import { activateExistingWindow } from "./single-instance.mjs";
 import { pollServerIdentity, probeHarness, resolvePackagedServer } from "./server-boot-probe.mjs";
 import { readPackagedBuildIdentity } from "./runtime-identity.mjs";
@@ -786,11 +787,9 @@ async function startServerOn(port) {
     isExited: () => exited,
   });
   if (identity.outcome === "ready") {
-    // Best-effort: this fresh child has no memory of any custom-engine key
-    // saved in an earlier launch (that value lives only in credentials.bin
-    // and this process's own memory, never on disk) — hand every stored one
-    // back now, before any bot can try to use one of these engines.
-    await replayInstanceCredentials(port);
+    // Restore missing encrypted credentials once the child is idle.  The
+    // same authenticated path also handles attaching to an existing owner.
+    void replayAttachedWorkspaceCredentials(port, readPackagedBuildIdentity(path.join(process.resourcesPath, "server")));
     return { proc };
   }
   if (identity.outcome === "exited") {
@@ -806,6 +805,41 @@ async function startServerOn(port) {
     proc.kill();
   } catch {}
   return { proc: null, reason: identity.outcome };
+}
+
+let credentialRestoreTimer = null;
+let credentialRestoreStopped = false;
+let credentialRestoreLastOutcome = null;
+async function replayAttachedWorkspaceCredentials(port, expectedBuild) {
+  if (credentialRestoreStopped) return;
+  const owner = readHarnessOwner(process.env.OMB_DATA_DIR || path.join(app.getPath("home"), ".botfleet"));
+  let outcome = "unavailable";
+  try {
+    // Hold the existing credential transaction through the network restore.
+    // A successful clear/save cannot race an older snapshot back into memory.
+    await updateSecureCredentialDocument(async (credentials) => {
+      const options = { port, owner, credentials,
+        verifyOwner: async (candidate) => (await probeHarness({ port, owner: candidate, expectedBuild })).kind === "botfleet" };
+      outcome = await restoreWorkspaceCredentials(options);
+      if (outcome === "restored" || outcome === "empty") {
+        const instances = await restoreInstanceCredentials(options);
+        outcome = instances.outcome;
+        for (const id of instances.missing) delete credentials.instanceKeys[id];
+      }
+      return credentials;
+    });
+  } catch {
+    outcome = "unavailable";
+  }
+  if (outcome === "restored" || outcome === "empty" || credentialRestoreStopped) return;
+  // Active work owns its credentials until it finishes.  Retry from the
+  // encrypted store so a settings edit during the wait is never overwritten.
+  if (outcome !== credentialRestoreLastOutcome) {
+    slog(`[credentials] workspace restoration ${outcome}; will retry`);
+    credentialRestoreLastOutcome = outcome;
+  }
+  credentialRestoreTimer = setTimeout(() => void replayAttachedWorkspaceCredentials(port, expectedBuild), 15_000);
+  credentialRestoreTimer.unref?.();
 }
 
 async function startServerPackaged() {
@@ -838,15 +872,9 @@ async function startServerPackaged() {
     serverProc = null;
     serverMode = "attached";
     SERVER_PORT = result.port;
-    // The spawn branch's own replay (inside startServerOn) only runs for a
-    // child THIS launch forks — an attached harness may be a survivor from
-    // an earlier launch (or another window) that has since been restarted
-    // by something outside this code path, with no memory of any
-    // instanceKeyOverrides a prior launch's replay put into it. Best-effort
-    // and idempotent (re-PATCHing an already-live key is a no-op), so
-    // calling it unconditionally here is cheap insurance against a custom
-    // engine silently going keyless on the attach path.
-    await replayInstanceCredentials(SERVER_PORT);
+    // An independently restarted harness has no memory of keys held in the
+    // desktop's encrypted store.  Restore missing values after attachment.
+    void replayAttachedWorkspaceCredentials(SERVER_PORT, expectedBuild);
     if (result.static) {
       rendererBase = `http://127.0.0.1:${SERVER_PORT}`;
       return true;
@@ -1751,45 +1779,6 @@ ipcMain.handle("credential:clear-instance", async (_event, instanceId) => {
   });
 });
 
-/** Replay every stored custom-engine key back into a freshly spawned server.
- * The fixed workspace secrets (xai/box/…) ride process.env at spawn
- * (workspaceCredentialEnv); a dynamic per-instance key has no fixed env-var
- * name to piggyback on, so it takes one PATCH per stored key instead, after
- * the server is confirmed alive. Best-effort and non-fatal: an instance
- * whose replay fails just boots keyless — the same, already-supported state
- * as a deliberately-keyless local engine — rather than blocking startup. */
-async function replayInstanceCredentials(port) {
-  const instanceKeys = secureCredentials?.instanceKeys;
-  if (!instanceKeys || typeof instanceKeys !== "object") return;
-  for (const [instanceId, value] of Object.entries(instanceKeys)) {
-    if (typeof value !== "string" || !value) continue;
-    try {
-      const response = await fetch(
-        `http://127.0.0.1:${port}/api/instances/${encodeURIComponent(instanceId)}?secretStorage=external`,
-        {
-          method: "PATCH",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ key: value }),
-        },
-      );
-      // A 404 means this instance no longer exists — most likely deletion
-      // (credential:clear-instance) racing an app crash/kill between the
-      // instance actually being removed and its key being purged from
-      // credentials.bin. Self-heal now: drop the stale entry, so a
-      // DIFFERENT engine later created with the same name (same slug, same
-      // instance id) can never have this old key replayed into it.
-      if (response.status === 404) {
-        await updateSecureCredentialDocument((credentials) => {
-          const nextKeys = { ...credentials.instanceKeys };
-          delete nextKeys[instanceId];
-          return { ...credentials, instanceKeys: nextKeys };
-        }).catch(() => {});
-      }
-    } catch (error) {
-      slog(`[credentials] replay failed for instance "${instanceId}": ${error?.message ?? error}`);
-    }
-  }
-}
 
 async function broadcastDesktopCapabilities() {
   const capabilities = desktopCapabilities({
@@ -2182,6 +2171,8 @@ process.once("SIGINT", requestSignalQuit);
 process.once("SIGTERM", requestSignalQuit);
 
 app.on("before-quit", (e) => {
+  credentialRestoreStopped = true;
+  clearTimeout(credentialRestoreTimer);
   if (cuaCleanedUp) return;
   e.preventDefault();
   try {
