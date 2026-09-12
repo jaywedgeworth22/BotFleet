@@ -2,6 +2,7 @@ import AVFAudio
 import CompanionCore
 import PhotosUI
 import SwiftUI
+import UIKit
 
 /// The paired-safe subset of an agent profile. Shared provider keys remain on
 /// the computer; the phone sees only configured/not-configured status and the

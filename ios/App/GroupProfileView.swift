@@ -1,6 +1,7 @@
 import SwiftUI
 import PhotosUI
 import CompanionCore
+import UIKit
 
 struct GroupProfileView: View {
     let room: Room
