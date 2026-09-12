@@ -1,8 +1,11 @@
 # Companion And iOS Safety Follow-ups
 
-Date: 2026-09-12  
-Owner: CODEX  
-Issues: #93, #291, #292, #310  
+Date: 2026-09-12
+
+Owner: CODEX
+
+Issues: #93, #291, #292, #310
+
 Pull request: #323
 
 ## Result
