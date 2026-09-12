@@ -5,142 +5,93 @@
 // caller identity lives: `botId` and `threadId` are baked into the closure
 // at dispatch, never read from the model's arguments, because this lane
 // bypasses the loopback + COMMS_TOKEN hop the MCP lane uses and there is no
-// second place to check who is asking.
+// second place to check who is asking.  `AgentToolCallContext` is therefore
+// constructible ONLY here — nothing else in the process assembles one.
 //
-// Scope today is the two tools the HTTP lane already offered — `list_bots`
-// and `ask_bot` — with their bodies moved off `runHttpLaneTool` so the
-// driver-owned loop and the old executor cannot drift.  The registry that
-// serves all eight tools, and the permission broker behind the write ones,
-// arrive in later PRs; `requestApproval` resolves `"unavailable"` until then,
-// which the loop treats as a deny.
+// The host owns no tool bodies.  `server/tools/registry.ts` says which tools
+// exist and what they look like on each lane; `server/tools/agents.ts` says
+// what they do, with every dependency passed in.  This file is the join:
+// gate the catalog, look the call up in it, run it with the turn's identity.
 //
 // `execute` never throws.  Every failure comes back as `{ kind: "error" }`
 // with a string the MODEL reads, so a broken tool is one more thing the
 // agent can reason about rather than a dead turn.
 
-import type { TurnToolCall, TurnToolHost, TurnToolOutcome } from "../contracts.ts";
-import { sectionKey } from "../store.ts";
+import type { TurnToolCall, TurnToolHost, TurnToolOutcome, TurnToolRuntime } from "../contracts.ts";
+import {
+  createAgentTools,
+  type AgentToolCallContext,
+  type AgentToolDeps,
+  type AgentToolExecutor,
+} from "./agents.ts";
+import { toolsFor, type ToolGateContext } from "./registry.ts";
 
-/** The slice of a bot record the two tools read.  Structural on purpose:
- *  the host takes its dependencies explicitly so `server/tools/*` never
- *  imports `index.ts`, which is what made the old executor a cycle. */
-export interface TurnToolBot {
-  id: string;
-  name: string;
-  section?: string | null;
-  hidden?: boolean;
-  busy?: boolean;
-  title?: string | null;
-  description?: string | null;
-  modelSelection: { model: string };
-}
+export type { AgentBot as TurnToolBot } from "./agents.ts";
 
-export interface TurnToolHostDeps {
-  bot(id: string): TurnToolBot | null | undefined;
-  bots(): TurnToolBot[];
-  executeAskBotRequest(input: {
-    fromBotId: string;
-    toBotId: string;
-    message: string;
-    depth: number;
-    fromThreadId?: string;
-  }): Promise<{ status: number; body: Record<string, unknown> }>;
-}
+/** The host's dependencies are exactly the agents tools' dependencies: the
+ *  `/api/internal/` endpoint bodies `index.ts` exports.  Nothing here
+ *  imports `index.ts`, which is what keeps the cycle broken. */
+export type TurnToolHostDeps = AgentToolDeps;
 
 export interface TurnToolHostContext {
   /** The bot whose turn this is.  Never taken from tool arguments. */
   botId: string;
-  /** The thread the turn is running on — `executeAskBotRequest` checks that
-   *  it belongs to the caller before it will start a peer turn. */
+  /** The thread the turn is running on — the endpoint bodies check that it
+   *  belongs to the caller before they will start a peer turn or read
+   *  routines. */
   threadId: string;
   /** How many peer hops deep this turn already is. */
   commsDepth: number;
+  /** This bot is its section's Chief of Staff.  No tool gates on it yet;
+   *  the write tools that do arrive in a later PR. */
+  chiefOfStaff?: boolean;
   deps: TurnToolHostDeps;
   /** Ceiling on model-to-tool rounds; absent = the driver's default. */
   maxRounds?: number;
 }
 
-const ok = (content: string, detail?: string): TurnToolOutcome =>
-  detail ? { kind: "result", content, detail } : { kind: "result", content };
-
 const failed = (content: string, detail?: string): TurnToolOutcome =>
   detail ? { kind: "error", content, detail } : { kind: "error", content };
-
-/** Peers this bot can message: same section, not hidden, and NOT the caller
- *  itself — with each peer's `busy` flag.  Byte-for-byte the same filter the
- *  `/api/internal/agents` endpoint applies for the MCP lane, so a MiniMax bot
- *  and a Claude bot are told the same thing.  The old HTTP executor offered
- *  the caller its own row and hid `busy`, which cost a wasted round every
- *  time the model asked itself or a busy peer for something. */
-function listBots(ctx: TurnToolHostContext): TurnToolOutcome {
-  const self = ctx.deps.bot(ctx.botId);
-  if (!self) return failed("(no current bot — list_bots needs a turn context)", "unknown caller");
-  const peers = ctx.deps
-    .bots()
-    .filter(
-      (peer) =>
-        peer.id !== self.id && !peer.hidden && sectionKey(peer.section) === sectionKey(self.section),
-    )
-    .map((peer) => ({
-      id: peer.id,
-      name: peer.name,
-      model: peer.modelSelection.model,
-      busy: !!peer.busy,
-      title: peer.title || undefined,
-      description: peer.description || undefined,
-    }));
-  return ok(
-    JSON.stringify({ section: self.section ?? "", bots: peers }),
-    peers.length === 1 ? "1 peer" : `${peers.length} peers`,
-  );
-}
-
-async function askBot(call: TurnToolCall, ctx: TurnToolHostContext): Promise<TurnToolOutcome> {
-  const target = String(call.arguments.bot_id ?? call.arguments.bot ?? "").trim();
-  const task = String(call.arguments.task ?? call.arguments.message ?? "").trim();
-  if (!target || !task) {
-    return failed(JSON.stringify({ error: "ask_bot requires both `bot_id` and `task`" }), "bad arguments");
-  }
-  const peer = ctx.deps.bots().find((b) => b.id === target || `@${b.name}` === target);
-  if (!peer) return failed(JSON.stringify({ error: `no bot matches ${target}` }), "no such bot");
-  // Every guard the MCP lane gets — depth cap, section, thread ownership,
-  // approvePeerComms, mirroring — lives in executeAskBotRequest, which is
-  // why the host calls it rather than reimplementing the hop.
-  const result = await ctx.deps.executeAskBotRequest({
-    fromBotId: ctx.botId,
-    toBotId: peer.id,
-    message: task,
-    depth: ctx.commsDepth,
-    fromThreadId: ctx.threadId,
-  });
-  if (result.body.busy) {
-    return failed(
-      JSON.stringify({ error: "That bot is busy right now — try again after it finishes." }),
-      "peer busy",
-    );
-  }
-  if (result.body.error) {
-    return failed(JSON.stringify({ error: String(result.body.error) }), String(result.body.error));
-  }
-  const text = typeof result.body.text === "string" ? result.body.text : "";
-  const name = typeof result.body.botName === "string" ? result.body.botName : peer.name;
-  if (!text) return failed(JSON.stringify({ error: "no reply" }), "no reply");
-  return ok(`${name} replied:\n${text}`, `@${name} replied`);
-}
 
 /** Build the tool host for ONE turn.  The returned host closes over the
  *  caller's identity, so nothing downstream can forge it. */
 export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
+  // A Map, not the record itself: `call.name` is whatever the model said.
+  const executors = new Map<string, AgentToolExecutor>(Object.entries(createAgentTools(ctx.deps)));
+  const gate: ToolGateContext = {
+    // The dispatch only builds a host when the agents integration is
+    // mounted, so reaching this file at all means the surface is on — and
+    // it mounted that integration only after checking `commsDepth` against
+    // `MAX_COMMS_DEPTH`.  Re-applying the ceiling here would subtract it
+    // twice and silently strip tools the model was just offered, so the
+    // gate below is the SAME one `buildTurnTools` used for the catalog.
+    // What it still catches is a name the catalog never contained.
+    agents: true,
+    commsDepth: 0,
+    maxCommsDepth: Number.POSITIVE_INFINITY,
+    chiefOfStaff: ctx.chiefOfStaff ?? false,
+  };
+  // The same gate the catalog handed the model.  A hallucinated name, or a
+  // real name the model was not offered this turn, finds no executor.
+  const available = new Set(toolsFor("http", gate).map((tool) => tool.name));
+  const identity: AgentToolCallContext = {
+    botId: ctx.botId,
+    threadId: ctx.threadId,
+    commsDepth: ctx.commsDepth,
+  };
+
   return {
     maxRounds: ctx.maxRounds,
-    async execute(call: TurnToolCall): Promise<TurnToolOutcome> {
+    async execute(call: TurnToolCall, runtime: TurnToolRuntime): Promise<TurnToolOutcome> {
       try {
-        if (call.name === "list_bots") return listBots(ctx);
-        if (call.name === "ask_bot") return await askBot(call, ctx);
-        return failed(
-          `Tool ${call.name} is not available to this bot.  Call only the tools you were given.`,
-          "unknown tool",
-        );
+        const executor = available.has(call.name) ? executors.get(call.name) : undefined;
+        if (!executor) {
+          return failed(
+            `Tool ${call.name} is not available to this bot.  Call only the tools you were given.`,
+            "unknown tool",
+          );
+        }
+        return await executor(call, identity, runtime);
       } catch (e) {
         // The contract says a host never throws.  This is where that
         // promise is kept, so the driver's loop has one shape to handle.

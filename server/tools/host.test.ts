@@ -1,15 +1,19 @@
-// The tool host is the harness side of a driver-owned turn.  Two things
-// have to be true of it: `list_bots` must tell an HTTP bot exactly what the
-// MCP lane tells a CLI bot, and `ask_bot` must go through
-// `executeAskBotRequest` rather than reimplementing the peer hop — every
-// guard that matters (depth cap, section, thread ownership, approval,
-// mirroring) lives in there.
+// The tool host is the harness side of a driver-owned turn, and after the
+// registry landed it owns exactly three things: caller identity, the gate
+// that decides which catalog entry a call may reach, and the promise that
+// `execute` never throws.  The tool BODIES are tested in `agents.test.ts`
+// and the two lanes' definitions in `registry.test.ts`; what is left here is
+// the join.
+//
+// The pinned copy of the `/api/internal/agents` body that used to live in
+// this file is gone.  It was a drift detector for a divergence that can no
+// longer happen: the host now receives the endpoint function itself.
 import { describe, expect, it, vi } from "vitest";
 
-import { createTurnToolHost, type TurnToolBot, type TurnToolHostDeps } from "./host.ts";
-import { sectionKey } from "../store.ts";
+import { createTurnToolHost, type TurnToolHostDeps } from "./host.ts";
+import { listAgentsResponse, type AgentBot, type AgentRequestResult } from "./agents.ts";
 
-const bots: TurnToolBot[] = [
+const bots: AgentBot[] = [
   { id: "bot-self", name: "self", section: "ops", modelSelection: { model: "m" }, title: "self title" },
   { id: "bot-peer", name: "peer", section: "ops", modelSelection: { model: "m" }, title: "peer title" },
   { id: "bot-busy", name: "busy", section: "ops", modelSelection: { model: "m" }, busy: true },
@@ -17,34 +21,18 @@ const bots: TurnToolBot[] = [
   { id: "bot-other", name: "other", section: "research", modelSelection: { model: "m" } },
 ];
 
-/** A pinned copy of the `/api/internal/agents` endpoint body (server/index.ts,
- *  the `GET /api/internal/agents` branch) — the single implementation the MCP
- *  lane serves to CLI bots.  The host must produce the same rows.  PR 4
- *  replaces both with one registry entry and deletes this copy; until then
- *  this is the drift test that would have caught the divergence where the
- *  HTTP executor offered a bot its own row and hid `busy`. */
-function endpointAgents(selfId: string, all: TurnToolBot[]) {
-  const sender = all.find((b) => b.id === selfId);
-  if (!sender) return null;
-  return all
-    .filter((b) => b.id !== selfId && !b.hidden && sectionKey(b.section) === sectionKey(sender.section))
-    .map((b) => ({
-      id: b.id,
-      name: b.name,
-      model: b.modelSelection.model,
-      busy: !!b.busy,
-      title: b.title || undefined,
-      description: b.description || undefined,
-    }));
-}
-
 function deps(over: Partial<TurnToolHostDeps> = {}): TurnToolHostDeps {
   return {
-    bot: (id) => bots.find((b) => b.id === id),
-    bots: () => bots,
+    // The real endpoint bodies, bound to a fixture roster — the same
+    // functions `index.ts` exports and binds to the live store.
+    executeListAgentsRequest: ({ selfId }) => listAgentsResponse(selfId, bots),
     executeAskBotRequest: vi.fn(
-      async (): Promise<{ status: number; body: Record<string, unknown> }> => ({ status: 200, body: {} }),
+      async (): Promise<AgentRequestResult> => ({ status: 200, body: {} }),
     ),
+    executeListRoutinesRequest: () => ({
+      status: 200,
+      body: { now: "2026-09-12T10:00:00.000Z", timeZone: "UTC", routines: [] },
+    }),
     ...over,
   };
 }
@@ -59,25 +47,26 @@ const hostFor = (over: Partial<TurnToolHostDeps> = {}, ctx: { commsDepth?: numbe
 
 const runtime = { signal: new AbortController().signal, requestApproval: async () => "unavailable" as const };
 
-describe("list_bots", () => {
+describe("the host runs what the catalog advertised", () => {
+  it("serves the registry's three agents tools", async () => {
+    const host = hostFor();
+    for (const name of ["list_bots", "ask_bot", "list_routines"]) {
+      const outcome = await host.execute({ id: "1", name, arguments: { bot_id: "bot-peer", task: "x" } }, runtime);
+      expect(outcome.content, name).not.toContain("is not available to this bot");
+    }
+  });
+
   it("matches the /api/internal/agents rows the MCP lane serves", async () => {
     const outcome = await hostFor().execute({ id: "1", name: "list_bots", arguments: {} }, runtime);
     expect(outcome.kind).toBe("result");
-    expect(JSON.parse(outcome.content).bots).toEqual(endpointAgents("bot-self", bots));
+    expect(JSON.parse(outcome.content).bots).toEqual(listAgentsResponse("bot-self", bots).body.bots);
   });
 
-  it("excludes the caller itself — a bot asking itself for help is a wasted round", async () => {
-    const outcome = await hostFor().execute({ id: "1", name: "list_bots", arguments: {} }, runtime);
-    const ids = JSON.parse(outcome.content).bots.map((b: { id: string }) => b.id);
-    expect(ids).not.toContain("bot-self");
-    expect(ids).toContain("bot-peer");
-  });
-
-  it("reports busy, so the model does not spend a round on a peer that cannot answer", async () => {
+  it("excludes the caller and reports busy — the two facts that save a round", async () => {
     const outcome = await hostFor().execute({ id: "1", name: "list_bots", arguments: {} }, runtime);
     const rows: Array<{ id: string; busy: boolean }> = JSON.parse(outcome.content).bots;
+    expect(rows.map((b) => b.id)).not.toContain("bot-self");
     expect(rows.find((b) => b.id === "bot-busy")?.busy).toBe(true);
-    expect(rows.find((b) => b.id === "bot-peer")?.busy).toBe(false);
   });
 
   it("hides other sections and hidden bots", async () => {
@@ -99,10 +88,10 @@ describe("list_bots", () => {
   });
 });
 
-describe("ask_bot", () => {
-  it("delegates to executeAskBotRequest with the turn's own identity, never the model's", async () => {
+describe("caller identity is the turn's, never the model's", () => {
+  it("bakes botId, threadId and depth into ask_bot at dispatch", async () => {
     const executeAskBotRequest = vi.fn(
-      async (): Promise<{ status: number; body: Record<string, unknown> }> => ({
+      async (): Promise<AgentRequestResult> => ({
         status: 200,
         body: { botName: "peer", text: "here you go" },
       }),
@@ -114,7 +103,6 @@ describe("ask_bot", () => {
       deps: deps({ executeAskBotRequest }),
     });
     const outcome = await host.execute(
-      // the model also passes a fromBotId; it must be ignored
       { id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "summarize", fromBotId: "bot-other" } },
       runtime,
     );
@@ -128,50 +116,16 @@ describe("ask_bot", () => {
     expect(outcome).toMatchObject({ kind: "result", content: "peer replied:\nhere you go" });
   });
 
-  it("accepts an id as well as an @name", async () => {
-    const executeAskBotRequest = vi.fn(
-      async (): Promise<{ status: number; body: Record<string, unknown> }> => ({
-        status: 200,
-        body: { botName: "peer", text: "ok" },
-      }),
-    );
-    await hostFor({ executeAskBotRequest }).execute(
-      { id: "1", name: "ask_bot", arguments: { bot_id: "bot-peer", task: "x" } },
+  it("ignores a thread the model names for list_routines", async () => {
+    const executeListRoutinesRequest = vi.fn(() => ({ status: 200, body: { routines: [] } }));
+    await hostFor({ executeListRoutinesRequest }).execute(
+      { id: "1", name: "list_routines", arguments: { fromThreadId: "thread-9" } },
       runtime,
     );
-    expect(executeAskBotRequest).toHaveBeenCalledWith(expect.objectContaining({ toBotId: "bot-peer" }));
-  });
-
-  it("requires both arguments", async () => {
-    const outcome = await hostFor().execute(
-      { id: "1", name: "ask_bot", arguments: { bot_id: "@peer" } },
-      runtime,
-    );
-    expect(outcome.kind).toBe("error");
-    expect(JSON.parse(outcome.content).error).toMatch(/requires both/);
-  });
-
-  it("names an unknown peer rather than failing silently", async () => {
-    const outcome = await hostFor().execute(
-      { id: "1", name: "ask_bot", arguments: { bot_id: "@nobody", task: "x" } },
-      runtime,
-    );
-    expect(JSON.parse(outcome.content).error).toMatch(/no bot matches/);
-  });
-
-  it("turns a busy peer into something the model can act on", async () => {
-    const outcome = await hostFor({
-      executeAskBotRequest: async () => ({ status: 200, body: { busy: true } }),
-    }).execute({ id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "x" } }, runtime);
-    expect(outcome.kind).toBe("error");
-    expect(JSON.parse(outcome.content).error).toMatch(/busy/);
-  });
-
-  it("passes the peer path's own refusal straight through", async () => {
-    const outcome = await hostFor({
-      executeAskBotRequest: async () => ({ status: 200, body: { error: "denied by user" } }),
-    }).execute({ id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "x" } }, runtime);
-    expect(JSON.parse(outcome.content).error).toBe("denied by user");
+    expect(executeListRoutinesRequest).toHaveBeenCalledWith({
+      fromBotId: "bot-self",
+      fromThreadId: "thread-1",
+    });
   });
 });
 
@@ -190,5 +144,13 @@ describe("the host's contract", () => {
     const outcome = await hostFor().execute({ id: "1", name: "delete_everything", arguments: {} }, runtime);
     expect(outcome.kind).toBe("error");
     expect(outcome.content).toContain("delete_everything");
+  });
+
+  it("refuses a tool that exists but was never in this turn's catalog", async () => {
+    // The write tools land in a later PR.  Until they do, a model that
+    // hallucinates one must not find an executor waiting for it.
+    const outcome = await hostFor().execute({ id: "1", name: "create_bot", arguments: {} }, runtime);
+    expect(outcome.kind).toBe("error");
+    expect(outcome.content).toContain("is not available to this bot");
   });
 });

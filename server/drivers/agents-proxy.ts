@@ -27,6 +27,7 @@
 import readline from "node:readline";
 
 import { CREDENTIAL_TARGETS, isCredentialTargetId } from "../../shared/credential-request.ts";
+import { mcpToolDefinitions } from "../tools/registry.ts";
 
 const HARNESS = process.env.OMB_HARNESS_URL ?? "http://127.0.0.1:8799";
 const BOT_ID = process.env.OMB_BOT_ID ?? "";
@@ -181,26 +182,25 @@ const ROUTINE_FIELDS_SCHEMA = {
   },
 } as const;
 
-const TOOLS = [
-  {
-    name: "list_bots",
-    description:
-      "List the other bots (agents) in your BotFleet section you can message, with their model and whether they're busy. Call this before ask_bot to discover who's available.",
-    inputSchema: { type: "object", properties: {} },
-  },
-  {
-    name: "ask_bot",
-    description:
-      "Send a message to another bot in your section and wait for its reply. Use it to delegate a subtask to a specialist bot or ask a peer a question. The other bot runs a full turn under its own model and permissions; the reply is returned to you as text. Returns promptly with a note if that bot is busy.",
-    inputSchema: {
-      type: "object",
-      properties: {
-        bot_id: { type: "string", description: "The target bot's id (from list_bots)." },
-        message: { type: "string", description: "What to say / ask the bot." },
-      },
-      required: ["bot_id", "message"],
-    },
-  },
+/** One definition per tool, rendered — not restated.  `server/tools/registry.ts`
+ *  owns `list_bots`, `ask_bot` and `list_routines`; this proxy renders them
+ *  onto the MCP wire instead of keeping a second copy that can drift from
+ *  the HTTP lane's.  The five write tools below have not moved yet.
+ *
+ *  The gate is deliberately wide open: the harness decides whether to mount
+ *  this proxy at all, and by the time the process exists the bot has peer
+ *  comms.  Every guard that matters is enforced by the `/api/internal/`
+ *  endpoint each tool calls, not by what `tools/list` advertises. */
+type McpTool = { name: string; description: string; inputSchema: unknown };
+
+const REGISTRY_TOOLS = mcpToolDefinitions({
+  agents: true,
+  commsDepth: 0,
+  maxCommsDepth: 1,
+  chiefOfStaff: true,
+});
+
+const UNMIGRATED_TOOLS = [
   {
     name: "delegate_bot",
     description:
@@ -250,12 +250,6 @@ const TOOLS = [
     },
   },
   {
-    name: "list_routines",
-    description:
-      "List routines owned by this bot, including their ids, schedules, status, and next run. The result includes the computer's authoritative current time and timezone; use those when interpreting relative dates. Only call this when the user asks about routines or wants to change one.",
-    inputSchema: { type: "object", additionalProperties: false, properties: {} },
-  },
-  {
     name: "propose_routine",
     description:
       "Prepare a new routine after the user explicitly asks to schedule recurring or future work. Call list_routines first for relative dates or times so you use its authoritative current time and timezone. This only creates a durable confirmation card; it does NOT enable the routine. Resolve ambiguous dates, times, timezone, destination, or instructions with the user first, and always give one-time schedules an explicit RFC3339 offset. After calling it, end the turn and do not claim the routine exists until the user confirms the card.",
@@ -291,6 +285,30 @@ const TOOLS = [
     },
   },
 ];
+
+// The publication order shipped CLI engines already see.  Spelled out so
+// migrating a tool into the registry cannot silently reorder the list.
+const MCP_TOOL_ORDER = [
+  "list_bots",
+  "ask_bot",
+  "delegate_bot",
+  "create_bot",
+  "request_credential",
+  "list_routines",
+  "propose_routine",
+  "propose_routine_action",
+];
+
+const TOOLS_BY_NAME = new Map<string, McpTool>(
+  [...REGISTRY_TOOLS, ...(UNMIGRATED_TOOLS as McpTool[])].map((tool) => [tool.name, tool]),
+);
+
+const TOOLS = MCP_TOOL_ORDER.map((name) => {
+  const tool = TOOLS_BY_NAME.get(name);
+  if (!tool) throw new Error(`agents-proxy: no definition for ${name}`);
+  return tool;
+});
+
 
 type Json = Record<string, unknown>;
 type RoutineAction = "update" | "pause" | "resume" | "run_now" | "delete";
