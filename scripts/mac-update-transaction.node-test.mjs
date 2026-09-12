@@ -35,6 +35,7 @@ function fakeApplyOps({ readiness = [{ safe: true }, { safe: true }], failAt } =
       assertQuiesced: () => step("assertQuiesced"),
       advanceCheckout: () => step("advanceCheckout"),
       installCandidate: () => step("installCandidate"),
+      prepareCredentials: () => step("prepareCredentials"),
       startHarness: () => step("startHarness"),
       verifyHarness: () => step("verifyHarness"),
       startApplication: () => step("startApplication"),
@@ -117,7 +118,7 @@ test("candidate cleanup failure preserves the refusal and cleanup errors", async
   );
 });
 
-for (const failAt of ["quiesce", "assertQuiesced", "advanceCheckout", "installCandidate", "startHarness", "verifyHarness", "startApplication", "verifySingleOwner"]) {
+for (const failAt of ["quiesce", "assertQuiesced", "advanceCheckout", "installCandidate", "prepareCredentials", "startHarness", "verifyHarness", "startApplication", "verifySingleOwner"]) {
   test(`a ${failAt} failure rolls the prior bundle and checkout back`, async () => {
     const fake = fakeApplyOps({ failAt });
     await assert.rejects(applyPreparedUpdate(prepared, {}, fake.ops), new RegExp(`${failAt} failed`));
@@ -147,6 +148,8 @@ test("successful apply verifies the expected harness before reopening and owners
     previousCommit: "a".repeat(40),
   });
   assert.ok(fake.calls.indexOf("fence") < fake.calls.indexOf("quiesce"));
+  assert.ok(fake.calls.indexOf("installCandidate") < fake.calls.indexOf("prepareCredentials"));
+  assert.ok(fake.calls.indexOf("prepareCredentials") < fake.calls.indexOf("startHarness"));
   assert.ok(fake.calls.indexOf("verifyHarness") < fake.calls.indexOf("startApplication"));
   assert.ok(fake.calls.indexOf("startApplication") < fake.calls.indexOf("verifySingleOwner"));
   assert.ok(fake.calls.indexOf("finish") < fake.calls.indexOf("unlock"));

@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   applicationAttachmentError,
   authenticatedRuntimeError,
+  credentialPreparationReceiptPath,
   DEFAULT_PORTS,
   dependencyFingerprint,
   designatedRequirementFromOutput,
@@ -231,6 +232,10 @@ test("rollback refuses to interrupt an active or unprovable replacement", () => 
   assert.equal(rollbackReadinessError(1, { safe: true }), null);
   assert.equal(rollbackReadinessError(1, { safe: false, reason: "1 active operation" }), "1 active operation");
   assert.match(pendingRecoveryReceiptPath({ stageDirectory: "/private/stage" }), /pending-recovery\.json$/);
+  assert.equal(
+    credentialPreparationReceiptPath({ stageDirectory: "/private/stage" }),
+    "/private/stage/credential-migration.json",
+  );
 });
 
 test("post-start identity accepts new work while the pre-install readiness gate still refuses it", () => {

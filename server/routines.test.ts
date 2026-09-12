@@ -28,12 +28,14 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
   const failed: any[] = [];
   let live = true;
   let admitting = true;
+  let canStart = true;
   const options: RoutineManagerOptions = {
     file: tempFile(),
     now: () => now,
     emit: (payload) => emitted.push(payload),
     botState: () => bot,
     admit: () => admitting,
+    canStart: () => canStart,
     turnLive: () => live,
     createTask: (_botId, title, activate = false, automationKey) => {
       taskActivations.push(activate);
@@ -70,6 +72,7 @@ function harness(start = new Date(2026, 7, 17, 8, 0, 0).getTime()) {
     setBot: (value: typeof bot) => (bot = value),
     setLive: (value: boolean) => (live = value),
     setAdmitting: (value: boolean) => (admitting = value),
+    setCanStart: (value: boolean) => (canStart = value),
   };
 }
 
@@ -258,6 +261,48 @@ describe("RoutineManager", () => {
     h.setAdmitting(true);
     await h.manager.tick();
     expect(h.manager.listRuns()).toHaveLength(1);
+    expect(h.started).toHaveLength(1);
+  });
+
+  it("keeps a due run queued until its selected engine prerequisite arrives", async () => {
+    const h = harness();
+    const routine = h.manager.create({
+      name: "Encrypted engine run",
+      prompt: "Run after the key is restored",
+      botId: "maus-1",
+      schedule: { type: "once", at: new Date(2026, 7, 17, 8, 5).getTime() },
+    });
+    h.setNow(routine.nextRunAt!);
+    h.setCanStart(false);
+    await h.manager.tick();
+    expect(h.manager.listRuns()).toMatchObject([{ status: "queued" }]);
+    expect(h.started).toHaveLength(0);
+    expect(h.taskTitles).toHaveLength(0);
+
+    h.setCanStart(true);
+    await h.manager.tick();
+    expect(h.manager.listRuns()).toMatchObject([{ status: "running" }]);
+    expect(h.started).toHaveLength(1);
+  });
+
+  it("does not apply a local engine prerequisite to a cloud routine", async () => {
+    const h = harness();
+    const admittedTargets: string[] = [];
+    h.options.canStart = (_botId, _threadId, runOn) => {
+      admittedTargets.push(runOn);
+      return runOn === "cloud";
+    };
+    const routine = h.manager.create({
+      name: "Cloud run",
+      prompt: "Run in the cloud",
+      botId: "maus-1",
+      runOn: "cloud",
+      schedule: { type: "once", at: new Date(2026, 7, 17, 8, 5).getTime() },
+    });
+    h.setNow(routine.nextRunAt!);
+    await h.manager.tick();
+    expect(admittedTargets).toContain("cloud");
+    expect(h.manager.listRuns()).toMatchObject([{ status: "running", runOn: "cloud" }]);
     expect(h.started).toHaveLength(1);
   });
 

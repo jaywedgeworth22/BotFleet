@@ -180,6 +180,9 @@ export interface RoutineManagerOptions {
   botState: (botId: string) => "ready" | "busy" | "missing";
   /** Synchronous admission fence used during an update boundary. */
   admit?: () => boolean;
+  /** Per-run readiness gate.  False leaves the durable run queued; callers
+   * invoke tick() again when the missing runtime prerequisite arrives. */
+  canStart?: (botId: string, threadId: string | undefined, runOn: RoutineRunOn) => boolean;
   /** Minutes this run's trigger must stay quiet after it activates.  Absent
    * or 0 runs every delivery as it lands. */
   minGapMinutes?: (run: RoutineRun) => number | undefined;
@@ -856,6 +859,7 @@ export class RoutineManager {
           return id;
         };
         let threadId: string | undefined = acceptReuse(this.options.taskForKey?.(run.botId, key));
+        let stampResolvedThread = false;
         if (!threadId) {
           const previous = [...this.runs].reverse().find(
             (candidate) =>
@@ -866,30 +870,37 @@ export class RoutineManager {
               this.options.taskExists?.(run.botId, candidate.threadId!),
           );
           threadId = acceptReuse(previous?.threadId);
-          if (threadId) this.options.stampKey?.(run.botId, threadId, key);
+          stampResolvedThread = Boolean(threadId);
         }
-        if (!threadId) {
-          if (!allowsMultipleBotThreads(mode)) {
-            threadId = this.options.defaultThread?.(run.botId);
-            if (!threadId) {
-              this.failRun(run, "Could not find this bot's conversation");
-              continue;
-            }
-            this.options.stampKey?.(run.botId, threadId, key);
-          } else {
-            const task = this.options.createTask(
-              run.botId,
-              title,
-              run.triggerSource === "webhook" || run.triggerSource === "resource",
-              key,
-            );
-            if (!task) {
-              this.failRun(run, "Could not create a task for this run");
-              continue;
-            }
-            threadId = task.threadId;
+        if (!threadId && !allowsMultipleBotThreads(mode)) {
+          threadId = this.options.defaultThread?.(run.botId);
+          if (!threadId) {
+            this.failRun(run, "Could not find this bot's conversation");
+            continue;
           }
-        } else if (run.triggerSource === "webhook" || run.triggerSource === "resource") {
+          stampResolvedThread = true;
+        }
+        // Gate before creating, activating, or stamping a task.  A missing
+        // runtime credential may take many scheduler ticks to arrive; those
+        // retries must not mint duplicate empty tasks as a side effect.
+        if (this.options.canStart?.(run.botId, threadId, run.runOn) === false) continue;
+        if (stampResolvedThread && threadId) this.options.stampKey?.(run.botId, threadId, key);
+        if (!threadId) {
+          const task = this.options.createTask(
+            run.botId,
+            title,
+            run.triggerSource === "webhook" || run.triggerSource === "resource",
+            key,
+          );
+          if (!task) {
+            this.failRun(run, "Could not create a task for this run");
+            continue;
+          }
+          threadId = task.threadId;
+        } else if (
+          allowsMultipleBotThreads(mode) &&
+          (run.triggerSource === "webhook" || run.triggerSource === "resource")
+        ) {
           this.options.activateTask?.(run.botId, threadId);
         }
         if (
