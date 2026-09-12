@@ -152,6 +152,7 @@ import {
 import { buildTurnTools } from "./turn-tools.ts";
 import { isToolCallsStopReason, sendTurnWithToolLoop } from "./tool-executor.ts";
 import { createTurnToolHost } from "./tools/host.ts";
+import { listAgentsResponse } from "./tools/agents.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import {
   ActiveTurnOwners,
@@ -3160,9 +3161,12 @@ async function startTurn(
               threadId,
               commsDepth,
               deps: {
-                bot: (id: string) => store.bot(id),
-                bots: () => store.bots,
+                // The `/api/internal/` bodies themselves — not reimplementations
+                // of them.  A MiniMax bot and a Claude bot run the same code
+                // with the same guards; only the transport differs.
+                executeListAgentsRequest,
                 executeAskBotRequest,
+                executeListRoutinesRequest,
               },
             })
           : undefined,
@@ -3731,7 +3735,46 @@ const commsBus: CommsBus = { store, broadcast };
 // can call resolvePeerComms without holding a reference back to here.
 const approvalBus: ApprovalBus = { store, broadcast };
 
-/** Guarded ask_bot path used by MCP proxy and the HTTP tool executor.
+/** The `GET /api/internal/agents` body.  ONE implementation: the MCP lane
+ * reaches it over the loopback + COMMS_TOKEN hop, the HTTP lane's tool host
+ * calls it directly as an injected dependency.  The filter itself lives in
+ * `tools/agents.ts` so nothing here can grow a private copy of it — which is
+ * exactly how `list_bots` came to offer a bot its own row on one lane and
+ * hide `busy` on the other. */
+export function executeListAgentsRequest(input: { selfId: string }): {
+  status: number;
+  body: Record<string, unknown>;
+} {
+  return listAgentsResponse(input.selfId, store.bots);
+}
+
+/** The `GET /api/internal/routines` body, factored the same way.  Read-only:
+ * it reports what this bot has scheduled plus the computer's authoritative
+ * clock, which is what makes a model's relative dates resolvable. */
+export function executeListRoutinesRequest(input: {
+  fromBotId: string;
+  fromThreadId?: string;
+}): { status: number; body: Record<string, unknown> } {
+  const from = store.bot(input.fromBotId);
+  if (!from) return { status: 403, body: { error: "unknown sender" } };
+  const fromThreadId = String(input.fromThreadId ?? from.threadId);
+  if (!connectorThread(from.id, fromThreadId)) {
+    return { status: 403, body: { error: "source conversation does not belong to sender" } };
+  }
+  return {
+    status: 200,
+    body: {
+      now: new Date().toISOString(),
+      timeZone: routineTimeZone(),
+      routines: (routines?.listRoutines() ?? [])
+        .filter((routine) => routine.botId === from.id)
+        .slice(0, 100)
+        .map(agentRoutine),
+    },
+  };
+}
+
+/** Guarded ask_bot path used by MCP proxy and the HTTP tool host.
  * Section, hidden, approval, mirroring, and depth all live here so a
  * driver that guessed an id cannot skip the gate. */
 export async function executeAskBotRequest(input: {
@@ -5432,44 +5475,16 @@ const server = createServer(async (req, res) => {
         return json(res, 401, { error: "unauthorized" });
       }
       if (method === "GET" && path === "/api/internal/agents") {
-        const self = url.searchParams.get("self");
-        const sender = self ? store.bot(self) : null;
-        if (!sender) return json(res, 403, { error: "unknown sender" });
-        // title/description included so a "chief of staff"-style bot can
-        // judge the team (who does what, who has no job description yet)
-        const bots = store.bots
-          .filter(
-            (b) =>
-              b.id !== self &&
-              !b.hidden &&
-              sectionKey(b.section) === sectionKey(sender.section),
-          )
-          .map((b) => ({
-            id: b.id,
-            name: b.name,
-            model: b.modelSelection.model,
-            busy: !!b.busy,
-            title: b.title || undefined,
-            description: b.description || undefined,
-          }));
-        return json(res, 200, { bots });
+        const result = executeListAgentsRequest({ selfId: url.searchParams.get("self") ?? "" });
+        return json(res, result.status, result.body);
       }
       if (method === "GET" && path === "/api/internal/routines") {
-        const fromBotId = String(url.searchParams.get("fromBotId") ?? "");
-        const from = store.bot(fromBotId);
-        if (!from) return json(res, 403, { error: "unknown sender" });
-        const fromThreadId = String(url.searchParams.get("fromThreadId") ?? from.threadId);
-        if (!connectorThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source conversation does not belong to sender" });
-        }
-        return json(res, 200, {
-          now: new Date().toISOString(),
-          timeZone: routineTimeZone(),
-          routines: routines!.listRoutines()
-            .filter((routine) => routine.botId === from.id)
-            .slice(0, 100)
-            .map(agentRoutine),
+        const fromThreadId = url.searchParams.get("fromThreadId");
+        const result = executeListRoutinesRequest({
+          fromBotId: String(url.searchParams.get("fromBotId") ?? ""),
+          ...(fromThreadId ? { fromThreadId } : {}),
         });
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/routine-requests") {
         const parsed = routineRequestEnvelopeSchema.safeParse(await readBody(req));
