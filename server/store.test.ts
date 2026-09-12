@@ -774,6 +774,19 @@ describe("Store task usage", () => {
     expect(store.addTaskUsage(bot.id, bot.threadId, { input: 10, output: 1, costUsd: null })?.costUsd).toBe(0.02);
   });
 
+  it("counts estimated subscription turns without adding their equivalent price to actual spend", () => {
+    const store = new Store(selection);
+    const bot = store.createBot();
+    store.addTaskUsage(bot.id, bot.threadId, { input: 10, output: 1, costUsd: 0.02 });
+
+    expect(store.addTaskUsage(bot.id, bot.threadId, {
+      input: 20,
+      output: 2,
+      costUsd: 0.03,
+      billingMode: "estimated",
+    })).toEqual({ input: 30, output: 3, costUsd: 0.02, turns: 2 });
+  });
+
   it("counts a turn that reported no tokens at all", () => {
     const store = new Store(selection);
     const bot = store.createBot();

@@ -20,4 +20,6 @@ The actual renderer was checked in an isolated local harness with a paused synth
 
 ## Remaining Boundary
 
-Retention remains capped at 2,000 receipts.  A very long execution with enough newer traffic can theoretically lose its parent during pruning; retaining active parent groups should be addressed separately.  The existing calendar uses local scheduling time while the new result timestamps explicitly use Central Time; a unified calendar timezone conversion requires coordinated scheduling and date-input tests.
+Follow-up #336 retains active executions, combined receipts and their parents, and results still needed by unsettled run-now confirmation cards.  The separate terminal tail is bounded at 2,000 records and pruned by completion time; once work and cards settle, the history returns to that bound.  Admission limits remain unchanged.  Peer review caught the confirmation-card result dependency, now covered by durable reload/retry coverage alongside active-group retention.  The existing calendar uses local scheduling time while the new result timestamps explicitly use Central Time; a unified calendar timezone conversion requires coordinated scheduling and date-input tests.
+
+The #336 retention follow-up passed peer review and the complete local gate: 3,588 Vitest tests, 19 skipped, plus every chained suite.  Durable reload tests prove that an unsettled confirmation replays its original result after more than 2,000 newer terminal runs, then releases that result when the card settles.
