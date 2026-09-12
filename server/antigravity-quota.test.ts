@@ -143,6 +143,69 @@ describe("applyAntigravityUsageToRegistry", () => {
   });
 });
 
+describe("observed Antigravity catalog aliases", () => {
+  it("routes opaque Gemini and third-party quotas through actual picker IDs, then recovers", () => {
+    const now = Date.now();
+    const snapshot = parseAntigravityUsageJson({ models: [
+      { modelId: "MODEL_PLACEHOLDER_M318", label: "Gemini 3.8 Flash (High)", remainingPercentage: 0, resetTime: new Date(now + 60_000).toISOString() },
+      { modelId: "MODEL_PLACEHOLDER_M35", label: "Claude Sonnet 4.6 (Thinking)", remainingPercentage: 1 },
+      { modelId: "MODEL_OPENAI_GPT_OSS_120B_MEDIUM", label: "GPT-OSS 120B (Medium)", remainingPercentage: 0 },
+      { modelId: "MODEL_PLACEHOLDER_UNKNOWN", label: "Unknown future model", remainingPercentage: 0 },
+    ] });
+    const registry = new QuotaCooldownRegistry();
+    applyAntigravityUsageToRegistry(snapshot, registry, now);
+    const primary = { instanceId: "antigravity", model: "gemini-3.8-flash-high", fallbacks: [
+      { instanceId: "antigravity", model: "gpt-oss-120b-medium" },
+      { instanceId: "antigravity", model: "claude-sonnet-4-6" },
+    ] };
+    expect(registry.resolveModel("bot", primary, now)).toMatchObject({ isFallback: true, selection: { model: "claude-sonnet-4-6" } });
+    expect(quotaModelsFromSnapshot(snapshot, now)[primary.model]?.capped).toBe(true);
+    expect(registry.get("bot", "antigravity", "gemini-2.5-flash", now)).toBeUndefined();
+    expect(registry.resolveModel("bot", primary, now + 60_001).isFallback).toBe(false);
+    expect(quotaModelsFromSnapshot(snapshot, now + 60_001)[primary.model]).toMatchObject({ capped: false, remainingPercent: null });
+    snapshot.models[0].remainingPercentage = 1;
+    applyAntigravityUsageToRegistry(snapshot, registry, now);
+    expect(registry.get("bot", "antigravity", primary.model, now)).toBeUndefined();
+    expect(registry.get("bot", "antigravity", "MODEL_PLACEHOLDER_M318", now)).toBeUndefined();
+  });
+
+  it.each([false, true])("retains the latest or indefinite alias reset independent of input order (%s)", (reverse) => {
+    const now = Date.now();
+    const rows = [
+      { modelId: "MODEL_PLACEHOLDER_M318", label: "Gemini 3.8 Flash (High)", remainingPercentage: 0, resetTime: new Date(now + 60_000).toISOString() },
+      { modelId: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", remainingPercentage: 0, resetTime: new Date(now + 3_600_000).toISOString() },
+    ];
+    const registry = new QuotaCooldownRegistry();
+    const snapshot = parseAntigravityUsageJson({ timestamp: new Date(now).toISOString(), models: reverse ? rows.toReversed() : rows });
+    applyAntigravityUsageToRegistry(snapshot, registry, now);
+    expect(registry.get("bot", "antigravity", "gemini-3.8-flash-high", now + 60_001)?.resetsAt).toBe(now + 3_600_000);
+    expect(quotaModelsFromSnapshot(snapshot, now + 60_001)["gemini-3.8-flash-high"]?.capped).toBe(true);
+    delete snapshot.models.find((row) => row.modelId === "gemini-3.8-flash-high")!.resetTime;
+    applyAntigravityUsageToRegistry(snapshot, registry, now);
+    expect(registry.get("bot", "antigravity", "gemini-3.8-flash-high", now + 3_600_001)?.resetsAt).toBeNull();
+  });
+
+  it("anchors a relative reset to the sampled timestamp rather than each picker refresh", () => {
+    const now = Date.now();
+    const snapshot = parseAntigravityUsageJson({ timestamp: new Date(now).toISOString(), models: [
+      { modelId: "MODEL_PLACEHOLDER_M318", label: "Gemini 3.8 Flash (High)", remainingPercentage: 0, timeUntilResetMs: 60_000 },
+    ] });
+    expect(quotaModelsFromSnapshot(snapshot, now + 30_000)["gemini-3.8-flash-high"]?.resetsAt).toBe(now + 60_000);
+    expect(quotaModelsFromSnapshot(snapshot, now + 60_001)["gemini-3.8-flash-high"]?.capped).toBe(false);
+  });
+
+  it("does not let an available duplicate alias overwrite an exhausted reading", () => {
+    const snapshot = parseAntigravityUsageJson({ models: [
+      { modelId: "MODEL_PLACEHOLDER_M318", label: "Gemini 3.8 Flash (High)", remainingPercentage: 0 },
+      { modelId: "gemini-3.8-flash-high", label: "Gemini 3.8 Flash (High)", remainingPercentage: 1 },
+    ] });
+    const registry = new QuotaCooldownRegistry();
+    applyAntigravityUsageToRegistry(snapshot, registry);
+    expect(registry.get("bot", "antigravity", "gemini-3.8-flash-high")).toBeDefined();
+    expect(quotaModelsFromSnapshot(snapshot)["gemini-3.8-flash-high"]?.capped).toBe(true);
+  });
+});
+
 describe("createAntigravityQuotaPoller", () => {
   it("parses injected CLI JSON and records cooldowns", async () => {
     const registry = new QuotaCooldownRegistry();
