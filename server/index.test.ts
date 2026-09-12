@@ -2260,9 +2260,9 @@ describe("harness HTTP API", () => {
 
       await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
       const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8")) as {
-        mcpConfig: { mcpServers: { ogb: { args: string[] } } };
+        mcpConfig: { mcpServers: { botfleet: { args: string[] } } };
       };
-      socket = await connectSocket(dump.mcpConfig.mcpServers.ogb.args[1]);
+      socket = await connectSocket(dump.mcpConfig.mcpServers.botfleet.args[1]);
       const brokerAnswer = new Promise<{ behavior: string }>((resolve) => {
         let buffer = "";
         socket!.on("data", (chunk) => {
