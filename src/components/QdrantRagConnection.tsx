@@ -1,8 +1,17 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CheckCircle, Database, RefreshCw, XCircle } from "lucide-react";
 import { api, useSecretSources, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { SecretSourceBadge } from "./SecretSourceBadge";
+import {
+  qdrantLastSuccessLabel,
+  qdrantRouteLabel,
+  qdrantStateLabel,
+  qdrantTestResultIfCurrent,
+  settleQdrantSaveWithStatusFence,
+  waitForLatestQdrantSave,
+  type QdrantStatus,
+} from "@/lib/qdrant-status";
 
 export function QdrantRagConnection() {
   const { state, dispatch } = useStore();
@@ -36,13 +45,13 @@ export function QdrantRagConnection() {
   const [accessClientId, setAccessClientId] = useState(qdrant?.accessClientId ?? "");
   const [accessClientSecret, setAccessClientSecret] = useState("");
   const [testing, setTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{
-    ready: boolean;
-    pointsCount?: number;
-    collection?: string;
-    collections?: string[];
-    error?: string;
-  } | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<QdrantStatus | null>(null);
+  const testRevision = useRef(0);
+  const enabledRevision = useRef(0);
+  const saveFailed = useRef(false);
+  const pendingSave = useRef<Promise<boolean> | null>(null);
 
   useEffect(() => {
     if (qdrant) {
@@ -53,7 +62,7 @@ export function QdrantRagConnection() {
     }
   }, [qdrant]);
 
-  const save = async (
+  const performSave = async (
     overrides: {
       enabled?: boolean;
       url?: string;
@@ -103,32 +112,63 @@ export function QdrantRagConnection() {
     if (apiKeyLocked) delete patchBody.qdrant.apiKey;
     if (accessClientSecretLocked) delete patchBody.qdrant.accessClientSecret;
 
-    try {
-      const config: ConfigStatus = await api("/api/config", {
+    setSaving(true);
+    setSaveError(null);
+    saveFailed.current = false;
+    const testRevisionAtStart = testRevision.current;
+    const result = await settleQdrantSaveWithStatusFence<ConfigStatus>(
+      () => api("/api/config", {
         method: "PATCH",
         body: JSON.stringify(patchBody),
-      });
-      dispatch({ type: "configStatus", config });
-    } catch {
-      // ignore
+      }),
+      testRevisionAtStart,
+      () => testRevision.current,
+    );
+    setSaving(false);
+    if (!result.ok) {
+      saveFailed.current = true;
+      setSaveError(result.error);
+      return false;
     }
+    if (result.clearTestResult) setTestResult(null);
+    dispatch({ type: "configStatus", config: result.value });
+    return true;
+  };
+
+  const save = (
+    overrides: Parameters<typeof performSave>[0] = {},
+  ): Promise<boolean> => {
+    testRevision.current += 1;
+    const previous = pendingSave.current;
+    const operation = previous
+      ? previous.then(() => performSave(overrides), () => performSave(overrides))
+      : performSave(overrides);
+    pendingSave.current = operation;
+    const clear = () => {
+      if (pendingSave.current === operation) pendingSave.current = null;
+    };
+    void operation.then(clear, clear);
+    return operation;
   };
 
   const runTest = async () => {
     setTesting(true);
+    if (!(await waitForLatestQdrantSave(() => pendingSave.current, () => saveFailed.current))) {
+      setTesting(false);
+      return;
+    }
+    const currentTestRevision = ++testRevision.current;
     setTestResult(null);
     try {
-      const res = await fetch("/api/qdrant/status");
-      const data = await res.json() as {
-        ready: boolean;
-        pointsCount?: number;
-        collection?: string;
-        collections?: string[];
-        error?: string;
-      };
-      setTestResult(data);
+      const data: QdrantStatus = await api("/api/qdrant/status");
+      const current = qdrantTestResultIfCurrent(currentTestRevision, () => testRevision.current, data);
+      if (current) setTestResult(current);
     } catch (err) {
-      setTestResult({ ready: false, error: err instanceof Error ? err.message : String(err) });
+      const current = qdrantTestResultIfCurrent(currentTestRevision, () => testRevision.current, {
+        ready: false,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      if (current) setTestResult(current);
     } finally {
       setTesting(false);
     }
@@ -152,10 +192,14 @@ export function QdrantRagConnection() {
         <button
           role="switch"
           aria-checked={enabled}
-          onClick={() => {
+          aria-label="Enable shared memory"
+          aria-busy={saving}
+          onClick={async () => {
+            const previous = enabled;
             const next = !enabled;
+            const revision = ++enabledRevision.current;
             setEnabled(next);
-            void save({ enabled: next });
+            if (!(await save({ enabled: next })) && enabledRevision.current === revision) setEnabled(previous);
           }}
           className={cn(
             "relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none",
@@ -171,8 +215,19 @@ export function QdrantRagConnection() {
         </button>
       </div>
 
+      {saveError && (
+        <div role="alert" className="mt-3 text-[12.5px] text-danger">
+          Shared memory settings were not saved.{"\u00A0 "}{saveError}
+        </div>
+      )}
+
       {enabled && (
         <div className="mt-4 flex flex-col gap-3 border-t border-hairline/30 pt-3">
+          <div className="grid gap-1 rounded-lg border border-hairline/30 bg-inset/40 px-3 py-2 text-[12px] text-ink-secondary sm:grid-cols-3">
+            <span><span className="font-medium text-ink">Selected route:</span> {qdrantRouteLabel(testResult, qdrant?.url ?? "")}</span>
+            <span><span className="font-medium text-ink">State:</span> {qdrantStateLabel(testResult)}</span>
+            <span><span className="font-medium text-ink">Last successful check:</span> {qdrantLastSuccessLabel(testResult)}</span>
+          </div>
           <div className="flex flex-col gap-1">
             <div className="flex items-center gap-2">
               <label className="text-[12px] font-medium text-ink-secondary">Service URL</label>
