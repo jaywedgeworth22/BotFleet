@@ -40,6 +40,7 @@ import { TranscriptionSettings } from "./TranscriptionSettings";
 import { QdrantRagConnection } from "./QdrantRagConnection";
 import { ElevenLabsConnection } from "./ElevenLabsConnection";
 import { cn } from "@/lib/cn";
+import { putAutomaticUpdateSetting } from "@/lib/automatic-update-setting";
 
 const SECTIONS: Array<{
   id: AppSettingsSection;
@@ -361,6 +362,8 @@ function CustomIngressFields() {
 function UpdatesRow() {
   const { state, dispatch } = useStore();
   const s = useUpdaterState();
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   if (!window.ogb?.updater) return null;
   const updater = window.ogb.updater;
   const label =
@@ -385,22 +388,29 @@ function UpdatesRow() {
           <input
             type="checkbox"
             checked={state.config?.autoUpdate?.enabled ?? false}
-            onChange={(e) => {
+            disabled={saving}
+            onChange={async (e) => {
               const enabled = e.target.checked;
-              void fetch("/api/config", {
-                method: "PUT",
-                headers: { "content-type": "application/json" },
-                body: JSON.stringify({ autoUpdate: { enabled } }),
-              })
-                .then((r) => r.json())
-                .then((config) => {
-                  dispatch({ type: "configStatus", config });
-                  void window.ogb?.updater?.setEnabled?.(enabled);
-                });
+              setSaving(true);
+              setSaveError(null);
+              try {
+                const config = await putAutomaticUpdateSetting(enabled);
+                dispatch({ type: "configStatus", config });
+                void window.ogb?.updater?.setEnabled?.(enabled);
+              } catch (error) {
+                setSaveError(error instanceof Error ? error.message : "Could not save automatic updates.");
+              } finally {
+                setSaving(false);
+              }
             }}
           />
           Enable automatic update checks
         </label>
+        {saveError && (
+          <div role="alert" className="max-w-sm text-right text-[12px] text-danger">
+            Automatic update preference was not saved.{"\u00A0 "}{saveError}
+          </div>
+        )}
         <button
           onClick={() => {
             if (s?.status === "available") return void updater.download();

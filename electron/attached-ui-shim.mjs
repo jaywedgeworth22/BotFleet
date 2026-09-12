@@ -97,11 +97,19 @@ async function serveStatic(uiDir, pathname, req, res) {
 function proxyHttp({ harnessHost, harnessPort, log }, req, res) {
   let attempts = 0;
   let current = null;
+  let retryTimer = null;
+  let downstreamClosed = false;
   const idempotent = req.method === "GET" || req.method === "HEAD";
   // The renderer's EventSource closes and reopens; each close must release
   // its upstream stream or the harness leaks one subscriber per reconnect.
-  res.on("close", () => current?.destroy());
+  res.on("close", () => {
+    downstreamClosed = true;
+    if (retryTimer) clearTimeout(retryTimer);
+    current?.destroy();
+  });
   const send = () => {
+    retryTimer = null;
+    if (downstreamClosed || res.destroyed || res.writableEnded) return;
     attempts += 1;
     current?.destroy();
     const upstream = http.request(
@@ -119,11 +127,12 @@ function proxyHttp({ harnessHost, harnessPort, log }, req, res) {
     );
     current = upstream;
     upstream.on("error", (error) => {
-      if (idempotent && attempts < 2 && !res.headersSent) {
+      if (idempotent && attempts < 2 && !res.headersSent && !downstreamClosed && !res.destroyed) {
         log(`proxy retry :${harnessPort} ${req.method} ${req.url}: ${error?.code ?? error?.message ?? error}`);
-        setTimeout(send, 150);
+        retryTimer = setTimeout(send, 150);
         return;
       }
+      if (downstreamClosed || res.destroyed || res.writableEnded) return;
       log(`proxy to harness :${harnessPort} failed for ${req.method} ${req.url}: ${error?.code ?? error?.message ?? error}`);
       if (!res.headersSent) res.writeHead(502, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: `BotFleet harness on port ${harnessPort} is not reachable` }));
