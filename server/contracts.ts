@@ -130,12 +130,11 @@ export type RuntimeEvent = RuntimeEventBase &
          * tool name does (ACP reports one). */
         toolKind?: ToolKind;
         /** Full JSON-encoded arguments the model passed to the tool, in
-         * OpenAI function-calling shape.  HTTP drivers emit this so the
-         * HTTP tool executor can replay the call on the harness side
-         * (the model gave the executor nothing; only the wire stream
-         * knew what arguments were passed).  CLI drivers omit it — they
-         * run the tool call themselves, the executor never sees the
-         * event for a CLI driver that stopped on tool calls. */
+         * OpenAI function-calling shape.  The chat-completions drivers emit
+         * it because their wire stream is the only thing that knows what the
+         * model asked for; it is what makes the repeat detector able to key
+         * on tool AND arguments for those engines.  CLI drivers omit it —
+         * their harness reports a title instead. */
         arguments?: string;
       }
     | { type: "item.updated"; itemType: "tool" | "reasoning"; tokens?: number | null }

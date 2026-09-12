@@ -293,15 +293,19 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
               emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
             }
             active.delete(threadId);
-            const toolNames = ((tool_calls as any[] | undefined) ?? [])
-              .map((tc: any) => tc?.function?.name)
-              .filter(Boolean)
-              .join(", ");
+            // A settled turn is settled.  This used to report a
+            // `tool_calls: <names>` stop reason, a string protocol five
+            // harness consumers had to recognise and six others silently
+            // mishandled — and grok has no harness re-feed loop behind it, so
+            // the only thing that prefix ever did here was hide the terminal
+            // event from the watchdog and the queue drains and leave the bot
+            // busy forever.  The convention is gone from the repo; the turn
+            // reports what it is.
             emit({
               ...base(threadId, turnId),
               type: "turn.completed",
               ok: true,
-              stopReason: toolNames ? `tool_calls: ${toolNames}` : null,
+              stopReason: null,
               cost: null,
             });
             return;
