@@ -8,12 +8,17 @@
 //                               verbatim and secret-redacted
 //                               (server/drivers/native.ts)
 //
+// Each log is capped and rotated (server/transcript-retention.ts), so a
+// thread's history is the live file plus at most one `.ndjson.1` beside it,
+// and the tail read here spans both.
+//
 // Merged by timestamp so a tool call and the raw message behind it sit
 // next to each other. Newest-`limit` only: a long-lived thread has
 // thousands of native lines and the panel wants the recent ones first.
 import { closeSync, fstatSync, openSync, readSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { RuntimeEvent } from "./contracts.ts";
+import { rotatedPath } from "./transcript-retention.ts";
 
 /** One line of native/<threadId>.ndjson (server/drivers/native.ts). */
 export interface NativeRecord {
@@ -97,6 +102,13 @@ function countLines(fd: number, file: string, stat: FileStat): number {
 
 type RecordGuard<T> = (value: unknown) => value is T;
 
+/** What one log file contributes to a page: its newest valid records, and how
+ * many lines it holds in total. */
+interface LogTail<T> {
+  lines: T[];
+  total: number;
+}
+
 function parseRecent<T>(text: string, includeFirst: boolean, limit: number, valid: RecordGuard<T>): T[] {
   const lines = text.split("\n");
   if (!includeFirst) lines.shift();
@@ -114,7 +126,10 @@ function parseRecent<T>(text: string, includeFirst: boolean, limit: number, vali
   return out.slice(-limit);
 }
 
-function readRecentLines<T>(file: string, limit: number, valid: RecordGuard<T>): { lines: T[]; total: number } {
+/** The newest `limit` valid records of ONE file, plus its line count.  A
+ * `limit` of zero counts without parsing, which is how the rotated generation
+ * is counted when the live file already filled the page. */
+function readTail<T>(file: string, limit: number, valid: RecordGuard<T>): LogTail<T> {
   let fd: number;
   try {
     fd = openSync(file, "r");
@@ -124,6 +139,7 @@ function readRecentLines<T>(file: string, limit: number, valid: RecordGuard<T>):
   try {
     const stat = fstatSync(fd);
     const total = countLines(fd, file, stat);
+    if (limit <= 0) return { lines: [], total };
     let position = stat.size;
     let bytes = Buffer.alloc(0);
     let lines: T[] = [];
@@ -152,6 +168,18 @@ function readRecentLines<T>(file: string, limit: number, valid: RecordGuard<T>):
   } finally {
     closeSync(fd);
   }
+}
+
+/** A thread's log spans at most two files: the live one and the single
+ * rotated generation beside it (server/transcript-retention.ts).  Rotation is
+ * what keeps either from growing without bound, so the panel reads across the
+ * seam — the newest lines come from the live file, and the rotated one both
+ * completes a short page and keeps the "showing 200 of 1,687" count honest
+ * about what is still on disk. */
+function readRecentLines<T>(file: string, limit: number, valid: RecordGuard<T>): LogTail<T> {
+  const live = readTail(file, limit, valid);
+  const rotated = readTail(rotatedPath(file), limit - live.lines.length, valid);
+  return { lines: [...rotated.lines, ...live.lines], total: live.total + rotated.total };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);

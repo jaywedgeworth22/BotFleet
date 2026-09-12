@@ -136,6 +136,12 @@ import {
   EVENTS_DIR,
   NATIVE_DIR,
 } from "./config.ts";
+import {
+  describeSweep,
+  startTranscriptRetentionSweeps,
+  sweepTranscriptRetention,
+  transcriptLogPaths,
+} from "./transcript-retention.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { findCliCandidates, resetPathCache } from "./env-path.ts";
 import { cliProbeEnvironment } from "./cli-probe-env.ts";
@@ -282,6 +288,21 @@ const MIME: Record<string, string> = {
 // SQLite, routines, or webhook receivers start.  Health timeouts never release it.
 // The parent startup lock also serializes the one-time legacy directory move.
 const harnessOwner = initializeHarnessOwnership(DATA_DIR, PORT, ensureDirs);
+// Bound the per-thread transcript logs before anything starts appending to
+// them.  Rotation keeps every log THIS run writes inside its cap
+// (server/transcript-retention.ts); this pass is what trims whatever an
+// earlier run left behind — three native logs on the owner's Mac had reached
+// 1.93 GB, 1.68 GB and 1.58 GB, against an Inspector panel that only ever
+// reads the newest few hundred lines.  Synchronous, behind the ownership
+// fence and long before `server.listen`, so no request ever waits on it, and
+// a stat-only no-op on every boot after the first.
+const transcriptDirs = { eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR };
+const bootTranscriptSweep = describeSweep(sweepTranscriptRetention(transcriptDirs));
+if (bootTranscriptSweep) console.log(bootTranscriptSweep);
+// A harness that stays up for weeks outlives its boot sweep; this catches a
+// log left oversized by anything rotation did not cover.  Unref'd, so it is
+// never the reason the process stays alive.
+const stopTranscriptSweeps = startTranscriptRetentionSweeps(transcriptDirs);
 let runtimeQuiescing = false;
 let activeUpdateAdmissions = 0;
 const cfg = loadConfig();
@@ -7203,9 +7224,13 @@ const server = createServer(async (req, res) => {
       store.deleteGroup(group.id);
       for (const threadId of threadIds) {
         for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-          try {
-            unlinkSync(join(dir, `${threadId}.ndjson`));
-          } catch {}
+          // Both generations: a rotated `.ndjson.1` left behind would outlive
+          // the room it belonged to (server/transcript-retention.ts).
+          for (const file of transcriptLogPaths(dir, threadId)) {
+            try {
+              unlinkSync(file);
+            } catch {}
+          }
         }
       }
       return json(res, 200, { ok: true });
@@ -7697,9 +7722,11 @@ const server = createServer(async (req, res) => {
         localVmLifecycleBusy.delete(localVmTarget.key);
       }
       for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-        try {
-          unlinkSync(join(dir, `${bot.threadId}.ndjson`));
-        } catch {}
+        for (const file of transcriptLogPaths(dir, bot.threadId)) {
+          try {
+            unlinkSync(file);
+          } catch {}
+        }
       }
       return json(res, 200, { ok: true });
     }
@@ -10013,6 +10040,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     for (const idle of localVmIdles.values()) idle.cancel();
     vps.closeAllVpsDesktopTunnels();
     watchdog.stop();
+    stopTranscriptSweeps();
     routines?.stop();
     stopAntigravityQuotaPoller();
     usageQuotaPoller.stop();

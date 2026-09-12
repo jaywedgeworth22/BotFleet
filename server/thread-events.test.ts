@@ -152,6 +152,54 @@ describe("readThreadEvents", () => {
     expect((page.entries[0]!.data as { text: string }).text.startsWith("🐭🐭")).toBe(true);
   });
 
+  // A log rotates at its byte cap (server/transcript-retention.ts): the live
+  // file starts fresh and the generation it displaced sits beside it as
+  // `<threadId>.ndjson.1`.  The panel must not notice the seam.
+  it("completes a short page from the rotated generation, oldest first", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson.1"),
+      line(runtime({ eventId: "e1", createdAt: "1", type: "turn.started" })) + line(runtime({ eventId: "e2", createdAt: "2", type: "turn.started" })),
+    );
+    writeFileSync(join(eventsDir, "t1.ndjson"), line(runtime({ eventId: "e3", createdAt: "3", type: "turn.started" })));
+    writeFileSync(join(nativeDir, "t1.ndjson.1"), line({ at: "1", dir: "out", source: "acp", msg: { rotated: true } }));
+    writeFileSync(join(nativeDir, "t1.ndjson"), line({ at: "4", dir: "in", source: "acp", msg: { live: true } }));
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.entries.map((entry) => entry.at)).toEqual(["1", "1", "2", "3", "4"]);
+    expect(page.total).toEqual({ runtime: 3, native: 2 });
+  });
+
+  it("takes only the newest lines when the live file alone fills the page, and still counts what is rotated", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson.1"),
+      line(runtime({ eventId: "old1", createdAt: "1", type: "turn.started" })) + line(runtime({ eventId: "old2", createdAt: "2", type: "turn.started" })),
+    );
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "new1", createdAt: "3", type: "turn.started" })) + line(runtime({ eventId: "new2", createdAt: "4", type: "turn.started" })),
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 2 });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["new1", "new2"]);
+    // "showing 2 of 4": the rotated generation is still on disk and still counted
+    expect(page.total.runtime).toBe(4);
+  });
+
+  it("reads a live file that is empty because it was just rotated", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(join(eventsDir, "t1.ndjson.1"), line(runtime({ eventId: "e1", createdAt: "1", type: "turn.started" })));
+    writeFileSync(join(eventsDir, "t1.ndjson"), "");
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["e1"]);
+    expect(page.total.runtime).toBe(1);
+  });
+
   it("refuses a thread id that could escape the log directory", () => {
     const eventsDir = tmp();
     const nativeDir = tmp();
