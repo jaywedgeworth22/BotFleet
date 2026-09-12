@@ -15,9 +15,13 @@ import { readFileSync } from "node:fs";
 const MAIN_SOURCE = readFileSync(new URL("./main.mjs", import.meta.url), "utf8");
 
 describe("custom-engine credential replay on boot", () => {
-  it("migrates encrypted-key markers before server startup and stops if that migration fails", () => {
-    const migration = MAIN_SOURCE.indexOf("if (!secureInstanceCredentialMarkers()) {");
+  it("prepares durable markers before the update receipt and requires them before normal server startup", () => {
+    const preparation = MAIN_SOURCE.indexOf("const markers = secureCredentialMarkers({ strict: true });");
+    const receipt = MAIN_SOURCE.indexOf("createUpdateCredentialReceipt(build, markers.markerNames)");
+    const migration = MAIN_SOURCE.indexOf("if (!secureCredentialMarkers().ok) {");
     const startup = MAIN_SOURCE.indexOf("serverReady = await startServerPackaged()");
+    expect(preparation).toBeGreaterThan(-1);
+    expect(receipt).toBeGreaterThan(preparation);
     expect(migration).toBeGreaterThan(-1);
     expect(startup).toBeGreaterThan(migration);
     expect(MAIN_SOURCE.slice(migration, startup)).toMatch(/app\.quit\(\);\s+return;/);

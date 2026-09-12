@@ -19,8 +19,17 @@ import { openBlankTerminal } from "./terminal-launch.mjs";
 import { startUpdater, registerUpdaterIpc } from "./updater.mjs";
 import { readConfigFile, updateConfigFile } from "./config-file-lock.mjs";
 import { buildDiagnosticsReport, decodeLogTail, diagnosticsFileName } from "./diagnostics.mjs";
-import { migrateWorkspaceCredentials, workspaceCredentialEnv } from "./workspace-credentials.mjs";
+import {
+  assertExternalWorkspaceCredentialMarkers,
+  markExternalWorkspaceCredentials,
+  migrateWorkspaceCredentials,
+  workspaceCredentialEnv,
+} from "./workspace-credentials.mjs";
 import { markExternalInstanceCredentials, restoreWorkspaceCredentials, restoreInstanceCredentials } from "./credential-restore.mjs";
+import {
+  createUpdateCredentialReceipt,
+  updateCredentialReceiptPath,
+} from "./update-credential-preparation.mjs";
 import { activateExistingWindow } from "./single-instance.mjs";
 import { pollServerIdentity, probeHarness, resolvePackagedServer } from "./server-boot-probe.mjs";
 import { readPackagedBuildIdentity } from "./runtime-identity.mjs";
@@ -57,6 +66,13 @@ import {
 import capabilitiesModule from "./capabilities.cjs";
 
 const { desktopCapabilities, nativeDesktopActions } = capabilitiesModule;
+let updateCredentialPreparationPath;
+try {
+  updateCredentialPreparationPath = updateCredentialReceiptPath(process.argv);
+} catch {
+  console.error("[desktop] invalid update credential preparation request");
+  process.exit(1);
+}
 const nativeActions = nativeDesktopActions(process.platform);
 const require = createRequire(import.meta.url);
 const { createDisplayMediaGuard, invokeDisplayMediaCallback, selectCaptureSource } = require(
@@ -271,7 +287,7 @@ async function saveSecureCredentials(credentials) {
   fs.renameSync(temporary, CREDENTIALS_FILE);
 }
 
-async function secureComposioConfig() {
+async function secureComposioConfig({ strict = false } = {}) {
   const configPath = desktopConfigPath();
   try {
     // The credential store first, outside the lock -- it is async and may
@@ -289,6 +305,7 @@ async function secureComposioConfig() {
       stripLegacyComposioFields(config, secureCredentials.composioApiKey) ? config : null,
     );
   } catch (error) {
+    if (strict) throw error;
     if (error?.code !== "ENOENT") slog(`credential migration failed: ${error?.message ?? error}`);
   }
 }
@@ -327,7 +344,7 @@ function stripLegacyComposioFields(config, storedApiKey) {
 // saves go straight through credential:set below; this boot-time sweep also
 // migrates plaintext left by older versions or direct development clients.
 // See workspace-credentials.mjs for the exact rules.
-async function secureWorkspaceConfig() {
+async function secureWorkspaceConfig({ strict = false } = {}) {
   const configPath = desktopConfigPath();
   try {
     // credentials.bin first, outside the lock: if the OS store cannot take
@@ -348,6 +365,7 @@ async function secureWorkspaceConfig() {
       return again.config;
     });
   } catch (error) {
+    if (strict) throw error;
     if (error?.code !== "ENOENT") slog(`credential migration failed: ${error?.message ?? error}`);
   }
 }
@@ -355,20 +373,39 @@ async function secureWorkspaceConfig() {
 /** Upgrade encrypted custom-engine keys created before config carried the
  * nonsecret external-storage marker.  This runs before attach-or-spawn, so a
  * fresh standalone harness can gate those exact engines from its first turn. */
-function secureInstanceCredentialMarkers() {
-  if (credentialStoreUnavailable) return true;
+function secureCredentialMarkers({ strict = false } = {}) {
+  if (credentialStoreUnavailable) {
+    if (strict) throw new Error("The operating-system credential store could not be read");
+    return { ok: false, markerNames: [] };
+  }
   const ids = Object.keys(secureCredentials?.instanceKeys ?? {});
-  if (!ids.length) return true;
   try {
     updateConfigFile(desktopConfigPath(), (config) => {
-      const migrated = markExternalInstanceCredentials(config, ids);
-      return migrated.changed ? migrated.config : null;
+      const workspace = markExternalWorkspaceCredentials(config, secureCredentials);
+      const instances = markExternalInstanceCredentials(workspace.config, ids);
+      return workspace.changed || instances.changed ? instances.config : null;
     });
-    return true;
+    const stored = readConfigFile(desktopConfigPath());
+    const markerNames = assertExternalWorkspaceCredentialMarkers(stored, secureCredentials);
+    for (const id of ids) {
+      if (stored?.instances?.[id]?.config?.credentialStorage === "external") markerNames.push(`instance.${id}`);
+      else if (stored?.instances?.[id]?.driver === "openai-compat") {
+        throw new Error(`Custom credential marker was not durably written for ${id}`);
+      }
+    }
+    return { ok: true, markerNames };
   } catch (error) {
+    if (strict) throw error;
     slog(`custom credential marker migration failed: ${error?.message ?? error}`);
-    return false;
+    return { ok: false, markerNames: [] };
   }
+}
+
+function writeUpdateCredentialReceipt(receiptPath, receipt) {
+  fs.mkdirSync(path.dirname(receiptPath), { recursive: true, mode: 0o700 });
+  const temporary = `${receiptPath}.${process.pid}.${randomUUID()}.tmp`;
+  fs.writeFileSync(temporary, `${JSON.stringify(receipt, null, 2)}\n`, { mode: 0o600, flag: "wx" });
+  fs.renameSync(temporary, receiptPath);
 }
 
 function desktopConfigPath() {
@@ -2004,6 +2041,26 @@ function setupApplicationMenu() {
 }
 
 app.whenReady().then(async () => {
+  if (updateCredentialPreparationPath) {
+    try {
+      if (!app.isPackaged) throw new Error("Credential preparation requires an installed BotFleet build");
+      secureCredentials = await loadSecureCredentials();
+      // Preparation is rollback-safe metadata work only.  Do not move or
+      // delete legacy plaintext secrets before the candidate harness proves
+      // it can start; regular desktop startup performs those migrations.
+      const markers = secureCredentialMarkers({ strict: true });
+      const build = readPackagedBuildIdentity(path.join(process.resourcesPath, "server"));
+      writeUpdateCredentialReceipt(
+        updateCredentialPreparationPath,
+        createUpdateCredentialReceipt(build, markers.markerNames),
+      );
+      app.exit(0);
+    } catch {
+      console.error("[desktop] update credential preparation failed");
+      app.exit(1);
+    }
+    return;
+  }
   setupApplicationMenu();
   if (app.isPackaged) {
     app.setAsDefaultProtocolClient("botfleet");
@@ -2035,7 +2092,7 @@ app.whenReady().then(async () => {
   if (app.isPackaged) {
     await secureComposioConfig();
     await secureWorkspaceConfig();
-    if (!secureInstanceCredentialMarkers()) {
+    if (!secureCredentialMarkers().ok) {
       dialog.showErrorBox(
         "BotFleet could not protect saved custom-engine credentials",
         "BotFleet could not update its local credential metadata.  Close other BotFleet processes and reopen the app.",

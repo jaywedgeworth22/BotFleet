@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertExternalWorkspaceCredentialMarkers,
+  EXTERNAL_WORKSPACE_CREDENTIALS,
+  markExternalWorkspaceCredentials,
   migrateWorkspaceCredentials,
+  setWorkspaceCredentialMarker,
+  workspaceCredentialPending,
   workspaceCredentialEnv,
   WORKSPACE_CREDENTIALS,
 } from "./workspace-credentials.mjs";
@@ -139,5 +144,55 @@ describe("workspace credential env", () => {
     const credentials = Object.fromEntries(WORKSPACE_CREDENTIALS.map((c) => [c.name, `v-${c.name}`]));
     const env = workspaceCredentialEnv(credentials);
     expect(Object.keys(env).sort()).toEqual(WORKSPACE_CREDENTIALS.map((c) => c.env).sort());
+  });
+});
+
+describe("workspace credential replay markers", () => {
+  it("marks only encrypted credentials and never persists their values", () => {
+    const source = { xai: { url: "https://api.example.test/v1" }, profile: { name: "Ada" } };
+    const result = markExternalWorkspaceCredentials(source, {
+      xaiApiKey: "saved-xai",
+      composioApiKey: "saved-composio",
+    });
+
+    expect(result).toEqual({ changed: true, config: {
+      xai: { url: "https://api.example.test/v1", credentialStorage: "external" },
+      composio: { credentialStorage: "external" },
+      profile: { name: "Ada" },
+    } });
+    expect(JSON.stringify(result.config)).not.toMatch(/saved-xai|saved-composio/);
+    expect(source.xai).not.toHaveProperty("credentialStorage");
+  });
+
+  it("rejects a preparation readback missing any fixed encrypted credential marker", () => {
+    const credentials = { xaiApiKey: "saved-xai", boxToken: "saved-box" };
+    expect(() => assertExternalWorkspaceCredentialMarkers(
+      { xai: { credentialStorage: "external" }, box: {} },
+      credentials,
+    )).toThrow(/boxToken/);
+    expect(assertExternalWorkspaceCredentialMarkers(
+      {
+        xai: { credentialStorage: "external" },
+        box: { credentialStorage: "external" },
+      },
+      credentials,
+    )).toEqual(["xaiApiKey", "boxToken"]);
+  });
+
+  it("distinguishes pending replay from a restored value", () => {
+    expect(workspaceCredentialPending({ xai: { credentialStorage: "external" } }, "xaiApiKey")).toBe(true);
+    expect(workspaceCredentialPending({ xai: { credentialStorage: "external", key: "runtime-only" } }, "xaiApiKey")).toBe(false);
+    expect(workspaceCredentialPending({ xai: {} }, "xaiApiKey")).toBe(false);
+    expect(EXTERNAL_WORKSPACE_CREDENTIALS.map((field) => field.name)).toContain("infisicalClientSecret");
+  });
+
+  it("removes an external marker only on an explicit credential clear", () => {
+    const marked = { xai: { url: "https://api.example.test/v1", credentialStorage: "external" } };
+    expect(setWorkspaceCredentialMarker(marked, "xaiApiKey", false)).toEqual({
+      xai: { url: "https://api.example.test/v1" },
+    });
+    expect(setWorkspaceCredentialMarker({ xai: {} }, "xaiApiKey", true)).toEqual({
+      xai: { credentialStorage: "external" },
+    });
   });
 });

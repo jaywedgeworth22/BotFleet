@@ -3818,8 +3818,8 @@ describe("harness HTTP API", () => {
     expect(JSON.stringify(saved.body)).not.toContain("ak_good");
 
     const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
-    expect(disk.composio).toMatchObject({ apiKey: "", sessionId: "trs_config_test" });
-    expect(disk.opencodeGo).toEqual({ apiKey: "" });
+    expect(disk.composio).toMatchObject({ apiKey: "", sessionId: "trs_config_test", credentialStorage: "external" });
+    expect(disk.opencodeGo).toEqual({ apiKey: "", credentialStorage: "external" });
     expect(disk.profile).toEqual({ name: "External Store" });
     expect(JSON.stringify(disk)).not.toContain("ak_good");
     expect(JSON.stringify(disk)).not.toContain("opencode-external");
@@ -3832,6 +3832,14 @@ describe("harness HTTP API", () => {
       mode: "self-hosted",
       managedSetup: { status: "unconfigured" },
     });
+
+    expect((await api("PUT", "/api/config?secretStorage=external", {
+      composio: { apiKey: "" },
+      opencodeGo: { apiKey: "" },
+    })).status).toBe(200);
+    const cleared = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+    expect(cleared.composio.credentialStorage).toBeUndefined();
+    expect(cleared.opencodeGo.credentialStorage).toBeUndefined();
   });
 
   it.skipIf(process.platform === "win32")("stores the credentials file with owner-only permissions", () => {

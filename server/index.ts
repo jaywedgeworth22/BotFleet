@@ -42,6 +42,7 @@ import { IdempotencyCache } from "./idempotency.ts";
 import { initializeHarnessOwnership, harnessOwnerProof } from "../electron/harness-ownership.mjs";
 import { authorizedRuntime } from "../electron/runtime-identity.mjs";
 import { planCredentialRestore } from "../electron/credential-restore.mjs";
+import { workspaceCredentialPending } from "../electron/workspace-credentials.mjs";
 import { runtimeBuildIdentity, runtimeReadiness } from "./runtime-identity.ts";
 import {
   avatarGenerationRequestSchema,
@@ -167,7 +168,7 @@ import { searchMessages } from "./message-db.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
 import { _loadPending, discardDelegations, drainDelegations, pendingDelegationSnapshot, pendingThreads, queueDelegation, type QueueResult } from "./delegations.ts";
 import { cancelSteeredMessage, drainSteeredMessages, queueSteeredMessage, queuedMessageCount } from "./steer-queue.ts";
-import { cancelRoomRounds, drainRoomRounds, queueRoomRound, _queuedRoomCount } from "./room-queue.ts";
+import { cancelRoomRounds, drainRoomRounds, hasQueuedRoomRound, queueRoomRound, _queuedRoomCount } from "./room-queue.ts";
 import { EventBus } from "./harness/bus.ts";
 import { observability, observabilityBootLine } from "./observability.ts";
 import { formatListenInUse, isListenInUse, listenErrorDisposition } from "./harness-ports.ts";
@@ -1178,6 +1179,14 @@ async function interruptThreadEverywhere(threadId: string): Promise<InterruptOut
 /** Room turns re-enter the member engine after turn.completed so failover
  * does not race the sequential roster walk. */
 const pendingMemberFallback = new Map<string, { groupId: string; botId: string; selection: ModelSelection }>();
+const credentialPendingRoomRounds = new Map<string, { threadId: string; botId: string }>();
+const pendingCredentialFallback = new Map<string, {
+  botId: string;
+  threadId: string;
+  text: string;
+  userMessage: Message;
+  selection: ModelSelection;
+}>();
 type InterruptedTurn = {
   botId: string;
   threadId: string;
@@ -2105,6 +2114,16 @@ bus.subscribe((event: RuntimeEvent) => {
             automationSource: userMsg.automationSource,
             unattended: isUnattended(fallbackBotId),
           }).catch((error) => {
+            if (isExternalCredentialPendingError(error)) {
+              pendingCredentialFallback.set(`${fallbackBotId}:${event.threadId}`, {
+                botId: fallbackBotId,
+                threadId: event.threadId,
+                text: userMsg.text || "",
+                userMessage: userMsg,
+                selection: fallbackSelection!,
+              });
+              return;
+            }
             console.error(`fallback startTurn failed for ${fallbackBotId}:`, error);
           });
         } else if (routineRun?.status !== "failed") {
@@ -2356,6 +2375,7 @@ bus.subscribe((event: RuntimeEvent) => {
  * like the steer drain above, so `busy` is already false when it looks. */
 function drainRoomQueue() {
   drainRoomRounds(store, Date.now(), (round) => {
+    credentialPendingRoomRounds.delete(`${round.groupId}:${round.threadId}:${round.botId}`);
     void runGroupMemberTurn(
       round.groupId,
       round.threadId,
@@ -2581,15 +2601,17 @@ async function startTurn(
   const fallbackPolicy = task.modelSelection ?? bot.modelSelection;
   const selection = opts?.modelSelection
     ?? quotaCooldowns.resolveModel(bot.id, fallbackPolicy).selection;
-  if (opts?.runOn !== "cloud" && externalCredentialPending(selection.instanceId)) {
+  if (turnExternalCredentialPending(bot, selection.instanceId, opts?.runOn)) {
     throw externalCredentialPendingError(selection.instanceId);
   }
   // A fresh user turn re-arms both the saved chain and the stop latch; the
   // fallback dispatch (which carries modelSelection) is a continuation of the
   // turn that just settled, so it must inherit them instead.
   if (!opts?.modelSelection) {
-    fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
-    stoppedTurns.delete(`${bot.id}:${threadId}`);
+    const turnKey = `${bot.id}:${threadId}`;
+    fallbackAttemptByTurn.delete(turnKey);
+    pendingCredentialFallback.delete(turnKey);
+    stoppedTurns.delete(turnKey);
   }
   const instance = opts?.runOn === "cloud"
     ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
@@ -3227,12 +3249,15 @@ routines = new RoutineManager({
   // then tick them after the authenticated credential has landed.
   admit: () => !runtimeQuiescing && !providerConfigBusy,
   canStart: (botId, threadId, runOn) => {
-    if (runOn === "cloud") return true;
     const bot = store.bot(botId);
     const task = bot && threadId ? store.taskByThread(bot.id, threadId) : undefined;
     if (!bot) return true;
     const policy = task?.modelSelection ?? bot.modelSelection;
-    return !externalCredentialPending(quotaCooldowns.resolveModel(bot.id, policy).selection.instanceId);
+    return !turnExternalCredentialPending(
+      bot,
+      quotaCooldowns.resolveModel(bot.id, policy).selection.instanceId,
+      runOn,
+    );
   },
   botState: (botId) => {
     const bot = store.bot(botId);
@@ -3775,11 +3800,11 @@ _loadPending();
 // crash marker durable and retry the same recovery after authenticated restore.
 const deferredBootRecoveries = new Set<string>();
 
-function turnExternalCredentialPending(bot: NonNullable<ReturnType<typeof store.bot>>, threadId: string): boolean {
+function threadExternalCredentialPending(bot: NonNullable<ReturnType<typeof store.bot>>, threadId: string): boolean {
   const task = store.taskByThread(bot.id, threadId);
   if (!task) return false;
   const policy = task.modelSelection ?? bot.modelSelection;
-  return externalCredentialPending(quotaCooldowns.resolveModel(bot.id, policy).selection.instanceId);
+  return turnExternalCredentialPending(bot, quotaCooldowns.resolveModel(bot.id, policy).selection.instanceId);
 }
 
 function recoverInflightTurn(botId: string): void {
@@ -3788,7 +3813,7 @@ function recoverInflightTurn(botId: string): void {
   if (!bot || bot.hidden || bot.busy) return;
   const threadId = bot.inflightThreadId;
   if (!threadId) return;
-  if (turnExternalCredentialPending(bot, threadId)) {
+  if (threadExternalCredentialPending(bot, threadId)) {
     deferredBootRecoveries.add(bot.id);
     console.log(`boot recovery: waiting for encrypted credential for ${bot.name}`);
     return;
@@ -3879,8 +3904,21 @@ async function runGroupMemberTurn(
     queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation, turnSelection }, Date.now());
     return true;
   }
-  spoken.add(botId);
   const selection = turnSelection ?? bot.modelSelection;
+  if (turnExternalCredentialPending(bot, selection.instanceId)) {
+    const queued = queueRoomRound(
+      { groupId: group.id, threadId, botId: bot.id, hop, cardContinuation, turnSelection },
+      Date.now(),
+    );
+    if (queued) {
+      credentialPendingRoomRounds.set(
+        `${group.id}:${threadId}:${bot.id}`,
+        { threadId, botId: bot.id },
+      );
+    }
+    return true;
+  }
+  spoken.add(botId);
   let instance = registry.get(selection.instanceId);
   const userName = cfg.profile?.name?.trim() || "User";
   if (!instance) {
@@ -5077,6 +5115,41 @@ function externalCredentialPending(instanceId: string): boolean {
   return !config.key && !entry.environment?.OPENAI_COMPAT_API_KEY;
 }
 
+function fixedProviderCredentialPending(instanceId: string, runOn?: RoutineRunOn): boolean {
+  if (runOn === "cloud") return workspaceCredentialPending(cfg, "boxToken");
+  const driver = instanceConfigs(cfg)[instanceId]?.driver;
+  const credential = driver === "grok"
+    ? "xaiApiKey"
+    : driver === "boxAgent"
+      ? "boxToken"
+      : driver === "opencodeGo"
+        ? "opencodeGoApiKey"
+        : null;
+  return credential ? workspaceCredentialPending(cfg, credential) : false;
+}
+
+/** Block only a consumer whose own encrypted value has not been replayed.
+ * Anonymous custom engines and unrelated subscription CLIs remain usable. */
+function turnExternalCredentialPending(
+  bot: NonNullable<ReturnType<typeof store.bot>>,
+  instanceId: string,
+  runOn?: RoutineRunOn,
+): boolean {
+  if (externalCredentialPending(instanceId) || fixedProviderCredentialPending(instanceId, runOn)) return true;
+  const instance = runOn === "cloud"
+    ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
+    : registry.get(instanceId);
+  if (bot.composio !== false && instance?.adapter.capabilities.composioMcp === true &&
+      workspaceCredentialPending(cfg, "composioApiKey")) return true;
+
+  const allowed = allowedBotComputers(cfg);
+  const grants = resolveGrants(bot.computers, runOn, cfg.botDefaults?.computers, allowed);
+  const mayUseCloud = grants.granted.includes("cloud") ||
+    (grants.auto && autoDestinations(allowed).includes("cloud"));
+  return mayUseCloud && resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "box" &&
+    workspaceCredentialPending(cfg, "boxToken");
+}
+
 function externalCredentialPendingError(instanceId: string): Error & { status: number; code: string } {
   return Object.assign(
     new Error(`provider instance "${instanceId}" is waiting for its encrypted credential`),
@@ -5086,6 +5159,24 @@ function externalCredentialPendingError(instanceId: string): Error & { status: n
 
 function isExternalCredentialPendingError(error: unknown): boolean {
   return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "external_credential_pending");
+}
+
+function drainCredentialFallbacks(): void {
+  for (const [key, entry] of pendingCredentialFallback) {
+    const bot = store.bot(entry.botId);
+    if (!bot || bot.busy || turnExternalCredentialPending(bot, entry.selection.instanceId)) continue;
+    pendingCredentialFallback.delete(key);
+    void startTurn(entry.botId, entry.text, {
+      userMessage: entry.userMessage,
+      threadId: entry.threadId,
+      modelSelection: entry.selection,
+      automationSource: entry.userMessage.automationSource,
+      unattended: isUnattended(entry.botId),
+    }).catch((error) => {
+      if (isExternalCredentialPendingError(error)) pendingCredentialFallback.set(key, entry);
+      else console.error(`credential fallback resume failed for ${entry.botId}:`, error);
+    });
+  }
 }
 
 /** Merge every live-only instance-key override into a freshly built
@@ -5217,7 +5308,10 @@ function isLoopbackAddress(address: string | undefined): boolean {
   return isLoopbackHost(bare.includes(":") ? `[${bare}]` : bare);
 }
 
-function currentRuntimeReadiness(ownAdmissionActive = false, allowQueuedRoutines = false) {
+function currentRuntimeReadiness(ownAdmissionActive = false, allowCredentialQueues = false) {
+  for (const [key, round] of credentialPendingRoomRounds) {
+    if (!hasQueuedRoomRound(round.threadId, round.botId)) credentialPendingRoomRounds.delete(key);
+  }
   return runtimeReadiness({
     // Restore routes may exclude only their own still-held HTTP admission.
     // Other requests, including ones still reading a body, remain blockers.
@@ -5226,7 +5320,7 @@ function currentRuntimeReadiness(ownAdmissionActive = false, allowQueuedRoutines
     completions: completionFolds.size,
     groupOperations: groupTurnOperations.size,
     queuedSends: queuedMessageCount(),
-    queuedRooms: _queuedRoomCount(),
+    queuedRooms: Math.max(0, _queuedRoomCount() - (allowCredentialQueues ? credentialPendingRoomRounds.size : 0)),
     delegations: pendingDelegationSnapshot().length,
     connectors: pendingConnectorResumes.size,
     secrets: pendingSecretResumes.size,
@@ -5236,7 +5330,7 @@ function currentRuntimeReadiness(ownAdmissionActive = false, allowQueuedRoutines
     restores: checkpointRestoreLeases.size,
     reloads: pendingProviderReloads + Number(providerConfigBusy),
     routineRuns: routines?.listRuns().filter((run) =>
-      (allowQueuedRoutines ? ["running", "waiting"] : ["queued", "running", "waiting"]).includes(run.status)
+      (allowCredentialQueues ? ["running", "waiting"] : ["queued", "running", "waiting"]).includes(run.status)
     ).length ?? 0,
   });
 }
@@ -6941,6 +7035,9 @@ const server = createServer(async (req, res) => {
       if (!parsed.success) {
         return json(res, 400, { error: `prompt must be at most 400 characters` });
       }
+      if (workspaceCredentialPending(cfg, "openaiImageApiKey")) {
+        return json(res, 409, { error: "Image generation is waiting for its encrypted credential" });
+      }
       const generated = await generateAvatarImage(cfg.imageGen?.key ?? "", existing, parsed.data.prompt);
       const current = store.bot(existing.id);
       if (!current) return json(res, 404, { error: "no such bot" });
@@ -7702,10 +7799,12 @@ const server = createServer(async (req, res) => {
       // before this handler resumes — if the latch were set after the await,
       // the fold would already have failed over to the next engine.
       const latchStop = (threadId: string) => {
-        stoppedTurns.add(`${bot.id}:${threadId}`);
+        const turnKey = `${bot.id}:${threadId}`;
+        stoppedTurns.add(turnKey);
         // the user ended this request, so the next message starts the saved
         // chain from the top rather than resuming mid-chain
-        fallbackAttemptByTurn.delete(`${bot.id}:${threadId}`);
+        fallbackAttemptByTurn.delete(turnKey);
+        pendingCredentialFallback.delete(turnKey);
         pendingMemberFallback.delete(threadId);
       };
       let stopped = false;
@@ -8076,6 +8175,8 @@ const server = createServer(async (req, res) => {
         broadcast({ kind: "config", ...configStatus() });
         queueMicrotask(() => {
           drainDeferredBootRecoveries();
+          drainCredentialFallbacks();
+          drainRoomQueue();
           void routines?.tick();
         });
         return json(res, 200, { restored: plan.restored, retained: plan.retained });
@@ -8142,6 +8243,9 @@ const server = createServer(async (req, res) => {
     // Sync Now: the one refresh that is allowed to rebuild the fleet, because
     // a person asked for it and is watching.
     if (method === "POST" && path === "/api/infisical/sync") {
+      if (workspaceCredentialPending(cfg, "infisicalClientSecret")) {
+        return json(res, 409, { error: "Infisical is waiting for its encrypted credential" });
+      }
       // Takes the same fence the two Settings routes take: this is the one
       // refresh allowed to rebuild the fleet, so it must not interleave with
       // a config save's read-modify-write.  (`reloadProviders` is serialized
@@ -8160,6 +8264,9 @@ const server = createServer(async (req, res) => {
     // Test Connection: proves the identity works without changing what any
     // bot resolves to mid-session — it never reads a value, only names.
     if (method === "POST" && path === "/api/infisical/test") {
+      if (workspaceCredentialPending(cfg, "infisicalClientSecret")) {
+        return json(res, 409, { error: "Infisical is waiting for its encrypted credential" });
+      }
       return json(res, 200, await infisical.probe());
     }
     // ── ingress test: confirm the configured webhook URL answers and
@@ -9078,18 +9185,31 @@ const server = createServer(async (req, res) => {
         // credential with an empty tombstone so an older plaintext value can
         // never survive the merge in config.json.
         const persisted = structuredClone(patch);
-        if (persisted.xai?.key !== undefined) persisted.xai.key = "";
-        if (persisted.composio?.apiKey !== undefined) persisted.composio.apiKey = "";
-        if (persisted.box?.token !== undefined) persisted.box.token = "";
-        if (persisted.opencodeGo?.apiKey !== undefined) persisted.opencodeGo.apiKey = "";
-        if (persisted.deepseek?.key !== undefined) persisted.deepseek.key = "";
-        if (persisted.tts?.key !== undefined) persisted.tts.key = "";
-        if (persisted.imageGen?.key !== undefined) persisted.imageGen.key = "";
+        const externalCredentialSections: Partial<Record<
+          "xai" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical",
+          boolean
+        >> = {};
+        const externalFields = [
+          ["xai", "key"],
+          ["composio", "apiKey"],
+          ["box", "token"],
+          ["opencodeGo", "apiKey"],
+          ["deepseek", "key"],
+          ["tts", "key"],
+          ["imageGen", "key"],
+          ["infisical", "clientSecret"],
+        ] as const;
+        for (const [section, field] of externalFields) {
+          const externalSection = persisted[section] as Record<string, string | undefined> | undefined;
+          const supplied = externalSection?.[field];
+          if (supplied === undefined) continue;
+          externalSection![field] = "";
+          externalCredentialSections[section] = Boolean(supplied.trim());
+        }
         // The one credential the store can never hold for us: its own client
         // secret.  The client id is a plain identifier and stays readable,
         // the way the Access client id does.
-        if (persisted.infisical?.clientSecret !== undefined) persisted.infisical.clientSecret = "";
-        saveConfig(persisted);
+        saveConfig(persisted, { externalCredentialSections });
         syncCredentialEnv(patch);
         Object.assign(cfg, loadConfig());
       } else {
@@ -9179,6 +9299,9 @@ const server = createServer(async (req, res) => {
       });
     }
     if (method === "GET" && path === "/api/tts/voices") {
+      if (cfg.tts?.provider !== "system" && workspaceCredentialPending(cfg, "ttsKey")) {
+        return json(res, 409, { error: "Voice synthesis is waiting for its encrypted credential" });
+      }
       try {
         return json(res, 200, { voices: await tts.listVoices(cfg) });
       } catch (e) {
@@ -9186,6 +9309,9 @@ const server = createServer(async (req, res) => {
       }
     }
     if (method === "POST" && path === "/api/tts/speak") {
+      if (cfg.tts?.provider !== "system" && workspaceCredentialPending(cfg, "ttsKey")) {
+        return json(res, 409, { error: "Voice synthesis is waiting for its encrypted credential" });
+      }
       const body = await readBody(req);
       const text = String(body.text ?? "").trim();
       if (!text) return json(res, 400, { error: "text required" });
@@ -9210,6 +9336,9 @@ const server = createServer(async (req, res) => {
     }
 
     // ── connectors (Composio) ──
+    if (path.startsWith("/api/connectors") && workspaceCredentialPending(cfg, "composioApiKey")) {
+      return json(res, 409, { error: "Connected Apps is waiting for its encrypted credential" });
+    }
     if (method === "GET" && path === "/api/connectors/catalog") {
       const { cards, source } = await composio.listToolkits(cfg);
       return json(res, 200, {
@@ -9343,6 +9472,10 @@ const server = createServer(async (req, res) => {
     if (m && method === "GET") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
+      if (resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "box" &&
+          workspaceCredentialPending(cfg, "boxToken")) {
+        return json(res, 409, { error: "Cloud computer is waiting for its encrypted credential" });
+      }
       return resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "vps"
         ? json(res, 200, { backend: "vps", ...(await vps.vpsComputerStatus(cfg, bot.id)) })
         : json(res, 200, { backend: "box", ...(await box.boxStatus(cfg, bot.id)) });
@@ -9406,6 +9539,10 @@ const server = createServer(async (req, res) => {
       const botId = m[1];
       const bot = store.bot(botId);
       if (!bot) return json(res, 404, { error: "no such bot" });
+      if (resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend) === "box" &&
+          workspaceCredentialPending(cfg, "boxToken")) {
+        return json(res, 409, { error: "Cloud computer is waiting for its encrypted credential" });
+      }
       // Requiring JSON makes every computer mutation a non-simple browser
       // request (same reasoning as the Local VM lifecycle routes above): a
       // hostile page cannot submit it with a form, and its cross-origin JSON

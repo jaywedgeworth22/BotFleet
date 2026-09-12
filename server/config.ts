@@ -23,6 +23,7 @@ import {
 } from "../shared/terminology.ts";
 
 const optionalText = z.string().optional();
+const externalCredentialStorage = z.literal("external").optional();
 const SSH_ALIAS = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
 export const DEFAULT_ROOM_TURN_TIMEOUT_MINUTES = 5;
@@ -204,29 +205,29 @@ const instanceConfigSchema = z.object({
 const instanceConfigMapSchema = z.record(z.string(), instanceConfigSchema);
 const appConfigSchema = z.object({
   deleteInstance: optionalText,
-  xai: z.object({ key: optionalText, url: optionalText }).optional(),
+  xai: z.object({ key: optionalText, url: optionalText, credentialStorage: externalCredentialStorage }).optional(),
   openaiCompat: z.object({ key: optionalText, url: optionalText }).optional(),
   /** Project key used for Sessions, catalog and agent tools. userId/sessionId
    * are non-secret local identifiers used to reuse one Composio Session. */
   // brokerUrl is read by the desktop shell only: the HTTPS origin of a
   // connected-apps broker the operator runs. There is no built-in default.
-  composio: z.object({ apiKey: optionalText, userId: optionalText, sessionId: optionalText, brokerUrl: optionalText }).optional(),
-  box: z.object({ token: optionalText }).optional(),
+  composio: z.object({ apiKey: optionalText, userId: optionalText, sessionId: optionalText, brokerUrl: optionalText, credentialStorage: externalCredentialStorage }).optional(),
+  box: z.object({ token: optionalText, credentialStorage: externalCredentialStorage }).optional(),
   vps: vpsConfigSchema.optional(),
   /** Optional OpenCode key; persisted write-only and passed only to its child. */
-  opencodeGo: z.object({ apiKey: optionalText }).optional(),
+  opencodeGo: z.object({ apiKey: optionalText, credentialStorage: externalCredentialStorage }).optional(),
   /** Optional DeepSeek API key — used only to display the user's account
    * balance under the engine row, never injected into the engine's process
    * environment. The user can run a deepseek CLI without this set; the
    * engine does not need the key to function. "for my user" — workspace
    * scope, not per-bot. */
-  deepseek: z.object({ key: optionalText, url: optionalText }).optional(),
+  deepseek: z.object({ key: optionalText, url: optionalText, credentialStorage: externalCredentialStorage }).optional(),
   /** Voice credentials and the selected voice id. `provider` picks the
    * engine: "elevenlabs" (default; needs a key) or "system" (the Mac's
    * built-in voices, no key). */
-  tts: z.object({ key: optionalText, voice: optionalText, provider: z.enum(["elevenlabs", "system"]).optional() }).optional(),
+  tts: z.object({ key: optionalText, voice: optionalText, provider: z.enum(["elevenlabs", "system"]).optional(), credentialStorage: externalCredentialStorage }).optional(),
   /** OpenAI key used only by the in-process avatar image generator. */
-  imageGen: z.object({ key: optionalText }).optional(),
+  imageGen: z.object({ key: optionalText, credentialStorage: externalCredentialStorage }).optional(),
   autoUpdate: z
     .object({
       enabled: z.boolean().optional(),
@@ -301,6 +302,7 @@ const appConfigSchema = z.object({
     secretPath: optionalText,
     clientId: optionalText,
     clientSecret: optionalText,
+    credentialStorage: externalCredentialStorage,
     refreshMinutes: z.number().int().min(5).max(1440).optional(),
   }).optional(),
   features: featureConfigSchema.optional(),
@@ -330,16 +332,16 @@ const jsonObjectSchema = z.record(z.string(), z.json());
 
 export interface AppConfig {
   deleteInstance?: string;
-  xai?: { key?: string; url?: string };
+  xai?: { key?: string; url?: string; credentialStorage?: "external" };
   openaiCompat?: { key?: string; url?: string };
-  composio?: { apiKey?: string; userId?: string; sessionId?: string; brokerUrl?: string };
-  box?: { token?: string };
+  composio?: { apiKey?: string; userId?: string; sessionId?: string; brokerUrl?: string; credentialStorage?: "external" };
+  box?: { token?: string; credentialStorage?: "external" };
   /** A named host from the user's SSH config. Authentication stays with SSH. */
   vps?: { sshAlias?: string; memoryGib?: number; cpus?: number };
-  opencodeGo?: { apiKey?: string };
-  deepseek?: { key?: string; url?: string };
-  tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system" };
-  imageGen?: { key?: string };
+  opencodeGo?: { apiKey?: string; credentialStorage?: "external" };
+  deepseek?: { key?: string; url?: string; credentialStorage?: "external" };
+  tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system"; credentialStorage?: "external" };
+  imageGen?: { key?: string; credentialStorage?: "external" };
   autoUpdate?: {
     enabled?: boolean;
     lastCheckMs?: number;
@@ -409,6 +411,7 @@ export interface AppConfig {
     secretPath?: string;
     clientId?: string;
     clientSecret?: string;
+    credentialStorage?: "external";
     refreshMinutes?: number;
   };
   /** Opt-in product experiments. Every flag defaults to disabled. */
@@ -439,6 +442,15 @@ export function parseStoredConfig(value: JsonValue): AppConfig {
 }
 
 export function parseConfigPatch(value: JsonValue): ConfigPatch {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    for (const section of ["xai", "composio", "box", "opencodeGo", "deepseek", "tts", "imageGen", "infisical"]) {
+      const candidate = value[section];
+      if (candidate && typeof candidate === "object" && !Array.isArray(candidate) &&
+          Object.hasOwn(candidate, "credentialStorage")) {
+        throw Object.assign(new Error(`${section}.credentialStorage is managed by the desktop credential store`), { status: 400 });
+      }
+    }
+  }
   const parsed = appConfigPatchSchema.safeParse(value);
   if (!parsed.success) {
     throw Object.assign(new Error(schemaIssue(parsed.error, "Invalid configuration")), { status: 400 });
@@ -951,7 +963,12 @@ export const PROVIDER_CREDENTIAL_ENV = [
  * echoed back — callers report configured-or-not booleans only). */
 type CheckedConfigPatch = z.infer<ReturnType<typeof appConfigSchema.partial>>;
 
-export function saveConfig(patch: Partial<AppConfig>): void {
+type ExternalCredentialSection = "xai" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical";
+
+export function saveConfig(
+  patch: Partial<AppConfig>,
+  options: { externalCredentialSections?: Partial<Record<ExternalCredentialSection, boolean>> } = {},
+): void {
   const p = join(DATA_DIR, "config.json");
   const checkedPatch = appConfigSchema.partial().parse(patch);
   // Last line of defence, on the parsed COPY so a caller's own object is
@@ -977,7 +994,17 @@ export function saveConfig(patch: Partial<AppConfig>): void {
   // the merge and the rename happen with no other writer in between.  A
   // save from the other process can never be answered with this one's
   // stale snapshot, and vice versa.  (PR #251 review, board a2a3a586.)
-  updateConfigFile(p, (raw) => mergeConfigPatch(raw, checkedPatch), { mode: 0o600 });
+  updateConfigFile(p, (raw) => {
+    const merged = mergeConfigPatch(raw, checkedPatch);
+    for (const [section, present] of Object.entries(options.externalCredentialSections ?? {})) {
+      const current = jsonObjectSchema.safeParse(merged[section]);
+      const next: JsonObject = current.success ? { ...current.data } : {};
+      if (present) next.credentialStorage = "external";
+      else delete next.credentialStorage;
+      merged[section] = next;
+    }
+    return merged;
+  }, { mode: 0o600 });
 }
 
 /** Merge a validated patch into the parsed on-disk object.  Runs under the
