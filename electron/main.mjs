@@ -789,6 +789,9 @@ async function gatherDiagnostics() {
 // Set by startServerPackaged: true only when every failing candidate port was
 // taken by another process — decides which error-page message renders.
 let serverStartConflictOnly = false;
+// Set alongside it when the live data-root owner never answered: the error
+// page names that process instead of blaming slow startup.
+let serverStartUnresponsiveOwner = null;
 
 async function startServerOn(port) {
   const entry = path.join(process.resourcesPath, "server", "index.js");
@@ -955,6 +958,14 @@ async function startServerPackaged() {
     }
   }
   serverStartConflictOnly = result.conflictOnly;
+  serverStartUnresponsiveOwner = result.unresponsiveOwner ?? null;
+  slog(
+    serverStartUnresponsiveOwner
+      ? `showing the error page: the data owner (pid ${serverStartUnresponsiveOwner.pid}, port ${serverStartUnresponsiveOwner.port}) is alive but not answering`
+      : result.conflictOnly
+        ? "showing the error page: every candidate port answered health checks from another program"
+        : "showing the error page: no harness came up in time",
+  );
   return false;
 }
 
@@ -980,16 +991,37 @@ function escapeHtml(value) {
   return value.replace(/[&<>"']/g, (ch) => `&#${ch.charCodeAt(0)};`);
 }
 
-function buildErrorPage({ allPortsOccupied }) {
+// The BotFleet app icon, inlined: the page lives on a data: origin, which
+// cannot load file:// images.  Empty when the icon cannot be read — the page
+// still renders without it.
+function errorPageIcon() {
+  try {
+    const icon = nativeImage.createFromPath(APP_ICON);
+    if (icon.isEmpty()) return "";
+    const src = icon.resize({ width: 96, height: 96 }).toDataURL();
+    return `<img src="${src}" width="96" height="96" alt="" style="display:block;margin:0 auto;border-radius:22px">`;
+  } catch {
+    return "";
+  }
+}
+
+const ERROR_PAGE_STYLE =
+  "body{margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#fcfcfc;color:#111;font:15px -apple-system,system-ui}" +
+  "h2{font-weight:600;margin:16px 0 6px}p{color:#555;line-height:1.5}a{color:inherit}" +
+  "@media(prefers-color-scheme:dark){body{background:#070707;color:#fcfcfc}p{color:#fcfcfc99}}";
+
+function buildErrorPage({ allPortsOccupied, unresponsiveOwner = null }) {
   const serverLogPath = path.join(LOG_DIR, "server.log");
   const serverLogHref = pathToFileURL(serverLogPath).href;
-  const reason = allPortsOccupied
-    ? "Every BotFleet port answered health checks from another program on ports 8799–28799.\u00a0 Quit that program, then quit and reopen BotFleet."
-    : "The background server didn't come up in time — this is usually slow startup, not a port conflict.\u00a0 Quit and reopen BotFleet.";
+  const reason = unresponsiveOwner
+    ? `A BotFleet server that owns this Mac's fleet data (process ${unresponsiveOwner.pid} on port ${unresponsiveOwner.port}) is running but not answering.\u00a0 BotFleet will not start a second server on the same data.\u00a0 Wait a minute and reopen BotFleet, or quit that process first.`
+    : allPortsOccupied
+      ? "Every BotFleet port answered health checks from another program on ports 8799–28799.\u00a0 Quit that program, then quit and reopen BotFleet."
+      : "The background server didn't come up in time — this is usually slow startup, not a port conflict.\u00a0 Quit and reopen BotFleet.";
   return (
     "data:text/html;charset=utf-8," +
     encodeURIComponent(
-      `<body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:#070707;color:#fcfcfc;font:15px -apple-system,system-ui"><div style="text-align:center;max-width:360px"><div style="font-size:40px">🐭</div><h2 style="font-weight:600;margin:12px 0 6px">Couldn't start the bot server</h2><p style="color:#fcfcfc99;line-height:1.5">${escapeHtml(reason)}&nbsp; If it keeps happening, check <a target="_blank" rel="noopener" href="${serverLogHref}" style="color:#fcfcfc">${escapeHtml(serverLogPath)}</a>.</p></div></body>`,
+      `<style>${ERROR_PAGE_STYLE}</style><body><div style="text-align:center;max-width:360px">${errorPageIcon()}<h2>Couldn't Start the Bot Server</h2><p>${escapeHtml(reason)}&nbsp; If it keeps happening, check <a target="_blank" rel="noopener" href="${serverLogHref}">${escapeHtml(serverLogPath)}</a>.</p></div></body>`,
     )
   );
 }
@@ -1387,7 +1419,11 @@ function createWindow() {
   }
 
   if (app.isPackaged) {
-    win.loadURL(serverReady ? rendererBaseUrl() : buildErrorPage({ allPortsOccupied: serverStartConflictOnly }));
+    win.loadURL(
+      serverReady
+        ? rendererBaseUrl()
+        : buildErrorPage({ allPortsOccupied: serverStartConflictOnly, unresponsiveOwner: serverStartUnresponsiveOwner }),
+    );
   } else {
     win.loadURL(DEV_URL);
   }
