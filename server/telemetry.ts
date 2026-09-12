@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { basename } from "node:path";
 
+import type { TurnBillingMode } from "./contracts.ts";
+
 export interface TelemetryTurnParams {
   botId: string;
   botName: string;
@@ -14,6 +16,8 @@ export interface TelemetryTurnParams {
   outputTokens?: number;
   cachedInputTokens?: number;
   costUsd?: number | null;
+  /** Classifies costUsd as cash spend or a provider-reported equivalent. */
+  billingMode?: TurnBillingMode;
   latencyMs?: number;
   success?: boolean;
   /** Set for a room turn, so Usage Monitor can tell shared-room spend from
@@ -276,6 +280,7 @@ type TurnMetadata = {
   model: string | null;
   instanceId: string;
   usageReported: boolean;
+  estimatedCostUsd?: number;
   roomId?: string;
   roomName?: string;
 };
@@ -292,13 +297,14 @@ type TurnMetadata = {
  * carries the cache, and the quantities still sum to what a single event
  * reported before this split existed.
  *
- * Money lands once.  The turn's `costUsd` and its `requests: 1` go on the
- * first event; the remaining slices carry `costUsd: 0`, not no cost at all.
+ * Actual money lands once.  The turn's `costUsd` and its `requests: 1` go
+ * on the first event; the remaining slices carry `costUsd: 0`, not no cost.
  * Usage Monitor sums producer `costUsd` into the pool that drives budget
  * spend, so repeating the figure across the split would treble reported
  * spend — but it also counts pricing coverage by how many events have a
  * `costUsd` at all, so omitting the key would report a priced turn as
- * partly unpriced.  An explicit zero satisfies both.
+ * partly unpriced.  An explicit zero satisfies both.  Subscription-equivalent
+ * estimates instead ride metadata and never enter that actual-spend pool.
  *
  * An unreported turn says so.  A turn with no token figures at all emits one
  * `quantity: 0` event flagged `usageReported: false`, rather than a phantom
@@ -331,8 +337,10 @@ export function buildTurnEvents(
   // A cost that is not a finite, non-negative number is not a cost.  The
   // schema refuses a negative `costUsd` and would take the whole event down
   // with it, so an unusable figure is dropped rather than sent.
-  const cost =
+  const reportedCost =
     params.costUsd != null && Number.isFinite(params.costUsd) && params.costUsd >= 0 ? params.costUsd : null;
+  const estimatedCost = params.billingMode === "estimated" ? reportedCost : null;
+  const cost = params.billingMode === "estimated" ? null : reportedCost;
 
   const allSlices: Array<{ suffix: string; tokenType: TokenType; quantity: number }> = [
     { suffix: "in", tokenType: "input", quantity: inputBillable },
@@ -376,6 +384,7 @@ export function buildTurnEvents(
       metadata.roomId = roomId;
       if (roomName) metadata.roomName = roomName;
     }
+    if (estimatedCost != null) metadata.estimatedCostUsd = index === 0 ? estimatedCost : 0;
 
     const event: TelemetryV2Event = {
       eventId: `${prefix}:${slice.suffix}`,

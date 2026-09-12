@@ -147,6 +147,23 @@ describe("money lands exactly once", () => {
     }
   });
 
+  it("keeps subscription-equivalent cost out of actual spend while retaining estimate metadata", () => {
+    const events = build({
+      inputTokens: 1000,
+      cachedInputTokens: 400,
+      outputTokens: 200,
+      costUsd: 0.0421,
+      billingMode: "estimated",
+    });
+
+    expect(events.map((event) => event.metadata.estimatedCostUsd)).toEqual([0.0421, 0, 0]);
+    for (const event of events) {
+      expect(Object.hasOwn(event, "costUsd")).toBe(false);
+      expect(event.billingMode).toBe("estimated");
+      expect(event.confidence).toBe("estimated");
+    }
+  });
+
   it("drops a cost that is not a finite, non-negative number", () => {
     for (const costUsd of [Number.NaN, Number.POSITIVE_INFINITY, -1]) {
       const events = build({ inputTokens: 10, outputTokens: 5, costUsd });
