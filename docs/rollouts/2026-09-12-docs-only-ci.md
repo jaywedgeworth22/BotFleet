@@ -10,7 +10,7 @@ The six branch-protection contexts remain unchanged: the three platform test job
 
 ## Baseline Cost
 
-The documentation-only PR #317 run `34635882853` consumed 1,483 summed job-seconds across the six protected jobs, or 24 minutes 43 seconds.  Its main-push run `34636567571` consumed another 1,560 job-seconds, or 26 minutes.  The combined baseline was 50 minutes 43 seconds before queue time.  The first post-merge documentation-only pull request and push will provide the optimized runner-time receipt; no projected saving is recorded as observed evidence.
+The documentation-only PR #317 run `34635882853` consumed 1,483 summed job-seconds across the six protected jobs, or 24 minutes 43 seconds.  Its main-push run `34636567571` consumed another 1,560 job-seconds, or 26 minutes.  The combined baseline was 50 minutes 43 seconds before queue time.  Receipt PR #339 run `34687437005` consumed 26 summed protected-job seconds: every required job succeeded through `Documentation-only fast path`, and every full checkout, install, test, package, and build step was skipped.  The observed pull-request saving is 1,457 seconds, or 98.2%; the resulting main-push receipt is recorded in issue #318 after merge.
 
 ## Validation
 
