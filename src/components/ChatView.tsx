@@ -1402,7 +1402,11 @@ export function ChatView({ bot }: { bot: Bot }) {
           today that's only ChatMarkdown's file-link menu backdrop, which
           still covers the whole transcript, just not the sidebar/header. */}
       <div className="relative min-h-0 flex-1 @container/chat">
-      <TurnErrorAnnouncement key={`${bot.threadId}:${errorBranchKey}`} latestMessage={latestServerError} />
+      <TurnErrorAnnouncement
+        key={`${bot.threadId}:${errorBranchKey}`}
+        latestMessage={latestServerError}
+        streamTailId={serverMessages.at(-1)?.id}
+      />
       <div
         ref={scrollRef}
         className="h-full overflow-x-hidden overflow-y-auto px-5 [overflow-anchor:none]"

@@ -83,6 +83,27 @@ describe("ErrorRow recovery", () => {
     expect(latestTurnErrorMessage([error, queued])).toBe(error);
   });
 
+  it("does not announce a historical error prepended behind an unchanged stream tail", () => {
+    const historical = { id: "old-error", kind: "activity", tool: { name: "error: old failure" } };
+    const next = nextTurnErrorAnnouncement("", historical, {
+      previousTailId: "current-tail",
+      currentTailId: "current-tail",
+    });
+
+    expect(next.signature).toBe("old-error\0old failure");
+    expect(next.text).toBeNull();
+  });
+
+  it("announces the newest error when a later notice arrives in the same batch", () => {
+    const error = { id: "new-error", kind: "activity", tool: { name: "error: provider failed" } };
+    const next = nextTurnErrorAnnouncement("", latestTurnErrorMessage([error, { id: "notice", kind: "activity" }]), {
+      previousTailId: "previous-tail",
+      currentTailId: "notice",
+    });
+
+    expect(next.text).toBe("provider failed");
+  });
+
   it("changes the alert baseline for a fork switch but not a linear append", () => {
     const root = { id: "root", role: "user", kind: "text", parentId: null };
     const first = { id: "first", role: "user", kind: "text", parentId: "root" };

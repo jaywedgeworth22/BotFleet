@@ -92,11 +92,16 @@ function turnErrorSignature(message: TurnErrorMessage | undefined): string {
 export function nextTurnErrorAnnouncement(
   previousSignature: string,
   latestMessage: TurnErrorMessage | undefined,
+  stream?: { previousTailId: string | undefined; currentTailId: string | undefined },
 ): { signature: string; text: string | null } {
   const signature = turnErrorSignature(latestMessage);
   return {
     signature,
-    text: signature !== previousSignature ? turnErrorText(latestMessage) : null,
+    // Loading an older page changes the newest known error without changing
+    // the stream tail.  Keep that historical row out of the live region.
+    text: signature !== previousSignature && (!stream || stream.currentTailId !== stream.previousTailId)
+      ? turnErrorText(latestMessage)
+      : null,
   };
 }
 
@@ -109,17 +114,28 @@ export function advanceTurnErrorLiveState(
   return { text, nonce: previous.nonce + 1 };
 }
 
-export function TurnErrorAnnouncement({ latestMessage }: { latestMessage: TurnErrorMessage | undefined }) {
+export function TurnErrorAnnouncement({
+  latestMessage,
+  streamTailId,
+}: {
+  latestMessage: TurnErrorMessage | undefined;
+  streamTailId?: string;
+}) {
   const initialSignature = turnErrorSignature(latestMessage);
   const previousSignature = useRef(initialSignature);
+  const previousTailId = useRef(streamTailId);
   const [announcement, setAnnouncement] = useState<TurnErrorLiveState>({ text: "", nonce: 0 });
 
   useEffect(() => {
-    const next = nextTurnErrorAnnouncement(previousSignature.current, latestMessage);
+    const next = nextTurnErrorAnnouncement(previousSignature.current, latestMessage, {
+      previousTailId: previousTailId.current,
+      currentTailId: streamTailId,
+    });
     previousSignature.current = next.signature;
+    previousTailId.current = streamTailId;
     const text = next.text;
     if (text) setAnnouncement((previous) => advanceTurnErrorLiveState(previous, text));
-  }, [latestMessage?.id, latestMessage?.tool?.name]);
+  }, [latestMessage?.id, latestMessage?.tool?.name, streamTailId]);
 
   return (
     <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
