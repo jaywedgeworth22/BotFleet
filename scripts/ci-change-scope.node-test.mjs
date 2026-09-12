@@ -74,3 +74,31 @@ test("every protected check stays present and takes the same fail-closed scope o
   assert.match(source, /git diff --no-renames --name-only -z/);
   assert.doesNotMatch(source, /paths-ignore:/);
 });
+
+test("the weekly full run is registered with the Sentry cron reporter", () => {
+  const workflow = parse(readFileSync(join(ROOT, ".github/workflows/ci.yml"), "utf8"));
+  const schedule = workflow.on.schedule[0].cron;
+  const maxJobTimeout = Math.max(
+    ...Object.values(workflow.jobs).map((job) => job["timeout-minutes"] ?? 0),
+  );
+  const probe = spawnSync(
+    "python3",
+    [
+      "-c",
+      [
+        "import importlib.util,json,pathlib",
+        "p=pathlib.Path('scripts/sentry-ci-report.py')",
+        "s=importlib.util.spec_from_file_location('sentry_ci_report', p)",
+        "m=importlib.util.module_from_spec(s)",
+        "s.loader.exec_module(m)",
+        "print(json.dumps({'schedules':m.CRON_SCHEDULES,'margins':m.CRON_CHECKIN_MARGIN_OVERRIDES}))",
+      ].join(";"),
+    ],
+    { cwd: ROOT, encoding: "utf8" },
+  );
+
+  assert.equal(probe.status, 0, probe.stderr);
+  const reporter = JSON.parse(probe.stdout);
+  assert.equal(reporter.schedules.CI, schedule);
+  assert.ok(reporter.margins.CI >= maxJobTimeout + 15);
+});

@@ -20,6 +20,7 @@ jobs:
   changes:
     name: Classify CI scope
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     outputs:
       docs_only: ${{ steps.scope.outputs.docs_only }}
     steps:
