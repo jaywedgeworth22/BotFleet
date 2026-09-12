@@ -52,6 +52,7 @@ describe("ErrorRow recovery", () => {
 
     expect(html).not.toContain('role="alert"');
     expect(html).not.toContain('aria-live="assertive"');
+    expect(html).toContain('aria-live="off"');
     expect(html).toContain("The task failed.");
   });
 
@@ -67,6 +68,7 @@ describe("ErrorRow recovery", () => {
 
     expect(initialHtml).toContain('role="alert"');
     expect(initialHtml).toContain('aria-live="assertive"');
+    expect(initialHtml).toContain('aria-atomic="true"');
     expect(initialHtml).not.toContain("old failure");
     expect(initial.text).toBeNull();
     expect(fresh.text).toBe("new failure");

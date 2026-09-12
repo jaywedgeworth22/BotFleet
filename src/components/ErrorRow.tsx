@@ -93,7 +93,7 @@ export function TurnErrorAnnouncement({ latestMessage }: { latestMessage: TurnEr
   }, [latestMessage?.id, latestMessage?.tool?.name]);
 
   return (
-    <div className="sr-only" role="alert" aria-live="assertive">
+    <div className="sr-only" role="alert" aria-live="assertive" aria-atomic="true">
       <span key={announcement.nonce}>{announcement.text}</span>
     </div>
   );
@@ -138,7 +138,7 @@ function ErrorRow({
   botId?: string;
 }) {
   return (
-    <div className="flex justify-start">
+    <div className="flex justify-start" aria-live="off">
       <div className="w-fit max-w-[min(42rem,78%)] rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[13.5px] text-danger">
         <div className="flex items-start gap-2">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" />
