@@ -27,6 +27,20 @@ test("rejects invalid snapshots and does not copy private URLs into the report",
   const row = { id: "a", app: "botfleet", source_kind: "agent-report", title: "Check https://host.invalid/capability/secret", status: "open" };
   const base = { board: [row], issues: [], mergedPullRequests: [] };
   assert.ok(!JSON.stringify(auditEffortBoard(base)).includes("capability/secret"));
+  for (const scheme of ["HTTPS", "HtTpS", "HTTP"]) {
+    assert.ok(!JSON.stringify(auditEffortBoard({ ...base, board: [{ ...row, title: `Check ${scheme}://host.invalid/capability/secret` }] })).includes("capability/secret"));
+  }
   assert.throws(() => auditEffortBoard({ ...base, board: [row, row] }), /duplicate/);
   assert.throws(() => auditEffortBoard({ ...base, board: [{ ...row, app: "another-app" }] }), /foreign/);
+});
+
+test("recognizes PR lists without treating later issue numbers or foreign links as PR evidence", () => {
+  const numbers = [314, 316, 324, 332, 339, 99, 100];
+  const report = auditEffortBoard({
+    board: [{ id: "a", app: "botfleet", source_kind: "agent-report", status: "open", title: "Merged PRs #314, #316, and #324; PRs #332 and #339.  Issue #99 remains.  https://github.com/other/repo/pull/100" }],
+    issues: [],
+    mergedPullRequests: numbers.map((number) => ({ number, mergedAt: "2026-09-12", mergeCommit: { oid: "a".repeat(40) } })),
+  });
+  const finding = report.findings.find((row) => row.kind === "merged-reference-needs-scope-review");
+  assert.deepEqual(finding.references.map((row) => row.number), [314, 316, 324, 332, 339]);
 });

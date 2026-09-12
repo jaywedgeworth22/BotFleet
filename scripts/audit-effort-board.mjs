@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 
 const OPEN = new Set(["open", "in_progress"]);
 const REPO = "jaywedgeworth22/BotFleet";
-const plain = (value) => String(value ?? "").replace(/https?:\/\/\S+/g, "[link]").replace(/[\r\n]+/g, " ");
+const plain = (value) => String(value ?? "").replace(/https?:\/\/\S+/gi, "[link]").replace(/[\r\n]+/g, " ");
 const normalized = (value) => plain(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const summary = (row) => ({ id: row.id, title: plain(row.title), status: row.status, sourceKind: row.source_kind, owner: row.addressed_by || row.reported_by || null });
 
@@ -40,7 +40,10 @@ export function auditEffortBoard({ board, issues, mergedPullRequests, deployment
     if (row.source_kind !== "effort-row" && !issueLinks.length && !String(row.external_uid ?? "").startsWith(`issue-${REPO}-`)) {
       findings.push({ kind: "missing-canonical-issue-link", ...summary(row) });
     }
-    const prNumbers = [...text.matchAll(/(?:\bPR\s*#|\/pull\/)(\d+)/gi)].map((match) => Number(match[1]));
+    const prNumbers = [...text.matchAll(/https?:\/\/github\.com\/jaywedgeworth22\/BotFleet\/pull\/(\d+)/gi)].map((match) => Number(match[1]));
+    for (const list of text.matchAll(/\bPRs?\s*(#\d+(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&\s*)#\d+)*)/gi)) {
+      prNumbers.push(...[...list[1].matchAll(/#(\d+)/g)].map((match) => Number(match[1])));
+    }
     const references = [...new Set(prNumbers)].flatMap((number) => {
       const pr = merged.get(number);
       return pr ? [{ number, sha: pr.mergeCommit.oid, mergedAt: pr.mergedAt }] : [];
