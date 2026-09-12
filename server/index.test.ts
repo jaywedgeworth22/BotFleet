@@ -1378,6 +1378,7 @@ describe("harness HTTP API", () => {
       color: "purple",
       mascotExpression: "focused",
       autoApprove: true,
+      computers: [],
       alwaysAllow: ["Bash:git"],
     });
     await api("PATCH", `/api/bots/${second.id}`, {
@@ -2706,7 +2707,7 @@ describe("harness HTTP API", () => {
   it("grants Auto on this computer only through the warning acknowledgement", async () => {
     const created = await api("POST", "/api/bots");
     const bot = created.body.bot;
-    expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).body.bot.autoApprove).toBe(
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { computers: ["cloud"], autoApprove: true })).body.bot.autoApprove).toBe(
       true,
     );
 
