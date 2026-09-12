@@ -5,7 +5,13 @@
 // reason the union is closed and both lookup tables are `Record<…>`.
 import { describe, expect, it, vi } from "vitest";
 
-import type { RuntimeEvent, RuntimeEventBase, TurnToolHost, TurnToolOutcome } from "../../contracts.ts";
+import type {
+  RequestOutcome,
+  RuntimeEvent,
+  RuntimeEventBase,
+  TurnToolHost,
+  TurnToolOutcome,
+} from "../../contracts.ts";
 import { ProviderError } from "../../contracts.ts";
 import {
   DEFAULT_TURN_LOOP_BUDGET,
@@ -65,6 +71,11 @@ interface Harness {
     now?: () => number;
     emit?: (event: RuntimeEvent) => void;
     computeCost?: (usage: { input: number; output: number; cachedInput?: number }) => number | null;
+    requestApproval?: (ask: {
+      tool: string;
+      summary: string;
+      signal?: AbortSignal;
+    }) => Promise<RequestOutcome>;
   }) => Promise<TurnLoopExit>;
 }
 
@@ -111,6 +122,7 @@ function harness(rounds: ScriptedRound[]): Harness {
         messages,
         signal: abort.signal,
         toolHost: over?.toolHost,
+        requestApproval: over?.requestApproval,
         budget: over?.budget,
         now: over?.now,
         computeCost: over?.computeCost,
@@ -787,5 +799,137 @@ describe("runTurnLoop — typed provider errors (chat-completions/errors.ts)", (
     expect(terminals(h.events)[0].stopReason).toBe("error");
     const errorEvent = h.events.find((e) => e.type === "runtime.error");
     expect((errorEvent as { setup?: boolean } | undefined)?.setup).toBeUndefined();
+  });
+});
+
+// A card in front of a person is not a hung tool.  The 90s per-tool ceiling
+// exists to catch a call that will never come back; killing a tool because
+// somebody took two minutes to read an approval would make approvals
+// unusable on this lane, and — worse — would run the turn's cleanup while a
+// card was still answerable.  So the clock STOPS while the card is open.
+describe("the per-tool clock pauses under an open card", () => {
+  /** A broker that holds its answer until the test releases it, and settles
+   *  `unavailable` if the turn is interrupted first — the real one's shape. */
+  function heldBroker() {
+    const asks: Array<{ tool: string; summary: string }> = [];
+    let release: ((outcome: RequestOutcome) => void) | null = null;
+    return {
+      asks,
+      answer: (outcome: RequestOutcome) => release?.(outcome),
+      requestApproval: (ask: { tool: string; summary: string; signal?: AbortSignal }) => {
+        asks.push({ tool: ask.tool, summary: ask.summary });
+        return new Promise<RequestOutcome>((resolve) => {
+          release = resolve;
+          ask.signal?.addEventListener("abort", () => resolve("unavailable"), { once: true });
+        });
+      },
+    };
+  }
+
+  it("does not fire while the card is open, and the tool still finishes", async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = heldBroker();
+      const h = harness([wantsTools([call("c1", "ask_bot")]), answer("done")]);
+      const running = h.run({
+        budget: { toolTimeoutMs: 5_000 },
+        requestApproval: broker.requestApproval,
+        toolHost: {
+          execute: async (_c, runtime) => {
+            const verdict = await runtime.requestApproval({ tool: "ask_bot", summary: "ask peer: go" });
+            return { kind: "result", content: verdict === "allowed-once" ? "peer replied" : "refused" };
+          },
+        },
+      });
+
+      // far past the per-tool ceiling, with the card still open
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(broker.asks).toEqual([{ tool: "ask_bot", summary: "ask peer: go" }]);
+
+      broker.answer("allowed-once");
+      await vi.advanceTimersByTimeAsync(10);
+      const exit = await running;
+
+      expect(exit).toBe("settled");
+      expect(h.messages.find((m) => m.role === "tool")?.content).toBe("peer replied");
+      expect(terminals(h.events)).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resumes with the time it had left, not a fresh budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const broker = heldBroker();
+      const h = harness([wantsTools([call("c1", "ask_bot")]), answer("moving on")]);
+      const running = h.run({
+        budget: { toolTimeoutMs: 5_000 },
+        requestApproval: broker.requestApproval,
+        toolHost: {
+          execute: async (_c, runtime) => {
+            // 4s of real work, then the ask, then work that never ends
+            await new Promise((resolve) => setTimeout(resolve, 4_000));
+            await runtime.requestApproval({ tool: "ask_bot", summary: "ask peer: go" });
+            return new Promise<TurnToolOutcome>(() => undefined);
+          },
+        },
+      });
+
+      await vi.advanceTimersByTimeAsync(4_000);
+      await vi.advanceTimersByTimeAsync(60_000); // the human reads the card
+      expect(broker.asks).toHaveLength(1);
+      broker.answer("allowed-once");
+      // only 1s of the tool's own budget is left
+      await vi.advanceTimersByTimeAsync(2_000);
+
+      const exit = await running;
+      expect(exit).toBe("settled");
+      expect(String(h.messages.find((m) => m.role === "tool")?.content)).toContain("did not finish");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("no broker mounted is fail-closed, and the clock never stopped", async () => {
+    const h = harness([wantsTools([call("c1", "ask_bot")]), answer("done")]);
+    const seen: RequestOutcome[] = [];
+    const exit = await h.run({
+      toolHost: {
+        execute: async (_c, runtime) => {
+          seen.push(await runtime.requestApproval({ tool: "ask_bot", summary: "ask peer: go" }));
+          return { kind: "result", content: "refused" };
+        },
+      },
+    });
+    expect(seen).toEqual(["unavailable"]);
+    expect(exit).toBe("settled");
+  });
+
+  it("an interrupt under an open card settles the ask and still emits ONE terminal event", async () => {
+    const broker = heldBroker();
+    const h = harness([wantsTools([call("c1", "ask_bot")])]);
+    const verdicts: RequestOutcome[] = [];
+    const running = h.run({
+      requestApproval: broker.requestApproval,
+      toolHost: {
+        execute: async (_c, runtime) => {
+          verdicts.push(await runtime.requestApproval({ tool: "ask_bot", summary: "ask peer: go" }));
+          return { kind: "result", content: "never reached" };
+        },
+      },
+    });
+
+    // let the round reach the tool, then Stop
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    h.abort.abort();
+    const exit = await running;
+
+    expect(exit).toBe("interrupted");
+    // the ask settled rather than hanging forever on a card nobody can answer
+    expect(verdicts).toEqual(["unavailable"]);
+    const completed = terminals(h.events);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ ok: false, stopReason: "interrupted" });
   });
 });

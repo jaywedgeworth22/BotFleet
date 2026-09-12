@@ -156,6 +156,20 @@ const ASK_BOT: HarnessTool = {
   settles: "immediate",
   promptFragment:
     "Use ask_bot to send a peer a task and wait for its reply; pass the bot's id or @name from list_bots.",
+  // Starting a peer's turn spends that bot's tokens under its own model and
+  // permissions, so it is the one registry tool a person may want to see
+  // first.  The verdict itself is NOT decided here: the ask goes through
+  // the same fold a CLI engine's does, so this bot's existing auto-approve,
+  // always-allow and unattended settings decide it — no per-tool switch.
+  approval: {
+    policy: "ask",
+    summary: (args) => {
+      const target = typeof args.bot_id === "string" ? args.bot_id : "another bot";
+      const raw = typeof args.task === "string" ? args.task : typeof args.message === "string" ? args.message : "";
+      const text = raw.replace(/\s+/g, " ").trim();
+      return text ? `ask ${target}: ${text.slice(0, 160)}` : `ask ${target}`;
+    },
+  },
   wire: {
     http: {
       reason:

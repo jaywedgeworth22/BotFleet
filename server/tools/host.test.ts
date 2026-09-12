@@ -10,6 +10,7 @@
 // longer happen: the host now receives the endpoint function itself.
 import { describe, expect, it, vi } from "vitest";
 
+import type { RequestOutcome } from "../contracts.ts";
 import { createTurnToolHost, type TurnToolHostDeps } from "./host.ts";
 import { listAgentsResponse, type AgentBot, type AgentRequestResult } from "./agents.ts";
 
@@ -45,7 +46,25 @@ const hostFor = (over: Partial<TurnToolHostDeps> = {}, ctx: { commsDepth?: numbe
     deps: deps(over),
   });
 
-const runtime = { signal: new AbortController().signal, requestApproval: async () => "unavailable" as const };
+/** The loop's runtime, with a broker that says yes.  The rows in "the host
+ *  asks before a write tool runs" cover deny and no-broker explicitly; the
+ *  rest of this file is about what happens once a call is allowed. */
+const runtime = { signal: new AbortController().signal, requestApproval: async () => "allowed-once" as const };
+
+/** A runtime that records what it was asked and answers with `verdict`. */
+function askingRuntime(verdict: RequestOutcome) {
+  const asks: Array<{ tool: string; summary: string }> = [];
+  return {
+    asks,
+    runtime: {
+      signal: new AbortController().signal,
+      requestApproval: async (ask: { tool: string; summary: string }) => {
+        asks.push(ask);
+        return verdict;
+      },
+    },
+  };
+}
 
 describe("the host runs what the catalog advertised", () => {
   it("serves the registry's three agents tools", async () => {
@@ -156,11 +175,94 @@ describe("the host's contract", () => {
     expect(outcome.content).toContain("delete_everything");
   });
 
+  it("carries the harness's broker so the driver's loop can pause its clock around it", () => {
+    const requestApproval = async () => "allowed-once" as const;
+    const host = createTurnToolHost({
+      botId: "bot-self",
+      threadId: "thread-1",
+      commsDepth: 0,
+      deps: deps(),
+      requestApproval,
+    });
+    expect(host.requestApproval).toBe(requestApproval);
+    // absent when no broker was mounted, so the loop can tell
+    expect(hostFor().requestApproval).toBeUndefined();
+  });
+
   it("refuses a tool that exists but was never in this turn's catalog", async () => {
     // The write tools land in a later PR.  Until they do, a model that
     // hallucinates one must not find an executor waiting for it.
     const outcome = await hostFor().execute({ id: "1", name: "create_bot", arguments: {} }, runtime);
     expect(outcome.kind).toBe("error");
     expect(outcome.content).toContain("is not available to this bot");
+  });
+});
+
+// Before PR 6 nothing on this lane ever asked for permission: an HTTP bot
+// ran whatever the model called.  The host is where that changed, and the
+// policy is a FIELD ON THE TOOL — not a switch here — so a read tool
+// cannot start carding by accident and a write tool cannot stop.
+describe("the host asks before a write tool runs", () => {
+  it("opens an ask carrying the registry's own summary, and only then runs the tool", async () => {
+    const executeAskBotRequest = vi.fn(async () => ({ status: 200, body: { botName: "peer", text: "ok" } }));
+    const asking = askingRuntime("allowed-once");
+    const outcome = await hostFor({ executeAskBotRequest }).execute(
+      { id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "summarise  the   log" } },
+      asking.runtime,
+    );
+
+    expect(asking.asks).toEqual([{ tool: "ask_bot", summary: "ask @peer: summarise the log" }]);
+    expect(executeAskBotRequest).toHaveBeenCalledTimes(1);
+    expect(outcome.kind).toBe("result");
+  });
+
+  it("a deny never reaches the executor, and the model is told why", async () => {
+    const executeAskBotRequest = vi.fn(async () => ({ status: 200, body: {} }));
+    const asking = askingRuntime("rejected");
+    const outcome = await hostFor({ executeAskBotRequest }).execute(
+      { id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "spend the budget" } },
+      asking.runtime,
+    );
+
+    // the side effect never happened — an approval that arrives after the
+    // fact is a receipt, not a decision
+    expect(executeAskBotRequest).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ kind: "error", detail: "denied" });
+    expect(outcome.content).toContain("was not approved");
+  });
+
+  it("no broker mounted is fail-closed — nobody asked is not nobody objected", async () => {
+    const executeAskBotRequest = vi.fn(async () => ({ status: 200, body: {} }));
+    const asking = askingRuntime("unavailable");
+    const outcome = await hostFor({ executeAskBotRequest }).execute(
+      { id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "x" } },
+      asking.runtime,
+    );
+
+    expect(executeAskBotRequest).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ kind: "error", detail: "approval unavailable" });
+  });
+
+  it("a tool with no approval record never asks", async () => {
+    const asking = askingRuntime("rejected");
+    for (const name of ["list_bots", "list_routines"]) {
+      const outcome = await hostFor().execute({ id: "1", name, arguments: {} }, asking.runtime);
+      expect(outcome.kind, name).toBe("result");
+    }
+    // a denying broker proves it: these ran anyway, because they never
+    // reached it
+    expect(asking.asks).toEqual([]);
+  });
+
+  it("asks even when the summary cannot be built", async () => {
+    // A card nobody can read is bad; running a write tool unasked is worse.
+    const executeAskBotRequest = vi.fn(async () => ({ status: 200, body: {} }));
+    const asking = askingRuntime("rejected");
+    await hostFor({ executeAskBotRequest }).execute(
+      { id: "1", name: "ask_bot", arguments: { bot_id: { nested: "object" }, task: 42 } },
+      asking.runtime,
+    );
+    expect(asking.asks).toHaveLength(1);
+    expect(executeAskBotRequest).not.toHaveBeenCalled();
   });
 });
