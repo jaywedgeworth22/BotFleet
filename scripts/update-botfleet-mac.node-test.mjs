@@ -10,6 +10,7 @@ import {
   DEFAULT_PORTS,
   dependencyFingerprint,
   designatedRequirementFromOutput,
+  healthTopologyResult,
   isExpectedBotFleetProcess,
   loadPrepared,
   parseArguments,
@@ -152,6 +153,8 @@ test("desktop local-update UI does not report normal packaging latency as failur
   assert.match(source, /LOCAL_UPDATE_LONG_RUNNING_MS = 60 \* 60 \* 1000/);
   assert.match(source, /still preparing/);
   assert.match(source, /updater lock before retrying/);
+  assert.match(source, /still preparing\.\\u00A0 Do not start another update/);
+  assert.match(source, /expected\.\\u00A0 Check its updater lock/);
   assert.match(source, /status: "installing",\n\s+message: "The local updater is taking longer/);
   assert.doesNotMatch(source, /did not finish\. Quit the app and try again/);
 });
@@ -173,6 +176,16 @@ test("process verification binds relative server commands to the live checkout c
 
 test("the updater covers every desktop harness fallback port", () => {
   assert.deepEqual(DEFAULT_PORTS, [8799, 18799, 28799]);
+});
+
+test("unused foreign fallback ports do not hide one valid BotFleet owner", () => {
+  const owner = { kind: "botfleet", pid: 42, port: 18799, static: false };
+  assert.deepEqual(
+    healthTopologyResult([{ kind: "foreign" }, owner, { kind: "none" }]),
+    { safe: true, pid: 42, pids: [42], port: 18799, health: [owner] },
+  );
+  assert.match(healthTopologyResult([{ kind: "foreign" }, { kind: "none" }]).reason, /No BotFleet harness/);
+  assert.match(healthTopologyResult([owner, { kind: "unavailable" }]).reason, /unavailable or ambiguous/);
 });
 
 test("desktop verification requires one stable installed-application process after open", () => {

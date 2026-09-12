@@ -314,10 +314,9 @@ async function sqliteHolders(dataDirectory) {
   return [...new Set(result.stdout.split(/\s+/).filter(Boolean).map(Number).filter(Number.isInteger))];
 }
 
-async function healthTopology(ports, { allowMultiple = false } = {}) {
-  const results = await Promise.all(ports.map(probeHealth));
-  if (results.some((item) => item.kind === "unavailable" || item.kind === "foreign" || item.kind === "http")) {
-    return { safe: false, reason: "A BotFleet port returned an unavailable, foreign, or ambiguous response" };
+export function healthTopologyResult(results, { allowMultiple = false } = {}) {
+  if (results.some((item) => item.kind === "unavailable" || item.kind === "http")) {
+    return { safe: false, reason: "A BotFleet port returned an unavailable or ambiguous response" };
   }
   const botfleet = results.filter((item) => item.kind === "botfleet");
   if (!botfleet.length) return { safe: false, reason: "No BotFleet harness answered the expected ports" };
@@ -326,6 +325,10 @@ async function healthTopology(ports, { allowMultiple = false } = {}) {
     return { safe: false, reason: `Multiple BotFleet runtime owners answered (${pids.length})` };
   }
   return { safe: true, pid: pids[0], pids, port: botfleet[0].port, health: botfleet };
+}
+
+async function healthTopology(ports, options = {}) {
+  return healthTopologyResult(await Promise.all(ports.map(probeHealth)), options);
 }
 
 function validOwner(owner) {

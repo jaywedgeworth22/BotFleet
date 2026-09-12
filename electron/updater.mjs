@@ -134,13 +134,13 @@ export function registerUpdaterIpc() {
     const progressTimer = setTimeout(() => {
       setState({
         status: "installing",
-        message: "The local update is still preparing. Do not start another update while it runs.",
+        message: "The local update is still preparing.\u00A0 Do not start another update while it runs.",
       });
     }, LOCAL_UPDATE_PROGRESS_MS);
     const longRunningTimer = setTimeout(() => {
       setState({
         status: "installing",
-        message: "The local updater is taking longer than expected. Check its updater lock before retrying.",
+        message: "The local updater is taking longer than expected.\u00A0 Check its updater lock before retrying.",
       });
     }, LOCAL_UPDATE_LONG_RUNNING_MS);
     progressTimer.unref?.();
