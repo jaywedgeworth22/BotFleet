@@ -322,8 +322,7 @@ struct AgentProfileView: View {
                 ToolbarItem(placement: .topBarLeading) {
                     Button("Save") {
                         Task {
-                            await save()
-                            dismiss()
+                            if await save() { dismiss() }
                         }
                     }
                     .fontWeight(.semibold)
@@ -433,12 +432,13 @@ struct AgentProfileView: View {
         )
     }
 
-    private func save() async {
+    private func save() async -> Bool {
         busy = true
-        if let updated = await session.updateProfile(profilePatch(), for: current) {
-            synchronizeForm(with: updated)
-        }
-        busy = false
+        defer { busy = false }
+        return await ProfileSaveGate.run(
+            save: { await session.updateProfile(profilePatch(), for: current) },
+            accept: synchronizeForm(with:)
+        )
     }
 
     private func clearImage() async {
