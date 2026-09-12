@@ -133,7 +133,8 @@ import {
   NATIVE_DIR,
 } from "./config.ts";
 import { ComputerControl } from "./computer-control.ts";
-import { augmentedPath, findCliCandidates, resetPathCache } from "./env-path.ts";
+import { findCliCandidates, resetPathCache } from "./env-path.ts";
+import { cliProbeEnvironment } from "./cli-probe-env.ts";
 import { describeSpawnFailure, execCli } from "./procs.ts";
 import { buildNotification, type Notification } from "./notify.ts";
 import {
@@ -4554,26 +4555,6 @@ async function testCliBinary(
       },
     );
   });
-}
-
-/** A pre-save probe only needs PATH. Never hand credentials inherited by the
- * desktop/server process to an arbitrary wrapper selected through Settings. */
-function cliProbeEnvironment(): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, PATH: augmentedPath() };
-  for (const key of [
-    "XAI_API_KEY",
-    "BOX_TOKEN",
-    "OPENCODE_API_KEY",
-    "COMPOSIO_API_KEY",
-    "OMB_COMPOSIO_BROKER_TOKEN",
-    "OMB_TTS_KEY",
-    "OMB_OPENAI_IMAGE_KEY",
-    "ANTHROPIC_API_KEY",
-    "OPENAI_API_KEY",
-  ]) {
-    delete env[key];
-  }
-  return env;
 }
 
 /** execFile's error carries the child's stderr in .stderr. */
