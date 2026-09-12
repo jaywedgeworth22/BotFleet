@@ -43,8 +43,9 @@ export function isSentryDsn(value: string): boolean {
 /** What the Send Diagnostics switch should show before the operator touches
  * it.  The harness reports `enabled` as the EFFECTIVE state (false whenever
  * no DSN is configured), but the stored flag defaults to on, so an install
- * with no DSN yet must show the switch on — otherwise the first Save after
- * pasting a DSN would write `enabled: false` and turn diagnostics off. */
+ * with no DSN yet must show the switch on unless the newer status payload
+ * carries an explicit opt-out.  Otherwise the first Save after pasting a
+ * DSN would write `enabled: false` and turn diagnostics off. */
 export function initialSendDiagnostics(
   status: { configured: boolean; enabled: boolean; requestedEnabled?: boolean } | null | undefined,
 ): boolean {

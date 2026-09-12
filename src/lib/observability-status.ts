@@ -45,6 +45,7 @@ export function observabilityBadge(
   const lastError = fetchError || status?.lastError || null;
   if (lastError) return { label: "Error", tone: "error" };
   if (!status) return { label: "Waiting", tone: "waiting" };
+  if (status.requestedEnabled === false) return { label: "Turned off", tone: "off" };
   if (!status.configured) return { label: "Not configured", tone: "off" };
   if (!status.enabled) return { label: "Turned off", tone: "off" };
   return { label: "Sending diagnostics", tone: "active" };
