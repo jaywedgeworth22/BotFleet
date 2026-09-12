@@ -49,7 +49,7 @@ export class CommandError extends Error {
 
 export function parseArguments(argv) {
   const args = [...argv];
-  const command = ["prepare", "apply", "update"].includes(args[0]) ? args.shift() : "update";
+  const command = ["prepare", "apply", "update", "unquiesce"].includes(args[0]) ? args.shift() : "update";
   const parsed = {
     command,
     target: "origin/main",
@@ -71,6 +71,10 @@ export function parseArguments(argv) {
     else throw new Error(`Unknown option: ${arg}`);
   }
   if (command === "apply" && !parsed.stage) throw new Error("apply requires --stage <directory>");
+  if (command === "unquiesce" && (parsed.target !== "origin/main" || parsed.source || parsed.stage || parsed.bundle ||
+      parsed.dependencies || parsed.openApplication === false)) {
+    throw new Error("unquiesce accepts no options");
+  }
   if (command === "apply" && (parsed.bundle || parsed.dependencies || parsed.source)) {
     throw new Error("apply accepts only a prepared --stage");
   }
@@ -94,11 +98,13 @@ function usage() {
   update-botfleet-mac.mjs prepare [--target REF] [--source PATH] [--stage PATH]
                               [--bundle PATH --dependencies PATH]
   update-botfleet-mac.mjs apply   --stage PATH [--no-open]
+  update-botfleet-mac.mjs unquiesce
 
 prepare builds and validates without touching the live checkout, installed app, or processes.
 An existing exact-source build can be imported with --bundle and --dependencies.
 apply performs a fresh active-work check, installs one prepared stage, verifies exact runtime identity,
-and rolls the prior bundle and checkout back if any install or startup step fails.`;
+and rolls the prior bundle and checkout back if any install or startup step fails.
+unquiesce is the authenticated recovery action if the updater exits after fencing admission but before shutdown.`;
 }
 
 async function exists(path) {
@@ -269,11 +275,12 @@ async function parseJsonFile(path, label) {
   return value;
 }
 
-async function requestJson(url, { headers = {}, timeoutMs = 3_000, accept = [200] } = {}) {
+async function requestJson(url, { headers = {}, method = "GET", timeoutMs = 3_000, accept = [200] } = {}) {
   let response;
   try {
     response = await fetch(url, {
       headers,
+      method,
       redirect: "error",
       signal: AbortSignal.timeout(timeoutMs),
     });
@@ -398,6 +405,59 @@ export async function runtimePreflight(config, expectedBuild) {
 async function runtimeIdentityPreflight(config, expectedBuild) {
   const strict = await strictRuntimePreflight(config, expectedBuild, { requireIdle: false });
   return strict || { safe: false, reason: "Expected build does not expose authenticated runtime identity" };
+}
+
+export async function fenceRuntimeAdmission(config) {
+  const owner = await readOwner(config.dataDirectory);
+  if (!owner) return { safe: false, reason: "Authenticated runtime owner is unavailable for the admission fence" };
+  const response = await requestJson(`http://127.0.0.1:${owner.port}/api/runtime/quiesce`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${owner.nonce}` },
+    accept: [200, 409],
+  });
+  if (response.kind !== "ok") return { safe: false, reason: "Runtime admission fence could not be established" };
+  const runtime = response.body;
+  const fenceHeld = response.status === 200 && runtime?.quiescing === true;
+  const refuseAfterFence = async (reason) => {
+    if (!fenceHeld) return { safe: false, reason };
+    try {
+      await releaseRuntimeAdmission(config);
+      return { safe: false, reason };
+    } catch (error) {
+      return {
+        safe: false,
+        reason: `${reason}.  Admission recovery also failed; run update-botfleet.sh unquiesce before retrying: ${error instanceof Error ? error.message : String(error)}`,
+      };
+    }
+  };
+  const identityError = authenticatedRuntimeError(runtime, owner, undefined, { requireIdle: true });
+  if (identityError || !fenceHeld) {
+    return refuseAfterFence(identityError || "Runtime refused the admission fence because work is active");
+  }
+  const [topology, holders] = await Promise.all([
+    healthTopology(config.ports),
+    sqliteHolders(config.dataDirectory),
+  ]);
+  if (!topology.safe || topology.pid !== owner.pid) {
+    return refuseAfterFence(topology.reason || "Health endpoints do not share the fenced runtime owner");
+  }
+  if (holders.length !== 1 || holders[0] !== owner.pid) {
+    return refuseAfterFence(`Database ownership is ambiguous after admission fence (${holders.length} live holders)`);
+  }
+  return { safe: true, mode: "authenticated", pid: owner.pid, port: owner.port, runtime, holders, health: topology.health };
+}
+
+export async function releaseRuntimeAdmission(config) {
+  const owner = await readOwner(config.dataDirectory);
+  if (!owner) throw new Error("Authenticated runtime owner is unavailable for admission recovery");
+  const response = await requestJson(`http://127.0.0.1:${owner.port}/api/runtime/quiesce`, {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${owner.nonce}` },
+    accept: [200],
+  });
+  if (response.kind !== "ok" || response.body?.quiescing !== false) {
+    throw new Error("Runtime admission fence could not be released");
+  }
 }
 
 async function signatureIdentity(bundlePath) {
@@ -733,6 +793,8 @@ function createOperations(config) {
       return lastPreflight;
     },
 
+    fence: async () => fenceRuntimeAdmission(config),
+
     capturePrevious: async () => {
       const checkoutCommit = await gitOutput(config.checkout, ["rev-parse", "HEAD"]);
       const dirty = await gitOutput(config.checkout, ["status", "--porcelain"]);
@@ -907,7 +969,7 @@ function createOperations(config) {
       let readiness = { safe: true };
       if (runningPids.length) {
         try {
-          readiness = await runtimePreflight(config);
+          readiness = await fenceRuntimeAdmission(config);
         } catch (error) {
           readiness = { safe: false, reason: error instanceof Error ? error.message : String(error) };
         }
@@ -1045,6 +1107,16 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   const config = createConfig(parsed);
+  if (parsed.command === "unquiesce") {
+    const lock = await acquireDirectoryLock(config.lockDirectory, "unquiesce");
+    try {
+      await releaseRuntimeAdmission(config);
+    } finally {
+      await lock.release();
+    }
+    console.log("Released the BotFleet runtime admission fence.");
+    return;
+  }
   const operations = createOperations(config);
   if (parsed.command === "prepare") {
     await prepareUpdate(parsed, operations);

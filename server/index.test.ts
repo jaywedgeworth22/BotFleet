@@ -455,6 +455,50 @@ describe("harness HTTP API", () => {
     expect(body.static).toBe(true);
   });
 
+  it("authenticates a reversible runtime admission fence", async () => {
+    const owner = JSON.parse(readFileSync(join(home, ".botfleet", "harness-owner.json"), "utf8")) as { nonce: string };
+    const unauthorized = await fetch(`${BASE}/api/runtime/quiesce`, { method: "POST" });
+    expect(unauthorized.status).toBe(401);
+
+    const authorization = { Authorization: `Bearer ${owner.nonce}` };
+    const heldMutation = request({
+      hostname: "127.0.0.1",
+      port: PORT,
+      path: "/api/config",
+      method: "PUT",
+      headers: { "content-type": "application/json", "content-length": "2" },
+    });
+    heldMutation.on("error", () => {});
+    heldMutation.write("{");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const blockedFence = await fetch(`${BASE}/api/runtime/quiesce`, { method: "POST", headers: authorization });
+    expect(blockedFence.status).toBe(409);
+    expect(await blockedFence.json()).toMatchObject({ safeToRestart: false, activeWorkCount: 1, quiescing: false });
+    heldMutation.destroy();
+
+    let fenced: Response | undefined;
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      fenced = await fetch(`${BASE}/api/runtime/quiesce`, { method: "POST", headers: authorization });
+      if (fenced.status === 200) break;
+      await fenced.arrayBuffer();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(fenced).toBeDefined();
+    if (!fenced) throw new Error("runtime admission fence did not answer");
+    expect(fenced.status).toBe(200);
+    expect(await fenced.json()).toMatchObject({ safeToRestart: true, activeWorkCount: 0, quiescing: true });
+    try {
+      const refused = await fetch(`${BASE}/api/config`);
+      expect(refused.status).toBe(503);
+      expect(await refused.json()).toEqual({ error: "BotFleet is quiescing for an update" });
+    } finally {
+      const released = await fetch(`${BASE}/api/runtime/quiesce`, { method: "DELETE", headers: authorization });
+      expect(released.status).toBe(200);
+      expect(await released.json()).toMatchObject({ quiescing: false });
+    }
+    expect((await fetch(`${BASE}/api/config`)).status).toBe(200);
+  });
+
   it("serves packaged UI assets and preserves API 404s", async () => {
     const root = await fetch(`${BASE}/`);
     expect(root.status).toBe(200);

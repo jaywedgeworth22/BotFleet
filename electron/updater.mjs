@@ -126,23 +126,38 @@ export function registerUpdaterIpc() {
       stdio: "ignore",
       env: { ...process.env, BOTFLEET_CHECKOUT: join(homedir(), "apps", "botfleet-server") },
     });
-    const LOCAL_UPDATE_TIMEOUT_MS = 2 * 60 * 1000;
-    const timer = setTimeout(() => {
+    // A clean install plus signed package can take well beyond two minutes on
+    // this Mac.  Keep showing truthful progress while the detached updater is
+    // still alive; its own lock prevents a concurrent retry.
+    const LOCAL_UPDATE_PROGRESS_MS = 2 * 60 * 1000;
+    const LOCAL_UPDATE_LONG_RUNNING_MS = 60 * 60 * 1000;
+    const progressTimer = setTimeout(() => {
       setState({
-        status: "error",
-        message: "The local update did not finish. Quit the app and try again.",
+        status: "installing",
+        message: "The local update is still preparing. Do not start another update while it runs.",
       });
-    }, LOCAL_UPDATE_TIMEOUT_MS);
-    timer.unref?.();
+    }, LOCAL_UPDATE_PROGRESS_MS);
+    const longRunningTimer = setTimeout(() => {
+      setState({
+        status: "installing",
+        message: "The local updater is taking longer than expected. Check its updater lock before retrying.",
+      });
+    }, LOCAL_UPDATE_LONG_RUNNING_MS);
+    progressTimer.unref?.();
+    longRunningTimer.unref?.();
+    const clearUpdateTimers = () => {
+      clearTimeout(progressTimer);
+      clearTimeout(longRunningTimer);
+    };
     child.on("error", (error) => {
-      clearTimeout(timer);
+      clearUpdateTimers();
       setState({
         status: "error",
         message: error instanceof Error ? error.message : "The local update could not start.",
       });
     });
     child.on("exit", (code) => {
-      clearTimeout(timer);
+      clearUpdateTimers();
       if (code && code !== 0) {
         setState({
           status: "error",

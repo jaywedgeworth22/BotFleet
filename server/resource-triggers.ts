@@ -305,6 +305,8 @@ export interface ResourceTriggerManagerOptions {
   sample?: () => HostSample;
   emit?: (event: ResourceTriggerManagerEvent) => void;
   botState: (botId: string) => "ready" | "busy" | "missing";
+  /** Synchronous admission fence used during an update boundary. */
+  admit?: () => boolean;
   enqueue: (input: {
     triggerId: string;
     triggerName: string;
@@ -465,6 +467,7 @@ export class ResourceTriggerManager {
   }
 
   tick(): ResourceTriggerFire[] {
+    if (this.options.admit?.() === false) return [];
     if (this.ticking) return [];
     this.ticking = true;
     const fired: ResourceTriggerFire[] = [];

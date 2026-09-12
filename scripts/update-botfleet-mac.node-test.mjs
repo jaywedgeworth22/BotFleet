@@ -48,6 +48,8 @@ test("prepare and apply expose an explicit reusable stage", () => {
   assert.throws(() => parseArguments(["apply"]), /requires --stage/);
   assert.throws(() => parseArguments(["update", "--unknown"]), /Unknown option/);
   assert.throws(() => parseArguments(["prepare", "--bundle", "/tmp/app"]), /supplied together/);
+  assert.equal(parseArguments(["unquiesce"]).command, "unquiesce");
+  assert.throws(() => parseArguments(["unquiesce", "--no-open"]), /accepts no options/);
   assert.throws(
     () => parseArguments(["prepare", "--bundle", "/tmp/app", "--dependencies", "/tmp/deps"]),
     /requires its exact --source/,
@@ -140,6 +142,18 @@ test("production updater has no force-kill or unrelated desktop-process cleanup"
   assert.match(source, /manual first adoption is required/);
   assert.match(source, /rollback was deferred without interrupting it/);
   assert.doesNotMatch(source, /legacyPreflight/);
+  assert.match(source, /POST/);
+  assert.match(source, /update-botfleet\.sh unquiesce/);
+});
+
+test("desktop local-update UI does not report normal packaging latency as failure", async () => {
+  const source = await readFile(join(scripts, "../electron/updater.mjs"), "utf8");
+  assert.match(source, /LOCAL_UPDATE_PROGRESS_MS = 2 \* 60 \* 1000/);
+  assert.match(source, /LOCAL_UPDATE_LONG_RUNNING_MS = 60 \* 60 \* 1000/);
+  assert.match(source, /still preparing/);
+  assert.match(source, /updater lock before retrying/);
+  assert.match(source, /status: "installing",\n\s+message: "The local updater is taking longer/);
+  assert.doesNotMatch(source, /did not finish\. Quit the app and try again/);
 });
 
 test("process verification binds relative server commands to the live checkout cwd", () => {

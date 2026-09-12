@@ -266,6 +266,8 @@ const MIME: Record<string, string> = {
 // SQLite, routines, or webhook receivers start.  Health timeouts never release it.
 // The parent startup lock also serializes the one-time legacy directory move.
 const harnessOwner = initializeHarnessOwnership(DATA_DIR, PORT, ensureDirs);
+let runtimeQuiescing = false;
+let activeUpdateAdmissions = 0;
 const cfg = loadConfig();
 // Flipped once, at the end of this file, when everything a secret change
 // might rebuild or re-point exists.  A snapshot that lands before then is
@@ -2556,6 +2558,9 @@ async function startTurn(
     modelSelection?: ModelSelection;
   },
 ) {
+  if (runtimeQuiescing) {
+    throw Object.assign(new Error("BotFleet is quiescing for an update"), { status: 503 });
+  }
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
   if (providerReloadInProgress) {
@@ -3235,6 +3240,7 @@ async function startTurn(
 // only owner of provider sessions, approvals, tools, computers and messages.
 routines = new RoutineManager({
   emit: broadcast,
+  admit: () => !runtimeQuiescing,
   botState: (botId) => {
     const bot = store.bot(botId);
     return !bot ? "missing" : bot.busy ? "busy" : "ready";
@@ -3454,7 +3460,7 @@ const webhooks = new WebhookManager({
 let webhookIngress: WebhookIngress | null = null;
 let webhookIngressError: string | null = null;
 try {
-  webhookIngress = await listenWebhookIngress(webhooks, { port: WEBHOOK_PORT });
+  webhookIngress = await listenWebhookIngress(webhooks, { port: WEBHOOK_PORT, beginAdmission: beginUpdateAdmission });
   console.log(`botfleet webhook receiver on ${webhookIngress.baseUrl}`);
 } catch (error) {
   webhookIngressError = isListenInUse(error)
@@ -3648,6 +3654,7 @@ async function probeIngressUrl(raw: string): Promise<IngressProbeResult> {
 
 const resourceTriggers = new ResourceTriggerManager({
   emit: broadcast,
+  admit: () => !runtimeQuiescing,
   botState: (botId) => {
     const bot = store.bot(botId);
     return !bot ? "missing" : bot.busy ? "busy" : "ready";
@@ -5194,6 +5201,65 @@ function isLoopbackAddress(address: string | undefined): boolean {
   return isLoopbackHost(bare.includes(":") ? `[${bare}]` : bare);
 }
 
+function currentRuntimeReadiness() {
+  return runtimeReadiness({
+    admissions: activeUpdateAdmissions,
+    turns: store.bots.filter((bot) => bot.busy).length,
+    completions: completionFolds.size,
+    groupOperations: groupTurnOperations.size,
+    queuedSends: queuedMessageCount(),
+    queuedRooms: _queuedRoomCount(),
+    delegations: pendingDelegationSnapshot().length,
+    connectors: pendingConnectorResumes.size,
+    secrets: pendingSecretResumes.size,
+    vps: activeVpsThreads.size,
+    localVm: localVmActiveThreads.size + localVmLifecycleBusy.size,
+    localVmChanges: Number(localVmImageBusy) + Number(localVmProvisionBusy) + Number(localVmModeChangeBusy),
+    restores: checkpointRestoreLeases.size,
+    reloads: pendingProviderReloads + Number(providerConfigBusy),
+    routineRuns: routines?.listRuns().filter((run) => ["queued", "running", "waiting"].includes(run.status)).length ?? 0,
+  });
+}
+
+function beginUpdateAdmission(): (() => void) | null {
+  if (runtimeQuiescing) return null;
+  activeUpdateAdmissions += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    activeUpdateAdmissions = Math.max(0, activeUpdateAdmissions - 1);
+  };
+}
+
+function beginRuntimeQuiesce() {
+  const readiness = currentRuntimeReadiness();
+  if (!readiness.safeToRestart) return { ...readiness, quiescing: false };
+  if (!runtimeQuiescing) {
+    // This function has no await before the admission flag.  A request,
+    // scheduler tick, or queue drain cannot enter between the final complete
+    // readiness snapshot and the fence becoming visible to every dispatcher.
+    runtimeQuiescing = true;
+    routines?.stop();
+    resourceTriggers.stop();
+    infisical.stop();
+  }
+  return { ...readiness, quiescing: true };
+}
+
+function endRuntimeQuiesce() {
+  if (runtimeQuiescing) {
+    // Clear admission before restarting schedulers so their immediate ticks
+    // can dispatch normally.  This is an authenticated recovery action for
+    // an updater that died after fencing but before launchd bootout.
+    runtimeQuiescing = false;
+    infisical.start();
+    routines?.start();
+    resourceTriggers.start();
+  }
+  return { ...currentRuntimeReadiness(), quiescing: false };
+}
+
 const server = createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://localhost:${PORT}`);
   const path = url.pathname;
@@ -5208,6 +5274,17 @@ const server = createServer(async (req, res) => {
     const origin = req.headers.origin;
     if (origin && !isAllowedOrigin(origin)) {
       return json(res, 403, { error: "forbidden: cross-origin request" });
+    }
+    if (runtimeQuiescing && path.startsWith("/api/") && path !== "/api/runtime" && path !== "/api/runtime/quiesce" && path !== "/api/health") {
+      return json(res, 503, { error: "BotFleet is quiescing for an update" });
+    }
+    const mutatingApiRequest = path.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(method) &&
+      path !== "/api/runtime/quiesce";
+    if (mutatingApiRequest) {
+      const releaseAdmission = beginUpdateAdmission();
+      if (!releaseAdmission) return json(res, 503, { error: "BotFleet is quiescing for an update" });
+      res.once("finish", releaseAdmission);
+      res.once("close", releaseAdmission);
     }
     // ── internal peer-agent comms (localhost + shared token only) ──────
     // The agents-proxy (spawned inside a bot's agent process) calls these to
@@ -7939,28 +8016,20 @@ const server = createServer(async (req, res) => {
       });
     }
 
-    if (method === "GET" && path === "/api/runtime") {
+    if ((method === "GET" && path === "/api/runtime") ||
+        ((method === "POST" || method === "DELETE") && path === "/api/runtime/quiesce")) {
       if (!isLoopbackAddress(req.socket.remoteAddress) || !authorizedRuntime(harnessOwner, req.headers.authorization)) {
         return json(res, 401, { error: "unauthorized" });
       }
-      const readiness = runtimeReadiness({
-        turns: store.bots.filter((bot) => bot.busy).length,
-        completions: completionFolds.size,
-        groupOperations: groupTurnOperations.size,
-        queuedSends: queuedMessageCount(),
-        queuedRooms: _queuedRoomCount(),
-        delegations: pendingDelegationSnapshot().length,
-        connectors: pendingConnectorResumes.size,
-        secrets: pendingSecretResumes.size,
-        vps: activeVpsThreads.size,
-        localVm: localVmActiveThreads.size + localVmLifecycleBusy.size,
-        localVmChanges: Number(localVmImageBusy) + Number(localVmProvisionBusy) + Number(localVmModeChangeBusy),
-        restores: checkpointRestoreLeases.size,
-        reloads: pendingProviderReloads + Number(providerConfigBusy),
-        routineRuns: routines?.listRuns().filter((run) => ["queued", "running", "waiting"].includes(run.status)).length ?? 0,
-      });
-      return json(res, 200, {
+      const readiness = path !== "/api/runtime/quiesce"
+        ? currentRuntimeReadiness()
+        : method === "DELETE"
+          ? endRuntimeQuiesce()
+          : beginRuntimeQuiesce();
+      const refused = method === "POST" && path === "/api/runtime/quiesce" && !readiness.safeToRestart;
+      return json(res, refused ? 409 : 200, {
         ...runtimeBuildIdentity, pid: process.pid, ...readiness,
+        quiescing: runtimeQuiescing,
         dataOwner: { pid: harnessOwner.pid, port: harnessOwner.port },
       });
     }

@@ -59,6 +59,7 @@ export async function applyPreparedUpdate(prepared, options, ops) {
     previous = await ops.capturePrevious(prepared, options);
     await ops.materializeCandidate(prepared, previous);
     requireSafe(await ops.preflight(prepared), "install-boundary preflight");
+    requireSafe(await ops.fence(prepared, previous), "runtime admission fence");
 
     crossedBoundary = true;
     await ops.quiesce(previous);

@@ -29,6 +29,7 @@ function fakeApplyOps({ readiness = [{ safe: true }, { safe: true }], failAt } =
       preflight: () => step("preflight", readiness.shift() ?? { safe: true }),
       capturePrevious: () => step("capturePrevious", previous),
       materializeCandidate: () => step("materializeCandidate"),
+      fence: () => step("fence", { safe: true }),
       cleanupCandidate: () => step("cleanupCandidate"),
       quiesce: () => step("quiesce"),
       assertQuiesced: () => step("assertQuiesced"),
@@ -86,6 +87,21 @@ test("a candidate copy failure cleans partial files without crossing the live bo
   assert.equal(fake.calls.includes("rollback"), false);
 });
 
+test("work arriving before the admission fence refuses without crossing the live boundary", async () => {
+  const fake = fakeApplyOps();
+  fake.ops.fence = () => {
+    fake.calls.push("fence");
+    return Promise.resolve({ safe: false, reason: "work entered before fence" });
+  };
+  await assert.rejects(applyPreparedUpdate(prepared, {}, fake.ops), /work entered before fence/);
+  assert.deepEqual(fake.calls, [
+    "lock", "validatePrepared", "preflight", "capturePrevious", "materializeCandidate", "preflight", "fence",
+    "cleanupCandidate", "unlock",
+  ]);
+  assert.equal(fake.calls.includes("quiesce"), false);
+  assert.equal(fake.calls.includes("rollback"), false);
+});
+
 test("candidate cleanup failure preserves the refusal and cleanup errors", async () => {
   const fake = fakeApplyOps({
     readiness: [{ safe: true }, { safe: false, reason: "work started during staging" }],
@@ -130,6 +146,7 @@ test("successful apply verifies the expected harness before reopening and owners
     targetCommit: "b".repeat(40),
     previousCommit: "a".repeat(40),
   });
+  assert.ok(fake.calls.indexOf("fence") < fake.calls.indexOf("quiesce"));
   assert.ok(fake.calls.indexOf("verifyHarness") < fake.calls.indexOf("startApplication"));
   assert.ok(fake.calls.indexOf("startApplication") < fake.calls.indexOf("verifySingleOwner"));
   assert.ok(fake.calls.indexOf("finish") < fake.calls.indexOf("unlock"));
