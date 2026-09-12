@@ -3358,7 +3358,9 @@ const agentRoutine = (routine: ReturnType<RoutineManager["listRoutines"]>[number
           type: "weekly" as const,
           time: routine.schedule.time,
           weekdays: routine.schedule.weekdays.map((day) => ROUTINE_WEEKDAY_NAMES[day]),
-          timeZone: routine.schedule.timeZone ?? routineTimeZone(),
+          ...(routine.scheduleTimeZoneSource === "host"
+            ? {}
+            : { timeZone: routine.schedule.timeZone ?? routineTimeZone() }),
         },
     nextRunAt: routine.nextRunAt === null ? null : new Date(routine.nextRunAt).toISOString(),
   };
