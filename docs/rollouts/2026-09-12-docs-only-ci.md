@@ -17,3 +17,4 @@ The documentation-only PR #317 run `34635882853` consumed 1,483 summed job-secon
 - `pnpm test:ci-scope` covers the allowlist, mixed and empty fail-closed cases, NUL-delimited CLI output, unchanged protected job names, classifier-failure fallback, scheduled/manual full runs, and disabled rename detection.
 - Current branch protection was read through the GitHub API before implementation.  It requires the exact six existing job names and remains unchanged.
 - This workflow/package/script change is outside the documentation allowlist, so its own pull request and main push must run the complete matrix.
+- Post-merge documentation-only validation records the observed pull-request receipt here and the resulting main-push receipt in issue #318.
