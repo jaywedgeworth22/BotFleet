@@ -77,12 +77,20 @@ function bearerSecret(req: IncomingMessage): string {
 }
 
 function deliveryId(req: IncomingMessage): string | undefined {
-  return (
+  const explicit = (
     header(req, "idempotency-key") ??
     header(req, "x-webhook-id") ??
     header(req, "x-github-delivery") ??
     header(req, "webhook-id")
   )?.trim() || undefined;
+  if (explicit) return explicit;
+  // The configured Sentry custom integration identifies issue deliveries
+  // with Request-ID.  A generic proxy request ID is not an event identity.
+  const requestId = header(req, "request-id")?.trim();
+  if (header(req, "sentry-hook-resource") === "issue" && requestId && /^[a-f0-9]{32}$/i.test(requestId)) {
+    return `sentry:${requestId.toLowerCase()}`;
+  }
+  return undefined;
 }
 
 function eventName(req: IncomingMessage): string | undefined {

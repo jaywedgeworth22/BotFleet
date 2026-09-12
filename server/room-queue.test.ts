@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import {
   cancelRoomRounds,
   drainRoomRounds,
+  hasQueuedRoomRound,
   queueRoomRound,
   ROOM_QUEUE_MAX,
   ROOM_QUEUE_TTL_MS,
@@ -147,5 +148,12 @@ describe("room round queue", () => {
     const ran: string[] = [];
     drainRoomRounds(storeWith({ director: {} }), NOW, (r) => { ran.push(r.threadId); });
     expect(ran).toEqual(["t1"]);
+  });
+
+  it("reports only rounds that are still retained", () => {
+    queueRoomRound(round(), NOW);
+    expect(hasQueuedRoomRound("t1", "director")).toBe(true);
+    cancelRoomRounds((queued) => queued.threadId === "t1");
+    expect(hasQueuedRoomRound("t1", "director")).toBe(false);
   });
 });
