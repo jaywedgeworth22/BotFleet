@@ -50,6 +50,7 @@ export function QdrantRagConnection() {
   const [testResult, setTestResult] = useState<QdrantStatus | null>(null);
   const testRevision = useRef(0);
   const enabledRevision = useRef(0);
+  const saveFailed = useRef(false);
   const pendingSave = useRef<Promise<boolean> | null>(null);
 
   useEffect(() => {
@@ -113,6 +114,7 @@ export function QdrantRagConnection() {
 
     setSaving(true);
     setSaveError(null);
+    saveFailed.current = false;
     const testRevisionAtStart = testRevision.current;
     const result = await settleQdrantSaveWithStatusFence<ConfigStatus>(
       () => api("/api/config", {
@@ -124,6 +126,7 @@ export function QdrantRagConnection() {
     );
     setSaving(false);
     if (!result.ok) {
+      saveFailed.current = true;
       setSaveError(result.error);
       return false;
     }
@@ -150,7 +153,7 @@ export function QdrantRagConnection() {
 
   const runTest = async () => {
     setTesting(true);
-    if (!(await waitForLatestQdrantSave(() => pendingSave.current))) {
+    if (!(await waitForLatestQdrantSave(() => pendingSave.current, () => saveFailed.current))) {
       setTesting(false);
       return;
     }

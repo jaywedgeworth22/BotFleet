@@ -73,6 +73,14 @@ describe("Qdrant RAG status copy", () => {
     expect(events).toEqual(["status requested"]);
   });
 
+  it("keeps a failed save blocking tests after its promise settles", async () => {
+    let failed = true;
+
+    await expect(waitForLatestQdrantSave(() => null, () => failed)).resolves.toBe(false);
+    failed = false;
+    await expect(waitForLatestQdrantSave(() => null, () => failed)).resolves.toBe(true);
+  });
+
   it("drops a connection result from before a newer save", () => {
     let testRevision = 1;
     const result = { ready: true };

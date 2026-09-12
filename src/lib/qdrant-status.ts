@@ -66,13 +66,14 @@ export async function settleQdrantSaveWithStatusFence<T>(
 
 export async function waitForLatestQdrantSave(
   currentSave: () => Promise<boolean> | null,
+  hasFailedSave: () => boolean = () => false,
 ): Promise<boolean> {
   while (true) {
     const pending = currentSave();
-    if (!pending) return true;
+    if (!pending) return !hasFailedSave();
     if (!(await pending)) return false;
     const latest = currentSave();
-    if (!latest || latest === pending) return true;
+    if (!latest || latest === pending) return !hasFailedSave();
   }
 }
 
