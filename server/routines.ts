@@ -12,6 +12,7 @@ import {
   type ConversationMode,
 } from "../shared/conversation-mode.ts";
 import { foldPrompts, gapEndsAt, withinGap } from "./trigger-gap.ts";
+import { routineFailureCode, routineFailurePhase, type RoutineOutcomeCode, type RoutineFailurePhase } from "../shared/routine-outcomes.ts";
 
 export type RoutineSchedule =
   | { type: "once"; at: number }
@@ -106,6 +107,12 @@ export interface RoutineRun {
   denials?: string[];
   createdAt: number;
   seenAt?: number;
+  coalescedInto?: string;
+  outcomeCode?: RoutineOutcomeCode;
+  failurePhase?: RoutineFailurePhase;
+  engineId?: string;
+  driver?: string;
+  model?: string;
 }
 
 export interface RoutineRequestReceipt {
@@ -341,13 +348,15 @@ export class RoutineManager {
       if (run.status === "running" || run.status === "waiting") {
         run.status = "failed";
         run.error = "BotFleet restarted while this routine was running";
+        run.outcomeCode = "runtime_restart";
+        run.failurePhase = "lifecycle";
         run.finishedAt = this.now();
         recovered.push({ ...run });
       }
     }
     if (recovered.length > 0) {
       this.save();
-      for (const run of recovered) this.options.onRunFailed?.(run);
+      for (const run of recovered) if (!run.coalescedInto) this.options.onRunFailed?.(run);
     }
   }
 
@@ -364,7 +373,7 @@ export class RoutineManager {
 
   activeRunForBot(botId: string): RoutineRun | null {
     const run = this.runs.find(
-      (candidate) => candidate.botId === botId && ["running", "waiting"].includes(candidate.status),
+      (candidate) => !candidate.coalescedInto && candidate.botId === botId && ["running", "waiting"].includes(candidate.status),
     );
     return run ? { ...run } : null;
   }
@@ -668,9 +677,12 @@ export class RoutineManager {
   }
 
   async cancelRun(id: string): Promise<RoutineRun | null> {
-    const run = this.runs.find((r) => r.id === id);
+    let run = this.runs.find((r) => r.id === id);
+    if (run?.coalescedInto) run = this.runs.find((r) => r.id === run!.coalescedInto);
     if (!run || !["queued", "running", "waiting"].includes(run.status)) return null;
     run.status = "cancelled";
+    run.outcomeCode = "cancelled";
+    run.failurePhase = "lifecycle";
     run.finishedAt = this.now();
     this.save();
     this.emitRun(run);
@@ -741,6 +753,8 @@ export class RoutineManager {
           missed.status = "missed";
           missed.finishedAt = now;
           missed.error = "This computer was offline for more than 12 hours after the scheduled time";
+          missed.outcomeCode = "missed_offline";
+          missed.failurePhase = "schedule";
           this.emitRun(missed);
         } else {
           const run = this.newRun(routine, scheduledFor, false);
@@ -856,8 +870,8 @@ export class RoutineManager {
         run.startedAt = this.now();
         run.status = "running";
         this.lastStartedByKey.set(key, run.startedAt);
-        // Everything else of this trigger that was waiting rides along.  The
-        // receipts settle here rather than each starting a turn of its own.
+        // Combined deliveries stay pending until this owning turn settles.
+        // A dispatch is not evidence that any delivery completed successfully.
         const waiting = this.runs.filter(
           (candidate) =>
             candidate.status === "queued" &&
@@ -866,11 +880,12 @@ export class RoutineManager {
             automationThreadKey(candidate) === key,
         );
         for (const folded of waiting) {
-          folded.status = "completed";
+          folded.status = "running";
+          folded.coalescedInto = run.id;
           folded.threadId = threadId;
           folded.startedAt = run.startedAt;
-          folded.finishedAt = run.startedAt;
-          folded.output = `Handled together with ${run.routineName}`;
+          folded.finishedAt = undefined;
+          folded.output = undefined;
           this.emitRun(folded);
         }
         this.save();
@@ -899,10 +914,10 @@ export class RoutineManager {
             prompt,
             run.runOn ?? "maus",
             triggerSource,
-            (message) => this.failThread(threadId, message),
+            (message) => this.failThread(threadId, message, "dispatch_failed"),
           );
         } catch (error) {
-          this.failThread(threadId, error instanceof Error ? error.message : String(error));
+          this.failThread(threadId, error instanceof Error ? error.message : String(error), "dispatch_failed");
         }
       }
     } finally {
@@ -911,9 +926,13 @@ export class RoutineManager {
   }
 
   handleRuntimeEvent(event: RuntimeEvent): RoutineRun | null {
-    const run = this.runs.find((r) => r.threadId === event.threadId && ["running", "waiting"].includes(r.status));
+    const run = this.runs.find((r) => !r.coalescedInto && r.threadId === event.threadId && ["running", "waiting"].includes(r.status));
     if (!run) return null;
-    if (event.type === "request.opened") {
+    run.engineId = event.providerInstanceId ?? event.provider;
+    run.driver = event.provider;
+    if (event.type === "session.started") {
+      run.model = event.model ?? undefined;
+    } else if (event.type === "request.opened") {
       run.status = "waiting";
     } else if (event.type === "request.resolved") {
       run.status = "running";
@@ -921,6 +940,7 @@ export class RoutineManager {
       run.output = event.text.trim().slice(0, 2_000);
     } else if (event.type === "runtime.error") {
       run.error = event.message.slice(0, 500);
+      run.outcomeCode = event.setup ? "auth_required" : undefined;
     } else if (event.type === "turn.retrying") {
       // the driver will relaunch this same run; a transient blip is not a
       // receipt-worthy failure, so keep the run running and stay quiet
@@ -928,14 +948,24 @@ export class RoutineManager {
     } else if (event.type === "turn.completed") {
       run.cost = event.cost;
       run.denials = event.denials;
-      if (!event.ok) {
-        this.failRun(run, event.stopReason ?? run.error ?? "The bot did not complete this run");
+      const reason = event.stopReason ?? run.error;
+      const code = routineFailureCode(reason, run.outcomeCode === "auth_required", Boolean(event.denials?.length));
+      if (code === "cancelled") {
+        run.status = "cancelled";
+        run.outcomeCode = "cancelled";
+        run.failurePhase = "lifecycle";
+        run.finishedAt = this.now();
+      } else if (!event.ok) {
+        this.failRun(run, reason ?? "The bot did not complete this run", code);
         queueMicrotask(() => void this.tick());
         return { ...run };
+      } else {
+        run.status = "completed";
+        run.outcomeCode = "completed";
+        run.failurePhase = undefined;
+        run.finishedAt = this.now();
+        run.error = undefined;
       }
-      run.status = "completed";
-      run.finishedAt = this.now();
-      run.error = undefined;
     } else {
       return null;
     }
@@ -945,10 +975,10 @@ export class RoutineManager {
     return { ...run };
   }
 
-  failThread(threadId: string, message: string) {
-    const run = this.runs.find((r) => r.threadId === threadId && ["running", "waiting"].includes(r.status));
+  failThread(threadId: string, message: string, code = routineFailureCode(message)) {
+    const run = this.runs.find((r) => !r.coalescedInto && r.threadId === threadId && ["running", "waiting"].includes(r.status));
     if (!run) return;
-    this.failRun(run, message);
+    this.failRun(run, message, code);
     queueMicrotask(() => void this.tick());
   }
 
@@ -961,6 +991,7 @@ export class RoutineManager {
     if (!live) return [];
     const orphaned: RoutineRun[] = [];
     for (const run of this.runs) {
+      if (run.coalescedInto) continue;
       if (run.status !== "running" && run.status !== "waiting") continue;
       if (!run.threadId || run.startedAt === undefined) continue;
       if (now - run.startedAt < ORPHAN_GRACE_MS) continue;
@@ -971,9 +1002,11 @@ export class RoutineManager {
     return orphaned;
   }
 
-  private failRun(run: RoutineRun, message: string) {
+  private failRun(run: RoutineRun, message: string, code = routineFailureCode(message)) {
     run.status = "failed";
     run.error = message.slice(0, 500);
+    run.outcomeCode = code;
+    run.failurePhase = routineFailurePhase(code);
     run.finishedAt = this.now();
     this.save();
     this.emitRun(run);
@@ -1017,6 +1050,28 @@ export class RoutineManager {
 
   private emitRun(run: RoutineRun) {
     this.options.emit?.({ kind: "routine.run", run: { ...run } });
+    if (!run.coalescedInto) {
+      for (const child of this.runs) {
+        if (child.coalescedInto !== run.id) continue;
+        this.copyCombinedOutcome(child, run);
+        this.options.emit?.({ kind: "routine.run", run: { ...child } });
+      }
+    }
+  }
+
+  private copyCombinedOutcome(child: RoutineRun, owner: RoutineRun) {
+    child.status = owner.status;
+    child.finishedAt = owner.finishedAt;
+    child.error = owner.error;
+    child.outcomeCode = owner.outcomeCode;
+    child.failurePhase = owner.failurePhase;
+    child.engineId = owner.engineId;
+    child.driver = owner.driver;
+    child.model = owner.model;
+    child.denials = owner.denials ? [...owner.denials] : undefined;
+    child.output = owner.status === "completed" ? `Handled together with ${owner.routineName}` : undefined;
+    // Only the owning turn is billable; never duplicate its usage charge.
+    child.cost = undefined;
   }
 
   private matchingRoutineRequestReceipt(request: RoutineRequestCommit): RoutineRequestReceipt | null {
@@ -1072,6 +1127,11 @@ export class RoutineManager {
   }
 
   private save() {
+    const byId = new Map(this.runs.map((run) => [run.id, run]));
+    for (const run of this.runs) {
+      const owner = run.coalescedInto ? byId.get(run.coalescedInto) : undefined;
+      if (owner) this.copyCombinedOutcome(run, owner);
+    }
     mkdirSync(dirname(this.file), { recursive: true });
     const temp = `${this.file}.tmp`;
     writeFileSync(temp, JSON.stringify({
