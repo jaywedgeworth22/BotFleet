@@ -88,9 +88,12 @@ describe("every record is complete", () => {
 describe("both lanes derive from the same records", () => {
   it("describes explicit routine timezones consistently on both lanes", () => {
     const expected = "On update, omit it to preserve the routine's existing timezone";
-    for (const definitions of [mcpToolDefinitions(gate()), httpToolDefinitions(gate())]) {
-      const create = definitions.find((tool) => tool.name === "propose_routine")!;
-      const timeZone = (create.inputSchema ?? create.parameters).properties.schedule.properties.timeZone;
+    const schemas = [
+      mcpToolDefinitions(gate()).find((tool) => tool.name === "propose_routine")!.inputSchema,
+      httpToolDefinitions(gate()).find((tool) => tool.name === "propose_routine")!.parameters,
+    ];
+    for (const schema of schemas) {
+      const timeZone = schema.properties.schedule.properties.timeZone;
       expect(timeZone.description).toContain("IANA timezone");
       expect(timeZone.description).toContain(expected);
     }
