@@ -115,10 +115,22 @@ export function resetProviderTokens(): void {
 // --- Payload shape --------------------------------------------------------
 
 export const APNS_APPROVAL_CATEGORY = "BOTFLEET_APPROVAL";
+/** A question is blocking, but Approve and Deny mean nothing for it — it
+ * wants an answer, not a verdict.  Its own category is what keeps those two
+ * buttons off a notification that cannot use them. */
+export const APNS_QUESTION_CATEGORY = "BOTFLEET_QUESTION";
 export const APNS_UPDATE_CATEGORY = "BOTFLEET_UPDATE";
 
 /** The harness notify kinds, mirrored from `server/notify.ts`. */
 export type ApnsAlertKind = "approval" | "question" | "done" | "routine-failed" | "takeover";
+
+/** True for the kinds where a bot is blocked on a person.  These go to the
+ * front of a phone's queue and are the last thing dropped from it: a report
+ * that arrives late is stale, an approval that arrives late is a bot that
+ * sat waiting, and one that never arrives is a bot that waits forever. */
+export function alertIsBlocking(kind: string | undefined): boolean {
+  return kind === "approval" || kind === "question";
+}
 
 export interface ApnsAlert {
   title: string;
@@ -153,7 +165,7 @@ export function deliveryForKind(kind: string | undefined): ApnsDelivery {
     case "approval":
       return { category: APNS_APPROVAL_CATEGORY, interruptionLevel: "time-sensitive", relevanceScore: 1 };
     case "question":
-      return { category: APNS_APPROVAL_CATEGORY, interruptionLevel: "time-sensitive", relevanceScore: 0.9 };
+      return { category: APNS_QUESTION_CATEGORY, interruptionLevel: "time-sensitive", relevanceScore: 0.9 };
     case "takeover":
       return { category: APNS_UPDATE_CATEGORY, interruptionLevel: "active", relevanceScore: 0.7 };
     case "routine-failed":
@@ -478,7 +490,9 @@ export function watchHarnessNotifications(options: {
   loadConfig?: () => ApnsConfig | null;
   /** Fingerprint of the key file, so a rotated key is noticed. */
   keyStamp?: () => string | null;
-  forgetToken?: (deviceId: string) => void;
+  /** Retire a token Apple has rejected.  The token is named so a phone
+   * that registered a replacement while this send was in flight keeps it. */
+  forgetToken?: (deviceId: string, token: string) => void;
   fetchImpl?: typeof fetch;
   now?: () => number;
   keyRecheckMs?: number;
@@ -507,7 +521,6 @@ export function watchHarnessNotifications(options: {
   let retry: (() => void) | null = null;
   let discovered: ApnsConfig | null = fixed ?? null;
   let discoveredStamp: string | null = null;
-  let lastLookupAt = 0;
   let warnedMissing = false;
   /** Set when Apple refused the key itself.  Only a different key file
    * clears it — a fresh signature from the same one earns the same answer. */
@@ -539,11 +552,12 @@ export function watchHarnessNotifications(options: {
     abort?.abort();
   };
 
-  const resolveConfig = (): ApnsConfig | null => {
+  /** Look at the key file and reload when it has changed.  Runs on a timer
+   * rather than only when the stream reconnects: a sidecar whose harness
+   * stays up for days never reconnects, and a key dropped in or rotated
+   * under it would otherwise go unnoticed for exactly as long. */
+  const refreshConfig = (): ApnsConfig | null => {
     if (fixed) return keyFault ? null : fixed;
-    const at = now();
-    if (lastLookupAt && at - lastLookupAt < recheckMs) return keyFault ? null : discovered;
-    lastLookupAt = at;
     const stamp = keyStamp();
     if (keyFault) {
       // Apple refuses what is on disk.  Only a different file can help.
@@ -567,6 +581,19 @@ export function watchHarnessNotifications(options: {
     return discovered;
   };
 
+  /** What to sign with right now.  Read per send rather than captured when
+   * the stream opened, so a key replaced mid-stream is used immediately and
+   * a rejected one stops being used immediately. */
+  const activeConfig = (): ApnsConfig | null => {
+    if (keyFault) return null;
+    return fixed ?? discovered;
+  };
+
+  const keyTimer = setInterval(() => {
+    refreshConfig();
+  }, recheckMs);
+  keyTimer.unref?.();
+
   /** Sleep, but wake immediately when stop() is called. */
   const pause = (ms: number): Promise<void> =>
     new Promise<void>((resolve) => {
@@ -580,11 +607,21 @@ export function watchHarnessNotifications(options: {
   // One queue per device, drained on its own chain.  A phone Apple is rate
   // limiting sleeps out its own Retry-After without holding up any other
   // phone, and each phone still sees its notifications in order.
+  interface QueuedAlert {
+    token: string;
+    alert: ApnsAlert;
+  }
+
   interface DeviceQueue {
-    pending: { token: string; alert: ApnsAlert }[];
+    /** Approvals and questions — someone is blocked on these. */
+    blocking: QueuedAlert[];
+    /** Reports, in arrival order. */
+    normal: QueuedAlert[];
     running: boolean;
   }
   const queues = new Map<string, DeviceQueue>();
+
+  const queueDepth = (queue: DeviceQueue): number => queue.blocking.length + queue.normal.length;
 
   const sendOne = async (config: ApnsConfig, deviceId: string, token: string, alert: ApnsAlert) => {
     let result: ApnsSendResult;
@@ -611,9 +648,14 @@ export function watchHarnessNotifications(options: {
     // thing.  Drop it and let the phone register a new one; anything still
     // queued for it would earn the identical answer.
     if (tokenIsDead(result.status, result.reason)) {
-      options.forgetToken?.(deviceId);
+      // Name the token, so a phone that registered a replacement while this
+      // send was in flight does not lose the new one to the old one's 410.
+      options.forgetToken?.(deviceId, token);
       const queue = queues.get(deviceId);
-      if (queue) queue.pending.length = 0;
+      if (queue) {
+        queue.blocking = queue.blocking.filter((entry) => entry.token !== token);
+        queue.normal = queue.normal.filter((entry) => entry.token !== token);
+      }
       if (firstTime(`${deviceId}:dead:${result.reason ?? result.status}`)) {
         console.warn(
           `companion: APNs ${result.status}${result.reason ? ` ${result.reason}` : ""} — dropped that phone's push token; it will register a new one`,
@@ -630,21 +672,26 @@ export function watchHarnessNotifications(options: {
     console.warn(`companion: APNs ${result.status}${result.reason ? ` ${result.reason}` : ""}`);
   };
 
-  const drain = async (config: ApnsConfig, deviceId: string, queue: DeviceQueue) => {
+  const drain = async (deviceId: string, queue: DeviceQueue) => {
     queue.running = true;
     try {
       while (!stopped) {
-        const next = queue.pending.shift();
+        // Blocking first, always: an approval queued behind a rate-limited
+        // report would wait out that report's whole retry ladder, which is
+        // the one delay this queue exists to prevent.
+        const next = queue.blocking.shift() ?? queue.normal.shift();
         if (!next) break;
+        const config = activeConfig();
+        if (!config) break;
         await sendOne(config, deviceId, next.token, next.alert);
       }
     } finally {
       queue.running = false;
-      if (!queue.pending.length) queues.delete(deviceId);
+      if (queueDepth(queue) === 0) queues.delete(deviceId);
     }
   };
 
-  const deliver = (config: ApnsConfig, notification: {
+  const deliver = (notification: {
     title?: string;
     body?: string;
     kind?: string;
@@ -663,26 +710,31 @@ export function watchHarnessNotifications(options: {
       requestId: notification.requestId,
       tool: notification.tool,
     };
+    const blocking = alertIsBlocking(alert.kind);
     for (const row of options.tokensForDisconnected()) {
       if (connected.has(row.deviceId)) continue;
       let queue = queues.get(row.deviceId);
       if (!queue) {
-        queue = { pending: [], running: false };
+        queue = { blocking: [], normal: [], running: false };
         queues.set(row.deviceId, queue);
       }
-      queue.pending.push({ token: row.token, alert });
-      if (queue.pending.length > maxQueued) {
-        queue.pending.shift();
+      (blocking ? queue.blocking : queue.normal).push({ token: row.token, alert });
+      if (queueDepth(queue) > maxQueued) {
+        // Drop a report before an approval, whatever the order they arrived
+        // in.  A stale report is worth nothing; a dropped approval leaves a
+        // bot waiting on an answer nobody was ever asked for.
+        const lane = queue.normal.length ? queue.normal : queue.blocking;
+        lane.shift();
         health.recordDropped();
         console.warn("companion: APNs backlog for a phone is full; dropped its oldest notification");
       }
-      if (!queue.running) void drain(config, row.deviceId, queue);
+      if (!queue.running) void drain(row.deviceId, queue);
     }
   };
 
   const pump = async () => {
     while (!stopped) {
-      const config = resolveConfig();
+      const config = refreshConfig();
       if (!config) {
         await pause(recheckMs);
         continue;
@@ -738,7 +790,7 @@ export function watchHarnessNotifications(options: {
             // Returns at once: the sends happen on each device's own queue,
             // so a reader that has to keep up with the harness never waits
             // on one phone's retry.
-            deliver(config, frame.notification);
+            deliver(frame.notification);
           }
         }
       } catch {
@@ -754,8 +806,12 @@ export function watchHarnessNotifications(options: {
       stopped = true;
       abort?.abort();
       if (timer) clearTimeout(timer);
+      clearInterval(keyTimer);
       retry?.();
-      for (const queue of queues.values()) queue.pending.length = 0;
+      for (const queue of queues.values()) {
+        queue.blocking.length = 0;
+        queue.normal.length = 0;
+      }
       queues.clear();
     },
     health: health.snapshot,

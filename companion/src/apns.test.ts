@@ -2,6 +2,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  alertIsBlocking,
   apnsJwt,
   apnsPayload,
   deliveryForKind,
@@ -95,12 +96,25 @@ describe("deliveryForKind", () => {
     expect(deliveryForKind(undefined).relevanceScore).toBeLessThan(deliveryForKind("done").relevanceScore);
   });
 
-  it("routes blocking kinds to the approval category and the rest to updates", () => {
+  it("gives a question its own category, so it never offers Approve and Deny", () => {
+    // Both kinds are blocking, but a question wants an answer rather than a
+    // verdict — sharing the approval category put two meaningless buttons
+    // on it, and either one sent a permission verdict for free text.
     expect(deliveryForKind("approval").category).toBe("BOTFLEET_APPROVAL");
-    expect(deliveryForKind("question").category).toBe("BOTFLEET_APPROVAL");
+    expect(deliveryForKind("question").category).toBe("BOTFLEET_QUESTION");
     expect(deliveryForKind("done").category).toBe("BOTFLEET_UPDATE");
     expect(deliveryForKind("routine-failed").category).toBe("BOTFLEET_UPDATE");
     expect(deliveryForKind("takeover").category).toBe("BOTFLEET_UPDATE");
+    // It still breaks a Focus: it is a bot blocked on a person.
+    expect(deliveryForKind("question").interruptionLevel).toBe("time-sensitive");
+  });
+
+  it("knows which kinds have someone blocked behind them", () => {
+    expect(alertIsBlocking("approval")).toBe(true);
+    expect(alertIsBlocking("question")).toBe(true);
+    for (const kind of ["done", "routine-failed", "takeover", undefined, "something-new"]) {
+      expect(alertIsBlocking(kind)).toBe(false);
+    }
   });
 });
 
@@ -744,6 +758,155 @@ describe("watchHarnessNotifications", () => {
     expect(cursors[0]).toBeNull();
     expect(cursors[1]).toBe("stream-1:1");
   }, 15_000);
+
+  it("sends a queued approval before reports that were queued first", async () => {
+    // The delay this queue exists to prevent: an approval arriving behind a
+    // report whose retry ladder is mid-backoff waits out that whole ladder.
+    const gate = deferred();
+    const delivered: (string | undefined)[] = [];
+    const frames = [
+      notifyFrameWithBody("done", "first"),
+      notifyFrameWithBody("done", "second"),
+      notifyFrameWithBody("done", "third"),
+      notifyFrameWithBody("approval", "urgent"),
+    ].join("");
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "phone", token: "aa".repeat(32) }],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(frames, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async (_config, _token, alert) => {
+        if (delivered.length === 0) {
+          gate.started = true;
+          await gate.promise;
+        }
+        delivered.push(alert.body);
+        return { ok: true, status: 200, attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (!gate.started && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    gate.resolve();
+    while (delivered.length < 4 && Date.now() - started < 4000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    // "first" was already in flight; the approval jumps the two reports
+    // that queued behind it.
+    expect(delivered).toEqual(["first", "urgent", "second", "third"]);
+  });
+
+  it("drops a report before an approval when a phone's backlog is full", async () => {
+    const gate = deferred();
+    const delivered: (string | undefined)[] = [];
+    const frames = [
+      notifyFrameWithBody("done", "block"),
+      notifyFrameWithBody("approval", "needs you"),
+      notifyFrameWithBody("done", "report one"),
+      notifyFrameWithBody("done", "report two"),
+    ].join("");
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "phone", token: "aa".repeat(32) }],
+      config: testConfig(),
+      maxQueuedPerDevice: 2,
+      fetchImpl: async () =>
+        new Response(frames, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async (_config, _token, alert) => {
+        if (delivered.length === 0) {
+          gate.started = true;
+          await gate.promise;
+        }
+        delivered.push(alert.body);
+        return { ok: true, status: 200, attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (!gate.started && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    gate.resolve();
+    while (delivered.length < 3 && Date.now() - started < 4000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    // Three queued behind "block" with room for two: the approval survives
+    // and the oldest report is the one that goes.
+    expect(delivered).toEqual(["block", "needs you", "report two"]);
+    expect(watch.health().dropped).toBe(1);
+  });
+
+  it("names the rejected token when it retires one", async () => {
+    // A phone can register a replacement while an older send is in flight;
+    // the registry compares before clearing, and cannot unless it is told
+    // which token was actually refused.
+    const retired: { deviceId: string; token: string }[] = [];
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "phone", token: "aa".repeat(32) }],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(notifyFrame("approval"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      send: async () => ({ ok: false, status: 410, reason: "Unregistered", attempts: 1 }),
+      forgetToken: (deviceId, token) => retired.push({ deviceId, token }),
+    });
+    const started = Date.now();
+    while (retired.length === 0 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(retired).toEqual([{ deviceId: "phone", token: "aa".repeat(32) }]);
+  });
+
+  it("notices a rotated key while the stream stays open", async () => {
+    // The re-check used to ride on the reconnect, so a sidecar whose harness
+    // stays up for days never looked at the key file again.
+    let stamp = "key-v1";
+    let loads = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [],
+      loadConfig: () => {
+        loads += 1;
+        return testConfig();
+      },
+      keyStamp: () => stamp,
+      keyRecheckMs: 10,
+      // A stream that never ends and never errors: without the timer there
+      // is no second trip through the key check at all.
+      fetchImpl: async () =>
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start() {
+              /* stays open */
+            },
+          }),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+    });
+    const started = Date.now();
+    while (loads === 0 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    stamp = "key-v2";
+    while (loads < 2 && Date.now() - started < 4000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(loads).toBe(2);
+  });
 
   it("stays off, and stays quiet, when the sender is pinned off", () => {
     const watch = watchHarnessNotifications({

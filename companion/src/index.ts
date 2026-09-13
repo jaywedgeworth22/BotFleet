@@ -147,8 +147,8 @@ const pushWatch = watchHarnessNotifications({
   harnessPort: HARNESS_PORT,
   connectedIds: connectedDevices.ids,
   tokensForDisconnected: () => devices.pushTokens(),
-  forgetToken: (id) => {
-    devices.clearPushToken(id);
+  forgetToken: (id, token) => {
+    devices.clearPushToken(id, token);
   },
 });
 const proxy = createProxyHandler({

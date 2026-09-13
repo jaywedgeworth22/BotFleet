@@ -356,6 +356,7 @@ function page(): string {
   <section id="where"></section>
   <section id="pair"></section>
   <section id="devices"></section>
+  <section id="push"></section>
 </main>
 <script type="module">
 /** Shorthand for the handful of nodes this page updates. */
@@ -418,6 +419,30 @@ function render(s) {
           (d.cloudDesktopAccess ? "Cloud desktop on" : "Allow cloud desktop") + "</button></div>" +
           "<button data-revoke='" + esc(d.id) + "'>Remove</button></li>").join("") + "</ul>"
       : "<p class=dim>No phones are paired yet.</p>");
+
+  // Closed-app wake is the one thing on this page with no visible symptom
+  // when it breaks: a phone that is paired, reachable and simply never
+  // buzzes looks exactly like a quiet fleet.
+  el("push").innerHTML =
+    "<h2>Closed-app notifications</h2>" +
+    (!s.push
+      ? "<p class=dim>Not reported by this sidecar.</p>"
+      : s.push.keyRejected
+        ? "<p>Apple refused the signing key (<code>" + esc(s.push.keyRejected) + "</code>). " +
+          "Replace the key file to turn pushes back on.</p>"
+        : !s.push.configured
+          ? "<p class=dim>No signing key found, so a phone that is not open will not be woken. " +
+            "The key is looked for again every few minutes.</p>"
+          : "<p>On, for " + s.push.tokensRegistered + " " +
+            (s.push.tokensRegistered === 1 ? "phone" : "phones") + "." +
+            (s.push.lastSentAt ? " Last sent " + ago(s.push.lastSentAt) + "." : " Nothing sent yet.") +
+            "</p>" +
+            (s.push.lastError
+              ? "<p class=dim>Last error: <code>" + esc(String(s.push.lastError)) + "</code> " + ago(s.push.lastErrorAt) + ".</p>"
+              : "") +
+            (s.push.dropped
+              ? "<p class=dim>" + s.push.dropped + " dropped from a full backlog.</p>"
+              : ""));
 
   el("start")?.addEventListener("click", async () => render(await api("/pairing", "POST")));
   el("cancel")?.addEventListener("click", async () => render(await api("/pairing", "DELETE")));
