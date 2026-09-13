@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RuntimeEvent, TurnToolHost } from "../contracts.ts";
 import { recordEvents } from "../testing/events.ts";
+import { startFakeOpenAiServer } from "../testing/fake-openai-server.ts";
 import { observeRuntimeEvent, resetSentryAiForTests, type SentryAiSink } from "../sentry-ai.ts";
 import { costUsd } from "./chat-completions/pricing.ts";
 import {
@@ -485,8 +486,12 @@ describe("MinimaxDriver", () => {
     await instance.dispose();
   });
 
-  it("a 502 from chat/completions settles error:upstream_outage, so the fallback chain is consulted", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("bad gateway", { status: 502 })));
+  it("a 502 from chat/completions settles error:upstream_outage after three attempts, so the fallback chain is consulted", async () => {
+    // A 502 is retried now — but a PERSISTENT one must still reach the
+    // same terminal classification it always did, or model-fallback.ts
+    // never learns the upstream is out.
+    const fetchMock = vi.fn(async () => new Response("bad gateway", { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
     const instance = await MinimaxDriver.create({
       instanceId: "minimax-502",
       displayName: "MiniMax",
@@ -500,9 +505,97 @@ describe("MinimaxDriver", () => {
     const completed = await recorder.until((event) => event.type === "turn.completed");
 
     expect(completed).toMatchObject({ ok: false, stopReason: "error:upstream_outage" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(recorder.events.filter((e) => e.type === "turn.retrying").map((e) => e.attempt)).toEqual([1, 2]);
+    // still ONE terminal event and ONE error chip across all three tries
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.filter((e) => e.type === "runtime.error")).toHaveLength(1);
     recorder.stop();
     await instance.dispose();
-  });
+  }, 30_000);
+
+  it("rides out a 502 on the wire and settles the turn the retry answered", async () => {
+    // The end-to-end shape of the same policy: a real socket, a real
+    // non-2xx response, and a retry that re-sends a byte-identical body.
+    const server = await startFakeOpenAiServer();
+    try {
+      server.queueCompletion({ kind: "json", status: 502, body: { error: "bad gateway" } });
+      server.queueCompletion({
+        kind: "sse",
+        frames: [
+          JSON.stringify({ choices: [{ delta: { content: "recovered" } }] }),
+          JSON.stringify({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 4 } }),
+          "[DONE]",
+        ],
+      });
+      const instance = await MinimaxDriver.create({
+        instanceId: "minimax-wire-retry",
+        displayName: "MiniMax",
+        enabled: true,
+        config: decodeMinimaxConfig({ url: server.url }),
+        environment: { MINIMAX_API_KEY: "secret" },
+      });
+      const recorder = recordEvents(instance.adapter);
+
+      await instance.adapter.sendTurn({ threadId: "thread-wire-retry", text: "hi" });
+      const completed = await recorder.until((event) => event.type === "turn.completed");
+
+      // the usage that counts is the attempt that worked
+      expect(completed).toMatchObject({ ok: true, stopReason: "end_turn", usage: { input: 11, output: 4 } });
+      const posts = server.requests.filter((r) => r.method === "POST");
+      expect(posts).toHaveLength(2);
+      // the retry re-sends the same prefix — the model sees one turn, not
+      // a transcript that grew a round while nobody was looking
+      expect(posts[1].body).toEqual(posts[0].body);
+      expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(1);
+      expect(recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "assistant_text")).toHaveLength(1);
+      recorder.stop();
+      await instance.dispose();
+    } finally {
+      await server.close();
+    }
+  }, 30_000);
+
+  it("never retries a stream that already showed the person text", async () => {
+    // The duplicate-output hazard, on the wire: one delta reaches the bus
+    // and THEN the socket dies.  Retrying would replay "half an " on top
+    // of itself.
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls += 1;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "half an " } }] })}\n\n`),
+            );
+            setTimeout(() => controller.error(new Error("connection reset by peer")), 5);
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-partial",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread-partial", text: "hi" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    // the partial text stays on the bus, and nothing replayed it
+    expect(recorder.events.filter((e) => e.type === "content.delta").map((e) => e.delta)).toEqual(["half an "]);
+    expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(0);
+    expect(calls).toBe(1);
+    expect(completed).toMatchObject({ ok: false, stopReason: "error" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    recorder.stop();
+    await instance.dispose();
+  }, 20_000);
 
   it("forwards turn.tools to the API in OpenAI function-calling shape", async () => {
     let body: any;
