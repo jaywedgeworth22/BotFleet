@@ -156,7 +156,6 @@ import {
   type RuntimeEvent,
 } from "./contracts.ts";
 import { buildTurnTools } from "./turn-tools.ts";
-import { isToolCallsStopReason, sendTurnWithToolLoop } from "./tool-executor.ts";
 import { createTurnToolHost } from "./tools/host.ts";
 import { createPermissionBroker, type ApprovalAnswerSource } from "./tools/approvals.ts";
 import { listAgentsResponse } from "./tools/agents.ts";
@@ -584,7 +583,6 @@ export function askBotAndWait(targetBotId: string, message: string, depth: numbe
       if (e.type === "item.completed" && e.itemType === "assistant_text") {
         text += (text ? "\n" : "") + e.text;
       } else if (e.type === "turn.completed") {
-        if (isToolCallsStopReason(e.stopReason)) return;
         finish(text || "(the bot finished without a text reply)");
       }
     });
@@ -1548,9 +1546,7 @@ async function reviewPermissionCard(args: {
 bus.subscribe((event: RuntimeEvent) => {
   if (event.type === "request.opened") watchdog.setWaitingOnHuman(event.threadId, true);
   else if (event.type === "request.resolved") watchdog.setWaitingOnHuman(event.threadId, false);
-  else if (event.type === "turn.completed") {
-    if (!isToolCallsStopReason(event.stopReason)) watchdog.settle(event.threadId);
-  }
+  else if (event.type === "turn.completed") watchdog.settle(event.threadId);
   else watchdog.touch(event.threadId);
 });
 
@@ -2021,7 +2017,6 @@ bus.subscribe((event: RuntimeEvent) => {
     case "turn.completed": {
       const completionToken = Symbol(event.turnId);
       const completionFold = (async () => {
-      if (isToolCallsStopReason(event.stopReason)) return;
       const settledOwner = activeTurnOwners.settle(event.threadId, event.providerInstanceId);
       const reply = lastReply.get(event.threadId) ?? "";
       lastReply.delete(event.threadId);
@@ -2416,10 +2411,11 @@ bus.subscribe((event: RuntimeEvent) => {
   if (event.type === "turn.completed" || event.type === "session.exited") return void repeats.settle(event.threadId);
   let key: string | null = null;
   if (event.type === "item.started" && event.itemType === "tool") {
-    // a title with more than a bare identifier is a call with arguments
-    // (ACP: "echo hi", "Read src/x.ts"); a bare "Bash" is not countable
-    const title = event.title ?? "";
-    if (/\s|\//.test(title.trim())) key = callKey("tool", title);
+    const title = (event.title ?? "").trim();
+    if (event.arguments != null && title) key = callKey(title, event.arguments);
+    // A title with more than a bare identifier is a call with arguments
+    // (ACP: "echo hi", "Read src/x.ts"); a bare "Bash" is not countable.
+    else if (/\s|\//.test(title)) key = callKey("tool", title);
   } else if (event.type === "request.opened" && event.requestType === "permission") key = callKey(event.tool, event.summary);
   if (!key) return;
   const { threshold } = repeats.record(event.threadId, key);
@@ -2485,7 +2481,6 @@ const providerReloadDelegationDrains = new Set<string>();
 
 bus.subscribe((event: RuntimeEvent) => {
   if (event.type !== "turn.completed") return;
-  if (isToolCallsStopReason(event.stopReason)) return;
   // A turn that failed or was interrupted drops its queue rather than
   // firing it later: the user who hit Stop does not expect the delegations
   // that turn queued to run anyway, minutes later, on an unrelated turn.
@@ -2510,7 +2505,6 @@ bus.subscribe((event: RuntimeEvent) => {
 // drains too.
 bus.subscribe((event: RuntimeEvent) => {
   if (event.type !== "turn.completed") return;
-  if (isToolCallsStopReason(event.stopReason)) return;
   if (providerReloadInProgress) return;
   drainQueuedSends();
   drainRoomQueue();
@@ -3266,18 +3260,8 @@ async function startTurn(
       if (providerReloadInProgress) await waitForProviderReloads();
       if (!dispatchStillCurrent()) return;
       watchdog.watch(threadId, bot.id);
-      // HTTP drivers (MiniMax, OpenAI-compatible) cannot spawn MCP servers
-      // and so cannot run the model's tool calls themselves — the model
-      // asks for a tool, the driver emits `item.started` with the call,
-      // and the harness has to make the call and re-feed the result.
-      // `sendTurnWithToolLoop` is that re-feed loop; CLI drivers manage
-      // their own loop and call `instance.adapter.sendTurn` directly.
-      const isHttpDriver =
-        instance.driverKind === "minimax" || instance.driverKind === "openai-compat";
-      // A driver that runs the loop itself is dispatched on the SAME line a
-      // CLI driver is: one sendTurn, one terminal event, the bus fold does
-      // the rest.  The harness-side re-feed below is what remains for the
-      // HTTP drivers that have not moved yet.
+      // HTTP chat-completions drivers run their own model-to-tool rounds and
+      // emit the same single terminal event as CLI drivers.
       const usesDriverToolLoop = instance.adapter.capabilities.toolLoop === true;
       // One catalog, used twice: what the model is told it has, and what the
       // host will actually run.  Deriving both from the same call is what
@@ -3353,11 +3337,9 @@ async function startTurn(
             boxAgent: instance.driverKind === "boxAgent",
             hostPlatform: process.platform,
           }) +
-          // gated on the integration AND the driver: the hint only goes to
-          // a bot whose driver actually mounted the tools.  An HTTP driver
-          // has no MCP server, so a Composio hint would invite wasted
-          // calls the executor can only return "not wired" to.
-          (integrations.composio && !isHttpDriver
+          // `integrations.composio` exists only when the selected driver
+          // declared and mounted that capability above.
+          (integrations.composio
             ? " The user's connected apps (Gmail, Calendar, Slack, Notion, and the rest) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Reach for them before telling the user you have no access to a service."
             : "") +
           (coordinationPrompt ? ` ${coordinationPrompt}` : "") +
@@ -3382,19 +3364,11 @@ async function startTurn(
         integrations,
         cwd,
       };
-      if (isHttpDriver && !usesDriverToolLoop) {
-        await sendTurnWithToolLoop(instance, turnInput, {
-          threadId,
-          fromBotId: bot.id,
-          commsDepth,
-        });
-      } else {
-        const started = await instance.adapter.sendTurn(turnInput);
-        // A driver may settle before launch (for example, a failed capability
-        // preflight).  Its terminal event still drives fallback and cleanup,
-        // but it did not make this engine the thread's latest dispatcher.
-        if (started.dispatched === false) return;
-      }
+      const started = await instance.adapter.sendTurn(turnInput);
+      // A driver may settle before launch (for example, a failed capability
+      // preflight).  Its terminal event still drives fallback and cleanup,
+      // but it did not make this engine the thread's latest dispatcher.
+      if (started.dispatched === false) return;
       // dispatched: the rewind is spent, and the old cursors are dead
       if (!activeTurnOwners.isLatest(threadId, dispatchOwner.dispatchId)) return;
       if (rewound) store.patchBot(bot.id, { rewound: false, resumeCursors: {} });
@@ -4573,19 +4547,9 @@ async function runGroupMemberTurn(
     renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) +
     installedPlaybookInstructions(text, bot.playbooks);
 
-  // The SAME catalog and the SAME host the 1:1 dispatch builds, from the
-  // same two calls — `buildTurnTools` for what the model is told it has,
-  // `createTurnToolHost` for what will actually run.  Until now this path
-  // called `sendTurn` bare, so a room was the one place a driver-loop bot
-  // was handed a prompt naming list_bots and ask_bot with no way to call
-  // either.  A CLI engine is unaffected: it ignores `tools` here exactly as
-  // it does on the 1:1 path, and never gets a host at all.  Gated on
-  // `capabilities.toolLoop` for the same reason the host below is: an HTTP
-  // driver without a tool loop (grok.ts, openai-compat.ts) has no adapter
-  // side executor and the room path never runs the harness-side re-feed
-  // loop the 1:1 path uses for those drivers (`sendTurnWithToolLoop`), so
-  // handing it a catalog here would let the model call a tool nothing can
-  // ever run — the turn settles on a partial reply instead of an error.
+  // Direct and room turns share the catalog and host.  Only driver-loop
+  // engines receive HTTP tool definitions; other engines mount their own
+  // integrations or have no tool executor for this surface.
   const roomTurnTools =
     instance.adapter.capabilities.toolLoop === true ? buildTurnTools(integrations) : [];
   // `commsDepth: hop` — the room's own hop, not zero.  The catalog above

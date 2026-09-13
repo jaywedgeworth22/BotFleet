@@ -17,6 +17,10 @@ import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS }
 import { appendNative } from "./native.ts";
 import { parseToolArguments, toolFields } from "../tool-fields.ts";
 
+import type { TurnUsage } from "./chat-completions/loop.ts";
+import { addTurnUsage, toTurnUsage } from "./chat-completions/usage.ts";
+import { httpErrorFor } from "./chat-completions/errors.ts";
+
 const DRIVER_KIND = "grok";
 const DEFAULT_URL = "https://api.x.ai/v1";
 
@@ -74,12 +78,12 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
     const complete = async (
       messages: any[],
       model: string,
-      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
-    ): Promise<{ text: string; tool_calls?: any[]; usage: { input: number; output: number } | null }> => {
+      opts: { stream: boolean; tools?: any[]; signal?: AbortSignal; onUsage?: (usage: TurnUsage) => void; onDelta?: (d: string, streamKind?: string) => void; onToolCallDelta?: (index: number, id?: string, name?: string, args?: string) => void },
+    ): Promise<{ text: string; tool_calls?: any[]; usage: TurnUsage | null }> => {
       const res = await fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers: { authorization: `Bearer ${apiKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ model, messages, stream: opts.stream, ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools } : {}) }),
+        body: JSON.stringify({ model, messages, stream: opts.stream, ...(opts.stream ? { stream_options: { include_usage: true } } : {}), ...(opts.tools && opts.tools.length > 0 ? { tools: opts.tools } : {}) }),
         signal: opts.signal
           ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
           : AbortSignal.timeout(120_000),
@@ -94,12 +98,12 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           text: json.choices?.[0]?.message?.content ?? "",
           tool_calls: json.choices?.[0]?.message?.tool_calls,
           usage: json.usage
-            ? { input: json.usage.prompt_tokens ?? 0, output: json.usage.completion_tokens ?? 0 }
+            ? toTurnUsage(json.usage)
             : null,
         };
       }
       let text = "";
-      let usage: { input: number; output: number } | null = null;
+      let usage: TurnUsage | null = null;
       let streamToolCalls: any[] = [];
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
@@ -139,23 +143,36 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
           }
         }
         if (chunk.usage) {
-          usage = { input: chunk.usage.prompt_tokens ?? 0, output: chunk.usage.completion_tokens ?? 0 };
+          usage = toTurnUsage(chunk.usage);
+          opts.onUsage?.(usage);
+        }
+        if (chunk.error) {
+          const status = chunk.error.code ?? chunk.error.status;
+          if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599) {
+            throw httpErrorFor(status, "");
+          }
+          throw new Error("upstream reported a streaming error");
         }
       };
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) {
-          buf += decoder.decode();
-          if (buf.trim()) takeSseLine(buf.trim());
-          break;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            buf += decoder.decode();
+            if (buf.trim()) takeSseLine(buf.trim());
+            break;
+          }
+          buf += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) !== -1) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            takeSseLine(line);
+          }
         }
-        buf += decoder.decode(value, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          takeSseLine(line);
-        }
+      } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
       }
       return { text, usage, tool_calls: streamToolCalls.length > 0 ? streamToolCalls : undefined };
     };
@@ -207,7 +224,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         }),
         { role: "user", content: turn.text },
       ];
-      appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: { model: turn.model, messages } });
+      appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: { model: turn.model, messageCount: messages.length } });
 
       emit({ ...base(threadId, turnId), type: "turn.started" });
       emit({ ...base(threadId, turnId), type: "session.started", sessionId: null, model: turn.model ?? MODELS.default });
@@ -220,12 +237,15 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
 
       (async () => {
         let attempt = 0;
+        let totalUsage: TurnUsage | undefined;
         for (;;) {
+          let attemptUsage: TurnUsage | null = null;
           try {
             const { text, usage, tool_calls } = await complete(messages, turn.model || MODELS.default, {
               stream: true,
               tools: openAiTools,
               signal: abort.signal,
+              onUsage: (usage) => { attemptUsage = usage; },
               onDelta: (delta) => {
                 streamedText = true;
                 emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
@@ -251,7 +271,8 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
                 });
               },
             });
-            appendNative(threadId, { dir: "in", source: "xai.chat.completions", msg: { text, usage } });
+            totalUsage = addTurnUsage(totalUsage, usage);
+            appendNative(threadId, { dir: "in", source: "xai.chat.completions", msg: { textLength: text.length, usage } });
             if (text.trim()) {
               emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
             }
@@ -275,27 +296,37 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
                   type: "item.completed",
                   itemType: "tool",
                   itemId: tc.id,
-                  ok: true,
+                  ok: false,
+                  detail: "Grok cannot execute tools on this turn",
                 });
               }
             }
-            if (usage) {
-              emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...usage });
+            if (totalUsage) {
+              emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...totalUsage });
             }
             active.delete(threadId);
             const toolNames = ((tool_calls as any[] | undefined) ?? [])
               .map((tc: any) => tc?.function?.name)
               .filter(Boolean)
               .join(", ");
+            if ((tool_calls?.length ?? 0) > 0) {
+              emit({
+                ...base(threadId, turnId),
+                type: "runtime.error",
+                message: `Grok requested unavailable tools${toolNames ? `: ${toolNames}` : ""}`,
+              });
+            }
             emit({
               ...base(threadId, turnId),
               type: "turn.completed",
-              ok: true,
-              stopReason: toolNames ? `tool_calls: ${toolNames}` : null,
+              ok: (tool_calls?.length ?? 0) === 0,
+              stopReason: (tool_calls?.length ?? 0) > 0 ? "error" : null,
               cost: null,
+              ...(totalUsage ? { usage: totalUsage } : {}),
             });
             return;
           } catch (e) {
+            totalUsage = addTurnUsage(totalUsage, attemptUsage);
             const aborted = (e as Error).name === "AbortError";
             const failure = e instanceof Error ? e : { text: String(e) };
             const verdict = classifyError(failure);
@@ -319,6 +350,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
                   ok: false,
                   stopReason: "interrupted",
                   cost: null,
+                  ...(totalUsage ? { usage: totalUsage } : {}),
                 });
                 return;
               }
@@ -334,6 +366,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
               ok: false,
               stopReason: aborted ? "interrupted" : "error",
               cost: null,
+              ...(totalUsage ? { usage: totalUsage } : {}),
             });
             return;
           }

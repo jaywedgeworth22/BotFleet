@@ -81,6 +81,64 @@ describe("GrokDriver turns (fake fetch)", () => {
     });
   });
 
+  it("rejects an unexpected tool call instead of reporting unexecuted work as successful", async () => {
+    script = [{ sse: [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"search","arguments":"{\\"query\\":\\"report\\"}"}}]}}]}',
+      "data: [DONE]",
+      "",
+    ].join("\n") }];
+    await create();
+
+    await instance.adapter.sendTurn({ threadId: "t-unavailable-tool", text: "find it" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events).toContainEqual(expect.objectContaining({
+      type: "item.completed",
+      itemType: "tool",
+      itemId: "call-1",
+      ok: false,
+      detail: "Grok cannot execute tools on this turn",
+    }));
+    expect(recorder.events).toContainEqual(expect.objectContaining({
+      type: "runtime.error",
+      message: "Grok requested unavailable tools: search",
+    }));
+    expect(completed).toMatchObject({ ok: false, stopReason: "error" });
+    expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+  });
+
+  it("requests streamed usage and retains each reported attempt once across retry", async () => {
+    const first = { choices: [], usage: { prompt_tokens: 10, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 6 } } };
+    script = [
+      { sse: [first, first, { error: { code: 503, message: "private upstream request" } }].map((frame) => `data: ${JSON.stringify(frame)}`).join("\n") },
+      { sse: [
+        { choices: [{ delta: { content: "done" } }] },
+        { choices: [], usage: { prompt_tokens: 20, completion_tokens: 6, prompt_tokens_details: { cached_tokens: 8 } } },
+      ].map((frame) => `data: ${JSON.stringify(frame)}`).join("\n") },
+    ];
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-usage-retry", text: "go" });
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: true, usage: { input: 30, output: 10, cachedInput: 14 } });
+    expect(calls).toBe(2);
+    expect(requestBodies.every((body) => body.stream_options?.include_usage === true)).toBe(true);
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(JSON.stringify(recorder.events)).not.toContain("private upstream request");
+  });
+
+  it("fails a partial SSE error truthfully and keeps its reported cached usage", async () => {
+    script = [{ sse: [
+      { choices: [{ delta: { content: "partial" } }] },
+      { choices: [], usage: { prompt_tokens: 20, completion_tokens: 9, prompt_tokens_details: { cached_tokens: 6 } }, error: { code: 503, message: "private error body" } },
+    ].map((frame) => `data: ${JSON.stringify(frame)}`).join("\n") }];
+    await create();
+    await instance.adapter.sendTurn({ threadId: "t-usage-error", text: "go" });
+    const completed = await recorder.until((e) => e.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: false, stopReason: "error", usage: { input: 20, output: 9, cachedInput: 6 } });
+    expect(calls).toBe(1);
+    expect(JSON.stringify(recorder.events)).not.toContain("private error body");
+  });
+
   it("sends transcript tool history and the current prompt exactly once", async () => {
     script = [];
     await create();
