@@ -93,7 +93,7 @@ describe("both lanes derive from the same records", () => {
       httpToolDefinitions(gate()).find((tool) => tool.name === "propose_routine")!.parameters,
     ];
     for (const schema of schemas) {
-      const timeZone = schema.properties.schedule.properties.timeZone;
+      const timeZone = (schema.properties as any).schedule.properties.timeZone;
       expect(timeZone.description).toContain("IANA timezone");
       expect(timeZone.description).toContain(expected);
     }
