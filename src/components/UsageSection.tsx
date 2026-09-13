@@ -18,7 +18,8 @@ import { buildUsageConfigPatch } from "@/lib/usage-config";
 import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, quotaLinesSummary, usageWindowLines, windowHeadlines } from "@/lib/quota-display";
 import {
   antigravityQuotaCapped,
-  antigravityQuotaWindows,
+  antigravityDisplayWindows,
+  isHiddenQuotaEngine,
   isBotFleetQuotaWindow,
   isMiniMaxVideoQuotaWindow,
 } from "@/lib/usage-monitor-quota";
@@ -330,7 +331,7 @@ export function UsageSection() {
       >
         <div className="flex flex-col divide-y divide-hairline/20">
           {state.instances.filter((instance) => {
-            if (instance.enabled === false) return false;
+            if (instance.enabled === false || isHiddenQuotaEngine(instance.driverKind)) return false;
             const isDeepSeek =
               instance.driverKind === "deepseekAgent" ||
               instance.driverKind === "deepseek";
@@ -374,17 +375,17 @@ export function UsageSection() {
               : [];
             const instanceWindows = allInstanceWindows.filter((window) => !miniMaxVideoWindows.includes(window));
             const usageMonitorAGWindows = instance.instanceId === "antigravity"
-              ? antigravityQuotaWindows(botFleetQuotaWindows)
+              ? antigravityDisplayWindows(botFleetQuotaWindows, agModels, antigravityQuota?.timestamp)
               : [];
             const hasUsageMonitorAG = usageMonitorAGWindows.length > 0;
             const headlines = windowHeadlines(instanceWindows);
             const windowLines = usageWindowLines(instanceWindows);
-            const planSkip = instanceWindows.some((window) => isPlanLevelSkip(window));
+            const planSkip = !hasUsageMonitorAG && instanceWindows.some((window) => isPlanLevelSkip(window));
             const agExhausted = agGroups.filter((line) => line.exhausted);
             // The cap verdict accounts for each shared Antigravity pool:
             // both pools must have an exhausted period before the engine is capped.
             const isCapped = wildcardCap || planSkip || (hasUsageMonitorAG
-              ? antigravityQuotaCapped(botFleetQuotaWindows)
+              ? antigravityQuotaCapped(usageMonitorAGWindows)
               : agGroups.length > 0
                 ? agExhausted.length === agGroups.length
                 : instanceCooldowns.some((q) => q.model === "*"));

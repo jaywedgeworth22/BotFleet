@@ -1,4 +1,4 @@
-import { formatResetCountdown, type QuotaDisplayLine } from "./quota-display";
+import { formatResetCountdown, isGeminiQuotaModel, type QuotaDisplayLine, type QuotaDisplayModel } from "./quota-display";
 
 export type UsageMonitorQuotaWindow = {
   id: string;
@@ -62,6 +62,40 @@ export function isBotFleetQuotaWindow(window: UsageMonitorQuotaWindow): boolean 
     return key !== "openai" || /codex|chatgpt/i.test(`${window.sourceApp ?? ""} ${window.label}`);
   }
   return false;
+}
+
+/** Unused engines stay hidden even when old spend or local cooldowns exist. */
+export function isHiddenQuotaEngine(driverKind: string): boolean {
+  const key = driverKind.toLowerCase().replace(/[^a-z0-9]/g, "").replace(/agent$/, "");
+  return ["kimi", "moonshot", "geminicli", "githubcopilot", "copilot", "windsurf", "grokbot"].includes(key);
+}
+
+/** Legacy Antigravity observations report only the 5-hour pool.  Never turn
+ *  monthly prompt credits into a subscription percentage or borrow weekly
+ *  readings from a different account/source. */
+export function antigravityDisplayWindows(
+  windows: UsageMonitorQuotaWindow[],
+  models: QuotaDisplayModel[] = [],
+  occurredAt?: string,
+): UsageMonitorQuotaWindow[] {
+  const authoritative = antigravityQuotaWindows(windows);
+  if (authoritative.length > 0) return authoritative;
+  const legacy = models.filter((model) => !model.isAutocompleteOnly).map((model) => {
+    const fraction = model.remainingPercentage;
+    const resetAt = model.resetTime && Number.isFinite(Date.parse(model.resetTime)) ? model.resetTime : null;
+    const expired = resetAt !== null && Date.parse(resetAt) <= Date.now();
+    const percent = expired ? null : model.isExhausted ? 0
+      : typeof fraction === "number" && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1 ? fraction * 100 : null;
+    return {
+      id: `antigravity-local:${model.modelId}`, provider: "google-antigravity", sourceApp: "antigravity-local",
+      label: `${isGeminiQuotaModel(model) ? "Gemini Models" : "Third-Party Models"} · 5-hour`,
+      window: "5h", remainingPercent: percent, resetAt, skip: false, occurredAt,
+    };
+  });
+  return antigravityQuotaWindows(legacy.length > 0 ? legacy : [{
+    id: "antigravity-unreported", provider: "google-antigravity", label: "Gemini Models · 5-hour",
+    window: "5h", remainingPercent: null, resetAt: null, skip: false,
+  }]);
 }
 
 type AntigravityPool = "gemini" | "third-party";

@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   antigravityQuotaHeadlines,
+  antigravityDisplayWindows,
+  isHiddenQuotaEngine,
   antigravityQuotaCapped,
   antigravityQuotaLines,
   antigravityQuotaWindows,
@@ -26,6 +28,28 @@ function window(overrides: Partial<UsageMonitorQuotaWindow>): UsageMonitorQuotaW
 }
 
 describe("Usage Monitor BotFleet quota integration", () => {
+  it("keeps legacy Antigravity in four windows with unknown weekly quotas", () => {
+    const rows = antigravityDisplayWindows([], [
+      { label: "Gemini Pro", modelId: "gemini-pro", remainingPercentage: 0.7, isExhausted: false },
+      { label: "Claude", modelId: "claude-sonnet", remainingPercentage: 0.2, isExhausted: false },
+    ]);
+    expect(rows.map((row) => row.remainingPercent)).toEqual([70, null, 20, null]);
+    expect(rows.map((row) => row.window)).toEqual(["5h", "weekly", "5h", "weekly"]);
+  });
+
+  it("does not fill a partial Usage Monitor account from legacy local models", () => {
+    const rows = antigravityDisplayWindows([window({ label: "Gemini Models · Weekly", window: "weekly", remainingPercent: 42 })], [
+      { label: "Gemini Pro", modelId: "gemini-pro", remainingPercentage: 0.7, isExhausted: false },
+    ]);
+    expect(rows.map((row) => row.remainingPercent)).toEqual([null, 42, null, null]);
+    expect(antigravityDisplayWindows([]).map((row) => row.remainingPercent)).toEqual([null, null, null, null]);
+  });
+
+  it("hides unused engines while retaining Grok CLI and Antigravity", () => {
+    for (const driver of ["kimiAgent", "github-copilot", "gemini-cli", "windsurf", "grok-bot"]) expect(isHiddenQuotaEngine(driver)).toBe(true);
+    for (const driver of ["grokAgent", "grok", "antigravityAgent", "codex", "claudeAgent"]) expect(isHiddenQuotaEngine(driver)).toBe(false);
+  });
+
   it("renders exactly the two Antigravity pools across 5-hour and weekly windows", () => {
     const rows = antigravityQuotaWindows([
       window({ id: "gemini-week", label: "Gemini Models · Weekly", window: "weekly", remainingPercent: 75 }),
