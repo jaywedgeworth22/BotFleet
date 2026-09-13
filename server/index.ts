@@ -56,6 +56,8 @@ import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from 
 import { telemetry } from "./telemetry.ts";
 import { usageQuotaPoller } from "./usage-quota.ts";
 import { getDeepSeekBalance } from "./deepseek-balance.ts";
+import { getMiniMaxBalance } from "./minimax-balance.ts";
+import { loadLocalMiniMaxConfig, resolveMinimaxCredentials } from "./drivers/minimax.ts";
 import { rollingSpendTracker } from "./rolling-spend.ts";
 import {
   lastAntigravityQuotaSnapshot,
@@ -8713,12 +8715,21 @@ const server = createServer(async (req, res) => {
       // returns an error string instead of a balance — the chip reads
       // "balance unavailable", which is the honest answer.
       const deepseek = await getDeepSeekBalance(cfg.deepseek?.key, cfg.deepseek?.url);
+      // MiniMax has no separate "balance-check key" the way DeepSeek does —
+      // it reads the exact same key/region the driver itself already
+      // resolves (instance env → process env → ~/.mmx/config.json), so
+      // there is no new credential surface to configure here.
+      const minimaxLocal = loadLocalMiniMaxConfig();
+      const minimaxKey = resolveMinimaxCredentials({}, minimaxLocal);
+      const minimaxUrl = process.env.MINIMAX_BASE_URL?.trim() || minimaxLocal.url;
+      const minimax = await getMiniMaxBalance(minimaxKey, minimaxUrl);
       return json(res, 200, {
         ok: true,
         cooldowns: quotaCooldowns.list(),
         antigravity: lastAntigravityQuotaSnapshot(),
         windows: usageQuotaPoller.getWindows(),
         deepseek,
+        minimax,
         engineSpend: rollingSpendTracker.getSpend(),
       });
     }

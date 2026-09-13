@@ -14,8 +14,8 @@ import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { minimaxPriceRows } from "@/lib/minimax-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
-import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, quotaLinesSummary, usageWindowLines, windowHeadlines } from "@/lib/quota-display";
-import { isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
+import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, minimaxQuotaLine, quotaLinesSummary, usageWindowLines, windowHeadlines, windowsLabelFromHeadlines } from "@/lib/quota-display";
+import { engineMeterNote, isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
 interface QuotaCooldownInfo {
@@ -57,6 +57,19 @@ interface DeepSeekBalanceView {
   error: string | null;
 }
 
+interface MiniMaxBalanceView {
+  source: "account-balance" | "token-plan" | "unavailable";
+  capExists: boolean;
+  status: "ok" | "near_cap" | "capped" | "unknown";
+  balanceUsd: number | null;
+  remainingPercent: number | null;
+  secondaryRemainingPercent: number | null;
+  windowsLabel?: string;
+  resetsAt: number | null;
+  fetchedAt: number;
+  error: string | null;
+}
+
 function formatCountdown(resetsAt?: number | null): string {
   if (!resetsAt) return "Rolling refresh window";
   const diffMs = resetsAt - Date.now();
@@ -87,6 +100,7 @@ export function UsageSection() {
   const [quotas, setQuotas] = React.useState<QuotaCooldownInfo[]>([]);
   const [antigravityQuota, setAntigravityQuota] = React.useState<AntigravityUsageSnapshot | null>(null);
   const [deepseekBalance, setDeepSeekBalance] = React.useState<DeepSeekBalanceView | null>(null);
+  const [minimaxBalance, setMiniMaxBalance] = React.useState<MiniMaxBalanceView | null>(null);
   const [engineSpend, setEngineSpend] = React.useState<Record<string, { spend5hUsd: number; spend7dUsd: number }>>({});
   const [quotaWindows, setQuotaWindows] = React.useState<Array<{
     id: string;
@@ -154,6 +168,9 @@ export function UsageSection() {
           }
           if (data?.deepseek && typeof data.deepseek === "object") {
             setDeepSeekBalance(data.deepseek);
+          }
+          if (data?.minimax && typeof data.minimax === "object") {
+            setMiniMaxBalance(data.minimax);
           }
           if (data?.engineSpend && typeof data.engineSpend === "object") {
             setEngineSpend(data.engineSpend);
@@ -327,6 +344,7 @@ export function UsageSection() {
               (isDeepSeek ? (engineSpend["deepseek"] ?? engineSpend["deepseekAgent"]) : undefined);
             const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
             const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
+            const isMiniMax = instance.driverKind === "minimax";
             const hasQuotaData =
               Boolean(instance.snapshot.quota?.capped) ||
               Boolean(instance.snapshot.quota?.models && Object.keys(instance.snapshot.quota.models).length > 0) ||
@@ -334,6 +352,11 @@ export function UsageSection() {
               instanceWindows.length > 0 ||
               (instance.instanceId === "antigravity" && (antigravityQuota?.models?.length ?? 0) > 0) ||
               (isDeepSeek && deepseekBalance?.balanceUsd != null) ||
+              // MiniMax's row must render whenever the engine is configured,
+              // not only once it's capped or has spent something — a fresh
+              // Token Plan/pay-as-you-go account with a real capExists
+              // reading counts as "has quota data" on its own.
+              (isMiniMax && Boolean(minimaxBalance?.capExists)) ||
               Boolean(spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0));
             // A configured engine that has gone unavailable — a Box token set
             // but the API unreachable, a login that expired, a CLI that stops
@@ -359,11 +382,14 @@ export function UsageSection() {
             const windowLines = usageWindowLines(instanceWindows);
             const planSkip = instanceWindows.some((window) => isPlanLevelSkip(window));
             const agExhausted = agGroups.filter((line) => line.exhausted);
+            const isMiniMax = instance.driverKind === "minimax";
+            const minimaxRow = isMiniMax ? minimaxBalance : null;
+            const minimaxLine = minimaxRow ? minimaxQuotaLine(minimaxRow) : null;
             // The cap verdict accounts for Antigravity group exhaustion too:
             // the user's complaint was a four-name slice hiding an all-spent
             // group behind a "70% remaining" average. With the two-line
             // summary, an all-spent group reads as exhausted directly.
-            const isCapped = wildcardCap || planSkip || (agGroups.length > 0
+            const isCapped = wildcardCap || planSkip || minimaxRow?.status === "capped" || (agGroups.length > 0
               ? agExhausted.length === agGroups.length
               : instanceCooldowns.some((q) => q.model === "*"));
             // DeepSeek balance only applies to the DeepSeek engine. Surfaced
@@ -394,11 +420,28 @@ export function UsageSection() {
             } else if (spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0)) {
               deepseekStatus = `Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
             }
-            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
+            // Same "quota headline + spend" composition as DeepSeek above,
+            // for MiniMax's own quota/balance line — the only other engine
+            // with both a real quota reading and a real per-turn cost today.
+            let minimaxStatus = minimaxLine;
+            if (isMiniMax && minimaxLine && spend) {
+              minimaxStatus = `${minimaxLine}  ·  Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
+            } else if (isMiniMax && spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0)) {
+              minimaxStatus = `Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
+            }
+            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*") || minimaxRow?.status === "near_cap");
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
             const baseDetailLines = agLines.length > 0 ? agLines : windowLines;
             const detailLines = [...baseDetailLines];
+            if (minimaxRow && minimaxLine) {
+              detailLines.unshift({
+                label: minimaxRow.source === "account-balance" ? "Remaining Balance" : "Token Plan Quota",
+                value: minimaxLine,
+                exhausted: minimaxRow.status === "capped",
+                group: "external" as const,
+              });
+            }
             if (isDeepSeek && deepseekRow && !deepseekRow.error && deepseekRow.balanceUsd != null) {
               detailLines.unshift({
                 label: "Remaining Balance",
@@ -475,9 +518,24 @@ export function UsageSection() {
                   const reset = formatResetCountdown(headline.resetAtMs);
                   return reset ? `${headline.display} ${value} · resets in ${reset}` : `${headline.display} ${value}`;
                 });
-            const allHeadlineLines = deepseekStatus
-              ? [...headlineLines, deepseekStatus]
-              : headlineLines;
+            const allHeadlineLines = [
+              ...headlineLines,
+              ...(deepseekStatus ? [deepseekStatus] : []),
+              ...(minimaxStatus ? [minimaxStatus] : []),
+            ];
+            // Antigravity's own "Gemini"/"Third-Party" summary already names
+            // its windows explicitly, so the combined badge below is only
+            // for the other engines whose windows come through Usage
+            // Monitor (Claude, Codex, Cursor, Kimi, Grok, DSH, DeepSeek) —
+            // generalizing the "5hr" / "5hr/Week" vocabulary antigravity-quota.ts
+            // and minimax-balance.ts already use, instead of leaving it
+            // Antigravity-only.
+            const combinedWindowsLabel = agGroups.length === 0 ? windowsLabelFromHeadlines(headlines) : undefined;
+            // pi, qwen, hermes, opencodeGo and boxAgent have no Usage Monitor
+            // window family at all (quota-window-map.ts's engineMeterNote) —
+            // say so explicitly instead of falling through to generic
+            // "Active and ready for turns" filler.
+            const meterNote = engineMeterNote(instance.driverKind);
             // The engine's real state — capped, partially capped, disabled,
             // or otherwise unavailable — must win over a headline percentage
             // line, not the other way around: a stale "70% available" (or a
@@ -498,6 +556,8 @@ export function UsageSection() {
               ? allHeadlineLines.join("  ·  ")
               : fullSummary
               ? fullSummary
+              : meterNote
+              ? meterNote.copy
               : instance.snapshot.version ? `v${instance.snapshot.version} · Ready` : "Active and ready for turns";
             const open = expandedQuota === instance.instanceId;
 
@@ -515,7 +575,12 @@ export function UsageSection() {
                       <ProviderMark driverKind={instance.driverKind} size={16} iconUrl={instance.iconUrl} />
                     </div>
                     <div className="flex flex-col min-w-0">
-                      <span className="truncate font-medium text-ink">{instance.displayName}</span>
+                      <span className="truncate font-medium text-ink">
+                        {instance.displayName}
+                        {combinedWindowsLabel && (
+                          <span className="ml-1 font-normal text-[11px] text-ink-secondary">({combinedWindowsLabel})</span>
+                        )}
+                      </span>
                       <span className="truncate text-[11.5px] text-ink-secondary">
                         {statusLine}
                       </span>

@@ -316,6 +316,64 @@ export function formatResetCountdown(resetAtMs: number | null, now = Date.now())
   return `${Math.max(minutes, 1)}m`;
 }
 
+export type MiniMaxQuotaStatus = "ok" | "near_cap" | "capped" | "unknown";
+
+/** Structural subset of server/minimax-balance.ts's MiniMaxBalanceSnapshot —
+ *  redeclared rather than imported so this stays a dependency-free pure
+ *  module other UI surfaces can use without pulling in the server client. */
+export type MiniMaxQuotaView = {
+  source: "account-balance" | "token-plan" | "unavailable";
+  status: MiniMaxQuotaStatus;
+  balanceUsd: number | null;
+  remainingPercent: number | null;
+  secondaryRemainingPercent: number | null;
+  resetsAt: number | null;
+};
+
+/** One status vocabulary for MiniMax's quota row, whichever of the two
+ *  undocumented endpoints answered (server/minimax-balance.ts): sentence
+ *  case, "resets in Xh Ym" via the same formatResetCountdown every other
+ *  engine's row already uses. Null when there is nothing worth a line
+ *  (unavailable source, or a response with no usable figures) — the caller
+ *  falls back to its own generic "Active and ready for turns" line, exactly
+ *  like deepseek-balance.ts's contract: an absent/errored figure hides the
+ *  line, it never fabricates one. */
+export function minimaxQuotaLine(row: MiniMaxQuotaView): string | null {
+  if (row.source === "unavailable") return null;
+  const resetPart = row.resetsAt ? ` · resets in ${formatResetCountdown(row.resetsAt)}` : "";
+  if (row.source === "account-balance") {
+    if (row.balanceUsd == null) return null;
+    const amount = row.balanceUsd <= 0 ? "$0.00 remaining" : `$${row.balanceUsd.toFixed(2)} remaining`;
+    if (row.status === "capped") return `at usage cap — balance exhausted${resetPart}`;
+    if (row.status === "near_cap") return `${amount} · near cap`;
+    return amount;
+  }
+  // token-plan: up to two figures, 5h and weekly, same "N% available"
+  // wording windowHeadlines already uses for every other engine's windows.
+  const parts: string[] = [];
+  if (row.remainingPercent != null) parts.push(`5h ${Math.round(row.remainingPercent)}% available`);
+  if (row.secondaryRemainingPercent != null) parts.push(`week ${Math.round(row.secondaryRemainingPercent)}% available`);
+  if (parts.length === 0) return null;
+  return `${parts.join(" · ")}${resetPart}`;
+}
+
+/** Generalizes the "5hr" / "5hr/Week" dual-window badge — previously
+ *  computed only for Antigravity (antigravity-quota.ts) and, since MiniMax's
+ *  Token Plan quota client shipped, MiniMax (server/minimax-balance.ts,
+ *  merged in server/harness/registry.ts) — to any engine whose Usage
+ *  Monitor headlines include a 5h and/or a weekly bucket: Claude, Codex,
+ *  Cursor, Kimi, Grok, DSH and DeepSeek only ever get windows through
+ *  quota-window-map.ts's mapping (established fact, not this file's own
+ *  data), and had no equivalent combined label at all before this. */
+export function windowsLabelFromHeadlines(headlines: WindowHeadline[]): string | undefined {
+  const has5h = headlines.some((h) => h.bucket === "5h");
+  const hasWeekly = headlines.some((h) => h.bucket === "weekly");
+  if (has5h && hasWeekly) return "5hr/Week";
+  if (has5h) return "5hr";
+  if (hasWeekly) return "Week";
+  return undefined;
+}
+
 /** Formats dual-window quota percentage for ModelPicker row.
  *  When both primary (5h) and secondary (weekly/monthly) percentages exist: "(XX%/YY%)".
  *  When only primary exists: "(XX%)" if a windows label exists, or "XX% left" otherwise. */

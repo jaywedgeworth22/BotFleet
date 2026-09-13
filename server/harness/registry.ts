@@ -5,7 +5,9 @@
 // compatible — do not remove it); dispose tears an instance down without
 // touching its siblings.
 import { lastAntigravityQuotaSnapshot, quotaModelsFromSnapshot } from "../antigravity-quota.ts";
+import { loadLocalMiniMaxConfig, resolveMinimaxCredentials } from "../drivers/minimax.ts";
 import { findCliCandidates } from "../env-path.ts";
+import { getMiniMaxBalance } from "../minimax-balance.ts";
 import { quotaCooldowns } from "../model-fallback.ts";
 import type {
   AnyProviderDriver,
@@ -300,13 +302,42 @@ export class ProviderRegistry {
             error: cd.error,
           };
         }
-        let windowsLabel: string | undefined;
         if (inst.instanceId === "antigravity") {
           const agModels = quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot());
           Object.assign(models, agModels);
-          const dual = Object.values(agModels).find((m) => m.windowsLabel?.includes("/"));
-          windowsLabel = dual?.windowsLabel ?? Object.values(agModels)[0]?.windowsLabel;
         }
+        // MiniMax's Token Plan quota (server/minimax-balance.ts) reports the
+        // same per-model 5h + weekly shape antigravity-quota.ts does — cached
+        // internally, so this awaits the network only once per 5 minutes.
+        // A pay-as-you-go account or one with no key resolves instantly to
+        // `models: null` and changes nothing here.
+        if (inst.driverKind === "minimax") {
+          const local = loadLocalMiniMaxConfig();
+          const key = resolveMinimaxCredentials({}, local);
+          const balanceUrl = process.env.MINIMAX_BASE_URL?.trim() || local.url;
+          const balance = await getMiniMaxBalance(key, balanceUrl);
+          if (balance.models) {
+            for (const [id, model] of Object.entries(balance.models)) {
+              models[id] = {
+                capped: (model.remainingPercent ?? 100) <= 0,
+                remainingPercent: model.remainingPercent,
+                secondaryRemainingPercent: model.secondaryRemainingPercent,
+                windowsLabel: model.windowsLabel,
+                resetsAt: model.resetsAt,
+              };
+            }
+          }
+        }
+        // Generalized dual-window badge: pick it from whatever landed in
+        // `models` rather than special-casing one instanceId. Antigravity's
+        // antigravity-usage CLI and MiniMax's Token Plan quota (above) are
+        // the two sources today; either can report a bare "5hr" reading or a
+        // dual "5hr/Week" one, and a model reporting both wins over one that
+        // only reports the shorter window.
+        const modelsWithLabel = Object.values(models).filter((m) => m.windowsLabel);
+        const windowsLabel = modelsWithLabel.length > 0
+          ? modelsWithLabel.find((m) => m.windowsLabel?.includes("/"))?.windowsLabel ?? modelsWithLabel[0].windowsLabel
+          : undefined;
         const catalogIds = inst.models?.options?.map((option) => option.id) ?? [];
         const allCatalogCapped =
           catalogIds.length > 0 && catalogIds.every((id) => models[id]?.capped === true);

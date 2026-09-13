@@ -1,10 +1,23 @@
 // The registry's contract is forward/backward compatibility: a config
 // written by a newer or differently-built app must load as an
 // unavailable shadow, never crash the fleet. These tests pin that.
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { setLastAntigravityQuotaSnapshot } from "../antigravity-quota.ts";
 import { makeFakeDriver } from "../testing/fake-driver.ts";
 import { ProviderRegistry } from "./registry.ts";
+
+// registry.ts resolves MiniMax's key from ~/.mmx/config.json / process env —
+// stubbed here so a real key sitting in either on the machine running these
+// tests can never make describe() reach the real network. getMiniMaxBalance
+// itself is mocked per-test below.
+vi.mock("../drivers/minimax.ts", () => ({
+  loadLocalMiniMaxConfig: () => ({ apiKey: "", url: "https://api.minimax.io/v1", defaultModel: "" }),
+  resolveMinimaxCredentials: () => "test-minimax-key",
+}));
+vi.mock("../minimax-balance.ts", () => ({ getMiniMaxBalance: vi.fn() }));
+
+import { getMiniMaxBalance } from "../minimax-balance.ts";
 
 describe("ProviderRegistry", () => {
   it("creates live instances for known drivers", async () => {
@@ -255,5 +268,114 @@ describe("ProviderRegistry", () => {
 
     expect(fresh.find((i) => i.instanceId === "a")?.displayName).toBe("A v2");
     expect(fresh.find((i) => i.instanceId === "b")?.displayName).toBe("B v1");
+  });
+
+  describe("dual-window quota badge", () => {
+    beforeEach(() => {
+      vi.mocked(getMiniMaxBalance).mockReset();
+    });
+
+    it("still reports Antigravity's own dual '5hr/Week' badge (pinning the pre-generalization behavior)", async () => {
+      setLastAntigravityQuotaSnapshot({
+        timestamp: new Date().toISOString(),
+        models: [{ label: "Gemini 3.1 Pro", modelId: "gemini-3.1-pro-high", remainingPercentage: 0.5, isExhausted: false }],
+        promptCredits: { remainingPercentage: 0.4 },
+      });
+      try {
+        const fake = makeFakeDriver({ kind: "antigravity" });
+        const registry = new ProviderRegistry([fake.driver]);
+        await registry.load({ antigravity: { driver: "antigravity" } });
+        const [described] = await registry.describe();
+        expect(described.snapshot.quota?.windowsLabel).toBe("5hr/Week");
+        expect(described.snapshot.quota?.models?.["gemini-3.1-pro-high"]?.secondaryRemainingPercent).toBe(40);
+      } finally {
+        setLastAntigravityQuotaSnapshot(null);
+      }
+    });
+
+    it("generalizes the dual-window badge to a non-Antigravity engine (MiniMax's Token Plan quota)", async () => {
+      vi.mocked(getMiniMaxBalance).mockResolvedValue({
+        source: "token-plan",
+        capExists: true,
+        status: "ok",
+        balanceUsd: null,
+        remainingPercent: 62,
+        secondaryRemainingPercent: 40,
+        windowsLabel: "5hr/Week",
+        models: {
+          "MiniMax-M3": {
+            remainingPercent: 62,
+            secondaryRemainingPercent: 40,
+            windowsLabel: "5hr/Week",
+            resetsAt: Date.now() + 3_600_000,
+          },
+        },
+        resetsAt: Date.now() + 3_600_000,
+        fetchedAt: Date.now(),
+        error: null,
+      });
+      const fake = makeFakeDriver({ kind: "minimax" });
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ minimax: { driver: "minimax" } });
+      const [described] = await registry.describe();
+      // The regression this pins: before generalizing, windowsLabel was
+      // computed only `if (inst.instanceId === "antigravity")` — a second,
+      // unrelated engine with real dual-window per-model data got no badge
+      // at all, no matter what its own models reported.
+      expect(described.snapshot.quota?.windowsLabel).toBe("5hr/Week");
+      expect(described.snapshot.quota?.models?.["MiniMax-M3"]).toMatchObject({
+        remainingPercent: 62,
+        secondaryRemainingPercent: 40,
+        windowsLabel: "5hr/Week",
+      });
+      expect(getMiniMaxBalance).toHaveBeenCalledWith("test-minimax-key", "https://api.minimax.io/v1");
+    });
+
+    it("falls back to the bare '5hr' badge when only the interval window is known", async () => {
+      vi.mocked(getMiniMaxBalance).mockResolvedValue({
+        source: "token-plan",
+        capExists: true,
+        status: "ok",
+        balanceUsd: null,
+        remainingPercent: 62,
+        secondaryRemainingPercent: null,
+        windowsLabel: "5hr",
+        models: {
+          "MiniMax-M3": { remainingPercent: 62, secondaryRemainingPercent: null, windowsLabel: "5hr", resetsAt: null },
+        },
+        resetsAt: null,
+        fetchedAt: Date.now(),
+        error: null,
+      });
+      const fake = makeFakeDriver({ kind: "minimax" });
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ minimax: { driver: "minimax" } });
+      const [described] = await registry.describe();
+      expect(described.snapshot.quota?.windowsLabel).toBe("5hr");
+    });
+
+    it("leaves windowsLabel undefined for an engine with no dual-window source at all", async () => {
+      vi.mocked(getMiniMaxBalance).mockResolvedValue({
+        source: "unavailable",
+        capExists: false,
+        status: "unknown",
+        balanceUsd: null,
+        remainingPercent: null,
+        secondaryRemainingPercent: null,
+        windowsLabel: undefined,
+        models: null,
+        resetsAt: null,
+        fetchedAt: Date.now(),
+        error: "no key configured",
+      });
+      const fake = makeFakeDriver();
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ a: { driver: "fake" } });
+      const [described] = await registry.describe();
+      expect(described.snapshot.quota?.windowsLabel).toBeUndefined();
+      // A non-MiniMax, non-Antigravity engine must never trigger the
+      // MiniMax balance lookup at all.
+      expect(getMiniMaxBalance).not.toHaveBeenCalled();
+    });
   });
 });
