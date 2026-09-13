@@ -222,7 +222,10 @@ private struct RoutineEditorView: View {
         // The server sends its effective zone even for legacy host-local
         // schedules.  Keep it for truthful display on a phone in another
         // zone, but omit it again when serializing that legacy schedule.
-        let effectiveTimeZone = routine?.schedule.timeZone
+        let effectiveTimeZone = routineEditorTimeZoneIdentifier(
+            effectiveTimeZone: routine?.schedule.timeZone,
+            isNew: routine == nil
+        )
         let editorTimeZone = effectiveTimeZone.flatMap(TimeZone.init(identifier:)) ?? .current
         let time = routineEditorTimeDate(routine?.schedule.time, in: editorTimeZone)
         _dailyTime = State(initialValue: time)

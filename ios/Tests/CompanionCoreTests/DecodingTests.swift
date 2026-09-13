@@ -168,6 +168,14 @@ final class DecodingTests: XCTestCase {
             routineTimeZoneForUpdate(effectiveTimeZone: "America/Chicago", source: "stored"),
             "America/Chicago"
         )
+        let tokyo = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
+        XCTAssertEqual(
+            routineEditorTimeZoneIdentifier(effectiveTimeZone: nil, isNew: true, currentTimeZone: tokyo),
+            "Asia/Tokyo"
+        )
+        XCTAssertNil(
+            routineEditorTimeZoneIdentifier(effectiveTimeZone: nil, isNew: false, currentTimeZone: tokyo)
+        )
     }
 
     func testNotificationTargetRequiresBothExactIds() {

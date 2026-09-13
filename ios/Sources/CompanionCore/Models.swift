@@ -820,6 +820,14 @@ public func routineTimeZoneForUpdate(effectiveTimeZone: String?, source: String?
     source == "host" ? nil : effectiveTimeZone
 }
 
+public func routineEditorTimeZoneIdentifier(
+    effectiveTimeZone: String?,
+    isNew: Bool,
+    currentTimeZone: TimeZone = .current
+) -> String? {
+    effectiveTimeZone ?? (isNew ? currentTimeZone.identifier : nil)
+}
+
 public struct Routine: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var name: String
