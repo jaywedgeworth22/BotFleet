@@ -4,7 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { makeFakeDriver } from "../testing/fake-driver.ts";
-import { ProviderRegistry } from "./registry.ts";
+import { isCustomInstance, ProviderRegistry } from "./registry.ts";
 
 describe("ProviderRegistry", () => {
   it("creates live instances for known drivers", async () => {
@@ -255,5 +255,24 @@ describe("ProviderRegistry", () => {
 
     expect(fresh.find((i) => i.instanceId === "a")?.displayName).toBe("A v2");
     expect(fresh.find((i) => i.instanceId === "b")?.displayName).toBe("B v1");
+  });
+});
+
+describe("isCustomInstance", () => {
+  it("calls an instance custom when it is not its driver's reserved one", () => {
+    // `isCustom` is what puts a Delete button on an engine row and what the
+    // "added by you" callout keys off, so it has to follow the DRIVER, not a
+    // single hard-coded id. MiniMax is the second driver that can carry more
+    // than one instance; before this it could carry them and never say so.
+    expect(isCustomInstance("openai-compat", "openaiCompat")).toBe(false);
+    expect(isCustomInstance("openai-compat", "custom-ollama")).toBe(true);
+    expect(isCustomInstance("minimax", "minimax")).toBe(false);
+    expect(isCustomInstance("minimax", "custom-minimax-china")).toBe(true);
+  });
+
+  it("never calls a single-instance engine custom, whatever its id is", () => {
+    for (const driver of ["claudeAgent", "codex", "boxAgent", "not-a-real-driver"]) {
+      expect(isCustomInstance(driver, "anything-at-all")).toBe(false);
+    }
   });
 });

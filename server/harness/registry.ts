@@ -16,6 +16,21 @@ import type {
   ProviderSnapshot,
 } from "../contracts.ts";
 
+/** The instance id the default fleet reserves for each driver that supports
+ * more than one instance.  Anything else on that driver was added from the
+ * app, which is what `isCustom` reports: the delete button, the "added by
+ * you" callout and the engine rail all key off it.  A driver absent from this
+ * table has exactly one instance, so none of its instances is ever custom. */
+const RESERVED_INSTANCE_ID = new Map<string, InstanceId>([
+  ["openai-compat", "openaiCompat"],
+  ["minimax", "minimax"],
+]);
+
+export function isCustomInstance(driverKind: string, instanceId: InstanceId): boolean {
+  const reserved = RESERVED_INSTANCE_ID.get(driverKind);
+  return reserved !== undefined && instanceId !== reserved;
+}
+
 export interface ShadowInstance {
   instanceId: InstanceId;
   driverKind: string;
@@ -274,7 +289,7 @@ export class ProviderRegistry {
         cliCandidates: candidatesFor(driver),
         fullAuto: this.fullAutoByInstance.get(entry.instanceId) ?? false,
         iconUrl: undefined,
-        isCustom: entry.shadow.driverKind === "openai-compat" && entry.instanceId !== "openaiCompat",
+        isCustom: isCustomInstance(entry.shadow.driverKind, entry.instanceId),
       };
     }
     const inst = entry.live!;
@@ -351,7 +366,7 @@ export class ProviderRegistry {
       cliCandidates: candidatesFor(driver),
       fullAuto: this.fullAutoByInstance.get(inst.instanceId) ?? false,
       iconUrl: inst.iconUrl,
-      isCustom: inst.driverKind === "openai-compat" && inst.instanceId !== "openaiCompat",
+      isCustom: isCustomInstance(inst.driverKind, inst.instanceId),
     };
   }
 

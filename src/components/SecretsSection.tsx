@@ -526,7 +526,11 @@ export function SecretsSection() {
                 <tr key={field.id} className="border-b border-hairline/20">
                   <td className="py-2 pr-3 text-ink">{field.label}</td>
                   <td className="py-2 pr-3">
-                    <SecretSourceBadge source={field.source} infisicalConfigured={vault?.configured ?? false} />
+                    <SecretSourceBadge
+                      source={field.source}
+                      elsewhere={field.elsewhere}
+                      infisicalConfigured={vault?.configured ?? false}
+                    />
                   </td>
                   <td className="py-2 font-mono text-[11.5px] text-ink-secondary">{field.infisicalName}</td>
                 </tr>

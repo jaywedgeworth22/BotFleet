@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createCustomEngine, deleteCustomEngine, type EngineCredentialDeps } from "./custom-engine";
+import {
+  ADD_ENGINE_DRIVERS,
+  addEngineDriverOption,
+  createCustomEngine,
+  customEngineCalloutTitle,
+  deleteCustomEngine,
+  isCustomEngineInstance,
+  validateAddEngine,
+  type EngineCredentialDeps,
+} from "./custom-engine";
 
 describe("createCustomEngine", () => {
   it("never calls setInstanceCredential when there is no bridge (dev/browser fallback)", async () => {
@@ -175,5 +184,62 @@ describe("deleteCustomEngine", () => {
 
     expect(deleteInstance).toHaveBeenCalledWith("custom-y");
     expect(result).toEqual({ credentialClearError: "The operating-system credential store is unavailable" });
+  });
+});
+
+describe("the Add Engine form's driver choice", () => {
+  it("omits the driver entirely for the route's own default", async () => {
+    // An older client never sent one, and the body it did send has to keep
+    // meaning exactly what it meant.
+    const createInstance = vi.fn().mockResolvedValue({ instanceId: "custom-groq" });
+    await createCustomEngine(
+      { createInstance, deleteInstance: vi.fn() },
+      { name: "Groq", endpoint: "https://api.groq.com/openai/v1", driver: "openai-compat", key: "", models: ["m"] },
+    );
+    expect(Object.hasOwn(createInstance.mock.calls[0][0], "driver")).toBe(false);
+  });
+
+  it("sends the driver for a second MiniMax connection", async () => {
+    const createInstance = vi.fn().mockResolvedValue({ instanceId: "custom-minimax-china" });
+    await createCustomEngine(
+      { createInstance, deleteInstance: vi.fn() },
+      { name: "MiniMax China", endpoint: "https://api.minimaxi.com/v1", driver: "minimax", key: "sk-cn", models: [] },
+    );
+    expect(createInstance).toHaveBeenCalledWith(
+      expect.objectContaining({ driver: "minimax", key: "sk-cn", models: [] }),
+    );
+  });
+
+  it("asks for model IDs only where the driver has no catalog of its own", () => {
+    expect(addEngineDriverOption("openai-compat").requiresModels).toBe(true);
+    expect(addEngineDriverOption("minimax").requiresModels).toBe(false);
+    // An unknown driver falls back to the first option rather than rendering
+    // a form with no labels at all.
+    expect(addEngineDriverOption("nonsense")).toBe(ADD_ENGINE_DRIVERS[0]);
+
+    const base = { name: "Second MiniMax", endpoint: "https://api.minimaxi.com/v1" };
+    expect(validateAddEngine({ ...base, driver: "minimax", models: [] })).toBeNull();
+    expect(validateAddEngine({ ...base, driver: "openai-compat", models: [] })).toContain("model ID is required");
+    expect(validateAddEngine({ ...base, driver: "minimax", models: [] , name: "" })).toBe("Engine name is required");
+    expect(validateAddEngine({ ...base, driver: "minimax", models: [], endpoint: " " })).toBe("Endpoint URL is required");
+    expect(
+      validateAddEngine({ ...base, driver: "openai-compat", models: Array.from({ length: 16 }, (_, i) => `m${i}`) }),
+    ).toContain("At most 15");
+  });
+
+  it("treats any instance other than a driver's reserved one as added by the operator", () => {
+    expect(isCustomEngineInstance({ driverKind: "minimax", instanceId: "minimax" })).toBe(false);
+    expect(isCustomEngineInstance({ driverKind: "minimax", instanceId: "custom-minimax-china" })).toBe(true);
+    expect(isCustomEngineInstance({ driverKind: "openai-compat", instanceId: "openaiCompat" })).toBe(false);
+    expect(isCustomEngineInstance({ driverKind: "openai-compat", instanceId: "custom-ollama" })).toBe(true);
+    // A single-instance engine is never custom, whatever its id.
+    expect(isCustomEngineInstance({ driverKind: "claudeAgent", instanceId: "claude" })).toBe(false);
+    // The server's own flag still wins when it is set.
+    expect(isCustomEngineInstance({ driverKind: "claudeAgent", instanceId: "claude", isCustom: true })).toBe(true);
+  });
+
+  it("names the engine the operator actually added in the row callout", () => {
+    expect(customEngineCalloutTitle("minimax")).toBe("Added MiniMax Connection.");
+    expect(customEngineCalloutTitle("openai-compat")).toBe("Custom OpenAI-Compatible Engine.");
   });
 });

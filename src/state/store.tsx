@@ -1769,6 +1769,10 @@ export interface SecretFieldRow {
   infisicalName: string;
   inVault: boolean;
   source: "infisical" | "env" | "file" | "none";
+  /** A file outside BotFleet that holds this value when nothing BotFleet
+   * manages does — `~/.mmx/config.json` for the MiniMax key.  Server-probed;
+   * null whenever a managed source already has the value. */
+  elsewhere?: string | null;
   hasValue: boolean;
   hasLocalCopy: boolean;
   managed: boolean;

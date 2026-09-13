@@ -12,7 +12,16 @@ import { EngineGroupLabel } from "./EngineGroupLabel";
 import { ProviderMark } from "./ProviderIcons";
 import { splitEngineRail } from "@/lib/engine-rail";
 import { cn } from "@/lib/cn";
-import { createCustomEngine, deleteCustomEngine, type EngineCredentialDeps } from "@/lib/custom-engine";
+import {
+  ADD_ENGINE_DRIVERS,
+  addEngineDriverOption,
+  createCustomEngine,
+  customEngineCalloutTitle,
+  deleteCustomEngine,
+  isCustomEngineInstance,
+  validateAddEngine,
+  type EngineCredentialDeps,
+} from "@/lib/custom-engine";
 
 interface ProbeResult {
   ok: boolean;
@@ -254,7 +263,7 @@ function EngineRow({
   const isBusy = busyInstanceId !== null;
   const isThisBusy = busyInstanceId === instance.instanceId;
   const hasCli = instance.cli !== undefined || instance.cliDefault !== undefined;
-  const isCustom = Boolean(instance.isCustom) || (instance.driverKind === "openai-compat" && instance.instanceId !== "openaiCompat");
+  const isCustom = isCustomEngineInstance(instance);
 
   // Close the picker when this instance's override changes to anything else
   // — a save from this row, another tab, or the 5-min refresh. The picker
@@ -415,7 +424,7 @@ function EngineRow({
       )}
       {isCustom && (
         <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
-          <strong className="text-ink">Custom OpenAI-Compatible Engine.</strong>
+          <strong className="text-ink">{customEngineCalloutTitle(instance.driverKind)}</strong>
           {"  "}Configured models: {instance.models.options.map((o) => o.label || o.id).join(", ") || "default"}.
         </div>
       )}
@@ -434,6 +443,7 @@ function EngineRow({
 }
 
 function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdded: () => Promise<void> }) {
+  const [driver, setDriver] = useState(ADD_ENGINE_DRIVERS[0].driver);
   const [name, setName] = useState("");
   const [endpoint, setEndpoint] = useState("");
   const [apiKey, setApiKey] = useState("");
@@ -441,6 +451,17 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
   const [iconUrl, setIconUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const option = addEngineDriverOption(driver);
+
+  // Switching engine offers that engine's own endpoint, but only into a
+  // field the person has not typed in yet — retyping over somebody's URL
+  // because they glanced at the other tab would be worse than no help at all.
+  const chooseDriver = (next: string) => {
+    setDriver(next);
+    setError(null);
+    const suggestion = addEngineDriverOption(next).suggestedEndpoint;
+    if (suggestion && !endpoint.trim()) setEndpoint(suggestion);
+  };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -461,24 +482,15 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
   const save = () => {
     const trimmedName = name.trim();
     const trimmedUrl = endpoint.trim();
-    if (!trimmedName) {
-      setError("Engine name is required");
-      return;
-    }
-    if (!trimmedUrl) {
-      setError("Endpoint URL is required");
-      return;
-    }
-    const models = modelsText
-      .split(/[\n,]+/)
-      .map((m) => m.trim())
-      .filter(Boolean);
-    if (models.length === 0) {
-      setError("At least one model ID is required (e.g. meta-llama/llama-3.3-70b-instruct)");
-      return;
-    }
-    if (models.length > 15) {
-      setError("At most 15 model IDs can be configured");
+    const models = option.requiresModels
+      ? modelsText
+          .split(/[\n,]+/)
+          .map((m) => m.trim())
+          .filter(Boolean)
+      : [];
+    const invalid = validateAddEngine({ driver, name: trimmedName, endpoint: trimmedUrl, models });
+    if (invalid) {
+      setError(invalid);
       return;
     }
 
@@ -495,6 +507,7 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
     createCustomEngine(buildEngineCredentialDeps(), {
       name: trimmedName,
       endpoint: trimmedUrl,
+      driver,
       key: apiKey.trim(),
       models,
       iconUrl: iconUrl.trim() || undefined,
@@ -513,10 +526,8 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
       <div className="flex max-h-[90vh] w-full max-w-[540px] flex-col overflow-hidden rounded-2xl border border-hairline/60 bg-panel shadow-2xl text-ink">
         <div className="flex items-start justify-between border-b border-hairline/40 px-5 py-4">
           <div>
-            <div className="text-[16px] font-semibold text-ink">Add Custom Engine</div>
-            <div className="mt-1 text-[12px] text-ink-secondary">
-              Connect any OpenAI-compatible API endpoint (OpenRouter, Groq, Together, Ollama, vLLM, LM Studio).
-            </div>
+            <div className="text-[16px] font-semibold text-ink">Add Engine</div>
+            <div className="mt-1 text-[12px] text-ink-secondary">{option.blurb}</div>
           </div>
           <button
             type="button"
@@ -531,13 +542,38 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5 text-[13px]">
           <div>
             <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
+              Engine Type
+            </label>
+            <div role="radiogroup" aria-label="Engine Type" className="flex gap-2">
+              {ADD_ENGINE_DRIVERS.map((candidate) => (
+                <button
+                  key={candidate.driver}
+                  type="button"
+                  role="radio"
+                  aria-checked={candidate.driver === driver}
+                  onClick={() => chooseDriver(candidate.driver)}
+                  className={cn(
+                    "flex-1 rounded-xl border px-3.5 py-2 text-[12.5px] font-medium outline-none",
+                    candidate.driver === driver
+                      ? "border-accent/70 bg-accent/10 text-ink"
+                      : "border-hairline/60 bg-inset text-ink-secondary hover:text-ink",
+                  )}
+                >
+                  {candidate.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
               Engine Name
             </label>
             <input
               type="text"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="e.g. Together AI, Ollama Local, Groq Open"
+              placeholder={driver === "minimax" ? "e.g. MiniMax China, MiniMax Team Account" : "e.g. Together AI, Ollama Local, Groq Open"}
               className="w-full rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[13px] text-ink outline-none placeholder:text-ink-secondary/60 focus:border-accent/70"
             />
           </div>
@@ -550,36 +586,50 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
               type="text"
               value={endpoint}
               onChange={(e) => setEndpoint(e.target.value)}
-              placeholder="https://api.together.xyz/v1 or http://localhost:11434/v1"
+              placeholder={option.endpointPlaceholder}
               className="w-full rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[13px] font-mono text-ink outline-none placeholder:font-sans placeholder:text-ink-secondary/60 focus:border-accent/70"
             />
           </div>
 
           <div>
             <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
-              API Key <span className="font-normal normal-case text-[11px]">· optional</span>
+              API Key{" "}
+              <span className="font-normal normal-case text-[11px]">
+                {driver === "minimax" ? "· this connection's own key" : "· optional"}
+              </span>
             </label>
             <input
               type="password"
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
-              placeholder="Optional API key (leave blank for local Ollama / LM Studio)"
+              placeholder={
+                driver === "minimax"
+                  ? "The MiniMax key this connection bills against"
+                  : "Optional API key (leave blank for local Ollama / LM Studio)"
+              }
               className="w-full rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[13px] font-mono text-ink outline-none placeholder:font-sans placeholder:text-ink-secondary/60 focus:border-accent/70"
             />
           </div>
 
-          <div>
-            <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
-              Model IDs <span className="font-normal normal-case text-[11px]">· 1 to 15 models, comma or newline separated</span>
-            </label>
-            <textarea
-              rows={3}
-              value={modelsText}
-              onChange={(e) => setModelsText(e.target.value)}
-              placeholder="meta-llama/llama-3.3-70b-instruct&#10;mistralai/mixtral-8x7b-instruct"
-              className="w-full resize-y rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 font-mono text-[12.5px] text-ink outline-none placeholder:font-sans placeholder:text-ink-secondary/60 focus:border-accent/70"
-            />
-          </div>
+          {option.requiresModels ? (
+            <div>
+              <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
+                Model IDs <span className="font-normal normal-case text-[11px]">· 1 to 15 models, comma or newline separated</span>
+              </label>
+              <textarea
+                rows={3}
+                value={modelsText}
+                onChange={(e) => setModelsText(e.target.value)}
+                placeholder="meta-llama/llama-3.3-70b-instruct&#10;mistralai/mixtral-8x7b-instruct"
+                className="w-full resize-y rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 font-mono text-[12.5px] text-ink outline-none placeholder:font-sans placeholder:text-ink-secondary/60 focus:border-accent/70"
+              />
+            </div>
+          ) : (
+            <div className="rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[12px] text-ink-secondary">
+              MiniMax publishes its own model list, so there is nothing to type here.  This connection offers the
+              same models as the built-in one and bills them to the key above.
+            </div>
+          )}
 
           <div>
             <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
@@ -635,11 +685,13 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
           <button
             type="button"
             onClick={save}
-            disabled={saving || !name.trim() || !endpoint.trim() || !modelsText.trim()}
+            disabled={
+              saving || !name.trim() || !endpoint.trim() || (option.requiresModels && !modelsText.trim())
+            }
             className="flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-40"
           >
             {saving && <Loader2 size={14} className="animate-spin" />}
-            Add Custom Engine
+            {driver === "minimax" ? "Add MiniMax Connection" : "Add Custom Engine"}
           </button>
         </div>
       </div>
@@ -708,7 +760,7 @@ export function EnginesSettings() {
           className="flex shrink-0 items-center gap-1.5 rounded-xl border border-hairline/50 bg-raised px-3.5 py-2 text-[12.5px] font-medium text-ink hover:bg-raised-hover shadow-sm"
         >
           <Plus size={14} />
-          Add Custom Engine
+          Add Engine
         </button>
       </div>
       {busyInstanceId && (

@@ -20,6 +20,10 @@ export type EngineCredentialDeps = {
   createInstance: (body: {
     name: string;
     endpoint: string;
+    /** `driverKind` of the engine this instance rides. Omitted entirely for
+     * openai-compat, which is the route's own default — the body an older
+     * client sends is byte-for-byte what it always sent. */
+    driver?: string;
     key?: string;
     models: string[];
     iconUrl?: string;
@@ -48,16 +52,20 @@ export type EngineCredentialDeps = {
  * alongside it. */
 export async function createCustomEngine(
   deps: EngineCredentialDeps,
-  input: { name: string; endpoint: string; key: string; models: string[]; iconUrl?: string },
+  input: { name: string; endpoint: string; driver?: string; key: string; models: string[]; iconUrl?: string },
 ): Promise<{ instanceId: string }> {
   const hasBridge = Boolean(deps.setInstanceCredential);
-  const created = await deps.createInstance({
+  const body: Parameters<EngineCredentialDeps["createInstance"]>[0] = {
     name: input.name,
     endpoint: input.endpoint,
     key: hasBridge ? undefined : input.key || undefined,
     models: input.models,
     iconUrl: input.iconUrl,
-  });
+  };
+  // Sent only when it is not the route's own default, so the body an older
+  // client produced stays byte-for-byte what it always was.
+  if (input.driver && input.driver !== "openai-compat") body.driver = input.driver;
+  const created = await deps.createInstance(body);
   if (hasBridge && input.key) {
     try {
       await deps.setInstanceCredential!(created.instanceId, input.key);
@@ -111,4 +119,97 @@ export async function deleteCustomEngine(
     }
   }
   return { credentialClearError };
+}
+
+// ── Which engine a new instance rides ─────────────────────────────────
+// `POST /api/instances` accepts any registered driver that declares
+// `supportsMultipleInstances`; these are the two the Add Engine form offers,
+// because they are the two a person can finish configuring from a form — an
+// endpoint and a key, no CLI to install and no interactive sign-in. The
+// shapes below are the renderer's copy of what that route validates, kept
+// deliberately small for the same reason src/lib/secret-source.ts keeps its
+// own copy of the server's source union: the renderer cannot import a server
+// module, and a test on each side is cheaper than a shared build step.
+
+export interface AddEngineDriverOption {
+  /** `driverKind` on the wire — what the POST body's `driver` field carries. */
+  driver: string;
+  /** Title Case: this is a button label. */
+  label: string;
+  /** Sentence case: the line under the picker. */
+  blurb: string;
+  endpointPlaceholder: string;
+  /** Offered as the endpoint when the field is still empty. */
+  suggestedEndpoint?: string;
+  /** True when the operator has to name the models: the driver has no
+   * catalog it can trust for an endpoint it has never seen. MiniMax ships
+   * its own published catalog, so asking would only invite typos. */
+  requiresModels: boolean;
+}
+
+export const ADD_ENGINE_DRIVERS: readonly AddEngineDriverOption[] = [
+  {
+    driver: "openai-compat",
+    label: "OpenAI-Compatible",
+    blurb: "Any endpoint that speaks the OpenAI chat/completions shape — OpenRouter, Groq, Together, Ollama, vLLM, LM Studio.",
+    endpointPlaceholder: "https://api.together.xyz/v1 or http://localhost:11434/v1",
+    requiresModels: true,
+  },
+  {
+    driver: "minimax",
+    label: "MiniMax",
+    blurb: "A second MiniMax connection with its own key and endpoint — the China host, a gateway, or a separate billing account.",
+    endpointPlaceholder: "https://api.minimax.io/v1 or https://api.minimaxi.com/v1",
+    suggestedEndpoint: "https://api.minimaxi.com/v1",
+    requiresModels: false,
+  },
+];
+
+export function addEngineDriverOption(driver: string): AddEngineDriverOption {
+  return ADD_ENGINE_DRIVERS.find((option) => option.driver === driver) ?? ADD_ENGINE_DRIVERS[0];
+}
+
+/** Everything the Add Engine form refuses before it ever reaches the server,
+ * as one pure function: the modal shows the string, the server re-checks it
+ * all anyway. Returns null when the form is good to send. */
+export function validateAddEngine(input: {
+  driver: string;
+  name: string;
+  endpoint: string;
+  models: string[];
+}): string | null {
+  if (!input.name.trim()) return "Engine name is required";
+  if (!input.endpoint.trim()) return "Endpoint URL is required";
+  const option = addEngineDriverOption(input.driver);
+  if (option.requiresModels && input.models.length === 0) {
+    return "At least one model ID is required (e.g. meta-llama/llama-3.3-70b-instruct)";
+  }
+  if (input.models.length > 15) return "At most 15 model IDs can be configured";
+  return null;
+}
+
+/** The reserved instance id each multi-instance driver ships in the default
+ * fleet. The renderer's copy of server/harness/registry.ts's own table: the
+ * server already sets `isCustom` on every described instance, and this is the
+ * fallback for a payload that predates it. */
+const RESERVED_INSTANCE_ID = new Map<string, string>([
+  ["openai-compat", "openaiCompat"],
+  ["minimax", "minimax"],
+]);
+
+export function isCustomEngineInstance(instance: {
+  driverKind: string;
+  instanceId: string;
+  isCustom?: boolean;
+}): boolean {
+  if (instance.isCustom) return true;
+  const reserved = RESERVED_INSTANCE_ID.get(instance.driverKind);
+  return reserved !== undefined && instance.instanceId !== reserved;
+}
+
+/** Heading for the "this one was added by you" callout on an engine row.
+ * It used to say "OpenAI-Compatible" unconditionally, which is wrong copy on
+ * a second MiniMax connection. */
+export function customEngineCalloutTitle(driverKind: string): string {
+  return driverKind === "minimax" ? "Added MiniMax Connection." : "Custom OpenAI-Compatible Engine.";
 }

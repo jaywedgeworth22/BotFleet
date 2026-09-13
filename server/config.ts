@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { updateConfigFile } from "../electron/config-file-lock.mjs";
-import type { InstanceConfigMap } from "./contracts.ts";
+import type { InstanceConfig, InstanceConfigMap } from "./contracts.ts";
 import { parseJson, schemaIssue, type JsonObject, type JsonValue } from "./schema.ts";
 import { infisicalSnapshot, resolveSecretFields, stripVaultManagedValues } from "./secret-map.ts";
 import { describeDsn } from "./sentry.ts";
@@ -207,6 +207,13 @@ const appConfigSchema = z.object({
   deleteInstance: optionalText,
   xai: z.object({ key: optionalText, url: optionalText, credentialStorage: externalCredentialStorage }).optional(),
   openaiCompat: z.object({ key: optionalText, url: optionalText }).optional(),
+  /** MiniMax API key and base URL.  Same shape as `openaiCompat` above and
+   * for the same reason: the driver speaks the OpenAI wire protocol against
+   * an endpoint the operator may repoint (global, China, a gateway), so the
+   * key and the URL travel together.  The driver itself reads
+   * `MINIMAX_API_KEY` and its per-instance `config.url`; this section is the
+   * workspace default those resolve from when no per-instance value is set. */
+  minimax: z.object({ key: optionalText, url: optionalText }).optional(),
   /** Project key used for Sessions, catalog and agent tools. userId/sessionId
    * are non-secret local identifiers used to reuse one Composio Session. */
   // brokerUrl is read by the desktop shell only: the HTTPS origin of a
@@ -334,6 +341,7 @@ export interface AppConfig {
   deleteInstance?: string;
   xai?: { key?: string; url?: string; credentialStorage?: "external" };
   openaiCompat?: { key?: string; url?: string };
+  minimax?: { key?: string; url?: string };
   composio?: { apiKey?: string; userId?: string; sessionId?: string; brokerUrl?: string; credentialStorage?: "external" };
   box?: { token?: string; credentialStorage?: "external" };
   /** A named host from the user's SSH config. Authentication stays with SSH. */
@@ -804,6 +812,14 @@ export function loadConfig(): AppConfig {
   cfg.openaiCompat = { ...cfg.openaiCompat };
   if (process.env.OPENAI_COMPAT_API_KEY !== undefined) cfg.openaiCompat.key = process.env.OPENAI_COMPAT_API_KEY;
   if (process.env.OPENAI_COMPAT_URL !== undefined) cfg.openaiCompat.url = process.env.OPENAI_COMPAT_URL;
+  // Mirrors openaiCompat: the MiniMax driver reads `MINIMAX_API_KEY` and
+  // `MINIMAX_BASE_URL` from the environment on its own, so without this
+  // overlay a key exported in the shell would be invisible to the Settings
+  // card that reports where the value came from — the driver would work and
+  // the app would still say "not configured".
+  cfg.minimax = { ...cfg.minimax };
+  if (process.env.MINIMAX_API_KEY !== undefined) cfg.minimax.key = process.env.MINIMAX_API_KEY;
+  if (process.env.MINIMAX_BASE_URL !== undefined) cfg.minimax.url = process.env.MINIMAX_BASE_URL;
   cfg.composio = { ...cfg.composio };
   if (process.env.COMPOSIO_API_KEY !== undefined) cfg.composio.apiKey = process.env.COMPOSIO_API_KEY;
   cfg.box = { ...cfg.box };
@@ -861,6 +877,7 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
   const secrets: Array<[value: string | undefined, name: string]> = [
     [patch.xai?.key, "XAI_API_KEY"],
     [patch.openaiCompat?.key, "OPENAI_COMPAT_API_KEY"],
+    [patch.minimax?.key, "MINIMAX_API_KEY"],
     [patch.composio?.apiKey, "COMPOSIO_API_KEY"],
     [patch.box?.token, "BOX_TOKEN"],
     [patch.opencodeGo?.apiKey, "OPENCODE_API_KEY"],
@@ -885,6 +902,10 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
     if (patch.openaiCompat.url) process.env["OPENAI_COMPAT_URL"] = patch.openaiCompat.url;
     else delete process.env["OPENAI_COMPAT_URL"];
   }
+  if (patch.minimax?.url !== undefined) {
+    if (patch.minimax.url) process.env["MINIMAX_BASE_URL"] = patch.minimax.url;
+    else delete process.env["MINIMAX_BASE_URL"];
+  }
   if (patch.deepseek?.url !== undefined) {
     if (patch.deepseek.url) process.env["DEEPSEEK_URL"] = patch.deepseek.url;
     else delete process.env["DEEPSEEK_URL"];
@@ -904,6 +925,12 @@ export const WORKSPACE_CREDENTIAL_ENV = [
   "XAI_API_KEY",
   "OPENAI_COMPAT_API_KEY",
   "OPENAI_COMPAT_URL",
+  // The MiniMax driver spawns no CLI, so neither of these has ever been
+  // needed by a child process — they are listed for the same reason
+  // OPENAI_COMPAT_* are: a workspace credential the harness holds must not
+  // ride into an unrelated engine through `...process.env`.
+  "MINIMAX_API_KEY",
+  "MINIMAX_BASE_URL",
   "BOX_TOKEN",
   "OPENCODE_API_KEY",
   "OMB_TTS_KEY",
@@ -1024,7 +1051,7 @@ function mergeConfigPatch(raw: Record<string, unknown>, checkedPatch: CheckedCon
   // is in the schema, in the API Keys panel and in the tombstone list, but a
   // save of it never reached disk.  `infisical` is here from the start so the
   // machine identity does not repeat it a third time.
-  for (const key of ["xai", "openaiCompat", "composio", "box", "opencodeGo", "deepseek", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "observability", "infisical", "botDefaults"] as const) {
+  for (const key of ["xai", "openaiCompat", "minimax", "composio", "box", "opencodeGo", "deepseek", "tts", "imageGen", "profile", "rooms", "localVm", "features", "autoUpdate", "ingress", "usage", "qdrant", "observability", "infisical", "botDefaults"] as const) {
     const section = checkedPatch[key];
     if (!section) continue;
     const current = jsonObjectSchema.safeParse(disk[key]);
@@ -1147,8 +1174,17 @@ export function patchInstanceConfig(
     entry.enabled = patch.enabled ? undefined : false;
   }
 
-  entry.config = Object.keys(nextConfig).length ? nextConfig : undefined;
-  next.instances = stripInjectedEnvironment(next, map);
+  // Strip BEFORE the new config lands on the entry.  `map` came out of
+  // instanceConfigs(), so each entry's `environment` holds values injected
+  // from the config as it stands on disk right now; a driver whose injected
+  // key is derived from `config.key` (MiniMax) would otherwise have its
+  // PREVIOUS key left behind in the persisted environment, still shadowing
+  // the one just saved.  Stripping against the pre-patch entry removes the
+  // old value, and the new config is written onto the stripped copy.
+  const persistable = stripInjectedEnvironment(next, map);
+  const persisted = persistable[instanceId];
+  persisted.config = Object.keys(nextConfig).length ? nextConfig : undefined;
+  next.instances = persistable;
   return { ok: true, config: next };
 }
 
@@ -1185,7 +1221,14 @@ interface InstanceCliUpdate {
  * shared credential into it too would hand that endpoint the workspace's real
  * OpenRouter/Groq key as a bearer token. A custom instance gets only the key
  * (if any) the user entered for that specific instance, via `config.key`. */
-function injectedEnvironment(cfg: AppConfig, driver: string, instanceId: string): Map<string, string> {
+function injectedEnvironment(
+  cfg: AppConfig,
+  driver: string,
+  instanceId: string,
+  /** The entry's own opaque `config` blob, for the one driver whose
+   * per-instance key rides in it — `readInstanceConfigKey` is its parse. */
+  entryConfig?: InstanceConfig["config"],
+): Map<string, string> {
   const environment = new Map<string, string>();
   if (driver === "grok" && cfg.xai?.key) environment.set("XAI_API_KEY", cfg.xai.key);
   const isWorkspaceOpenAiCompatInstance = driver === "openai-compat" && instanceId === "openaiCompat";
@@ -1193,10 +1236,46 @@ function injectedEnvironment(cfg: AppConfig, driver: string, instanceId: string)
     environment.set("OPENAI_COMPAT_API_KEY", cfg.openaiCompat.key);
   if (isWorkspaceOpenAiCompatInstance && cfg.openaiCompat?.url)
     environment.set("OPENAI_COMPAT_URL", cfg.openaiCompat.url);
+  // MiniMax is the second driver that can carry more than one instance, and
+  // the same instance-id gate applies for the same reason: a second instance
+  // points at whatever endpoint the operator typed in (the China host, a
+  // gateway, a reseller), so the workspace key may only reach the reserved
+  // `minimax` instance.  Unlike openai-compat the driver reads no `config.key`
+  // of its own — `resolveMinimaxCredentials` looks at the instance
+  // environment, then process env, then ~/.mmx/config.json — so a
+  // per-instance key is delivered here, and takes precedence over the
+  // workspace one for the instance that carries it.
+  if (driver === "minimax") {
+    const instanceKey = readInstanceConfigKey(entryConfig);
+    if (instanceKey) environment.set("MINIMAX_API_KEY", instanceKey);
+    else if (instanceId === "minimax" && cfg.minimax?.key)
+      environment.set("MINIMAX_API_KEY", cfg.minimax.key);
+  }
   if (driver === "boxAgent" && cfg.box?.token) environment.set("BOX_TOKEN", cfg.box.token);
   if (driver === "opencodeGo" && cfg.opencodeGo?.apiKey) environment.set("OPENCODE_API_KEY", cfg.opencodeGo.apiKey);
   return environment;
 }
+
+/** The per-instance API key out of an instance's opaque `config` blob.  The
+ * blob is `z.json()` in the schema, so this IS its parse boundary — the same
+ * shape `cliOfRaw` and `fullAutoOfRaw` already use in the registry. */
+const instanceKeySchema = z.object({ key: z.string() });
+
+function readInstanceConfigKey(raw: InstanceConfig["config"]): string | undefined {
+  const parsed = instanceKeySchema.safeParse(raw);
+  if (!parsed.success) return undefined;
+  const key = parsed.data.key.trim();
+  return key ? key : undefined;
+}
+
+/** The per-instance environment variable each driver that supports more than
+ * one instance reads its API key from.  Shared with server/index.ts so the
+ * encrypted-credential routes and this module cannot drift on which variable
+ * carries which driver's key. */
+export const INSTANCE_API_KEY_ENV = new Map<string, string>([
+  ["openai-compat", "OPENAI_COMPAT_API_KEY"],
+  ["minimax", "MINIMAX_API_KEY"],
+]);
 
 /** Strip config-injected credential env (injectedEnvironment above) from a
  * materialized instance map before it is persisted. instanceConfigs() bakes
@@ -1213,7 +1292,7 @@ export function stripInjectedEnvironment(cfg: AppConfig, map: InstanceConfigMap)
       stripped[id] = entry;
       continue;
     }
-    const injected = injectedEnvironment(cfg, entry.driver, id);
+    const injected = injectedEnvironment(cfg, entry.driver, id, entry.config);
     const environment = { ...entry.environment };
     for (const [k, v] of Object.entries(environment)) {
       if (injected.get(k) === v) delete environment[k];
@@ -1290,20 +1369,28 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     const entry = { ...sourceEntry };
     map[id] = entry;
     const environment = { ...entry.environment };
-    for (const [key, value] of injectedEnvironment(cfg, entry.driver, id)) environment[key] = value;
+    for (const [key, value] of injectedEnvironment(cfg, entry.driver, id, entry.config)) environment[key] = value;
     entry.environment = environment;
     // The driver URL is configuration, not a credential. Environment is
     // intentionally not consulted by ProviderRegistry when it decodes a
     // driver's config, so carry the workspace default into the transient
-    // instance map while preserving a per-instance override.
-    if (entry.driver === "openai-compat" && cfg.openaiCompat?.url) {
+    // instance map while preserving a per-instance override.  MiniMax joins
+    // openai-compat here because its own `decodeMinimaxConfig` reads
+    // `config.url` first and only then `MINIMAX_BASE_URL` from process env —
+    // a workspace URL saved in Settings would otherwise never reach it.
+    const workspaceUrl = entry.driver === "openai-compat"
+      ? cfg.openaiCompat?.url
+      : entry.driver === "minimax"
+        ? cfg.minimax?.url
+        : undefined;
+    if (workspaceUrl) {
       const raw = entry.config;
       if (raw === undefined) {
-        entry.config = { url: cfg.openaiCompat.url };
+        entry.config = { url: workspaceUrl };
       } else if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
         const current = raw as Record<string, unknown>;
         if (typeof current.url !== "string" || !current.url.trim()) {
-          entry.config = { ...current, url: cfg.openaiCompat.url };
+          entry.config = { ...current, url: workspaceUrl };
         }
       }
     }
