@@ -9524,6 +9524,9 @@ const server = createServer(async (req, res) => {
       const nextAllowedComputers = patch.botDefaults && Object.hasOwn(patch.botDefaults, "allowedComputers")
         ? patch.botDefaults.allowedComputers ?? null
         : currentAllowedComputers;
+      const consentRelevantConfigSave =
+        JSON.stringify(nextDefaultComputers) !== JSON.stringify(currentDefaultComputers) ||
+        JSON.stringify(nextAllowedComputers) !== JSON.stringify(currentAllowedComputers);
       const acknowledgedLocalAuto = body.acknowledgeLocalAuto === true;
       const pendingConfigLocalAutoConsent = () => store.bots
         .filter((bot) => localAutoAcknowledgementError(
@@ -9556,7 +9559,7 @@ const server = createServer(async (req, res) => {
         });
       }
       providerConfigBusy = true;
-      localAutoConsentConfigBusy = true;
+      localAutoConsentConfigBusy = consentRelevantConfigSave;
             try {
       // A project key is useful only if it can create/reuse the Session that
       // powers both the connections UI and the agent MCP. Validate it before

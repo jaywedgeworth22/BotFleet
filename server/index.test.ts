@@ -6184,6 +6184,30 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     }
   }, 90_000);
 
+  it("keeps bot edits available while an unrelated config save awaits", async () => {
+    const bot = (await api("POST", "/api/bots", { name: "Editable During Provider Save" })).body.bot;
+    let saving: ReturnType<typeof api> | undefined;
+    try {
+      boxTurnRequests = 0;
+      boxTurnGate = new Promise<void>((resolve) => { releaseBoxTurnGate = resolve; });
+      saving = api("PUT", "/api/config", { box: { token: "box_gate" } });
+      await expect.poll(() => boxTurnRequests, { timeout: 5_000 }).toBe(1);
+
+      const renamed = await api("PATCH", `/api/bots/${bot.id}`, { name: "Renamed During Provider Save" });
+      expect(renamed.status).toBe(200);
+
+      releaseBoxTurnGate?.();
+      expect((await saving).status).toBe(200);
+    } finally {
+      releaseBoxTurnGate?.();
+      await saving?.catch(() => undefined);
+      boxTurnGate = null;
+      releaseBoxTurnGate = null;
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PUT", "/api/config", { box: { token: "" } })).status).toBe(200);
+    }
+  }, 90_000);
+
   it("skips a bot that would gain unacknowledged auto host control, and names it", async () => {
     // The per-bot PATCH refuses "This Computer" plus auto-approve without a
     // confirmed warning.  Applying a workspace default used to go straight to
