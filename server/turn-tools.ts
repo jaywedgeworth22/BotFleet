@@ -2,16 +2,13 @@
 //
 // CLI drivers (Claude, Codex, DSH, Droid, Pi, ACP engines) mount MCP
 // servers at turn time and discover tools at runtime, so they do not
-// need a static catalog.  HTTP drivers cannot, so the harness has to
-// hand the model a tool list on the wire and replay the result on
-// `turn.completed` — that replay is the `tool-executor.ts` loop.
+// need a static catalog.  HTTP drivers cannot, so the harness hands the
+// model a tool list on the wire and lends the driver a `TurnToolHost` for
+// the turn.  The driver runs the model-to-tool rounds against that host.
 //
-// The catalog intentionally exposes only the agents tools the executor
-// can actually run today.  Composio + computer-use tools return a
-// "not wired" string from the executor, so telling the model they are
-// available would invite wasted turns.  When the executor grows new
-// tools, add them here in the same `name` order the executor knows
-// about so the round trip is symmetric.
+// The catalog intentionally exposes only the agents tools the host can
+// actually run today.  Telling the model about a tool without a matching
+// implementation would invite wasted turns.
 //
 // The shape matches `SendTurnInput.tools` in `./contracts.ts`; the
 // drivers translate it into OpenAI function-calling format at call

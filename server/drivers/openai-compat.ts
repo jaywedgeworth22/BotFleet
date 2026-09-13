@@ -19,10 +19,11 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
-import { parseToolArguments, toolFields } from "../tool-fields.ts";
 import { recordExecutedTools, withChatSpan } from "../sentry-ai.ts";
+import { runTurnLoop, type ChatMessage, type TurnLoopDeps } from "./chat-completions/loop.ts";
 
 const DRIVER_KIND = "openai-compat";
+const REQUEST_TIMEOUT_MS = 120_000;
 
 // Default catalog — overwritten by /models when the endpoint answers.
 // Free-tier-friendly defaults so the picker is never empty.
@@ -143,7 +144,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         : (process.env[config.apiKeyEnv] ?? process.env["OPENAI_COMPAT_API_KEY"])) ??
       "";
     const listeners = new Set<RuntimeEventListener>();
-    const active = new Map<string, { abort: AbortController; turnId: string }>();
+    const active = new Map<string, { abort: AbortController; turnId: string; startedAt: number }>();
     let catalog = DEFAULT_MODELS;
     if (config.models && config.models.length > 0) {
       const options: ModelCatalog["options"] = config.models.map((m) => {
@@ -173,7 +174,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         signal?: AbortSignal;
         tools?: any[];
         onDelta?: (d: string, streamKind?: "assistant_text" | "reasoning_text") => void;
-        onToolCallDelta?: (index: number, id: string | undefined, name: string | undefined, args: string | undefined) => void;
+        onUsage?: (usage: { input: number; output: number }) => void;
       },
     ): Promise<{
       text: string;
@@ -195,9 +196,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         method: "POST",
         headers,
         body: JSON.stringify(bodyPayload),
-        signal: opts.signal
-          ? AbortSignal.any([opts.signal, AbortSignal.timeout(120_000)])
-          : AbortSignal.timeout(120_000),
+        signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
@@ -255,7 +254,9 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         if (toolCallsDelta) {
           for (const tc of toolCallsDelta) {
             const tcIndex = tc.index ?? 0;
-            if (!streamToolCalls[tcIndex]) streamToolCalls[tcIndex] = { id: "", function: { name: "", arguments: "" } };
+            if (!streamToolCalls[tcIndex]) {
+              streamToolCalls[tcIndex] = { id: "", type: "function", function: { name: "", arguments: "" } };
+            }
             // Only the arguments stream in fragments.  A provider that
             // repeats the id and the name on every chunk — several do — used
             // to accumulate `call_acall_acall_a` and `bashbashbash`, so the
@@ -265,7 +266,6 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
               streamToolCalls[tcIndex].function.name = tc.function.name;
             }
             if (tc.function?.arguments) streamToolCalls[tcIndex].function.arguments += tc.function.arguments;
-            opts.onToolCallDelta?.(tcIndex, tc.id, tc.function?.name, tc.function?.arguments);
           }
         }
         if (chunk.usage) {
@@ -273,6 +273,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
             input: chunk.usage.prompt_tokens ?? 0,
             output: chunk.usage.completion_tokens ?? 0,
           };
+          opts.onUsage?.(usage);
         }
       };
       for (;;) {
@@ -333,6 +334,11 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
+      // Validation throws SYNCHRONOUSLY out of sendTurn, before the loop
+      // exists, so startTurn's catch runs in milliseconds exactly as it does
+      // for a CLI driver — error chip, watchdog settled, bot idle, all three
+      // queue drains.  A rejection here must never become a resolved turn
+      // that nothing ever settles.
       if (!apiKey && !isCustomInstance) {
         throw new Error(
           `no API key — set ${config.apiKeyEnv} or add it to the instance config`,
@@ -343,7 +349,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       }
       const turnId = newId();
       const abort = new AbortController();
-      active.set(threadId, { abort, turnId });
+      active.set(threadId, { abort, turnId, startedAt: Date.now() });
 
       const openAiTools = turn.tools && turn.tools.length > 0
         ? turn.tools.map((t) => ({
@@ -356,16 +362,20 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           }))
         : undefined;
 
-      const messages = [
-        ...(turn.system ? [{ role: "system", content: turn.system }] : []),
-        ...(turn.transcript ?? []).flatMap((m: any) => {
-          const res = [];
+      const model = turn.model || catalog.default;
+      // Round 1's prefix.  The loop owns this array from here and only ever
+      // APPENDS to it, so rounds 2..N re-send a byte-identical prefix and the
+      // endpoint's prompt cache stays reachable.
+      const messages: ChatMessage[] = [
+        ...(turn.system ? [{ role: "system" as const, content: turn.system }] : []),
+        ...(turn.transcript ?? []).flatMap((m): ChatMessage[] => {
+          const res: ChatMessage[] = [];
           if (m.role === "assistant") {
-            const assistantMsg: any = { role: "assistant", content: m.text || "" };
+            const assistantMsg: ChatMessage = { role: "assistant", content: m.text || "" };
             if (m.toolCalls && m.toolCalls.length > 0) {
-              assistantMsg.tool_calls = m.toolCalls.map((tc: any) => ({
+              assistantMsg.tool_calls = m.toolCalls.map((tc) => ({
                 id: tc.id,
-                type: "function",
+                type: "function" as const,
                 function: { name: tc.name, arguments: tc.arguments },
               }));
             }
@@ -373,11 +383,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           } else {
             if (m.toolResults && m.toolResults.length > 0) {
               for (const tr of m.toolResults) {
-                res.push({
-                  role: "tool",
-                  tool_call_id: tr.id,
-                  content: tr.result,
-                });
+                res.push({ role: "tool", tool_call_id: tr.id, content: tr.result });
               }
             } else {
               res.push({ role: "user", content: m.text });
@@ -385,147 +391,81 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           }
           return res;
         }),
-        ...(turn.text ? [{ role: "user", content: turn.text }] : []),
+        ...(turn.text ? [{ role: "user" as const, content: turn.text }] : []),
       ];
-      appendNative(threadId, {
-        dir: "out",
-        source: "openai-compat.chat.completions",
-        // Native logs are diagnostic artifacts users commonly attach to
-        // issues. Keep routing metadata, not prompts or transcript content.
-        msg: { model: turn.model ?? catalog.default, messageCount: messages.length },
-      });
 
       emit({ ...base(threadId, turnId), type: "turn.started" });
       emit({
         ...base(threadId, turnId),
         type: "session.started",
         sessionId: null,
-        model: turn.model ?? catalog.default,
+        model,
       });
 
-      // Tool ids this turn has already opened a step for.  The stream
-      // announces a call once and then keeps sending argument fragments for
-      // it, and the settled reply repeats every call — without this a single
-      // tool would open a dozen rows.
-      const started = new Set<string>();
+      const runRound: TurnLoopDeps["runRound"] = async (roundMessages, opts) => {
+        appendNative(threadId, {
+          dir: "out",
+          source: "openai-compat.chat.completions",
+          // Native logs are diagnostic artifacts users commonly attach to
+          // issues. Keep routing metadata, not prompts or transcript content.
+          msg: { model, messageCount: roundMessages.length, round: opts.round },
+        });
+        const { text, reasoning, tool_calls, usage } = await withChatSpan(
+          { model, conversationId: threadId, provider: sentryProviderForUrl(config.url) },
+          () =>
+            complete(roundMessages, model, {
+              stream: true,
+              signal: opts.signal,
+              tools: openAiTools,
+              onDelta: (delta, streamKind = "assistant_text") =>
+                emit({
+                  ...base(threadId, turnId),
+                  type: "content.delta",
+                  streamKind,
+                  delta,
+                }),
+              // Forwarded straight to the loop's own live channel, so a
+              // round that errors mid-stream after several chunks still gets
+              // its usage folded into the terminal event instead of
+              // reporting zero.
+              onUsage: (u) => opts.onUsage?.(u),
+            }),
+        );
+        const toolNames = (tool_calls ?? [])
+          .map((tc: { function?: { name?: string } }) => tc?.function?.name)
+          .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+        recordExecutedTools(threadId, toolNames);
+        appendNative(threadId, {
+          dir: "in",
+          source: "openai-compat.chat.completions",
+          msg: { textLength: text.length, reasoningLength: reasoning.length, toolCallsLength: tool_calls?.length ?? 0, usage, round: opts.round },
+        });
+        // A reply that is entirely reasoning (no assistant text) still needs
+        // to render as something — fall back to the reasoning text rather
+        // than settling a silently empty turn.  The loop is what turns a
+        // non-empty `text` into the `item.completed` event and into the next
+        // round's assistant-message prefix, so folding the fallback in here
+        // is what makes both of those honour it too.
+        const replyText = text.trim() ? text : reasoning;
+        return { text: replyText, usage, toolCalls: tool_calls };
+      };
 
-      (async () => {
-        try {
-          const model = turn.model || catalog.default;
-          const { text, reasoning, tool_calls, usage } = await withChatSpan(
-            { model, conversationId: threadId, provider: sentryProviderForUrl(config.url) },
-            () =>
-              complete(messages, model, {
-                stream: true,
-                signal: abort.signal,
-                tools: openAiTools,
-                onDelta: (delta, streamKind = "assistant_text") =>
-                  emit({
-                    ...base(threadId, turnId),
-                    type: "content.delta",
-                    streamKind,
-                    delta,
-                  }),
-                // Contract-shaped tool steps.  This used to emit
-                // `tool_call.delta`, which is not in the RuntimeEvent union
-                // and was cast past the type checker with `as any`; the
-                // harness has no arm for it, so a turn that called five
-                // tools rendered no steps at all.  A streamed delta is only
-                // the argument text arriving, so the step starts here and
-                // settles below where the arguments are whole.
-                onToolCallDelta: (_index, id, name, args) => {
-                  if (!id || started.has(id)) return;
-                  started.add(id);
-                  emit({
-                    ...base(threadId, turnId),
-                    type: "item.started",
-                    itemType: "tool",
-                    itemId: id,
-                    title: name || "tool",
-                    ...toolFields(name, undefined),
-                    arguments: args,
-                  });
-                },
-              }),
-          );
-          const toolNames = (tool_calls ?? [])
-            .map((tc: { function?: { name?: string } }) => tc?.function?.name)
-            .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
-          recordExecutedTools(threadId, toolNames);
-          appendNative(threadId, {
-            dir: "in",
-            source: "openai-compat.chat.completions",
-            msg: { textLength: text.length, reasoningLength: reasoning.length, toolCallsLength: tool_calls?.length ?? 0, usage },
-          });
-          for (const call of tool_calls ?? []) {
-            // a step whose arguments never streamed still needs a start, or
-            // the completion settles a row nothing opened
-            if (call.id && !started.has(call.id)) {
-              started.add(call.id);
-              emit({
-                ...base(threadId, turnId),
-                type: "item.started",
-                itemType: "tool",
-                itemId: call.id,
-                title: call.function?.name ?? "tool",
-                ...toolFields(call.function?.name, parseToolArguments(call.function?.arguments)),
-                arguments: call.function?.arguments,
-              });
-            }
-            emit({
-              ...base(threadId, turnId),
-              type: "item.completed",
-              itemType: "tool",
-              itemId: call.id,
-              ok: true,
-              arguments: call.function?.arguments,
-            });
-          }
-          const replyText = text.trim() ? text : reasoning;
-          if (replyText.trim()) {
-            emit({
-              ...base(threadId, turnId),
-              type: "item.completed",
-              itemType: "assistant_text",
-              text: replyText,
-            });
-          }
-          if (usage) {
-            emit({
-              ...base(threadId, turnId),
-              type: "thread.token-usage.updated",
-              ...usage,
-            });
-          }
-          active.delete(threadId);
-          const toolCallNames = toolNames.join(", ");
-          emit({
-            ...base(threadId, turnId),
-            type: "turn.completed",
-            ok: true,
-            stopReason: toolCallNames ? `tool_calls: ${toolCallNames}` : null,
-            cost: null,
-            ...(usage ? { usage } : {}),
-          });
-        } catch (e) {
-          active.delete(threadId);
-          const aborted = (e as Error).name === "AbortError";
-          if (!aborted) {
-            emit({
-              ...base(threadId, turnId),
-              type: "runtime.error",
-              message: (e as Error).message,
-            });
-          }
-          emit({
-            ...base(threadId, turnId),
-            type: "turn.completed",
-            ok: false,
-            stopReason: aborted ? "interrupted" : "error",
-            cost: null,
-          });
-        }
-      })();
+      // Detached, exactly as every CLI driver runs its turn: sendTurn
+      // resolves at DISPATCH so markTaskDispatched and the rewind clear are
+      // not deferred to the end of the loop.  runTurnLoop never rejects — it
+      // emits one turn.completed on every exit and resolves with which one.
+      void runTurnLoop({
+        base: () => base(threadId, turnId),
+        emit,
+        runRound,
+        messages,
+        toolHost: turn.toolHost,
+        signal: abort.signal,
+        // The per-round ceiling this driver has always used, so an
+        // OpenRouter or Groq bot waits exactly as long as it did before.
+        budget: { requestTimeoutMs: REQUEST_TIMEOUT_MS },
+        onSettled: () => active.delete(threadId),
+      });
 
       return { turnId };
     };
@@ -560,9 +500,19 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         provider: DRIVER_KIND,
         // no MCP server is mounted in this file and respondToRequest answers
         // "unavailable": localComputerMcp would be a knob nothing can turn
-        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true },
+        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true, toolLoop: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
+        sweepStuckTurns: async (olderThanMs: number) => {
+          const cutoff = Date.now() - olderThanMs;
+          const stuck: string[] = [];
+          for (const [threadId, entry] of active) {
+            if (entry.startedAt > cutoff) continue;
+            stuck.push(threadId);
+            entry.abort.abort();
+          }
+          return stuck;
+        },
         respondToRequest: async () => "unavailable" as const,
         hasSession: (threadId) => active.has(threadId),
         stopAll: async () => {

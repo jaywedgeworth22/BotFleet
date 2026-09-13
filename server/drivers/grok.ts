@@ -275,7 +275,8 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
                   type: "item.completed",
                   itemType: "tool",
                   itemId: tc.id,
-                  ok: true,
+                  ok: false,
+                  detail: "Grok cannot execute tools on this turn",
                 });
               }
             }
@@ -287,12 +288,20 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
               .map((tc: any) => tc?.function?.name)
               .filter(Boolean)
               .join(", ");
+            if ((tool_calls?.length ?? 0) > 0) {
+              emit({
+                ...base(threadId, turnId),
+                type: "runtime.error",
+                message: `Grok requested unavailable tools${toolNames ? `: ${toolNames}` : ""}`,
+              });
+            }
             emit({
               ...base(threadId, turnId),
               type: "turn.completed",
-              ok: true,
-              stopReason: toolNames ? `tool_calls: ${toolNames}` : null,
+              ok: (tool_calls?.length ?? 0) === 0,
+              stopReason: (tool_calls?.length ?? 0) > 0 ? "error" : null,
               cost: null,
+              ...(usage ? { usage } : {}),
             });
             return;
           } catch (e) {

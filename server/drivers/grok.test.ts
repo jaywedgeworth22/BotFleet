@@ -81,6 +81,32 @@ describe("GrokDriver turns (fake fetch)", () => {
     });
   });
 
+  it("rejects an unexpected tool call instead of reporting unexecuted work as successful", async () => {
+    script = [{ sse: [
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"search","arguments":"{\\"query\\":\\"report\\"}"}}]}}]}',
+      "data: [DONE]",
+      "",
+    ].join("\n") }];
+    await create();
+
+    await instance.adapter.sendTurn({ threadId: "t-unavailable-tool", text: "find it" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events).toContainEqual(expect.objectContaining({
+      type: "item.completed",
+      itemType: "tool",
+      itemId: "call-1",
+      ok: false,
+      detail: "Grok cannot execute tools on this turn",
+    }));
+    expect(recorder.events).toContainEqual(expect.objectContaining({
+      type: "runtime.error",
+      message: "Grok requested unavailable tools: search",
+    }));
+    expect(completed).toMatchObject({ ok: false, stopReason: "error" });
+    expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+  });
+
   it("sends transcript tool history and the current prompt exactly once", async () => {
     script = [];
     await create();

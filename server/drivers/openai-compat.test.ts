@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { recordEvents } from "../testing/events.ts";
+import { startFakeOpenAiServer, type FakeOpenAiServer } from "../testing/fake-openai-server.ts";
 import { OpenAICompatDriver, sentryProviderForUrl } from "./openai-compat.ts";
 
 describe("OpenAICompatDriver", () => {
@@ -324,21 +325,26 @@ describe("OpenAICompatDriver tool steps", () => {
     vi.restoreAllMocks();
   });
 
-  it("emits contract-shaped tool steps naming what each call touched", async () => {
+  it("settles a contract-shaped tool step with the host's real outcome", async () => {
     // it used to emit `tool_call.delta` and `itemType: "tool_call"`, neither
     // of which is in the RuntimeEvent union — both were cast past the type
     // checker, the harness had no arm for either, and a turn that called a
     // tool rendered no steps at all
+    let round = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string | URL | Request) => {
         if (String(input).endsWith("/models")) {
           return new Response(JSON.stringify({ data: [] }), { status: 200 });
         }
-        return new Response(
+        round += 1;
+        return round === 1 ? new Response(
           'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":""}}]}}]}\n' +
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"file_path\\":\\"/srv/app/store.ts\\"}"}}]}}]}\n' +
             "data: [DONE]\n",
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ) : new Response(
+          'data: {"choices":[{"delta":{"content":"done"}}]}\ndata: [DONE]\n',
           { status: 200, headers: { "content-type": "text/event-stream" } },
         );
       }),
@@ -352,7 +358,13 @@ describe("OpenAICompatDriver tool steps", () => {
     });
     const recorder = recordEvents(inst.adapter);
 
-    await inst.adapter.sendTurn({ threadId: "tool-thread", text: "read it", model: "vendor/model" });
+    await inst.adapter.sendTurn({
+      threadId: "tool-thread",
+      text: "read it",
+      model: "vendor/model",
+      tools: [{ name: "read_file" }],
+      toolHost: { execute: async () => ({ kind: "result", content: "file contents" }) },
+    });
     await recorder.until((event) => event.type === "turn.completed");
 
     const started = recorder.events.filter(
@@ -372,16 +384,21 @@ describe("OpenAICompatDriver tool steps", () => {
   });
 
   it("does not open a second step for a call whose arguments streamed in fragments", async () => {
+    let round = 0;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: string | URL | Request) => {
         if (String(input).endsWith("/models")) {
           return new Response(JSON.stringify({ data: [] }), { status: 200 });
         }
-        return new Response(
+        round += 1;
+        return round === 1 ? new Response(
           'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"name":"bash","arguments":"{\\"comm"}}]}}]}\n' +
             'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","function":{"arguments":"and\\":\\"ls\\"}"}}]}}]}\n' +
             "data: [DONE]\n",
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ) : new Response(
+          'data: {"choices":[{"delta":{"content":"done"}}]}\ndata: [DONE]\n',
           { status: 200, headers: { "content-type": "text/event-stream" } },
         );
       }),
@@ -395,7 +412,13 @@ describe("OpenAICompatDriver tool steps", () => {
     });
     const recorder = recordEvents(inst.adapter);
 
-    await inst.adapter.sendTurn({ threadId: "fragment-thread", text: "run it", model: "vendor/model" });
+    await inst.adapter.sendTurn({
+      threadId: "fragment-thread",
+      text: "run it",
+      model: "vendor/model",
+      tools: [{ name: "bash" }],
+      toolHost: { execute: async () => ({ kind: "result", content: "ok" }) },
+    });
     await recorder.until((event) => event.type === "turn.completed");
 
     const started = recorder.events.filter(
@@ -418,6 +441,129 @@ describe("OpenAICompatDriver tool steps", () => {
     expect(inst.adapter.capabilities.localComputerMcp).toBeFalsy();
     expect(await inst.adapter.respondToRequest("t", "r", { behavior: "allow" })).toBe("unavailable");
     await inst.dispose();
+  });
+});
+
+describe("OpenAICompatDriver driver-owned tool loop", () => {
+  let server: FakeOpenAiServer | undefined;
+
+  afterEach(async () => {
+    await server?.close();
+    server = undefined;
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("keeps one turn across tool rounds with cumulative usage and an unchanged prefix", async () => {
+    server = await startFakeOpenAiServer();
+    server.queueCompletion({
+      kind: "sse",
+      frames: [
+        '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_bots","arguments":"{}"}}]}}]}',
+        '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}',
+        "[DONE]",
+      ],
+    });
+    server.queueCompletion({
+      kind: "sse",
+      frames: [
+        '{"choices":[{"delta":{"content":"two bots"}}]}',
+        '{"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":7}}',
+        "[DONE]",
+      ],
+    });
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "openai-loop-test",
+      displayName: "Loop",
+      enabled: true,
+      config: { url: server.url, apiKeyEnv: "TEST_KEY", models: ["fake-model"] },
+      environment: { TEST_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({
+      threadId: "loop-thread",
+      text: "list my bots",
+      model: "fake-model",
+      tools: [{ name: "list_bots" }],
+      toolHost: { execute: async () => ({ kind: "result", content: "[]" }) },
+    });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(completed).toMatchObject({
+      ok: true,
+      stopReason: "end_turn",
+      usage: { input: 30, output: 12 },
+    });
+    const requests = server.requests.filter((request) => request.url.endsWith("/chat/completions"));
+    expect(requests).toHaveLength(2);
+    const first = (requests[0].body as { messages: unknown[] }).messages;
+    const second = (requests[1].body as { messages: unknown[] }).messages;
+    expect(second.slice(0, first.length)).toEqual(first);
+    expect(second.slice(first.length)).toEqual([
+      {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ id: "call_1", type: "function", function: { name: "list_bots", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "call_1", content: "[]" },
+    ]);
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("retains streamed usage when the provider fails before the round settles", async () => {
+    let pulls = 0;
+    const stream = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        pulls += 1;
+        if (pulls === 1) {
+          controller.enqueue(new TextEncoder().encode(
+            'data: {"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":9}}\n',
+          ));
+          return;
+        }
+        controller.error(new Error("stream exploded"));
+      },
+    });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(stream, {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    })));
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "openai-usage-failure",
+      displayName: "Usage failure",
+      enabled: true,
+      config: { url: "https://example.test/v1", apiKeyEnv: "TEST_KEY", models: ["fake-model"] },
+      environment: { TEST_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "usage-failure", text: "hi", model: "fake-model" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    expect(completed).toMatchObject({ ok: false, stopReason: "error", usage: { input: 20, output: 9 } });
+    expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("rejects an invalid dispatch before starting a turn", async () => {
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "openaiCompat",
+      displayName: "Missing key",
+      enabled: true,
+      config: { url: "https://example.test/v1", apiKeyEnv: "MISSING_TEST_KEY", models: ["fake-model"] },
+      environment: {},
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await expect(instance.adapter.sendTurn({ threadId: "rejected", text: "hi" })).rejects.toThrow(/no API key/);
+    expect(recorder.events).toEqual([]);
+    expect(instance.adapter.hasSession("rejected")).toBe(false);
+    recorder.stop();
+    await instance.dispose();
   });
 });
 
