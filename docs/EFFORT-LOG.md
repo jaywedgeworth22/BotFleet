@@ -61,6 +61,7 @@ Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this f
 (mirror: docs/EFFORT-LOG.md in the repo). As of 2026-08-29.
 
 ## In Progress
+- **2026-09-13 — CODEX — IN PROGRESS — Historical credential alert remediation (#390; board d24c7fd2).**  Isolated `~/apps/botfleet-codex-ios-build-exclusion-20260913` @ `codex/ios-build-exclusion-20260913` excludes Xcode build output.  GitHub alerts remain open with validity unknown; credential replacement/revocation is separately outstanding.  <!-- codex-ios-build-exclusion-20260913 -->
 
 - **2026-09-12 — CODEX — IN PROGRESS — Complete signed macOS update feed and release automation (#285; board `5a2b2e02bf5c4debbc0559d2009032d0`; branch `codex/release-linux-feed-20260912`, worktree `/Users/jay/apps/botfleet-codex-release-feed-20260912`).**  PR #334 is merged; hosted run 34686539553 attempt 2 passes dual-architecture signing, notarization, and stapling.  Fixing the assembly verifier to require the actual two-entry Linux feed (AppImage and .deb).  No release published; final current-source packaging and installed-device acceptance remain open. <!-- wb-agent-report:5a2b2e02bf5c4debbc0559d2009032d0 -->
 
