@@ -396,9 +396,16 @@ export function ModelPicker({
                   )}
                   {["minimax"].includes(railInstance.driverKind) && (
                     <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
-                      <strong>Limited tool support:</strong> This engine has two harness tools today —{" "}
-                      <code>list_bots</code> and <code>ask_bot</code> — and no file, shell, or browser tools.
-                      {"  "}For full tool support, use an ACP engine (Claude, Codex, DSH, Droid) instead.
+                      <strong>Limited tool support:</strong> This engine has up to seven harness tools in a turn it starts itself{" "}
+                      —{" "}
+                      <code>list_bots</code>, <code>ask_bot</code>, <code>list_routines</code>,{" "}
+                      <code>delegate_bot</code>, <code>request_credential</code>,{" "}
+                      <code>propose_routine</code>, and <code>propose_routine_action</code> — and
+                      none of them in a turn another bot invoked.
+                      {"  "}A Chief of Staff also gets <code>create_bot</code>, but only in a direct
+                      chat.
+                      {"  "}It also has no file, shell, or web tools.
+                      {"  "}For full tool support, use a CLI engine (Claude, Codex, Antigravity, Cursor) instead.
                     </div>
                   )}
                 </div>
