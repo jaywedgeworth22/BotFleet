@@ -65,7 +65,6 @@ import {
 import {
   AUTO_FALLBACK_PRIORITY,
   enableQuotaCooldownPersist,
-  isQuotaOrCapText,
   lastTurnStartIndex,
   parseQuotaResetTime,
   providerErrorCodeFromStopReason,
@@ -75,7 +74,7 @@ import {
   shouldReplayPersistedStarter,
   bootRecoveryTurnOpts,
   sliceIsShortProviderError,
-  turnHitQuotaOrCap,
+  turnQuotaOrCapEvidence,
   BOOT_RECOVERY_NOTICE,
   turnProducedAssistantOutput,
 } from "./model-fallback.ts";
@@ -2068,7 +2067,6 @@ bus.subscribe((event: RuntimeEvent) => {
         const afterUser = lastUserIdx >= 0 ? activeMsgs.slice(lastUserIdx + 1) : [];
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
         const lastMsgText = afterUser.length > 0 ? (afterUser[afterUser.length - 1].text ?? "") : "";
-        const quotaInfo = parseQuotaResetTime(reply) || parseQuotaResetTime(lastMsgText);
         // A chat-completions driver's loop reports a classified HTTP
         // failure as an `error:<code>` stopReason (server/drivers/
         // chat-completions/loop.ts).  When that structured code is
@@ -2078,12 +2076,12 @@ bus.subscribe((event: RuntimeEvent) => {
         // code, so `structuredQuotaOrCap` is undefined there and the
         // existing chip-prose regexes decide exactly as they do today.
         const structuredQuotaOrCap = quotaOrCapFromErrorCode(providerErrorCodeFromStopReason(event.stopReason));
-        const isShortChip = sliceIsShortProviderError(afterUser);
-        const textIsCandidateForQuota = !event.ok || isShortChip;
-        const replyQuota = textIsCandidateForQuota && (quotaInfo.isQuotaOrCap || isQuotaOrCapText(reply));
-        const quotaOrCap = structuredQuotaOrCap
-          ?? (turnHitQuotaOrCap(afterUser) || replyQuota);
-        const isTextError = (textIsCandidateForQuota && isShortChip) || (!event.ok && quotaOrCap);
+        const quotaEvidence = turnQuotaOrCapEvidence(afterUser, Boolean(event.ok));
+        const quotaOrCap = structuredQuotaOrCap ?? Boolean(quotaEvidence);
+        const quotaText = (quotaEvidence?.text ?? reply) || lastMsgText;
+        const quotaInfo = parseQuotaResetTime(quotaText, Date.now(), quotaOrCap);
+        const textIsCandidateForQuota = !event.ok || Boolean(quotaEvidence);
+        const isTextError = structuredQuotaOrCap === true || Boolean(quotaEvidence) || sliceIsShortProviderError(afterUser);
         const isOk = Boolean(event.ok) && !isTextError;
         if (isOk) {
           fallbackAttemptByTurn.delete(fallbackKey);
@@ -2096,8 +2094,9 @@ bus.subscribe((event: RuntimeEvent) => {
             instanceId: actualSelection.instanceId,
             model: actualSelection.model,
             resetsAt: quotaInfo.resetsAt,
-            error: reply || lastMsgText || "quota exceeded",
+            error: quotaText || "quota exceeded",
             recordedAt: Date.now(),
+            source: quotaEvidence?.source ?? (structuredQuotaOrCap === true ? "provider-error-code" : undefined),
           });
         }
         const used = fallbackAttemptByTurn.get(fallbackKey) ?? 0;
@@ -5347,6 +5346,7 @@ function configStatus() {
     observability: {
       configured: diagnostics.configured,
       enabled: diagnostics.enabled,
+      requestedEnabled: diagnostics.requestedEnabled,
       hasDsn: diagnostics.configured,
       host: diagnostics.host,
       source: diagnostics.source,
