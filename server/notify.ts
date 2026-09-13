@@ -23,6 +23,19 @@ export interface Notification {
   /** The bot's stored profile image, when it has one; clients show it as
    * the OS notification's icon so every banner carries its bot's face. */
   avatarUrl?: string;
+  /** Which request is waiting, on the two kinds where something is.  A
+   * phone answering Approve or Deny from a lock screen has no transcript
+   * to search, so without this it has to guess which card the banner meant
+   * — and a thread with two open cards makes that guess wrong. */
+  requestId?: string;
+  /** The tool that asked, for display and telemetry.  Nothing may depend
+   * on it: an older harness sends neither field. */
+  tool?: string;
+}
+
+/** The two kinds where a request is actually waiting on a person. */
+export function isBlockingKind(kind: NotifyKind): boolean {
+  return kind === "approval" || kind === "question";
 }
 
 /** One line, short enough for a lock screen, with the newlines and code
@@ -48,7 +61,7 @@ export function buildNotification(
   bot: NotifyBot,
   threadId: string,
   detail: string,
-  extra?: { avatarUrl?: string },
+  extra?: { avatarUrl?: string; requestId?: string; tool?: string },
 ): Notification | null {
   // The toggle means what it says: off is off, including for approvals.
   // A bot whose notifications you turned off can still block waiting for
@@ -71,5 +84,14 @@ export function buildNotification(
   // badge in the sidebar already carries that much.
   if (kind === "done" && !body) return null;
 
-  return { kind, botId: bot.id, botName: bot.name, threadId, title, body, ...extra };
+  const frame: Notification = { kind, botId: bot.id, botName: bot.name, threadId, title, body };
+  if (extra?.avatarUrl !== undefined) frame.avatarUrl = extra.avatarUrl;
+  // Request identity belongs only to a frame where a request is waiting.
+  // Enforced here rather than trusted to every call site, because a `done`
+  // frame carrying a request id would invite a client to answer it.
+  if (isBlockingKind(kind)) {
+    if (extra?.requestId !== undefined) frame.requestId = extra.requestId;
+    if (extra?.tool !== undefined) frame.tool = extra.tool;
+  }
+  return frame;
 }

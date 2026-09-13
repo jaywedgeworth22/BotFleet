@@ -118,6 +118,9 @@ final class Session: ObservableObject {
         NotificationCoordinator.shared.responseHandler = { [weak self] target in
             Task { @MainActor in await self?.openNotification(target) }
         }
+        NotificationCoordinator.shared.approvalActionHandler = { [weak self] target, approve in
+            _ = await self?.answerPendingRequest(target: target, approve: approve)
+        }
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-store-preview"),
            let url = Bundle.main.url(forResource: "StorePreview", withExtension: "json"),
@@ -422,9 +425,12 @@ final class Session: ObservableObject {
 
     /// Leaving the screen: keep the stream alive for the grace period iOS
     /// allows (~30 s) rather than cutting it at once, so an approval that
-    /// lands right after you swipe home still reaches the Live Activity and
-    /// the island. After that, iOS suspends us anyway; disconnect cleanly so
-    /// the cursor is written down at a known point.
+    /// lands right after you swipe home still reaches the notification
+    /// banner and updates the badge.  The Live Activity lifecycle ends every
+    /// activity the moment the app backgrounds, so this linger buys it
+    /// nothing there — only the banner and badge benefit.  After that, iOS
+    /// suspends us anyway; disconnect cleanly so the cursor is written down
+    /// at a known point.
     func linger() {
         guard streamTask != nil, lingerTask == .invalid else { disconnect(); return }
         // A previous request can leave a sleeper behind when iOS refuses the
@@ -799,9 +805,11 @@ final class Session: ObservableObject {
     }
 
     /// The same answer, from something that only has the ids — the Live
-    /// Activity's buttons.
-    func answer(threadId: String, requestId: String, choice: String, isPermission: Bool) async {
-        await perform {
+    /// Activity's buttons.  Returns whether it reached the harness; the
+    /// intent ignores that, a notification action does not.
+    @discardableResult
+    func answer(threadId: String, requestId: String, choice: String, isPermission: Bool) async -> Bool {
+        return await perform {
             // Permission cards answer allow/deny; a question answers with
             // the chosen text. The harness tells them apart by `behavior`.
             let behavior = OptionCard.responseBehavior(for: choice, isPermission: isPermission)
@@ -815,6 +823,134 @@ final class Session: ObservableObject {
                 try await $0.respond(threadId: threadId, requestId: requestId, behavior: "answer", message: choice)
             }
         }
+    }
+
+    /// A bare notification-action background launch gets a much smaller
+    /// execution budget than the 15 s full background-fetch grant in
+    /// `CompanionAppDelegate` — long enough for one hydrate-and-respond
+    /// round trip, plus rebuilding the client first on a cold launch, short
+    /// enough to stay well inside what iOS is likely to allow before
+    /// reclaiming the process.
+    private static let approvalActionTimeoutNanoseconds: UInt64 = 8_000_000_000
+
+    /// Signals "this attempt could not even be made" (no client within the
+    /// timeout, or the answer itself failed) to `BackgroundRefreshCoordinator`,
+    /// which maps any thrown error to `.failed` — distinct from a clean
+    /// `false` return, which means "answered nothing on purpose because the
+    /// request was ambiguous."
+    private struct ApprovalActionFailed: Error {}
+
+    /// What answering a notification action actually accomplished.  The
+    /// banner is gone the instant the user taps an action, so this is the
+    /// only way a follow-up notification knows what to say.
+    enum ApprovalActionOutcome: Equatable {
+        case delivered
+        case needsAppOpened
+        case failed
+    }
+
+    /// Every pending approval the session knows about, flattened to the
+    /// three fields the resolver needs.  A method on `Session`, which is
+    /// `@MainActor`, so it reads `state` on the actor that owns it.
+    private func pendingApprovalRecords() -> [PendingApproval] {
+        state.pendingApprovals.compactMap { entry in
+            guard let card = entry.message.card, let requestId = card.requestId else { return nil }
+            return PendingApproval(
+                threadId: entry.threadId,
+                requestId: requestId,
+                isPermission: card.isPermission
+            )
+        }
+    }
+
+    /// Approve or deny from a notification action — Approve/Deny on a lock
+    /// screen banner, or the equivalent remote push.  Resolves which request
+    /// to answer with `ApprovalResolver` — never by picking "whatever is
+    /// pending on this thread", the bug PR #383's review caught, which can
+    /// send a permission deny for a question or a text answer for a
+    /// permission card.  Rebuilds the client first if the action
+    /// cold-launched the process, the same bootstrap `openNotification`
+    /// below already relies on, and bounds the whole attempt so the
+    /// notification's completion handler is never left hanging.  Either way
+    /// this defers to the same `answer(threadId:requestId:choice:isPermission:)`
+    /// above, the one `AnswerApprovalIntent` calls.
+    @discardableResult
+    func answerPendingRequest(target: NotificationTarget, approve: Bool) async -> ApprovalActionOutcome {
+        if client == nil { connect() }
+
+        let threadId = target.threadId
+        let choice = approve ? "Approve" : "Deny"
+        // Declared with the same shape as `CompanionAppDelegate.onRemoteRefresh`,
+        // and reached the same way: `run` takes a plain `@Sendable` closure,
+        // which is NOT isolated to anything, and `state` and `client` belong
+        // to this main-actor type.  Naming the isolation here is what lets
+        // the body read them at all.
+        let attempt: @MainActor @Sendable () async throws -> Bool = {
+            // Poll rather than fail on the first check: a cold launch may
+            // still be rebuilding the client — `restore()` reading the
+            // keychain — right now, and one moment later it may well exist.
+            // No inner cap of its own: `run`'s 8 s deadline above is the
+            // only timeout, and cancelling this sleep when that deadline
+            // hits is what reaches `.failed` correctly.
+            while self.client == nil {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                self.connect()
+            }
+            guard let client = self.client else { throw ApprovalActionFailed() }
+
+            var candidates = self.pendingApprovalRecords()
+            if candidates.first(where: { $0.threadId == threadId }) == nil {
+                // Nothing usable yet — an older harness never named the
+                // request, or this is the first thing the session has
+                // heard about it after a cold launch.
+                _ = try? await self.hydrateSnapshot(using: client)
+                candidates = self.pendingApprovalRecords()
+            }
+
+            switch ApprovalResolver.resolve(
+                threadId: threadId, requestId: target.requestId, kind: target.kind, pending: candidates
+            ) {
+            case let .answer(requestId, isPermission):
+                let sent = await self.answer(
+                    threadId: threadId, requestId: requestId, choice: choice, isPermission: isPermission
+                )
+                if !sent { throw ApprovalActionFailed() }
+                return true
+            case .openApp:
+                return false
+            }
+        }
+        let bounded = await BackgroundRefreshCoordinator.run(
+            timeoutNanoseconds: Self.approvalActionTimeoutNanoseconds
+        ) { try await attempt() }
+
+        let outcome: ApprovalActionOutcome
+        switch bounded {
+        case .newData: outcome = .delivered
+        case .noData: outcome = .needsAppOpened
+        case .failed: outcome = .failed
+        }
+
+        switch outcome {
+        case .delivered:
+            break
+        case .needsAppOpened:
+            // The same destination the explicit Open action already lands
+            // on — prepared now so it is there the moment the app opens.
+            await openNotification(target)
+            NotificationCoordinator.shared.deliverFollowUp(
+                title: "Open BotFleet to Answer",
+                body: "Open the app to answer this request.",
+                target: target
+            )
+        case .failed:
+            NotificationCoordinator.shared.deliverFollowUp(
+                title: "Couldn't Deliver That Answer",
+                body: "Open BotFleet to try again.",
+                target: target
+            )
+        }
+        return outcome
     }
 
     /// Make a new bot. The harness chooses its name, colour and greeting, so
@@ -1477,14 +1613,23 @@ final class Session: ObservableObject {
         }
     }
 
-    private func perform(quietly: Bool = false, _ body: (CompanionClient) async throws -> Void) async {
-        guard let client else { return }
+    /// Returns whether the body got all the way through.  Almost every
+    /// caller ignores that — the error banner is the answer they want — but
+    /// a notification action has no banner to show and has to know, and
+    /// reading `actionError` to find out would mean clearing a message the
+    /// user may be looking at.
+    @discardableResult
+    private func perform(quietly: Bool = false, _ body: (CompanionClient) async throws -> Void) async -> Bool {
+        guard let client else { return false }
         do {
             try await body(client)
+            return true
         } catch let error as APIError where error.isUnauthorized {
             status = .unauthorized
+            return false
         } catch {
             if !quietly { actionError = error.localizedDescription }
+            return false
         }
     }
 }

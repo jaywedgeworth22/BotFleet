@@ -141,14 +141,23 @@ export function requestPeerApproval(
 /** Called by the respond endpoints BEFORE forwarding to the provider
  * adapter. Returns true if the requestId belonged to a pending peer
  * approval (and resolves it); false if it was a provider request and
- * the endpoint should keep going. */
+ * the endpoint should keep going.
+ *
+ * `threadId` is the thread the answer arrived on, and it must match the one
+ * the card was raised on. Every other answer path already checks that; this
+ * was the one that did not, which let a request id learned from one thread
+ * settle a peer approval owned by another. */
 export function resolvePeerComms(
   _bus: ApprovalBus,
   requestId: string,
   behavior: string | undefined,
+  threadId: string,
 ): boolean {
   const pending = pendingComms.get(requestId);
   if (!pending) return false;
+  // Not this thread's card: leave it pending and let the caller fall
+  // through, exactly as it would for a request id it has never seen.
+  if (pending.threadId !== threadId) return false;
   pendingComms.delete(requestId);
   clearTimeout(pending.timer);
   const allow = behavior === "allow";

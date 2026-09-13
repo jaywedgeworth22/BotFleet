@@ -234,6 +234,25 @@ describe("DeviceRegistry", () => {
     expect(registry.clearPushToken("missing")).toBe(false);
   });
 
+  it("clears only the token Apple actually rejected", () => {
+    // A send can be in flight for seconds while the phone reinstalls and
+    // registers a new token.  Clearing on the old one's 410 would throw the
+    // good token away and leave a paired, reachable phone silent.
+    const registry = new DeviceRegistry();
+    const { device } = pair(registry);
+    const stale = "a".repeat(64);
+    const fresh = "b".repeat(64);
+
+    expect(registry.setPushToken(device.id, stale)).toBe(true);
+    expect(registry.setPushToken(device.id, fresh)).toBe(true);
+    expect(registry.clearPushToken(device.id, stale)).toBe(false);
+    expect(registry.pushTokens()).toEqual([{ deviceId: device.id, token: fresh }]);
+
+    // The token that is actually current still clears, however it was cased.
+    expect(registry.clearPushToken(device.id, fresh.toUpperCase())).toBe(true);
+    expect(registry.pushTokens()).toEqual([]);
+  });
+
   it("rolls cloud desktop access back when it cannot be saved", () => {
     const registry = new DeviceRegistry();
     const { token, device } = pair(registry);

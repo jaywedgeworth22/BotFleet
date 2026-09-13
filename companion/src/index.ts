@@ -140,6 +140,17 @@ const service = (): ServiceInfo => ({
 });
 
 const connectedDevices = createConnectedDeviceTracker();
+// Started before the proxy so both servers can report the sender's health:
+// the pairing page shows it to whoever is at the computer, and the phone
+// reads it to explain why a closed-app notification never arrived.
+const pushWatch = watchHarnessNotifications({
+  harnessPort: HARNESS_PORT,
+  connectedIds: connectedDevices.ids,
+  tokensForDisconnected: () => devices.pushTokens(),
+  forgetToken: (id, token) => {
+    devices.clearPushToken(id, token);
+  },
+});
 const proxy = createProxyHandler({
     harnessPort: HARNESS_PORT,
     // `authenticate` also stamps lastSeenAt, which is what makes the control
@@ -154,15 +165,8 @@ const proxy = createProxyHandler({
     endpoints: () => companionEndpointCandidates(COMPANION_PORT, undefined, undefined, hostedUrl),
     connected: connectedDevices.open,
     setPushToken: (id, token) => devices.setPushToken(id, token),
+    pushHealth: pushWatch.health,
   });
-watchHarnessNotifications({
-  harnessPort: HARNESS_PORT,
-  connectedIds: connectedDevices.ids,
-  tokensForDisconnected: () => devices.pushTokens(),
-  forgetToken: (id) => {
-    devices.clearPushToken(id);
-  },
-});
 const companion = createServer(proxy);
 const managedOrigin = PRIVATE_ORIGIN ? createServer(proxy) : null;
 
@@ -176,6 +180,7 @@ const control = createControlServer({
   discovery: () => ({ advertising: mdns.advertising, name: service().name }),
   connectedDeviceIds: connectedDevices.ids,
   disconnectDevice: connectedDevices.disconnect,
+  pushHealth: pushWatch.health,
 });
 
 /** Bind a server, turning a bind failure into a sentence rather than a stack
@@ -288,6 +293,9 @@ const shutdown = async (signal: string): Promise<void> => {
   // the watcher first, or a tick could re-advertise the record the next
   // line just withdrew
   watcher.stop();
+  // The push sender holds its own SSE stream to the harness and a retry
+  // timer; without this, stop means stopped everywhere except here.
+  pushWatch.stop();
   await mdns.stop().catch(() => {});
   // close() waits for open connections, and an SSE stream never ends on its
   // own — drop the sockets so "stop" means stopped, now.

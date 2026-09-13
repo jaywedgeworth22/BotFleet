@@ -13,6 +13,7 @@
 // serve. Nothing upstream has to change, or even know this exists.
 import { request as httpRequest, type IncomingMessage, type ServerResponse } from "node:http";
 
+import type { PushSenderHealth } from "./apns.ts";
 import { bearerToken } from "./devices.ts";
 import {
   COMPANION_ENDPOINT_KINDS,
@@ -57,6 +58,9 @@ export interface ProxyOptions {
   connected?: (deviceId: string, disconnect: () => void) => () => void;
   /** Store an APNs device token for closed-app wake. */
   setPushToken?: (deviceId: string, token: string) => boolean;
+  /** How the closed-app wake sender is doing.  Counts, timestamps, and the
+   * last status Apple returned — nothing derived from the signing key. */
+  pushHealth?: () => PushSenderHealth;
   /** How long the harness may take to produce response *headers*. Optional,
    * and only ever set by tests — the default is the one that ships. */
   headersTimeoutMs?: number;
@@ -304,6 +308,13 @@ export function createProxyHandler(options: ProxyOptions) {
     // default-deny checks above and never send it to the harness.
     if (method === "GET" && path === "/api/companion/endpoints") {
       return sendJson(res, 200, endpointSnapshot(options));
+    }
+
+    // Also sidecar-owned: whether a push could reach this phone at all when
+    // it stops streaming.  A phone that never sees a closed-app notification
+    // cannot otherwise tell a quiet fleet from a sender with no key.
+    if (method === "GET" && path === "/api/companion/push-health") {
+      return sendJson(res, 200, options.pushHealth?.() ?? { configured: false });
     }
 
     if (method === "POST" && path === "/api/companion/push-token") {

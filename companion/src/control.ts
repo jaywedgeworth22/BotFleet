@@ -14,6 +14,7 @@
 // withhold.
 import { createServer, type Server, type ServerResponse } from "node:http";
 
+import type { PushSenderHealth } from "./apns.ts";
 import type { DeviceRegistry } from "./devices.ts";
 import { companionEndpointCandidates, hostedCompanionUrl } from "./endpoints.ts";
 import { lanAddresses, tailnetName, tailscaleAddress } from "./listener.ts";
@@ -35,6 +36,9 @@ export interface ControlOptions {
   connectedDeviceIds?: () => string[];
   /** Terminate every authenticated event stream owned by a revoked device. */
   disconnectDevice?: (deviceId: string) => void;
+  /** How closed-app phone wake is doing — configured, last send, last error,
+   * tokens registered.  Never anything about the signing key. */
+  pushHealth?: () => PushSenderHealth;
 }
 
 /** The host out of a `Host` header, port removed.
@@ -198,6 +202,9 @@ export function companionState(options: ControlOptions) {
     devices: options.devices.list(),
     connectedDeviceIds: options.connectedDeviceIds?.() ?? [],
     discovery: options.discovery(),
+    // A push path that quietly stopped working looks exactly like a quiet
+    // fleet from the pairing page.  This is the difference.
+    push: options.pushHealth?.() ?? null,
   };
 }
 
@@ -349,6 +356,7 @@ function page(): string {
   <section id="where"></section>
   <section id="pair"></section>
   <section id="devices"></section>
+  <section id="push"></section>
 </main>
 <script type="module">
 /** Shorthand for the handful of nodes this page updates. */
@@ -411,6 +419,30 @@ function render(s) {
           (d.cloudDesktopAccess ? "Cloud desktop on" : "Allow cloud desktop") + "</button></div>" +
           "<button data-revoke='" + esc(d.id) + "'>Remove</button></li>").join("") + "</ul>"
       : "<p class=dim>No phones are paired yet.</p>");
+
+  // Closed-app wake is the one thing on this page with no visible symptom
+  // when it breaks: a phone that is paired, reachable and simply never
+  // buzzes looks exactly like a quiet fleet.
+  el("push").innerHTML =
+    "<h2>Closed-app notifications</h2>" +
+    (!s.push
+      ? "<p class=dim>Not reported by this sidecar.</p>"
+      : s.push.keyRejected
+        ? "<p>Apple refused the signing key (<code>" + esc(s.push.keyRejected) + "</code>). " +
+          "Replace the key file to turn pushes back on.</p>"
+        : !s.push.configured
+          ? "<p class=dim>No signing key found, so a phone that is not open will not be woken. " +
+            "The key is looked for again every few minutes.</p>"
+          : "<p>On, for " + s.push.tokensRegistered + " " +
+            (s.push.tokensRegistered === 1 ? "phone" : "phones") + "." +
+            (s.push.lastSentAt ? " Last sent " + ago(s.push.lastSentAt) + "." : " Nothing sent yet.") +
+            "</p>" +
+            (s.push.lastError
+              ? "<p class=dim>Last error: <code>" + esc(String(s.push.lastError)) + "</code> " + ago(s.push.lastErrorAt) + ".</p>"
+              : "") +
+            (s.push.dropped
+              ? "<p class=dim>" + s.push.dropped + " dropped from a full backlog.</p>"
+              : ""));
 
   el("start")?.addEventListener("click", async () => render(await api("/pairing", "POST")));
   el("cancel")?.addEventListener("click", async () => render(await api("/pairing", "DELETE")));

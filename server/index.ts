@@ -1948,7 +1948,16 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!card || card.answered) return;
         // the bot is not working now — it is waiting on a person
         if (asker.busy) store.setActivity(asker.id, "waiting-on-you");
-        notify(buildNotification(permission ? "approval" : "question", asker, event.threadId, event.summary));
+        // The request id travels with the frame so a phone can answer THIS
+        // card from a lock screen rather than looking for whatever is
+        // pending on the thread — which is the wrong card as soon as two
+        // are open at once.
+        notify(
+          buildNotification(permission ? "approval" : "question", asker, event.threadId, event.summary, {
+            requestId: event.requestId,
+            tool: event.tool,
+          }),
+        );
       };
       if (reviewTask && reviewMode === "enforce") {
         // Avoid buzzing the owner for a card the reviewer is about to answer.
@@ -8134,7 +8143,7 @@ const server = createServer(async (req, res) => {
       // peer-approval intercept: harness-native cards carry a requestId
       // that lives in peer-approval's pending map. Resolve them here so
       // the provider adapter never sees a request it didn't raise.
-      if (resolvePeerComms(approvalBus, String(body.requestId), behavior)) {
+      if (resolvePeerComms(approvalBus, String(body.requestId), behavior, bot.threadId)) {
         return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
       }
       const outcome = await answerRequest(bot.threadId, bot.modelSelection.instanceId, String(body.requestId), behavior, body.message, { id: bot.id, name: bot.name });
@@ -8171,7 +8180,7 @@ const server = createServer(async (req, res) => {
       // peer-approval intercept (see /api/bots/:id/respond above). A peer card
       // belongs to the bus rather than to a speaker, so resolve it before we go
       // looking for one — a room between turns has no speaker to find.
-      if (resolvePeerComms(approvalBus, requestId, behavior)) {
+      if (resolvePeerComms(approvalBus, requestId, behavior, threadId)) {
         return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
       }
       const group = store.groupByThread(threadId);
