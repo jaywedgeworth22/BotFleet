@@ -141,4 +141,76 @@ final class NotificationActionsTests: XCTestCase {
         XCTAssertEqual(OptionCard.responseBehavior(for: "Approve", isPermission: true), "allow")
         XCTAssertEqual(OptionCard.responseBehavior(for: "Deny", isPermission: true), "deny")
     }
+
+    // MARK: - Approval resolution (PR #383 review)
+
+    /// P1 regression.  `state.pendingApprovals` is newest-first across every
+    /// thread; the code this replaced picked `pending.first { $0.threadId
+    /// == threadId }`, which ignores `requestId` entirely and returns
+    /// whichever card is newest — the WRONG one the moment two are open on
+    /// one thread.  Reproduce that exact selection here first, prove it
+    /// picks the wrong card, then prove `ApprovalResolver` does not.
+    func testRequestIdNamingTheOlderCardAnswersThatCardNotTheNewestOnTheThread() {
+        // Newest first, matching `state.pendingApprovals`'s own ordering.
+        let pending = [
+            PendingApproval(threadId: "t1", requestId: "newer-question", isPermission: false),
+            PendingApproval(threadId: "t1", requestId: "older-permission", isPermission: true),
+        ]
+
+        let buggyPick = pending.first { $0.threadId == "t1" }
+        XCTAssertEqual(buggyPick?.requestId, "newer-question", "sanity: reproducing the bug this test guards against")
+        XCTAssertNotEqual(buggyPick?.isPermission, true, "the buggy pick does not belong to \"older-permission\"")
+
+        XCTAssertEqual(
+            ApprovalResolver.resolve(threadId: "t1", requestId: "older-permission", kind: "approval", pending: pending),
+            .answer(requestId: "older-permission", isPermission: true)
+        )
+    }
+
+    /// The id happens to exist, but only on a different thread — its
+    /// `isPermission` must never leak into this answer.
+    func testRequestIdOnlyOnAnotherThreadFallsBackToKindNotThatCard() {
+        let pending = [PendingApproval(threadId: "other-thread", requestId: "req-1", isPermission: true)]
+        XCTAssertEqual(
+            ApprovalResolver.resolve(threadId: "t1", requestId: "req-1", kind: "question", pending: pending),
+            .answer(requestId: "req-1", isPermission: false)
+        )
+    }
+
+    func testRequestIdWithNothingInMemoryDerivesIsPermissionFromKind() {
+        XCTAssertEqual(
+            ApprovalResolver.resolve(threadId: "t1", requestId: "req-1", kind: "approval", pending: []),
+            .answer(requestId: "req-1", isPermission: true)
+        )
+        XCTAssertEqual(
+            ApprovalResolver.resolve(threadId: "t1", requestId: "req-1", kind: "question", pending: []),
+            .answer(requestId: "req-1", isPermission: false)
+        )
+    }
+
+    func testNoRequestIdWithExactlyOnePendingOnThreadAnswersIt() {
+        let pending = [PendingApproval(threadId: "t1", requestId: "req-1", isPermission: true)]
+        XCTAssertEqual(
+            ApprovalResolver.resolve(threadId: "t1", requestId: nil, kind: nil, pending: pending),
+            .answer(requestId: "req-1", isPermission: true)
+        )
+    }
+
+    /// No id to be right with, and more than one candidate — guessing
+    /// "the newest" is the same bug as the regression test above, just
+    /// without an id to expose it.  Never guess; open the app instead.
+    func testNoRequestIdWithTwoPendingOnThreadOpensAppInsteadOfGuessing() {
+        let pending = [
+            PendingApproval(threadId: "t1", requestId: "req-1", isPermission: true),
+            PendingApproval(threadId: "t1", requestId: "req-2", isPermission: false),
+        ]
+        XCTAssertEqual(
+            ApprovalResolver.resolve(threadId: "t1", requestId: nil, kind: "approval", pending: pending),
+            .openApp
+        )
+    }
+
+    func testNoRequestIdWithNothingPendingOnThreadOpensApp() {
+        XCTAssertEqual(ApprovalResolver.resolve(threadId: "t1", requestId: nil, kind: "approval", pending: []), .openApp)
+    }
 }

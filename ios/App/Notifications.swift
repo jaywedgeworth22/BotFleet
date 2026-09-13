@@ -70,6 +70,26 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         center.setBadgeCount(max(0, count))
     }
 
+    /// A phone-local follow-up for when a notification action could not
+    /// finish on its own — the original notification is already gone by
+    /// the time the user would see this, so it needs its own banner.  Open
+    /// only: this never carries Approve/Deny, so it cannot itself become
+    /// the same "which request?" problem it exists to report.
+    func deliverFollowUp(title: String, body: String, target: NotificationTarget) {
+        let content = UNMutableNotificationContent()
+        content.title = title
+        content.body = body
+        content.sound = .default
+        content.categoryIdentifier = NotificationCategoryIdentifier.update
+        content.threadIdentifier = target.threadId
+        content.userInfo = ["threadId": target.threadId, "botId": target.botId]
+        center.add(UNNotificationRequest(
+            identifier: "botfleet.followup.\(target.threadId).\(UUID().uuidString)",
+            content: content,
+            trigger: nil
+        ))
+    }
+
     func userNotificationCenter(
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification,

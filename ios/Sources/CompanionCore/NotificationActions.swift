@@ -106,3 +106,68 @@ public extension NotificationTarget {
         }
     }
 }
+
+// MARK: - Resolving which request Approve/Deny actually answers
+
+/// The minimum slice of a pending card an approval decision needs — kept
+/// separate from `OptionCard`/`Message` so `ApprovalResolver` never has to
+/// know how a card is stored, only what it means.
+public struct PendingApproval: Equatable, Sendable {
+    public let threadId: String
+    public let requestId: String
+    public let isPermission: Bool
+
+    public init(threadId: String, requestId: String, isPermission: Bool) {
+        self.threadId = threadId
+        self.requestId = requestId
+        self.isPermission = isPermission
+    }
+}
+
+/// What a notification's Approve/Deny action should actually do.
+public enum ApprovalResolution: Equatable, Sendable {
+    /// Answer this exact request.  `isPermission` decides allow/deny
+    /// behavior versus a free-text answer.
+    case answer(requestId: String, isPermission: Bool)
+    /// No single pending request can be identified with confidence —
+    /// bring the app to the thread instead of guessing which one the user
+    /// meant.
+    case openApp
+}
+
+/// Decides which pending request an Approve/Deny notification action
+/// answers.  Pure and total on purpose: PR #383's review found that the
+/// code this replaced picked a card by "newest pending on this thread" —
+/// which is silently the WRONG card the moment two requests are open on
+/// one thread, or absent entirely on a cold-launched process.  A Deny on a
+/// question, misrouted to a permission card, is sent as a permission deny
+/// with no message; the mirror case sends `behavior: "answer"` for a
+/// permission card, which the harness's proxy fails closed with no audit
+/// row.  Neither is safe to guess past — `swift test` pins the rule here
+/// instead.
+public enum ApprovalResolver {
+    public static func resolve(
+        threadId: String,
+        requestId: String?,
+        kind: String?,
+        pending: [PendingApproval]
+    ) -> ApprovalResolution {
+        if let requestId {
+            // A card matching both the thread AND the exact request id
+            // knows its own `isPermission` for certain.  A cold launch, or
+            // an id that only exists on a different thread, must never
+            // borrow an unrelated card's answer shape — `kind` is
+            // authoritative there: the harness builds it as
+            // `permission ? "approval" : "question"`.
+            let isPermission = pending.first { $0.threadId == threadId && $0.requestId == requestId }?.isPermission
+                ?? (kind == "approval")
+            return .answer(requestId: requestId, isPermission: isPermission)
+        }
+        // An older harness names no request at all.  Guessing "the newest
+        // pending card on this thread" is exactly the bug above — safe
+        // only when there is exactly one candidate to guess.
+        let onThread = pending.filter { $0.threadId == threadId }
+        guard onThread.count == 1, let only = onThread.first else { return .openApp }
+        return .answer(requestId: only.requestId, isPermission: only.isPermission)
+    }
+}

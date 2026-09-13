@@ -119,12 +119,7 @@ final class Session: ObservableObject {
             Task { @MainActor in await self?.openNotification(target) }
         }
         NotificationCoordinator.shared.approvalActionHandler = { [weak self] target, approve in
-            await self?.answerPendingRequest(
-                threadId: target.threadId,
-                requestId: target.requestId,
-                kind: target.kind,
-                approve: approve
-            )
+            await self?.answerPendingRequest(target: target, approve: approve)
         }
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-store-preview"),
@@ -810,9 +805,11 @@ final class Session: ObservableObject {
     }
 
     /// The same answer, from something that only has the ids — the Live
-    /// Activity's buttons.
-    func answer(threadId: String, requestId: String, choice: String, isPermission: Bool) async {
-        await perform {
+    /// Activity's buttons.  Returns whether it reached the harness; the
+    /// intent ignores that, a notification action does not.
+    @discardableResult
+    func answer(threadId: String, requestId: String, choice: String, isPermission: Bool) async -> Bool {
+        return await perform {
             // Permission cards answer allow/deny; a question answers with
             // the chosen text. The harness tells them apart by `behavior`.
             let behavior = OptionCard.responseBehavior(for: choice, isPermission: isPermission)
@@ -828,44 +825,108 @@ final class Session: ObservableObject {
         }
     }
 
+    /// A bare notification-action background launch gets a much smaller
+    /// execution budget than the 15 s full background-fetch grant in
+    /// `CompanionAppDelegate` — long enough for one hydrate-and-respond
+    /// round trip, plus rebuilding the client first on a cold launch, short
+    /// enough to stay well inside what iOS is likely to allow before
+    /// reclaiming the process.
+    private static let approvalActionTimeoutNanoseconds: UInt64 = 8_000_000_000
+
+    /// Signals "this attempt could not even be made" (no client within the
+    /// timeout, or the answer itself failed) to `BackgroundRefreshCoordinator`,
+    /// which maps any thrown error to `.failed` — distinct from a clean
+    /// `false` return, which means "answered nothing on purpose because the
+    /// request was ambiguous."
+    private struct ApprovalActionFailed: Error {}
+
+    /// What answering a notification action actually accomplished.  The
+    /// banner is gone the instant the user taps an action, so this is the
+    /// only way a follow-up notification knows what to say.
+    enum ApprovalActionOutcome: Equatable {
+        case delivered
+        case needsAppOpened
+        case failed
+    }
+
     /// Approve or deny from a notification action — Approve/Deny on a lock
-    /// screen banner, or the equivalent remote push.  A harness new enough
-    /// to send `requestId` (see `NotificationFrame`) answers that exact
-    /// request directly.  An older harness sends only `threadId`/`botId`,
-    /// so this falls back to resolving the thread's current pending card —
-    /// the only option before `requestId` existed.  Either way this defers
-    /// to the same `answer(threadId:requestId:choice:isPermission:)` above,
-    /// the one `AnswerApprovalIntent` calls.
-    func answerPendingRequest(threadId: String, requestId: String?, kind: String?, approve: Bool) async {
+    /// screen banner, or the equivalent remote push.  Resolves which request
+    /// to answer with `ApprovalResolver` — never by picking "whatever is
+    /// pending on this thread", the bug PR #383's review caught, which can
+    /// send a permission deny for a question or a text answer for a
+    /// permission card.  Rebuilds the client first if the action
+    /// cold-launched the process, the same bootstrap `openNotification`
+    /// below already relies on, and bounds the whole attempt so the
+    /// notification's completion handler is never left hanging.  Either way
+    /// this defers to the same `answer(threadId:requestId:choice:isPermission:)`
+    /// above, the one `AnswerApprovalIntent` calls.
+    @discardableResult
+    func answerPendingRequest(target: NotificationTarget, approve: Bool) async -> ApprovalActionOutcome {
+        if client == nil { connect() }
+
+        let threadId = target.threadId
         let choice = approve ? "Approve" : "Deny"
-        func cardInMemory() -> OptionCard? {
-            state.pendingApprovals.first { $0.threadId == threadId }?.message.card
+        let bounded = await BackgroundRefreshCoordinator.run(
+            timeoutNanoseconds: Self.approvalActionTimeoutNanoseconds
+        ) { [weak self] in
+            guard let self, let client = self.client else { throw ApprovalActionFailed() }
+
+            func pendingOnRecord() -> [PendingApproval] {
+                self.state.pendingApprovals.compactMap { entry in
+                    guard let card = entry.message.card, let requestId = card.requestId else { return nil }
+                    return PendingApproval(threadId: entry.threadId, requestId: requestId, isPermission: card.isPermission)
+                }
+            }
+            var candidates = pendingOnRecord()
+            if candidates.first(where: { $0.threadId == threadId }) == nil {
+                // Nothing usable yet — an older harness never named the
+                // request, or this is the first thing the session has
+                // heard about it after a cold launch.
+                _ = try? await self.hydrateSnapshot(using: client)
+                candidates = pendingOnRecord()
+            }
+
+            switch ApprovalResolver.resolve(
+                threadId: threadId, requestId: target.requestId, kind: target.kind, pending: candidates
+            ) {
+            case let .answer(requestId, isPermission):
+                let sent = await self.answer(
+                    threadId: threadId, requestId: requestId, choice: choice, isPermission: isPermission
+                )
+                if !sent { throw ApprovalActionFailed() }
+                return true
+            case .openApp:
+                return false
+            }
         }
 
-        if let requestId {
-            // A permission card allows/denies; a question answers with
-            // text.  A card already in memory knows which; otherwise the
-            // frame's kind is the only signal available.
-            let isPermission = cardInMemory()?.isPermission ?? (kind == "approval")
-            await answer(threadId: threadId, requestId: requestId, choice: choice, isPermission: isPermission)
-            return
+        let outcome: ApprovalActionOutcome
+        switch bounded {
+        case .newData: outcome = .delivered
+        case .noData: outcome = .needsAppOpened
+        case .failed: outcome = .failed
         }
 
-        guard let client else { return }
-        // A cold-launched process has not hydrated yet; the notification
-        // action may be this session's first sign the request even exists.
-        var card = cardInMemory()
-        if card?.requestId == nil {
-            _ = try? await hydrateSnapshot(using: client)
-            card = cardInMemory()
+        switch outcome {
+        case .delivered:
+            break
+        case .needsAppOpened:
+            // The same destination the explicit Open action already lands
+            // on — prepared now so it is there the moment the app opens.
+            await openNotification(target)
+            NotificationCoordinator.shared.deliverFollowUp(
+                title: "Open BotFleet to Answer",
+                body: "Open the app to answer this request.",
+                target: target
+            )
+        case .failed:
+            NotificationCoordinator.shared.deliverFollowUp(
+                title: "Couldn't Deliver That Answer",
+                body: "Open BotFleet to try again.",
+                target: target
+            )
         }
-        guard let resolvedRequestId = card?.requestId else { return }
-        await answer(
-            threadId: threadId,
-            requestId: resolvedRequestId,
-            choice: choice,
-            isPermission: card?.isPermission ?? false
-        )
+        return outcome
     }
 
     /// Make a new bot. The harness chooses its name, colour and greeting, so
@@ -1528,14 +1589,23 @@ final class Session: ObservableObject {
         }
     }
 
-    private func perform(quietly: Bool = false, _ body: (CompanionClient) async throws -> Void) async {
-        guard let client else { return }
+    /// Returns whether the body got all the way through.  Almost every
+    /// caller ignores that — the error banner is the answer they want — but
+    /// a notification action has no banner to show and has to know, and
+    /// reading `actionError` to find out would mean clearing a message the
+    /// user may be looking at.
+    @discardableResult
+    private func perform(quietly: Bool = false, _ body: (CompanionClient) async throws -> Void) async -> Bool {
+        guard let client else { return false }
         do {
             try await body(client)
+            return true
         } catch let error as APIError where error.isUnauthorized {
             status = .unauthorized
+            return false
         } catch {
             if !quietly { actionError = error.localizedDescription }
+            return false
         }
     }
 }
