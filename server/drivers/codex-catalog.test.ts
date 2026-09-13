@@ -152,10 +152,10 @@ name = "oMLX"
     });
   });
 
-  it("preserves an explicitly stored retired official slug as a custom selection", async () => {
+  it.each(['model_provider = "openai"', ""])("preserves a retired official slug with provider config %j", async (provider) => {
     const home = scratchHome({
       "config.toml": `
-model_provider = "openai"
+${provider}
 model = "gpt-5.4"
 `,
     });
@@ -166,6 +166,20 @@ model = "gpt-5.4"
     expect(catalog.default).toBe(stored);
     expect(catalog.options).toContainEqual({
       id: stored,
+      label: "gpt-5.4",
+      custom: true,
+    });
+  });
+
+  it("preserves profile models when the main provider defaults to OpenAI", async () => {
+    const home = scratchHome({
+      "config.toml": 'model = "gpt-5.6-sol"\n',
+      "legacy.config.toml": 'model = "gpt-5.4"\n',
+    });
+    const catalog = await readCodexModelCatalog({ HOME: home });
+    expect(catalog.default).toBe("gpt-5.6-sol");
+    expect(catalog.options).toContainEqual({
+      id: encodeCodexSelection("openai", "gpt-5.4"),
       label: "gpt-5.4",
       custom: true,
     });

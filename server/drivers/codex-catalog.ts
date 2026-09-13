@@ -357,7 +357,7 @@ async function probeProviderModels(
   }
 }
 
-/** Local slugs Codex already knows, plus the three official cloud rows. */
+/** Local slugs Codex already knows, plus the available official cloud rows. */
 export async function readCodexModelCatalog(
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
@@ -386,7 +386,8 @@ export async function readCodexModelCatalog(
     extras.push({ provider, model });
   };
 
-  remember(main.modelProvider, main.model);
+  const mainProvider = main.modelProvider ?? OFFICIAL_CODEX_PROVIDER;
+  remember(mainProvider, main.model);
 
   for (const file of listDir(home)) {
     if (!file.endsWith(".config.toml")) continue;
@@ -394,7 +395,7 @@ export async function readCodexModelCatalog(
     for (const provider of profile.providers) {
       if (!known.has(provider.id)) known.set(provider.id, provider);
     }
-    remember(profile.modelProvider ?? main.modelProvider, profile.model);
+    remember(profile.modelProvider ?? mainProvider, profile.model);
   }
 
   for (const [encoded, _label] of named) {
@@ -423,14 +424,12 @@ export async function readCodexModelCatalog(
     });
   }
 
-  const configured = main.model && main.modelProvider
-    ? main.modelProvider === OFFICIAL_CODEX_PROVIDER &&
+  const configured = main.model
+    ? mainProvider === OFFICIAL_CODEX_PROVIDER &&
       official.options.some((option) => option.id === main.model)
       ? main.model
-      : encodeCodexSelection(main.modelProvider, main.model)
-    : main.model && seen.has(main.model)
-      ? main.model
-      : null;
+      : encodeCodexSelection(mainProvider, main.model)
+    : null;
 
   return mergeLocalInject(
     {
