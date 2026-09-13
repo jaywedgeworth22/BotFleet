@@ -563,7 +563,7 @@ export function UsageSection() {
                           : "bg-inset text-ink-secondary"
                       }`}
                     >
-                      {isCapped ? "At Usage Cap" : isPartial ? "Partial cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
+                      {isCapped ? "At Usage Cap" : isPartial ? "Partial Cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
                     </span>
                     <ChevronDown
                       size={14}
@@ -586,7 +586,7 @@ export function UsageSection() {
                 )}
                 {miniMaxVideoWindows.length > 0 && (
                   <details className="ml-9 mt-1.5 rounded-lg border border-hairline/20 bg-inset/20 px-2.5 py-1.5 text-[11px]">
-                    <summary className="cursor-pointer text-ink-secondary">Video quota ({miniMaxVideoWindows.length})</summary>
+                    <summary className="cursor-pointer text-ink-secondary">Video Quota ({miniMaxVideoWindows.length})</summary>
                     <div className="mt-1.5 flex flex-col gap-1">
                       {miniMaxVideoWindows.map((window) => {
                         // SAFETY: `/api/quotas` windows include id/resetAt; QuotaWindowMatch omits these optional transport fields.

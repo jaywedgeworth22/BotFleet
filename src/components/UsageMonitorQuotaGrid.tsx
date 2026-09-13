@@ -4,17 +4,32 @@ import { formatResetCountdown } from "@/lib/quota-display";
 function percentLabel(window: UsageMonitorQuotaWindow): string {
   const percent = window.remainingPercent;
   if (percent == null || !Number.isFinite(percent) || percent < 0 || percent > 100) {
-    return "Not reported";
+    return "not reported";
   }
   return `${Math.round(percent)}% remaining`;
 }
 
 function resetLabel(resetAt: string | null | undefined): string {
-  if (!resetAt) return "Reset unknown";
+  if (!resetAt) return "reset unknown";
   const parsed = Date.parse(resetAt);
-  if (!Number.isFinite(parsed)) return "Reset unknown";
-  if (parsed <= Date.now()) return "Awaiting refresh";
+  if (!Number.isFinite(parsed)) return "reset unknown";
+  if (parsed <= Date.now()) return "awaiting refresh";
   return `Resets in ${formatResetCountdown(parsed)}`;
+}
+
+function resetHover(resetAt: string | undefined): string | undefined {
+  if (!resetAt) return undefined;
+  const parsed = Date.parse(resetAt);
+  if (!Number.isFinite(parsed)) return undefined;
+  // Viewer timezone, labeled — never pin America/Chicago.
+  return new Date(parsed).toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
 }
 
 export function UsageMonitorQuotaGrid({ windows }: { windows: UsageMonitorQuotaWindow[] }) {
@@ -39,9 +54,7 @@ export function UsageMonitorQuotaGrid({ windows }: { windows: UsageMonitorQuotaW
             </div>
             <div
               className="truncate text-[10.5px] text-ink-secondary"
-              title={resetAt && Number.isFinite(Date.parse(resetAt)) ? new Date(resetAt).toLocaleString("en-US", {
-                timeZone: "America/Chicago", year: "numeric", month: "short", day: "numeric", hour: "numeric", minute: "2-digit", timeZoneName: "short",
-              }) : undefined}
+              title={resetHover(resetAt)}
             >
               {resetLabel(resetAt)}
             </div>
