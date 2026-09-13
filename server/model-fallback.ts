@@ -32,7 +32,7 @@ const SHORT_PROVIDER_ERROR =
 const QUOTA_OR_CAP_TERMINAL = [
   /^(?:you(?:'ve| have)?|you are|you're)\s+(?:hit|reached|exceeded|exhausted|out of)\b.{0,120}\b(?:session|usage|message|messaging|quota|limit|allowance|credits?|funds?|balance|plan|tier|spend|budget|requests?)\b(?!\s+(?:session|usage|message|messaging|quota|limit|allowance|credits?|funds?|balance|plan|tier|spend|budget|requests?|fix|handling|parser|parsing|test|tests|coverage|review|work|logic|implementation|documentation|code)\b)/i,
   /^your\s+(?:credit|prepayment|message|messaging|usage|quota|plan|tier|spend|budget)\b.{0,120}\b(?:low|depleted|empty|exhausted|insufficient|exceeded|reached|limit|cap)\b(?!\s+(?:fix|handling|parser|parsing|test|tests|coverage|review|work|logic|implementation|documentation|code)\b)/i,
-  /^this request would exceed\b.{0,120}\b(?:rate|usage|quota|plan|tier|spend|budget|token|request)\s+(?:limit|cap|quota|allowance|budget)\b/i,
+  /^this request would exceed\b.{0,120}\b(?:rate|usage|quota|plan|tier|spend|budget|token|request)\s+(?:limit|cap|quota|allowance|budget)\b(?:\s+of\s+[\d,.]+\s+(?:input\s+)?tokens?\s+per\s+(?:minute|hour|day))?[.!]?$/i,
   /^individual\s+quota\s+reached\b/i,
   /^(?:codex|claude|grok|cursor|deepseek|kimi|gemini|antigravity)\s+(?:session|usage|message)\s+(?:limit|cap|quota)\s+(?:reached|exceeded|exhausted)\b/i,
   /^(?:session|usage|message|monthly|daily|plan|tier|free tier|spend|budget|concurrency)\s+(?:limit|cap|quota)(?:\s+(?:reached|exceeded|exhausted))?(?:\s+(?:for|on|in|until)\b.{0,120})?[.!]?$/i,
