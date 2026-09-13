@@ -1240,7 +1240,10 @@ public struct MacUpdateCapabilities: Codable, Hashable, Sendable {
 public struct MacUpdateStatus: Codable, Hashable, Sendable {
     public var installed: MacInstalledBuild
     public var available: MacAvailableUpdate?
-    public var checkedAt: String
+    /// `null` before this Mac has ever checked — distinct from a real,
+    /// long-ago timestamp, and worth its own "Not checked yet" copy rather
+    /// than folding it into `available == nil`.
+    public var checkedAt: String?
     public var running: MacUpdateRun?
     public var lastRun: MacUpdateLastRun?
     public var capabilities: MacUpdateCapabilities
@@ -1248,7 +1251,7 @@ public struct MacUpdateStatus: Codable, Hashable, Sendable {
     public init(
         installed: MacInstalledBuild,
         available: MacAvailableUpdate? = nil,
-        checkedAt: String,
+        checkedAt: String? = nil,
         running: MacUpdateRun? = nil,
         lastRun: MacUpdateLastRun? = nil,
         capabilities: MacUpdateCapabilities
@@ -1262,13 +1265,40 @@ public struct MacUpdateStatus: Codable, Hashable, Sendable {
     }
 }
 
-/// `POST /api/update/run` answers 202 with the run it just started; a 409
-/// refusal surfaces as the ordinary `APIError` every other write on this
-/// client throws, carrying the harness's own reason.
+/// `POST /api/update/run`'s 202 body: the run it just started, plus the
+/// status right after starting it — the phone renders progress from this
+/// without a follow-up GET.
 public struct MacUpdateRunStarted: Codable, Hashable, Sendable {
     public var runId: String
+    public var status: MacUpdateStatus
 
-    public init(runId: String) {
+    public init(runId: String, status: MacUpdateStatus) {
         self.runId = runId
+        self.status = status
     }
+}
+
+/// `POST /api/update/run`'s 409 body — the harness's reason plus the same
+/// status a 202 would have carried, so `CompanionClient.runUpdate()` can
+/// hand both to the caller instead of only an error string.
+struct MacUpdateRunRefusalBody: Decodable, Sendable {
+    var error: String
+    var status: MacUpdateStatus
+}
+
+/// A refused `runUpdate()` — a run already in progress, or one of
+/// `capabilities.reasons` — carrying both the harness's own reason and the
+/// status right now.  Kept apart from `APIError` because that type's
+/// `.status(code:message:)` case has no room for the status object every
+/// other caller of `runUpdate()` also needs.
+public struct MacUpdateRunRefusal: Error, LocalizedError, Sendable {
+    public var message: String
+    public var status: MacUpdateStatus
+
+    public init(message: String, status: MacUpdateStatus) {
+        self.message = message
+        self.status = status
+    }
+
+    public var errorDescription: String? { message }
 }

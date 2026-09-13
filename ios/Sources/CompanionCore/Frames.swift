@@ -123,12 +123,11 @@ extension Frame: Decodable {
         case "runtime":
             self = .runtime(try container.decode(RuntimeEvent.self, forKey: .event))
         case "update.status":
-            // The harness contract for this event's exact shape is still
-            // being finalized alongside the server route.  Try a `status`
-            // wrapper first — the convention `notify` and `runtime` use —
-            // and fall back to the frame's own fields, which is how `screen`
-            // and `computer` are shaped instead.  Either way this decodes
-            // without a second round trip once the server side lands.
+            // Confirmed shape: `{ kind: "update.status", status: <MacUpdateStatus> }`
+            // — `server/index.ts`'s `emit: (status) => broadcast({ kind: "update.status", status })`.
+            // The flat fallback below costs nothing and keeps this decoding
+            // if a future harness ever spreads the fields instead, the way
+            // `screen` and `computer` are shaped.
             if let status = try? container.decode(MacUpdateStatus.self, forKey: .status) {
                 self = .updateStatus(status)
             } else {

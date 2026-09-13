@@ -2,12 +2,14 @@
 // outcome it has to render, the `update.status` stream frame, and the fold
 // into `CompanionState`.
 //
-// There is no live harness route to capture fixtures from yet — the sibling
-// lane building `companion/src/routes.ts`'s `/api/update/*` is still in
-// flight — so these are hand-written against the contract rather than
-// `scripts/capture-companion-fixtures.mjs` output. Re-capture and replace
-// once that route ships, the same way `options-card.json` is called out in
-// `DecodingTests.swift` as the one fixture a run does not regenerate.
+// The shapes here are pinned against `server/update-control.ts` and the
+// route handlers in PR #382 (branch `claude/remote-update`) — not yet merged
+// to `main` at the time this was written, so there is no captured fixture
+// from a live run yet.  These are hand-written to match that PR's diff
+// verbatim rather than `scripts/capture-companion-fixtures.mjs` output.
+// Re-capture and replace once the route lands on `main`, the same way
+// `options-card.json` is called out in `DecodingTests.swift` as the one
+// fixture a run does not regenerate.
 import XCTest
 @testable import CompanionCore
 
@@ -119,10 +121,46 @@ final class MacUpdateTests: XCTestCase {
         XCTAssertEqual(lastRun.outcome, .unknown)
     }
 
-    func testRunStartedDecodesTheRunId() throws {
-        let json = Data(#"{"runId": "run-42"}"#.utf8)
+    /// `checkedAt` is `null` on a Mac that has never checked — distinct from
+    /// "no update available", which is what a real timestamp with `available:
+    /// null` means instead.
+    func testCheckedAtIsNilBeforeTheFirstCheck() throws {
+        let json = Data(#"""
+        {
+          "installed": {"version": "1.0.30", "sourceCommit": "abc1234"},
+          "available": null,
+          "checkedAt": null,
+          "running": null,
+          "lastRun": null,
+          "capabilities": {"canCheck": true, "canRun": true, "reasons": []}
+        }
+        """#.utf8)
+        let status = try JSONDecoder().decode(MacUpdateStatus.self, from: json)
+        XCTAssertNil(status.checkedAt)
+    }
+
+    // MARK: - `POST /api/update/run`'s two response bodies
+
+    /// The 202 body carries a full status alongside the run id, so the phone
+    /// never needs a follow-up GET just to see what starting the run changed.
+    func testRunStartedCarriesTheRunIdAndAFullStatus() throws {
+        let json = Data(#"""
+        {"runId": "run-42", "status": \#(sampleStatusJSON)}
+        """#.utf8)
         let started = try JSONDecoder().decode(MacUpdateRunStarted.self, from: json)
         XCTAssertEqual(started.runId, "run-42")
+        XCTAssertEqual(started.status.installed.version, "1.0.30")
+    }
+
+    /// The 409 body is `{ error, status }` — the same status a 202 would
+    /// have carried, plus why it refused instead of a run id.
+    func testRunRefusalBodyCarriesTheReasonAndAFullStatus() throws {
+        let json = Data(#"""
+        {"error": "An update is already running.", "status": \#(sampleStatusJSON)}
+        """#.utf8)
+        let refusal = try JSONDecoder().decode(MacUpdateRunRefusalBody.self, from: json)
+        XCTAssertEqual(refusal.error, "An update is already running.")
+        XCTAssertEqual(refusal.status.installed.sourceCommit, "abc1234")
     }
 
     // MARK: - The `update.status` stream frame
@@ -131,6 +169,22 @@ final class MacUpdateTests: XCTestCase {
         #"""
         {"installed": {"version": "1.0.30", "sourceCommit": "abc1234"}, "available": null, "checkedAt": "2026-09-13T09:00:00Z", "running": null, "lastRun": null, "capabilities": {"canCheck": true, "canRun": true, "reasons": []}}
         """#
+    }
+
+    /// The confirmed wrapped shape, verbatim from `server/index.ts`'s
+    /// `emit: (status) => broadcast({ kind: "update.status", status })` — a
+    /// `status`-nested payload, not the flat-fields shape `screen` and
+    /// `computer` use.  `broadcast()` may stamp its own `seq` onto the wire
+    /// payload the way it does for every other frame kind; `StreamFrame.seq`
+    /// stays optional regardless, so this decodes with or without one.
+    func testDecodesTheConfirmedWrappedShapeExactly() throws {
+        let json = Data(#"{"kind": "update.status", "status": \#(sampleStatusJSON)}"#.utf8)
+        let frame = try JSONDecoder().decode(StreamFrame.self, from: json)
+        guard case let .updateStatus(status) = frame.frame else {
+            return XCTFail("expected .updateStatus")
+        }
+        XCTAssertEqual(status.installed.version, "1.0.30")
+        XCTAssertNil(frame.seq)
     }
 
     func testDecodesTheEventWhenTheStatusIsNestedUnderAKey() throws {

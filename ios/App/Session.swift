@@ -1475,18 +1475,28 @@ final class Session: ObservableObject {
         }
     }
 
-    /// Start the install.  Returns whether the harness accepted the request —
-    /// everything that happens after arrives as `update.status` events into
-    /// `state`, which is what the card actually renders progress from.
+    /// Start the install.  Returns the harness's own reason when it refused
+    /// (a run already in progress, or one of `capabilities.reasons`) so the
+    /// card can show that sentence inline — `nil` on success, and also on
+    /// any other failure, which already went to `actionError` above.
+    /// Everything after a successful start arrives as `update.status` events
+    /// into `state`, which is what the card actually renders progress from;
+    /// both outcomes fold their own copy of `status` in immediately so the
+    /// card never has to wait on that stream (or a follow-up GET) just to
+    /// know why a refusal happened.
     @discardableResult
-    func runMacUpdate() async -> Bool {
-        guard let client else { return false }
+    func runMacUpdate() async -> String? {
+        guard let client else { return nil }
         do {
-            _ = try await client.runUpdate()
-            return true
+            let started = try await client.runUpdate()
+            state.apply(.updateStatus(started.status))
+            return nil
+        } catch let refusal as MacUpdateRunRefusal {
+            state.apply(.updateStatus(refusal.status))
+            return refusal.message
         } catch {
             actionError = error.localizedDescription
-            return false
+            return nil
         }
     }
 

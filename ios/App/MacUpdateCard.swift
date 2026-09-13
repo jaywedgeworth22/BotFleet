@@ -14,6 +14,11 @@ struct MacUpdateSection: View {
     @State private var checking = false
     @State private var installing = false
     @State private var confirmingInstall = false
+    /// The harness's own reason the last `runUpdate()` refused (a 409) —
+    /// shown right here rather than only in the app-wide error alert, since
+    /// it is a normal, expected answer ("an update is already running"),
+    /// not a failure worth interrupting the screen for.
+    @State private var installError: String?
 
     private var status: MacUpdateStatus? { session.state.macUpdateStatus }
 
@@ -26,6 +31,11 @@ struct MacUpdateSection: View {
                     lastRunRow(lastRun)
                 }
                 actionsRow(status)
+                if let installError {
+                    Text(installError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             } else {
                 HStack {
                     Text("Checking for updates…")
@@ -37,9 +47,14 @@ struct MacUpdateSection: View {
         } header: {
             Text("Mac Update")
         } footer: {
-            if let status, status.running == nil, status.capabilities.canRun == false,
-               let reason = status.capabilities.reasons.first {
-                Text(reason)
+            if let status {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(Self.checkedAtText(status.checkedAt))
+                    if status.running == nil, status.capabilities.canRun == false,
+                       let reason = status.capabilities.reasons.first {
+                        Text(reason)
+                    }
+                }
             }
         }
         .task { await session.loadMacUpdateStatus() }
@@ -185,11 +200,19 @@ struct MacUpdateSection: View {
 
     private func startInstall() async {
         installing = true
-        _ = await session.runMacUpdate()
+        installError = await session.runMacUpdate()
         installing = false
     }
 
     // MARK: - Formatting
+
+    private static func checkedAtText(_ checkedAt: String?) -> String {
+        guard let checkedAt else { return "Not checked yet" }
+        guard let date = ISO8601DateFormatter().date(from: checkedAt) else {
+            return "Checked \(checkedAt)"
+        }
+        return "Checked \(date.formatted(date: .abbreviated, time: .shortened))"
+    }
 
     private static func shortCommit(_ sha: String) -> String {
         String(sha.prefix(7))
