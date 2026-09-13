@@ -94,4 +94,31 @@ describe("usage quota mapping", () => {
       }),
     ).toEqual(["*"]);
   });
+
+  it("maps DeepSeek and DSH windows to their respective driver kinds", () => {
+    const dsWindow: RemoteQuotaWindow = {
+      id: "deepseek-balance",
+      provider: "deepseek",
+      sourceApp: "deepseek",
+      label: "DeepSeek API",
+      modelId: "deepseek-chat",
+      modelType: "deepseek",
+      window: "monthly",
+      remainingPercent: 85,
+      resetAt: null,
+      status: "available",
+      skip: false,
+      skipReason: null,
+    };
+    expect(driverKindsForWindow(dsWindow)).toEqual(["deepseekAgent", "deepseek"]);
+
+    const dshWindow: RemoteQuotaWindow = {
+      ...dsWindow,
+      id: "dsh-window",
+      provider: "dsh",
+      sourceApp: "dsh",
+      label: "DeepSeek Harness",
+    };
+    expect(driverKindsForWindow(dshWindow)).toEqual(["dshAgent"]);
+  });
 });

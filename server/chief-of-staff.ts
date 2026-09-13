@@ -25,11 +25,17 @@ const sectionKey = (section?: string): string => section?.trim() || "";
 
 /** Dynamic system context for a section's Chief of Staff.
  * It names the current team on every turn, while list_bots remains the
- * authoritative tool for IDs and live availability at delegation time. */
+ * authoritative tool for IDs and live availability at delegation time.
+ *
+ * `availableAgentTools` is the tool-NAME set this Chief's turn actually has
+ * — not a boolean — so a driver that can reach ask_bot but not create_bot /
+ * delegate_bot (today's MiniMax, whose HTTP catalog stops at the registry's
+ * three tools) is told it can delegate one-off work but not build a team,
+ * rather than being handed the full CLI-lane paragraph regardless. */
 export function chiefOfStaffSystemPrompt(
   chiefId: string,
   bots: ChiefTeamMember[],
-  canDelegate: boolean,
+  availableAgentTools: readonly string[],
   trustedBotFleetStatus = "",
 ): string {
   const chief = bots.find((bot) => bot.id === chiefId);
@@ -52,13 +58,19 @@ export function chiefOfStaffSystemPrompt(
         .join("\n") + (overflow > 0 ? `\n- …and ${overflow} more (use list_bots for the full roster).` : "")
     : "- No other visible bots are available yet.";
 
-  const delegation = canDelegate
+  const canAskBot = availableAgentTools.includes("ask_bot");
+  const canBuildTeam = canAskBot && availableAgentTools.includes("create_bot") && availableAgentTools.includes("delegate_bot");
+  const delegation = canAskBot
     ? [
         "Use list_bots to confirm the live roster and IDs. Use ask_bot when a teammate is better suited to part of the request.",
-        "When the user asks you to assemble a team, use create_bot for each genuinely useful specialist. Give each one a clear role and instructions, then use delegate_bot to assign its work. Do not create duplicate or unnecessary bots.",
+        canBuildTeam
+          ? "When the user asks you to assemble a team, use create_bot for each genuinely useful specialist. Give each one a clear role and instructions, then use delegate_bot to assign its work. Do not create duplicate or unnecessary bots."
+          : undefined,
         "Delegate with a clear, self-contained brief and wait for the teammate's actual reply before claiming its work is complete.",
         "You may consult more than one teammate when the request genuinely benefits, then combine their results into one coherent answer.",
-      ].join(" ")
+      ]
+        .filter(Boolean)
+        .join(" ")
     : "Your current engine cannot contact teammates. Be honest about that limitation and ask the user to choose a delegation-compatible engine before promising coordinated work.";
 
   return [

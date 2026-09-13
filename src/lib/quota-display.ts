@@ -315,3 +315,27 @@ export function formatResetCountdown(resetAtMs: number | null, now = Date.now())
   if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   return `${Math.max(minutes, 1)}m`;
 }
+
+/** Formats dual-window quota percentage for ModelPicker row.
+ *  When both primary (5h) and secondary (weekly/monthly) percentages exist: "(XX%/YY%)".
+ *  When only primary exists: "(XX%)" if a windows label exists, or "XX% left" otherwise. */
+export function formatDualQuotaBadge(
+  remainingPercent?: number | null,
+  secondaryRemainingPercent?: number | null,
+  options?: { windowsLabel?: string },
+): string | null {
+  if (remainingPercent == null && secondaryRemainingPercent == null) return null;
+  const p1 = remainingPercent != null ? Math.round(remainingPercent) : null;
+  const p2 = secondaryRemainingPercent != null ? Math.round(secondaryRemainingPercent) : null;
+  if (p1 != null && p2 != null) {
+    return `(${p1}%/${p2}%)`;
+  }
+  if (p1 != null) {
+    return options?.windowsLabel ? `(${p1}%)` : `${p1}% left`;
+  }
+  if (p2 != null) {
+    return `(${p2}%)`;
+  }
+  return null;
+}
+

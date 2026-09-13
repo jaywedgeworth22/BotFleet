@@ -9,6 +9,7 @@ import { join } from "node:path";
 
 import { EVENTS_DIR } from "../config.ts";
 import { redactSecrets } from "../redact.ts";
+import { appendBounded, EVENTS_LOG_MAX_BYTES } from "../transcript-retention.ts";
 import { newId, type ProviderInstance, type RuntimeEvent, type RuntimeEventListener } from "../contracts.ts";
 
 const INCOMPLETE_LOG_MESSAGE =
@@ -92,10 +93,16 @@ export class EventBus {
       // the canonical log is a file people paste into bug reports; scrub
       // credential-shaped content (tool titles, request summaries, reply
       // text) the same way the native tee does
-      this.appendLog(
+      // Bounded: the canonical log rotates at EVENTS_LOG_MAX_BYTES instead of
+      // growing for the life of the thread (server/transcript-retention.ts).
+      // The injected writer is still the one that touches disk, so a test that
+      // fails the write fails it exactly where it used to.
+      appendBounded(
         join(EVENTS_DIR, `${event.threadId}.ndjson`),
         persistedEvents.map((entry) => JSON.stringify(entry)).join("\n") + "\n",
+        EVENTS_LOG_MAX_BYTES,
         { mode: 0o600 },
+        this.appendLog,
       );
       if (pendingWarning) this.pendingLogWarnings.delete(event.threadId);
     } catch (error) {

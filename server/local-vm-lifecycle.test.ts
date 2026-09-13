@@ -64,7 +64,10 @@ fs.appendFileSync(path.join(home, "runtime.log"), args.join(" ") + "\\n");
   } else if (args[0] !== "rm") process.exitCode = 64;
 })().catch(() => { process.exitCode = 1; });
 `;
-    for (const name of ["docker", "podman", "container"]) writeFileSync(join(bin, name), fake, { mode: 0o755 });
+    // One runtime keeps the lifecycle log deterministic.  Advertising all
+    // three makes runtime discovery probe Docker and Podman concurrently, so
+    // a second preflight line can race an assertion about the fenced request.
+    writeFileSync(join(bin, "docker"), fake, { mode: 0o755 });
     child = spawn(process.execPath, [join(serverDir, "index.ts")], {
       cwd: join(serverDir, ".."), stdio: ["ignore", "pipe", "pipe"],
       env: { HOME: home, USERPROFILE: home, PATH: process.env.PATH, OMB_EXTRA_PATH: bin,
@@ -104,6 +107,9 @@ fs.appendFileSync(path.join(home, "runtime.log"), args.join(" ") + "\\n");
   });
 
   it("refuses mode changes while deletion owns a target fence, then permits retry", async () => {
+    // Establish this case's own starting mode.  It must not depend on the
+    // preceding test having completed its mode switch.
+    expect((await api("POST", "/api/local-computer/mode", { mode: "per-bot" })).status).toBe(200);
     const bot = (await api("POST", "/api/bots", { name: "Delete held" })).body.bot;
     hold();
     const deletion = api("DELETE", `/api/bots/${bot.id}`);
