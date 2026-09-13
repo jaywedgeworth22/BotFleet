@@ -10130,6 +10130,6 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     usageQuotaPoller.stop();
     infisical.stop();
     webhookIngress?.server.close();
-    void registry.disposeAll().finally(() => process.exit(0));
+    void Promise.all([registry.disposeAll(), telemetry.dispose()]).finally(() => process.exit(0));
   });
 }
