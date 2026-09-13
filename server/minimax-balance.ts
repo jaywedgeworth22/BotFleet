@@ -1,3 +1,9 @@
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
+import { loadLocalMiniMaxConfig } from "./drivers/minimax.ts";
+
 // Reads the user's MiniMax account balance / Token Plan quota and serves it
 // to the Settings → Usage UI. A peer of deepseek-balance.ts, same cache and
 // timeout shape, deliberately never injected into any engine's process
@@ -183,6 +189,21 @@ function parsePercent(raw: unknown): number | null {
   return Math.min(100, Math.max(0, Math.round(raw)));
 }
 
+/** MiniMax's own client (mmx-cli's sdk.mjs) scales the weekly percent by
+ *  `weekly_boost_permille / 1000` and clamps at 200, not 100 — a "boosted"
+ *  weekly allowance (a promo, a plan upgrade mid-week, …) can legitimately
+ *  read above 100%. No boost field (or a non-positive one) is a 1.0x
+ *  factor, matching the un-boosted case exactly. There is no interval-side
+ *  equivalent field, so the 5-hour figure stays on the plain parsePercent
+ *  above. */
+function parseWeeklyPercent(raw: unknown, boostPermille: unknown): number | null {
+  if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+  const boost = typeof boostPermille === "number" && Number.isFinite(boostPermille) && boostPermille > 0
+    ? boostPermille
+    : 1000;
+  return Math.min(200, Math.max(0, Math.round(raw * (boost / 1000))));
+}
+
 /** Live-verified 2026-09-13: start_time/end_time/weekly_start_time/
  *  weekly_end_time are always epoch MILLISECONDS (observed ~1.79e12-scale
  *  values) — never seconds. No unit-guessing: just validate and pass
@@ -272,7 +293,7 @@ function parseModelRow(raw: unknown, now: number): { name: string; quota: MiniMa
   const modelName = typeof row.model_name === "string" && row.model_name ? row.model_name : null;
   if (!modelName) return null;
   const interval = parsePercent(row.current_interval_remaining_percent);
-  const weekly = parsePercent(row.current_weekly_remaining_percent);
+  const weekly = parseWeeklyPercent(row.current_weekly_remaining_percent, row.weekly_boost_permille);
   const intervalResetsAt = parseResetMs(row.end_time, row.remains_time, now);
   const weeklyResetsAt = parseResetMs(row.weekly_end_time, row.weekly_remains_time, now);
   const resetsAt = intervalResetsAt != null && weeklyResetsAt != null
@@ -420,4 +441,52 @@ export async function getMiniMaxBalance(key: string | undefined, url: string | u
 
 export function invalidateMiniMaxBalance(): void {
   entry = null;
+}
+
+type LocalMiniMaxConfig = ReturnType<typeof loadLocalMiniMaxConfig>;
+
+type LocalConfigCacheEntry = {
+  mtimeMs: number | null;
+  expiresAt: number;
+  value: LocalMiniMaxConfig;
+};
+
+let localConfigCache: LocalConfigCacheEntry | null = null;
+
+function statMmxConfig(): { mtimeMs: number } | null {
+  try {
+    return statSync(join(homedir(), ".mmx", "config.json"));
+  } catch {
+    return null;
+  }
+}
+
+/** loadLocalMiniMaxConfig() (server/drivers/minimax.ts) does a synchronous
+ *  readFileSync + JSON.parse every call — cheap once, but registry.ts's
+ *  describe() (per instance, per poll) and /api/quotas both called it on
+ *  every request. Cached for the same 5-minute TTL as the balance itself,
+ *  keyed on the config file's own mtime so an `mmx auth login` mid-window
+ *  is picked up immediately rather than waiting out the TTL — a stat()
+ *  call replaces the read+parse on every cache hit, far cheaper than
+ *  either the old unconditional read or a naive time-only cache that would
+ *  miss an edit for up to 5 minutes. */
+export function getCachedLocalMiniMaxConfig(opts: {
+  now?: number;
+  stat?: () => { mtimeMs: number } | null;
+  load?: () => LocalMiniMaxConfig;
+} = {}): LocalMiniMaxConfig {
+  const now = opts.now ?? Date.now();
+  const stat = opts.stat ?? statMmxConfig;
+  const load = opts.load ?? loadLocalMiniMaxConfig;
+  const mtimeMs = stat()?.mtimeMs ?? null;
+  if (localConfigCache && localConfigCache.mtimeMs === mtimeMs && localConfigCache.expiresAt > now) {
+    return localConfigCache.value;
+  }
+  const value = load();
+  localConfigCache = { mtimeMs, expiresAt: now + CACHE_TTL_MS, value };
+  return value;
+}
+
+export function invalidateLocalMiniMaxConfigCache(): void {
+  localConfigCache = null;
 }

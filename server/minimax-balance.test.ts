@@ -267,6 +267,54 @@ describe("getMiniMaxBalance", () => {
     expect(result.remainingPercent).toBe(100);
   });
 
+  it("scales the weekly percent by weekly_boost_permille (a 1500 boost = 1.5x) — matching mmx-cli's own client", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(true, 200, {
+        model_remains: [{
+          model_name: "general",
+          current_interval_remaining_percent: 100,
+          current_weekly_remaining_percent: 94,
+          weekly_boost_permille: 1500,
+        }],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    // 94 * (1500 / 1000) = 141 — a legitimately boosted allowance above 100%.
+    expect(result.secondaryRemainingPercent).toBe(141);
+    expect(result.remainingPercent).toBe(100);
+  });
+
+  it("clamps a boosted weekly percent at 200, never higher", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(true, 200, {
+        model_remains: [{
+          model_name: "general",
+          current_weekly_remaining_percent: 90,
+          weekly_boost_permille: 2500,
+        }],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    // 90 * 2.5 = 225, clamped to 200.
+    expect(result.secondaryRemainingPercent).toBe(200);
+  });
+
+  it("treats a missing or non-positive weekly_boost_permille as a 1.0x factor (no boost)", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(true, 200, {
+        model_remains: [{ model_name: "general", current_weekly_remaining_percent: 94 }],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    expect(result.secondaryRemainingPercent).toBe(94);
+  });
+
   it("uses the balance alert threshold as the near-cap signal", async () => {
     fetchMock.mockResolvedValueOnce(
       mockResponse(true, 200, {
@@ -337,5 +385,63 @@ describe("getMiniMaxBalance", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("getCachedLocalMiniMaxConfig", () => {
+  it("serves the cached value when the file's mtime and the TTL both still hold", async () => {
+    const mod = await loadModule();
+    const load = vi.fn(() => ({ apiKey: "k1", url: "https://api.minimax.io/v1", defaultModel: "" }));
+    const stat = vi.fn(() => ({ mtimeMs: 1000 }));
+    const now = Date.now();
+    const first = mod.getCachedLocalMiniMaxConfig({ now, stat, load });
+    const second = mod.getCachedLocalMiniMaxConfig({ now: now + 1000, stat, load });
+    expect(first).toEqual(second);
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(stat).toHaveBeenCalledTimes(2); // stat is cheap; called every time to detect a change
+  });
+
+  it("reloads when the file's mtime changes, even within the TTL", async () => {
+    const mod = await loadModule();
+    let mtimeMs = 1000;
+    const load = vi.fn(() => ({ apiKey: `k-${mtimeMs}`, url: "https://api.minimax.io/v1", defaultModel: "" }));
+    const stat = () => ({ mtimeMs });
+    const now = Date.now();
+    const first = mod.getCachedLocalMiniMaxConfig({ now, stat, load });
+    mtimeMs = 2000;
+    const second = mod.getCachedLocalMiniMaxConfig({ now: now + 1000, stat, load });
+    expect(first.apiKey).toBe("k-1000");
+    expect(second.apiKey).toBe("k-2000");
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("reloads once the TTL lapses, even with the same mtime", async () => {
+    const mod = await loadModule();
+    const load = vi.fn(() => ({ apiKey: "k1", url: "https://api.minimax.io/v1", defaultModel: "" }));
+    const stat = () => ({ mtimeMs: 1000 });
+    const now = Date.now();
+    mod.getCachedLocalMiniMaxConfig({ now, stat, load });
+    mod.getCachedLocalMiniMaxConfig({ now: now + 5 * 60_000 + 1, stat, load });
+    expect(load).toHaveBeenCalledTimes(2);
+  });
+
+  it("treats a missing config file (stat returns null) as its own stable cache key", async () => {
+    const mod = await loadModule();
+    const load = vi.fn(() => ({ apiKey: "", url: "https://api.minimax.io/v1", defaultModel: "" }));
+    const stat = () => null;
+    const now = Date.now();
+    mod.getCachedLocalMiniMaxConfig({ now, stat, load });
+    mod.getCachedLocalMiniMaxConfig({ now: now + 1000, stat, load });
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("invalidateLocalMiniMaxConfigCache forces the next call to reload", async () => {
+    const mod = await loadModule();
+    const load = vi.fn(() => ({ apiKey: "k1", url: "https://api.minimax.io/v1", defaultModel: "" }));
+    const stat = () => ({ mtimeMs: 1000 });
+    mod.getCachedLocalMiniMaxConfig({ stat, load });
+    mod.invalidateLocalMiniMaxConfigCache();
+    mod.getCachedLocalMiniMaxConfig({ stat, load });
+    expect(load).toHaveBeenCalledTimes(2);
   });
 });

@@ -542,6 +542,19 @@ export interface InstanceInfo {
         error?: string;
         windowsLabel?: string;
       }>;
+      /** MiniMax's own balance/quota summary, computed per instance — see
+       *  server/contracts.ts's ProviderSnapshot.quota.minimax. */
+      minimax?: {
+        source: "account-balance" | "token-plan" | "unavailable";
+        capExists: boolean;
+        status: "ok" | "near_cap" | "capped" | "unknown";
+        balanceUsd: number | null;
+        remainingPercent: number | null;
+        secondaryRemainingPercent: number | null;
+        resetsAt: number | null;
+        weeklyResetsAt: number | null;
+        error: string | null;
+      };
     };
   };
   models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean }> };

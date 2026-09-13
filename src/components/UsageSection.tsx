@@ -57,19 +57,6 @@ interface DeepSeekBalanceView {
   error: string | null;
 }
 
-interface MiniMaxBalanceView {
-  source: "account-balance" | "token-plan" | "unavailable";
-  capExists: boolean;
-  status: "ok" | "near_cap" | "capped" | "unknown";
-  balanceUsd: number | null;
-  remainingPercent: number | null;
-  secondaryRemainingPercent: number | null;
-  windowsLabel?: string;
-  resetsAt: number | null;
-  fetchedAt: number;
-  error: string | null;
-}
-
 function formatCountdown(resetsAt?: number | null): string {
   if (!resetsAt) return "Rolling refresh window";
   const diffMs = resetsAt - Date.now();
@@ -100,7 +87,6 @@ export function UsageSection() {
   const [quotas, setQuotas] = React.useState<QuotaCooldownInfo[]>([]);
   const [antigravityQuota, setAntigravityQuota] = React.useState<AntigravityUsageSnapshot | null>(null);
   const [deepseekBalance, setDeepSeekBalance] = React.useState<DeepSeekBalanceView | null>(null);
-  const [minimaxBalance, setMiniMaxBalance] = React.useState<MiniMaxBalanceView | null>(null);
   const [engineSpend, setEngineSpend] = React.useState<Record<string, { spend5hUsd: number; spend7dUsd: number }>>({});
   const [quotaWindows, setQuotaWindows] = React.useState<Array<{
     id: string;
@@ -169,9 +155,11 @@ export function UsageSection() {
           if (data?.deepseek && typeof data.deepseek === "object") {
             setDeepSeekBalance(data.deepseek);
           }
-          if (data?.minimax && typeof data.minimax === "object") {
-            setMiniMaxBalance(data.minimax);
-          }
+          // MiniMax's balance/quota is no longer on this payload — it is
+          // per-instance (a second connection has its own account) and
+          // reaches the client on that instance's own GET /api/instances
+          // snapshot.quota.minimax instead. See server/index.ts's comment
+          // on this route.
           if (data?.engineSpend && typeof data.engineSpend === "object") {
             setEngineSpend(data.engineSpend);
           }
@@ -355,8 +343,12 @@ export function UsageSection() {
               // MiniMax's row must render whenever the engine is configured,
               // not only once it's capped or has spent something — a fresh
               // Token Plan/pay-as-you-go account with a real capExists
-              // reading counts as "has quota data" on its own.
-              (isMiniMax && Boolean(minimaxBalance?.capExists)) ||
+              // reading counts as "has quota data" on its own. Read off this
+              // INSTANCE's own snapshot (server/harness/registry.ts computes
+              // it per instance) — never a value shared across every
+              // MiniMax row, which is what let a second connection show the
+              // reserved instance's numbers.
+              (isMiniMax && Boolean(instance.snapshot.quota?.minimax?.capExists)) ||
               Boolean(spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0));
             // A configured engine that has gone unavailable — a Box token set
             // but the API unreachable, a login that expired, a CLI that stops
@@ -383,7 +375,7 @@ export function UsageSection() {
             const planSkip = instanceWindows.some((window) => isPlanLevelSkip(window));
             const agExhausted = agGroups.filter((line) => line.exhausted);
             const isMiniMax = instance.driverKind === "minimax";
-            const minimaxRow = isMiniMax ? minimaxBalance : null;
+            const minimaxRow = isMiniMax ? instance.snapshot.quota?.minimax ?? null : null;
             const minimaxLine = minimaxRow ? minimaxQuotaLine(minimaxRow) : null;
             // The cap verdict accounts for Antigravity group exhaustion too:
             // the user's complaint was a four-name slice hiding an all-spent

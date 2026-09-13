@@ -473,6 +473,22 @@ export interface ProviderSnapshot {
       error?: string;
       windowsLabel?: string;
     }>;
+    /** MiniMax's own balance/quota summary (server/minimax-balance.ts),
+     *  computed per INSTANCE in server/harness/registry.ts — each MiniMax
+     *  row reads its own account here rather than one shared value, so a
+     *  second connection with its own key never shows the reserved
+     *  instance's numbers. Present only on a `minimax`-driverKind instance. */
+    minimax?: {
+      source: "account-balance" | "token-plan" | "unavailable";
+      capExists: boolean;
+      status: "ok" | "near_cap" | "capped" | "unknown";
+      balanceUsd: number | null;
+      remainingPercent: number | null;
+      secondaryRemainingPercent: number | null;
+      resetsAt: number | null;
+      weeklyResetsAt: number | null;
+      error: string | null;
+    };
   };
 }
 

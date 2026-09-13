@@ -344,8 +344,15 @@ export type MiniMaxQuotaView = {
  *  "resets at H:MM" convention server/index.ts's own quota line already
  *  uses. `row.resetsAt` here is specifically the 5-hour window's own reset
  *  (server/minimax-balance.ts keeps it separate from the "soonest of either
- *  window" figure the registry.ts per-model merge uses instead). */
-export function minimaxQuotaLine(row: MiniMaxQuotaView): string | null {
+ *  window" figure the registry.ts per-model merge uses instead). A weekly
+ *  figure above 100% (MiniMax's own boosted-allowance scaling,
+ *  server/minimax-balance.ts's parseWeeklyPercent) says so explicitly
+ *  rather than reading like a typo. `now` defaults to the real clock and
+ *  exists so a test can pin it; when the cached snapshot has outlived its
+ *  own window (the 5-minute balance cache can outlive a 5-hour window's
+ *  reset), a reset time already in the past reads "resets soon" instead of
+ *  a stale clock time. */
+export function minimaxQuotaLine(row: MiniMaxQuotaView, now: number = Date.now()): string | null {
   if (row.source === "unavailable") return null;
   if (row.source === "account-balance") {
     if (row.balanceUsd == null) return null;
@@ -355,12 +362,17 @@ export function minimaxQuotaLine(row: MiniMaxQuotaView): string | null {
     return amount;
   }
   const parts: string[] = [];
-  if (row.secondaryRemainingPercent != null) parts.push(`${Math.round(row.secondaryRemainingPercent)}% left this week`);
+  if (row.secondaryRemainingPercent != null) {
+    const boosted = row.secondaryRemainingPercent > 100 ? " of a boosted allowance" : "";
+    parts.push(`${Math.round(row.secondaryRemainingPercent)}% left this week${boosted}`);
+  }
   if (row.remainingPercent != null) parts.push(`${Math.round(row.remainingPercent)}% left in the current 5 h window`);
   if (parts.length === 0) return null;
   let line = parts.join(", ");
   if (row.resetsAt != null) {
-    line += `, resets at ${new Date(row.resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    line += row.resetsAt <= now
+      ? ", resets soon"
+      : `, resets at ${new Date(row.resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
   }
   return line;
 }

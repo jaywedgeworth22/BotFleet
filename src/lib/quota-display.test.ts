@@ -412,6 +412,36 @@ describe("minimaxQuotaLine", () => {
   it("returns null for a Token Plan response with zero usable model rows", () => {
     expect(minimaxQuotaLine({ ...base, source: "token-plan", status: "unknown" })).toBeNull();
   });
+
+  it("says 'of a boosted allowance' when the weekly figure is above 100%", () => {
+    const line = minimaxQuotaLine({ ...base, source: "token-plan", status: "ok", secondaryRemainingPercent: 141 });
+    expect(line).toBe("141% left this week of a boosted allowance");
+  });
+
+  it("does not say 'boosted' for an ordinary weekly figure at or below 100%", () => {
+    const line = minimaxQuotaLine({ ...base, source: "token-plan", status: "ok", secondaryRemainingPercent: 100 });
+    expect(line).toBe("100% left this week");
+  });
+
+  it("says 'resets soon' instead of a stale clock time once the reset has already passed", () => {
+    const now = Date.now();
+    const line = minimaxQuotaLine(
+      { ...base, source: "token-plan", status: "ok", remainingPercent: 100, resetsAt: now - 60_000 },
+      now,
+    );
+    expect(line).toBe("100% left in the current 5 h window, resets soon");
+  });
+
+  it("still shows a clock time for a reset that has not passed yet", () => {
+    const now = Date.now();
+    const resetsAt = now + 3_600_000;
+    const line = minimaxQuotaLine(
+      { ...base, source: "token-plan", status: "ok", remainingPercent: 100, resetsAt },
+      now,
+    );
+    const expectedTime = new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(line).toBe(`100% left in the current 5 h window, resets at ${expectedTime}`);
+  });
 });
 
 function futureIso(days: number, hours: number, extraMinutes = 0): string {
