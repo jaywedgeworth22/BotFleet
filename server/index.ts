@@ -269,6 +269,7 @@ import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
+import { installTestParentWatchdog } from "./test-parent-watchdog.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -2069,16 +2070,19 @@ bus.subscribe((event: RuntimeEvent) => {
         // code, so `structuredQuotaOrCap` is undefined there and the
         // existing chip-prose regexes decide exactly as they do today.
         const structuredQuotaOrCap = quotaOrCapFromErrorCode(providerErrorCodeFromStopReason(event.stopReason));
+        const isShortChip = sliceIsShortProviderError(afterUser);
+        const textIsCandidateForQuota = !event.ok || isShortChip;
+        const replyQuota = textIsCandidateForQuota && (quotaInfo.isQuotaOrCap || isQuotaOrCapText(reply));
         const quotaOrCap = structuredQuotaOrCap
-          ?? (quotaInfo.isQuotaOrCap || turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply));
-        const isTextError = sliceIsShortProviderError(afterUser) || quotaOrCap;
+          ?? (turnHitQuotaOrCap(afterUser) || replyQuota);
+        const isTextError = (textIsCandidateForQuota && isShortChip) || (!event.ok && quotaOrCap);
         const isOk = Boolean(event.ok) && !isTextError;
         if (isOk) {
           fallbackAttemptByTurn.delete(fallbackKey);
           pendingMemberFallback.delete(event.threadId);
           quotaCooldowns.clear(fallbackBot.id, actualSelection.instanceId, actualSelection.model);
         }
-        if (quotaOrCap) {
+        if (quotaOrCap && textIsCandidateForQuota) {
           quotaCooldowns.record({
             botId: fallbackBot.id,
             instanceId: actualSelection.instanceId,
@@ -10057,6 +10061,30 @@ if (credentialFingerprint(cfg) !== loadedCredentialFingerprint) {
 server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
 });
+
+// Test-only safety net (see server/test-parent-watchdog.ts): a harness
+// spawned by the suite via server/testing/cleanup.ts's spawnDetached carries
+// BOTFLEET_TEST_CHILD, and self-terminates the moment its recorded parent —
+// the vitest worker that spawned it — is gone, whether that worker exited
+// cleanly or was SIGKILLed outright and never got to signal anything. It
+// re-sends itself SIGTERM rather than exiting directly so it goes through
+// the exact same graceful shutdown below, driver CLIs and MCP proxies
+// included, that a real caller's SIGTERM already gets.
+//
+// Gated strictly on the marker: the always-on launchd harness
+// (com.jay.botfleet-server) never sets it, so this is a no-op in production,
+// where the parent legitimately is launchd for the process's whole life.
+if (process.env.BOTFLEET_TEST_CHILD === "1") {
+  const parentPidAtBoot = Number(process.env.BOTFLEET_TEST_PARENT_PID) || process.ppid;
+  installTestParentWatchdog(parentPidAtBoot, () => {
+    console.error(`[test-child] parent pid ${parentPidAtBoot} is gone — self-terminating`);
+    try {
+      process.kill(process.pid, "SIGTERM");
+    } catch {
+      process.exit(1);
+    }
+  });
+}
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {

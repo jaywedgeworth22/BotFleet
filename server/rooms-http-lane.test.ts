@@ -19,14 +19,14 @@
 //
 // The engine is `server/testing/fake-openai-server.ts` — a real HTTP server
 // the spawned harness talks to over the loopback, scripted round by round.
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
+import { removeTempDir, spawnDetached, waitForExit } from "./testing/cleanup.ts";
 import { startFakeOpenAiServer, type FakeOpenAiServer } from "./testing/fake-openai-server.ts";
 import { freePortBlock } from "./testing/ports.ts";
 
@@ -253,7 +253,7 @@ posixOnly("room turns run on the HTTP lane", () => {
     );
     const port = await freePortBlock([0]);
     base = `http://127.0.0.1:${port}`;
-    child = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
+    child = spawnDetached(process.execPath, [join(SERVER_DIR, "index.ts")], {
       cwd: join(SERVER_DIR, ".."),
       env: {
         ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
