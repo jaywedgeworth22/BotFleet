@@ -772,14 +772,60 @@ public struct RoutineSchedule: Codable, Hashable, Sendable {
     public var at: Double?
     public var time: String?
     public var weekdays: [Int]?
+    public var timeZone: String?
+
+    public init(
+        type: Kind,
+        at: Double? = nil,
+        time: String? = nil,
+        weekdays: [Int]? = nil,
+        timeZone: String? = nil
+    ) {
+        self.type = type
+        self.at = at
+        self.time = time
+        self.weekdays = weekdays
+        self.timeZone = timeZone
+    }
 
     public static func once(at: Date) -> Self {
-        .init(type: .once, at: at.timeIntervalSince1970 * 1_000, time: nil, weekdays: nil)
+        .init(type: .once, at: at.timeIntervalSince1970 * 1_000)
     }
 
-    public static func daily(time: String, weekdays: [Int]) -> Self {
-        .init(type: .daily, at: nil, time: time, weekdays: weekdays)
+    public static func daily(time: String, weekdays: [Int], timeZone: String? = nil) -> Self {
+        .init(type: .daily, time: time, weekdays: weekdays, timeZone: timeZone)
     }
+}
+
+public func routineEditorTimeDate(_ value: String?, in timeZone: TimeZone) -> Date {
+    let parts = (value ?? "09:00").split(separator: ":").compactMap { Int($0) }
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    // A time-only picker needs an arbitrary backing day.  Using today can
+    // normalize a stored 02:30 to 03:00 on a spring-forward day and an
+    // untouched save then changes every future occurrence.
+    let components = DateComponents(
+        timeZone: timeZone,
+        year: 2001,
+        month: 1,
+        day: 15,
+        hour: parts.first ?? 9,
+        minute: parts.count > 1 ? parts[1] : 0,
+        second: 0
+    )
+    return calendar.date(from: components) ?? Date(timeIntervalSince1970: 978_307_200)
+}
+
+public func routineTimeZoneForUpdate(effectiveTimeZone: String?, source: String?) -> String? {
+    source == "host" ? nil : effectiveTimeZone
+}
+
+public func routineEditorTimeZoneIdentifier(
+    effectiveTimeZone: String?,
+    isNew: Bool,
+    currentTimeZone: TimeZone = .current
+) -> String? {
+    effectiveTimeZone ?? (isNew ? currentTimeZone.identifier : nil)
 }
 
 public struct Routine: Codable, Hashable, Identifiable, Sendable {
@@ -790,6 +836,7 @@ public struct Routine: Codable, Hashable, Identifiable, Sendable {
     public var runOn: String
     public var enabled: Bool
     public var schedule: RoutineSchedule
+    public var scheduleTimeZoneSource: String? = nil
     public var durationMinutes: Int
     public var nextRunAt: Double?
     public var createdAt: Double

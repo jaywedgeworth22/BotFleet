@@ -21,7 +21,7 @@ import {
   X,
 } from "lucide-react";
 import { useStore, type Bot } from "@/state/store";
-import type { Routine } from "@/lib/routines";
+import { nextCalendarRunLabel, routineScheduleLabel } from "@/lib/routine-calendar";
 import { ApiKeyRow } from "./ApiKeys";
 import { cn } from "@/lib/cn";
 import { usePageVisible } from "@/lib/page-visible";
@@ -79,34 +79,6 @@ interface LocalVmStatus {
   ready: boolean;
   problem: string | null;
   viewer_url: string;
-}
-
-function routineScheduleLabel(routine: Routine) {
-  if (routine.schedule.type === "once") {
-    return new Date(routine.schedule.at).toLocaleString([], {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "2-digit",
-    });
-  }
-  const days = routine.schedule.weekdays;
-  const cadence =
-    days.length === 7
-      ? "Every day"
-      : days.join(",") === "1,2,3,4,5"
-        ? "Weekdays"
-        : days.map((day) => ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][day]).join(", ");
-  const [hour, minute] = routine.schedule.time.split(":").map(Number);
-  return `${cadence} · ${new Date(2000, 0, 1, hour, minute).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
-}
-
-function nextRunLabel(at: number | null) {
-  if (at == null) return "Paused";
-  const date = new Date(at);
-  const today = new Date();
-  const sameDay = date.toDateString() === today.toDateString();
-  return `${sameDay ? "Today" : date.toLocaleDateString([], { month: "short", day: "numeric" })}, ${date.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
 }
 
 export function ComputerPanel({
@@ -1232,7 +1204,7 @@ export function ComputerPanel({
                       {routineScheduleLabel(routine)}{routine.runOn === "cloud" ? " · runs on ASCII.dev Box" : ""}
                     </span>
                   </span>
-                  <span className="shrink-0 text-[10px] text-ink-secondary">{nextRunLabel(routine.nextRunAt)}</span>
+                  <span className="shrink-0 text-[10px] text-ink-secondary">{nextCalendarRunLabel(routine.nextRunAt)}</span>
                 </button>
               ))}
             </div>

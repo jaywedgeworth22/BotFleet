@@ -939,6 +939,7 @@ public struct CompanionClient: Sendable {
         if let at = input.schedule.at { schedule["at"] = at }
         if let time = input.schedule.time { schedule["time"] = time }
         if let weekdays = input.schedule.weekdays { schedule["weekdays"] = weekdays }
+        if let timeZone = input.schedule.timeZone { schedule["timeZone"] = timeZone }
         var body: [String: Any] = [
             "name": input.name, "prompt": input.prompt, "botId": input.botId,
             "runOn": input.runOn, "schedule": schedule, "durationMinutes": input.durationMinutes,

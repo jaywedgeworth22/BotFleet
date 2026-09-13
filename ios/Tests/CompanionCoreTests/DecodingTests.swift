@@ -147,12 +147,35 @@ final class DecodingTests: XCTestCase {
     func testFutureRoutineScheduleKindRemainsVisibleAsUnknown() throws {
         let schedule = try JSONDecoder().decode(
             RoutineSchedule.self,
-            from: Data(#"{"type":"weekly","time":"09:00","weekdays":[1]}"#.utf8)
+            from: Data(#"{"type":"weekly","time":"09:00","weekdays":[1],"timeZone":"Asia/Tokyo"}"#.utf8)
         )
 
         XCTAssertEqual(schedule.type, .unknown)
         XCTAssertEqual(schedule.time, "09:00")
         XCTAssertEqual(schedule.weekdays, [1])
+        XCTAssertEqual(schedule.timeZone, "Asia/Tokyo")
+    }
+
+    func testRoutineEditorPreservesGapWallTimeAndHostZoneOmission() throws {
+        let zone = try XCTUnwrap(TimeZone(identifier: "America/Chicago"))
+        let date = routineEditorTimeDate("02:30", in: zone)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        XCTAssertEqual(calendar.component(.hour, from: date), 2)
+        XCTAssertEqual(calendar.component(.minute, from: date), 30)
+        XCTAssertNil(routineTimeZoneForUpdate(effectiveTimeZone: "America/Chicago", source: "host"))
+        XCTAssertEqual(
+            routineTimeZoneForUpdate(effectiveTimeZone: "America/Chicago", source: "stored"),
+            "America/Chicago"
+        )
+        let tokyo = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
+        XCTAssertEqual(
+            routineEditorTimeZoneIdentifier(effectiveTimeZone: nil, isNew: true, currentTimeZone: tokyo),
+            "Asia/Tokyo"
+        )
+        XCTAssertNil(
+            routineEditorTimeZoneIdentifier(effectiveTimeZone: nil, isNew: false, currentTimeZone: tokyo)
+        )
     }
 
     func testNotificationTargetRequiresBothExactIds() {

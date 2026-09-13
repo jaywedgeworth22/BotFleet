@@ -191,6 +191,7 @@ describe("agents-proxy MCP surface", () => {
     expect(schedule.type).toBe("object");
     expect(schedule.required).toEqual(["type"]);
     expect(schedule.properties.type.enum).toEqual(["once", "weekly", "daily"]);
+    expect(schedule.properties.timeZone.description).toContain("IANA timezone");
     expect(schedule.properties.weekdays.items.enum).toEqual([
       "monday",
       "tuesday",
@@ -323,7 +324,7 @@ describe("agents-proxy MCP surface", () => {
     const res = await callTool("propose_routine", {
       name: "Morning brief",
       instructions: "Summarize today's priorities.",
-      schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "friday"] },
+      schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "friday"], timeZone: "America/Chicago" },
       run_on: "maus",
       duration_minutes: 45,
     });
@@ -334,7 +335,7 @@ describe("agents-proxy MCP surface", () => {
       routine: {
         name: "Morning brief",
         instructions: "Summarize today's priorities.",
-        schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "friday"] },
+        schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "friday"], timeZone: "America/Chicago" },
         runOn: "maus",
         durationMinutes: 45,
       },

@@ -338,12 +338,19 @@ const ROUTINE_SCHEDULE_SCHEMA = {
     },
     time: {
       type: "string",
-      description: "For type weekly or daily: local computer time in 24-hour HH:MM format, for example 09:00.",
+      description:
+        "For type weekly or daily: 24-hour HH:MM, interpreted in schedule.timeZone when supplied and otherwise in the computer timezone, for example 09:00.",
+    },
+    timeZone: {
+      type: "string",
+      description:
+        "Optional IANA timezone for a weekly or daily schedule, for example America/Chicago.  When supplied, it overrides the zone used to interpret both time and weekdays.  On create, omit it to use the computer timezone returned by list_routines.  On update, omit it to preserve the routine's existing timezone; send a different IANA timezone to change it.",
     },
     weekdays: {
       type: "array",
       items: { type: "string", enum: WEEKDAYS_ENUM },
-      description: "Only for type weekly: which days the routine runs, in the computer's local timezone.",
+      description:
+        "Only for type weekly: which days the routine runs, interpreted in schedule.timeZone when supplied and otherwise in the computer timezone.",
     },
   },
   required: ["type"],

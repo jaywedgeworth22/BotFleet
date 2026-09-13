@@ -85,6 +85,7 @@ export function normalizeScheduleInput(args: { schedule?: unknown }): Normalized
   }
   if (type === "weekly" || type === "daily") {
     const time = typeof raw.time === "string" ? raw.time.trim() : "";
+    const timeZone = typeof raw.timeZone === "string" ? raw.timeZone.trim() : "";
     if (!time) return { error: `A ${type} schedule needs "time" in 24-hour HH:MM, for example 09:00.` };
     let weekdays: unknown[];
     if (type === "daily") {
@@ -109,7 +110,14 @@ export function normalizeScheduleInput(args: { schedule?: unknown }): Normalized
       if (!full) return { error: `Unsupported weekday "${String(day)}". Use full names: ${WEEKDAYS.join(", ")}.` };
       if (!normalized.includes(full)) normalized.push(full);
     }
-    return { schedule: { type: "weekly", time, weekdays: normalized } };
+    return {
+      schedule: {
+        type: "weekly",
+        time,
+        weekdays: normalized,
+        ...(timeZone ? { timeZone } : {}),
+      },
+    };
   }
   if (type === "interval" || type === "cron" || type === "hourly" || type === "minutes") {
     return {

@@ -21,6 +21,7 @@ import type {
   RoutineRequestRunOn,
   RoutineRequestSchedule,
 } from "../shared/routine-request.ts";
+import { validTimeZone } from "../shared/time-zone.ts";
 
 const WEEKDAY_NUMBER = {
   sunday: 0,
@@ -54,6 +55,7 @@ const routineToolScheduleSchema = z.discriminatedUnion("type", [
     type: z.literal("weekly"),
     time: z.string().max(5),
     weekdays: z.array(z.string().max(9)).min(1).max(7),
+    timeZone: z.string().refine(validTimeZone, "Choose a valid IANA timezone").optional(),
   }).strict(),
 ]);
 
@@ -89,6 +91,7 @@ const storedScheduleSchema = z.discriminatedUnion("type", [
     type: z.literal("daily"),
     time: z.string().regex(TIME),
     weekdays: storedWeekdaysSchema,
+    timeZone: z.string().refine(validTimeZone, "Stored routine timezone must be valid").optional(),
   }).strict(),
 ]);
 const storedDefinitionSchema = z.object({
@@ -260,7 +263,7 @@ function duration(value: number | undefined): number {
   return normalized;
 }
 
-function normalizeSchedule(schedule: RoutineToolScheduleInput, now: number): RoutineRequestSchedule {
+function normalizeSchedule(schedule: RoutineToolScheduleInput, now: number, defaultTimeZone: string | undefined): RoutineRequestSchedule {
   if (schedule.type === "once") {
     const parts = RFC3339_WITH_OFFSET.exec(schedule.at);
     if (!parts) {
@@ -304,24 +307,30 @@ function normalizeSchedule(schedule: RoutineToolScheduleInput, now: number): Rou
     if (number === undefined) throw new RoutineRequestError(`Unsupported weekday: ${day}`);
     return number;
   });
-  return { type: "daily", time: schedule.time, weekdays: [...new Set(weekdays)].sort() };
+  const timeZone = schedule.timeZone ?? defaultTimeZone;
+  return {
+    type: "daily",
+    time: schedule.time,
+    weekdays: [...new Set(weekdays)].sort(),
+    ...(timeZone ? { timeZone } : {}),
+  };
 }
 
-function normalizeDefinition(input: RoutineToolDefinitionInput, now: number): RoutineRequestDefinition {
+function normalizeDefinition(input: RoutineToolDefinitionInput, now: number, defaultTimeZone: string): RoutineRequestDefinition {
   return {
     name: text(input.name, "name", 80),
     instructions: text(input.instructions, "instructions", 20_000),
-    schedule: normalizeSchedule(input.schedule, now),
+    schedule: normalizeSchedule(input.schedule, now, defaultTimeZone),
     runOn: runOn(input.runOn),
     durationMinutes: duration(input.durationMinutes),
   };
 }
 
-function normalizeChanges(input: RoutineToolChangesInput, now: number): RoutineRequestChanges {
+function normalizeChanges(input: RoutineToolChangesInput, now: number, defaultTimeZone: string | undefined): RoutineRequestChanges {
   const changes: RoutineRequestChanges = {};
   if (input.name !== undefined) changes.name = text(input.name, "name", 80);
   if (input.instructions !== undefined) changes.instructions = text(input.instructions, "instructions", 20_000);
-  if (input.schedule !== undefined) changes.schedule = normalizeSchedule(input.schedule, now);
+  if (input.schedule !== undefined) changes.schedule = normalizeSchedule(input.schedule, now, defaultTimeZone);
   if (input.runOn !== undefined) changes.runOn = runOn(input.runOn);
   if (input.durationMinutes !== undefined) changes.durationMinutes = duration(input.durationMinutes);
   return changes;
@@ -341,19 +350,28 @@ function normalizedOperation(
   botId: string,
   validated: ParsedRoutineProposal,
   now: number,
+  defaultTimeZone: string,
 ): RoutineRequestOperation {
   if (validated.action === "create") {
-    return { action: "create", routine: normalizeDefinition(validated.routine, now) };
+    return { action: "create", routine: normalizeDefinition(validated.routine, now, defaultTimeZone) };
   }
   const id = routineId(validated.routineId);
   const current = ownedRoutine(manager, id, botId);
   if (!current) throw new RoutineRequestError("That routine does not exist", 404);
   if (validated.action === "update") {
+    // A schedule edit that omits its optional zone means "keep this
+    // recurrence's stored zone", not "move it to the harness zone".  Read
+    // through the raw accessor because listRoutines intentionally enriches a
+    // legacy zone-less schedule for clients; persisting that enrichment here
+    // would silently turn its host-local behavior into a fixed zone.
+    const scheduleTimeZone = current.schedule.type === "daily"
+      ? manager.storedRoutineTimeZone(id)
+      : defaultTimeZone;
     return {
       action: "update",
       routineId: id,
       expectedUpdatedAt: current.updatedAt,
-      changes: normalizeChanges(validated.changes, now),
+      changes: normalizeChanges(validated.changes, now, scheduleTimeZone),
     };
   }
   if (validated.action === "resume" && nextOccurrence(current.schedule, now) === null) {
@@ -368,7 +386,12 @@ function normalizedOperation(
 function asSchedule(schedule: RoutineRequestSchedule): RoutineSchedule {
   return schedule.type === "once"
     ? { type: "once", at: schedule.at }
-    : { type: "daily", time: schedule.time, weekdays: [...schedule.weekdays] };
+    : {
+        type: "daily",
+        time: schedule.time,
+        weekdays: [...schedule.weekdays],
+        ...(schedule.timeZone ? { timeZone: schedule.timeZone } : {}),
+      };
 }
 
 function nextForOperation(operation: RoutineRequestOperation, manager: RoutineManager, now: number): number | null {
@@ -399,7 +422,7 @@ function formatInstant(at: number, timeZone: string): string {
 function scheduleText(schedule: RoutineRequestSchedule, timeZone: string): string {
   if (schedule.type === "once") return `${formatInstant(schedule.at, timeZone)} (${timeZone})`;
   const days = schedule.weekdays.map((day) => WEEKDAY_LABEL[day]).join(", ");
-  return `${days} at ${schedule.time} (${timeZone})`;
+  return `${days} at ${schedule.time} (${schedule.timeZone ?? timeZone})`;
 }
 
 function effectiveDefinition(operation: RoutineRequestOperation, manager: RoutineManager): RoutineRequestDefinition | null {
@@ -605,7 +628,8 @@ export class RoutineRequestService {
     if (!parsedProposal.success) {
       throw new RoutineRequestError(schemaIssue(parsedProposal.error, "Invalid routine proposal"));
     }
-    const operation = normalizedOperation(this.routines, botId, parsedProposal.data, at);
+    const timeZone = this.timeZone();
+    const operation = normalizedOperation(this.routines, botId, parsedProposal.data, at, timeZone);
     await this.requireCloudReadiness(operation);
     // The readiness probe is asynchronous. Another request can edit or
     // delete the routine while it is in flight, so re-check the captured
@@ -621,7 +645,6 @@ export class RoutineRequestService {
       createdAt: cardAt,
       operation,
     };
-    const timeZone = this.timeZone();
     const copy = cardCopy(operation, this.routines, timeZone, cardAt);
     const messageInput: Parameters<RoutineRequestStore["appendMessage"]>[1] = {
       role: "bot",

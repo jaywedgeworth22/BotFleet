@@ -204,6 +204,7 @@ private struct RoutineEditorView: View {
     @State private var onceAt: Date
     @State private var dailyTime: Date
     @State private var weekdays: Set<Int>
+    @State private var scheduleTimeZone: String?
     @State private var duration: Int
     @State private var saving = false
 
@@ -218,10 +219,18 @@ private struct RoutineEditorView: View {
         _availabilityLoaded = State(initialValue: false)
         _kind = State(initialValue: routine?.schedule.type ?? .daily)
         _onceAt = State(initialValue: routine?.schedule.at.map { Date(timeIntervalSince1970: $0 / 1_000) } ?? Date().addingTimeInterval(3_600))
-        let parts = (routine?.schedule.time ?? "09:00").split(separator: ":").compactMap { Int($0) }
-        let time = Calendar.current.date(bySettingHour: parts.first ?? 9, minute: parts.count > 1 ? parts[1] : 0, second: 0, of: Date()) ?? Date()
+        // The server sends its effective zone even for legacy host-local
+        // schedules.  Keep it for truthful display on a phone in another
+        // zone, but omit it again when serializing that legacy schedule.
+        let effectiveTimeZone = routineEditorTimeZoneIdentifier(
+            effectiveTimeZone: routine?.schedule.timeZone,
+            isNew: routine == nil
+        )
+        let editorTimeZone = effectiveTimeZone.flatMap(TimeZone.init(identifier:)) ?? .current
+        let time = routineEditorTimeDate(routine?.schedule.time, in: editorTimeZone)
         _dailyTime = State(initialValue: time)
         _weekdays = State(initialValue: Set(routine?.schedule.weekdays ?? [1, 2, 3, 4, 5]))
+        _scheduleTimeZone = State(initialValue: effectiveTimeZone)
         _duration = State(initialValue: routine?.durationMinutes ?? 30)
     }
 
@@ -279,6 +288,8 @@ private struct RoutineEditorView: View {
                         DatePicker("Run", selection: $onceAt, in: Date()...)
                     } else if kind == .daily {
                         DatePicker("Time", selection: $dailyTime, displayedComponents: .hourAndMinute)
+                            .environment(\.timeZone, editorTimeZone)
+                        LabeledContent("Time zone", value: scheduleTimeZone ?? TimeZone.current.identifier)
                         HStack {
                             ForEach(0..<7) { day in
                                 Button(Self.dayLetters[day]) {
@@ -324,6 +335,10 @@ private struct RoutineEditorView: View {
         runAvailability?.canSelect(.cloud, preserving: runOn) ?? (runOn == .cloud)
     }
 
+    private var editorTimeZone: TimeZone {
+        scheduleTimeZone.flatMap(TimeZone.init(identifier:)) ?? .current
+    }
+
     private func save() async {
         guard kind != .unknown else {
             session.actionError = "Choose a supported schedule before saving this routine."
@@ -333,9 +348,18 @@ private struct RoutineEditorView: View {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.calendar = Calendar(identifier: .gregorian)
-        formatter.timeZone = .current
+        formatter.timeZone = editorTimeZone
         formatter.dateFormat = "HH:mm"
-        let schedule = kind == .once ? RoutineSchedule.once(at: onceAt) : .daily(time: formatter.string(from: dailyTime), weekdays: weekdays.sorted())
+        let schedule = kind == .once
+            ? RoutineSchedule.once(at: onceAt)
+            : .daily(
+                time: formatter.string(from: dailyTime),
+                weekdays: weekdays.sorted(),
+                timeZone: routineTimeZoneForUpdate(
+                    effectiveTimeZone: scheduleTimeZone,
+                    source: routine?.scheduleTimeZoneSource
+                )
+            )
         let input = RoutineInput(
             name: String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)),
             prompt: String(prompt.trimmingCharacters(in: .whitespacesAndNewlines).prefix(20_000)),

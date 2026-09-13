@@ -14,10 +14,11 @@ import {
 } from "../shared/conversation-mode.ts";
 import { foldPrompts, gapEndsAt, withinGap } from "./trigger-gap.ts";
 import { routineFailureCode, routineFailurePhase, type RoutineOutcomeCode, type RoutineFailurePhase } from "../shared/routine-outcomes.ts";
+import { nextZonedOccurrence, validTimeZone } from "../shared/time-zone.ts";
 
 export type RoutineSchedule =
   | { type: "once"; at: number }
-  | { type: "daily"; time: string; weekdays: number[] };
+  | { type: "daily"; time: string; weekdays: number[]; timeZone?: string };
 
 /** `cloud` runs the agent itself inside the bot's Box VM. `maus` keeps
  * using the provider selected on the MAUS and only borrows its configured
@@ -77,6 +78,9 @@ export interface Routine {
   runOn: RoutineRunOn;
   enabled: boolean;
   schedule: RoutineSchedule;
+  /** Whether a daily schedule's client-facing timezone was stored with the
+   * recurrence or supplied from the current harness for display only. */
+  scheduleTimeZoneSource?: "stored" | "host";
   durationMinutes: number;
   nextRunAt: number | null;
   createdAt: number;
@@ -153,6 +157,7 @@ export interface RoutineInput {
   runOn?: RoutineRunOn;
   enabled?: boolean;
   schedule: RoutineSchedule;
+  scheduleTimeZoneSource?: "stored" | "host";
   durationMinutes?: number;
 }
 
@@ -224,6 +229,9 @@ export interface RoutineManagerOptions {
    * receipt `running` forever — that also holds a slot against the webhook
    * and resource-trigger pending caps until the app restarts. */
   turnLive?: (run: RoutineRun) => boolean;
+  /** Effective host timezone exposed for legacy recurrences that predate an
+   * explicit schedule zone.  Their stored and execution semantics stay local. */
+  timeZone?: () => string;
 }
 
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
@@ -268,7 +276,9 @@ function cleanSchedule(schedule: RoutineSchedule): RoutineSchedule {
   if (schedule?.type === "daily") {
     const time = String(schedule.time ?? "");
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error("Time must use HH:MM");
-    return { type: "daily", time, weekdays: cleanDays(schedule.weekdays) };
+    const timeZone = typeof schedule.timeZone === "string" ? schedule.timeZone.trim() : "";
+    if (timeZone && !validTimeZone(timeZone)) throw new Error("Choose a valid timezone");
+    return { type: "daily", time, weekdays: cleanDays(schedule.weekdays), ...(timeZone ? { timeZone } : {}) };
   }
   throw new Error("Choose a supported schedule");
 }
@@ -276,6 +286,7 @@ function cleanSchedule(schedule: RoutineSchedule): RoutineSchedule {
 /** Next wall-clock occurrence in this computer's timezone, strictly after `after`. */
 export function nextOccurrence(schedule: RoutineSchedule, after: number): number | null {
   if (schedule.type === "once") return schedule.at > after ? schedule.at : null;
+  if (schedule.timeZone) return nextZonedOccurrence(schedule, after, schedule.timeZone);
   const [hour, minute] = schedule.time.split(":").map(Number);
   const weekdays = new Set(cleanDays(schedule.weekdays));
   for (let offset = 0; offset <= 8; offset++) {
@@ -296,13 +307,16 @@ function sanitizeInput(input: RoutineInput): Omit<Routine, "id" | "createdAt" | 
   if (!botId) throw new Error("Choose a bot");
   const runOn = input.runOn ?? "maus";
   if (runOn !== "maus" && runOn !== "cloud") throw new Error("Choose where this routine runs");
+  const schedule = input.schedule.type === "daily" && input.scheduleTimeZoneSource === "host"
+    ? { type: "daily" as const, time: input.schedule.time, weekdays: input.schedule.weekdays }
+    : input.schedule;
   return {
     name,
     prompt,
     botId,
     runOn,
     enabled: input.enabled !== false,
-    schedule: cleanSchedule(input.schedule),
+    schedule: cleanSchedule(schedule),
     durationMinutes: Math.min(240, Math.max(15, Math.round(Number(input.durationMinutes) || 30))),
   };
 }
@@ -376,7 +390,17 @@ export class RoutineManager {
   }
 
   listRoutines(): Routine[] {
-    return this.routines.map((r) => ({ ...r, schedule: { ...r.schedule } }));
+    const effectiveTimeZone = this.options.timeZone?.();
+    return this.routines.map((routine) => this.clientRoutine(routine, effectiveTimeZone));
+  }
+
+  /** The explicit zone stored for a recurrence, without the client-facing
+   * effective host zone added by listRoutines.  Callers that replace a
+   * legacy schedule need this distinction so its host-local behavior stays
+   * host-local. */
+  storedRoutineTimeZone(id: string): string | undefined {
+    const schedule = this.routines.find((routine) => routine.id === id)?.schedule;
+    return schedule?.type === "daily" ? schedule.timeZone : undefined;
   }
 
   listRuns(from?: number, to?: number): RoutineRun[] {
@@ -495,13 +519,26 @@ export class RoutineManager {
     const routine = this.routines.find((r) => r.id === id);
     if (!routine) return null;
     const now = this.now();
+    const replacementSchedule = patch.schedule?.type === "daily" && patch.scheduleTimeZoneSource === "host"
+      ? { type: "daily" as const, time: patch.schedule.time, weekdays: patch.schedule.weekdays }
+      : patch.schedule;
+    const nextSchedule = replacementSchedule?.type === "daily" &&
+        routine.schedule.type === "daily" &&
+        replacementSchedule.timeZone === undefined &&
+        routine.schedule.timeZone !== undefined
+      ? { ...replacementSchedule, timeZone: routine.schedule.timeZone }
+      : replacementSchedule ?? routine.schedule;
     const clean = sanitizeInput({
       name: patch.name ?? routine.name,
       prompt: patch.prompt ?? routine.prompt,
       botId: patch.botId ?? routine.botId,
       runOn: patch.runOn ?? routine.runOn,
       enabled: patch.enabled ?? routine.enabled,
-      schedule: patch.schedule ?? routine.schedule,
+      // Older clients replace time/weekdays without sending the newer zone
+      // field.  Omission preserves an explicit stored zone; it does not
+      // convert the recurrence to the harness clock.  A legacy zone-less
+      // routine remains zone-less because there is no zone to carry forward.
+      schedule: nextSchedule,
       durationMinutes: patch.durationMinutes ?? routine.durationMinutes,
     });
     if (this.options.botState(clean.botId) === "missing") throw new Error("That bot no longer exists");
@@ -1065,7 +1102,18 @@ export class RoutineManager {
   }
 
   private emitRoutine(routine: Routine) {
-    this.options.emit?.({ kind: "routine", routine: { ...routine, schedule: { ...routine.schedule } } });
+    this.options.emit?.({ kind: "routine", routine: this.clientRoutine(routine, this.options.timeZone?.()) });
+  }
+
+  private clientRoutine(routine: Routine, effectiveTimeZone?: string): Routine {
+    if (routine.schedule.type !== "daily") return { ...routine, schedule: { ...routine.schedule } };
+    if (routine.schedule.timeZone) {
+      return { ...routine, schedule: { ...routine.schedule }, scheduleTimeZoneSource: "stored" };
+    }
+    const schedule = effectiveTimeZone
+      ? { ...routine.schedule, timeZone: effectiveTimeZone }
+      : { ...routine.schedule };
+    return { ...routine, schedule, scheduleTimeZoneSource: "host" };
   }
 
   private emitRun(run: RoutineRun) {

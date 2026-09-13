@@ -156,9 +156,79 @@ describe("nextOccurrence", () => {
     expect(nextOccurrence({ type: "once", at: 200 }, 100)).toBe(200);
     expect(nextOccurrence({ type: "once", at: 100 }, 100)).toBeNull();
   });
+
+  it("uses an explicit IANA zone through Central DST gaps and folds", () => {
+    expect(nextOccurrence(
+      { type: "daily", time: "02:30", weekdays: [0], timeZone: "America/Chicago" },
+      Date.parse("2026-03-08T06:00:00.000Z"),
+    )).toBe(Date.parse("2026-03-08T08:30:00.000Z"));
+    expect(nextOccurrence(
+      { type: "daily", time: "01:30", weekdays: [0], timeZone: "America/Chicago" },
+      Date.parse("2026-11-01T05:00:00.000Z"),
+    )).toBe(Date.parse("2026-11-01T06:30:00.000Z"));
+  });
 });
 
 describe("RoutineManager", () => {
+  it("enriches legacy client schedules with the host zone without rewriting their stored semantics", () => {
+    const h = harness(Date.parse("2026-09-14T12:00:00.000Z"));
+    h.options.timeZone = () => "Europe/Athens";
+    const created = h.manager.create({
+      name: "Legacy local",
+      prompt: "Check",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1] },
+    });
+
+    expect(created.schedule).toEqual({ type: "daily", time: "09:00", weekdays: [1] });
+    expect(h.manager.listRoutines()[0].schedule).toEqual({
+      type: "daily",
+      time: "09:00",
+      weekdays: [1],
+      timeZone: "Europe/Athens",
+    });
+    expect(h.manager.listRoutines()[0].scheduleTimeZoneSource).toBe("host");
+    expect(h.emitted.at(-1)?.routine.schedule.timeZone).toBe("Europe/Athens");
+    expect(h.emitted.at(-1)?.routine.scheduleTimeZoneSource).toBe("host");
+    const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+    expect(disk.routines[0].schedule.timeZone).toBeUndefined();
+
+    const clientCopy = h.manager.listRoutines()[0];
+    if (clientCopy.schedule.type !== "daily") throw new Error("Expected a daily routine");
+    const echoed = h.manager.update(created.id, {
+      ...clientCopy,
+      schedule: { ...clientCopy.schedule, time: "10:15" },
+    });
+    expect(echoed?.schedule).toEqual({ type: "daily", time: "10:15", weekdays: [1] });
+    expect(h.manager.storedRoutineTimeZone(created.id)).toBeUndefined();
+  });
+
+  it("persists an explicit schedule zone and rejects an invalid one", () => {
+    const h = harness(Date.parse("2026-09-14T12:00:00.000Z"));
+    const created = h.manager.create({
+      name: "Central",
+      prompt: "Check",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1], timeZone: "America/Chicago" },
+    });
+    expect(created.nextRunAt).toBe(Date.parse("2026-09-14T14:00:00.000Z"));
+    const reloaded = new RoutineManager(h.options).listRoutines()[0];
+    expect(reloaded.schedule).toMatchObject({ timeZone: "America/Chicago" });
+    expect(reloaded.scheduleTimeZoneSource).toBe("stored");
+    const updated = h.manager.update(created.id, {
+      schedule: { type: "daily", time: "10:30", weekdays: [2] },
+    });
+    expect(updated?.schedule).toEqual({
+      type: "daily",
+      time: "10:30",
+      weekdays: [2],
+      timeZone: "America/Chicago",
+    });
+    expect(() => h.manager.update(created.id, {
+      schedule: { type: "daily", time: "09:00", weekdays: [1], timeZone: "Mars/Olympus" },
+    })).toThrow("Choose a valid timezone");
+  });
+
   it.each([true, false])("keeps combined receipts pending until their owning execution settles (ok=%s)", async (ok) => {
     const h = harness();
     h.setBot("busy");
