@@ -1573,11 +1573,15 @@ function createOperations(config) {
       await record(async () => { await git(config.checkout, ["checkout", "--detach", previous.checkoutCommit]); });
       await record(async () => { await rm(previous.candidatePath, { recursive: true, force: true }); });
       await record(async () => { await rm(previous.candidateDependencies, { recursive: true, force: true }); });
-      // The prior bundle is back in place, so its install receipt no longer
-      // describes anything on disk and must not survive as a generation the
-      // prune rule would later refuse to touch.  If the restore did not
-      // happen, the receipt is the only record of where that bundle went and
-      // it stays.
+      // Deleting the receipt is right in exactly two cases, and the flag
+      // distinguishes both from the third.  Either the prior bundle was
+      // restored to its place, or it never left it — the swap can fail on its
+      // very first rename, after the provisional receipt is already written.
+      // Both leave nothing at the rollback path for the receipt to describe,
+      // and a receipt left behind would become a generation prune refuses to
+      // touch.  The case that keeps it is a swap that did move the bundle
+      // followed by a restore that failed: the flag is still true there, and
+      // the receipt is then the only record of where the bundle went.
       await record(async () => {
         if (previous.swap?.rollbackAppHolds) return;
         await rm(`${previous.rollbackPath}.json`, { force: true });
