@@ -1,4 +1,4 @@
-import { retainRoutineRuns } from "../shared/routine-retention.ts";
+import { boundStalePromptSnapshots, retainRoutineRuns } from "../shared/routine-retention.ts";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -87,7 +87,11 @@ export interface RoutineRun {
   id: string;
   routineId: string;
   routineName: string;
-  /** Snapshot the work so an edited/deleted definition cannot rewrite history. */
+  /** Snapshot of the work as dispatched, so an edited definition cannot
+   * rewrite what a run actually did.  Kept in full on active runs and on the
+   * newest settled runs; older settled runs keep a bounded copy of it (see
+   * boundStalePromptSnapshots), because these snapshots were 94% of a 35 MB
+   * routines.json. */
   prompt?: string;
   durationMinutes?: number;
   botId: string;
@@ -225,6 +229,13 @@ export interface RoutineManagerOptions {
 const ALL_DAYS = [0, 1, 2, 3, 4, 5, 6];
 const CATCH_UP_MS = 12 * 60 * 60_000;
 const MAX_RUNS = 2_000;
+/** Settled runs that keep their full prompt snapshot.  A webhook run's
+ * snapshot carries its whole payload, so 2,000 of them made routines.json
+ * 35 MB and turned every save() below into a multi-second main-thread stall
+ * (the always-on harness stopped answering health checks under memory
+ * pressure).  Older settled runs keep a bounded snapshot — see
+ * boundStalePromptSnapshots for exactly what survives. */
+const PROMPT_SNAPSHOT_LIMIT = 100;
 /** A run is marked running just before its turn is dispatched; give the
  * dispatch this long to mark the bot busy before the sweep may call it an
  * orphan. */
@@ -1141,9 +1152,11 @@ export class RoutineManager {
       const owner = run.coalescedInto ? byId.get(run.coalescedInto) : undefined;
       if (owner) this.copyCombinedOutcome(run, owner);
     }
-    this.runs = retainRoutineRuns(this.runs, MAX_RUNS, this.routineRequestReceipts
+    const receiptResultIds = this.routineRequestReceipts
       .filter((receipt) => receipt.action === "run_now")
-      .map((receipt) => receipt.resultId));
+      .map((receipt) => receipt.resultId);
+    this.runs = retainRoutineRuns(this.runs, MAX_RUNS, receiptResultIds);
+    boundStalePromptSnapshots(this.runs, PROMPT_SNAPSHOT_LIMIT, receiptResultIds);
     mkdirSync(dirname(this.file), { recursive: true });
     const temp = `${this.file}.tmp`;
     writeFileSync(temp, JSON.stringify({

@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,7 +15,7 @@ import {
   validateBaseUrl,
   validateToolArguments,
 } from "../scripts/mcp-server.ts";
-import { waitForExit } from "./testing/cleanup.ts";
+import { spawnDetached, waitForExit } from "./testing/cleanup.ts";
 
 const MCP_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "scripts", "mcp-server.ts");
 
@@ -863,7 +862,7 @@ describe("MCP fleet tools", () => {
     });
     await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
     const port = (stub.address() as { port: number }).port;
-    const child = spawn(process.execPath, [MCP_SCRIPT], {
+    const child = spawnDetached(process.execPath, [MCP_SCRIPT], {
       env: {
         ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
         ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}),
