@@ -9,9 +9,9 @@ import { cn } from "@/lib/cn";
 type Platform = "darwin" | "win32" | "linux";
 
 function hostPlatform(): Platform {
-  const platform = window.ogb?.platform;
+  const platform = typeof window !== "undefined" ? window.ogb?.platform : undefined;
   if (platform === "darwin" || platform === "win32" || platform === "linux") return platform;
-  const userAgent = navigator.userAgent;
+  const userAgent = typeof navigator !== "undefined" ? navigator.userAgent : "";
   if (userAgent.includes("Mac")) return "darwin";
   if (userAgent.includes("Win")) return "win32";
   return "linux";
