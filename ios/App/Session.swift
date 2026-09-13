@@ -119,7 +119,7 @@ final class Session: ObservableObject {
             Task { @MainActor in await self?.openNotification(target) }
         }
         NotificationCoordinator.shared.approvalActionHandler = { [weak self] target, approve in
-            await self?.answerPendingRequest(target: target, approve: approve)
+            _ = await self?.answerPendingRequest(target: target, approve: approve)
         }
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-store-preview"),
@@ -849,6 +849,20 @@ final class Session: ObservableObject {
         case failed
     }
 
+    /// Every pending approval the session knows about, flattened to the
+    /// three fields the resolver needs.  A method on `Session`, which is
+    /// `@MainActor`, so it reads `state` on the actor that owns it.
+    private func pendingApprovalRecords() -> [PendingApproval] {
+        state.pendingApprovals.compactMap { entry in
+            guard let card = entry.message.card, let requestId = card.requestId else { return nil }
+            return PendingApproval(
+                threadId: entry.threadId,
+                requestId: requestId,
+                isPermission: card.isPermission
+            )
+        }
+    }
+
     /// Approve or deny from a notification action — Approve/Deny on a lock
     /// screen banner, or the equivalent remote push.  Resolves which request
     /// to answer with `ApprovalResolver` — never by picking "whatever is
@@ -866,24 +880,21 @@ final class Session: ObservableObject {
 
         let threadId = target.threadId
         let choice = approve ? "Approve" : "Deny"
-        let bounded = await BackgroundRefreshCoordinator.run(
-            timeoutNanoseconds: Self.approvalActionTimeoutNanoseconds
-        ) { [weak self] in
-            guard let self, let client = self.client else { throw ApprovalActionFailed() }
+        // Declared with the same shape as `CompanionAppDelegate.onRemoteRefresh`,
+        // and reached the same way: `run` takes a plain `@Sendable` closure,
+        // which is NOT isolated to anything, and `state` and `client` belong
+        // to this main-actor type.  Naming the isolation here is what lets
+        // the body read them at all.
+        let attempt: @MainActor @Sendable () async throws -> Bool = {
+            guard let client = self.client else { throw ApprovalActionFailed() }
 
-            func pendingOnRecord() -> [PendingApproval] {
-                self.state.pendingApprovals.compactMap { entry in
-                    guard let card = entry.message.card, let requestId = card.requestId else { return nil }
-                    return PendingApproval(threadId: entry.threadId, requestId: requestId, isPermission: card.isPermission)
-                }
-            }
-            var candidates = pendingOnRecord()
+            var candidates = self.pendingApprovalRecords()
             if candidates.first(where: { $0.threadId == threadId }) == nil {
                 // Nothing usable yet — an older harness never named the
                 // request, or this is the first thing the session has
                 // heard about it after a cold launch.
                 _ = try? await self.hydrateSnapshot(using: client)
-                candidates = pendingOnRecord()
+                candidates = self.pendingApprovalRecords()
             }
 
             switch ApprovalResolver.resolve(
@@ -899,6 +910,9 @@ final class Session: ObservableObject {
                 return false
             }
         }
+        let bounded = await BackgroundRefreshCoordinator.run(
+            timeoutNanoseconds: Self.approvalActionTimeoutNanoseconds
+        ) { try await attempt() }
 
         let outcome: ApprovalActionOutcome
         switch bounded {
