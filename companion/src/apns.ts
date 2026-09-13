@@ -2,7 +2,7 @@
 // sends an APNs alert so iOS can relaunch the companion.  The .p8 never
 // leaves this process; tests inject sendImpl.
 import { createHash, createPrivateKey, sign as cryptoSign } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -14,13 +14,29 @@ export interface ApnsConfig {
   production: boolean;
 }
 
+/** Where the signing key lives.  The path, never the contents. */
+export function apnsKeyPath(): string {
+  const keyId = process.env.APNS_KEY_ID?.trim() || "N3949G7CN6";
+  return process.env.APNS_P8_PATH?.trim() || join(homedir(), ".secrets", `AuthKey_${keyId}.p8`);
+}
+
+/** A fingerprint of the key FILE — modification time and size, never a
+ * byte of the key itself.  Cheap enough to take every few minutes, and
+ * enough to notice a rotated .p8 that kept its path. */
+export function apnsKeyStamp(path = apnsKeyPath()): string | null {
+  try {
+    const info = statSync(path);
+    return `${info.mtimeMs}:${info.size}`;
+  } catch {
+    return null;
+  }
+}
+
 export function loadApnsConfig(): ApnsConfig | null {
   const keyId = process.env.APNS_KEY_ID?.trim() || "N3949G7CN6";
   const teamId = process.env.APNS_TEAM_ID?.trim() || "CC8UTF7ATG";
   const bundleId = process.env.APNS_BUNDLE_ID?.trim() || "app.botfleet";
-  const p8Path =
-    process.env.APNS_P8_PATH?.trim() ||
-    join(homedir(), ".secrets", `AuthKey_${keyId}.p8`);
+  const p8Path = apnsKeyPath();
   if (!existsSync(p8Path)) return null;
   let p8: string;
   try {
@@ -226,7 +242,29 @@ const APNS_MAX_BACKOFF_MS = 30_000;
  * and will fail identically next time. */
 const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
 
-const EXPIRED_TOKEN_REASONS = new Set(["ExpiredProviderToken", "InvalidProviderToken"]);
+/** The one rejection worth signing a new token for.  `InvalidProviderToken`
+ * is NOT here: it means Apple refuses the key itself — wrong team, revoked,
+ * a .p8 that does not match its key id — and re-signing produces exactly the
+ * same rejection, forever, on every send.  The watcher treats it as a key
+ * fault instead. */
+const EXPIRED_TOKEN_REASON = "ExpiredProviderToken";
+
+/** Apple refuses the signing key itself.  A new signature cannot help. */
+export const INVALID_PROVIDER_TOKEN = "InvalidProviderToken";
+
+/** Rejections that mean this device token will never work again.  410 says
+ * the same thing with a status; these two say it with a 400, and retrying
+ * either one earns the identical answer on every future notification. */
+export const PERMANENT_TOKEN_REASONS: ReadonlySet<string> = new Set([
+  "BadDeviceToken",
+  "DeviceTokenNotForTopic",
+]);
+
+/** True when Apple has told us to stop using this device token. */
+export function tokenIsDead(status: number, reason: string | undefined): boolean {
+  if (status === 410) return true;
+  return status === 400 && reason !== undefined && PERMANENT_TOKEN_REASONS.has(reason);
+}
 
 const defaultSleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -306,7 +344,7 @@ export async function sendApnsAlert(
 
     // A stale provider token is the one failure worth retrying instantly:
     // sign a new one and go straight back, no backoff, exactly once.
-    if (reason && EXPIRED_TOKEN_REASONS.has(reason) && !resigned) {
+    if (reason === EXPIRED_TOKEN_REASON && !resigned) {
       invalidateProviderToken(config);
       resigned = true;
       continue;
@@ -339,13 +377,20 @@ export interface PushSenderHealth {
   lastErrorAt: number | null;
   /** Status plus Apple's reason, e.g. `403 ExpiredProviderToken`. */
   lastError: string | null;
+  /** Set when Apple refused the signing key itself.  Sending is off until
+   * the key file changes; a new signature from the same key cannot help. */
+  keyRejected: string | null;
+  /** Notifications dropped because a device's queue was already full. */
+  dropped: number;
 }
 
 interface HealthTracker {
   snapshot(): PushSenderHealth;
   setConfigured(config: ApnsConfig | null): void;
+  rejectKey(at: number, reason: string): void;
   recordSent(at: number): void;
   recordError(at: number, status: number, reason?: string): void;
+  recordDropped(): void;
 }
 
 function createHealthTracker(tokensRegistered: () => number): HealthTracker {
@@ -356,6 +401,8 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
   let lastSentAt: number | null = null;
   let lastErrorAt: number | null = null;
   let lastError: string | null = null;
+  let keyRejected: string | null = null;
+  let dropped = 0;
   return {
     snapshot: () => ({
       configured,
@@ -366,10 +413,22 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
       lastSentAt,
       lastErrorAt,
       lastError,
+      keyRejected,
+      dropped,
     }),
     setConfigured: (config) => {
       configured = config !== null;
       production = config ? config.production : null;
+      // A key that loads again clears the rejection: the file changed, so
+      // the verdict on the old one no longer describes what we hold.
+      if (config) keyRejected = null;
+    },
+    rejectKey: (at, reason) => {
+      configured = false;
+      production = null;
+      keyRejected = reason;
+      lastErrorAt = at;
+      lastError = reason;
     },
     recordSent: (at) => {
       sent += 1;
@@ -380,15 +439,25 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
       lastErrorAt = at;
       lastError = reason ? `${status} ${reason}` : String(status);
     },
+    recordDropped: () => {
+      dropped += 1;
+    },
   };
 }
 
 // --- The watcher ----------------------------------------------------------
 
-/** How often to look for a .p8 that was not there at startup.  Someone who
- * drops the key in afterwards should get working pushes without restarting
- * the sidecar, and a five-minute stat() costs nothing. */
+/** How often to look for a .p8 that was not there at startup, or one that
+ * has been replaced since.  Someone who drops a key in afterwards, or
+ * rotates one, should get working pushes without restarting the sidecar,
+ * and a five-minute stat() costs nothing. */
 export const APNS_KEY_RECHECK_MS = 5 * 60 * 1000;
+
+/** How many notifications may wait for ONE phone before the oldest is
+ * dropped.  A phone Apple is rate-limiting must not be able to grow an
+ * unbounded backlog inside a sidecar that runs for weeks, and when a
+ * backlog does form the newest alerts are the ones worth keeping. */
+export const APNS_MAX_QUEUED_PER_DEVICE = 8;
 
 export interface PushWatch {
   /** Stop tailing the harness and sending. */
@@ -404,19 +473,24 @@ export function watchHarnessNotifications(options: {
   tokensForDisconnected: () => { deviceId: string; token: string }[];
   send?: typeof sendApnsAlert;
   /** Explicit config pins the sender; `undefined` discovers it from disk and
-   * keeps looking until it appears. */
+   * keeps looking until it appears, then watches for it changing. */
   config?: ApnsConfig | null;
   loadConfig?: () => ApnsConfig | null;
+  /** Fingerprint of the key file, so a rotated key is noticed. */
+  keyStamp?: () => string | null;
   forgetToken?: (deviceId: string) => void;
   fetchImpl?: typeof fetch;
   now?: () => number;
   keyRecheckMs?: number;
+  maxQueuedPerDevice?: number;
 }): PushWatch {
   const health = createHealthTracker(() => options.tokensForDisconnected().length);
   const fixed = options.config;
   const loadConfig = options.loadConfig ?? loadApnsConfig;
+  const keyStamp = options.keyStamp ?? (() => apnsKeyStamp());
   const now = options.now ?? Date.now;
   const recheckMs = options.keyRecheckMs ?? APNS_KEY_RECHECK_MS;
+  const maxQueued = Math.max(1, options.maxQueuedPerDevice ?? APNS_MAX_QUEUED_PER_DEVICE);
 
   // An explicit null means "this process does not send pushes" — the desktop
   // saying so, or a test.  Honour it without holding a stream open.
@@ -432,21 +506,59 @@ export function watchHarnessNotifications(options: {
   let abort: AbortController | null = null;
   let retry: (() => void) | null = null;
   let discovered: ApnsConfig | null = fixed ?? null;
+  let discoveredStamp: string | null = null;
   let lastLookupAt = 0;
   let warnedMissing = false;
+  /** Set when Apple refused the key itself.  Only a different key file
+   * clears it — a fresh signature from the same one earns the same answer. */
+  let keyFault = false;
+  /** The newest SSE id seen, so a reconnect resumes rather than silently
+   * skipping every notification raised while we were away. */
+  let lastEventId: string | null = null;
   /** One line per device and failure, so a phone with a dead token does not
    * write a log line for every notification the fleet ever sends. */
   const loggedFailures = new Set<string>();
 
   if (fixed) health.setConfigured(fixed);
 
+  /** True the first time this exact failure is seen for this device. */
+  const firstTime = (key: string): boolean => {
+    if (loggedFailures.has(key)) return false;
+    loggedFailures.add(key);
+    return true;
+  };
+
+  const onKeyFault = (reason: string) => {
+    if (keyFault) return;
+    keyFault = true;
+    discovered = null;
+    health.rejectKey(now(), reason);
+    console.warn(`companion: APNs refused the signing key (${reason}); pushes are off until the key file changes`);
+    // Leave the stream so the pump re-enters the key check rather than
+    // sending the same doomed request for every notification that follows.
+    abort?.abort();
+  };
+
   const resolveConfig = (): ApnsConfig | null => {
-    if (fixed) return fixed;
-    if (discovered) return discovered;
+    if (fixed) return keyFault ? null : fixed;
     const at = now();
-    if (lastLookupAt && at - lastLookupAt < recheckMs) return null;
+    if (lastLookupAt && at - lastLookupAt < recheckMs) return keyFault ? null : discovered;
     lastLookupAt = at;
-    discovered = loadConfig();
+    const stamp = keyStamp();
+    if (keyFault) {
+      // Apple refuses what is on disk.  Only a different file can help.
+      if (stamp === null || stamp === discoveredStamp) return null;
+      keyFault = false;
+    } else if (discovered && stamp !== null && stamp === discoveredStamp) {
+      // The same file as last time: keep the config, and the provider token
+      // cached against it.
+      return discovered;
+    }
+    const loaded = loadConfig();
+    // Whatever is on disk now is not what the cached token was signed with.
+    if (discovered) invalidateProviderToken(discovered);
+    discovered = loaded;
+    discoveredStamp = stamp;
     health.setConfigured(discovered);
     if (!discovered && !warnedMissing) {
       warnedMissing = true;
@@ -465,7 +577,74 @@ export function watchHarnessNotifications(options: {
       }, ms);
     });
 
-  const deliver = async (config: ApnsConfig, notification: {
+  // One queue per device, drained on its own chain.  A phone Apple is rate
+  // limiting sleeps out its own Retry-After without holding up any other
+  // phone, and each phone still sees its notifications in order.
+  interface DeviceQueue {
+    pending: { token: string; alert: ApnsAlert }[];
+    running: boolean;
+  }
+  const queues = new Map<string, DeviceQueue>();
+
+  const sendOne = async (config: ApnsConfig, deviceId: string, token: string, alert: ApnsAlert) => {
+    let result: ApnsSendResult;
+    try {
+      result = await send(config, token, alert);
+    } catch {
+      health.recordError(now(), 0, "SendFailed");
+      console.warn("companion: APNs send failed");
+      return;
+    }
+    if (result.ok) {
+      health.recordSent(now());
+      return;
+    }
+    health.recordError(now(), result.status, result.reason);
+
+    // The key, not the phone: every device is about to fail the same way.
+    if (result.reason === INVALID_PROVIDER_TOKEN) {
+      onKeyFault(result.reason);
+      return;
+    }
+
+    // Apple has retired this token — 410, or a 400 that means the same
+    // thing.  Drop it and let the phone register a new one; anything still
+    // queued for it would earn the identical answer.
+    if (tokenIsDead(result.status, result.reason)) {
+      options.forgetToken?.(deviceId);
+      const queue = queues.get(deviceId);
+      if (queue) queue.pending.length = 0;
+      if (firstTime(`${deviceId}:dead:${result.reason ?? result.status}`)) {
+        console.warn(
+          `companion: APNs ${result.status}${result.reason ? ` ${result.reason}` : ""} — dropped that phone's push token; it will register a new one`,
+        );
+      }
+      return;
+    }
+
+    // 400 and 403 are configuration, not weather: the same push will fail
+    // the same way forever, so say it once and stay quiet.
+    if (result.status === 400 || result.status === 403) {
+      if (!firstTime(`${deviceId}:${result.status}:${result.reason ?? ""}`)) return;
+    }
+    console.warn(`companion: APNs ${result.status}${result.reason ? ` ${result.reason}` : ""}`);
+  };
+
+  const drain = async (config: ApnsConfig, deviceId: string, queue: DeviceQueue) => {
+    queue.running = true;
+    try {
+      while (!stopped) {
+        const next = queue.pending.shift();
+        if (!next) break;
+        await sendOne(config, deviceId, next.token, next.alert);
+      }
+    } finally {
+      queue.running = false;
+      if (!queue.pending.length) queues.delete(deviceId);
+    }
+  };
+
+  const deliver = (config: ApnsConfig, notification: {
     title?: string;
     body?: string;
     kind?: string;
@@ -475,39 +654,29 @@ export function watchHarnessNotifications(options: {
     tool?: string;
   }) => {
     const connected = new Set(options.connectedIds());
+    const alert: ApnsAlert = {
+      title: notification.title ?? "BotFleet",
+      body: notification.body ?? "",
+      kind: notification.kind,
+      threadId: notification.threadId,
+      botId: notification.botId,
+      requestId: notification.requestId,
+      tool: notification.tool,
+    };
     for (const row of options.tokensForDisconnected()) {
       if (connected.has(row.deviceId)) continue;
-      try {
-        const result = await send(config, row.token, {
-          title: notification.title ?? "BotFleet",
-          body: notification.body ?? "",
-          kind: notification.kind,
-          threadId: notification.threadId,
-          botId: notification.botId,
-          requestId: notification.requestId,
-          tool: notification.tool,
-        });
-        if (result.ok) {
-          health.recordSent(now());
-          continue;
-        }
-        health.recordError(now(), result.status, result.reason);
-        if (result.status === 410) {
-          options.forgetToken?.(row.deviceId);
-          continue;
-        }
-        // 400 and 403 are configuration, not weather: the same push will
-        // fail the same way forever, so say it once and stay quiet.
-        const once = `${row.deviceId}:${result.status}:${result.reason ?? ""}`;
-        if (result.status === 400 || result.status === 403) {
-          if (loggedFailures.has(once)) continue;
-          loggedFailures.add(once);
-        }
-        console.warn(`companion: APNs ${result.status}${result.reason ? ` ${result.reason}` : ""}`);
-      } catch {
-        health.recordError(now(), 0, "SendFailed");
-        console.warn("companion: APNs send failed");
+      let queue = queues.get(row.deviceId);
+      if (!queue) {
+        queue = { pending: [], running: false };
+        queues.set(row.deviceId, queue);
       }
+      queue.pending.push({ token: row.token, alert });
+      if (queue.pending.length > maxQueued) {
+        queue.pending.shift();
+        health.recordDropped();
+        console.warn("companion: APNs backlog for a phone is full; dropped its oldest notification");
+      }
+      if (!queue.running) void drain(config, row.deviceId, queue);
     }
   };
 
@@ -520,19 +689,19 @@ export function watchHarnessNotifications(options: {
       }
       abort = new AbortController();
       try {
+        // Resume where the last connection stopped.  Without this every
+        // notification raised during a harness restart, or during our own
+        // four-second retry, is simply never pushed.
+        const headers = new Headers({ accept: "text/event-stream" });
+        if (lastEventId) headers.set("last-event-id", lastEventId);
         const res = await fetchImpl(`http://127.0.0.1:${options.harnessPort}/api/events`, {
-          headers: { accept: "text/event-stream" },
+          headers,
           signal: abort.signal,
         });
         if (!res.ok || !res.body) throw new Error(String(res.status));
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
-        // Deliveries run off the reader, one after another.  A retry can
-        // sleep for the Retry-After Apple asked for, and the read loop must
-        // not be the thing waiting: a stalled reader backs the harness's own
-        // event stream up behind one phone with a rate-limited token.
-        let queue: Promise<void> = Promise.resolve();
         while (!stopped) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -540,7 +709,10 @@ export function watchHarnessNotifications(options: {
           const parts = buf.split("\n\n");
           buf = parts.pop() ?? "";
           for (const part of parts) {
-            const line = part.split("\n").find((row) => row.startsWith("data:"));
+            const rows = part.split("\n");
+            const id = rows.find((row) => row.startsWith("id:"));
+            if (id) lastEventId = id.slice(3).trim();
+            const line = rows.find((row) => row.startsWith("data:"));
             if (!line) continue;
             let frame: {
               kind?: string;
@@ -563,10 +735,10 @@ export function watchHarnessNotifications(options: {
               continue;
             }
             if (frame.kind !== "notify" || !frame.notification) continue;
-            const notification = frame.notification;
-            // Swallowing here keeps one bad delivery from breaking the
-            // chain for every notification after it.
-            queue = queue.then(() => deliver(config, notification)).catch(() => {});
+            // Returns at once: the sends happen on each device's own queue,
+            // so a reader that has to keep up with the harness never waits
+            // on one phone's retry.
+            deliver(config, frame.notification);
           }
         }
       } catch {
@@ -583,6 +755,8 @@ export function watchHarnessNotifications(options: {
       abort?.abort();
       if (timer) clearTimeout(timer);
       retry?.();
+      for (const queue of queues.values()) queue.pending.length = 0;
+      queues.clear();
     },
     health: health.snapshot,
   };

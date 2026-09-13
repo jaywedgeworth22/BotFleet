@@ -293,6 +293,9 @@ const shutdown = async (signal: string): Promise<void> => {
   // the watcher first, or a tick could re-advertise the record the next
   // line just withdrew
   watcher.stop();
+  // The push sender holds its own SSE stream to the harness and a retry
+  // timer; without this, stop means stopped everywhere except here.
+  pushWatch.stop();
   await mdns.stop().catch(() => {});
   // close() waits for open connections, and an SSE stream never ends on its
   // own — drop the sockets so "stop" means stopped, now.

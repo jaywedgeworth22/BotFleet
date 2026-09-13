@@ -9,6 +9,7 @@ import {
   resetProviderTokens,
   retryAfterMs,
   sendApnsAlert,
+  tokenIsDead,
   watchHarnessNotifications,
   type ApnsConfig,
   type ApnsPayload,
@@ -43,6 +44,21 @@ function recordingSleep() {
 
 const rejection = (status: number, reason: string, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify({ reason }), { status, headers });
+
+/** A promise someone else finishes.  The resolver lives on the object
+ * because a `let` only ever assigned inside a callback is narrowed to
+ * `never` by the time the test tries to call it. */
+function deferred() {
+  const gate = {
+    started: false,
+    resolve: () => {},
+    promise: Promise.resolve(),
+  };
+  gate.promise = new Promise<void>((resolve) => {
+    gate.resolve = resolve;
+  });
+  return gate;
+}
 
 beforeEach(() => {
   resetProviderTokens();
@@ -239,6 +255,30 @@ describe("sendApnsAlert", () => {
     expect(waits).toEqual([]);
   });
 
+  it("does not re-sign for InvalidProviderToken — the key itself is refused", async () => {
+    // Expiry is worth a fresh signature.  An invalid token means Apple
+    // refuses the KEY — wrong team, revoked, a .p8 that does not match its
+    // key id — and every new signature earns the identical rejection.
+    const config = testConfig();
+    const { waits, sleep } = recordingSleep();
+    let calls = 0;
+    const result = await sendApnsAlert(
+      config,
+      "ab".repeat(32),
+      { title: "a", body: "b" },
+      {
+        sleep,
+        fetchImpl: async () => {
+          calls += 1;
+          return rejection(403, "InvalidProviderToken");
+        },
+      },
+    );
+    expect(calls).toBe(1);
+    expect(waits).toEqual([]);
+    expect(result).toEqual({ ok: false, status: 403, reason: "InvalidProviderToken", attempts: 1 });
+  });
+
   it("retries a 429 after the Retry-After Apple asked for", async () => {
     const { waits, sleep } = recordingSleep();
     let call = 0;
@@ -318,6 +358,19 @@ describe("sendApnsAlert", () => {
   });
 });
 
+describe("tokenIsDead", () => {
+  it("treats the permanent 400 reasons exactly like a 410", () => {
+    expect(tokenIsDead(410, "Unregistered")).toBe(true);
+    expect(tokenIsDead(400, "BadDeviceToken")).toBe(true);
+    expect(tokenIsDead(400, "DeviceTokenNotForTopic")).toBe(true);
+    // A 400 about the payload says nothing about the token.
+    expect(tokenIsDead(400, "PayloadTooLarge")).toBe(false);
+    expect(tokenIsDead(400, undefined)).toBe(false);
+    expect(tokenIsDead(429, "TooManyRequests")).toBe(false);
+    expect(tokenIsDead(503, "ServiceUnavailable")).toBe(false);
+  });
+});
+
 describe("retryAfterMs", () => {
   it("reads seconds, caps them, and ignores anything else", () => {
     expect(retryAfterMs("3")).toBe(3000);
@@ -329,6 +382,12 @@ describe("retryAfterMs", () => {
 });
 
 describe("watchHarnessNotifications", () => {
+  const notifyFrameWithBody = (kind: string, body: string) =>
+    `data: ${JSON.stringify({
+      kind: "notify",
+      notification: { kind, title: "Scout finished", body, threadId: "t1", botId: "b1" },
+    })}\n\n`;
+
   const notifyFrame = (kind: string, identity: { requestId?: string; tool?: string } = {}) =>
     `data: ${JSON.stringify({
       kind: "notify",
@@ -486,6 +545,205 @@ describe("watchHarnessNotifications", () => {
     expect(sent).toEqual(["bb".repeat(32)]);
     expect(watch.health().configured).toBe(true);
   });
+
+  it("keeps one rate-limited phone from delaying any other", async () => {
+    // Serial delivery meant a phone Apple was throttling could hold every
+    // other phone behind its Retry-After — up to a minute of silence for
+    // people whose own token was fine.
+    const slow = deferred();
+    const finished: string[] = [];
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [
+        { deviceId: "slow", token: "aa".repeat(32) },
+        { deviceId: "quick", token: "bb".repeat(32) },
+      ],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(notifyFrame("approval"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      send: async (_config, token) => {
+        if (token === "aa".repeat(32)) {
+          slow.started = true;
+          await slow.promise;
+        }
+        finished.push(token);
+        return { ok: true, status: 200, attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (finished.length === 0 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // The quick phone is done while the slow one is still in flight.
+    expect(finished).toEqual(["bb".repeat(32)]);
+    expect(slow.started).toBe(true);
+    slow.resolve();
+    while (finished.length < 2 && Date.now() - started < 4000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(finished.sort()).toEqual(["aa".repeat(32), "bb".repeat(32)].sort());
+  });
+
+  it("bounds a stuck phone's backlog and drops its oldest notifications", async () => {
+    const gate = deferred();
+    const delivered: string[] = [];
+    const frames = ["one", "two", "three", "four", "five"]
+      .map((body) => notifyFrameWithBody("approval", body))
+      .join("");
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "stuck", token: "aa".repeat(32) }],
+      config: testConfig(),
+      maxQueuedPerDevice: 2,
+      fetchImpl: async () =>
+        new Response(frames, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async (_config, _token, alert) => {
+        if (delivered.length === 0) {
+          gate.started = true;
+          await gate.promise;
+        }
+        delivered.push(alert.body);
+        return { ok: true, status: 200, attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (!gate.started && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // Give the reader time to hand every frame to the queue behind the
+    // first, still-unfinished send.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    gate.resolve();
+    while (delivered.length < 3 && Date.now() - started < 4000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    // The first went out; of the four that queued behind it only the two
+    // newest survive, because the newest alerts are the ones worth keeping.
+    expect(delivered).toEqual(["one", "four", "five"]);
+    expect(watch.health().dropped).toBe(2);
+  });
+
+  it("drops a token Apple rejects with a permanent 400, not just a 410", async () => {
+    const forgotten: string[] = [];
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "dead", token: "aa".repeat(32) }],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(notifyFrame("approval"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      send: async () => ({ ok: false, status: 400, reason: "BadDeviceToken", attempts: 1 }),
+      forgetToken: (id) => forgotten.push(id),
+    });
+    const started = Date.now();
+    while (forgotten.length === 0 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(forgotten).toEqual(["dead"]);
+  });
+
+  it("stops sending when Apple refuses the key, and says so on the health", async () => {
+    let sends = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "aa".repeat(32) }],
+      loadConfig: () => testConfig(),
+      keyStamp: () => "same-key",
+      keyRecheckMs: 10,
+      fetchImpl: async () =>
+        new Response(notifyFrame("approval"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      send: async () => {
+        sends += 1;
+        return { ok: false, status: 403, reason: "InvalidProviderToken", attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (sends === 0 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // Long enough for several re-check intervals: a key Apple refuses must
+    // not be retried just because the timer came round again.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    watch.stop();
+    expect(sends).toBe(1);
+    const health = watch.health();
+    expect(health.keyRejected).toBe("InvalidProviderToken");
+    expect(health.configured).toBe(false);
+  });
+
+  it("picks up a rotated key file and forgets the one it replaced", async () => {
+    let stamp = "key-v1";
+    let loads = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [],
+      loadConfig: () => {
+        loads += 1;
+        return testConfig();
+      },
+      keyStamp: () => stamp,
+      keyRecheckMs: 10,
+      fetchImpl: async () => new Response("", { status: 200, headers: { "content-type": "text/event-stream" } }),
+    });
+    const started = Date.now();
+    while (loads === 0 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // Several re-checks against an unchanged file must not re-read it.
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(loads).toBe(1);
+
+    stamp = "key-v2";
+    while (loads < 2 && Date.now() - started < 4000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(loads).toBe(2);
+  });
+
+  it("resumes the harness stream where it left off", async () => {
+    // Without a cursor every notification raised during a harness restart,
+    // or during our own retry, is simply never pushed.
+    const cursors: (string | null)[] = [];
+    let connections = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [],
+      config: testConfig(),
+      fetchImpl: async (_input, init) => {
+        connections += 1;
+        cursors.push(new Headers(init?.headers).get("last-event-id"));
+        return new Response(`id: stream-1:${connections}\ndata: ${JSON.stringify({ kind: "hello" })}\n\n`, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+    const started = Date.now();
+    while (connections < 2 && Date.now() - started < 12_000) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    watch.stop();
+    expect(cursors[0]).toBeNull();
+    expect(cursors[1]).toBe("stream-1:1");
+  }, 15_000);
 
   it("stays off, and stays quiet, when the sender is pinned off", () => {
     const watch = watchHarnessNotifications({

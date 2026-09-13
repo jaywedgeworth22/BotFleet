@@ -1119,6 +1119,8 @@ describe("pairing, end to end", () => {
           lastSentAt: 1_700_000_000_000,
           lastErrorAt: 1_700_000_001_000,
           lastError: "403 ExpiredProviderToken",
+          keyRejected: null,
+          dropped: 0,
         }),
       }),
     );
@@ -1147,6 +1149,8 @@ describe("pairing, end to end", () => {
         lastSentAt: 1_700_000_000_000,
         lastErrorAt: 1_700_000_001_000,
         lastError: "403 ExpiredProviderToken",
+        keyRejected: null,
+        dropped: 0,
       });
       // Nothing about the signing key may cross this boundary.
       expect(body).not.toMatch(/PRIVATE KEY|keyId|teamId|p8/i);
