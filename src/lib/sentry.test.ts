@@ -208,19 +208,115 @@ describe("renderer diagnostics refresh", () => {
     expect(sentry.record.closes).toBe(0);
   });
 
-  it("leaves a build-time client pinned to the DSN the release was built with", async () => {
+  it("applies the runtime kill switch to a packaged build and can re-enable with a changed key", async () => {
     vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    vi.stubEnv("VITE_SENTRY_ENV", "production");
+    vi.stubEnv("VITE_SENTRY_TRACES_SAMPLE_RATE", "0.2");
+    vi.stubEnv("VITE_SENTRY_REPLAY_ENABLED", "false");
     initSentry();
     expect(sentry.record.inits).toHaveLength(1);
-    expect(sentry.record.inits[0]).toMatchObject({ dsn: BUILD_DSN });
+    expect(sentry.record.inits[0]).toMatchObject({
+      dsn: BUILD_DSN,
+      replayEnabled: false,
+      replaysSessionSampleRate: 0,
+      replaysOnErrorSampleRate: 0,
+    });
 
-    harness.answer({ enabled: false, dsn: null });
-    await refreshSentryFromRuntime();
-    expect(sentry.record.closes).toBe(0);
+    harness.answer({ enabled: false, requestedEnabled: false, dsn: null });
+    await initSentryFromRuntime();
+    expect(sentry.record.closes).toBe(1);
     expect(sentry.record.inits).toHaveLength(1);
-    // The harness is never even asked: Settings governs the harness, not a
-    // shipped build's own reporting.
-    expect(harness.calls()).toBe(0);
+
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null, environment: "production", tracesSampleRate: 0.2 });
+    await refreshSentryFromRuntime();
+    expect(sentry.record.inits).toHaveLength(2);
+    expect(sentry.record.inits[1]).toMatchObject({ dsn: BUILD_DSN });
+
+    harness.answer({ enabled: true, requestedEnabled: true, dsn: ROTATED_DSN, environment: "staging", tracesSampleRate: 0.5 });
+    await refreshSentryFromRuntime();
+    expect(sentry.record.closes).toBe(2);
+    expect(sentry.record.inits).toHaveLength(3);
+    expect(sentry.record.inits[2]).toMatchObject({
+      dsn: ROTATED_DSN,
+      environment: "staging",
+      tracesSampleRate: 0.5,
+      replayEnabled: false,
+      replaysSessionSampleRate: 0,
+      replaysOnErrorSampleRate: 0,
+    });
+
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null });
+    await refreshSentryFromRuntime();
+    expect(sentry.record.closes).toBe(3);
+    expect(sentry.record.inits).toHaveLength(4);
+    expect(sentry.record.inits[3]).toMatchObject({ dsn: BUILD_DSN });
+    expect(harness.calls()).toBe(4);
+  });
+
+  it("does not start the packaged client before the saved opt-out is known", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    let finishBoot: ((value: RuntimeObservability) => void) | undefined;
+    setObservabilityReaderForTests(() => new Promise((resolve) => { finishBoot = resolve; }));
+
+    const boot = initSentryFromRuntime();
+    expect(sentry.record.inits).toHaveLength(0);
+
+    finishBoot?.({ enabled: false, requestedEnabled: false, dsn: null });
+    await boot;
+    expect(sentry.record.inits).toHaveLength(0);
+    expect(sentry.record.closes).toBe(0);
+  });
+
+  it("starts the packaged default only after a successful enabled runtime read", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null });
+
+    await initSentryFromRuntime();
+
+    expect(sentry.record.inits).toHaveLength(1);
+    expect(sentry.record.inits[0]).toMatchObject({ dsn: BUILD_DSN });
+  });
+
+  it("keeps a packaged client running when the runtime status is unavailable", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    initSentry();
+    harness.answer(null);
+
+    await initSentryFromRuntime();
+
+    expect(harness.calls()).toBe(1);
+    expect(sentry.record.inits).toHaveLength(1);
+    expect(sentry.record.closes).toBe(0);
+    expect(sentry.record.running).toBe(true);
+  });
+
+  it("keeps normal packaged diagnostics when the harness is merely unconfigured", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    initSentry();
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null });
+
+    await initSentryFromRuntime();
+
+    expect(sentry.record.inits).toHaveLength(1);
+    expect(sentry.record.closes).toBe(0);
+    expect(sentry.record.running).toBe(true);
+  });
+
+  it("ignores a stale boot answer when a newer Settings refresh finishes first", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    initSentry();
+    let finishBoot: ((value: RuntimeObservability) => void) | undefined;
+    setObservabilityReaderForTests(() => new Promise((resolve) => { finishBoot = resolve; }));
+    const boot = initSentryFromRuntime();
+
+    setObservabilityReaderForTests(async () => ({ enabled: false, requestedEnabled: false, dsn: null }));
+    await refreshSentryFromRuntime();
+    finishBoot?.({ enabled: true, requestedEnabled: true, dsn: RUNTIME_DSN });
+    await boot;
+
+    expect(sentry.record.closes).toBe(1);
+    expect(sentry.record.inits).toHaveLength(1);
+    expect(sentry.record.running).toBe(false);
   });
 
   it("stays inert when the harness will not answer", async () => {

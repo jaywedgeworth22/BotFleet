@@ -2,13 +2,12 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { applySkin, followsComputerLook, readSkin } from "./lib/skins";
-import { initSentry, initSentryFromRuntime } from "./lib/sentry";
+import { initSentryFromRuntime } from "./lib/sentry";
 import "./styles.css";
 
-initSentry();
-// Runtime fallback for the desktop app and dev/attached windows, where no
-// DSN was inlined at build time: ask the harness what it resolved. A no-op
-// when initSentry() above already started the SDK from a build-time DSN.
+// Ask the harness for the live switch before starting even the packaged
+// client.  A saved opt-out must win before tracing or replay can capture the
+// first render; an unreachable harness leaves this window inert.
 void initSentryFromRuntime();
 
 // Before the first paint, not inside a component: stamping the skin during
