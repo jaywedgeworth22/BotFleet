@@ -514,6 +514,11 @@ export function watchHarnessNotifications(options: {
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
         let buf = "";
+        // Deliveries run off the reader, one after another.  A retry can
+        // sleep for the Retry-After Apple asked for, and the read loop must
+        // not be the thing waiting: a stalled reader backs the harness's own
+        // event stream up behind one phone with a rate-limited token.
+        let queue: Promise<void> = Promise.resolve();
         while (!stopped) {
           const { done, value } = await reader.read();
           if (done) break;
@@ -536,7 +541,10 @@ export function watchHarnessNotifications(options: {
               continue;
             }
             if (frame.kind !== "notify" || !frame.notification) continue;
-            await deliver(config, frame.notification);
+            const notification = frame.notification;
+            // Swallowing here keeps one bad delivery from breaking the
+            // chain for every notification after it.
+            queue = queue.then(() => deliver(config, notification)).catch(() => {});
           }
         }
       } catch {
