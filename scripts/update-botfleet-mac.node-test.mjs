@@ -26,6 +26,18 @@ import {
 
 const scripts = dirname(fileURLToPath(import.meta.url));
 
+test("a detached run is given a progress file and a run id to report under", () => {
+  const parsed = parseArguments(["update", "--progress", "/tmp/state/run.json", "--run-id", "run_one"]);
+  assert.equal(parsed.command, "update");
+  assert.equal(parsed.progress, "/tmp/state/run.json");
+  assert.equal(parsed.runId, "run_one");
+  // A run id with nothing to write it to is a caller mistake, not a default.
+  assert.throws(() => parseArguments(["update", "--run-id", "run_one"]), /--run-id requires --progress/);
+  assert.throws(() => parseArguments(["update", "--progress", "/tmp/p", "--run-id", "../escape"]), /short identifier/);
+  // The recovery action still takes nothing at all.
+  assert.throws(() => parseArguments(["unquiesce", "--progress", "/tmp/p"]), /accepts no options/);
+});
+
 test("prepare and apply expose an explicit reusable stage", () => {
   assert.deepEqual(
     parseArguments(["prepare", "--target", "abc", "--source", "/tmp/source", "--stage", "/tmp/stage"]),
@@ -37,6 +49,8 @@ test("prepare and apply expose an explicit reusable stage", () => {
       bundle: undefined,
       dependencies: undefined,
       openApplication: true,
+      progress: undefined,
+      runId: undefined,
     },
   );
   assert.deepEqual(parseArguments(["apply", "--stage", "/tmp/stage", "--no-open"]), {
@@ -47,6 +61,8 @@ test("prepare and apply expose an explicit reusable stage", () => {
     bundle: undefined,
     dependencies: undefined,
     openApplication: false,
+    progress: undefined,
+    runId: undefined,
   });
   assert.throws(() => parseArguments(["apply"]), /requires --stage/);
   assert.throws(() => parseArguments(["update", "--unknown"]), /Unknown option/);

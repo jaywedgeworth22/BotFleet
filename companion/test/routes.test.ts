@@ -92,6 +92,17 @@ describe("what the app may do", () => {
   for (const [method, path] of calls) {
     it(`allows ${method} ${path}`, () => expect(ask(method, path)).toBeNull());
   }
+
+  it("lets the phone check for a newer BotFleet and install it", () => {
+    expect(allowed("GET", "/api/update/status")).toBe(true);
+    expect(allowed("POST", "/api/update/check")).toBe(true);
+    expect(allowed("POST", "/api/update/run")).toBe(true);
+    // Exactly those three.  The updater's own recovery action stays on the
+    // Mac, and an unpaired device gets nothing.
+    expect(ask("POST", "/api/update/unquiesce")?.status).toBe(404);
+    expect(ask("POST", "/api/update/status")?.status).toBe(404);
+    expect(ask("GET", "/api/update/status", false)?.status).toBe(401);
+  });
 });
 
 describe("what it may not", () => {

@@ -1,0 +1,58 @@
+---
+title: Updating a self-hosted Mac
+description: The two update paths, and how to check and install from the app or from your phone.
+icon: RefreshCw
+---
+
+A self-hosted Mac has two ways to reach a newer BotFleet, and they answer different questions.
+
+| Path | Question it answers | Works when |
+| --- | --- | --- |
+| **Release feed** | Has a new version been published? | The app is a packaged, signed build that shipped with its `app-update.yml` release feed. |
+| **This Mac's own checkout** | Is the always-on checkout behind `origin/main`? | macOS, with the harness checkout at `~/apps/botfleet-server` and the updater installed at `~/apps/update-botfleet.sh`. |
+
+A locally built app has no release feed at all, so **Check for Updates** could only fail there.  When the harness reports that this computer can check or install, the Updates card in **Settings → General** and the floating update popup both switch to the second path and the release feed steps aside.
+
+## What the card shows
+
+- The installed build, by version and short commit — two builds of the same version are common on a machine that builds its own.
+- **Update Available: `<version>`, N commits ahead** once a check finds `origin/main` past the installed commit, with the newest commit subjects behind it.
+- Live progress while an update runs: the step the updater is on, a percentage when it has one, and the tail of the updater's own log.
+- The last run's outcome — verified, rolled back, failed, or refused — with the updater's own sentence.
+- `checkError`, when the last check could not reach the source.  `checkedAt` does not move in that case, so the previous answer and its age both stay honest.
+
+## Starting one from your phone
+
+The paired iOS companion reaches the same three routes through the sidecar, so an update can be started from a pocket:
+
+- `GET /api/update/status` — everything the card shows.
+- `POST /api/update/check` — `git fetch origin main` in the harness checkout, then compare.  Answers `502` with `{ error, status }` when the fetch could not reach the source, rather than a false "up to date": the stale `origin/main` left on disk by the last good fetch would happily produce one.
+- `POST /api/update/run` — start the transactional updater.  Returns `202` with a `runId`, or `409` with the reason it will not start.
+
+The sidecar's allowlist carries exactly those three; the updater's own recovery action stays on the Mac.  `POST /api/update/run` takes an optional JSON body, `{ "force": true }`.
+
+Who may call the two actions: the desktop renderer, a paired phone through the sidecar, and any other process running as you on this Mac.  That is the harness's ordinary loopback trust boundary — the same one `PUT /api/config` writes provider API keys behind — not a separate credential.
+
+Status changes arrive on the existing event stream as `update.status` frames, so the phone and the desktop follow the same run live without polling.
+
+## What happens during a run
+
+The updater cannot be a child of either thing it stops, so it is launched detached as a one-shot launchd job (`com.jay.botfleet-update`) and reports through a progress file.  It then:
+
+1. Builds and signs a candidate from `origin/main` in a throwaway stage under `~/Library/Caches/BotFleet/updates/`, and verifies its signature, Team ID, bundle ID, build identity, and dependency fingerprint.
+2. Checks again that no work is in flight, fences new work, and lets the harness and the desktop app stop.
+3. Advances the checkout, installs the new bundle and dependencies with receipts, restarts the harness, verifies its identity and that it is the single owner, and reopens the app.
+
+Any failure after the interruption boundary rolls the previous bundle, dependency tree, and checkout commit back.  Because the harness is restarted partway through, the run outlives it: the next harness reads the same progress file on boot and keeps describing the run it did not start.
+
+## When it refuses
+
+`POST /api/update/run` answers `409` rather than starting, and the card shows the same sentence:
+
+- **An update is already running.**
+- **The always-on checkout has uncommitted changes, so the updater would refuse.**  Clean `~/apps/botfleet-server` first — the updater refuses on any `git status --porcelain` output, untracked files included.
+- **BotFleet is already on the newest build.**  Send `{ "force": true }` to build and install the current `origin/main` anyway.
+- **The updater in `~/apps/botfleet-server` predates this build.**  Run it once from a terminal to advance the checkout, after which the button works.
+- **BotFleet is working right now.**  The harness takes the same runtime-readiness reading `POST /api/runtime/quiesce` takes — turns, queued sends, routine runs, in-flight mutations — and will not start an update that would interrupt one.  This is also the only refusal `{ "force": true }` is meant to override, and forcing does not make it safe: the updater's own preflight refuses a busy machine too, and the run then ends `refused` without touching anything.
+
+Every one of these also appears in `capabilities.reasons`, so a client can disable **Install Update** and say why before anyone presses it.

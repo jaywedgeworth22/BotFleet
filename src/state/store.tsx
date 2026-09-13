@@ -2,6 +2,7 @@
 // it dispatches typed commands over HTTP and folds the one SSE event
 // stream from the harness server into local state. The reducer stays
 // pure; everything async lives in the wrapped dispatch + SSE fold.
+import { UPDATE_STATUS_EVENT } from "@/lib/update-control";
 import {
   createContext,
   useCallback,
@@ -2511,6 +2512,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
         case "message.patch":
           rawDispatch({ type: "messagePatched", threadId: frame.threadId, message: frame.message });
+          break;
+        // An update runs detached and takes minutes; the harness pushes a
+        // new status on every step so the Updates card and the floating
+        // banner follow it live.  It is not reducer state — only the two
+        // update components want it — so it goes out as a window event
+        // rather than growing the store.
+        case "update.status":
+          window.dispatchEvent(new CustomEvent(UPDATE_STATUS_EVENT, { detail: frame.status }));
           break;
         case "thread":
           rawDispatch({ type: "threadActive", threadId: frame.threadId, activeLeafId: frame.activeLeafId });
