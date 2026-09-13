@@ -316,6 +316,84 @@ export function formatResetCountdown(resetAtMs: number | null, now = Date.now())
   return `${Math.max(minutes, 1)}m`;
 }
 
+export type MiniMaxQuotaStatus = "ok" | "near_cap" | "capped" | "unknown";
+
+/** Structural subset of server/minimax-balance.ts's MiniMaxBalanceSnapshot —
+ *  redeclared rather than imported so this stays a dependency-free pure
+ *  module other UI surfaces can use without pulling in the server client. */
+export type MiniMaxQuotaView = {
+  source: "account-balance" | "token-plan" | "unavailable";
+  status: MiniMaxQuotaStatus;
+  balanceUsd: number | null;
+  remainingPercent: number | null;
+  secondaryRemainingPercent: number | null;
+  resetsAt: number | null;
+};
+
+/** One status vocabulary for MiniMax's quota row, whichever of the two
+ *  undocumented endpoints answered (server/minimax-balance.ts). Null when
+ *  there is nothing worth a line (unavailable source, or a response with no
+ *  usable figures) — the caller falls back to its own generic "Active and
+ *  ready for turns" line, exactly like deepseek-balance.ts's contract: an
+ *  absent/errored figure hides the line, it never fabricates one.
+ *
+ *  Live-verified 2026-09-13: the Token Plan sentence is "N% left this week,
+ *  N% left in the current 5 h window, resets at H:MM" — weekly first, then
+ *  the 5-hour figure, then when the 5-hour window (the recurring, actionable
+ *  one) comes back, as a clock time rather than a countdown, matching the
+ *  "resets at H:MM" convention server/index.ts's own quota line already
+ *  uses. `row.resetsAt` here is specifically the 5-hour window's own reset
+ *  (server/minimax-balance.ts keeps it separate from the "soonest of either
+ *  window" figure the registry.ts per-model merge uses instead). A weekly
+ *  figure above 100% (MiniMax's own boosted-allowance scaling,
+ *  server/minimax-balance.ts's parseWeeklyPercent) says so explicitly
+ *  rather than reading like a typo. `now` defaults to the real clock and
+ *  exists so a test can pin it; when the cached snapshot has outlived its
+ *  own window (the 5-minute balance cache can outlive a 5-hour window's
+ *  reset), a reset time already in the past reads "resets soon" instead of
+ *  a stale clock time. */
+export function minimaxQuotaLine(row: MiniMaxQuotaView, now: number = Date.now()): string | null {
+  if (row.source === "unavailable") return null;
+  if (row.source === "account-balance") {
+    if (row.balanceUsd == null) return null;
+    const amount = row.balanceUsd <= 0 ? "$0.00 remaining" : `$${row.balanceUsd.toFixed(2)} remaining`;
+    if (row.status === "capped") return "at usage cap — balance exhausted";
+    if (row.status === "near_cap") return `${amount} · near cap`;
+    return amount;
+  }
+  const parts: string[] = [];
+  if (row.secondaryRemainingPercent != null) {
+    const boosted = row.secondaryRemainingPercent > 100 ? " of a boosted allowance" : "";
+    parts.push(`${Math.round(row.secondaryRemainingPercent)}% left this week${boosted}`);
+  }
+  if (row.remainingPercent != null) parts.push(`${Math.round(row.remainingPercent)}% left in the current 5 h window`);
+  if (parts.length === 0) return null;
+  let line = parts.join(", ");
+  if (row.resetsAt != null) {
+    line += row.resetsAt <= now
+      ? ", resets soon"
+      : `, resets at ${new Date(row.resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  }
+  return line;
+}
+
+/** Generalizes the "5hr" / "5hr/Week" dual-window badge — previously
+ *  computed only for Antigravity (antigravity-quota.ts) and, since MiniMax's
+ *  Token Plan quota client shipped, MiniMax (server/minimax-balance.ts,
+ *  merged in server/harness/registry.ts) — to any engine whose Usage
+ *  Monitor headlines include a 5h and/or a weekly bucket: Claude, Codex,
+ *  Cursor, Kimi, Grok, DSH and DeepSeek only ever get windows through
+ *  quota-window-map.ts's mapping (established fact, not this file's own
+ *  data), and had no equivalent combined label at all before this. */
+export function windowsLabelFromHeadlines(headlines: WindowHeadline[]): string | undefined {
+  const has5h = headlines.some((h) => h.bucket === "5h");
+  const hasWeekly = headlines.some((h) => h.bucket === "weekly");
+  if (has5h && hasWeekly) return "5hr/Week";
+  if (has5h) return "5hr";
+  if (hasWeekly) return "Week";
+  return undefined;
+}
+
 /** Formats dual-window quota percentage for ModelPicker row.
  *  When both primary (5h) and secondary (weekly/monthly) percentages exist: "(XX%/YY%)".
  *  When only primary exists: "(XX%)" if a windows label exists, or "XX% left" otherwise. */

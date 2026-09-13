@@ -140,6 +140,56 @@ describe("automatic fallback eligibility", () => {
       },
     )).toEqual([{ instanceId: "custom-b", model: "custom-b-model" }]);
   });
+
+  it("treats a MiniMax candidate as eligible when its chat model is uncapped, regardless of an unrelated video-pool exhaustion", () => {
+    // server/harness/registry.ts maps MiniMax's "general" (chat) pool onto
+    // every catalog model id and keeps other pools ("video", …) out of
+    // `models` entirely — this pins that THIS function (keying strictly by
+    // `candidate.models.default`, i.e. a catalog model id) reads that
+    // shape correctly: a video pool being exhausted must never surface
+    // here at all, since it was never placed under any model id.
+    const chain = eligibleAutoFallbackChain(
+      [
+        candidate("current"),
+        candidate("minimax", {
+          models: { default: "MiniMax-M3" },
+          snapshot: {
+            state: "available",
+            quota: { capped: false, models: { "MiniMax-M3": { capped: false } } },
+          },
+        }),
+      ],
+      {
+        botId: "bot-1",
+        currentInstanceId: "current",
+        isCooling: () => false,
+        priority: ["minimax"],
+      },
+    );
+    expect(chain).toEqual([{ instanceId: "minimax", model: "MiniMax-M3" }]);
+  });
+
+  it("excludes a MiniMax candidate whose chat model IS capped, keyed by the catalog model id", () => {
+    const chain = eligibleAutoFallbackChain(
+      [
+        candidate("current"),
+        candidate("minimax", {
+          models: { default: "MiniMax-M3" },
+          snapshot: {
+            state: "available",
+            quota: { capped: false, models: { "MiniMax-M3": { capped: true } } },
+          },
+        }),
+      ],
+      {
+        botId: "bot-1",
+        currentInstanceId: "current",
+        isCooling: () => false,
+        priority: ["minimax"],
+      },
+    );
+    expect(chain).toEqual([]);
+  });
 });
 
 describe("runtime-owner interruption", () => {

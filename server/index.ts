@@ -8720,6 +8720,14 @@ const server = createServer(async (req, res) => {
       // returns an error string instead of a balance — the chip reads
       // "balance unavailable", which is the honest answer.
       const deepseek = await getDeepSeekBalance(cfg.deepseek?.key, cfg.deepseek?.url);
+      // MiniMax's balance/quota is NOT fetched here: unlike DeepSeek's
+      // deliberately separate, non-per-instance key, MiniMax reads the same
+      // key each instance's own driver already uses, so it is resolved and
+      // cached PER INSTANCE in server/harness/registry.ts's describeEntry
+      // and reaches the client on that instance's own
+      // GET /api/instances snapshot.quota.minimax — never one shared value
+      // here, which is what let a second MiniMax connection read the
+      // reserved instance's numbers.
       return json(res, 200, {
         ok: true,
         cooldowns: quotaCooldowns.list(),

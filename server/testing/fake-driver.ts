@@ -19,6 +19,10 @@ export interface FakeDriverOptions {
   failSnapshot?: string;
   /** effort levels this fake driver declares, forwarded onto capabilities. */
   effortLevels?: readonly EffortLevel[];
+  /** Catalog override — defaults to one model, `${kind}-1`. Set this to
+   *  test per-model behavior (quota mapping, fallback ordering, …) across
+   *  more than one catalog id. */
+  models?: { default: string; options: Array<{ id: string; label: string }> };
 }
 
 export interface FakeDriverHandle {
@@ -38,7 +42,7 @@ export function makeFakeDriver(opts: FakeDriverOptions = {}): FakeDriverHandle {
     driver: {
       driverKind: kind,
       metadata: { displayName: `Fake ${kind}` },
-      models: { default: `${kind}-1`, options: [{ id: `${kind}-1`, label: `${kind} one` }] },
+      models: opts.models ?? { default: `${kind}-1`, options: [{ id: `${kind}-1`, label: `${kind} one` }] },
       decodeConfig(raw: unknown) {
         if (raw && typeof raw === "object" && (raw as Record<string, unknown>).bad) {
           throw new Error(`${kind}: bad config`);

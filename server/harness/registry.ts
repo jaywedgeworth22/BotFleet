@@ -5,7 +5,9 @@
 // compatible — do not remove it); dispose tears an instance down without
 // touching its siblings.
 import { lastAntigravityQuotaSnapshot, quotaModelsFromSnapshot } from "../antigravity-quota.ts";
+import { resolveMinimaxCredentials } from "../drivers/minimax.ts";
 import { findCliCandidates } from "../env-path.ts";
+import { getCachedLocalMiniMaxConfig, getMiniMaxBalance } from "../minimax-balance.ts";
 import { quotaCooldowns } from "../model-fallback.ts";
 import type {
   AnyProviderDriver,
@@ -88,6 +90,14 @@ export class ProviderRegistry {
   private cliByInstance = new Map<InstanceId, string>();
   private fullAutoByInstance = new Map<InstanceId, boolean>();
   private enabledByInstance = new Map<InstanceId, boolean>();
+  /** This instance's own environment overrides and resolved config.url —
+   *  the same inputs MinimaxDriver.create() itself receives — captured at
+   *  registration so describeEntry's balance lookup can resolve a SECOND
+   *  MiniMax connection's own key/host instead of always falling back to
+   *  the reserved instance's (resolveMinimaxCredentials's global
+   *  process.env/~/.mmx/config.json fallback has no instance concept of
+   *  its own). Only ever set for driver "minimax". */
+  private minimaxContextByInstance = new Map<InstanceId, { environment: Record<string, string>; url: string | undefined }>();
   private driversByKind: Map<string, AnyProviderDriver>;
 
   constructor(drivers: readonly AnyProviderDriver[]) {
@@ -124,6 +134,18 @@ export class ProviderRegistry {
       else this.cliByInstance.delete(instanceId);
       const enabled = entry.enabled !== false;
       this.enabledByInstance.set(instanceId, enabled);
+      // Same inputs MinimaxDriver.create() below receives — retained here
+      // (rather than read back off `live`, which exposes no such getter)
+      // so describeEntry's balance lookup resolves THIS instance's own
+      // key/host instead of only ever the reserved instance's.
+      if (entry.driver === "minimax") {
+        const url = typeof (config as { url?: unknown } | undefined)?.url === "string"
+          ? (config as { url: string }).url
+          : undefined;
+        this.minimaxContextByInstance.set(instanceId, { environment: entry.environment ?? {}, url });
+      } else {
+        this.minimaxContextByInstance.delete(instanceId);
+      }
       const live = await driver.create({
         instanceId,
         displayName: entry.displayName ?? driver.metadata.displayName,
@@ -180,6 +202,7 @@ export class ProviderRegistry {
     this.cliByInstance.delete(instanceId);
     this.fullAutoByInstance.delete(instanceId);
     this.enabledByInstance.delete(instanceId);
+    this.minimaxContextByInstance.delete(instanceId);
     this.lastDescribe = null;
   }
 
@@ -300,23 +323,83 @@ export class ProviderRegistry {
             error: cd.error,
           };
         }
-        let windowsLabel: string | undefined;
+        const catalogIds = inst.models?.options?.map((option) => option.id) ?? [];
         if (inst.instanceId === "antigravity") {
           const agModels = quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot());
           Object.assign(models, agModels);
-          const dual = Object.values(agModels).find((m) => m.windowsLabel?.includes("/"));
-          windowsLabel = dual?.windowsLabel ?? Object.values(agModels)[0]?.windowsLabel;
         }
-        const catalogIds = inst.models?.options?.map((option) => option.id) ?? [];
+        // MiniMax's Token Plan quota (server/minimax-balance.ts) reports one
+        // pool PER PRODUCT ("general" = chat, "video" = video generation, …)
+        // keyed by MiniMax's own pool name — every consumer of `models`
+        // (ModelPicker.tsx's per-row badge and "Partial quota" chip,
+        // turn-safety.ts's auto-fallback eligibility) keys by CATALOG model
+        // id instead. Only "general" governs chat models, so it is the only
+        // pool mapped in here — onto every id this instance's own catalog
+        // reports, never hardcoded — so an exhausted, unrelated "video" pool
+        // can never mislabel a chat model (or the whole engine) as capped.
+        // Every pool the endpoint reported is still on `balance.models` and
+        // reaches the client via `minimaxSummary` below for a future
+        // "video quota" display; it just never enters this dict.
+        let minimaxSummary: NonNullable<ProviderSnapshot["quota"]>["minimax"] | undefined;
+        if (inst.driverKind === "minimax") {
+          const ctx = this.minimaxContextByInstance.get(inst.instanceId);
+          const local = getCachedLocalMiniMaxConfig();
+          // TODO(#387): resolveMinimaxCredentials is gaining an instance id
+          // argument that restricts the process.env / ~/.mmx/config.json
+          // fallback to the reserved "minimax" instance only. Pass
+          // inst.instanceId here once that lands — until then, a second
+          // MiniMax instance with no key of its own still (incorrectly)
+          // inherits the reserved instance's key and therefore its quota,
+          // which is exactly the gap #387 is meant to close; ctx?.environment
+          // already fixes the common case (a second instance WITH its own
+          // key/url is resolved correctly today).
+          const key = resolveMinimaxCredentials(ctx?.environment ?? {}, local);
+          const balanceUrl = ctx?.url || process.env.MINIMAX_BASE_URL?.trim() || local.url;
+          const balance = await getMiniMaxBalance(key, balanceUrl);
+          const general = balance.models?.general;
+          if (general) {
+            for (const id of catalogIds) {
+              models[id] = {
+                capped: (general.remainingPercent ?? 100) <= 0,
+                remainingPercent: general.remainingPercent,
+                secondaryRemainingPercent: general.secondaryRemainingPercent,
+                windowsLabel: general.windowsLabel,
+                resetsAt: general.resetsAt,
+              };
+            }
+          }
+          minimaxSummary = {
+            source: balance.source,
+            capExists: balance.capExists,
+            status: balance.status,
+            balanceUsd: balance.balanceUsd,
+            remainingPercent: balance.remainingPercent,
+            secondaryRemainingPercent: balance.secondaryRemainingPercent,
+            resetsAt: balance.resetsAt,
+            weeklyResetsAt: balance.weeklyResetsAt,
+            error: balance.error,
+          };
+        }
+        // Generalized dual-window badge: pick it from whatever landed in
+        // `models` rather than special-casing one instanceId. Antigravity's
+        // antigravity-usage CLI and MiniMax's Token Plan quota (above) are
+        // the two sources today; either can report a bare "5hr" reading or a
+        // dual "5hr/Week" one, and a model reporting both wins over one that
+        // only reports the shorter window.
+        const modelsWithLabel = Object.values(models).filter((m) => m.windowsLabel);
+        const windowsLabel = modelsWithLabel.length > 0
+          ? modelsWithLabel.find((m) => m.windowsLabel?.includes("/"))?.windowsLabel ?? modelsWithLabel[0].windowsLabel
+          : undefined;
         const allCatalogCapped =
           catalogIds.length > 0 && catalogIds.every((id) => models[id]?.capped === true);
-        if (wildcard || Object.keys(models).length > 0 || windowsLabel) {
+        if (wildcard || Object.keys(models).length > 0 || windowsLabel || minimaxSummary) {
           snapshot.quota = {
             capped: Boolean(wildcard) || allCatalogCapped,
             resetsAt: wildcard?.resetsAt,
             error: wildcard?.error,
             ...(windowsLabel ? { windowsLabel } : {}),
             ...(Object.keys(models).length > 0 ? { models } : {}),
+            ...(minimaxSummary ? { minimax: minimaxSummary } : {}),
           };
         }
       } catch (e) {
@@ -397,5 +480,6 @@ export class ProviderRegistry {
     this.cliByInstance.clear();
     this.fullAutoByInstance.clear();
     this.enabledByInstance.clear();
+    this.minimaxContextByInstance.clear();
   }
 }

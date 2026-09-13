@@ -6,9 +6,11 @@ import {
   formatDualQuotaBadge,
   formatResetCountdown,
   isEngineUnconfigured,
+  minimaxQuotaLine,
   quotaLinesSummary,
   remainingPercentLabel,
   windowHeadlines,
+  windowsLabelFromHeadlines,
 } from "./quota-display";
 import { driverKindsForWindow, isPlanLevelSkip, modelsToSkip } from "../../server/quota-window-map";
 
@@ -320,6 +322,125 @@ describe("formatDualQuotaBadge", () => {
     expect(formatDualQuotaBadge(75, null)).toBe("75% left");
     expect(formatDualQuotaBadge(null, 50)).toBe("(50%)");
     expect(formatDualQuotaBadge(null, null)).toBeNull();
+  });
+});
+
+describe("windowsLabelFromHeadlines", () => {
+  it("returns the combined '5hr/Week' badge when both buckets are present", () => {
+    const headlines = windowHeadlines([
+      { label: "Cursor 5h", window: "5h", remainingPercent: 60, resetAt: null, skip: false },
+      { label: "Cursor weekly", window: "weekly", remainingPercent: 40, resetAt: null, skip: false },
+    ]);
+    expect(windowsLabelFromHeadlines(headlines)).toBe("5hr/Week");
+  });
+
+  it("returns the bare '5hr' badge when only the 5h bucket is present", () => {
+    const headlines = windowHeadlines([{ label: "Cursor 5h", window: "5h", remainingPercent: 60, resetAt: null, skip: false }]);
+    expect(windowsLabelFromHeadlines(headlines)).toBe("5hr");
+  });
+
+  it("returns 'Week' when only the weekly bucket is present", () => {
+    const headlines = windowHeadlines([{ label: "Cursor weekly", window: "weekly", remainingPercent: 40, resetAt: null, skip: false }]);
+    expect(windowsLabelFromHeadlines(headlines)).toBe("Week");
+  });
+
+  it("returns undefined for a monthly-only engine (no 5h or weekly window at all)", () => {
+    const headlines = windowHeadlines([{ label: "Cursor monthly", window: "monthly", remainingPercent: 100, resetAt: null, skip: false }]);
+    expect(windowsLabelFromHeadlines(headlines)).toBeUndefined();
+  });
+
+  it("returns undefined for an empty window list", () => {
+    expect(windowsLabelFromHeadlines([])).toBeUndefined();
+  });
+});
+
+describe("minimaxQuotaLine", () => {
+  const base = {
+    source: "unavailable" as const,
+    status: "unknown" as const,
+    balanceUsd: null,
+    remainingPercent: null,
+    secondaryRemainingPercent: null,
+    resetsAt: null,
+  };
+
+  it("returns null when the source is unavailable", () => {
+    expect(minimaxQuotaLine(base)).toBeNull();
+  });
+
+  it("formats a pay-as-you-go balance line", () => {
+    expect(minimaxQuotaLine({ ...base, source: "account-balance", status: "ok", balanceUsd: 12.34 })).toBe("$12.34 remaining");
+  });
+
+  it("flags a near-cap balance without claiming it's exhausted", () => {
+    expect(minimaxQuotaLine({ ...base, source: "account-balance", status: "near_cap", balanceUsd: 4 })).toBe("$4.00 remaining · near cap");
+  });
+
+  it("reports a capped balance as exhausted (a wallet balance has no reset time)", () => {
+    const line = minimaxQuotaLine({ ...base, source: "account-balance", status: "capped", balanceUsd: 0 });
+    expect(line).toBe("at usage cap — balance exhausted");
+  });
+
+  it("returns null for a pay-as-you-go response with no balance figure at all", () => {
+    expect(minimaxQuotaLine({ ...base, source: "account-balance", status: "unknown", balanceUsd: null })).toBeNull();
+  });
+
+  it("formats the live-verified Token Plan sentence: weekly first, then the 5h window, then a clock-time reset", () => {
+    const resetsAt = Date.now() + 3_600_000;
+    const line = minimaxQuotaLine({
+      ...base,
+      source: "token-plan",
+      status: "ok",
+      remainingPercent: 100,
+      secondaryRemainingPercent: 94,
+      resetsAt,
+    });
+    const expectedTime = new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(line).toBe(`94% left this week, 100% left in the current 5 h window, resets at ${expectedTime}`);
+  });
+
+  it("formats a Token Plan line with only the 5h window known, and no reset clause when the reset is unknown", () => {
+    const line = minimaxQuotaLine({ ...base, source: "token-plan", status: "ok", remainingPercent: 62 });
+    expect(line).toBe("62% left in the current 5 h window");
+  });
+
+  it("formats a Token Plan line with only the weekly window known", () => {
+    const line = minimaxQuotaLine({ ...base, source: "token-plan", status: "ok", secondaryRemainingPercent: 40 });
+    expect(line).toBe("40% left this week");
+  });
+
+  it("returns null for a Token Plan response with zero usable model rows", () => {
+    expect(minimaxQuotaLine({ ...base, source: "token-plan", status: "unknown" })).toBeNull();
+  });
+
+  it("says 'of a boosted allowance' when the weekly figure is above 100%", () => {
+    const line = minimaxQuotaLine({ ...base, source: "token-plan", status: "ok", secondaryRemainingPercent: 141 });
+    expect(line).toBe("141% left this week of a boosted allowance");
+  });
+
+  it("does not say 'boosted' for an ordinary weekly figure at or below 100%", () => {
+    const line = minimaxQuotaLine({ ...base, source: "token-plan", status: "ok", secondaryRemainingPercent: 100 });
+    expect(line).toBe("100% left this week");
+  });
+
+  it("says 'resets soon' instead of a stale clock time once the reset has already passed", () => {
+    const now = Date.now();
+    const line = minimaxQuotaLine(
+      { ...base, source: "token-plan", status: "ok", remainingPercent: 100, resetsAt: now - 60_000 },
+      now,
+    );
+    expect(line).toBe("100% left in the current 5 h window, resets soon");
+  });
+
+  it("still shows a clock time for a reset that has not passed yet", () => {
+    const now = Date.now();
+    const resetsAt = now + 3_600_000;
+    const line = minimaxQuotaLine(
+      { ...base, source: "token-plan", status: "ok", remainingPercent: 100, resetsAt },
+      now,
+    );
+    const expectedTime = new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(line).toBe(`100% left in the current 5 h window, resets at ${expectedTime}`);
   });
 });
 
