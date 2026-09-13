@@ -259,6 +259,93 @@ export function staleCandidateNames(names, { prefix, suffix = "", keepNames = []
 
 export const CANDIDATE_BUNDLE_PREFIX = ".BotFleet.update-";
 export const CANDIDATE_DEPENDENCY_PREFIX = ".botfleet-server.node_modules.update-";
+// A failed replacement's dependency tree is set aside beside the checkout, not
+// inside it: anything left in the checkout shows up as untracked in
+// `git status --porcelain`, and the dirty-checkout guard would then refuse
+// every later update forever.  It carries the updater's pid so the ordinary
+// candidate rule sweeps it once that process is gone.
+export const FAILED_DEPENDENCY_PREFIX = ".botfleet-server.node_modules.failed-";
+// Entries a stage directory is allowed to contain and still be swept
+// unattended.  Anything else in there was put there by a person, and a person
+// gets to decide when it goes.
+const KNOWN_STAGE_ENTRIES = new Set([
+  "BotFleet.app", "node_modules", "prepared.json", "rollback", "source",
+  "pending-recovery.json", "credential-migration.json",
+]);
+export const ABANDONED_STAGE_AGE_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A port that answers is not by itself a reason to refuse or to keep waiting.
+ * Three cases are genuinely different: BotFleet still owns the port, something
+ * else owns it, or the probe could not tell.  Only the first says the shutdown
+ * did not finish.
+ */
+export function quiescedPortError(results) {
+  const named = (items) => items.map((item) => `${item.port}`).join(", ");
+  const botfleet = results.filter((item) => item.kind === "botfleet");
+  if (botfleet.length) {
+    return `BotFleet still answers on port ${named(botfleet)} (pid ${[...new Set(botfleet.map((item) => item.pid))].join(", ")}) after graceful shutdown`;
+  }
+  const foreign = results.filter((item) => item.kind === "foreign" || item.kind === "http");
+  if (foreign.length) {
+    const detail = foreign
+      .map((item) => `${item.port} (${item.kind === "http" ? `HTTP ${item.status}` : "a health response that is not BotFleet's"})`)
+      .join(", ");
+    return `Another service answers port ${detail}; free that port or point BOTFLEET_UPDATE_PORTS elsewhere before updating`;
+  }
+  const unavailable = results.filter((item) => item.kind === "unavailable");
+  if (unavailable.length) {
+    return `Port ${named(unavailable)} did not answer conclusively after retries (${unavailable.map((item) => item.reason || "unknown").join(", ")})`;
+  }
+  return null;
+}
+
+/**
+ * After the boundary the question is not whether a port answers but whether
+ * anything this transaction owns is still alive.  A stranger on one of the
+ * fallback ports, or a probe that timed out once, must never hold a rollback
+ * open — that would leave the Mac mid-install waiting on something the update
+ * has no relationship with.
+ */
+export function ownedRuntimePids({ holders = [], bundlePids = [], health = [], ownerPid } = {}) {
+  const fromHealth = health.filter((item) => item.kind === "botfleet").map((item) => item.pid);
+  return [...new Set([...holders, ...bundlePids, ...fromHealth, ownerPid].filter(Number.isInteger))];
+}
+
+/**
+ * Stage directories this updater creates end in `Date.now()`.  The suffix has
+ * to be exactly that and nothing else: a hand-made directory ending in a date
+ * like `-20260912` parses as a number too, and reading it as epoch
+ * milliseconds would date that stage to 1970 and make it look ancient.
+ */
+export function stageStamp(name) {
+  const last = name.split("-").at(-1);
+  return /^\d{13}$/.test(last) ? Number(last) : null;
+}
+
+/**
+ * A stage nobody references, with no prepared manifest and no rollback
+ * generation, is leftover.  An empty one goes immediately.  A stale one goes
+ * only when everything still inside it is something this updater wrote; a
+ * stage holding anything else was arranged by a person and is only reported.
+ */
+export function abandonedStages(entries, { now = Date.now(), referenced = [], ageMs = ABANDONED_STAGE_AGE_MS } = {}) {
+  const prune = [];
+  const report = [];
+  for (const entry of entries) {
+    if (referenced.includes(entry.path)) continue;
+    if (entry.hasPrepared || entry.hasGeneration) continue;
+    if (!entry.names.length) {
+      prune.push(entry.path);
+      continue;
+    }
+    const stamp = stageStamp(entry.name) ?? entry.mtimeMs;
+    const stale = Number.isFinite(stamp) && now - stamp > ageMs;
+    if (stale && entry.names.every((name) => KNOWN_STAGE_ENTRIES.has(name))) prune.push(entry.path);
+    else report.push(entry.path);
+  }
+  return { prune, report };
+}
 
 /**
  * A run killed between the swap and its verification leaves a receipt stuck at
@@ -495,6 +582,19 @@ async function requestJson(url, { headers = {}, method = "GET", timeoutMs = 3_00
   try { body = await response.json(); } catch { body = null; }
   if (!accept.includes(response.status)) return { kind: "http", status: response.status, body };
   return { kind: "ok", status: response.status, body };
+}
+
+async function probeHealthWithRetry(port, { attempts = 3, backoffMs = 250 } = {}) {
+  let result;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    result = await probeHealth(port);
+    // none, botfleet, foreign and http are all definitive; only an
+    // unreachable or ambiguous response is worth asking again, because a
+    // single three-second timeout is not evidence that a port is owned.
+    if (result.kind !== "unavailable") return { ...result, port };
+    if (attempt + 1 < attempts) await sleep(backoffMs * (attempt + 1));
+  }
+  return { ...result, port };
 }
 
 async function probeHealth(port) {
@@ -983,6 +1083,41 @@ export async function rollbackGenerations(config, { stageDirectories = [] } = {}
   return { generations: found, orphans: [...new Set(orphans)] };
 }
 
+/**
+ * One entry per stage directory under the updates root, with just enough to
+ * decide whether it is leftover: whether it still carries a prepared manifest,
+ * whether any rollback generation lives in it, and what else is inside.
+ */
+export async function stageEntries(config, generations = []) {
+  const referencedStages = new Set();
+  for (const item of generations) {
+    if (typeof item.receipt?.stageDirectory === "string") referencedStages.add(resolve(item.receipt.stageDirectory));
+    referencedStages.add(resolve(dirname(dirname(item.receiptPath))));
+    referencedStages.add(resolve(dirname(dirname(dirname(item.receiptPath)))));
+  }
+  const entries = [];
+  for (const name of await listDirectory(config.updatesDirectory)) {
+    const path = join(config.updatesDirectory, name);
+    let details;
+    try {
+      details = await lstat(path);
+    } catch {
+      continue;
+    }
+    if (!details.isDirectory() || details.isSymbolicLink()) continue;
+    const names = await listDirectory(path);
+    entries.push({
+      name,
+      path,
+      names,
+      mtimeMs: details.mtimeMs,
+      hasPrepared: names.includes("prepared.json"),
+      hasGeneration: generations.some((item) => resolve(item.receiptPath).startsWith(`${resolve(path)}${sep}`)),
+    });
+  }
+  return { entries, referenced: [...referencedStages] };
+}
+
 function createConfig(parsed) {
   const home = homedir();
   return {
@@ -1075,6 +1210,22 @@ function createOperations(config) {
       previous?.candidateDependencies ? [basename(previous.candidateDependencies)] : [],
       roots,
     );
+    // A dependency tree set aside by a failed rollback carries the pid of the
+    // updater that parked it, so the same rule applies: gone once that process
+    // is.  These are large, and unlike a failed application bundle there is
+    // nothing in one to examine.
+    await sweepCandidates(dirname(config.checkout), FAILED_DEPENDENCY_PREFIX, "", [], roots);
+
+    const { entries, referenced } = await stageEntries(config, generations);
+    const stages = abandonedStages(entries, { referenced: [...referenced, ...stageDirectories.map((path) => resolve(path))] });
+    for (const path of stages.prune) {
+      if (!prunablePath(path, [config.updatesDirectory])) continue;
+      await rm(path, { recursive: true, force: true });
+      console.log(`Removed the leftover update stage ${path}`);
+    }
+    for (const path of stages.report) {
+      console.error(`Update stage ${path} has no prepared manifest and no rollback generation, and holds files this updater did not write; it was left in place for manual review.`);
+    }
 
     for (const orphan of orphans) {
       console.error(`Rollback bundle ${orphan} has no receipt; it was left in place for manual review.`);
@@ -1248,7 +1399,12 @@ function createOperations(config) {
     capturePrevious: async (prepared) => {
       const checkoutCommit = await gitOutput(config.checkout, ["rev-parse", "HEAD"]);
       const dirty = await gitOutput(config.checkout, ["status", "--porcelain"]);
-      if (dirty) throw new Error("Live always-on checkout has changes; refusing update");
+      if (dirty) {
+        // Name them.  An untracked directory left by an earlier failure blocks
+        // every later update, and a refusal that does not say which path is at
+        // fault gives the operator nothing to act on.
+        throw new Error(`Live always-on checkout has changes; refusing update:\n${dirty}`);
+      }
       if (!(await exists(config.appPath))) throw new Error(`Installed BotFleet app is missing: ${config.appPath}`);
       const liveDependencies = join(config.checkout, "node_modules");
       const dependencyDetails = await lstat(liveDependencies);
@@ -1370,10 +1526,9 @@ function createOperations(config) {
       if (appPids.length) {
         throw new Error(`BotFleet process ${appPids.join(", ")} still runs from inside ${config.appPath} after graceful shutdown`);
       }
-      const health = await Promise.all(config.ports.map(probeHealth));
-      if (health.some((item) => item.kind !== "none")) {
-        throw new Error("A BotFleet port is still owned after graceful shutdown");
-      }
+      const health = await Promise.all(config.ports.map((port) => probeHealthWithRetry(port)));
+      const portError = quiescedPortError(health);
+      if (portError) throw new Error(portError);
     },
 
     advanceCheckout: async (targetCommit) => {
@@ -1559,10 +1714,19 @@ function createOperations(config) {
         await terminateVerified([...holders, ...appPids], { ...previous, runtimePids: [...new Set([...previous.runtimePids, ...holders])] }, config);
       });
       await recordStop(async () => {
-        const holders = await sqliteHolders(config.dataDirectory);
-        const health = await Promise.all(config.ports.map(probeHealth));
-        if (holders.length || health.some((item) => item.kind !== "none")) {
-          throw new Error("Rollback cannot mutate files while a BotFleet process, port, or database owner remains");
+        const [holders, bundlePids, health, owner] = await Promise.all([
+          sqliteHolders(config.dataDirectory),
+          bundleProcessPids(config.appPath),
+          Promise.all(config.ports.map((port) => probeHealthWithRetry(port))),
+          readOwner(config.dataDirectory).catch(() => null),
+        ]);
+        const stranger = health.filter((item) => item.kind === "foreign" || item.kind === "http");
+        if (stranger.length) {
+          console.error(`Something other than BotFleet answers port ${stranger.map((item) => item.port).join(", ")}; rollback is not waiting on it.`);
+        }
+        const owned = ownedRuntimePids({ holders, bundlePids, health, ownerPid: owner?.pid });
+        if (owned.length) {
+          throw new Error(`Rollback cannot mutate files while BotFleet process ${owned.join(", ")} still owns its bundle, database, or health endpoint`);
         }
       });
       if (stopErrors.length) throw new AggregateError(stopErrors, "Could not quiesce the failed replacement for safe rollback");
@@ -1578,7 +1742,15 @@ function createOperations(config) {
       await record(async () => {
         const liveDependencies = join(config.checkout, "node_modules");
         if (previous.swap?.rollbackDependenciesHold && await exists(previous.rollbackDependencies)) {
-          if (await exists(liveDependencies)) await rename(liveDependencies, `${liveDependencies}.failed-${Date.now()}`);
+          if (await exists(liveDependencies)) {
+            // Beside the checkout, never inside it.  `.gitignore` covers
+            // `node_modules` exactly, so a sibling named `node_modules.failed-…`
+            // is untracked, and the dirty-checkout guard would then refuse
+            // every later update until somebody found and removed it.
+            const setAside = join(dirname(config.checkout), `${FAILED_DEPENDENCY_PREFIX}${process.pid}-${Date.now()}`);
+            await rename(liveDependencies, setAside);
+            console.error(`The failed replacement's dependency tree was set aside at ${setAside}`);
+          }
           await rename(previous.rollbackDependencies, liveDependencies);
           previous.swap.rollbackDependenciesHold = false;
         }
@@ -1593,17 +1765,16 @@ function createOperations(config) {
       await record(async () => { await git(config.checkout, ["checkout", "--detach", previous.checkoutCommit]); });
       await record(async () => { await rm(previous.candidatePath, { recursive: true, force: true }); });
       await record(async () => { await rm(previous.candidateDependencies, { recursive: true, force: true }); });
-      // Deleting the receipt is right in exactly two cases, and the flag
-      // distinguishes both from the third.  Either the prior bundle was
-      // restored to its place, or it never left it — the swap can fail on its
-      // very first rename, after the provisional receipt is already written.
-      // Both leave nothing at the rollback path for the receipt to describe,
-      // and a receipt left behind would become a generation prune refuses to
-      // touch.  The case that keeps it is a swap that did move the bundle
-      // followed by a restore that failed: the flag is still true there, and
-      // the receipt is then the only record of where the bundle went.
+      // The receipt describes two copies, the bundle and the dependency tree,
+      // so it may only go when neither is still parked at a rollback path.
+      // Each restore clears its own flag on success; a dependency restore that
+      // throws leaves its flag set even though the bundle restore afterwards
+      // succeeds, and that tree is then the only copy there is.  Deleting the
+      // receipt is right when both flags are clear: either both copies were
+      // restored, or the swap failed on its first rename and neither ever left
+      // its place, which the provisional receipt cannot know when it is written.
       await record(async () => {
-        if (previous.swap?.rollbackAppHolds) return;
+        if (previous.swap?.rollbackAppHolds || previous.swap?.rollbackDependenciesHold) return;
         await rm(`${previous.rollbackPath}.json`, { force: true });
       });
       await record(async () => {

@@ -5,14 +5,19 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import {
+  abandonedStages,
   failedInstallBundles,
   generationBelongsToApp,
+  ownedRuntimePids,
   prunablePath,
+  quiescedPortError,
   reconcilableGenerations,
   resolveRollbackPlacement,
   rollbackGenerations,
   rollbackGenerationsToPrune,
   run,
+  stageEntries,
+  stageStamp,
   staleCandidateNames,
   swapPreparedFiles,
   txtHolderPids,
@@ -181,11 +186,33 @@ test("the bundle scan finds an embedded driver, not only the main executable", m
   await new Promise((done) => setTimeout(done, 800));
   assert.equal(child.exitCode, null, "the embedded driver should still be running");
 
-  const scan = await run("lsof", ["-F", "pn", "-d", "txt"], { allowFailure: true });
   const { realpath } = await import("node:fs/promises");
+  const before = await run("lsof", ["-F", "pn", "-d", "txt"], { allowFailure: true });
   assert.ok(
-    txtHolderPids(scan.stdout, await realpath(bundle)).includes(child.pid),
+    txtHolderPids(before.stdout, await realpath(bundle)).includes(child.pid),
     "a process running Contents/Resources/cua-driver holds the bundle",
+  );
+
+  // The case that matters is after the swap has renamed the bundle: a helper
+  // that outlived quiescence has to be findable in the rollback bundle, and
+  // its arguments still name the path it started from.
+  const renamed = join(root, ".BotFleet.rollback-1757600000000-2246f19e9de8.app");
+  await rename(bundle, renamed);
+  const after = await run("lsof", ["-F", "pn", "-d", "txt"], { allowFailure: true });
+  assert.ok(
+    txtHolderPids(after.stdout, await realpath(renamed)).includes(child.pid),
+    "the embedded driver must still be found under the renamed bundle",
+  );
+  assert.equal(
+    txtHolderPids(after.stdout, join(root, "BotFleet.app")).includes(child.pid),
+    false,
+    "and no longer under the path it was launched from",
+  );
+  const arguments_ = await run("ps", ["-axo", "pid=,command="], { allowFailure: true });
+  assert.equal(
+    arguments_.stdout.split("\n").some((line) => line.includes(`${child.pid} `) && line.includes(renamed)),
+    false,
+    "arguments do not follow the rename, which is why the scan cannot rely on them",
   );
 });
 
@@ -383,4 +410,172 @@ test("bundles left behind by a failed install are reported, never deleted", () =
     staleCandidateNames(names, { prefix: ".BotFleet.update-", suffix: ".app", isAlive: () => false }).stale,
     [".BotFleet.update-4242-1757000000000.app"],
   );
+});
+
+// Second review round.
+
+test("a failed dependency tree is set aside beside the checkout, never inside it", async () => {
+  const source = await readFile(new URL("./update-botfleet-mac.mjs", import.meta.url), "utf8");
+  // Anything left inside the checkout is untracked, and capturePrevious reads
+  // `git status --porcelain` with untracked files included, so it would refuse
+  // every later update until somebody found and removed it.
+  assert.doesNotMatch(source, /\$\{liveDependencies\}\.failed-/);
+  assert.match(source, /FAILED_DEPENDENCY_PREFIX = "\.botfleet-server\.node_modules\.failed-"/);
+  assert.match(source, /const setAside = join\(dirname\(config\.checkout\), `\$\{FAILED_DEPENDENCY_PREFIX\}\$\{process\.pid\}-\$\{Date\.now\(\)\}`\)/);
+  assert.match(source, /The failed replacement's dependency tree was set aside at/);
+  // It carries a pid, so the ordinary candidate rule reaches it.
+  assert.match(source, /sweepCandidates\(dirname\(config\.checkout\), FAILED_DEPENDENCY_PREFIX/);
+  // And a dirty checkout says which paths are dirty.
+  assert.match(source, /Live always-on checkout has changes; refusing update:\\n\$\{dirty\}/);
+});
+
+test("a set-aside dependency tree is swept by the same rule as a candidate", () => {
+  const names = [
+    "botfleet-server",
+    ".botfleet-server.node_modules.failed-4242-1789260170446",
+    ".botfleet-server.node_modules.failed-9999-1789260170447",
+    ".botfleet-server.node_modules.update-9999-1789260170448",
+  ];
+  assert.deepEqual(
+    staleCandidateNames(names, { prefix: ".botfleet-server.node_modules.failed-", isAlive: (pid) => pid === 4242 }),
+    { stale: [".botfleet-server.node_modules.failed-9999-1789260170447"], unrecognised: [] },
+  );
+  // The failed prefix must not reach the update candidates or vice versa.
+  assert.deepEqual(
+    staleCandidateNames(names, { prefix: ".botfleet-server.node_modules.update-", isAlive: () => false }).stale,
+    [".botfleet-server.node_modules.update-9999-1789260170448"],
+  );
+});
+
+test("the provisional receipt survives a dependency restore that failed under a bundle restore that did not", () => {
+  // rollback() runs the dependency restore first and the bundle restore
+  // second, each clearing its own flag only on success.  A dependency restore
+  // that throws therefore leaves its flag set while the bundle restore clears
+  // its own, and that dependency tree is then the only copy in existence.
+  const keeps = (swap) => Boolean(swap?.rollbackAppHolds || swap?.rollbackDependenciesHold);
+  assert.equal(keeps({ rollbackAppHolds: false, rollbackDependenciesHold: true }), true);
+  assert.equal(keeps({ rollbackAppHolds: true, rollbackDependenciesHold: false }), true);
+  assert.equal(keeps({ rollbackAppHolds: true, rollbackDependenciesHold: true }), true);
+  // Both restored, or the swap failed on its first rename and neither moved.
+  assert.equal(keeps({ rollbackAppHolds: false, rollbackDependenciesHold: false }), false);
+
+  return readFile(new URL("./update-botfleet-mac.mjs", import.meta.url), "utf8").then((source) => {
+    assert.match(source, /if \(previous\.swap\?\.rollbackAppHolds \|\| previous\.swap\?\.rollbackDependenciesHold\) return;/);
+  });
+});
+
+test("a port tells three different stories and only one of them is a failed shutdown", () => {
+  assert.equal(quiescedPortError([{ kind: "none", port: 8799 }, { kind: "none", port: 18799 }]), null);
+  assert.match(
+    quiescedPortError([{ kind: "botfleet", pid: 42, port: 8799 }, { kind: "none", port: 18799 }]),
+    /BotFleet still answers on port 8799 \(pid 42\) after graceful shutdown/,
+  );
+  // A stranger on a fallback port is named, so the operator knows what to free.
+  assert.match(
+    quiescedPortError([{ kind: "none", port: 8799 }, { kind: "foreign", port: 18799 }]),
+    /Another service answers port 18799 \(a health response that is not BotFleet's\); free that port/,
+  );
+  assert.match(
+    quiescedPortError([{ kind: "http", status: 503, port: 28799 }]),
+    /port 28799 \(HTTP 503\)/,
+  );
+  // An ambiguous probe is reported as ambiguous, not as ownership.
+  assert.match(
+    quiescedPortError([{ kind: "unavailable", reason: "UND_ERR_CONNECT_TIMEOUT", port: 8799 }]),
+    /did not answer conclusively after retries \(UND_ERR_CONNECT_TIMEOUT\)/,
+  );
+  // BotFleet outranks the rest: that is the one that means shutdown failed.
+  assert.match(
+    quiescedPortError([{ kind: "botfleet", pid: 7, port: 8799 }, { kind: "foreign", port: 18799 }]),
+    /BotFleet still answers/,
+  );
+});
+
+test("rollback waits on processes the transaction owns, never on a stranger's port", () => {
+  assert.deepEqual(ownedRuntimePids({}), []);
+  // A stranger and a timed-out probe are not the transaction's business.
+  assert.deepEqual(
+    ownedRuntimePids({ health: [{ kind: "foreign", port: 18799 }, { kind: "unavailable", port: 28799 }] }),
+    [],
+  );
+  assert.deepEqual(
+    ownedRuntimePids({
+      holders: [11],
+      bundlePids: [22, 11],
+      health: [{ kind: "botfleet", pid: 33, port: 8799 }, { kind: "foreign", port: 18799 }],
+      ownerPid: 44,
+    }),
+    [11, 22, 33, 44],
+  );
+  assert.deepEqual(ownedRuntimePids({ ownerPid: undefined, holders: [5] }), [5]);
+});
+
+test("the retrying probe asks again only when the answer was ambiguous", async () => {
+  const source = await readFile(new URL("./update-botfleet-mac.mjs", import.meta.url), "utf8");
+  assert.match(source, /if \(result\.kind !== "unavailable"\) return \{ \.\.\.result, port \};/);
+  assert.match(source, /await sleep\(backoffMs \* \(attempt \+ 1\)\)/);
+  // Both gates go through the retrying probe.
+  assert.equal(source.split("probeHealthWithRetry(port)").length - 1 >= 2, true);
+  // And rollback no longer refuses on port state alone.
+  assert.doesNotMatch(source, /Rollback cannot mutate files while a BotFleet process, port, or database owner remains/);
+  assert.match(source, /rollback is not waiting on it/);
+});
+
+test("leftover stages are pruned only when empty or entirely this updater's own work", () => {
+  const now = 1789300000000;
+  const day = 24 * 60 * 60 * 1000;
+  const entry = (name, names, extra = {}) => ({
+    name, path: `/updates/${name}`, names, mtimeMs: now, hasPrepared: names.includes("prepared.json"), hasGeneration: false, ...extra,
+  });
+  const entries = [
+    entry(`empty-${now - 60_000}`, []),
+    entry(`stale-${now - 2 * day}`, ["BotFleet.app", "node_modules"]),
+    entry(`recent-${now - 60_000}`, ["BotFleet.app", "node_modules"]),
+    // A person put evidence in this one, so it is only ever reported.
+    entry(`evidence-${now - 2 * day}`, ["failed-BotFleet.app", "failed-BotFleet.app.json"]),
+    entry(`prepared-${now - 5 * day}`, ["prepared.json", "BotFleet.app", "node_modules"]),
+    entry(`generation-${now - 5 * day}`, ["rollback"], { hasGeneration: true }),
+    entry(`referenced-${now - 5 * day}`, ["rollback"]),
+  ];
+  const { prune, report } = abandonedStages(entries, { now, referenced: ["/updates/referenced-" + (now - 5 * day)] });
+  assert.deepEqual(prune, [`/updates/empty-${now - 60_000}`, `/updates/stale-${now - 2 * day}`]);
+  assert.deepEqual(report, [`/updates/recent-${now - 60_000}`, `/updates/evidence-${now - 2 * day}`]);
+  // A stage with a prepared manifest, one holding a generation, and one named
+  // by a receipt are all left entirely alone.
+  for (const kept of ["prepared", "generation", "referenced"]) {
+    assert.equal([...prune, ...report].some((path) => path.includes(kept)), false, `${kept} must be untouched`);
+  }
+});
+
+test("stage age comes from the name the updater gave it", () => {
+  assert.equal(stageStamp("4e3459758b67-1789257579801"), 1789257579801);
+  // A hand-made directory ending in a date parses as a number too, and
+  // reading it as epoch milliseconds would date the stage to 1970 and make it
+  // look old enough to sweep.
+  assert.equal(stageStamp("audit-ae8abe7d-v2-20260912"), null);
+  assert.equal(stageStamp("audit-4ad1bc91-20260912"), null);
+  assert.equal(stageStamp("no-stamp-here"), null);
+  assert.equal(stageStamp("short-123"), null);
+});
+
+test("stage discovery never counts a stage that holds a rollback generation as leftover", async (t) => {
+  const root = await fixture(t);
+  const updates = join(root, "updates");
+  const appPath = join(root, "Applications", "BotFleet.app");
+  await mkdir(appPath, { recursive: true });
+  const generationBundle = join(updates, "a-1789257579801", "rollback", "1789257579801-2246f19e9de8", "BotFleet.app");
+  await mkdir(generationBundle, { recursive: true });
+  await writeReceipt(`${generationBundle}.json`, {
+    appPath, rollbackBundle: generationBundle, stageDirectory: join(updates, "a-1789257579801"), installedAt: "2026-09-12T00:00:00.000Z",
+  });
+  await mkdir(join(updates, "b-1789257579802"), { recursive: true });
+
+  const { generations } = await rollbackGenerations({ appPath, updatesDirectory: updates });
+  const { entries, referenced } = await stageEntries({ updatesDirectory: updates }, generations);
+  const holder = entries.find((item) => item.name === "a-1789257579801");
+  assert.equal(holder.hasGeneration, true);
+  assert.ok(referenced.includes(join(updates, "a-1789257579801")));
+  const { prune } = abandonedStages(entries, { referenced });
+  // Only the genuinely empty one goes.
+  assert.deepEqual(prune, [join(updates, "b-1789257579802")]);
 });
