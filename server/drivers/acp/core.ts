@@ -488,8 +488,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         }
         const cancelled = cancelledBeforeDispatch();
         if (cancelled) return cancelled;
-        const resolvedModel = support.resolveTurnModel?.(turn.model, env);
-        support.applyTurnEnv?.(env, { model: resolvedModel, requestedModel: turn.model });
+        let resolvedModel: string | undefined;
+        try {
+          resolvedModel = support.resolveTurnModel?.(turn.model, env);
+          support.applyTurnEnv?.(env, { model: resolvedModel, requestedModel: turn.model });
+        } catch (error) {
+          return finishBeforeDispatch(false, "setup_error", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+        }
         const cliTurn =
           resolvedModel !== undefined && resolvedModel !== turn.model
             ? { ...turn, model: resolvedModel }

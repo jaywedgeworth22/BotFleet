@@ -902,6 +902,36 @@ describe("ACP turns (fake CLI)", () => {
     );
   });
 
+  it("clears the reservation when turn model setup throws before spawn", async () => {
+    let resolveAttempts = 0;
+    const ThrowingTurnSetupDriver = createAcpDriver({
+      ...SELECT_MODEL_SUPPORT,
+      driverKind: "throwingTurnSetupTest",
+      selectModel: undefined,
+      resolveTurnModel: (model) => {
+        resolveAttempts += 1;
+        if (resolveAttempts === 1) throw new Error("model setup failed");
+        return model;
+      },
+    });
+    await create(ThrowingTurnSetupDriver);
+
+    const failed = await instance.adapter.sendTurn({ threadId: "t-setup-throw", text: "first" });
+    expect(failed).toMatchObject({ dispatched: false });
+    expect(instance.adapter.hasSession("t-setup-throw")).toBe(false);
+    expect(recorder.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "runtime.error", message: "model setup failed" }),
+      expect.objectContaining({ type: "turn.completed", ok: false, stopReason: "setup_error" }),
+    ]));
+
+    const retried = await instance.adapter.sendTurn({ threadId: "t-setup-throw", text: "second" });
+    expect(retried).toMatchObject({ turnId: expect.any(String) });
+    await vi.waitFor(() => {
+      expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(2);
+    });
+    expect(recorder.events.at(-1)).toMatchObject({ type: "turn.completed", ok: true });
+  });
+
   it("transformEnv sees the instance config", async () => {
     const dump = join(scratch, "policy.json");
     process.env.FAKE_ACP_DUMP = dump;
