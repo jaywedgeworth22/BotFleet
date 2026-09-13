@@ -9759,7 +9759,10 @@ const server = createServer(async (req, res) => {
     }
 
     // ── connectors (Composio) ──
-    if (path.startsWith("/api/connectors") && workspaceCredentialPending(cfg, "composioApiKey")) {
+    const composioCredentialPending = workspaceCredentialPending(cfg, "composioApiKey");
+    const connectorReadOnlyStatus = method === "GET"
+      && (path === "/api/connectors/connected" || path === "/api/connectors/catalog");
+    if (path.startsWith("/api/connectors") && composioCredentialPending && !connectorReadOnlyStatus) {
       return json(res, 409, { error: "Connected Apps is waiting for its encrypted credential" });
     }
     if (method === "GET" && path === "/api/connectors/catalog") {
@@ -9773,18 +9776,20 @@ const server = createServer(async (req, res) => {
       });
     }
     if (method === "GET" && path === "/api/connectors/connected") {
-      const availability = composio.connectorAvailability(cfg);
-      if (availability !== "configured") {
-        // `credentialStore` is what stops the panel treating this empty list
-        // as authoritative: an unreadable store means we do not KNOW what is
-        // connected, which is not the same as knowing nothing is.
-        return json(res, 200, {
-          configured: false,
-          credentialStore: availability === "unreadable" ? "unavailable" : "ok",
-          services: {},
-        });
+      let credentialState: "available" | "pending" | "unreadable" = composioCredentialPending ? "pending" : "available";
+      if (!composioCredentialPending) {
+        try {
+          if (composio.connectorAvailability(cfg) === "unreadable") credentialState = "unreadable";
+        } catch {
+          // Invalid broker configuration is a typed degraded readiness result,
+          // not a raw route error.  The probe below classifies it safely.
+        }
       }
-      return json(res, 200, { configured: true, credentialStore: "ok", services: await composio.connectedServices(cfg) });
+      const inventory = await composio.connectedInventoryStatus(
+        cfg,
+        credentialState,
+      );
+      return json(res, 200, { configured: inventory.readiness.configured, ...inventory });
     }
     if (method === "GET" && path === "/api/connectors") {
       const services = (url.searchParams.get("services") ?? "").split(",").filter(Boolean);

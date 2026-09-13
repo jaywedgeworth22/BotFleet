@@ -34,14 +34,55 @@ export interface ConnectorStatus {
 let cachedConnectorStatus: Record<string, ConnectorStatus> | null = null;
 let cachedConnectorStatusAt = 0;
 let cachedConnectorStatusAuthoritative = true;
+let cachedConnectorReadiness: ConnectorReadiness | null = null;
 let connectorStatusRequest: Promise<ConnectorInventory> | null = null;
 const CONNECTOR_STATUS_CACHE_MS = 30_000;
 
+export type ConnectorFailureKind =
+  | "authentication"
+  | "credential_pending"
+  | "credential_unreadable"
+  | "invalid_response"
+  | "network"
+  | "permission"
+  | "rate_limited"
+  | "timeout"
+  | "upstream"
+  | "unknown";
+
+export interface ConnectorReadiness {
+  ready: boolean;
+  configured: boolean;
+  state: "credential_pending" | "credential_unreadable" | "degraded" | "ready" | "unconfigured";
+  checkedAt: number;
+  lastSuccessAt: number | null;
+  failure?: { kind: ConnectorFailureKind; message: string };
+}
+
 export interface ConnectorInventory {
   services: Record<string, ConnectorStatus>;
-  /** false when the server could not read the credential store: the list is
-   * then "we do not know", and nothing may be cleared on the strength of it */
+  /** false when the server could not verify the upstream inventory: the list
+   * then means "we do not know", and may not clear a prior known-good list */
   authoritative: boolean;
+  readiness: ConnectorReadiness;
+}
+
+function legacyReadiness(response: any, checkedAt: number): ConnectorReadiness {
+  if (response?.credentialStore === "unavailable") return {
+    ready: false,
+    configured: false,
+    state: "credential_unreadable",
+    checkedAt,
+    lastSuccessAt: null,
+    failure: {
+      kind: "credential_unreadable",
+      message: "BotFleet could not read the encrypted Connected Apps credential.",
+    },
+  };
+  if (response?.configured === false) return {
+    ready: false, configured: false, state: "unconfigured", checkedAt, lastSuccessAt: null,
+  };
+  return { ready: true, configured: true, state: "ready", checkedAt, lastSuccessAt: checkedAt };
 }
 
 /** Warm the account inventory once the app server is ready. Concurrent panel
@@ -51,24 +92,57 @@ export function preloadConnectedApps(force = false): Promise<ConnectorInventory>
     return Promise.resolve({
       services: cachedConnectorStatus,
       authoritative: cachedConnectorStatusAuthoritative,
+      readiness: cachedConnectorReadiness ?? {
+        ready: cachedConnectorStatusAuthoritative,
+        configured: true,
+        state: cachedConnectorStatusAuthoritative ? "ready" : "degraded",
+        checkedAt: cachedConnectorStatusAt,
+        lastSuccessAt: cachedConnectorStatusAuthoritative ? cachedConnectorStatusAt : null,
+        ...(cachedConnectorStatusAuthoritative ? {} : {
+          failure: { kind: "unknown" as const, message: "BotFleet could not verify connected apps." },
+        }),
+      },
     });
   }
   if (connectorStatusRequest) return connectorStatusRequest;
   connectorStatusRequest = api("/api/connectors/connected")
     .then((response) => {
+      const checkedAt = Date.now();
+      const readiness: ConnectorReadiness = response.readiness ?? legacyReadiness(response, checkedAt);
       const services: Record<string, ConnectorStatus> = response.services ?? {};
-      // An unreadable credential store tells us nothing about what is
-      // connected. Keep the last inventory we were sure about instead.
-      if (response.credentialStore === "unavailable") {
-        return { services: readCachedInventory()?.services ?? {}, authoritative: false };
+      const authoritative = response.authoritative ?? response.credentialStore !== "unavailable";
+      // A failed upstream or credential read tells us nothing about what is
+      // connected.  Keep the last inventory we were sure about instead.
+      if (!authoritative) {
+        const cached = readCachedInventory();
+        cachedConnectorReadiness = readiness;
+        cachedConnectorStatusAuthoritative = false;
+        cachedConnectorStatusAt = checkedAt;
+        return { services: cached?.services ?? cachedConnectorStatus ?? {}, authoritative: false, readiness };
       }
       cachedConnectorStatus = services;
-      cachedConnectorStatusAt = Date.now();
+      cachedConnectorStatusAt = checkedAt;
       cachedConnectorStatusAuthoritative = true;
-      writeCachedInventory(services, Date.now());
-      return { services, authoritative: true };
+      cachedConnectorReadiness = readiness;
+      writeCachedInventory(services, checkedAt);
+      return { services, authoritative: true, readiness };
     })
-    .catch(() => ({ services: readCachedInventory()?.services ?? {}, authoritative: false }))
+    .catch(() => {
+      const checkedAt = Date.now();
+      const cached = readCachedInventory();
+      const readiness: ConnectorReadiness = {
+        ready: false,
+        configured: true,
+        state: "degraded",
+        checkedAt,
+        lastSuccessAt: cached?.at || null,
+        failure: { kind: "network", message: "BotFleet could not reach the connected-apps service." },
+      };
+      cachedConnectorReadiness = readiness;
+      cachedConnectorStatusAuthoritative = false;
+      cachedConnectorStatusAt = checkedAt;
+      return { services: cached?.services ?? cachedConnectorStatus ?? {}, authoritative: false, readiness };
+    })
     .finally(() => {
       connectorStatusRequest = null;
     });
@@ -116,6 +190,30 @@ export function connectedInventoryCopy(phase: ConnectorInventoryPhase) {
     title: "No connected apps yet",
     description: "Connect an app from Marketplace and it will appear here.",
   };
+}
+
+function verifiedAtLabel(at: number | null): string | null {
+  if (!at) return null;
+  return new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Chicago",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  }).format(new Date(at));
+}
+
+export function connectedReadinessCopy(readiness: ConnectorReadiness | null, cachedAt = 0): string | null {
+  if (!readiness || readiness.state === "ready" || readiness.state === "unconfigured") return null;
+  const lastVerified = verifiedAtLabel(readiness.lastSuccessAt ?? cachedAt);
+  const retained = lastVerified
+    ? ` Showing the last verified account list from ${lastVerified}.`
+    : " Account status is unavailable until verification succeeds.";
+  if (readiness.state === "credential_pending") {
+    return `Restoring the encrypted Connected Apps credential.\u00A0${retained}`;
+  }
+  return `${readiness.failure?.message ?? "BotFleet could not verify connected apps."}\u00A0${retained}`;
 }
 
 export function mergeCurrentConnectorStatus(
@@ -210,6 +308,8 @@ export function PluginsPanel() {
   const [stale, setStale] = useState(
     cachedConnectorStatus !== null && !cachedConnectorStatusAuthoritative,
   );
+  const [readiness, setReadiness] = useState<ConnectorReadiness | null>(cachedConnectorReadiness);
+  const [rememberedInventoryAt] = useState(() => readCachedInventory()?.at ?? cachedConnectorStatusAt);
   const [pendingUrls, setPendingUrls] = useState<Record<string, string>>({});
   const [aliasSlug, setAliasSlug] = useState<string | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
@@ -264,12 +364,14 @@ export function PluginsPanel() {
       .catch(() => ({}));
   }, []);
 
-  const refreshConnectedStatus = useCallback((force = false): Promise<Record<string, ConnectorStatus>> => {
+  const refreshConnectedStatus = useCallback((force = false): Promise<ConnectorInventory> => {
     const requestGenerations = new Map(statusGenerations.current);
     setRefreshing(true);
     return preloadConnectedApps(force)
-      .then(({ services, authoritative }) => {
+      .then((inventory) => {
+        const { services, authoritative } = inventory;
         setStale(!authoritative);
+        setReadiness(inventory.readiness);
         setStatus((current) => mergeCompleteConnectorStatus(
           current,
           services,
@@ -286,7 +388,7 @@ export function PluginsPanel() {
             return next;
           });
         }
-        return services;
+        return inventory;
       })
       .finally(() => setRefreshing(false));
   }, []);
@@ -296,9 +398,13 @@ export function PluginsPanel() {
     if (!hadCachedInventory) setInventoryPhase("loading");
     setError(null);
     return refreshConnectedStatus(force)
-      .then((services) => {
-        setInventoryPhase("ready");
-        return services;
+      .then((inventory) => {
+        setInventoryPhase(
+          ["credential_pending", "credential_unreadable", "degraded"].includes(inventory.readiness.state)
+            ? "error"
+            : "ready",
+        );
+        return inventory.services;
       })
       .catch((cause) => {
         if (!hadCachedInventory) setInventoryPhase("error");
@@ -317,7 +423,8 @@ export function PluginsPanel() {
     cachedConnectorStatus = status;
     cachedConnectorStatusAt = Date.now();
     cachedConnectorStatusAuthoritative = !stale;
-  }, [inventoryPhase, stale, status]);
+    cachedConnectorReadiness = readiness;
+  }, [inventoryPhase, readiness, stale, status]);
 
   useEffect(() => {
     let alive = true;
@@ -469,6 +576,7 @@ export function PluginsPanel() {
   );
   const connectedCount = Object.values(status).filter((service) => service.connected || service.accounts?.length).length;
   const connectedEmptyCopy = connectedInventoryCopy(inventoryPhase);
+  const readinessNotice = connectedReadinessCopy(readiness, rememberedInventoryAt);
   const close = () => dispatch({ type: "togglePlugins", open: false });
 
   return (
@@ -508,15 +616,10 @@ export function PluginsPanel() {
           </div>
         </header>
 
-        {stale && (
-          // Say which of the two things is true. Silence here is what makes a
-          // remembered list indistinguishable from a confirmed one.
+        {readinessNotice && (
           <div className="mx-6 mb-1 flex items-start gap-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 text-[12.5px] text-warning sm:mx-8">
             <TriangleAlert size={14} className="mt-px shrink-0" />
-            <span>
-              Showing what was connected last time — this Mac's credential store could not be opened just now, so these
-              could not be re-checked. Your apps are still connected; restarting BotFleet usually clears this.
-            </span>
+            <span>{readinessNotice}</span>
           </div>
         )}
 
@@ -561,7 +664,7 @@ export function PluginsPanel() {
             above already explains this launch. Say WHY connected apps are off:
             a broker that failed its identity check is a different situation
             from a build that never had one. */}
-        {!configured && !stale && (
+        {!configured && !readinessNotice && (
           <div role="status" className="mx-6 mb-1 rounded-xl bg-warning/10 px-4 py-3 text-[13px] text-warning sm:mx-8">
             {managedSetup?.status === "failed"
               ? `${managedSetup.message ?? "Connected apps could not be set up."}\u00a0 Check the connected-apps service address, or add your own Composio project key.`

@@ -1,10 +1,11 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { AppConfig } from "./config.ts";
 import {
   applyManagedBrokerMessage,
   authorizeService,
+  connectedInventoryStatus,
   connectedServices,
   connectionMode,
   connectionStatus,
@@ -22,6 +23,7 @@ let base = "";
 const calls: Array<{ method: string; path: string; query: string; body: any }> = [];
 let malformedConnectedAccounts = false;
 let connectedAccountsUnavailable = false;
+let connectedAccountsStatus: number | null = null;
 // The project's own auth configs, and the ones the stub Session was created
 // with — a Session only knows the configs named at its creation, which is
 // the whole reason #509 happened.
@@ -103,6 +105,10 @@ beforeAll(async () => {
       if (connectedAccountsUnavailable) {
         res.writeHead(403, { "content-type": "application/json" });
         return res.end(JSON.stringify({ error: "connected-account read not granted" }));
+      }
+      if (connectedAccountsStatus !== null) {
+        res.writeHead(connectedAccountsStatus, { "content-type": "application/json" });
+        return res.end(JSON.stringify({ error: "temporary connected-account failure" }));
       }
       res.writeHead(200, { "content-type": "application/json" });
       if (malformedConnectedAccounts) return res.end(JSON.stringify({ items: {} }));
@@ -234,6 +240,35 @@ describe.sequential("Composio Sessions", () => {
     expect(managedSetup()).toEqual({ status: "unconfigured" });
     setManagedBrokerAccess(null);
   });
+  it("preserves the last verified inventory across identical managed credential sync", async () => {
+    const fetchStub = vi.spyOn(globalThis, "fetch");
+    const access = { url: "https://broker.example/root/", token: "a".repeat(64) };
+    const cfg: AppConfig = {};
+    try {
+      setManagedBrokerAccess(access);
+      fetchStub.mockResolvedValueOnce(new Response(JSON.stringify({ services: {} }), {
+        headers: { "content-type": "application/json" },
+      }));
+      const verified = await connectedInventoryStatus(cfg);
+      expect(verified.readiness.ready).toBe(true);
+      expect(verified.readiness.lastSuccessAt).not.toBeNull();
+      // Reconnection can repeat the same credential with an equivalent URL.
+      setManagedBrokerAccess({ ...access, url: "https://broker.example/root" });
+      fetchStub.mockRejectedValueOnce(new TypeError("fetch failed"));
+      const degraded = await connectedInventoryStatus(cfg);
+      expect(degraded.readiness).toMatchObject({
+        state: "degraded", lastSuccessAt: verified.readiness.lastSuccessAt,
+      });
+      setManagedBrokerAccess({ ...access, token: "b".repeat(64) });
+      fetchStub.mockRejectedValueOnce(new TypeError("fetch failed"));
+      const changed = await connectedInventoryStatus(cfg);
+      expect(changed.readiness.lastSuccessAt).toBeNull();
+    } finally {
+      fetchStub.mockRestore();
+      setManagedBrokerAccess(null);
+    }
+  });
+
   it("accepts only project API keys", async () => {
     await expect(prepareProjectSession("old_key")).rejects.toThrow(/start with ak_/i);
     await expect(prepareProjectSession("ak_wrong")).rejects.toThrow(/invalid project key/i);
@@ -505,6 +540,28 @@ describe.sequential("Composio Sessions", () => {
       });
     } finally {
       connectedAccountsUnavailable = false;
+    }
+  });
+
+  it("reports account inventory failures instead of turning them into an empty success", async () => {
+    const cfg: AppConfig = {
+      composio: { apiKey: "ak_test", userId: "botfleet_existing", sessionId: "trs_test" },
+    };
+    connectedAccountsStatus = 503;
+    try {
+      await expect(connectedInventoryStatus(cfg)).resolves.toMatchObject({
+        authoritative: false,
+        readiness: {
+          ready: false,
+          state: "degraded",
+          failure: {
+            kind: "upstream",
+            message: "The connected-apps service is temporarily unavailable.",
+          },
+        },
+      });
+    } finally {
+      connectedAccountsStatus = null;
     }
   });
 
