@@ -97,6 +97,31 @@ it("persists queued receipts while pruning more than 2,000 terminal records", ()
   expect(persisted.runs.some((run: { id: string }) => run.id === "history-0")).toBe(false);
 });
 
+it("bounds the prompt snapshot of settled runs older than the newest 100 when it saves", () => {
+  const h = harness();
+  h.setAdmitting(false);
+  const payload = "p".repeat(20_000);
+  const prompt = ["Event: deploy.finished", "[UNTRUSTED WEBHOOK EVENT DATA]", payload, "[/UNTRUSTED WEBHOOK EVENT DATA]"].join("\n");
+  const input = { runOn: "maus" as const, webhookId: "bound-hook", webhookName: "Bound", prompt, botId: "bot", receivedAt: 1 };
+  const queued = h.manager.enqueueWebhook({ ...input, deliveryId: "queued" });
+  const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+  disk.runs = [queued, ...Array.from({ length: 105 }, (_, i) => ({ ...queued, id: `history-${i}`, deliveryId: `history-${i}`, status: "completed", createdAt: i + 2, finishedAt: i + 3 }))];
+  writeFileSync(h.options.file!, JSON.stringify(disk));
+  const reloaded = new RoutineManager(h.options);
+  reloaded.enqueueWebhook({ ...input, deliveryId: "new-queued" });
+  const persisted = JSON.parse(readFileSync(h.options.file!, "utf8"));
+  const byId = new Map(persisted.runs.map((run: { id: string; prompt?: string }) => [run.id, run.prompt]));
+  expect(byId.get(queued.id)).toBe(prompt);
+  expect(byId.get("history-104")).toBe(prompt);
+  expect(byId.get("history-5")).toBe(prompt);
+  for (const stale of ["history-0", "history-4"]) {
+    const bounded = byId.get(stale) as string;
+    expect(bounded.length).toBeLessThan(700);
+    expect(bounded.startsWith("Event: deploy.finished\n[UNTRUSTED WEBHOOK EVENT DATA]\n" + "p".repeat(500))).toBe(true);
+    expect(bounded.endsWith("\n[/UNTRUSTED WEBHOOK EVENT DATA]")).toBe(true);
+  }
+});
+
 it("retains the exact result of an unsettled run-now confirmation until its card settles", () => {
   const h = harness();
   h.setAdmitting(false);

@@ -9,6 +9,7 @@ import { isCustomOnly, splitEngineRail } from "@/lib/engine-rail";
 import { ProviderMark } from "./ProviderIcons";
 import { EngineSetup, needsCli, needsSignIn } from "./EngineSetup";
 import { EngineGroupLabel } from "./EngineGroupLabel";
+import { formatDualQuotaBadge } from "@/lib/quota-display";
 import { cn } from "@/lib/cn";
 import { COMPACT_SQUARE } from "@/lib/compact-chip";
 
@@ -35,15 +36,25 @@ function ModelRow({
   defaultId,
   onPick,
   quota,
+  windowsLabel,
 }: {
   option: ModelOption;
   current: boolean;
   defaultId: string;
   onPick: () => void;
-  quota?: { capped: boolean; remainingPercent?: number | null };
+  quota?: {
+    capped: boolean;
+    remainingPercent?: number | null;
+    secondaryRemainingPercent?: number | null;
+    windowsLabel?: string;
+  };
+  windowsLabel?: string;
 }) {
-  const remaining =
-    quota?.remainingPercent == null ? null : `${Math.round(quota.remainingPercent)}%`;
+  const badge = formatDualQuotaBadge(
+    quota?.remainingPercent,
+    quota?.secondaryRemainingPercent,
+    { windowsLabel: quota?.windowsLabel ?? windowsLabel },
+  );
   return (
     <button
       type="button"
@@ -65,8 +76,8 @@ function ModelRow({
         {quota?.capped && (
           <span className="shrink-0 rounded bg-amber-500/15 px-1.5 py-px text-[10px] text-amber-700 dark:text-amber-300">Exhausted</span>
         )}
-        {!quota?.capped && remaining && (
-          <span className="shrink-0 rounded bg-inset px-1.5 py-px text-[10px] text-ink-secondary">{remaining} left</span>
+        {!quota?.capped && badge && (
+          <span className="shrink-0 rounded bg-inset px-1.5 py-px text-[10px] text-ink-secondary">{badge}</span>
         )}
       </span>
       {current && <Check size={14} className="shrink-0 text-accent" />}
@@ -223,6 +234,10 @@ export function ModelPicker({
   const canOpenCustom = Boolean(railInstance && !needsCli(railInstance));
   const canReturnToOfficial = official.length > 0 && !isCustomOnly(railInstance);
 
+  const windowsLabel =
+    railInstance?.snapshot.quota?.windowsLabel ??
+    (railInstance?.instanceId === "antigravity" ? "5hr/Week" : undefined);
+
   const renderRow = (option: ModelOption) => (
     <ModelRow
       key={option.id}
@@ -231,6 +246,7 @@ export function ModelPicker({
       defaultId={railInstance?.models.default ?? ""}
       onPick={() => railInstance && pick(railInstance, option.id)}
       quota={railInstance?.snapshot.quota?.models?.[option.id]}
+      windowsLabel={windowsLabel}
     />
   );
 
@@ -380,9 +396,16 @@ export function ModelPicker({
                   )}
                   {["minimax"].includes(railInstance.driverKind) && (
                     <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
-                      <strong>Limited tool support:</strong> This engine has two harness tools today —{" "}
-                      <code>list_bots</code> and <code>ask_bot</code> — and no file, shell, or browser tools.
-                      {"  "}For full tool support, use an ACP engine (Claude, Codex, DSH, Droid) instead.
+                      <strong>Limited tool support:</strong> This engine has up to seven harness tools in a turn it starts itself{" "}
+                      —{" "}
+                      <code>list_bots</code>, <code>ask_bot</code>, <code>list_routines</code>,{" "}
+                      <code>delegate_bot</code>, <code>request_credential</code>,{" "}
+                      <code>propose_routine</code>, and <code>propose_routine_action</code> — and
+                      none of them in a turn another bot invoked.
+                      {"  "}A Chief of Staff also gets <code>create_bot</code>, but only in a direct
+                      chat.
+                      {"  "}It also has no file, shell, or web tools.
+                      {"  "}For full tool support, use a CLI engine (Claude, Codex, Antigravity, Cursor) instead.
                     </div>
                   )}
                 </div>
@@ -445,7 +468,7 @@ export function ModelPicker({
                               onClick={() => setShowAll(true)}
                               className="mt-1 flex w-full items-center justify-between rounded-lg border-t border-hairline/40 px-2.5 py-2 text-[12.5px] font-medium text-ink-secondary hover:bg-control/60 hover:text-ink"
                             >
-                              Show all {official.length} models <ChevronDown size={13} />
+                              Show all {official.length} models{windowsLabel ? ` (${windowsLabel})` : ""} <ChevronDown size={13} />
                             </button>
                           )}
                           {!query && showAll && official.length > COMPACT_MODEL_COUNT && (

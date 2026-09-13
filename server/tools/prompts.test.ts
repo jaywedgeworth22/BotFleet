@@ -1,0 +1,125 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  availableAgentToolNames,
+  credentialPromptFor,
+  hasFileTools,
+  LEGACY_MCP_AGENT_TOOLS,
+  promptFragmentsFor,
+  routinePromptFor,
+} from "./prompts.ts";
+import type { HarnessTool } from "./registry.ts";
+
+const tool = (overrides: Partial<HarnessTool> & { name: string }): HarnessTool => ({
+  description: `${overrides.name} description`,
+  schema: { type: "object", properties: {} },
+  surfaces: { mcp: true, http: true },
+  gate: () => true,
+  sideEffect: "read",
+  settles: "immediate",
+  ...overrides,
+});
+
+describe("promptFragmentsFor", () => {
+  it("joins only the fragments the catalog records carry, in order", () => {
+    const tools = [
+      tool({ name: "a", promptFragment: "Use a." }),
+      tool({ name: "b", promptFragment: "Use b." }),
+    ];
+    expect(promptFragmentsFor(tools)).toBe(" Use a. Use b.");
+  });
+
+  it("contributes nothing for a tool with no promptFragment", () => {
+    const tools = [tool({ name: "silent" })];
+    expect(promptFragmentsFor(tools)).toBe("");
+  });
+
+  it("contributes nothing at all when the catalog passed in is empty", () => {
+    // A tool absent from `tools` — because it failed its gate, or belongs to
+    // a surface this bot does not use — cannot appear, by construction: the
+    // function only ever reads what it is handed.
+    expect(promptFragmentsFor([])).toBe("");
+  });
+
+  it("mixes fragment and no-fragment tools without gaps", () => {
+    const tools = [
+      tool({ name: "a", promptFragment: "Use a." }),
+      tool({ name: "silent" }),
+      tool({ name: "c", promptFragment: "Use c." }),
+    ];
+    expect(promptFragmentsFor(tools)).toBe(" Use a. Use c.");
+  });
+});
+
+describe("availableAgentToolNames", () => {
+  it("is empty when the turn has no agents integration", () => {
+    expect(
+      availableAgentToolNames({
+        hasAgentsIntegration: false,
+        mcpSurface: true,
+        registryToolNames: ["list_bots", "ask_bot"],
+      }),
+    ).toEqual([]);
+  });
+
+  it("is the registry set alone for an HTTP-only (MiniMax-shaped) turn", () => {
+    const names = availableAgentToolNames({
+      hasAgentsIntegration: true,
+      mcpSurface: false,
+      registryToolNames: ["list_bots", "ask_bot", "list_routines"],
+    });
+    expect(names).toEqual(["list_bots", "ask_bot", "list_routines"]);
+    for (const legacy of LEGACY_MCP_AGENT_TOOLS) expect(names).not.toContain(legacy);
+  });
+
+  it("adds the legacy MCP splice for an MCP-surfaced (Claude-shaped) turn", () => {
+    const names = availableAgentToolNames({
+      hasAgentsIntegration: true,
+      mcpSurface: true,
+      registryToolNames: ["list_bots", "ask_bot", "list_routines"],
+    });
+    for (const legacy of LEGACY_MCP_AGENT_TOOLS) expect(names).toContain(legacy);
+  });
+});
+
+describe("credentialPromptFor", () => {
+  it("is silent when request_credential is not in this turn's tool set", () => {
+    expect(credentialPromptFor(["list_bots", "ask_bot", "list_routines"])).toBe("");
+  });
+
+  it("names request_credential only when it is actually available", () => {
+    expect(credentialPromptFor(["request_credential"])).toContain("request_credential");
+  });
+});
+
+describe("routinePromptFor", () => {
+  it("is silent when neither routines tool is available", () => {
+    expect(routinePromptFor(["list_bots", "ask_bot"])).toBe("");
+  });
+
+  it("offers only list_routines, truthfully, when propose_routine is absent", () => {
+    const prompt = routinePromptFor(["list_routines"]);
+    expect(prompt).toContain("list_routines");
+    expect(prompt).not.toContain("propose_routine");
+  });
+
+  it("offers the full list-and-propose sentence when propose_routine is available", () => {
+    const prompt = routinePromptFor(["list_routines", "propose_routine", "propose_routine_action"]);
+    expect(prompt).toContain("list_routines");
+    expect(prompt).toContain("propose_routine_action");
+  });
+});
+
+describe("hasFileTools", () => {
+  it("is kept for a CLI driver (has a workspace, does not run the harness tool loop)", () => {
+    expect(hasFileTools(true, false)).toBe(true);
+  });
+
+  it("is suppressed for a toolLoop (no-file-tools) driver even though it has a workspace for cwd bookkeeping", () => {
+    expect(hasFileTools(true, true)).toBe(false);
+  });
+
+  it("is suppressed when the driver has no workspace at all", () => {
+    expect(hasFileTools(false, false)).toBe(false);
+  });
+});
