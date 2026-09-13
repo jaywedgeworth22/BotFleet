@@ -247,6 +247,18 @@ describe("renderer diagnostics refresh", () => {
     expect(() => buildFallbackIssueUrl("Issue \uD800", loneSurrogate)).not.toThrow();
     const loneUrl = buildFallbackIssueUrl("Issue \uD800", loneSurrogate);
     expect(() => decodeURIComponent(loneUrl)).not.toThrow();
+
+    // Verify without native toWellFormed (Safari < 16.4 fallback path)
+    const orig = (String.prototype as unknown as Record<string, unknown>).toWellFormed;
+    try {
+      delete (String.prototype as unknown as Record<string, unknown>).toWellFormed;
+      const fallbackUrl = buildFallbackIssueUrl("Fallback \uD800", "Lone \uDC00 and pair \uD83D\uDE00");
+      expect(() => decodeURIComponent(fallbackUrl)).not.toThrow();
+      expect(fallbackUrl).toContain(encodeURIComponent("\uFFFD"));
+      expect(fallbackUrl).toContain(encodeURIComponent("😀"));
+    } finally {
+      (String.prototype as unknown as Record<string, unknown>).toWellFormed = orig;
+    }
   });
 
   it("isSentryFeedbackAvailable reflects client initialization state", () => {

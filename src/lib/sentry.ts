@@ -203,7 +203,26 @@ function toWellFormedString(val: string): string {
   if (typeof (val as { toWellFormed?: () => string }).toWellFormed === "function") {
     return (val as unknown as { toWellFormed: () => string }).toWellFormed();
   }
-  return val.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+  let result = "";
+  for (let i = 0; i < val.length; i++) {
+    const code = val.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (i + 1 < val.length) {
+        const next = val.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          result += val[i] + val[i + 1];
+          i++;
+          continue;
+        }
+      }
+      result += "\uFFFD";
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      result += "\uFFFD";
+    } else {
+      result += val[i];
+    }
+  }
+  return result;
 }
 
 export function buildFallbackIssueUrl(
