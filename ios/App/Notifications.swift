@@ -13,10 +13,17 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
     /// Thread currently on screen.  Banners for this id stay off; the
     /// bubble is already in the transcript.
     var viewingThreadId: String?
+    /// Set by `Session`; answers Approve/Deny straight from a notification
+    /// action, without opening the app.
+    var approvalActionHandler: ((_ target: NotificationTarget, _ approve: Bool) async -> Void)?
 
     private override init() {
         super.init()
         center.delegate = self
+        // Registered on every launch, before `RootView` appears and before
+        // any notification (local or remote) can be delivered — see
+        // `NotificationCategories` for why the set lives in CompanionCore.
+        center.setNotificationCategories(NotificationCategories.all())
     }
 
     func authorizationStatus() async -> UNAuthorizationStatus {
@@ -36,7 +43,9 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         content.title = notification.title
         content.body = notification.body
         content.sound = .default
-        content.categoryIdentifier = notification.isBlocking ? "BOTFLEET_APPROVAL" : "BOTFLEET_UPDATE"
+        content.categoryIdentifier = notification.isBlocking
+            ? NotificationCategoryIdentifier.approval
+            : NotificationCategoryIdentifier.update
         content.threadIdentifier = notification.threadId
         content.userInfo = [
             "threadId": notification.threadId,
@@ -73,12 +82,39 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        if let target = NotificationTarget.navigationTarget(
-            fromRemoteUserInfo: response.notification.request.content.userInfo,
-            source: .userResponse
-        ) {
+        let userInfo = response.notification.request.content.userInfo
+        switch NotificationTarget.actionRoute(actionIdentifier: response.actionIdentifier, userInfo: userInfo) {
+        case let .approve(target):
+            sendApprovalAction(target, approve: true, completionHandler: completionHandler)
+        case let .deny(target):
+            sendApprovalAction(target, approve: false, completionHandler: completionHandler)
+        case let .open(target):
+            // Covers both the explicit Open action and a plain tap
+            // (`UNNotificationDefaultActionIdentifier`) — the app's existing
+            // tap behaviour, unchanged.
             responseHandler?(target)
+            completionHandler()
+        case .dismiss, .ignore:
+            completionHandler()
         }
-        completionHandler()
+    }
+
+    /// Approve/deny send a network request, so — unlike a tap, which only
+    /// touches in-memory navigation state — completion must wait for it:
+    /// calling `completionHandler` early risks iOS suspending the process
+    /// before the answer goes out.
+    private func sendApprovalAction(
+        _ target: NotificationTarget,
+        approve: Bool,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard let approvalActionHandler else {
+            completionHandler()
+            return
+        }
+        Task {
+            await approvalActionHandler(target, approve)
+            completionHandler()
+        }
     }
 }

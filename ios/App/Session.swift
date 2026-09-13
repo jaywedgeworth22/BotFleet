@@ -118,6 +118,9 @@ final class Session: ObservableObject {
         NotificationCoordinator.shared.responseHandler = { [weak self] target in
             Task { @MainActor in await self?.openNotification(target) }
         }
+        NotificationCoordinator.shared.approvalActionHandler = { [weak self] target, approve in
+            await self?.answerPendingRequest(threadId: target.threadId, approve: approve)
+        }
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-store-preview"),
            let url = Bundle.main.url(forResource: "StorePreview", withExtension: "json"),
@@ -422,9 +425,12 @@ final class Session: ObservableObject {
 
     /// Leaving the screen: keep the stream alive for the grace period iOS
     /// allows (~30 s) rather than cutting it at once, so an approval that
-    /// lands right after you swipe home still reaches the Live Activity and
-    /// the island. After that, iOS suspends us anyway; disconnect cleanly so
-    /// the cursor is written down at a known point.
+    /// lands right after you swipe home still reaches the notification
+    /// banner and updates the badge.  The Live Activity lifecycle ends every
+    /// activity the moment the app backgrounds, so this linger buys it
+    /// nothing there — only the banner and badge benefit.  After that, iOS
+    /// suspends us anyway; disconnect cleanly so the cursor is written down
+    /// at a known point.
     func linger() {
         guard streamTask != nil, lingerTask == .invalid else { disconnect(); return }
         // A previous request can leave a sleeper behind when iOS refuses the
@@ -815,6 +821,34 @@ final class Session: ObservableObject {
                 try await $0.respond(threadId: threadId, requestId: requestId, behavior: "answer", message: choice)
             }
         }
+    }
+
+    /// Approve or deny from a notification action — Approve/Deny on a lock
+    /// screen banner, or the equivalent remote push. Unlike the Live
+    /// Activity's buttons, the notification payload carries only `threadId`
+    /// and `botId` (see `NotificationFrame`, which has no `requestId`), so
+    /// this resolves today's pending card for the thread first, then defers
+    /// to the same `answer(threadId:requestId:choice:isPermission:)` above —
+    /// the one `AnswerApprovalIntent` calls.
+    func answerPendingRequest(threadId: String, approve: Bool) async {
+        guard let client else { return }
+        func pendingCard() -> OptionCard? {
+            state.pendingApprovals.first { $0.threadId == threadId }?.message.card
+        }
+        // A cold-launched process has not hydrated yet; the notification
+        // action may be this session's first sign the request even exists.
+        var card = pendingCard()
+        if card?.requestId == nil {
+            _ = try? await hydrateSnapshot(using: client)
+            card = pendingCard()
+        }
+        guard let requestId = card?.requestId else { return }
+        await answer(
+            threadId: threadId,
+            requestId: requestId,
+            choice: approve ? "Approve" : "Deny",
+            isPermission: card?.isPermission ?? false
+        )
     }
 
     /// Make a new bot. The harness chooses its name, colour and greeting, so
