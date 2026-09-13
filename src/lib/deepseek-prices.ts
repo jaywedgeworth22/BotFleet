@@ -1,11 +1,15 @@
-/** Published DeepSeek API rates, USD per million tokens.
- *
- * Must stay in lockstep with `computeDeepSeekCost` in server/drivers/deepseek.ts.
- * The Vite client cannot import that driver (Node-only), so this is the
- * display copy of the same numbers. */
+/** Reference API rates, USD per million tokens, verified 2026-09-13.
+ * https://api-docs.deepseek.com/quick_start/pricing/
+ * These display values do not establish historical or subscription charges. */
 export const DEEPSEEK_PRICE_PER_MILLION = {
-  flash: { input: 0.7, cache: 0.175, output: 1.4 },
-  pro: { input: 1.4, cache: 0.14, output: 2.8 },
+  flash: {
+    offPeak: { input: 0.15, cache: 0.003, output: 0.6 },
+    peak: { input: 0.3, cache: 0.006, output: 1.2 },
+  },
+  pro: {
+    offPeak: { input: 0.66, cache: 0.022, output: 1.98 },
+    peak: { input: 1.32, cache: 0.044, output: 3.96 },
+  },
 } as const;
 
 export function formatPerMillionUsd(usd: number): string {
@@ -26,22 +30,23 @@ export type DeepSeekPriceRow = {
 
 export function deepSeekPriceRows(): DeepSeekPriceRow[] {
   const { flash, pro } = DEEPSEEK_PRICE_PER_MILLION;
+  const range = (low: number, high: number) => `${formatPerMillionUsd(low)}–${formatPerMillionUsd(high)}`;
   return [
     {
-      model: "DeepSeek V4 Flash",
+      model: "DeepSeek V4.1 Flash",
       provider: "DeepSeek",
-      input: formatPerMillionUsd(flash.input),
-      cache: formatPerMillionUsd(flash.cache),
-      output: formatPerMillionUsd(flash.output),
-      badge: "API",
+      input: range(flash.offPeak.input, flash.peak.input),
+      cache: range(flash.offPeak.cache, flash.peak.cache),
+      output: range(flash.offPeak.output, flash.peak.output),
+      badge: "Off-Peak–Peak",
     },
     {
       model: "DeepSeek V4 Pro",
       provider: "DeepSeek",
-      input: formatPerMillionUsd(pro.input),
-      cache: formatPerMillionUsd(pro.cache),
-      output: formatPerMillionUsd(pro.output),
-      badge: "Default MoE",
+      input: range(pro.offPeak.input, pro.peak.input),
+      cache: range(pro.offPeak.cache, pro.peak.cache),
+      output: range(pro.offPeak.output, pro.peak.output),
+      badge: "Off-Peak–Peak",
     },
   ];
 }

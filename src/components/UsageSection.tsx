@@ -590,7 +590,7 @@ export function UsageSection() {
             </div>
           ))}
           <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-            Prices for API-billed engines (such as DeepSeek and MiniMax) are calculated directly from input and output token counts each turn.{'\u00A0'} MiniMax M3 turns whose prompt passes 512K input tokens bill at roughly double the listed rate, per MiniMax's own published tier.
+            API rates are reference estimates; actual charges depend on the provider, billing window, cache usage, and context tier.{'\u00A0'} Subscription limits are separate.{'\u00A0'} DeepSeek ranges show off-peak to peak prices: peak hours are Monday–Friday, 01:00–04:00 and 06:00–10:00 UTC; all other times are off-peak.{'\u00A0'} <a className="underline underline-offset-2" href="https://api-docs.deepseek.com/quick_start/pricing/" target="_blank" rel="noreferrer">DeepSeek rates verified September 13, 2026</a>.{'\u00A0'} MiniMax M3 prompts over 512K input tokens use twice its listed input, cache-read, and output rates.
           </div>
         </div>
       </Card>
