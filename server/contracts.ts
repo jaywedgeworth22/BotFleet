@@ -462,13 +462,16 @@ export interface ProviderSnapshot {
     capped: boolean;
     resetsAt?: number | null;
     error?: string;
-    /** Per-model remaining from antigravity-usage.  Instance `capped` is a
+    windowsLabel?: string;
+    /** Per-model remaining from antigravity-usage or quota windows.  Instance `capped` is a
      *  wildcard cap, not "any one model is exhausted". */
     models?: Record<string, {
       capped: boolean;
       remainingPercent?: number | null;
+      secondaryRemainingPercent?: number | null;
       resetsAt?: number | null;
       error?: string;
+      windowsLabel?: string;
     }>;
   };
 }
