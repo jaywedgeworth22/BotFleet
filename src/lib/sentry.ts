@@ -171,24 +171,56 @@ interface SentryFeedbackDialog {
 
 let activeFeedbackDialog: SentryFeedbackDialog | null = null;
 
+export function buildFallbackIssueUrl(
+  rawTitle: string,
+  rawMessage?: string,
+  maxTotalLength = 2000,
+): string {
+  const points = Array.from(rawTitle || "Bug Report");
+  const safeTitle = (points.length > 80 ? points.slice(0, 80).join("") + "…" : points.join(""));
+  const encodedTitle = encodeURIComponent(safeTitle);
+  const base = `https://github.com/jaywedgeworth22/BotFleet/issues/new?title=${encodedTitle}&body=`;
+  const budget = maxTotalLength - base.length;
+  if (budget <= 0) return base;
+
+  if (!rawMessage) {
+    const defaultBody = "<!-- Describe the problem and reproduction steps here -->\n\n*(Submitted via BotFleet)*";
+    return base + encodeURIComponent(defaultBody);
+  }
+
+  const header = "**Reported Problem:**\n";
+  const footer = "\n\n*(Submitted via BotFleet)*";
+  const msgPoints = Array.from(rawMessage);
+  let low = 0;
+  let high = Math.min(msgPoints.length, budget);
+  let best = "";
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidateSlice = msgPoints.slice(0, mid).join("") + (mid < msgPoints.length ? "…" : "");
+    const candidateText = `${header}${candidateSlice}${footer}`;
+    const candidateEncoded = encodeURIComponent(candidateText);
+    if (candidateEncoded.length <= budget) {
+      best = candidateEncoded;
+      low = mid + 1;
+    } else {
+      high = mid - 1;
+    }
+  }
+
+  return base + best;
+}
+
 export function isSentryFeedbackAvailable(): boolean {
-  if (!globalThis.window) return false;
+  if (!globalThis.window || !initialized) return false;
   return Boolean(Sentry.getFeedback());
 }
 
 export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise<void> {
   if (!globalThis.window) return;
   try {
-    const feedback = Sentry.getFeedback();
-    if (!feedback) {
-      const truncatedMsg = options?.defaultMessage ? options.defaultMessage.slice(0, 1500) : "";
-      const title = encodeURIComponent((options?.formTitle ?? "Bug Report").slice(0, 100));
-      const body = encodeURIComponent(
-        truncatedMsg
-          ? `**Reported Problem:**\n${truncatedMsg}\n\n*(Submitted via BotFleet)*`
-          : "<!-- Describe the problem and reproduction steps here -->\n\n*(Submitted via BotFleet)*",
-      );
-      const url = `https://github.com/jaywedgeworth22/BotFleet/issues/new?title=${title}&body=${body}`;
+    if (!isSentryFeedbackAvailable()) {
+      const url = buildFallbackIssueUrl(options?.formTitle ?? "Bug Report", options?.defaultMessage);
       if (typeof window !== "undefined") {
         if (window.ogb?.openExternal) {
           window.ogb.openExternal(url);
@@ -198,6 +230,9 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
       }
       return;
     }
+
+    const feedback = Sentry.getFeedback();
+    if (!feedback) return;
 
     if (activeFeedbackDialog) {
       try {

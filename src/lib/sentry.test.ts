@@ -4,8 +4,10 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  buildFallbackIssueUrl,
   initSentry,
   initSentryFromRuntime,
+  isSentryFeedbackAvailable,
   refreshSentryFromRuntime,
   resetSentryForTests,
   setObservabilityReaderForTests,
@@ -227,5 +229,20 @@ describe("renderer diagnostics refresh", () => {
     await refreshSentryFromRuntime();
     expect(sentry.record.inits).toHaveLength(0);
     expect(sentry.record.closes).toBe(0);
+  });
+
+  it("buildFallbackIssueUrl bounds total encoded length and safely handles surrogate pairs", () => {
+    const hugeMessageWithEmoji = "Error: 🔥 something crashed 🚨 " + "x".repeat(10000) + " 💥";
+    const url = buildFallbackIssueUrl("Error in Bot", hugeMessageWithEmoji, 2000);
+    expect(url.length).toBeLessThanOrEqual(2000);
+    expect(url).toContain("https://github.com/jaywedgeworth22/BotFleet/issues/new?title=");
+    expect(url).toContain("Error%20in%20Bot");
+    // Verify decodeURIComponent does not throw (meaning surrogate pairs were not split)
+    expect(() => decodeURIComponent(url)).not.toThrow();
+  });
+
+  it("isSentryFeedbackAvailable reflects client initialization state", () => {
+    // When reset/uninitialized
+    expect(isSentryFeedbackAvailable()).toBe(false);
   });
 });
