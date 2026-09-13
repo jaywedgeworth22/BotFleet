@@ -11,17 +11,19 @@ import type { ModelCatalog } from "../contracts.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
 import { mergeLocalInject } from "./local-inject.ts";
 
+/**
+ * Compatibility rows used only when the installed Codex app-server cannot
+ * provide its live catalog.  This list is a source fallback, not proof that
+ * every row is available for the current account or transport.
+ */
 export const STATIC_CODEX_MODELS: ModelCatalog = {
   default: "gpt-5.6-sol",
   options: [
+    { id: "gpt-6-astra", label: "GPT-6 Astra" },
     { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
     { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
     { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-    { id: "o3", label: "o3" },
-    { id: "o3-mini", label: "o3-mini" },
     { id: "gpt-5.5", label: "GPT-5.5" },
-    { id: "gpt-5.4", label: "GPT-5.4" },
-    { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
     { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
   ],
 };
