@@ -8136,7 +8136,7 @@ const server = createServer(async (req, res) => {
       // peer-approval intercept: harness-native cards carry a requestId
       // that lives in peer-approval's pending map. Resolve them here so
       // the provider adapter never sees a request it didn't raise.
-      if (resolvePeerComms(approvalBus, String(body.requestId), behavior)) {
+      if (resolvePeerComms(approvalBus, String(body.requestId), behavior, bot.threadId)) {
         return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
       }
       const outcome = await answerRequest(bot.threadId, bot.modelSelection.instanceId, String(body.requestId), behavior, body.message, { id: bot.id, name: bot.name });
@@ -8173,7 +8173,7 @@ const server = createServer(async (req, res) => {
       // peer-approval intercept (see /api/bots/:id/respond above). A peer card
       // belongs to the bus rather than to a speaker, so resolve it before we go
       // looking for one — a room between turns has no speaker to find.
-      if (resolvePeerComms(approvalBus, requestId, behavior)) {
+      if (resolvePeerComms(approvalBus, requestId, behavior, threadId)) {
         return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
       }
       const group = store.groupByThread(threadId);
