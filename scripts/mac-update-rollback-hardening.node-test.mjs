@@ -18,6 +18,8 @@ import {
   unclaimedGenerations,
 } from "./update-botfleet-mac.mjs";
 
+const macOnly = { skip: process.platform === "darwin" ? false : "needs macOS: spawns a Mach-O binary and reads open file references" };
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "botfleet-rollback-hardening-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -122,7 +124,7 @@ test("a rollback bundle this run did not move is never promoted over the install
 
 // P1 — argv does not follow a rename; the kernel's open reference does.
 
-test("a process keeps its bundle open across a rename, and only the open reference finds it", async (t) => {
+test("a process keeps its bundle open across a rename, and only the open reference finds it", macOnly, async (t) => {
   const root = await fixture(t);
   const executable = join(root, "App.app", "Contents", "MacOS", "BotFleet");
   await mkdir(dirname(executable), { recursive: true });
@@ -164,7 +166,7 @@ test("a process keeps its bundle open across a rename, and only the open referen
 
 // P1 — processes that live inside the bundle but are not its main binary.
 
-test("the bundle scan finds an embedded driver, not only the main executable", async (t) => {
+test("the bundle scan finds an embedded driver, not only the main executable", macOnly, async (t) => {
   const root = await fixture(t);
   const bundle = join(root, "BotFleet.app");
   const driver = join(bundle, "Contents", "Resources", "cua-driver");
