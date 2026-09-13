@@ -797,6 +797,29 @@ public struct RoutineSchedule: Codable, Hashable, Sendable {
     }
 }
 
+public func routineEditorTimeDate(_ value: String?, in timeZone: TimeZone) -> Date {
+    let parts = (value ?? "09:00").split(separator: ":").compactMap { Int($0) }
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    // A time-only picker needs an arbitrary backing day.  Using today can
+    // normalize a stored 02:30 to 03:00 on a spring-forward day and an
+    // untouched save then changes every future occurrence.
+    let components = DateComponents(
+        timeZone: timeZone,
+        year: 2001,
+        month: 1,
+        day: 15,
+        hour: parts.first ?? 9,
+        minute: parts.count > 1 ? parts[1] : 0,
+        second: 0
+    )
+    return calendar.date(from: components) ?? Date(timeIntervalSince1970: 978_307_200)
+}
+
+public func routineTimeZoneForUpdate(effectiveTimeZone: String?, source: String?) -> String? {
+    source == "host" ? nil : effectiveTimeZone
+}
+
 public struct Routine: Codable, Hashable, Identifiable, Sendable {
     public var id: String
     public var name: String

@@ -156,6 +156,20 @@ final class DecodingTests: XCTestCase {
         XCTAssertEqual(schedule.timeZone, "Asia/Tokyo")
     }
 
+    func testRoutineEditorPreservesGapWallTimeAndHostZoneOmission() throws {
+        let zone = try XCTUnwrap(TimeZone(identifier: "America/Chicago"))
+        let date = routineEditorTimeDate("02:30", in: zone)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = zone
+        XCTAssertEqual(calendar.component(.hour, from: date), 2)
+        XCTAssertEqual(calendar.component(.minute, from: date), 30)
+        XCTAssertNil(routineTimeZoneForUpdate(effectiveTimeZone: "America/Chicago", source: "host"))
+        XCTAssertEqual(
+            routineTimeZoneForUpdate(effectiveTimeZone: "America/Chicago", source: "stored"),
+            "America/Chicago"
+        )
+    }
+
     func testNotificationTargetRequiresBothExactIds() {
         XCTAssertEqual(
             NotificationTarget(payload: ["botId": "bot-1", "threadId": "detached-task-2"]),

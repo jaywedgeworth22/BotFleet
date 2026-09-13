@@ -96,6 +96,9 @@ describe("both lanes derive from the same records", () => {
       const timeZone = (schema.properties as any).schedule.properties.timeZone;
       expect(timeZone.description).toContain("IANA timezone");
       expect(timeZone.description).toContain(expected);
+      expect(timeZone.description).toContain("interpret both time and weekdays");
+      expect((schema.properties as any).schedule.properties.time.description).toContain("schedule.timeZone");
+      expect((schema.properties as any).schedule.properties.weekdays.description).toContain("schedule.timeZone");
     }
   });
 

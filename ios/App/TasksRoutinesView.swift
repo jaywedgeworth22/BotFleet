@@ -219,14 +219,15 @@ private struct RoutineEditorView: View {
         _availabilityLoaded = State(initialValue: false)
         _kind = State(initialValue: routine?.schedule.type ?? .daily)
         _onceAt = State(initialValue: routine?.schedule.at.map { Date(timeIntervalSince1970: $0 / 1_000) } ?? Date().addingTimeInterval(3_600))
-        let explicitTimeZone = routine?.scheduleTimeZoneSource == "stored" ? routine?.schedule.timeZone : nil
-        var scheduleCalendar = Calendar.current
-        scheduleCalendar.timeZone = explicitTimeZone.flatMap(TimeZone.init(identifier:)) ?? .current
-        let parts = (routine?.schedule.time ?? "09:00").split(separator: ":").compactMap { Int($0) }
-        let time = scheduleCalendar.date(bySettingHour: parts.first ?? 9, minute: parts.count > 1 ? parts[1] : 0, second: 0, of: Date()) ?? Date()
+        // The server sends its effective zone even for legacy host-local
+        // schedules.  Keep it for truthful display on a phone in another
+        // zone, but omit it again when serializing that legacy schedule.
+        let effectiveTimeZone = routine?.schedule.timeZone
+        let editorTimeZone = effectiveTimeZone.flatMap(TimeZone.init(identifier:)) ?? .current
+        let time = routineEditorTimeDate(routine?.schedule.time, in: editorTimeZone)
         _dailyTime = State(initialValue: time)
         _weekdays = State(initialValue: Set(routine?.schedule.weekdays ?? [1, 2, 3, 4, 5]))
-        _scheduleTimeZone = State(initialValue: explicitTimeZone)
+        _scheduleTimeZone = State(initialValue: effectiveTimeZone)
         _duration = State(initialValue: routine?.durationMinutes ?? 30)
     }
 
@@ -351,7 +352,10 @@ private struct RoutineEditorView: View {
             : .daily(
                 time: formatter.string(from: dailyTime),
                 weekdays: weekdays.sorted(),
-                timeZone: scheduleTimeZone
+                timeZone: routineTimeZoneForUpdate(
+                    effectiveTimeZone: scheduleTimeZone,
+                    source: routine?.scheduleTimeZoneSource
+                )
             )
         let input = RoutineInput(
             name: String(name.trimmingCharacters(in: .whitespacesAndNewlines).prefix(80)),
