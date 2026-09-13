@@ -360,6 +360,14 @@ public enum APIError: Error, LocalizedError, Sendable {
         if case let .status(code, _) = self { return code == 409 }
         return false
     }
+
+    public var isCancellation: Bool {
+        if case let .transport(detail) = self {
+            let lower = detail.lowercased()
+            return lower == "cancelled" || lower == "canceled"
+        }
+        return false
+    }
 }
 
 public struct CompanionClient: Sendable {
@@ -457,6 +465,9 @@ public struct CompanionClient: Sendable {
         do {
             return try await session.data(for: request)
         } catch {
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled || error is CancellationError {
+                throw CancellationError()
+            }
             throw APIError.transport(error.localizedDescription)
         }
     }
