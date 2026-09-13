@@ -11,7 +11,7 @@ import {
   rollbackGenerations,
   rollbackGenerationsToPrune,
   sameVolume,
-  staleCandidateBundles,
+  staleCandidateNames,
   survivingRollbackProcessError,
 } from "./update-botfleet-mac.mjs";
 
@@ -29,12 +29,13 @@ test("a same-volume update cache keeps the rollback bundle out of the applicatio
     livePath: join(root, "Applications", "BotFleet.app"),
     stageDirectory: stage,
     stageName: "BotFleet.app",
+    generation: "1-aaaaaaaaaaaa",
     adjacentPath: join(root, "Applications", ".BotFleet.rollback-1-aaaaaaaaaaaa.app"),
   });
   assert.equal(placement.placement, "stage");
   assert.equal(placement.crossVolume, false);
-  assert.equal(placement.path, join(stage, "rollback", "BotFleet.app"));
-  assert.equal(placement.directory, join(stage, "rollback"));
+  assert.equal(placement.path, join(stage, "rollback", "1-aaaaaaaaaaaa", "BotFleet.app"));
+  assert.equal(placement.directory, join(stage, "rollback", "1-aaaaaaaaaaaa"));
   assert.equal(placement.crossVolumeReason, undefined);
 });
 
@@ -46,6 +47,7 @@ test("a cross-volume cache falls back to the adjacent hidden bundle and records 
       livePath: join(root, "Applications", "BotFleet.app"),
       stageDirectory: join(root, "updates", "audit-ae8abe7d"),
       stageName: "BotFleet.app",
+      generation: "1-aaaaaaaaaaaa",
       adjacentPath: adjacent,
     },
     async () => false,
@@ -99,28 +101,6 @@ test("pruning keeps one verified generation and never touches an unverified one"
   );
 });
 
-test("a receipt naming no app path is claimed only by the installation that could have written it", () => {
-  const legacy = { rollbackBundle: "/Applications/.BotFleet.rollback-1757600000000-2246f19e9de8.app" };
-  assert.equal(generationBelongsToApp(legacy, "/Applications/BotFleet.app"), true);
-  // A second installation sharing /Applications under another name must not
-  // claim the copies the primary install left there.
-  assert.equal(generationBelongsToApp(legacy, "/Applications/BotFleet Beta.app"), false);
-  // Nor may an install elsewhere claim them by basename alone.
-  assert.equal(generationBelongsToApp(legacy, "/Users/test/Applications/BotFleet.app"), false);
-  assert.equal(generationBelongsToApp({ rollbackBundle: "/Applications/something-else.app" }, "/Applications/BotFleet.app"), false);
-  // A receipt that names its app path is matched on that alone.
-  assert.equal(generationBelongsToApp({ appPath: "/Applications/BotFleet Beta.app", rollbackBundle: "/x" }, "/Applications/BotFleet Beta.app"), true);
-  assert.equal(generationBelongsToApp({ appPath: "/Applications/BotFleet Beta.app", rollbackBundle: "/x" }, "/Applications/BotFleet.app"), false);
-});
-
-test("a co-existing installation's legacy rollback copies are never pruned", () => {
-  const generations = [
-    { receiptPath: "/Applications/.BotFleet.rollback-old.app.json", receipt: { rollbackBundle: "/Applications/.BotFleet.rollback-old.app", installedAt: "2026-09-11T21:01:00.000Z" } },
-    { receiptPath: "/updates/new/rollback/BotFleet Beta.app.json", receipt: { appPath: "/Applications/BotFleet Beta.app", rollbackBundle: "/updates/new/rollback/BotFleet Beta.app", installedAt: "2026-09-12T11:31:00.000Z" } },
-  ];
-  assert.deepEqual(rollbackGenerationsToPrune(generations, { appPath: "/Applications/BotFleet Beta.app" }), []);
-});
-
 test("prune refuses any receipt path outside the directories the updater owns", () => {
   const roots = ["/Applications", "/Users/test/apps", "/Users/test/Library/Caches/BotFleet/updates"];
   assert.equal(prunablePath("/Applications/.BotFleet.rollback-old.app", roots), true);
@@ -140,11 +120,13 @@ test("abandoned update candidates are recognised only once their updater is gone
     ".BotFleet.update-7777-1757000000002.app",
   ];
   assert.deepEqual(
-    staleCandidateBundles(names, {
+    staleCandidateNames(names, {
+      prefix: ".BotFleet.update-",
+      suffix: ".app",
       keepNames: [".BotFleet.update-7777-1757000000002.app"],
       isAlive: (pid) => pid === 4242,
     }),
-    [".BotFleet.update-9999-1757000000001.app"],
+    { stale: [".BotFleet.update-9999-1757000000001.app"], unrecognised: [] },
   );
 });
 
@@ -201,11 +183,13 @@ test("generations come from receipts in both placements and a bundle without one
   ].sort());
   assert.deepEqual(orphans, [orphan]);
 
+  // The legacy receipt names no application, so no install claims it and the
+  // prune leaves it for a person.
   const pruned = rollbackGenerationsToPrune(generations, {
     appPath,
     keepReceiptPath: join(stagedRollback, "BotFleet.app.json"),
   });
-  assert.deepEqual(pruned.map((item) => item.receiptPath), [`${legacyBundle}.json`]);
+  assert.deepEqual(pruned, []);
 });
 
 test("the updater writes the rollback receipt beside whichever bundle it produced", async () => {
@@ -213,10 +197,11 @@ test("the updater writes the rollback receipt beside whichever bundle it produce
     readFile(new URL("./update-botfleet-mac.mjs", import.meta.url), "utf8"));
   // The receipt path is derived from the rollback path, so both placements
   // keep a receipt next to the bundle it describes.
-  assert.match(source, /atomicJson\(`\$\{previous\.rollbackPath\}\.json`, rollbackReceipt\(prepared, previous, config, \{ status: "installing" \}\)\)/);
+  assert.match(source, /const receiptPath = `\$\{previous\.rollbackPath\}\.json`/);
+  assert.match(source, /status: "installing"/);
   assert.match(source, /status: "verified"/);
   // The prior bundle must never be parked in the installed application's folder
   // by default again.
   assert.match(source, /stageName: basename\(config\.appPath\)/);
-  assert.match(source, /BotFleet application process .* still runs from/);
+  assert.match(source, /BotFleet process .* still runs from inside/);
 });
