@@ -126,6 +126,9 @@ export interface AcpSupport {
     /** Translate the picker model into the option's opaque ACP wire value.
      * The UI-facing session event keeps the picker id. */
     valueForModel?(model: string): string;
+    /** Translate a confirmed opaque ACP value back to the picker model id
+     * when the caller accepts the session default. */
+    modelForValue?(value: unknown): string | null;
   };
   /** Mutate the child env in place: strip a key, inject a policy. Receives the
    *  instance config so a support can vary with fullAuto. */
@@ -879,7 +882,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
             try {
               if (support.selectModel) {
-                const { configId, valueForModel } = support.selectModel;
+                const { configId, valueForModel, modelForValue } = support.selectModel;
                 const currentOf = (r: any) =>
                   (Array.isArray(r?.configOptions) ? r.configOptions : []).find((o: any) => o?.id === configId)
                     ?.currentValue ?? null;
@@ -906,7 +909,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 // Opaque option values are protocol details.  Persist the
                 // picker id in the task so resume and usage attribution keep
                 // the same model identity the user selected.
-                selectedModel = cliTurn.model ?? selectedValue;
+                selectedModel = cliTurn.model ?? modelForValue?.(selectedValue) ?? null;
               }
 
               if (support.configureSession) {

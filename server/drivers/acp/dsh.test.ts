@@ -11,6 +11,7 @@ import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import {
   classifyDshError,
   dshCredentialCandidates,
+  dshModelIdFromOptionValue,
   dshModelOptionValue,
   dshSpawnArgs,
   dshVersionCompatibilityReason,
@@ -49,6 +50,9 @@ describe("DshAgentDriver config", () => {
 
   it("encodes the ACP model option with its provider while preserving the picker id", () => {
     expect(dshModelOptionValue("deepseek-v4-pro")).toBe('["deepseek-official","deepseek-v4-pro"]');
+    expect(dshModelIdFromOptionValue('["deepseek-official","deepseek-v4-pro"]')).toBe("deepseek-v4-pro");
+    expect(dshModelIdFromOptionValue('["other-provider","deepseek-v4-pro"]')).toBeNull();
+    expect(dshModelIdFromOptionValue("deepseek-v4-pro")).toBeNull();
   });
 
   it("rejects stock DSH versions older than the native ACP profile", () => {
@@ -151,6 +155,22 @@ describe("native DSH ACP turns", () => {
     expect(methods).toContain("session/resume");
     expect(methods).not.toContain("session/load");
     expect(methods).not.toContain("session/new");
+  });
+
+  it("reports the picker model id when a turn accepts the native session default", async () => {
+    const flash = dshModelOptionValue("deepseek-v4-flash");
+    process.env.FAKE_ACP_MODELS_JSON = JSON.stringify([flash]);
+    await create();
+
+    await instance!.adapter.sendTurn({
+      threadId: "dsh-native-default-model",
+      text: "use the session default",
+    });
+    await recorder!.until((event) => event.type === "turn.completed");
+
+    expect(recorder!.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "session.started", model: "deepseek-v4-flash" }),
+    ]));
   });
 
   it("fails before prompting if DSH acknowledges but does not apply reasoning effort", async () => {

@@ -66,6 +66,25 @@ export function dshModelOptionValue(model: string): string {
   return JSON.stringify([DSH_PROVIDER_ID, model]);
 }
 
+export function dshModelIdFromOptionValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const decoded: unknown = JSON.parse(value);
+    if (
+      Array.isArray(decoded) &&
+      decoded.length === 2 &&
+      decoded[0] === DSH_PROVIDER_ID &&
+      typeof decoded[1] === "string" &&
+      decoded[1].length > 0
+    ) {
+      return decoded[1];
+    }
+  } catch {
+    // ACP config values are opaque; an unrecognized value is not a model id.
+  }
+  return null;
+}
+
 function currentConfigValue(result: unknown, configId: string): unknown {
   if (!result || typeof result !== "object") return undefined;
   const options = (result as { configOptions?: unknown }).configOptions;
@@ -148,7 +167,11 @@ const support: AcpSupport = {
 
   spawnArgs: dshSpawnArgs,
   resumeMethod: "session/resume",
-  selectModel: { configId: "model", valueForModel: dshModelOptionValue },
+  selectModel: {
+    configId: "model",
+    valueForModel: dshModelOptionValue,
+    modelForValue: dshModelIdFromOptionValue,
+  },
   versionCompatibilityReason: (version, config) => dshVersionCompatibilityReason(version, config.cli),
 
   async configureSession({ request, sessionId, turn }) {
