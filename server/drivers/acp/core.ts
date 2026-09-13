@@ -909,7 +909,9 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                 // Opaque option values are protocol details.  Persist the
                 // picker id in the task so resume and usage attribution keep
                 // the same model identity the user selected.
-                selectedModel = cliTurn.model ?? modelForValue?.(selectedValue) ?? null;
+                selectedModel = cliTurn.model ?? modelForValue?.(selectedValue) ?? (
+                  valueForModel === undefined && typeof selectedValue === "string" ? selectedValue : null
+                );
               }
 
               if (support.configureSession) {
