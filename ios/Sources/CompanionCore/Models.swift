@@ -816,16 +816,20 @@ public func routineEditorTimeDate(_ value: String?, in timeZone: TimeZone) -> Da
     return calendar.date(from: components) ?? Date(timeIntervalSince1970: 978_307_200)
 }
 
-public func routineTimeZoneForUpdate(effectiveTimeZone: String?, source: String?) -> String? {
-    source == "host" ? nil : effectiveTimeZone
+public func routineTimeZoneForUpdate(
+    effectiveTimeZone: String?,
+    source: String?,
+    existingScheduleType: RoutineSchedule.Kind?
+) -> String? {
+    source == "host" && existingScheduleType == .daily ? nil : effectiveTimeZone
 }
 
 public func routineEditorTimeZoneIdentifier(
     effectiveTimeZone: String?,
-    isNew: Bool,
+    existingScheduleType: RoutineSchedule.Kind?,
     currentTimeZone: TimeZone = .current
 ) -> String? {
-    effectiveTimeZone ?? (isNew ? currentTimeZone.identifier : nil)
+    effectiveTimeZone ?? (existingScheduleType == .daily ? nil : currentTimeZone.identifier)
 }
 
 public struct Routine: Codable, Hashable, Identifiable, Sendable {

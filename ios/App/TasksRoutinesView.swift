@@ -224,7 +224,7 @@ private struct RoutineEditorView: View {
         // zone, but omit it again when serializing that legacy schedule.
         let effectiveTimeZone = routineEditorTimeZoneIdentifier(
             effectiveTimeZone: routine?.schedule.timeZone,
-            isNew: routine == nil
+            existingScheduleType: routine?.schedule.type
         )
         let editorTimeZone = effectiveTimeZone.flatMap(TimeZone.init(identifier:)) ?? .current
         let time = routineEditorTimeDate(routine?.schedule.time, in: editorTimeZone)
@@ -357,7 +357,8 @@ private struct RoutineEditorView: View {
                 weekdays: weekdays.sorted(),
                 timeZone: routineTimeZoneForUpdate(
                     effectiveTimeZone: scheduleTimeZone,
-                    source: routine?.scheduleTimeZoneSource
+                    source: routine?.scheduleTimeZoneSource,
+                    existingScheduleType: routine?.schedule.type
                 )
             )
         let input = RoutineInput(

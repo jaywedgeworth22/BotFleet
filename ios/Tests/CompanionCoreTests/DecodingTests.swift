@@ -163,19 +163,43 @@ final class DecodingTests: XCTestCase {
         calendar.timeZone = zone
         XCTAssertEqual(calendar.component(.hour, from: date), 2)
         XCTAssertEqual(calendar.component(.minute, from: date), 30)
-        XCTAssertNil(routineTimeZoneForUpdate(effectiveTimeZone: "America/Chicago", source: "host"))
-        XCTAssertEqual(
-            routineTimeZoneForUpdate(effectiveTimeZone: "America/Chicago", source: "stored"),
-            "America/Chicago"
-        )
+        let foldDate = routineEditorTimeDate("01:30", in: zone)
+        XCTAssertEqual(calendar.component(.hour, from: foldDate), 1)
+        XCTAssertEqual(calendar.component(.minute, from: foldDate), 30)
+
         let tokyo = try XCTUnwrap(TimeZone(identifier: "Asia/Tokyo"))
-        XCTAssertEqual(
-            routineEditorTimeZoneIdentifier(effectiveTimeZone: nil, isNew: true, currentTimeZone: tokyo),
-            "Asia/Tokyo"
-        )
-        XCTAssertNil(
-            routineEditorTimeZoneIdentifier(effectiveTimeZone: nil, isNew: false, currentTimeZone: tokyo)
-        )
+        let transitions: [(
+            name: String,
+            effective: String?,
+            source: String?,
+            existingType: RoutineSchedule.Kind?,
+            editor: String?,
+            update: String?
+        )] = [
+            ("new daily", nil, nil, nil, "Asia/Tokyo", "Asia/Tokyo"),
+            ("legacy host daily", "America/Chicago", "host", .daily, "America/Chicago", nil),
+            ("explicit daily", "America/Chicago", "stored", .daily, "America/Chicago", "America/Chicago"),
+            ("one time to daily", nil, nil, .once, "Asia/Tokyo", "Asia/Tokyo"),
+            ("unknown to daily", nil, nil, .unknown, "Asia/Tokyo", "Asia/Tokyo"),
+            ("host provenance is daily only", nil, "host", .once, "Asia/Tokyo", "Asia/Tokyo"),
+        ]
+        for transition in transitions {
+            let editor = routineEditorTimeZoneIdentifier(
+                effectiveTimeZone: transition.effective,
+                existingScheduleType: transition.existingType,
+                currentTimeZone: tokyo
+            )
+            XCTAssertEqual(editor, transition.editor, transition.name)
+            XCTAssertEqual(
+                routineTimeZoneForUpdate(
+                    effectiveTimeZone: editor,
+                    source: transition.source,
+                    existingScheduleType: transition.existingType
+                ),
+                transition.update,
+                transition.name
+            )
+        }
     }
 
     func testNotificationTargetRequiresBothExactIds() {
