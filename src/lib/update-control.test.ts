@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   availableLabel,
+  bannerDismissKey,
   bannerIsActionable,
   fetchUpdateStatus,
   idleLabel,
@@ -34,6 +35,7 @@ function status(patch: Partial<UpdateStatus> = {}): UpdateStatus {
     checkedAt: "2026-09-13T12:00:00.000Z",
     running: null,
     lastRun: null,
+    checkError: null,
     capabilities: { canCheck: true, canRun: true, reasons: [] },
     ...patch,
   };
@@ -118,6 +120,45 @@ describe("retrying a status that did not arrive", () => {
     stop();
     await vi.advanceTimersByTimeAsync(STATUS_RETRY_STEADY_MS * 3);
     expect(calls).toBe(1);
+  });
+});
+
+describe("what a banner dismissal is remembered against", () => {
+  const finished = (runId: string, finishedAt: string) => ({
+    runId,
+    startedAt: "",
+    finishedAt,
+    outcome: "failed" as const,
+    message: "",
+  });
+
+  it("gives a finished run its own key, so a dismissed offer does not hide it", () => {
+    const offered = status({ available: { sourceCommit: NEXT, aheadBy: 2, commits: [] } });
+    const afterFailure = status({
+      available: { sourceCommit: NEXT, aheadBy: 2, commits: [] },
+      lastRun: finished("run_one", "2026-09-13T12:30:00.000Z"),
+    });
+    // The available answer survives an unsuccessful run, so a key built from
+    // it alone stayed put across the failure and the banner never came back.
+    expect(bannerDismissKey(offered)).not.toBe(bannerDismissKey(afterFailure));
+    // A second failure is a third key.
+    const afterSecond = status({
+      available: { sourceCommit: NEXT, aheadBy: 2, commits: [] },
+      lastRun: finished("run_two", "2026-09-13T13:00:00.000Z"),
+    });
+    expect(bannerDismissKey(afterSecond)).not.toBe(bannerDismissKey(afterFailure));
+  });
+
+  it("is stable while nothing changes, and follows the run while one is going", () => {
+    const offered = status({ available: { sourceCommit: NEXT, aheadBy: 2, commits: [] } });
+    expect(bannerDismissKey(offered)).toBe(bannerDismissKey(status({
+      available: { sourceCommit: NEXT, aheadBy: 2, commits: [] },
+    })));
+    const running = status({
+      available: { sourceCommit: NEXT, aheadBy: 2, commits: [] },
+      running: { runId: "run_one", startedAt: "", step: "Building", logTail: [] },
+    });
+    expect(bannerDismissKey(running)).toBe("running:run_one");
   });
 });
 
@@ -219,11 +260,37 @@ describe("talking to the harness", () => {
     expect(seen?.headers).toMatchObject({ "content-type": "application/json" });
   });
 
-  it("surfaces the harness's refusal verbatim", async () => {
-    await expect(requestUpdateRun({}, async () =>
-      response({ error: "An update is already running." }, { status: 409 }))).rejects.toThrow(
-      "An update is already running.",
-    );
+  it("carries the un-refreshed status through a failed check", async () => {
+    const known = status({ available: { sourceCommit: NEXT, aheadBy: 2, commits: [] } });
+    const failure = await requestUpdateCheck(async () =>
+      response({ error: "Could not reach the update source.", status: known }, { status: 502 }))
+      .then(() => null, (error: unknown) => error as Error & { status?: UpdateStatus });
+    expect(failure?.message).toBe("Could not reach the update source.");
+    // The card keeps saying what it last knew rather than blanking.
+    expect(failure?.status).toEqual(known);
+  });
+
+  it("returns the harness's refusal WITH the status that explains it", async () => {
+    // The 409 carries the status showing the run already in flight.  Throwing
+    // the error and dropping it left the UI saying "already running" with no
+    // run on screen.
+    const running = status({
+      running: { runId: "run_one", startedAt: "", step: "Building and signing the app", logTail: [] },
+    });
+    const refused = await requestUpdateRun({}, async () =>
+      response({ error: "An update is already running.", status: running }, { status: 409 }));
+    expect(refused).toEqual({
+      ok: false,
+      error: "An update is already running.",
+      status: running,
+    });
+  });
+
+  it("still answers when a refusal carries no status", async () => {
+    const refused = await requestUpdateRun({}, async () => response({ error: "nope" }, { status: 409 }));
+    expect(refused).toEqual({ ok: false, error: "nope", status: null });
+    const unexplained = await requestUpdateRun({}, async () => response({}, { status: 503 }));
+    expect(unexplained).toMatchObject({ ok: false, error: "Could not start the update (503)." });
   });
 
   it("asks for a forced run only when told to", async () => {
@@ -232,7 +299,8 @@ describe("talking to the harness", () => {
       bodies.push(String(init?.body ?? ""));
       return response({ runId: "run_one", status: status() }, { status: 202 });
     };
-    expect((await requestUpdateRun({}, fetcher)).runId).toBe("run_one");
+    const started = await requestUpdateRun({}, fetcher);
+    expect(started.ok && started.runId).toBe("run_one");
     await requestUpdateRun({ force: true }, fetcher);
     expect(bodies).toEqual(["{}", '{"force":true}']);
   });

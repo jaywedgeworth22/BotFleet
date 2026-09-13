@@ -7,6 +7,7 @@ import { ArrowDownToLine, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
 import { useUpdaterState } from "@/lib/updater";
 import {
   availableLabel,
+  bannerDismissKey,
   bannerIsActionable,
   lastRunLabel,
   mayUseLegacyLocalUpdate,
@@ -261,11 +262,7 @@ function LocalUpdateCard({
   const status = local.status;
   if (!status) return null;
   const running = status.running;
-  const key = running
-    ? `running:${running.runId}`
-    : status.available
-      ? `available:${status.available.sourceCommit}`
-      : `last:${status.lastRun?.runId ?? ""}`;
+  const key = bannerDismissKey(status);
   if (!running && dismissed === key) return null;
 
   const title = running

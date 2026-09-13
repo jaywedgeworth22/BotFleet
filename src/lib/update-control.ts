@@ -51,6 +51,10 @@ export interface UpdateStatus {
   installed: { version: string; sourceCommit: string; installedAt?: string };
   available: UpdateAvailable | null;
   checkedAt: string | null;
+  /** Why the last check produced no answer, or null when it did.  A failed
+   * `git fetch` leaves a stale `origin/main` on disk, so "no error" is the
+   * only thing that makes "up to date" mean anything. */
+  checkError?: string | null;
   running: UpdateRunning | null;
   lastRun: UpdateLastRun | null;
   capabilities: { canCheck: boolean; canRun: boolean; reasons: string[] };
@@ -80,31 +84,61 @@ export async function fetchUpdateStatus(request: Fetcher = fetch): Promise<Updat
   }
 }
 
+/**
+ * A check that could not reach the source answers 502 with the status and the
+ * reason.  Both matter: the reason is what the person reads, and the status
+ * still carries the previous answer and its timestamp, so the card keeps
+ * saying what it last knew rather than blanking.
+ */
 export async function requestUpdateCheck(request: Fetcher = fetch): Promise<UpdateStatus> {
   const response = await request("/api/update/check", { method: "POST", headers: JSON_HEADERS, body: "{}" });
   const body = await readJson(response);
-  if (!response.ok || !isUpdateStatus(body)) {
-    throw new Error(asError(body) ?? `Could not check for updates (${response.status}).`);
+  if (!response.ok) {
+    const failure = new Error(asError(body) ?? `Could not check for updates (${response.status}).`);
+    if (isUpdateStatus(body.status)) Object.assign(failure, { status: body.status });
+    throw failure;
   }
+  if (!isUpdateStatus(body)) throw new Error(`Could not check for updates (${response.status}).`);
   return body;
 }
 
+/** Started, or refused with the reason and the status that goes with it. */
+export type UpdateRunResult =
+  | { ok: true; runId: string; status: UpdateStatus }
+  | { ok: false; error: string; status: UpdateStatus | null };
+
+/**
+ * A refusal is an answer, not an exception.
+ *
+ * The harness sends `{ error, status }` with its 409, and that status is the
+ * one that explains the refusal — the run already in flight, the busy
+ * machine, the reason list.  Throwing the error and dropping the body left
+ * the UI showing whatever it last knew while saying "an update is already
+ * running", with no run on screen.  Only a transport or shape failure throws
+ * now; a refusal comes back with the status folded in.
+ */
 export async function requestUpdateRun(
   options: { force?: boolean } = {},
   request: Fetcher = fetch,
-): Promise<{ runId: string; status: UpdateStatus }> {
+): Promise<UpdateRunResult> {
   const response = await request("/api/update/run", {
     method: "POST",
     headers: JSON_HEADERS,
     body: JSON.stringify(options.force ? { force: true } : {}),
   });
   const body = await readJson(response);
-  if (!response.ok) throw new Error(asError(body) ?? `Could not start the update (${response.status}).`);
-  const status = body.status;
-  if (typeof body.runId !== "string" || !isUpdateStatus(status)) {
+  const status = isUpdateStatus(body.status) ? body.status : null;
+  if (!response.ok) {
+    return {
+      ok: false,
+      error: asError(body) ?? `Could not start the update (${response.status}).`,
+      status,
+    };
+  }
+  if (typeof body.runId !== "string" || !status) {
     throw new Error("The harness started an update but did not describe it.");
   }
-  return { runId: body.runId, status };
+  return { ok: true, runId: body.runId, status };
 }
 
 function asError(body: Record<string, unknown>): string | null {
@@ -187,6 +221,22 @@ export function idleLabel(status: UpdateStatus): string {
   }
   if (!status.checkedAt) return "This computer has not checked for a newer build yet.";
   return "BotFleet is on the newest build this computer knows about.";
+}
+
+/**
+ * What a dismissal of the floating banner should be remembered against.
+ *
+ * Dismissing "1.0.31 is available" must not also dismiss "that install
+ * failed" — but the available answer survives an unsuccessful run, so a key
+ * built from the available commit alone stayed the same across it and the
+ * failure was never shown.  The last run's identity is part of the key, so a
+ * run finishing always produces a banner the person has not dismissed yet.
+ */
+export function bannerDismissKey(status: UpdateStatus): string {
+  if (status.running) return `running:${status.running.runId}`;
+  const offer = status.available ? `available:${status.available.sourceCommit}` : "idle";
+  const lastRun = status.lastRun ? `${status.lastRun.runId}@${status.lastRun.finishedAt}` : "none";
+  return `${offer}|${lastRun}`;
 }
 
 /** Whether the floating banner should show the harness card at all. */
@@ -336,6 +386,9 @@ export function useUpdateControl(pollMs = 5_000): UpdateControlView {
     try {
       setStatus(await requestUpdateCheck());
     } catch (failure) {
+      // A 502 carries the status it could not refresh; keep showing it.
+      const carried = (failure as { status?: unknown })?.status;
+      if (isUpdateStatus(carried)) setStatus(carried);
       setError(failure instanceof Error ? failure.message : "Could not check for updates.");
     } finally {
       setBusy(null);
@@ -346,7 +399,11 @@ export function useUpdateControl(pollMs = 5_000): UpdateControlView {
     setBusy("install");
     setError(null);
     try {
-      setStatus((await requestUpdateRun(options ?? {})).status);
+      const result = await requestUpdateRun(options ?? {});
+      // The refusal's own status is the one that explains it — take it even
+      // when the answer is no.
+      if (result.status) setStatus(result.status);
+      if (!result.ok) setError(result.error);
     } catch (failure) {
       setError(failure instanceof Error ? failure.message : "Could not start the update.");
     } finally {

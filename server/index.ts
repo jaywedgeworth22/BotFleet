@@ -8682,7 +8682,15 @@ const server = createServer(async (req, res) => {
     }
     if (method === "POST" && path === "/api/update/check") {
       if (!mayControlUpdates(req)) return json(res, 401, { error: "unauthorized" });
-      return json(res, 200, await updateControl.check());
+      const checked = await updateControl.check();
+      // A check that could not reach the source is a failure, not "up to
+      // date": `origin/main` is still on disk from the last good fetch, and
+      // answering 200 would have a person believe a week-old comparison they
+      // just asked for.  The status comes back either way.
+      if (checked.checkError) {
+        return json(res, 502, { error: checked.checkError, status: checked });
+      }
+      return json(res, 200, checked);
     }
     if (method === "POST" && path === "/api/update/run") {
       if (!mayControlUpdates(req)) return json(res, 401, { error: "unauthorized" });

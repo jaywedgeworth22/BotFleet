@@ -1,12 +1,11 @@
 // The four things that decide whether "install the update" is safe: the
 // status shape both clients render, the refusals, what the launcher actually
 // runs, and the reconcile that lets a run survive the restart it performs.
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { chmodSync } from "node:fs";
 import {
   availableIsStale,
   BUSY_REFUSAL,
@@ -151,6 +150,7 @@ describe("status", () => {
       installed: { version: "1.0.30", sourceCommit: INSTALLED_COMMIT },
       available: null,
       checkedAt: null,
+      checkError: null,
       running: null,
       lastRun: null,
       capabilities: { canCheck: true, canRun: true, reasons: [] },
@@ -284,8 +284,8 @@ describe("refusals", () => {
     // origin/main moved to Y, and Y is what got installed.
     expect(availableIsStale({ ...base, installedAt: at("2026-09-13T12:30:00.000Z") })).toBe(true);
     expect(availableIsStale({ ...base, installedAt: at("2026-09-13T11:30:00.000Z") })).toBe(false);
-    // A source build has no installedAt; the last run's finish is the same line.
-    expect(availableIsStale({ ...base, lastRunFinishedAt: at("2026-09-13T12:30:00.000Z") })).toBe(true);
+    // A source build has no installedAt; a VERIFIED run's finish is the same line.
+    expect(availableIsStale({ ...base, verifiedRunFinishedAt: at("2026-09-13T12:30:00.000Z") })).toBe(true);
     // An answer with no usable timestamp cannot be placed, so it is not acted on.
     expect(availableIsStale({ ...base, checkedAt: null })).toBe(true);
     expect(availableIsStale({ ...base, checkedAt: "not a date" })).toBe(true);
@@ -387,6 +387,113 @@ describe("refusals", () => {
   });
 });
 
+describe("checking when the fetch does not work", () => {
+  it("reports the failure instead of reading a stale origin/main as up to date", async () => {
+    const paths = rig();
+    // Offline: `git fetch` fails, but `origin/main` is still on disk from the
+    // last time it worked — and it happens to equal what is installed.
+    const harness = build(paths, {
+      git: (args) => {
+        if (args[0] === "fetch") return { code: 1, stdout: "", stderr: "fatal: unable to access 'https://…': could not resolve host\n" };
+        if (args[0] === "rev-parse") return ok(`${INSTALLED_COMMIT}\n`);
+        return ok();
+      },
+    });
+    const status = await harness.control.check();
+    expect(status.checkedAt).toBeNull();
+    expect(status.checkError).toContain("Could not reach the update source.");
+    expect(status.checkError).toContain("could not resolve host");
+    expect(status.available).toBeNull();
+  });
+
+  it("keeps the previous answer, and its timestamp, when a check fails", async () => {
+    const paths = rig();
+    const online = (args: string[]): CommandResult => {
+      if (args[0] === "rev-parse") return ok(`${NEW_COMMIT}\n`);
+      if (args[0] === "rev-list") return ok("4\n");
+      if (args[0] === "log") return ok(`${NEW_COMMIT}${UNIT}feat: something`);
+      if (args[0] === "show") return ok(JSON.stringify({ version: "1.0.31" }));
+      return ok();
+    };
+    let offline = false;
+    const harness = build(paths, {
+      git: (args) => (offline && args[0] === "fetch" ? fail() : online(args)),
+    });
+    const good = await harness.control.check();
+    expect(good.checkedAt).toBe("2026-09-13T12:00:00.000Z");
+    expect(good.checkError).toBeNull();
+    offline = true;
+    const bad = await harness.control.check();
+    expect(bad.checkedAt).toBe("2026-09-13T12:00:00.000Z");
+    expect(bad.checkError).toContain("Could not reach the update source.");
+    expect(bad.available?.sourceCommit).toBe(NEW_COMMIT);
+  });
+
+  it("says so when origin/main cannot be resolved even after a good fetch", async () => {
+    const paths = rig();
+    const harness = build(paths, {
+      git: (args) => (args[0] === "rev-parse" ? fail() : ok()),
+    });
+    const status = await harness.control.check();
+    expect(status.checkedAt).toBeNull();
+    expect(status.checkError).toContain("Could not read origin/main");
+  });
+
+  it("clears the failure once a check works again", async () => {
+    const paths = rig();
+    let offline = true;
+    const harness = build(paths, {
+      git: (args) => {
+        if (args[0] === "fetch") return offline ? fail() : ok();
+        if (args[0] === "rev-parse") return ok(`${INSTALLED_COMMIT}\n`);
+        return ok();
+      },
+    });
+    expect((await harness.control.check()).checkError).not.toBeNull();
+    offline = false;
+    const recovered = await harness.control.check();
+    expect(recovered.checkError).toBeNull();
+    expect(recovered.checkedAt).toBe("2026-09-13T12:00:00.000Z");
+  });
+});
+
+describe("an unsuccessful run", () => {
+  const seedLastRun = (paths: ReturnType<typeof rig>, outcome: string) => {
+    mkdirSync(paths.stateDirectory, { recursive: true });
+    writeFileSync(join(paths.stateDirectory, "last-run.json"), JSON.stringify({
+      runId: "run_prior",
+      startedAt: "2026-09-13T12:20:00.000Z",
+      finishedAt: "2026-09-13T12:30:00.000Z",
+      outcome,
+      message: "whatever happened",
+    }));
+    writeFileSync(join(paths.stateDirectory, "available.json"), JSON.stringify({
+      checkedAt: "2026-09-13T12:00:00.000Z",
+      available: { sourceCommit: NEW_COMMIT, version: "1.0.31", aheadBy: 4, commits: [] },
+    }));
+  };
+
+  it("leaves the available answer alone — it installed nothing", () => {
+    // Refused, failed and rolled-back runs all have a finishedAt, and none of
+    // them changed what is installed.  Treating them as the staleness
+    // boundary threw away a good answer every time a run was declined.
+    for (const outcome of ["refused", "failed", "rolled-back"]) {
+      const paths = rig();
+      seedLastRun(paths, outcome);
+      const status = build(paths).control.status();
+      expect(status.lastRun?.outcome, outcome).toBe(outcome);
+      expect(status.available?.sourceCommit, outcome).toBe(NEW_COMMIT);
+    }
+  });
+
+  it("but a verified one does move the line", () => {
+    const paths = rig();
+    seedLastRun(paths, "verified");
+    const status = build(paths).control.status();
+    expect(status.available).toBeNull();
+  });
+});
+
 describe("the launcher", () => {
   it("submits a one-shot launchd job that outlives both parents", () => {
     const { command, args } = launchPlanCommand({
@@ -414,6 +521,49 @@ describe("the launcher", () => {
     expect(args[10]).toContain("export PATH='/opt/homebrew/bin'");
     expect(args[10]).toContain("--progress '/tmp/state/runs/run_one.progress.json'");
     expect(args[10]).toContain("--run-id 'run_one'");
+  });
+
+  it("records the run before launching it, and launches nothing it cannot record", async () => {
+    const paths = rig();
+    const order: string[] = [];
+    const harness = build(paths, {
+      writeState: (path, value) => {
+        order.push(`write:${path.endsWith("current-run.json") ? "current-run" : "other"}`);
+        mkdirSync(join(paths.stateDirectory, "runs"), { recursive: true });
+        writeFileSync(path, JSON.stringify(value));
+      },
+      launchDelay: async () => void order.push("launch"),
+    });
+    expect((await harness.control.start({ force: true })).ok).toBe(true);
+    // Written afterwards, a failed write left a real updater running that no
+    // harness knew about.
+    expect(order.indexOf("write:current-run")).toBeLessThan(order.indexOf("launch"));
+
+    const refusing = build(rig(), {
+      writeState: () => {
+        throw new Error("EACCES: permission denied");
+      },
+    });
+    const blocked = await refusing.control.start({ force: true });
+    expect(blocked.ok).toBe(false);
+    expect(blocked.ok === false && blocked.error).toContain("could not be recorded");
+    expect(refusing.launched).toHaveLength(0);
+  });
+
+  it("does not leave a record behind when the launch itself fails", async () => {
+    const paths = rig();
+    const harness = build(paths, {
+      launchDelay: async () => {
+        throw new Error("A com.jay.botfleet-update job is already running on this Mac.");
+      },
+    });
+    const failed = await harness.control.start({ force: true });
+    expect(failed.ok).toBe(false);
+    expect(failed.ok === false && failed.error).toContain("could not be started");
+    expect(harness.control.status().running).toBeNull();
+    expect(existsSync(join(paths.stateDirectory, "current-run.json"))).toBe(false);
+    // And a later harness does not find a phantom run either.
+    expect(build(paths).control.status().running).toBeNull();
   });
 
   it("starts exactly one job when two callers race", async () => {

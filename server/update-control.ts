@@ -110,6 +110,13 @@ export interface UpdateStatus {
   installed: UpdateInstalled;
   available: UpdateAvailable | null;
   checkedAt: string | null;
+  /** Why the last check did not produce an answer, or null when it did.
+   *
+   * A failed `git fetch` still leaves an `origin/main` ref from whenever it
+   * last succeeded, so the comparison would happily report "up to date" on a
+   * machine that has been offline for a week.  `checkedAt` deliberately does
+   * not move in that case, and this says why. */
+  checkError: string | null;
   running: UpdateRunning | null;
   lastRun: UpdateLastRun | null;
   capabilities: UpdateCapabilities;
@@ -197,6 +204,12 @@ interface CurrentRunRecord {
 }
 
 const OUTCOMES: readonly UpdateOutcome[] = ["verified", "rolled-back", "failed", "refused"];
+
+/** The first line of a git failure, clipped.  Enough to tell a DNS failure
+ * from an auth failure without pasting a transcript into a phone. */
+function firstLine(text: string): string {
+  return (text.split("\n").map((line) => line.trim()).find(Boolean) ?? "").slice(0, 200);
+}
 
 function isOutcome(value: unknown): value is UpdateOutcome {
   return typeof value === "string" && (OUTCOMES as readonly string[]).includes(value);
@@ -361,7 +374,11 @@ export function availableIsStale(input: {
   installedCommit: string;
   checkedAt: string | null;
   installedAt?: string;
-  lastRunFinishedAt?: string;
+  /** When an update last finished AND VERIFIED.  A refused, failed or
+   * rolled-back run also has a `finishedAt`, and none of them changed what is
+   * installed — treating those as the boundary would throw away a perfectly
+   * good answer every time a run was declined for being busy. */
+  verifiedRunFinishedAt?: string;
 }): boolean {
   if (!input.available) return true;
   if (input.available.sourceCommit === input.installedCommit) return true;
@@ -369,7 +386,7 @@ export function availableIsStale(input: {
   // An answer with no readable timestamp cannot be placed relative to the
   // install, and an unplaceable answer is not one to act on.
   if (!Number.isFinite(recorded)) return true;
-  for (const boundary of [input.installedAt, input.lastRunFinishedAt]) {
+  for (const boundary of [input.installedAt, input.verifiedRunFinishedAt]) {
     const at = boundary ? Date.parse(boundary) : Number.NaN;
     if (Number.isFinite(at) && recorded <= at) return true;
   }
@@ -579,6 +596,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
 
   let available: UpdateAvailable | null = null;
   let checkedAt: string | null = null;
+  let checkError: string | null = null;
   let current: CurrentRunRecord | null = null;
   let lastRun: UpdateLastRun | null = null;
   let lastEmitted = "";
@@ -614,7 +632,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     installedCommit: deps.installed.sourceCommit,
     checkedAt,
     installedAt: deps.installed.installedAt,
-    lastRunFinishedAt: lastRun?.finishedAt,
+    verifiedRunFinishedAt: lastRun?.outcome === "verified" ? lastRun.finishedAt : undefined,
   });
 
   /** What this Mac is equipped to do, before anything about what it is doing
@@ -794,6 +812,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       // never reaches a client, whichever commit it names.
       available: staleAvailable(available) ? null : available,
       checkedAt,
+      checkError,
       running,
       lastRun,
       capabilities: capabilities(Boolean(running)),
@@ -828,13 +847,26 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
 
   const check = async (): Promise<UpdateStatus> => {
     reconcile();
+    flushAvailable();
     if (!capabilities(Boolean(current)).canCheck) return buildStatus();
-    await deps.git(["fetch", "origin", "main"]);
+    // A failed fetch is not "nothing new".  `origin/main` is still on disk
+    // from whenever the last fetch DID work, so comparing against it would
+    // report a machine that has been offline for a week as up to date — and
+    // the person would believe it, because they just pressed the button.
+    const fetched = await deps.git(["fetch", "origin", "main"]);
+    if (fetched.code !== 0) {
+      checkError = `Could not reach the update source.${GAP}${firstLine(fetched.stderr) || "git fetch failed."}`;
+      emitIfChanged();
+      return buildStatus();
+    }
     const head = await deps.git(["rev-parse", "--verify", "origin/main^{commit}"]);
     const target = head.stdout.trim();
-    // A failed fetch with no usable origin/main leaves the previous answer in
-    // place rather than claiming there is nothing new.
-    if (head.code !== 0 || !/^[a-f0-9]{40}$/.test(target)) return buildStatus();
+    if (head.code !== 0 || !/^[a-f0-9]{40}$/.test(target)) {
+      checkError = `Could not read origin/main in ${deps.checkout}.`;
+      emitIfChanged();
+      return buildStatus();
+    }
+    checkError = null;
     checkedAt = deps.now().toISOString();
     if (target === deps.installed.sourceCommit) {
       available = null;
@@ -954,6 +986,27 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       };
     }
     const startedAt = deps.now().toISOString();
+    // The record goes down BEFORE anything is launched.  Written afterwards,
+    // a failed write left a real updater running that this harness — and
+    // every harness after it — had no idea about: no run in the status, no
+    // refusal protecting it, and a second Install a click away.  The launcher
+    // it names is provisional until the launch returns.
+    const record: CurrentRunRecord = {
+      runId,
+      startedAt,
+      progressPath: files.progress,
+      logPath: files.log,
+      launcher: "launchd",
+      targetCommit: before.available?.sourceCommit ?? null,
+    };
+    if (!persist(paths.currentRun, record)) {
+      return {
+        ok: false as const,
+        error: `The update could not be recorded, so it was not started.${GAP}Check ${deps.stateDirectory}.`,
+        status: buildStatus(),
+      };
+    }
+    current = record;
     let result: LaunchResult;
     try {
       result = await deps.launch({
@@ -965,18 +1018,21 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
         nodeDirectory: deps.nodeDirectory,
       });
     } catch (error) {
+      // Nothing started, so the record must not outlive the attempt.
+      current = null;
+      try {
+        rmSync(paths.currentRun, { force: true });
+      } catch {
+        /* a record we cannot remove is reconciled away on the next boot:
+         * no progress file ever appears and the launch grace period ends it. */
+      }
       const detail = String((error as Error)?.message ?? error).slice(0, 200);
       return { ok: false as const, error: `The updater could not be started.${GAP}${detail}`, status: buildStatus() };
     }
-    current = {
-      runId,
-      startedAt,
-      progressPath: files.progress,
-      logPath: files.log,
-      launcher: result.launcher,
-      targetCommit: before.available?.sourceCommit ?? null,
-    };
-    persist(paths.currentRun, current);
+    if (result.launcher !== record.launcher) {
+      current = { ...record, launcher: result.launcher };
+      persist(paths.currentRun, current);
+    }
     ensureTimer();
     emitIfChanged();
     return { ok: true as const, runId, status: buildStatus() };
