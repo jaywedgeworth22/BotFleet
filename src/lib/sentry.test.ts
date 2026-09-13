@@ -231,7 +231,7 @@ describe("renderer diagnostics refresh", () => {
     expect(sentry.record.closes).toBe(0);
   });
 
-  it("buildFallbackIssueUrl bounds total encoded length and safely handles surrogate pairs", () => {
+  it("buildFallbackIssueUrl bounds total encoded length and safely handles surrogate pairs and lone surrogates", () => {
     const hugeMessageWithEmoji = "Error: 🔥 something crashed 🚨 " + "x".repeat(10000) + " 💥";
     const url = buildFallbackIssueUrl("Error in Bot", hugeMessageWithEmoji, 2000);
     expect(url.length).toBeLessThanOrEqual(2000);
@@ -239,6 +239,12 @@ describe("renderer diagnostics refresh", () => {
     expect(url).toContain("Error%20in%20Bot");
     // Verify decodeURIComponent does not throw (meaning surrogate pairs were not split)
     expect(() => decodeURIComponent(url)).not.toThrow();
+
+    // Lone surrogate string
+    const loneSurrogate = "Broken surrogate: \uD800 invalid character";
+    expect(() => buildFallbackIssueUrl("Issue \uD800", loneSurrogate)).not.toThrow();
+    const loneUrl = buildFallbackIssueUrl("Issue \uD800", loneSurrogate);
+    expect(() => decodeURIComponent(loneUrl)).not.toThrow();
   });
 
   it("isSentryFeedbackAvailable reflects client initialization state", () => {

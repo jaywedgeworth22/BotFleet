@@ -171,12 +171,20 @@ interface SentryFeedbackDialog {
 
 let activeFeedbackDialog: SentryFeedbackDialog | null = null;
 
+function toWellFormedString(val: string): string {
+  if (typeof (val as { toWellFormed?: () => string }).toWellFormed === "function") {
+    return (val as unknown as { toWellFormed: () => string }).toWellFormed();
+  }
+  return val.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "\uFFFD");
+}
+
 export function buildFallbackIssueUrl(
   rawTitle: string,
   rawMessage?: string,
   maxTotalLength = 2000,
 ): string {
-  const points = Array.from(rawTitle || "Bug Report");
+  const wellFormedTitle = toWellFormedString(rawTitle || "Bug Report");
+  const points = Array.from(wellFormedTitle);
   const safeTitle = (points.length > 80 ? points.slice(0, 80).join("") + "…" : points.join(""));
   const encodedTitle = encodeURIComponent(safeTitle);
   const base = `https://github.com/jaywedgeworth22/BotFleet/issues/new?title=${encodedTitle}&body=`;
@@ -188,9 +196,10 @@ export function buildFallbackIssueUrl(
     return base + encodeURIComponent(defaultBody);
   }
 
+  const wellFormedMsg = toWellFormedString(rawMessage);
   const header = "**Reported Problem:**\n";
   const footer = "\n\n*(Submitted via BotFleet)*";
-  const msgPoints = Array.from(rawMessage);
+  const msgPoints = Array.from(wellFormedMsg);
   let low = 0;
   let high = Math.min(msgPoints.length, budget);
   let best = "";
@@ -199,11 +208,15 @@ export function buildFallbackIssueUrl(
     const mid = Math.floor((low + high) / 2);
     const candidateSlice = msgPoints.slice(0, mid).join("") + (mid < msgPoints.length ? "…" : "");
     const candidateText = `${header}${candidateSlice}${footer}`;
-    const candidateEncoded = encodeURIComponent(candidateText);
-    if (candidateEncoded.length <= budget) {
-      best = candidateEncoded;
-      low = mid + 1;
-    } else {
+    try {
+      const candidateEncoded = encodeURIComponent(candidateText);
+      if (candidateEncoded.length <= budget) {
+        best = candidateEncoded;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    } catch {
       high = mid - 1;
     }
   }
