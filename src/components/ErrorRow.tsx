@@ -207,7 +207,12 @@ function ErrorRow({
           <span className="min-w-0 break-words">{message}</span>
         </div>
         {setupInstance && !(setupInstance.snapshot.state === "available" && setupInstance.snapshot.authenticated !== false) ? (
-          <EngineSetup instance={setupInstance} className="mt-2 text-ink-secondary" />
+          <div className="mt-2 flex flex-col gap-2">
+            <EngineSetup instance={setupInstance} className="text-ink-secondary" />
+            <div className="flex flex-wrap items-center gap-2">
+              <ReportProblemButton message={message} />
+            </div>
+          </div>
         ) : message.includes("stall watchdog timeout") && onRetry ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
             <RecoveryButton icon={Play} label="Continue" onClick={onRetry} />

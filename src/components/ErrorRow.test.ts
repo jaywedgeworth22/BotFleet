@@ -144,4 +144,25 @@ describe("ErrorRow recovery", () => {
     expect(checkpointHtml).toContain("git fetch origin &amp;&amp; git checkout main");
     expect(checkpointHtml).toContain("Report Problem");
   });
+
+  it("offers Report Problem on engine setup error rows", () => {
+    const unavailableInstance = {
+      instanceId: "kimi",
+      driverKind: "kimiAgent",
+      displayName: "Kimi",
+      snapshot: { state: "unavailable" as const, reason: "`kimi` CLI not found" },
+      models: { default: "kimi-code/k3", options: [] },
+      install: {
+        command: { darwin: "curl -fsSL https://kimi.ai/install.sh | bash" },
+      },
+    };
+    const html = renderToStaticMarkup(
+      createElement(ErrorRow, {
+        message: "`kimi` CLI not found",
+        setupInstance: unavailableInstance,
+      }),
+    );
+    expect(html).toContain("Report Problem");
+    expect(html).toContain("Install Kimi");
+  });
 });
