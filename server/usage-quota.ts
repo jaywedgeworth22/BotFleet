@@ -1,3 +1,4 @@
+import { mergeLocalQuotaWindows, readLocalQuotaSnapshot } from "./local-usage-monitor.ts";
 import { quotaCooldowns } from "./model-fallback.ts";
 import {
   driverKindsForWindow,
@@ -17,6 +18,11 @@ export {
 export type RemoteQuotaWindow = {
   id: string;
   provider: string;
+  providerKey?: string;
+  providerLabel?: string;
+  via?: string;
+  occurredAt?: string;
+  source?: string;
   sourceApp: string;
   label: string;
   modelId: string | null;
@@ -80,9 +86,16 @@ export class UsageQuotaPoller {
   private instancesProvider: (() => QuotaPollerInstance[]) | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
   private windows: RemoteQuotaWindow[] = [];
+  private localWindows: RemoteQuotaWindow[] = [];
   private lastError: string | null = null;
   private lastOkAt: string | null = null;
   private inFlight = false;
+
+  private readonly readNativeQuota: typeof readLocalQuotaSnapshot;
+
+  constructor(readNativeQuota = readLocalQuotaSnapshot) {
+    this.readNativeQuota = readNativeQuota;
+  }
 
   configure(opts: {
     settings: () => QuotaPollerSettings;
@@ -107,14 +120,14 @@ export class UsageQuotaPoller {
   }
 
   getWindows(): RemoteQuotaWindow[] {
-    return this.windows;
+    return mergeLocalQuotaWindows(this.windows, this.localWindows);
   }
 
   getStatus(): { lastError: string | null; lastOkAt: string | null; windowCount: number } {
     return {
       lastError: this.lastError,
       lastOkAt: this.lastOkAt,
-      windowCount: this.windows.length,
+      windowCount: this.getWindows().length,
     };
   }
 
@@ -149,6 +162,8 @@ export class UsageQuotaPoller {
 
   async poll(): Promise<void> {
     if (this.inFlight) return;
+    this.inFlight = true;
+    this.localWindows = await this.readNativeQuota();
     const settings = this.settingsProvider?.() ?? {};
     const url = quotaWindowsUrl(settings.ingestUrl);
     const token =
@@ -156,13 +171,16 @@ export class UsageQuotaPoller {
       process.env.USAGE_READ_TOKEN?.trim() ||
       "";
     if (!url || !token) {
-      this.windows = [];
+      this.applyPayload({ ok: true, generatedAt: new Date().toISOString(), windows: [], skipModelTypes: [], skipModelIds: [] }, this.instancesProvider?.() ?? []);
+      this.lastError = null;
+      this.inFlight = false;
       return;
     }
     this.inFlight = true;
     try {
       const response = await fetch(url, {
         headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+        signal: AbortSignal.timeout(10_000),
       });
       const body = (await response.json().catch(() => null)) as QuotaWindowsPayload | { error?: string } | null;
       if (!response.ok || !body || typeof body !== "object" || !("ok" in body) || body.ok !== true) {
