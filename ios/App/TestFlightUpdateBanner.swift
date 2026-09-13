@@ -41,7 +41,14 @@ final class TestFlightUpdateMonitor: ObservableObject {
 
     /// Reads the running app's own stamped version — real `Info.plist`
     /// values in production, and whatever a test constructs otherwise.
-    static func runningBuild(bundle: Bundle = .main) -> AppBuildInfo {
+    ///
+    /// `nonisolated` on purpose: it only reads `Bundle.infoDictionary`, which
+    /// needs no actor, and it is called from `init`'s default-argument
+    /// expression above — default argument generators are their own
+    /// synchronous, nonisolated functions regardless of the enclosing type's
+    /// actor, so a plain `@MainActor`-inferred member cannot be called from
+    /// one without this.
+    nonisolated static func runningBuild(bundle: Bundle = .main) -> AppBuildInfo {
         AppBuildInfo(
             marketingVersion: bundle.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0",
             build: bundle.infoDictionary?["CFBundleVersion"] as? String ?? "0"
@@ -128,11 +135,19 @@ struct TestFlightUpdateBanner: View {
     /// manifest does not carry — so this opens TestFlight itself and falls
     /// back to TestFlight's own App Store page when it is not installed,
     /// exactly as the brief asks.
+    ///
+    /// Uses the `async` `open(_:)` overload rather than the completion-handler
+    /// one, the same way `ConnectedAppsView.authorize(_:alias:)` and
+    /// `Session.enableNotifications()` already do — one proven-to-compile
+    /// shape for "open a URL and act on whether it worked" rather than a
+    /// second one whose completion-closure actor isolation this file would
+    /// otherwise have to get right on its own.
     private func openTestFlight() {
-        guard let testFlight = URL(string: "itms-beta://") else { return }
-        UIApplication.shared.open(testFlight, options: [:]) { opened in
+        Task {
+            guard let testFlight = URL(string: "itms-beta://") else { return }
+            let opened = await UIApplication.shared.open(testFlight)
             guard !opened, let appStore = URL(string: "https://apps.apple.com/app/testflight/id899247664") else { return }
-            UIApplication.shared.open(appStore)
+            await UIApplication.shared.open(appStore)
         }
     }
 }
