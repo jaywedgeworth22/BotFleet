@@ -250,11 +250,12 @@ export function quotaModelsFromSnapshot(
   }
   for (const model of routingRows(snapshot, now)) {
     const reset = resetAtMs(model, now);
+    const isGemini = /gemini/i.test(`${model.label} ${model.modelId}`);
     models[model.modelId] = {
       capped: activeQuotaCap(model, now),
       remainingPercent: reset !== null && reset <= now ? null : remainingPercentDisplay(model),
-      ...(secondaryPercent != null ? { secondaryRemainingPercent: secondaryPercent } : {}),
-      windowsLabel: "5hr/Week",
+      ...(isGemini && secondaryPercent != null ? { secondaryRemainingPercent: secondaryPercent } : {}),
+      windowsLabel: isGemini && secondaryPercent != null ? "5hr/Week" : "5hr",
       resetsAt: resetAtMs(model, now),
       ...(activeQuotaCap(model, now)
         ? { error: `${model.label} quota exhausted (antigravity-usage)` }

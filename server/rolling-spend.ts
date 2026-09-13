@@ -40,6 +40,7 @@ export function parseTurnSpendFromEventLog(content: string, cutoffMs: number): T
       const parsed = turnCompletedSchema.safeParse(raw);
       if (!parsed.success) continue;
       const ev = parsed.data;
+      if (ev.billingMode === "estimated") continue;
       const at = ev.createdAt ? Date.parse(ev.createdAt) : NaN;
       if (!Number.isFinite(at) || at < cutoffMs) continue;
       entries.push({
@@ -66,7 +67,7 @@ export function scanRecentSpend(eventsDir: string, now = Date.now()): TurnSpendE
     return entries;
   }
   for (const file of files) {
-    if (!file.endsWith(".ndjson")) continue;
+    if (!file.endsWith(".ndjson") && !file.endsWith(".ndjson.1")) continue;
     const fullPath = join(eventsDir, file);
     try {
       const st = statSync(fullPath);
@@ -100,6 +101,9 @@ export class RollingSpendTracker {
     if (!entry.costUsd || !Number.isFinite(entry.costUsd) || entry.costUsd <= 0) {
       return;
     }
+    if (entry.billingMode === "estimated") {
+      return;
+    }
     this.records.push({
       at: entry.at ?? Date.now(),
       provider: entry.provider,
@@ -127,20 +131,35 @@ export class RollingSpendTracker {
       }
     };
 
+    // Ensure DeepSeek alias keys are aggregated together across all aliases
+    const dsKeys = ["deepseekAgent", "deepseek", "dshAgent"];
+    let dsSpend5h = 0;
+    let dsSpend7d = 0;
+    let hasDsEntry = false;
     for (const r of this.records) {
-      addCost(r.provider, r.costUsd, r.at);
-      if (r.instanceId && r.instanceId !== r.provider) {
-        addCost(r.instanceId, r.costUsd, r.at);
+      const isDs = dsKeys.includes(r.provider) || (r.instanceId && dsKeys.includes(r.instanceId));
+      if (isDs) {
+        hasDsEntry = true;
+        dsSpend7d = Math.round((dsSpend7d + r.costUsd) * 10_000) / 10_000;
+        if (r.at >= t5h) {
+          dsSpend5h = Math.round((dsSpend5h + r.costUsd) * 10_000) / 10_000;
+        }
+      }
+    }
+    if (hasDsEntry) {
+      const dsSummary = { spend5hUsd: dsSpend5h, spend7dUsd: dsSpend7d };
+      for (const k of dsKeys) {
+        spend[k] = { ...dsSummary };
       }
     }
 
-    // Ensure DeepSeek alias keys are synchronized if one was recorded
-    const dsKeys = ["deepseekAgent", "deepseek", "dshAgent"];
-    const hasDs = dsKeys.find((k) => spend[k]);
-    if (hasDs) {
-      const summary = spend[hasDs];
-      for (const k of dsKeys) {
-        if (!spend[k]) spend[k] = { ...summary };
+    for (const r of this.records) {
+      const isDs = dsKeys.includes(r.provider) || (r.instanceId && dsKeys.includes(r.instanceId));
+      if (!isDs) {
+        addCost(r.provider, r.costUsd, r.at);
+        if (r.instanceId && r.instanceId !== r.provider) {
+          addCost(r.instanceId, r.costUsd, r.at);
+        }
       }
     }
 

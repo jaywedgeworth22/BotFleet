@@ -88,6 +88,60 @@ describe("rolling spend calculation", () => {
     });
   });
 
+  it("ignores estimated billing entries from actual spend totals", () => {
+    const lines = [
+      JSON.stringify({
+        type: "turn.completed",
+        provider: "claude",
+        createdAt: new Date(now - 1000).toISOString(),
+        cost: 0.15,
+        billingMode: "estimated",
+      }),
+      JSON.stringify({
+        type: "turn.completed",
+        provider: "deepseek",
+        createdAt: new Date(now - 1000).toISOString(),
+        cost: 0.05,
+        billingMode: "actual",
+      }),
+    ].join("\n");
+
+    const parsed = parseTurnSpendFromEventLog(lines, now - SEVEN_DAYS_MS);
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].provider).toBe("deepseek");
+    expect(parsed[0].costUsd).toBe(0.05);
+
+    const tracker = new RollingSpendTracker();
+    tracker.recordTurn({
+      at: now - 1000,
+      provider: "claude",
+      costUsd: 0.2,
+      billingMode: "estimated",
+    });
+    expect(tracker.getSpend(now).claude).toBeUndefined();
+  });
+
+  it("aggregates spend from multiple provider aliases without double-counting", () => {
+    const tracker = new RollingSpendTracker();
+    // dshAgent recorded 0.05
+    tracker.recordTurn({
+      at: now - 1000,
+      provider: "dshAgent",
+      costUsd: 0.05,
+    });
+    // deepseekAgent recorded 0.03
+    tracker.recordTurn({
+      at: now - 2000,
+      provider: "deepseekAgent",
+      costUsd: 0.03,
+    });
+
+    const spend = tracker.getSpend(now);
+    expect(spend.dshAgent).toEqual({ spend5hUsd: 0.08, spend7dUsd: 0.08 });
+    expect(spend.deepseekAgent).toEqual({ spend5hUsd: 0.08, spend7dUsd: 0.08 });
+    expect(spend.deepseek).toEqual({ spend5hUsd: 0.08, spend7dUsd: 0.08 });
+  });
+
   it("prunes turns older than 7 days", () => {
     const tracker = new RollingSpendTracker();
     tracker.recordTurn({

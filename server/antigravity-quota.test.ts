@@ -263,7 +263,9 @@ describe("findAntigravityUsageBin", () => {
     };
     const snapshot = parseAntigravityUsageJson(fixtureWithCredits);
     const overlay = quotaModelsFromSnapshot(snapshot);
-    expect(overlay["claude-sonnet-4-6"]?.secondaryRemainingPercent).toBe(1);
-    expect(overlay["claude-sonnet-4-6"]?.windowsLabel).toBe("5hr/Week");
+    expect(overlay["claude-sonnet-4-6"]?.secondaryRemainingPercent).toBeUndefined();
+    expect(overlay["claude-sonnet-4-6"]?.windowsLabel).toBe("5hr");
+    expect(overlay["gemini-3.1-pro-high"]?.secondaryRemainingPercent).toBe(1);
+    expect(overlay["gemini-3.1-pro-high"]?.windowsLabel).toBe("5hr/Week");
   });
 });
