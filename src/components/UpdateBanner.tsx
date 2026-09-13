@@ -5,6 +5,14 @@
 import { useEffect, useState } from "react";
 import { ArrowDownToLine, Loader2, RefreshCw, Sparkles, X } from "lucide-react";
 import { useUpdaterState } from "@/lib/updater";
+import {
+  availableLabel,
+  bannerIsActionable,
+  lastRunLabel,
+  runningLabel,
+  updateSource,
+  useUpdateControl,
+} from "@/lib/update-control";
 import { cn } from "@/lib/cn";
 
 // The one action button in the card. Disabled drops the accent fill for the
@@ -41,6 +49,8 @@ import { loadUpdateNotificationsEnabled } from "@/lib/update-preferences";
 
 export function UpdateBanner() {
   const s = useUpdaterState();
+  // The local-harness path, which is the only one a locally built app has.
+  const local = useUpdateControl();
   // dismissal is per status+version, so the popup returns for the next
   // update (and when an available one finishes downloading)
   const [dismissed, setDismissed] = useState<string | null>(null);
@@ -60,6 +70,15 @@ export function UpdateBanner() {
   
   const status = s?.status;
   useEffect(() => setPending(null), [status]);
+
+  // When this Mac can install from its own checkout, that path owns the
+  // popup entirely: it is the one that can actually finish, it is the one
+  // with progress to show while it runs, and a locally built app has no
+  // release feed behind the other card — so its "check failed" is noise.
+  if (updateSource(local.status, Boolean(window.ogb?.updater)) === "harness") {
+    if (!enabled || !bannerIsActionable(local.status)) return null;
+    return <LocalUpdateCard local={local} onDismiss={setDismissed} dismissed={dismissed} />;
+  }
 
   if (!enabled || !s || s.status === "idle" || s.status === "checking") return null;
   const key = `${s.status}:${s.version ?? ""}`;
@@ -211,6 +230,115 @@ export function UpdateBanner() {
           <button
             onClick={() => setDismissed(key)}
             disabled={pending !== null}
+            className="rounded-lg px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-50 disabled:hover:bg-transparent"
+          >
+            Later
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The same popup, driven by the harness rather than the release feed.
+ *
+ * A local update takes minutes and restarts both the harness and this app,
+ * so unlike the feed card this one is mostly a progress report: the step the
+ * updater is on, how far through it is, and what happened last time. */
+function LocalUpdateCard({
+  local,
+  dismissed,
+  onDismiss,
+}: {
+  local: ReturnType<typeof useUpdateControl>;
+  dismissed: string | null;
+  onDismiss: (key: string) => void;
+}) {
+  const status = local.status;
+  if (!status) return null;
+  const running = status.running;
+  const key = running
+    ? `running:${running.runId}`
+    : status.available
+      ? `available:${status.available.sourceCommit}`
+      : `last:${status.lastRun?.runId ?? ""}`;
+  if (!running && dismissed === key) return null;
+
+  const title = running
+    ? "Updating BotFleet…"
+    : (availableLabel(status) ?? "The last update did not finish");
+  const subtitle = running
+    ? runningLabel(running)
+    : status.available
+      ? "This Mac can build and install it."
+      : (lastRunLabel(status.lastRun) ?? "");
+  const percent = running && typeof running.progress === "number"
+    ? Math.round(Math.min(1, Math.max(0, running.progress)) * 100)
+    : null;
+
+  return (
+    <div className="animate-panel-in fixed bottom-4 left-4 z-50 w-[300px] rounded-xl border border-hairline/40 bg-panel p-3.5 shadow-2xl shadow-black/50">
+      <div className="flex items-start gap-2.5">
+        <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent">
+          <Sparkles size={14} />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="text-[13.5px] font-semibold text-ink">{title}</div>
+          <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary" title={subtitle}>
+            {subtitle}
+          </div>
+        </div>
+        {!running && (
+          <button
+            onClick={() => onDismiss(key)}
+            className="shrink-0 rounded-md p-1 text-ink-secondary hover:bg-control hover:text-ink"
+            title="Dismiss"
+          >
+            <X size={14} />
+          </button>
+        )}
+      </div>
+
+      {running && (
+        <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-control">
+          <div
+            className={cn(
+              "h-full rounded-full bg-accent transition-[width]",
+              percent === null && "w-1/4 animate-pulse",
+            )}
+            style={percent === null ? undefined : { width: `${percent}%` }}
+          />
+        </div>
+      )}
+
+      {local.error && (
+        <div role="alert" className="mt-2 text-[12px] text-danger">
+          {local.error}
+        </div>
+      )}
+
+      {!running && (
+        <div className="mt-2.5 flex gap-2">
+          {status.capabilities.canRun && status.available && (
+            <button
+              onClick={() => void local.install()}
+              disabled={local.busy !== null}
+              className={primaryAction}
+            >
+              {local.busy === "install" ? (
+                <>
+                  <Loader2 size={13} className="animate-spin" /> Starting…
+                </>
+              ) : (
+                <>
+                  <ArrowDownToLine size={13} /> Install Update
+                </>
+              )}
+            </button>
+          )}
+          <button
+            onClick={() => onDismiss(key)}
+            disabled={local.busy !== null}
             className="rounded-lg px-3 py-1.5 text-[13px] text-ink-secondary hover:bg-control hover:text-ink disabled:opacity-50 disabled:hover:bg-transparent"
           >
             Later

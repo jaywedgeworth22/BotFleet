@@ -157,6 +157,15 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "DELETE", path: /^\/api\/routines\/[\w-]+$/ },
   { method: "POST", path: /^\/api\/routines\/[\w-]+\/run$/ },
 
+  // Checking for a newer BotFleet and installing it.  The phone is the one
+  // place an update is convenient to start — the Mac is usually mid-work when
+  // someone notices a build is stale — and the harness refuses the run while
+  // anything is in flight, so a tap from a pocket cannot interrupt a turn.
+  // `status` is a read; `check` and `run` are the two actions.
+  { method: "GET", path: /^\/api\/update\/status$/ },
+  { method: "POST", path: /^\/api\/update\/check$/ },
+  { method: "POST", path: /^\/api\/update\/run$/ },
+
   // Connected apps have full parity with the computer: list, authorize, and
   // detach an account.
   //

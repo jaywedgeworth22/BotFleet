@@ -20,6 +20,12 @@ import { homedir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { applyPreparedUpdate, prepareUpdate, runUpdate } from "./mac-update-transaction.mjs";
+import {
+  createUpdateProgress,
+  instrumentOperations,
+  outcomeForError,
+  outcomeMessage,
+} from "./update-progress.mjs";
 import { validUpdateCredentialReceipt } from "../electron/update-credential-preparation.mjs";
 
 const EXPECTED_TEAM_ID = "CC8UTF7ATG";
@@ -59,6 +65,8 @@ export function parseArguments(argv) {
     bundle: undefined,
     dependencies: undefined,
     openApplication: true,
+    progress: undefined,
+    runId: undefined,
   };
   while (args.length) {
     const arg = args.shift();
@@ -67,13 +75,15 @@ export function parseArguments(argv) {
     else if (arg === "--stage") parsed.stage = resolve(requiredValue(arg, args.shift()));
     else if (arg === "--bundle") parsed.bundle = resolve(requiredValue(arg, args.shift()));
     else if (arg === "--dependencies") parsed.dependencies = resolve(requiredValue(arg, args.shift()));
+    else if (arg === "--progress") parsed.progress = resolve(requiredValue(arg, args.shift()));
+    else if (arg === "--run-id") parsed.runId = requiredValue(arg, args.shift());
     else if (arg === "--no-open") parsed.openApplication = false;
     else if (arg === "--help" || arg === "-h") parsed.help = true;
     else throw new Error(`Unknown option: ${arg}`);
   }
   if (command === "apply" && !parsed.stage) throw new Error("apply requires --stage <directory>");
   if (command === "unquiesce" && (parsed.target !== "origin/main" || parsed.source || parsed.stage || parsed.bundle ||
-      parsed.dependencies || parsed.openApplication === false)) {
+      parsed.dependencies || parsed.openApplication === false || parsed.progress || parsed.runId)) {
     throw new Error("unquiesce accepts no options");
   }
   if (command === "apply" && (parsed.bundle || parsed.dependencies || parsed.source)) {
@@ -84,6 +94,10 @@ export function parseArguments(argv) {
   }
   if (parsed.bundle && !parsed.source) {
     throw new Error("importing a built bundle requires its exact --source checkout");
+  }
+  if (parsed.runId !== undefined) {
+    if (!parsed.progress) throw new Error("--run-id requires --progress <path>");
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(parsed.runId)) throw new Error("--run-id must be a short identifier");
   }
   return parsed;
 }
@@ -100,6 +114,9 @@ function usage() {
                               [--bundle PATH --dependencies PATH]
   update-botfleet-mac.mjs apply   --stage PATH [--no-open]
   update-botfleet-mac.mjs unquiesce
+
+Any of update/prepare/apply also accepts --progress PATH [--run-id ID], which records each
+step and the final outcome to a JSON file a detached caller can read while the run is going.
 
 prepare builds and validates without touching the live checkout, installed app, or processes.
 An existing exact-source build can be imported with --bundle and --dependencies.
@@ -1852,16 +1869,42 @@ export async function main(argv = process.argv.slice(2)) {
     console.log("Released the BotFleet runtime admission fence.");
     return;
   }
-  const operations = createOperations(config);
-  if (parsed.command === "prepare") {
-    await prepareUpdate(parsed, operations);
+  const bare = createOperations(config);
+  // The detached run is the only kind the desktop app and the phone can
+  // start, and neither can be its parent — so a progress file is the whole
+  // channel.  Instrumenting the adapter keeps the coordinator untouched.
+  const progress = parsed.progress
+    ? createUpdateProgress({
+        path: parsed.progress,
+        runId: parsed.runId || randomUUID(),
+        command: parsed.command,
+        target: parsed.target,
+      })
+    : null;
+  const operations = progress ? instrumentOperations(bare, progress) : bare;
+  const perform = async () => {
+    if (parsed.command === "prepare") return prepareUpdate(parsed, operations);
+    if (parsed.command === "apply") {
+      return applyPreparedUpdate(await loadPrepared(parsed.stage), parsed, operations);
+    }
+    return runUpdate(parsed, parsed, operations);
+  };
+  if (!progress) {
+    await perform();
     return;
   }
-  if (parsed.command === "apply") {
-    await applyPreparedUpdate(await loadPrepared(parsed.stage), parsed, operations);
-    return;
+  try {
+    await perform();
+    progress.finish("verified", parsed.command === "prepare"
+      ? "The update was prepared."
+      : "The update installed and verified.");
+  } catch (error) {
+    progress.finish(
+      outcomeForError(error, { rolledBack: progress.record.rolledBack }),
+      outcomeMessage(error),
+    );
+    throw error;
   }
-  await runUpdate(parsed, parsed, operations);
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || "").href) {

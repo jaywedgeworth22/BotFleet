@@ -44,6 +44,7 @@ import { authorizedRuntime } from "../electron/runtime-identity.mjs";
 import { planCredentialRestore } from "../electron/credential-restore.mjs";
 import { workspaceCredentialPending } from "../electron/workspace-credentials.mjs";
 import { runtimeBuildIdentity, runtimeReadiness } from "./runtime-identity.ts";
+import { createUpdateControl, packagedInstalledAt } from "./update-control.ts";
 import {
   avatarGenerationRequestSchema,
   avatarGenerationStateMatches,
@@ -290,6 +291,19 @@ const MIME: Record<string, string> = {
 // SQLite, routines, or webhook receivers start.  Health timeouts never release it.
 // The parent startup lock also serializes the one-time legacy directory move.
 const harnessOwner = initializeHarnessOwnership(DATA_DIR, PORT, ensureDirs);
+// "Is there a newer BotFleet, and install it" — asked from this Mac or from
+// a paired phone.  The updater it starts stops this harness partway through,
+// so it can never be our child: it is launched detached and reports through
+// a progress file, which is also how a run that outlived the last harness is
+// still describable here.  Construction reconciles that file on boot.
+const updateControl = createUpdateControl({
+  installed: {
+    version: runtimeBuildIdentity.version,
+    sourceCommit: runtimeBuildIdentity.sourceCommit,
+    installedAt: packagedInstalledAt(),
+  },
+  emit: (status) => broadcast({ kind: "update.status", status }),
+});
 // Bound the per-thread transcript logs before anything starts appending to
 // them.  Rotation keeps every log THIS run writes inside its cap
 // (server/transcript-retention.ts); this pass is what trims whatever an
@@ -5768,6 +5782,23 @@ function phoneCwdConfinement(): CwdConfinement {
   return { roots: [...roots], protectedDirs: protectedCwdDirs(homedir(), DATA_DIR) };
 }
 
+/** Who may re-check for an update or start one.
+ *
+ * Every route on this port is loopback-only already: the desktop renderer
+ * and the companion sidecar both speak to 127.0.0.1, and the sidecar has
+ * checked the phone's pairing token against its own allowlist before it
+ * forwards anything here.  On top of that, a caller holding the harness
+ * owner nonce is the app that started this harness and is trusted outright,
+ * and every other caller must send JSON — which makes the request
+ * non-simple, so a hostile page cannot submit it with a form and its
+ * cross-origin JSON dies in a preflight this server never answers.
+ */
+function authorizedUpdateControl(req: IncomingMessage): boolean {
+  if (!isLoopbackAddress(req.socket.remoteAddress)) return false;
+  if (authorizedRuntime(harnessOwner, req.headers.authorization)) return true;
+  return String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json");
+}
+
 function json(res: ServerResponse, status: number, body: unknown) {
   const data = JSON.stringify(body);
   res.writeHead(status, { "content-type": "application/json" });
@@ -5937,7 +5968,8 @@ const server = createServer(async (req, res) => {
     if (origin && !isAllowedOrigin(origin)) {
       return json(res, 403, { error: "forbidden: cross-origin request" });
     }
-    if (runtimeQuiescing && path.startsWith("/api/") && path !== "/api/runtime" && path !== "/api/runtime/quiesce" && path !== "/api/health") {
+    if (runtimeQuiescing && path.startsWith("/api/") && path !== "/api/runtime" && path !== "/api/runtime/quiesce" &&
+        path !== "/api/health" && path !== "/api/update/status") {
       return json(res, 503, { error: "BotFleet is quiescing for an update" });
     }
     const mutatingApiRequest = path.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(method) &&
@@ -8619,6 +8651,32 @@ const server = createServer(async (req, res) => {
         quiescing: runtimeQuiescing,
         dataOwner: { pid: harnessOwner.pid, port: harnessOwner.port },
       });
+    }
+    // ── check for a newer BotFleet, and install it ─────────────────────
+    // The three routes the desktop app and the paired phone share.  Reading
+    // is open to anything that reaches this loopback port; the two actions
+    // take `authorizedUpdateControl` above.  The run itself is detached and
+    // survives both this harness and the desktop app — server/update-control.ts
+    // explains why it has to be.
+    if (method === "GET" && path === "/api/update/status") {
+      return json(res, 200, updateControl.status());
+    }
+    if (method === "POST" && path === "/api/update/check") {
+      if (!authorizedUpdateControl(req)) return json(res, 401, { error: "unauthorized" });
+      return json(res, 200, await updateControl.check());
+    }
+    if (method === "POST" && path === "/api/update/run") {
+      if (!authorizedUpdateControl(req)) return json(res, 401, { error: "unauthorized" });
+      let force = false;
+      try {
+        const body = await readBody(req);
+        force = body?.force === true;
+      } catch {
+        // An absent or unparseable body is the ordinary "just install it".
+      }
+      const started = await updateControl.start({ force });
+      if (!started.ok) return json(res, 409, { error: started.error, status: started.status });
+      return json(res, 202, { runId: started.runId, status: started.status });
     }
     // identity handshake for the packaged app's port fallback: the forked
     // child proves it is OURS by echoing its pid (a stray dev server has
