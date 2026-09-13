@@ -136,6 +136,12 @@ import {
   EVENTS_DIR,
   NATIVE_DIR,
 } from "./config.ts";
+import {
+  describeSweep,
+  startTranscriptRetentionSweeps,
+  sweepTranscriptRetention,
+  removeTranscriptLogs,
+} from "./transcript-retention.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { findCliCandidates, resetPathCache } from "./env-path.ts";
 import { cliProbeEnvironment } from "./cli-probe-env.ts";
@@ -283,6 +289,21 @@ const MIME: Record<string, string> = {
 // SQLite, routines, or webhook receivers start.  Health timeouts never release it.
 // The parent startup lock also serializes the one-time legacy directory move.
 const harnessOwner = initializeHarnessOwnership(DATA_DIR, PORT, ensureDirs);
+// Bound the per-thread transcript logs before anything starts appending to
+// them.  Rotation keeps every log THIS run writes inside its cap
+// (server/transcript-retention.ts); this pass is what trims whatever an
+// earlier run left behind — three native logs on the owner's Mac had reached
+// 1.93 GB, 1.68 GB and 1.58 GB, against an Inspector panel that only ever
+// reads the newest few hundred lines.  Synchronous, behind the ownership
+// fence and long before `server.listen`, so no request ever waits on it, and
+// a stat-only no-op on every boot after the first.
+const transcriptDirs = { eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR };
+const bootTranscriptSweep = describeSweep(sweepTranscriptRetention(transcriptDirs));
+if (bootTranscriptSweep) console.log(bootTranscriptSweep);
+// A harness that stays up for weeks outlives its boot sweep; this catches a
+// log left oversized by anything rotation did not cover.  Unref'd, so it is
+// never the reason the process stays alive.
+const stopTranscriptSweeps = startTranscriptRetentionSweeps(transcriptDirs);
 let runtimeQuiescing = false;
 let activeUpdateAdmissions = 0;
 const cfg = loadConfig();
@@ -7038,6 +7059,10 @@ const server = createServer(async (req, res) => {
       cancelRoomRounds((round) => round.threadId === m![2]);
       const updated = store.deleteGroupTask(group.id, m[2]);
       if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
+      // The thread is gone from the store, so its logs have nothing left to
+      // name them (server/transcript-retention.ts).  A task that MOVED keeps
+      // its thread id and never reaches this branch.
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, [m[2]!]);
       const fresh = groupWithThread(updated);
       broadcast({ kind: "group", group: fresh });
       return json(res, 200, { group: fresh });
@@ -7214,13 +7239,10 @@ const server = createServer(async (req, res) => {
       const threadIds = new Set([group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]);
       for (const threadId of threadIds) lastReply.delete(threadId);
       store.deleteGroup(group.id);
-      for (const threadId of threadIds) {
-        for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-          try {
-            unlinkSync(join(dir, `${threadId}.ndjson`));
-          } catch {}
-        }
-      }
+      // Both generations and any temp file, for every task this room had: a
+      // `.ndjson.1` or a killed trim's `.tmp` left behind would outlive the
+      // room it belonged to (server/transcript-retention.ts).
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, threadIds);
       return json(res, 200, { ok: true });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/messages$/);
@@ -7676,6 +7698,8 @@ const server = createServer(async (req, res) => {
       // container — orphaning it forever.  Claimed before the first await,
       // exactly like that route claims it, so two requests cannot both
       // pass the check.
+      // Read off the record while it still exists, not after the delete.
+      const botThreadIds = new Set([bot.threadId, ...(bot.tasks ?? []).map((task) => task.threadId)]);
       const localVmTarget = perBotLocalVmTarget(bot.id);
       if (localVmLifecycleBusy.has(localVmTarget.key)) {
         return json(res, 409, { error: "this bot's Local VM setup action is still running — retry the delete after it finishes" });
@@ -7705,15 +7729,25 @@ const server = createServer(async (req, res) => {
         // Best-effort: no container runtime, or no such container, is the
         // ordinary case and must not fail the delete.
         await containerComputerAction("remove", undefined, undefined, localVmTarget).catch(() => {});
+        // The snapshot above was taken before two awaits.  A task created
+        // while they ran has a record the delete below removes and a pair of
+        // logs the snapshot never heard of, so take the union rather than
+        // either list alone.
+        const current = store.bot(bot.id);
+        if (current) {
+          botThreadIds.add(current.threadId);
+          for (const task of current.tasks ?? []) botThreadIds.add(task.threadId);
+        }
         store.deleteBot(bot.id);
       } finally {
         localVmLifecycleBusy.delete(localVmTarget.key);
       }
-      for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-        try {
-          unlinkSync(join(dir, `${bot.threadId}.ndjson`));
-        } catch {}
-      }
+      // Every task is its own thread with its own pair of logs, and
+      // `bot.threadId` names only the active one — deleting just that left
+      // every other task's transcript on disk forever, which was already true
+      // on `main` for the single generation it knew about.  Same set
+      // `store.deleteBot` uses to drop the message records.
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, botThreadIds);
       return json(res, 200, { ok: true });
     }
 
@@ -8248,6 +8282,12 @@ const server = createServer(async (req, res) => {
             error: "those conversations cannot merge — a bot keeps its last one",
           });
         }
+        // A merge COPIES the source's messages into the target and then
+        // deletes the source task, so — unlike the moves below, which keep
+        // their thread id — the source thread id names nothing afterwards and
+        // its logs would sit on disk forever.  The target keeps its own
+        // (server/transcript-retention.ts).
+        for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, [m[2]!]);
         broadcast({ kind: "bot", bot: botWithThread(merged) });
         return json(res, 200, { bot: botWithThread(merged) });
       }
@@ -8309,6 +8349,7 @@ const server = createServer(async (req, res) => {
       }
       const updated = store.deleteTask(m[1], m[2]);
       if (!updated) return json(res, 400, { error: "a bot keeps at least one task" });
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, [m[2]!]);
       const fresh = botWithThread(updated);
       broadcast({ kind: "bot", bot: fresh });
       return json(res, 200, { bot: fresh });
@@ -10050,6 +10091,7 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
     for (const idle of localVmIdles.values()) idle.cancel();
     vps.closeAllVpsDesktopTunnels();
     watchdog.stop();
+    stopTranscriptSweeps();
     routines?.stop();
     stopAntigravityQuotaPoller();
     usageQuotaPoller.stop();

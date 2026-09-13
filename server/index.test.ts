@@ -4051,6 +4051,94 @@ describe("harness HTTP API", () => {
   });
 });
 
+describe("transcript logs on delete", () => {
+  /** Both generations plus a killed trim's leftovers, for one thread. */
+  const logFiles = (threadId: string) =>
+    ["events", "native"].flatMap((dir) => [
+      join(home, ".botfleet", dir, `${threadId}.ndjson`),
+      join(home, ".botfleet", dir, `${threadId}.ndjson.1`),
+      join(home, ".botfleet", dir, `${threadId}.ndjson.4242.123e4567-e89b-42d3-a456-426614174000.tmp`),
+    ]);
+
+  it("removes every task's logs, both generations and temp files, when a bot is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const first = bot.threadId;
+    const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Second task" });
+    expect(task.status).toBe(201);
+    const second = task.body.task.threadId;
+    expect(second).not.toBe(first);
+
+    // A bot's `threadId` names only its ACTIVE task, so a delete that used it
+    // alone orphaned every other task's transcript forever.
+    const files = [...logFiles(first), ...logFiles(second)];
+    for (const file of files) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
+    expect(files.filter((file) => existsSync(file))).toEqual([]);
+  });
+
+  it("removes a bot task's logs when just that task is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const kept = bot.threadId;
+    const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Throwaway" });
+    expect(task.status).toBe(201);
+    const gone = task.body.task.threadId;
+    for (const file of [...logFiles(kept), ...logFiles(gone)]) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/bots/${bot.id}/tasks/${gone}`)).status).toBe(200);
+    expect(logFiles(gone).filter((file) => existsSync(file))).toEqual([]);
+    // the task that stayed keeps its history
+    expect(logFiles(kept).every((file) => existsSync(file))).toBe(true);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
+  it("removes the merged-away thread's logs when two tasks are merged", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const kept = bot.threadId;
+    const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Folded in" });
+    expect(task.status).toBe(201);
+    const gone = task.body.task.threadId;
+    for (const file of [...logFiles(kept), ...logFiles(gone)]) writeFileSync(file, "{}\n");
+
+    // a merge copies the source's messages into the target and deletes the
+    // source task, so nothing names the source thread afterwards
+    const merged = await api("PATCH", `/api/bots/${bot.id}/tasks/${gone}`, { mergeInto: kept });
+    expect(merged.status).toBe(200);
+    expect(logFiles(gone).filter((file) => existsSync(file))).toEqual([]);
+    expect(logFiles(kept).every((file) => existsSync(file))).toBe(true);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
+  it("removes a room task's logs when just that task is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Task cleanup", memberIds: [bot.id] })).body.group;
+    const kept = room.threadId;
+    const task = await api("POST", `/api/groups/${room.id}/tasks`, { title: "Throwaway" });
+    expect(task.status).toBe(201);
+    const gone = task.body.task.threadId;
+    for (const file of [...logFiles(kept), ...logFiles(gone)]) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/groups/${room.id}/tasks/${gone}`)).status).toBe(200);
+    expect(logFiles(gone).filter((file) => existsSync(file))).toEqual([]);
+    expect(logFiles(kept).every((file) => existsSync(file))).toBe(true);
+    await api("DELETE", `/api/groups/${room.id}`);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
+  it("removes every task's logs when a room is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Log cleanup", memberIds: [bot.id] })).body.group;
+    const task = await api("POST", `/api/groups/${room.id}/tasks`, { title: "Second task" });
+    expect(task.status).toBe(201);
+    const files = [...logFiles(room.threadId), ...logFiles(task.body.task.threadId)];
+    for (const file of files) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/groups/${room.id}`)).status).toBe(200);
+    expect(files.filter((file) => existsSync(file))).toEqual([]);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+});
+
 describe("section context API", () => {
   it("keeps user-managed briefs isolated by live section and clears them explicitly", async () => {
     const work = (await api("POST", "/api/bots")).body.bot;
