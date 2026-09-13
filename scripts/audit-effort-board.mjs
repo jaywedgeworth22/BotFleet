@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 
 const OPEN = new Set(["open", "in_progress"]);
 const REPO = "jaywedgeworth22/BotFleet";
-const plain = (value) => String(value ?? "").replace(/https?:\/\/\S+/gi, "[link]").replace(/[\r\n]+/g, " ");
+const plain = (value) => String(value ?? "").replace(/\b[a-z][a-z0-9+.-]*:\S+/gi, "[link]").replace(/[\r\n]+/g, " ");
 const normalized = (value) => plain(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 const summary = (row) => ({ id: row.id, title: plain(row.title), status: row.status, sourceKind: row.source_kind, owner: row.addressed_by || row.reported_by || null });
 

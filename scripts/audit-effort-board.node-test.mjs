@@ -27,8 +27,13 @@ test("rejects invalid snapshots and does not copy private URLs into the report",
   const row = { id: "a", app: "botfleet", source_kind: "agent-report", title: "Check https://host.invalid/capability/secret", status: "open" };
   const base = { board: [row], issues: [], mergedPullRequests: [] };
   assert.ok(!JSON.stringify(auditEffortBoard(base)).includes("capability/secret"));
-  for (const scheme of ["HTTPS", "HtTpS", "HTTP"]) {
+  for (const scheme of ["HTTPS", "HtTpS", "HTTP", "wss", "ssh", "file", "botfleet", "custom+app-v2"]) {
     assert.ok(!JSON.stringify(auditEffortBoard({ ...base, board: [{ ...row, title: `Check ${scheme}://host.invalid/capability/secret` }] })).includes("capability/secret"));
+  }
+  for (const uri of ["mailto:private@example.invalid", "data:text/plain,secret"]) {
+    const report = JSON.stringify(auditEffortBoard({ ...base, board: [{ ...row, title: `Check ${uri}` }] }));
+    assert.ok(!report.includes(uri));
+    assert.ok(report.includes("Check [link]"));
   }
   assert.throws(() => auditEffortBoard({ ...base, board: [row, row] }), /duplicate/);
   assert.throws(() => auditEffortBoard({ ...base, board: [{ ...row, app: "another-app" }] }), /foreign/);
