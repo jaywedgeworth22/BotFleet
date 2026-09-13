@@ -125,9 +125,9 @@ export class RollingSpendTracker {
       if (!spend[key]) {
         spend[key] = { spend5hUsd: 0, spend7dUsd: 0 };
       }
-      spend[key].spend7dUsd = Math.round((spend[key].spend7dUsd + cost) * 10_000) / 10_000;
+      spend[key].spend7dUsd += cost;
       if (at >= t5h) {
-        spend[key].spend5hUsd = Math.round((spend[key].spend5hUsd + cost) * 10_000) / 10_000;
+        spend[key].spend5hUsd += cost;
       }
     };
 
@@ -140,14 +140,17 @@ export class RollingSpendTracker {
       const isDs = dsKeys.includes(r.provider) || (r.instanceId && dsKeys.includes(r.instanceId));
       if (isDs) {
         hasDsEntry = true;
-        dsSpend7d = Math.round((dsSpend7d + r.costUsd) * 10_000) / 10_000;
+        dsSpend7d += r.costUsd;
         if (r.at >= t5h) {
-          dsSpend5h = Math.round((dsSpend5h + r.costUsd) * 10_000) / 10_000;
+          dsSpend5h += r.costUsd;
         }
       }
     }
     if (hasDsEntry) {
-      const dsSummary = { spend5hUsd: dsSpend5h, spend7dUsd: dsSpend7d };
+      const dsSummary = {
+        spend5hUsd: Math.round(dsSpend5h * 10_000) / 10_000,
+        spend7dUsd: Math.round(dsSpend7d * 10_000) / 10_000,
+      };
       for (const k of dsKeys) {
         spend[k] = { ...dsSummary };
       }
@@ -161,6 +164,12 @@ export class RollingSpendTracker {
           addCost(r.instanceId, r.costUsd, r.at);
         }
       }
+    }
+
+    // Round accumulated values in final output
+    for (const key of Object.keys(spend)) {
+      spend[key].spend5hUsd = Math.round(spend[key].spend5hUsd * 10_000) / 10_000;
+      spend[key].spend7dUsd = Math.round(spend[key].spend7dUsd * 10_000) / 10_000;
     }
 
     return spend;

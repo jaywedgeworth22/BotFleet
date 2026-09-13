@@ -142,6 +142,22 @@ describe("rolling spend calculation", () => {
     expect(spend.deepseek).toEqual({ spend5hUsd: 0.08, spend7dUsd: 0.08 });
   });
 
+  it("preserves precision when aggregating small fractional turns", () => {
+    const tracker = new RollingSpendTracker();
+    // Record three turns with $0.00004 each
+    for (let i = 0; i < 3; i++) {
+      tracker.recordTurn({
+        at: now - 1000 * (i + 1),
+        provider: "minimax",
+        costUsd: 0.00004,
+      });
+    }
+    const spend = tracker.getSpend(now);
+    // 0.00004 * 3 = 0.00012 -> rounded to 0.0001
+    expect(spend.minimax?.spend5hUsd).toBe(0.0001);
+    expect(spend.minimax?.spend7dUsd).toBe(0.0001);
+  });
+
   it("prunes turns older than 7 days", () => {
     const tracker = new RollingSpendTracker();
     tracker.recordTurn({

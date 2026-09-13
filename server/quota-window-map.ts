@@ -61,7 +61,8 @@ export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   // raw Usage Monitor windows table this PR removed was the only place a
   // Kimi window stayed visible without this mapping.
   if (hay.includes("kimi") || hay.includes("moonshot")) return ["kimiAgent"];
-  if (hay.includes("deepseek") || hay.includes("dsh")) return ["deepseekAgent", "deepseek", "dshAgent"];
+  if (hay.includes("dsh")) return ["dshAgent"];
+  if (hay.includes("deepseek")) return ["deepseekAgent", "deepseek"];
   return [];
 }
 
