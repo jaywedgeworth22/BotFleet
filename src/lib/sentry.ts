@@ -63,7 +63,7 @@ const browserPort: SentryBrowserPort = {
         Sentry.browserTracingIntegration(),
         Sentry.feedbackIntegration({
           colorScheme: "light",
-          autoInject: true,
+          autoInject: false,
           showBranding: false,
           buttonLabel: "Report a problem",
           submitButtonLabel: "Send",
@@ -157,6 +157,205 @@ export function initSentry(): void {
 export const SentryErrorBoundary = Sentry.ErrorBoundary;
 export const captureException = Sentry.captureException;
 export const captureMessage = Sentry.captureMessage;
+
+export interface OpenFeedbackOptions {
+  formTitle?: string;
+  defaultMessage?: string;
+  defaultEmail?: string;
+  defaultName?: string;
+}
+
+interface SentryFeedbackDialog {
+  appendToDom(): void;
+  open(): void;
+  close(): void;
+  removeFromDom(): void;
+}
+
+let activeFeedbackDialog: SentryFeedbackDialog | null = null;
+let isCreatingFeedback = false;
+let activeFeedbackDetails: string | null = null;
+let feedbackProcessorInstalled = false;
+
+export function attachFeedbackEventDetails<T extends Sentry.Event>(event: T): T {
+  if (event.type === "feedback" && activeFeedbackDetails) {
+    return {
+      ...event,
+      contexts: {
+        ...event.contexts,
+        reported_problem: {
+          error_details: activeFeedbackDetails,
+        },
+      },
+    };
+  }
+  return event;
+}
+
+export function setActiveFeedbackDetailsForTests(details: string | null): void {
+  activeFeedbackDetails = details;
+}
+
+function ensureFeedbackEventProcessor(): void {
+  if (feedbackProcessorInstalled) return;
+  feedbackProcessorInstalled = true;
+  Sentry.addEventProcessor((event) => attachFeedbackEventDetails(event));
+}
+
+function toWellFormedString(val: string): string {
+  if (typeof (val as { toWellFormed?: () => string }).toWellFormed === "function") {
+    return (val as unknown as { toWellFormed: () => string }).toWellFormed();
+  }
+  let result = "";
+  for (let i = 0; i < val.length; i++) {
+    const code = val.charCodeAt(i);
+    if (code >= 0xd800 && code <= 0xdbff) {
+      if (i + 1 < val.length) {
+        const next = val.charCodeAt(i + 1);
+        if (next >= 0xdc00 && next <= 0xdfff) {
+          result += val[i] + val[i + 1];
+          i++;
+          continue;
+        }
+      }
+      result += "\uFFFD";
+    } else if (code >= 0xdc00 && code <= 0xdfff) {
+      result += "\uFFFD";
+    } else {
+      result += val[i];
+    }
+  }
+  return result;
+}
+
+export function buildFallbackIssueUrl(
+  rawTitle: string,
+  rawMessage?: string,
+  maxTotalLength = 2000,
+): string {
+  const wellFormedTitle = toWellFormedString(rawTitle || "Bug Report");
+  const points = Array.from(wellFormedTitle);
+  const safeTitle = (points.length > 80 ? points.slice(0, 80).join("") + "…" : points.join(""));
+  const encodedTitle = encodeURIComponent(safeTitle);
+  const base = `https://github.com/jaywedgeworth22/BotFleet/issues/new?title=${encodedTitle}&body=`;
+  const budget = maxTotalLength - base.length;
+  if (budget <= 0) return base;
+
+  if (!rawMessage) {
+    const defaultBody = "<!-- Describe the problem and reproduction steps here -->\n\n*(Submitted via BotFleet)*";
+    return base + encodeURIComponent(defaultBody);
+  }
+
+  const wellFormedMsg = toWellFormedString(rawMessage);
+  const header = "**Reported Problem:**\n";
+  const footer = "\n\n*(Submitted via BotFleet)*";
+  const msgPoints = Array.from(wellFormedMsg);
+  let low = 0;
+  let high = Math.min(msgPoints.length, budget);
+  let best = "";
+
+  while (low <= high) {
+    const mid = Math.floor((low + high) / 2);
+    const candidateSlice = msgPoints.slice(0, mid).join("") + (mid < msgPoints.length ? "…" : "");
+    const candidateText = `${header}${candidateSlice}${footer}`;
+    try {
+      const candidateEncoded = encodeURIComponent(candidateText);
+      if (candidateEncoded.length <= budget) {
+        best = candidateEncoded;
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    } catch {
+      high = mid - 1;
+    }
+  }
+
+  return base + best;
+}
+
+export function isSentryFeedbackAvailable(): boolean {
+  if (!globalThis.window || !initialized) return false;
+  return Boolean(Sentry.getFeedback());
+}
+
+export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise<void> {
+  if (!globalThis.window) return;
+  try {
+    if (!isSentryFeedbackAvailable()) {
+      const url = buildFallbackIssueUrl(options?.formTitle ?? "Report a Problem", options?.defaultMessage);
+      if (typeof window !== "undefined") {
+        if (window.ogb?.openExternal) {
+          await window.ogb.openExternal(url);
+        } else {
+          window.open(url, "_blank", "noopener,noreferrer");
+        }
+      }
+      return;
+    }
+
+    const feedback = Sentry.getFeedback();
+    if (!feedback || isCreatingFeedback) return;
+    isCreatingFeedback = true;
+    ensureFeedbackEventProcessor();
+
+    let formOpened = false;
+    try {
+      if (activeFeedbackDialog) {
+        try {
+          activeFeedbackDialog.close();
+          activeFeedbackDialog.removeFromDom();
+        } catch {
+          /* ignore cleanup failure */
+        }
+        activeFeedbackDialog = null;
+      }
+
+      activeFeedbackDetails = options?.defaultMessage ?? null;
+
+      const cleanup = () => {
+        dialog?.removeFromDom();
+        activeFeedbackDialog = null;
+        activeFeedbackDetails = null;
+      };
+
+      const dialog = (await feedback.createForm({
+        formTitle: options?.formTitle ?? "Report a Problem",
+        messagePlaceholder: options?.defaultMessage ? `Details: ${options.defaultMessage}` : "What went wrong?",
+        tags: options?.defaultMessage ? { reportedError: options.defaultMessage.slice(0, 200) } : undefined,
+        onFormSubmitted: cleanup,
+        onFormClose: cleanup,
+      })) as unknown as (SentryFeedbackDialog & { el?: unknown }) | undefined;
+
+      if (dialog) {
+        activeFeedbackDialog = dialog;
+        dialog.appendToDom();
+        dialog.open();
+        formOpened = true;
+        if (options?.defaultMessage) {
+          try {
+            const shadow = (dialog.el as { shadowRoot?: ShadowRoot | null } | undefined)?.shadowRoot;
+            const textarea = shadow?.querySelector("textarea");
+            if (textarea) {
+              textarea.value = options.defaultMessage;
+              textarea.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+          } catch {
+            /* ignore DOM inspection failures */
+          }
+        }
+      }
+    } finally {
+      isCreatingFeedback = false;
+      if (!formOpened) {
+        activeFeedbackDetails = null;
+      }
+    }
+  } catch {
+    /* If the feedback dialog cannot be opened, swallow to protect the renderer */
+  }
+}
+
 
 /** The option set that decides whether the running client is still the right
  * one.  Anything that changes where events go, or how many of them go,
@@ -333,4 +532,7 @@ export function resetSentryForTests(): void {
   runtimeIdentity = null;
   sentryPort = browserPort;
   readObservability = harnessReader;
+  activeFeedbackDetails = null;
+  activeFeedbackDialog = null;
+  isCreatingFeedback = false;
 }
