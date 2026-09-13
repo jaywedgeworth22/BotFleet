@@ -121,6 +121,20 @@ describe("httpRetryPolicy", () => {
     expect(httpRetryPolicy({ status: 505 })).toBeUndefined();
   });
 
+  it("honours a cool-down a retryable 5xx or a 408 named, not just a 429", () => {
+    // a 503 that says when it will be back knows better than our schedule
+    expect(httpRetryPolicy({ status: 503, retryAfterMs: 4_000 })).toEqual({
+      maxAttempts: 3,
+      reason: "server_error",
+      retryAfterMs: 4_000,
+    });
+    expect(httpRetryPolicy({ status: 408, retryAfterMs: 1_500 })).toEqual({
+      maxAttempts: 3,
+      reason: "timeout",
+      retryAfterMs: 1_500,
+    });
+  });
+
   it("gives a 429 the full schedule only when the provider named its cool-down", () => {
     expect(httpRetryPolicy({ status: 429, retryAfterMs: 2_000 })).toEqual({
       maxAttempts: 3,

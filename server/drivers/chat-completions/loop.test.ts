@@ -1053,6 +1053,64 @@ describe("runTurnLoop — bounded retry with backoff", () => {
     expect(h.events.filter((e) => e.type === "runtime.error")).toHaveLength(1);
   });
 
+  it("honours a cool-down a 503 named, instead of its own schedule", async () => {
+    const h = harness([
+      failsThenAnswers(1, () => httpErrorFor(503, "back soon", retryAfter("2")), answer("ok")),
+    ]);
+    await h.run({ retryDelayScale: 0.001 });
+
+    expect(retries(h.events).map((e) => e.delayMs)).toEqual([2_000]);
+  });
+
+  it("carries THIS failure's own attempt ceiling, so the chip never promises a try that is not coming", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(429, "rate limit exceeded");
+      },
+    ]);
+    await h.run({ retryDelayScale: 0.001 });
+
+    // a 429 with no cool-down is worth two attempts, not the global three
+    expect(retries(h.events).map((e) => e.maxAttempts)).toEqual([2]);
+
+    const outage = harness([
+      async () => {
+        throw httpErrorFor(502, "bad gateway");
+      },
+    ]);
+    await outage.run({ retryDelayScale: 0.001 });
+    expect(retries(outage.events).map((e) => e.maxAttempts)).toEqual([3, 3]);
+  });
+
+  it("gives a 429 that reached it as bare text the same one polite retry", async () => {
+    // a driver still throwing `new Error("HTTP 429")` instead of going
+    // through httpErrorFor must not get a MORE generous policy than one
+    // that reports its status properly
+    const h = harness([
+      async () => {
+        throw new Error("HTTP 429: rate limit exceeded");
+      },
+    ]);
+    await h.run({ retryDelayScale: 0.001 });
+
+    expect(h.attempts).toHaveLength(2);
+    expect(retries(h.events).map((e) => ({ reason: e.reason, maxAttempts: e.maxAttempts }))).toEqual([
+      { reason: "rate_limited", maxAttempts: 2 },
+    ]);
+  });
+
+  it("lowers the named ceiling to the budget's, never above it", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(502, "bad gateway");
+      },
+    ]);
+    await h.run({ budget: { maxRequestAttempts: 2 }, retryDelayScale: 0.001 });
+
+    expect(h.attempts).toHaveLength(2);
+    expect(retries(h.events).map((e) => e.maxAttempts)).toEqual([2]);
+  });
+
   it("retries a bare network failure through the same classifier the CLI drivers use", async () => {
     const h = harness([failsThenAnswers(1, () => new TypeError("fetch failed"), answer("ok"))]);
     const exit = await h.run({ retryDelayScale: 0.001 });

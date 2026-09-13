@@ -134,6 +134,14 @@ export function parseRetryAfter(raw: string | null | undefined, now: number = Da
   return Math.min(Math.max(at - now, 0), RETRY_AFTER_CAP_MS);
 }
 
+/** Attempts a 429 gets when nothing named a cool-down.  A rate limit with
+ *  no `Retry-After` is much more often a real quota wall than a momentary
+ *  burst, so it is worth exactly one polite retry — and the SAME ceiling
+ *  has to apply when a driver's 429 reached us as bare text rather than
+ *  through `httpErrorFor`, or the policy would depend on which driver
+ *  threw it. */
+export const UNHINTED_RATE_LIMIT_ATTEMPTS = 2;
+
 export interface HttpRetryPolicy {
   /** Total attempts this status is worth, the FIRST one included.  2 means
    *  one retry. */
@@ -164,12 +172,18 @@ export interface HttpRetryPolicy {
  *  outlast. */
 export function httpRetryPolicy(failure: HttpFailure): HttpRetryPolicy | undefined {
   const { status, retryAfterMs } = failure;
-  if (status === 408) return { maxAttempts: RETRY_MAX_ATTEMPTS, reason: "timeout" };
+  // A provider that named a cool-down is honoured whatever the status —
+  // a 503 with a `Retry-After` knows when it will be back, and retrying a
+  // second earlier than it asked only meets the same outage again.
+  const cooldown = retryAfterMs === undefined ? {} : { retryAfterMs };
+  if (status === 408) return { maxAttempts: RETRY_MAX_ATTEMPTS, reason: "timeout", ...cooldown };
   if (status === 429) {
     return retryAfterMs === undefined
-      ? { maxAttempts: 2, reason: "rate_limited" }
+      ? { maxAttempts: UNHINTED_RATE_LIMIT_ATTEMPTS, reason: "rate_limited" }
       : { maxAttempts: RETRY_MAX_ATTEMPTS, reason: "rate_limited", retryAfterMs };
   }
-  if (RETRYABLE_SERVER_STATUSES.has(status)) return { maxAttempts: RETRY_MAX_ATTEMPTS, reason: "server_error" };
+  if (RETRYABLE_SERVER_STATUSES.has(status)) {
+    return { maxAttempts: RETRY_MAX_ATTEMPTS, reason: "server_error", ...cooldown };
+  }
   return undefined;
 }

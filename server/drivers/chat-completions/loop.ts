@@ -57,7 +57,7 @@ import type {
 import { ProviderError } from "../../contracts.ts";
 import { parseToolArguments, toolFields } from "../../tool-fields.ts";
 import { RETRY_MAX_ATTEMPTS, classifyError, computeBackoff, interruptibleDelay } from "../retry.ts";
-import { httpFailureOf, httpRetryPolicy } from "./errors.ts";
+import { UNHINTED_RATE_LIMIT_ATTEMPTS, httpFailureOf, httpRetryPolicy } from "./errors.ts";
 
 /** Every way a turn can end.  Closed on purpose: `STOP_REASON` and
  *  `TERMINAL_OK` are `Record<TurnLoopExit, …>`, so adding a member without
@@ -368,7 +368,10 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
    *  mid-body — goes through the SAME text classifier drivers/retry.ts
    *  already applies to every CLI engine, so a provider hiccup is judged
    *  the same way on both lanes instead of by a second private policy. */
-  const retryPlanFor = (error: Error, attempt: number): { delayMs: number; reason: string } | undefined => {
+  const retryPlanFor = (
+    error: Error,
+    attempt: number,
+  ): { delayMs: number; reason: string; maxAttempts: number } | undefined => {
     const failure = httpFailureOf(error);
     let maxAttempts: number;
     let reason: string;
@@ -380,13 +383,19 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
     } else {
       const verdict = classifyError(error);
       if (!verdict.transient) return undefined;
-      maxAttempts = RETRY_MAX_ATTEMPTS;
+      // A rate limit that reached us as bare text — a driver still
+      // throwing `new Error("HTTP 429")` instead of going through
+      // `httpErrorFor` — carries no cool-down by definition, so it gets
+      // the same one polite retry the parsed no-`Retry-After` 429 gets.
+      // The policy must not depend on which driver threw it.
+      maxAttempts = verdict.reason === "rate_limited" ? UNHINTED_RATE_LIMIT_ATTEMPTS : RETRY_MAX_ATTEMPTS;
       reason = verdict.reason;
     }
-    if (attempt >= Math.min(maxAttempts, budget.maxRequestAttempts)) return undefined;
+    const ceiling = Math.min(maxAttempts, budget.maxRequestAttempts);
+    if (attempt >= ceiling) return undefined;
     // The provider's own cool-down wins over our schedule when it named
     // one — it knows when it will serve us and we do not.
-    return { delayMs: retryAfterMs ?? computeBackoff(attempt - 1), reason };
+    return { delayMs: retryAfterMs ?? computeBackoff(attempt - 1), reason, maxAttempts: ceiling };
   };
 
   const emitToolStarted = (call: ChatToolCall) => {
@@ -642,6 +651,11 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
                   attempt,
                   delayMs: plan.delayMs,
                   reason: plan.reason,
+                  // THIS failure's own ceiling, not the global one: a 429
+                  // with no cool-down is worth two attempts, and a chip
+                  // reading "attempt 2/3" right before the turn fails
+                  // after attempt 2 promises a try that is never coming.
+                  maxAttempts: plan.maxAttempts,
                 });
                 // Abort-aware: Stop, a sweep or the round deadline during
                 // the wait resolves it at once, and the classification

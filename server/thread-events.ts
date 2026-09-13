@@ -392,7 +392,9 @@ function isRuntimeEvent(value: unknown): value is RuntimeEvent {
         typeof value.delayMs === "number" &&
         Number.isFinite(value.delayMs) &&
         value.delayMs >= 0 &&
-        typeof value.reason === "string"
+        typeof value.reason === "string" &&
+        (value.maxAttempts === undefined ||
+          (typeof value.maxAttempts === "number" && Number.isInteger(value.maxAttempts) && value.maxAttempts >= 1))
       );
     case "turn.completed":
       return (
