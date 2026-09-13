@@ -18,7 +18,7 @@ struct TasksRoutinesView: View {
                 }
                 .font(.subheadline)
             } footer: {
-                Text("No cron syntax. Every run uses the agent's existing model, tools, permissions, computer, and connected apps. Times follow the paired computer's local timezone.")
+                Text("No cron syntax.\u{00A0} Every run uses the bot's existing model, tools, permissions, computer, and connected apps.\u{00A0} Recurring times show the timezone used by the paired scheduler.")
             }
 
             Section("Routines") {
@@ -402,7 +402,8 @@ private extension RoutineSchedule {
         if values.count == 7 { dayText = "Every day" }
         else if values == [1, 2, 3, 4, 5] { dayText = "Weekdays" }
         else { dayText = values.compactMap { (0..<7).contains($0) ? RoutineEditorView.dayNames[$0].prefix(3) : nil }.joined(separator: ", ") }
-        return "\(dayText) at \(time ?? "—")"
+        let zoneText = timeZone ?? "paired computer zone"
+        return "\(dayText) at \(time ?? "—") · \(zoneText)"
     }
 }
 
