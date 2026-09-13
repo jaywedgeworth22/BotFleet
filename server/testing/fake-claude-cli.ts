@@ -17,6 +17,7 @@
 //                      inherited-api-key — what `auth status` reports
 //   FAKE_CLAUDE_QUOTA_GATE  optional file whose creation releases quota mode,
 //                           so integration tests can queue work before settle
+//   FAKE_CLAUDE_REPLY  optional successful assistant text for prose-boundary tests
 //
 // Keep this file dependency-free — it runs as a bare `node` subprocess.
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -224,7 +225,7 @@ const playTurn = (prompt: JsonValue) => {
     type: "assistant",
     message: {
       content: [
-        { type: "text", text: "hello from fake claude" },
+        { type: "text", text: process.env.FAKE_CLAUDE_REPLY ?? "hello from fake claude" },
         { type: "tool_use", id: "tu-1", name: "Bash" },
       ],
       usage: { input_tokens: 10, cache_read_input_tokens: 2, output_tokens: 5 },
