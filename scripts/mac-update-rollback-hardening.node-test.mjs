@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import test from "node:test";
 import {
+  failedInstallBundles,
   generationBelongsToApp,
   prunablePath,
   reconcilableGenerations,
@@ -349,4 +350,37 @@ test("the updater passes its own stage to discovery and to the prunable roots", 
   assert.match(source, /previous\.swap\?\.rollbackAppHolds/);
   assert.match(source, /bundleProcessPids\(previous\.rollbackPath\)/);
   assert.match(source, /Rollback path already exists before install/);
+});
+
+// Found by a real `ubf` run during this work, not by reading the code.
+
+test("the receipt names the build the rollback bundle actually is, not just the checkout commit", async () => {
+  const source = await readFile(new URL("./update-botfleet-mac.mjs", import.meta.url), "utf8");
+  // A live run recorded previousCommit 69128228 from the git checkout while the
+  // bundle it displaced was ae8abe7d, because `ubf --force` exists exactly for
+  // the case where the checkout has moved and the installed app has not.
+  assert.match(source, /previousInstalledCommit: previous\.installedCommit \?\? null/);
+  assert.match(source, /installedCommit = await installedBuildCommit\(config\.appPath\)/);
+  // Reconciliation keys on the installed build for the same reason.
+  assert.match(source, /installedCommit: previous\?\.installedCommit/);
+});
+
+test("bundles left behind by a failed install are reported, never deleted", () => {
+  const names = [
+    "BotFleet.app",
+    "BotFleet.app.failed-1789260170446",
+    "BotFleet.app.failed-1789111111111",
+    ".BotFleet.update-4242-1757000000000.app",
+    "BotFleet Beta.app.failed-1789260170446",
+  ];
+  assert.deepEqual(failedInstallBundles(names, "BotFleet.app"), [
+    "BotFleet.app.failed-1789260170446",
+    "BotFleet.app.failed-1789111111111",
+  ]);
+  assert.deepEqual(failedInstallBundles(names, "BotFleet Beta.app"), ["BotFleet Beta.app.failed-1789260170446"]);
+  // They are evidence, so they must not be reachable by the candidate sweep.
+  assert.deepEqual(
+    staleCandidateNames(names, { prefix: ".BotFleet.update-", suffix: ".app", isAlive: () => false }).stale,
+    [".BotFleet.update-4242-1757000000000.app"],
+  );
 });

@@ -304,6 +304,16 @@ export function txtHolderPids(lsofOutput, bundleRealPath) {
  * process that survives the swap keeps running out of the renamed bundle and
  * shows that name in the Dock and menu bar until it is relaunched.
  */
+/**
+ * A failed install leaves the replacement behind as `<name>.failed-<stamp>`
+ * so it can be examined.  Nothing ever removes them, and nothing mentioned
+ * them either.  They are evidence of a failed update, so they are reported
+ * rather than deleted.
+ */
+export function failedInstallBundles(names, bundleName) {
+  return names.filter((name) => name.startsWith(`${bundleName}.failed-`));
+}
+
 export function survivingRollbackProcessError(pids, rollbackPath) {
   if (!pids.length) return null;
   return `BotFleet process ${pids.join(", ")} still runs from the prior bundle ${rollbackPath}; it would keep showing that bundle's name until relaunch`;
@@ -886,6 +896,12 @@ function rollbackReceipt(prepared, previous, config, extra) {
   return {
     schemaVersion: 1,
     previousCommit: previous.checkoutCommit,
+    // The checkout commit and the installed build can disagree: `ubf --force`
+    // exists precisely because the checkout can sit at origin/main while the
+    // installed app still carries older code.  `previousCommit` keeps its
+    // original meaning, the checkout, and this names what the rollback bundle
+    // actually is — the build anyone recovering from it would get.
+    previousInstalledCommit: previous.installedCommit ?? null,
     replacementCommit: prepared.targetCommit,
     rollbackBundle: previous.rollbackPath,
     rollbackDependencies: previous.rollbackDependencies,
@@ -1040,7 +1056,8 @@ function createOperations(config) {
           await rm(path, { recursive: true, force: true });
         }
         await rm(item.receiptPath, { force: true });
-        console.log(`Pruned the superseded rollback copy of ${String(item.receipt.previousCommit || "unknown").slice(0, 12)} (${item.receipt.rollbackBundle})`);
+        const prunedBuild = item.receipt.previousInstalledCommit || item.receipt.previousCommit || "unknown";
+        console.log(`Pruned the superseded rollback copy of ${String(prunedBuild).slice(0, 12)} (${item.receipt.rollbackBundle})`);
       }
     }
 
@@ -1064,6 +1081,9 @@ function createOperations(config) {
     }
     for (const item of unclaimedGenerations(generations)) {
       console.error(`Rollback receipt ${item.receiptPath} names no installed application; it was left in place for manual review.`);
+    }
+    for (const name of failedInstallBundles(await listDirectory(dirname(config.appPath)), basename(config.appPath))) {
+      console.error(`A previous update left ${join(dirname(config.appPath), name)} behind; it is evidence of that failure and was left in place for manual review.`);
     }
   };
 
