@@ -187,3 +187,39 @@ describe("an endpoint that did not change", () => {
     expect(result.save.bridgeSecret).toEqual({ name: "minimaxApiKey", value: SENTINEL_KEY });
   });
 });
+
+describe("an endpoint-only save", () => {
+  it("sends no credential half at all, so it cannot delete the saved key", () => {
+    // The data-loss bug this replaces: the row inferred "clear" from an empty
+    // key field, and the field is empty on every visit because a key is never
+    // echoed back — so editing only the endpoint deleted the saved key.
+    // Clearing is now an explicit button that sets `clear`, and nothing else
+    // sets it.
+    const result = splitEngineKeySave({
+      engine: minimax,
+      key: "",
+      url: "https://api.minimaxi.com/v1",
+      savedUrl: "https://api.minimax.io/v1",
+      hasBridge: true,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.save.bridgeSecret).toBeNull();
+    expect(result.save.configPatch).toEqual({ minimax: { url: "https://api.minimaxi.com/v1" } });
+    expect(Object.hasOwn(result.save.configPatch!.minimax, "key")).toBe(false);
+  });
+
+  it("still carries no credential half without a bridge either", () => {
+    const result = splitEngineKeySave({
+      engine: openaiCompat,
+      key: "   ",
+      url: "https://openrouter.ai/api/v1",
+      savedUrl: "",
+      hasBridge: false,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.save.configPatch).toEqual({ openaiCompat: { url: "https://openrouter.ai/api/v1" } });
+    expect(result.save.bridgeSecret).toBeNull();
+  });
+});

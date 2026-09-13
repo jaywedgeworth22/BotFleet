@@ -4873,7 +4873,7 @@ describe("instance CLI override API", () => {
     // a dynamic per-instance key. The live instance still gets it (via
     // instanceKeyOverrides → its environment map), just never through
     // config.json.
-    const created = await api("POST", "/api/instances", {
+    const created = await api("POST", "/api/instances?secretStorage=external", {
       name: "Encrypted Key Engine",
       endpoint: "http://localhost:11498/v1",
       models: ["encrypted-model"],
@@ -4954,13 +4954,63 @@ describe("instance CLI override API", () => {
       name: "Not A Driver",
       endpoint: "http://127.0.0.1:11497/v1",
       driver: "definitely-not-a-driver",
+      key: "sk-refused",
     })).status).toBe(400);
     // boxAgent declares supportsMultipleInstances: false.
     expect((await api("POST", "/api/instances", {
       name: "Second Computer",
       endpoint: "http://127.0.0.1:11497/v1",
       driver: "boxAgent",
+      key: "sk-refused",
     })).status).toBe(400);
+    // These three DO declare supportsMultipleInstances, and every one of them
+    // would be handed a workspace credential it reads from process.env or a
+    // CLI login in the user's home directory. A second instance pointed at an
+    // endpoint typed into this route would receive it, so the gate is
+    // `supportsMultipleInstances` AND `install.apiKeyOnly`.
+    for (const driver of ["grok", "piAgent", "antigravityAgent", "claudeAgent", "codex"]) {
+      const refused = await api("POST", "/api/instances", {
+        name: `Second ${driver}`,
+        endpoint: "http://127.0.0.1:11497/v1",
+        driver,
+        key: "sk-refused",
+      });
+      expect(refused.status, driver).toBe(400);
+      expect(refused.body.error, driver).toContain("can only be configured once");
+    }
+    // A paid hosted API still needs a key of its own: no workspace credential
+    // will ever reach a non-reserved instance, so a keyless one could do
+    // nothing but fail every turn.
+    const keyless = await api("POST", "/api/instances", {
+      name: "Keyless MiniMax",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+    });
+    expect(keyless.status).toBe(400);
+    expect(keyless.body.error).toContain("API key is required");
+    // …unless the desktop shell is about to commit one to its encrypted
+    // store, which is the one keyless create that is not a broken engine.
+    const declared = await api("POST", "/api/instances?secretStorage=external", {
+      name: "Declared MiniMax",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+    });
+    expect(declared.status).toBe(201);
+    expect((await api("DELETE", `/api/instances/${declared.body.instanceId}`)).status).toBe(200);
+    // openai-compat is the exception: an endpoint needing no auth at all —
+    // Ollama, LM Studio, vLLM — is a first-class use, and safe because the
+    // driver refuses the workspace key for a non-reserved instance.
+    const anonymous = await api("POST", "/api/instances", {
+      name: "Anonymous Local",
+      endpoint: "http://127.0.0.1:11494/v1",
+      models: ["local-model"],
+    });
+    expect(anonymous.status).toBe(201);
+    expect(
+      JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"))
+        .instances[anonymous.body.instanceId].config.credentialStorage,
+    ).toBeUndefined();
+    expect((await api("DELETE", `/api/instances/${anonymous.body.instanceId}`)).status).toBe(200);
 
     const created = await api("POST", "/api/instances", {
       name: "MiniMax China",
@@ -5104,12 +5154,19 @@ describe("instance CLI override API", () => {
     // The desktop shell creates the instance without a key (the bridge holds
     // it) and then PATCHes ?secretStorage=external. Nothing about that path
     // was openai-compat-specific except the driver check it used to make.
-    const created = await api("POST", "/api/instances", {
+    const created = await api("POST", "/api/instances?secretStorage=external", {
       name: "MiniMax Gateway",
       endpoint: "http://127.0.0.1:11496/v1",
       driver: "minimax",
     });
     expect(created.status).toBe(201);
+    // Marked at CREATE time, not by the follow-up PATCH: otherwise there is a
+    // window in which the instance exists keyless AND unmarked, which is the
+    // one state that reads as an intentionally anonymous engine.
+    expect(
+      JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"))
+        .instances[created.body.instanceId].config.credentialStorage,
+    ).toBe("external");
     const instanceId = created.body.instanceId;
     try {
       expect((await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, {

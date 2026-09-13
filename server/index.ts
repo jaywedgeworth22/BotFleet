@@ -9018,9 +9018,16 @@ const server = createServer(async (req, res) => {
     //
     // `driver` defaults to "openai-compat" — the only engine this route could
     // add before — so an older client's body behaves exactly as it always has.
-    // Any registered driver that declares `supportsMultipleInstances` is
-    // accepted; anything else is refused rather than silently creating a
-    // second instance the registry would then have to arbitrate.
+    //
+    // `supportsMultipleInstances` alone is NOT the gate.  Fifteen drivers
+    // declare it, and most of them — grok, antigravity, pi, every ACP engine —
+    // have no per-instance credential at all: they read a workspace key from
+    // process.env or a CLI login from the user's home directory.  A second
+    // instance of one of those, pointed at an endpoint somebody typed into
+    // this route, would be handed the workspace's real credential.  So the
+    // gate is `supportsMultipleInstances` AND `install.apiKeyOnly`: the driver
+    // must be one whose whole configuration is an endpoint and a key it reads
+    // per instance.  openai-compat and minimax today.
     if (method === "POST" && path === "/api/instances") {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
@@ -9039,7 +9046,7 @@ const server = createServer(async (req, res) => {
         return json(res, 400, { error: `unknown engine driver "${String(requestedDriver).slice(0, 64)}"` });
       }
       const driverKind = driverRecord.driverKind;
-      if (driverRecord.metadata.supportsMultipleInstances !== true) {
+      if (driverRecord.metadata.supportsMultipleInstances !== true || driverRecord.install?.apiKeyOnly !== true) {
         return json(res, 400, {
           error: `engine "${driverRecord.metadata.displayName}" can only be configured once`,
         });
@@ -9050,6 +9057,26 @@ const server = createServer(async (req, res) => {
       }
       const rawKey = typeof body?.key === "string" ? body.key.trim() : undefined;
       const rawIcon = typeof body?.iconUrl === "string" ? body.iconUrl.trim() : undefined;
+      // Every instance this route creates is non-reserved, so no workspace
+      // credential will ever reach it — by design, and enforced in both
+      // drivers.  A key therefore has to arrive with the request, or with the
+      // declaration that one is about to be committed to the desktop's
+      // encrypted store (the same `?secretStorage=external` the credential
+      // PATCH uses).
+      //
+      // openai-compat is the one exception, and deliberately: an endpoint
+      // needing no auth at all is a first-class use of it — Ollama, LM
+      // Studio, vLLM, a local llama.cpp server — so a keyless instance there
+      // is an ANONYMOUS engine, not a broken one.  That is safe precisely
+      // because the driver refuses to fall back to the workspace key for a
+      // non-reserved instance.  Every other engine on this route is a paid
+      // hosted API with no anonymous endpoint, where keyless can only mean an
+      // instance that fails every turn it is ever given.
+      const externalCredential = url.searchParams.get("secretStorage") === "external";
+      const keyRequired = driverKind !== "openai-compat";
+      if (keyRequired && !rawKey && !externalCredential) {
+        return json(res, 400, { error: "an API key is required for this engine" });
+      }
 
       let rawModels: string[] = [];
       if (Array.isArray(body?.models)) {
@@ -9089,8 +9116,16 @@ const server = createServer(async (req, res) => {
         // driver: openai-compat reads it out of its own config, MiniMax gets
         // it as MINIMAX_API_KEY through injectedEnvironment(). With the
         // desktop bridge present the client omits it entirely and the key
-        // rides the encrypted store instead.
+        // rides the encrypted store instead — marked here rather than by the
+        // follow-up PATCH, so there is no window in which the instance exists
+        // keyless AND unmarked, which is the one state that reads as an
+        // intentionally anonymous engine and dispatches turns.
         if (rawKey) customConfig.key = rawKey;
+        // Only when the caller actually declared it.  A keyless create with
+        // no declaration is an anonymous engine, and marking THAT external
+        // would make `externalCredentialPending` refuse its every turn while
+        // it waited for a replay that is never coming.
+        else if (externalCredential) customConfig.credentialStorage = "external";
         if (rawIcon) customConfig.iconUrl = rawIcon;
 
         const newInstanceEntry = {

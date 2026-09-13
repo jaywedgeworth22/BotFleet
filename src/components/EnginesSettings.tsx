@@ -41,7 +41,11 @@ function isEngineEnabled(instance: InstanceInfo): boolean {
  * rather than cached) is always current. */
 function buildEngineCredentialDeps(): EngineCredentialDeps {
   return {
-    createInstance: (body) => api("/api/instances", { method: "POST", body: JSON.stringify(body) }),
+    createInstance: (body, options) =>
+      api(
+        options?.secretStorage === "external" ? "/api/instances?secretStorage=external" : "/api/instances",
+        { method: "POST", body: JSON.stringify(body) },
+      ),
     deleteInstance: (instanceId) => api(`/api/instances/${encodeURIComponent(instanceId)}`, { method: "DELETE" }),
     setInstanceCredential: window.ogb?.setInstanceCredential
       ? (instanceId, value) => window.ogb!.setInstanceCredential!(instanceId, value)
@@ -488,7 +492,13 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
           .map((m) => m.trim())
           .filter(Boolean)
       : [];
-    const invalid = validateAddEngine({ driver, name: trimmedName, endpoint: trimmedUrl, models });
+    const invalid = validateAddEngine({
+      driver,
+      name: trimmedName,
+      endpoint: trimmedUrl,
+      key: apiKey,
+      models,
+    });
     if (invalid) {
       setError(invalid);
       return;
@@ -595,7 +605,7 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
             <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
               API Key{" "}
               <span className="font-normal normal-case text-[11px]">
-                {driver === "minimax" ? "· this connection's own key" : "· optional"}
+                {option.requiresKey ? "· this connection's own key" : "· optional"}
               </span>
             </label>
             <input
@@ -603,7 +613,7 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               placeholder={
-                driver === "minimax"
+                option.requiresKey
                   ? "The MiniMax key this connection bills against"
                   : "Optional API key (leave blank for local Ollama / LM Studio)"
               }
@@ -686,7 +696,11 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
             type="button"
             onClick={save}
             disabled={
-              saving || !name.trim() || !endpoint.trim() || (option.requiresModels && !modelsText.trim())
+              saving ||
+              !name.trim() ||
+              !endpoint.trim() ||
+              (option.requiresKey && !apiKey.trim()) ||
+              (option.requiresModels && !modelsText.trim())
             }
             className="flex items-center gap-2 rounded-xl bg-accent px-4 py-2 text-[13px] font-medium text-white hover:brightness-110 disabled:opacity-40"
           >

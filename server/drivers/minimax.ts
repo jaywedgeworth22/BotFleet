@@ -30,6 +30,10 @@ import { genAiProvider, withChatSpan } from "../sentry-ai.ts";
 
 const DRIVER_KIND = "minimax";
 const API_KEY_ENV = "MINIMAX_API_KEY";
+/** The one instance id the default fleet reserves for this driver, and so the
+ * only one the workspace-wide key sources may reach.  Mirrors
+ * `injectedEnvironment()`'s gate in server/config.ts. */
+const RESERVED_INSTANCE_ID = "minimax";
 const DEFAULT_URL = "https://api.minimax.io/v1";
 const CN_URL = "https://api.minimaxi.com/v1";
 // The GET /models probe backing both `snapshot()` and `refreshModels()` is
@@ -151,11 +155,26 @@ function normalizedApiUrl(value: string): string {
 // Empty higher-priority values are skipped instead of masking a real key.
 // One shared resolver so no future lane (snapshot probe, a shared
 // chat-completions base, …) can drift on which key is the MiniMax key.
+//
+// The last two are WORKSPACE-WIDE and reserved-instance only, for exactly the
+// reason openai-compat.ts gates its own process.env lookup on
+// `instanceId !== "openaiCompat"`: process.env is process-wide, not
+// per-instance, and ~/.mmx/config.json is one file for the whole machine. A
+// second MiniMax connection points at whatever endpoint the operator typed in
+// — the China host, a gateway, a reseller — so letting it fall through to
+// either would send the workspace's real MiniMax key to that endpoint as a
+// Bearer token. A non-reserved instance gets a key only from its own isolated
+// instance environment, which injectedEnvironment() fills from that
+// instance's own `config.key` (and nothing else, by the same gate).
 export function resolveMinimaxCredentials(
   environment: Record<string, string>,
   local: Pick<LocalMiniMaxConfig, "apiKey">,
+  instanceId: string,
 ): string {
-  return environment[API_KEY_ENV]?.trim() || process.env[API_KEY_ENV]?.trim() || local.apiKey;
+  const own = environment[API_KEY_ENV]?.trim();
+  if (own) return own;
+  if (instanceId !== RESERVED_INSTANCE_ID) return "";
+  return process.env[API_KEY_ENV]?.trim() || local.apiKey;
 }
 
 export function loadLocalMiniMaxConfig(home = homedir()): LocalMiniMaxConfig {
@@ -216,7 +235,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     const { instanceId, config } = input;
 
     const local = loadLocalMiniMaxConfig();
-    const apiKey = resolveMinimaxCredentials(input.environment, local);
+    const apiKey = resolveMinimaxCredentials(input.environment, local, instanceId);
     const apiUrl = config.url === DEFAULT_URL && local.url !== DEFAULT_URL ? local.url : config.url;
     // Resolved once, from the endpoint this instance actually calls, so a
     // gateway or proxy never gets MiniMax's own tariff reported as its

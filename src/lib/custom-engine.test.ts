@@ -31,6 +31,8 @@ describe("createCustomEngine", () => {
     // The dev fallback still sends the plaintext key straight to the server.
     expect(createInstance).toHaveBeenCalledWith(
       expect.objectContaining({ key: "unused-without-a-bridge" }),
+      // No bridge, so no external-storage declaration: the key is in the body.
+      undefined,
     );
   });
 
@@ -51,7 +53,9 @@ describe("createCustomEngine", () => {
     });
 
     // With the bridge present, the plaintext key never reaches the POST body.
-    expect(createInstance).toHaveBeenCalledWith(expect.objectContaining({ key: undefined }));
+    expect(createInstance).toHaveBeenCalledWith(expect.objectContaining({ key: undefined }), {
+      secretStorage: "external",
+    });
     expect(setInstanceCredential).toHaveBeenCalledWith("custom-groq-2", "sk-groq-secret");
   });
 
@@ -187,6 +191,8 @@ describe("deleteCustomEngine", () => {
   });
 });
 
+const SENTINEL_ADD_KEY = "sentinel-add-engine-key-not-real";
+
 describe("the Add Engine form's driver choice", () => {
   it("omits the driver entirely for the route's own default", async () => {
     // An older client never sent one, and the body it did send has to keep
@@ -197,6 +203,8 @@ describe("the Add Engine form's driver choice", () => {
       { name: "Groq", endpoint: "https://api.groq.com/openai/v1", driver: "openai-compat", key: "", models: ["m"] },
     );
     expect(Object.hasOwn(createInstance.mock.calls[0][0], "driver")).toBe(false);
+    // No bridge: the key is in the body, so the route needs no declaration.
+    expect(createInstance.mock.calls[0][1]).toBeUndefined();
   });
 
   it("sends the driver for a second MiniMax connection", async () => {
@@ -207,6 +215,7 @@ describe("the Add Engine form's driver choice", () => {
     );
     expect(createInstance).toHaveBeenCalledWith(
       expect.objectContaining({ driver: "minimax", key: "sk-cn", models: [] }),
+      undefined,
     );
   });
 
@@ -217,11 +226,20 @@ describe("the Add Engine form's driver choice", () => {
     // a form with no labels at all.
     expect(addEngineDriverOption("nonsense")).toBe(ADD_ENGINE_DRIVERS[0]);
 
-    const base = { name: "Second MiniMax", endpoint: "https://api.minimaxi.com/v1" };
+    const base = { name: "Second MiniMax", endpoint: "https://api.minimaxi.com/v1", key: SENTINEL_ADD_KEY };
     expect(validateAddEngine({ ...base, driver: "minimax", models: [] })).toBeNull();
     expect(validateAddEngine({ ...base, driver: "openai-compat", models: [] })).toContain("model ID is required");
     expect(validateAddEngine({ ...base, driver: "minimax", models: [] , name: "" })).toBe("Engine name is required");
     expect(validateAddEngine({ ...base, driver: "minimax", models: [], endpoint: " " })).toBe("Endpoint URL is required");
+    // A paid hosted API is given no workspace credential for a connection the
+    // operator added, so one created keyless could only fail every turn.
+    expect(validateAddEngine({ ...base, driver: "minimax", models: [], key: "  " })).toBe("An API key is required");
+    // openai-compat is the exception: an endpoint needing no auth at all —
+    // Ollama, LM Studio, vLLM — is a first-class use of it, and safe because
+    // the driver refuses the workspace key for a non-reserved instance.
+    expect(validateAddEngine({ ...base, driver: "openai-compat", models: ["m"], key: "" })).toBeNull();
+    expect(addEngineDriverOption("openai-compat").requiresKey).toBe(false);
+    expect(addEngineDriverOption("minimax").requiresKey).toBe(true);
     expect(
       validateAddEngine({ ...base, driver: "openai-compat", models: Array.from({ length: 16 }, (_, i) => `m${i}`) }),
     ).toContain("At most 15");
@@ -232,8 +250,14 @@ describe("the Add Engine form's driver choice", () => {
     expect(isCustomEngineInstance({ driverKind: "minimax", instanceId: "custom-minimax-china" })).toBe(true);
     expect(isCustomEngineInstance({ driverKind: "openai-compat", instanceId: "openaiCompat" })).toBe(false);
     expect(isCustomEngineInstance({ driverKind: "openai-compat", instanceId: "custom-ollama" })).toBe(true);
-    // A single-instance engine is never custom, whatever its id.
+    // The default fleet's own ids, for drivers whose id is not their kind.
     expect(isCustomEngineInstance({ driverKind: "claudeAgent", instanceId: "claude" })).toBe(false);
+    expect(isCustomEngineInstance({ driverKind: "boxAgent", instanceId: "computer" })).toBe(false);
+    // …and a driver nobody listed fails SAFE: its reserved id is its own
+    // kind, so anything else reads as operator-added and offers a delete
+    // button, rather than hiding one for an engine that really was added.
+    expect(isCustomEngineInstance({ driverKind: "someFutureDriver", instanceId: "someFutureDriver" })).toBe(false);
+    expect(isCustomEngineInstance({ driverKind: "someFutureDriver", instanceId: "custom-x" })).toBe(true);
     // The server's own flag still wins when it is set.
     expect(isCustomEngineInstance({ driverKind: "claudeAgent", instanceId: "claude", isCustom: true })).toBe(true);
   });
@@ -241,5 +265,47 @@ describe("the Add Engine form's driver choice", () => {
   it("names the engine the operator actually added in the row callout", () => {
     expect(customEngineCalloutTitle("minimax")).toBe("Added MiniMax Connection.");
     expect(customEngineCalloutTitle("openai-compat")).toBe("Custom OpenAI-Compatible Engine.");
+  });
+});
+
+describe("a create whose key is going to the encrypted store", () => {
+  it("declares it, so the route does not refuse a body with no key in it", () => {
+    // With the bridge present the key is deliberately left out of the POST
+    // and committed to the store straight afterwards. The route refuses a
+    // keyless create without this declaration, because an instance with no
+    // key from either source could only fail every turn it is given.
+    const createInstance = vi.fn().mockResolvedValue({ instanceId: "custom-minimax-cn" });
+    const setInstanceCredential = vi.fn().mockResolvedValue(undefined);
+    return createCustomEngine(
+      { createInstance, deleteInstance: vi.fn(), setInstanceCredential },
+      {
+        name: "MiniMax China",
+        endpoint: "https://api.minimaxi.com/v1",
+        driver: "minimax",
+        key: SENTINEL_ADD_KEY,
+        models: [],
+      },
+    ).then(() => {
+      expect(createInstance.mock.calls[0][0].key).toBeUndefined();
+      expect(createInstance.mock.calls[0][1]).toEqual({ secretStorage: "external" });
+      expect(setInstanceCredential).toHaveBeenCalledWith("custom-minimax-cn", SENTINEL_ADD_KEY);
+    });
+  });
+});
+
+describe("an anonymous engine added from the desktop", () => {
+  it("is not declared external, so it is never left waiting for a key nobody will send", () => {
+    // The bridge exists but no key was typed — a local Ollama or LM Studio.
+    // Declaring external here would mark the instance as waiting for a
+    // credential that is never coming, and refuse its every turn.
+    const createInstance = vi.fn().mockResolvedValue({ instanceId: "custom-ollama" });
+    const setInstanceCredential = vi.fn().mockResolvedValue(undefined);
+    return createCustomEngine(
+      { createInstance, deleteInstance: vi.fn(), setInstanceCredential },
+      { name: "Ollama", endpoint: "http://localhost:11434/v1", key: "", models: ["llama3"] },
+    ).then(() => {
+      expect(createInstance.mock.calls[0][1]).toBeUndefined();
+      expect(setInstanceCredential).not.toHaveBeenCalled();
+    });
   });
 });

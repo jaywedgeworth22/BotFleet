@@ -1117,9 +1117,22 @@ export function patchInstanceConfig(
   // assignment below would poison EVERY object in the process (instanceId
   // comes off the URL, where `__proto__` passes the route's [\w.-]+ regex)
   if (!Object.hasOwn(map, instanceId)) return { ok: false, config: cfg };
-  const entry = map[instanceId];
 
-  const currentConfig = jsonObjectSchema.safeParse(entry.config);
+  // Strip BEFORE reading the config this patch is layered onto.  `map` came
+  // out of instanceConfigs(), so each entry carries what workspace config
+  // materialized onto it: the injected credential env, and a `config.url`
+  // resolved from the workspace endpoint.  The environment half matters
+  // because a driver whose injected key comes from `config.key` (MiniMax)
+  // would otherwise have its PREVIOUS key left behind in the persisted
+  // environment, still shadowing the one just saved.  The url half matters
+  // because reading the LIVE config here — rather than the stripped one —
+  // would copy a resolved fallback into `nextConfig` and persist it as a
+  // per-instance override, which is how a later workspace endpoint change
+  // stopped reaching the instance it was set for.
+  const persistable = stripInjectedDefaults(next, map);
+  const persisted = persistable[instanceId];
+
+  const currentConfig = jsonObjectSchema.safeParse(persisted.config);
   const nextConfig: JsonObject = currentConfig.success ? { ...currentConfig.data } : {};
 
   if (patch.cli !== undefined) {
@@ -1171,18 +1184,10 @@ export function patchInstanceConfig(
   // clears it on merge — JSON.stringify drops it from the file the same way
   // `entry.config = undefined` already does just below.
   if (patch.enabled !== undefined) {
-    entry.enabled = patch.enabled ? undefined : false;
+    // Set on the stripped copy, which is the object that gets persisted.
+    persisted.enabled = patch.enabled ? undefined : false;
   }
 
-  // Strip BEFORE the new config lands on the entry.  `map` came out of
-  // instanceConfigs(), so each entry's `environment` holds values injected
-  // from the config as it stands on disk right now; a driver whose injected
-  // key is derived from `config.key` (MiniMax) would otherwise have its
-  // PREVIOUS key left behind in the persisted environment, still shadowing
-  // the one just saved.  Stripping against the pre-patch entry removes the
-  // old value, and the new config is written onto the stripped copy.
-  const persistable = stripInjectedEnvironment(next, map);
-  const persisted = persistable[instanceId];
   persisted.config = Object.keys(nextConfig).length ? nextConfig : undefined;
   next.instances = persistable;
   return { ok: true, config: next };
@@ -1226,7 +1231,7 @@ function injectedEnvironment(
   driver: string,
   instanceId: string,
   /** The entry's own opaque `config` blob, for the one driver whose
-   * per-instance key rides in it — `readInstanceConfigKey` is its parse. */
+   * per-instance key rides in it — `readInstanceConfigText` is its parse. */
   entryConfig?: InstanceConfig["config"],
 ): Map<string, string> {
   const environment = new Map<string, string>();
@@ -1246,7 +1251,7 @@ function injectedEnvironment(
   // per-instance key is delivered here, and takes precedence over the
   // workspace one for the instance that carries it.
   if (driver === "minimax") {
-    const instanceKey = readInstanceConfigKey(entryConfig);
+    const instanceKey = readInstanceConfigText(entryConfig, "key");
     if (instanceKey) environment.set("MINIMAX_API_KEY", instanceKey);
     else if (instanceId === "minimax" && cfg.minimax?.key)
       environment.set("MINIMAX_API_KEY", cfg.minimax.key);
@@ -1256,16 +1261,19 @@ function injectedEnvironment(
   return environment;
 }
 
-/** The per-instance API key out of an instance's opaque `config` blob.  The
- * blob is `z.json()` in the schema, so this IS its parse boundary — the same
- * shape `cliOfRaw` and `fullAutoOfRaw` already use in the registry. */
-const instanceKeySchema = z.object({ key: z.string() });
+/** One string field out of an instance's opaque `config` blob.  The blob is
+ * `z.json()` in the schema, so this IS its parse boundary — the same shape
+ * `cliOfRaw` and `fullAutoOfRaw` already use in the registry. */
+const instanceTextSchema = z.object({ key: z.string().optional(), url: z.string().optional() });
 
-function readInstanceConfigKey(raw: InstanceConfig["config"]): string | undefined {
-  const parsed = instanceKeySchema.safeParse(raw);
+function readInstanceConfigText(
+  raw: InstanceConfig["config"],
+  field: "key" | "url",
+): string | undefined {
+  const parsed = instanceTextSchema.safeParse(raw);
   if (!parsed.success) return undefined;
-  const key = parsed.data.key.trim();
-  return key ? key : undefined;
+  const value = parsed.data[field]?.trim();
+  return value ? value : undefined;
 }
 
 /** The per-instance environment variable each driver that supports more than
@@ -1277,19 +1285,38 @@ export const INSTANCE_API_KEY_ENV = new Map<string, string>([
   ["minimax", "MINIMAX_API_KEY"],
 ]);
 
-/** Strip config-injected credential env (injectedEnvironment above) from a
- * materialized instance map before it is persisted. instanceConfigs() bakes
- * those secrets into each entry's `environment` for the live driver to read;
- * anything that persists a snapshot of that transient map — adding the first
- * custom engine when `cfg.instances` was never set, patching a per-instance
- * override — must strip them back out first, or config.json ends up holding
- * a literal copy of a secret that was never meant to live on disk, and a
- * later key rotation or clear leaves that stale copy still active. */
-export function stripInjectedEnvironment(cfg: AppConfig, map: InstanceConfigMap): InstanceConfigMap {
+/** Strip everything instanceConfigs() materialized onto an entry from
+ * WORKSPACE config, before that entry is persisted.
+ *
+ * Two kinds of value, one rule.  The credential env is the obvious one:
+ * instanceConfigs() bakes each secret into the consuming entry's
+ * `environment` for the live driver to read, and anything that persists a
+ * snapshot of that transient map — adding the first custom engine when
+ * `cfg.instances` was never set, patching a per-instance override — must
+ * strip them back out, or config.json ends up holding a literal copy of a
+ * secret that was never meant to live on disk and a later rotation leaves the
+ * stale copy still active.
+ *
+ * `config.url` is the same bug wearing different clothes.  The workspace
+ * endpoint is a FALLBACK: an instance with no url of its own resolves one at
+ * load time.  Persisting the resolved value turns that fallback into a
+ * per-instance override, so the next change to the workspace endpoint
+ * silently stops reaching the instance it was set for, and Settings reports
+ * an endpoint the engine is no longer using.  A per-instance url the operator
+ * really did type is indistinguishable from the fallback only when the two
+ * are equal — in which case dropping it changes nothing that resolves. */
+export function stripInjectedDefaults(cfg: AppConfig, map: InstanceConfigMap): InstanceConfigMap {
   const stripped: InstanceConfigMap = {};
   for (const [id, entry] of Object.entries(map)) {
+    const next = { ...entry };
+    const fallbackUrl = workspaceDriverUrl(cfg, entry.driver)?.trim();
+    if (fallbackUrl && readInstanceConfigText(entry.config, "url") === fallbackUrl) {
+      const parsed = jsonObjectSchema.safeParse(entry.config);
+      const { url: _resolved, ...rest } = parsed.success ? parsed.data : {};
+      next.config = Object.keys(rest).length ? rest : undefined;
+    }
     if (!entry.environment) {
-      stripped[id] = entry;
+      stripped[id] = next;
       continue;
     }
     const injected = injectedEnvironment(cfg, entry.driver, id, entry.config);
@@ -1297,9 +1324,19 @@ export function stripInjectedEnvironment(cfg: AppConfig, map: InstanceConfigMap)
     for (const [k, v] of Object.entries(environment)) {
       if (injected.get(k) === v) delete environment[k];
     }
-    stripped[id] = Object.keys(environment).length ? { ...entry, environment } : { ...entry, environment: undefined };
+    stripped[id] = Object.keys(environment).length
+      ? { ...next, environment }
+      : { ...next, environment: undefined };
   }
   return stripped;
+}
+
+/** The workspace-level endpoint a driver's instances fall back to, if it has
+ * one.  Only the two engines configured with an endpoint and a key do. */
+function workspaceDriverUrl(cfg: AppConfig, driver: string): string | undefined {
+  if (driver === "openai-compat") return cfg.openaiCompat?.url;
+  if (driver === "minimax") return cfg.minimax?.url;
+  return undefined;
 }
 
 // Default fleet: one instance per built-in driver (upstream
@@ -1410,5 +1447,5 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
 export function persistableInstanceConfigs(cfg: AppConfig): InstanceConfigMap {
   return cfg.instances && Object.keys(cfg.instances).length
     ? cfg.instances
-    : stripInjectedEnvironment(cfg, instanceConfigs(cfg));
+    : stripInjectedDefaults(cfg, instanceConfigs(cfg));
 }

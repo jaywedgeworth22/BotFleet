@@ -270,9 +270,20 @@ describe("isCustomInstance", () => {
     expect(isCustomInstance("minimax", "custom-minimax-china")).toBe(true);
   });
 
-  it("never calls a single-instance engine custom, whatever its id is", () => {
-    for (const driver of ["claudeAgent", "codex", "boxAgent", "not-a-real-driver"]) {
-      expect(isCustomInstance(driver, "anything-at-all")).toBe(false);
-    }
+  it("knows the default fleet's own ids for every driver whose id is not its kind", () => {
+    expect(isCustomInstance("claudeAgent", "claude")).toBe(false);
+    expect(isCustomInstance("boxAgent", "computer")).toBe(false);
+    expect(isCustomInstance("cursorAgent", "cursor")).toBe(false);
+    expect(isCustomInstance("codex", "codex")).toBe(false);
+  });
+
+  it("fails SAFE for a driver nobody remembered to list", () => {
+    // The old table listed two drivers and answered false for every other
+    // driver's non-reserved id, hiding the delete button on an instance the
+    // operator really did add. The fallback is "reserved id IS the driver
+    // kind", which is how the default fleet names every remaining instance.
+    expect(isCustomInstance("not-a-real-driver", "not-a-real-driver")).toBe(false);
+    expect(isCustomInstance("not-a-real-driver", "custom-something")).toBe(true);
+    expect(isCustomInstance("someFutureDriver", "someFutureDriver-2")).toBe(true);
   });
 });

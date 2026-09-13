@@ -16,19 +16,34 @@ import type {
   ProviderSnapshot,
 } from "../contracts.ts";
 
-/** The instance id the default fleet reserves for each driver that supports
- * more than one instance.  Anything else on that driver was added from the
- * app, which is what `isCustom` reports: the delete button, the "added by
- * you" callout and the engine rail all key off it.  A driver absent from this
- * table has exactly one instance, so none of its instances is ever custom. */
+/** The instance id the default fleet reserves for each driver whose reserved
+ * id is not simply its own kind.  `isCustom` — which drives the delete button,
+ * the "added by you" callout and the engine rail — asks whether an instance is
+ * one the operator added rather than one the default fleet ships.
+ *
+ * Only the exceptions live here.  Every other driver's reserved id IS its
+ * driver kind (`claude`/`claudeAgent` aside, the default fleet names each
+ * instance after its engine), so the fallback below answers for a driver
+ * nobody remembered to list — and answers the SAFE way: an id that is not the
+ * reserved one is treated as operator-added, which offers a delete button for
+ * something deletable rather than hiding one for something that is. */
 const RESERVED_INSTANCE_ID = new Map<string, InstanceId>([
   ["openai-compat", "openaiCompat"],
-  ["minimax", "minimax"],
+  ["claudeAgent", "claude"],
+  ["grokAgent", "grok"],
+  ["dshAgent", "dsh"],
+  ["droidAgent", "droid"],
+  ["cursorAgent", "cursor"],
+  ["antigravityAgent", "antigravity"],
+  ["boxAgent", "computer"],
+  ["kimiAgent", "kimi"],
+  ["qwenAgent", "qwen"],
+  ["hermesAgent", "hermes"],
+  ["piAgent", "pi"],
 ]);
 
 export function isCustomInstance(driverKind: string, instanceId: InstanceId): boolean {
-  const reserved = RESERVED_INSTANCE_ID.get(driverKind);
-  return reserved !== undefined && instanceId !== reserved;
+  return instanceId !== (RESERVED_INSTANCE_ID.get(driverKind) ?? driverKind);
 }
 
 export interface ShadowInstance {

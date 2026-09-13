@@ -229,7 +229,11 @@ export function ApiKeyRow({
           </span>
         )}
         {configured && <span className="text-[11px] text-success">Connected</span>}
-        <SecretSourceBadge source={provenance?.source} infisicalConfigured={infisicalConfigured} />
+        <SecretSourceBadge
+          source={provenance?.source}
+          elsewhere={provenance?.elsewhere}
+          infisicalConfigured={infisicalConfigured}
+        />
         <CredentialHelp section={section} />
       </div>
       <div className="flex gap-2">
@@ -383,20 +387,25 @@ export function EngineKeyRow({ engine: engineId }: { engine: ApiKeyEngineId }) {
   const urlLocked = (urlProvenance?.managed ?? false) && !writeThrough;
 
   const keyState = engineKeyStatus(status);
-  // A locked key cannot be cleared from here either — the vault is the only
-  // place it can change — so the button must not offer to.
-  const clearing = !key.trim() && !keyLocked && Boolean(status?.configured || status?.pending);
-  const nothingToSave = !key.trim() && !clearing && url.trim() === savedUrl.trim();
+  const hasSavedKey = Boolean(status?.configured || status?.pending);
+  // Clearing is its own button, never a mode Save falls into.  Inferring it
+  // from an empty field was a data-loss bug: the field is blank on every
+  // visit (a key is never echoed back), so editing only the endpoint and
+  // pressing Save deleted the saved key.  A locked key cannot be cleared
+  // from here at all — the vault is the only place it can change.
+  const canClear = hasSavedKey && !keyLocked;
+  const urlChanged = url.trim() !== savedUrl.trim();
+  const nothingToSave = !key.trim() && !urlChanged;
 
-  const save = () => {
-    if (saving || nothingToSave) return;
+  const commit = (clear: boolean) => {
+    if (saving) return;
     const split = splitEngineKeySave({
       engine,
       key,
-      url,
+      url: clear ? savedUrl : url,
       savedUrl,
       hasBridge: Boolean(window.ogb?.setCredential),
-      clear: clearing,
+      clear,
     });
     if (!split.ok) {
       setError(split.error);
@@ -427,6 +436,17 @@ export function EngineKeyRow({ engine: engineId }: { engine: ApiKeyEngineId }) {
       .finally(() => setSaving(false));
   };
 
+  const save = () => {
+    if (nothingToSave) return;
+    commit(false);
+  };
+
+  const clear = () => {
+    if (!canClear) return;
+    if (!window.confirm(`Remove the saved ${engine.label} API key?`)) return;
+    commit(true);
+  };
+
   return (
     <div>
       <div className="mb-1.5 flex items-center gap-2 text-[13px] text-ink-secondary">
@@ -447,6 +467,7 @@ export function EngineKeyRow({ engine: engineId }: { engine: ApiKeyEngineId }) {
         </span>
         <SecretSourceBadge
           source={keyProvenance?.source}
+          elsewhere={keyProvenance?.elsewhere}
           infisicalConfigured={infisicalConfigured}
           className="ml-auto"
         />
@@ -473,19 +494,29 @@ export function EngineKeyRow({ engine: engineId }: { engine: ApiKeyEngineId }) {
           onClick={save}
           disabled={saving || nothingToSave}
           className={cn(
-            "flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg py-2 text-[13px]",
-            clearing ? "bg-control text-danger hover:bg-raised-hover" : "bg-control text-ink hover:bg-raised-hover",
+            "flex w-[72px] shrink-0 items-center justify-center gap-1.5 rounded-lg bg-control py-2 text-[13px] text-ink hover:bg-raised-hover",
             "disabled:cursor-not-allowed disabled:opacity-50",
           )}
-          title={clearing ? "Remove the Saved Key" : "Save"}
+          title="Save"
         >
-          {saving ? <Loader2 size={13} className="animate-spin" /> : clearing ? "Clear" : <><Check size={13} />Save</>}
+          {saving ? <Loader2 size={13} className="animate-spin" /> : <><Check size={13} />Save</>}
         </button>
+        {canClear && (
+          <button
+            onClick={clear}
+            disabled={saving}
+            className="shrink-0 rounded-lg bg-control px-3 py-2 text-[13px] text-danger hover:bg-raised-hover disabled:cursor-not-allowed disabled:opacity-50"
+            title="Remove the Saved Key"
+          >
+            Clear
+          </button>
+        )}
       </div>
       <div className="mt-2 flex items-center gap-2 text-[12px] text-ink-secondary">
         <span>Endpoint</span>
         <SecretSourceBadge
           source={urlProvenance?.source}
+          elsewhere={urlProvenance?.elsewhere}
           infisicalConfigured={infisicalConfigured}
           className="ml-auto"
         />
