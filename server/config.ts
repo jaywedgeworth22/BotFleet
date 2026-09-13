@@ -206,14 +206,14 @@ const instanceConfigMapSchema = z.record(z.string(), instanceConfigSchema);
 const appConfigSchema = z.object({
   deleteInstance: optionalText,
   xai: z.object({ key: optionalText, url: optionalText, credentialStorage: externalCredentialStorage }).optional(),
-  openaiCompat: z.object({ key: optionalText, url: optionalText }).optional(),
+  openaiCompat: z.object({ key: optionalText, url: optionalText, credentialStorage: externalCredentialStorage }).optional(),
   /** MiniMax API key and base URL.  Same shape as `openaiCompat` above and
    * for the same reason: the driver speaks the OpenAI wire protocol against
    * an endpoint the operator may repoint (global, China, a gateway), so the
    * key and the URL travel together.  The driver itself reads
    * `MINIMAX_API_KEY` and its per-instance `config.url`; this section is the
    * workspace default those resolve from when no per-instance value is set. */
-  minimax: z.object({ key: optionalText, url: optionalText }).optional(),
+  minimax: z.object({ key: optionalText, url: optionalText, credentialStorage: externalCredentialStorage }).optional(),
   /** Project key used for Sessions, catalog and agent tools. userId/sessionId
    * are non-secret local identifiers used to reuse one Composio Session. */
   // brokerUrl is read by the desktop shell only: the HTTPS origin of a
@@ -340,8 +340,8 @@ const jsonObjectSchema = z.record(z.string(), z.json());
 export interface AppConfig {
   deleteInstance?: string;
   xai?: { key?: string; url?: string; credentialStorage?: "external" };
-  openaiCompat?: { key?: string; url?: string };
-  minimax?: { key?: string; url?: string };
+  openaiCompat?: { key?: string; url?: string; credentialStorage?: "external" };
+  minimax?: { key?: string; url?: string; credentialStorage?: "external" };
   composio?: { apiKey?: string; userId?: string; sessionId?: string; brokerUrl?: string; credentialStorage?: "external" };
   box?: { token?: string; credentialStorage?: "external" };
   /** A named host from the user's SSH config. Authentication stays with SSH. */
@@ -451,7 +451,7 @@ export function parseStoredConfig(value: JsonValue): AppConfig {
 
 export function parseConfigPatch(value: JsonValue): ConfigPatch {
   if (value && typeof value === "object" && !Array.isArray(value)) {
-    for (const section of ["xai", "composio", "box", "opencodeGo", "deepseek", "tts", "imageGen", "infisical"]) {
+    for (const section of ["xai", "openaiCompat", "minimax", "composio", "box", "opencodeGo", "deepseek", "tts", "imageGen", "infisical"]) {
       const candidate = value[section];
       if (candidate && typeof candidate === "object" && !Array.isArray(candidate) &&
           Object.hasOwn(candidate, "credentialStorage")) {
@@ -990,7 +990,7 @@ export const PROVIDER_CREDENTIAL_ENV = [
  * echoed back — callers report configured-or-not booleans only). */
 type CheckedConfigPatch = z.infer<ReturnType<typeof appConfigSchema.partial>>;
 
-type ExternalCredentialSection = "xai" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical";
+type ExternalCredentialSection = "xai" | "openaiCompat" | "minimax" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical";
 
 export function saveConfig(
   patch: Partial<AppConfig>,

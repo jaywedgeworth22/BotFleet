@@ -5289,6 +5289,23 @@ function configStatus() {
       managedSetup: composio.managedSetup(),
     },
     box: { configured: Boolean(cfg.box?.token) },
+    // The two `install.apiKeyOnly` engines: no CLI to install, no sign-in,
+    // just an endpoint and a key.  The key is reported the same
+    // configured-or-not way as every other credential here; the endpoint is
+    // configuration, not a credential, so it is returned in full.
+    // `pending` is the packaged-app state where the encrypted store holds
+    // the key but its replay has not reached this harness yet — the panel
+    // shows "waiting" rather than an untrue "not set".
+    openaiCompat: {
+      configured: Boolean(cfg.openaiCompat?.key),
+      url: cfg.openaiCompat?.url ?? "",
+      pending: workspaceCredentialPending(cfg, "openaiCompatApiKey"),
+    },
+    minimax: {
+      configured: Boolean(cfg.minimax?.key),
+      url: cfg.minimax?.url ?? "",
+      pending: workspaceCredentialPending(cfg, "minimaxApiKey"),
+    },
     vps: {
       configured: Boolean(vpsSshAlias(cfg)),
       sshAlias: vpsSshAlias(cfg) ?? "",
@@ -5690,13 +5707,22 @@ function externalCredentialPending(instanceId: string): boolean {
 function fixedProviderCredentialPending(instanceId: string, runOn?: RoutineRunOn): boolean {
   if (runOn === "cloud") return workspaceCredentialPending(cfg, "boxToken");
   const driver = instanceConfigs(cfg)[instanceId]?.driver;
+  // The two multi-instance drivers are gated on the RESERVED instance id as
+  // well as the driver, exactly as injectedEnvironment() is: only that one
+  // instance is backed by the workspace credential, so a connection the
+  // operator added — which carries its own key — must never be held back
+  // waiting for a replay that was never going to reach it.
   const credential = driver === "grok"
     ? "xaiApiKey"
     : driver === "boxAgent"
       ? "boxToken"
       : driver === "opencodeGo"
         ? "opencodeGoApiKey"
-        : null;
+        : driver === "openai-compat" && instanceId === "openaiCompat"
+          ? "openaiCompatApiKey"
+          : driver === "minimax" && instanceId === "minimax"
+            ? "minimaxApiKey"
+            : null;
   return credential ? workspaceCredentialPending(cfg, credential) : false;
 }
 
@@ -9664,11 +9690,17 @@ const server = createServer(async (req, res) => {
         // never survive the merge in config.json.
         const persisted = structuredClone(patch);
         const externalCredentialSections: Partial<Record<
-          "xai" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical",
+          "xai" | "openaiCompat" | "minimax" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical",
           boolean
         >> = {};
         const externalFields = [
           ["xai", "key"],
+          // The two engines that are configured with an endpoint and a key
+          // rather than a CLI login.  Only the KEY goes to the store — each
+          // one's `url` is configuration and stays readable in config.json,
+          // the way the Access client id does.
+          ["openaiCompat", "key"],
+          ["minimax", "key"],
           ["composio", "apiKey"],
           ["box", "token"],
           ["opencodeGo", "apiKey"],

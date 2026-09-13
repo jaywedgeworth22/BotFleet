@@ -14,13 +14,19 @@ BotFleet looks in several places.  The first one that holds a value wins, and a 
 |---|---|---|
 | Secret store | Add `MINIMAX_API_KEY` to the Infisical project BotFleet is pointed at | A fleet of machines that should rotate one key together |
 | Environment | Export `MINIMAX_API_KEY` before launching BotFleet | A development shell, a launch agent, a container |
-| This computer | `{"minimax": {"key": "…", "url": "…"}}` in `~/.botfleet/config.json` | One machine, one key, no vault to run |
+| Settings | **Settings → API Keys → MiniMax API key**, or `{"minimax": {"key": "…", "url": "…"}}` in `~/.botfleet/config.json` | One machine, one key, no vault to run |
 | The connection itself | Paste a key into **Add Engine** when you add a MiniMax connection | A second account or endpoint, keyed separately from the workspace |
 | `mmx` CLI | `mmx auth login --api-key YOUR_MINIMAX_API_KEY`, which writes `~/.mmx/config.json` | You already use the `mmx` CLI for other work |
 
 **Settings → Secrets** names the source the value in use actually came from, so a key exported in a shell and a key held in the vault are never confused for each other.  A key that lives only in `~/.mmx/config.json` is named there too — that file is read by the driver itself rather than managed by BotFleet, so the card shows the path instead of a managed source.
 
-The base URL follows the same ladder under the name `MINIMAX_BASE_URL` (`minimax.url` in `config.json`).  Leave it unset for MiniMax's global host, `https://api.minimax.io/v1`; set it to `https://api.minimaxi.com/v1` for the China host, or to a gateway or proxy of your own.
+The base URL follows the same ladder under the name `MINIMAX_BASE_URL` (`minimax.url` in `config.json`), and sits under the key in the same Settings row.  Leave it blank for MiniMax's global host, `https://api.minimax.io/v1`; set it to `https://api.minimaxi.com/v1` for the China host, or to a gateway or proxy of your own.
+
+On the desktop app the key you type in Settings goes into the operating system's encrypted credential store and never reaches `~/.botfleet/config.json`; the endpoint beside it is configuration, not a credential, so it stays readable in the file.  Running in a browser against a local harness there is no such store, and the key is saved in the config file instead, the same way every other locally-configured credential is.
+
+<Callout type="info" title="A blank key field never clears a saved key">
+  Settings never shows a key back to you, so the field is blank on every visit.  Saving with it blank changes only the endpoint.  To remove a saved key, leave the field blank and press **Clear**.
+</Callout>
 
 <Callout type="info" title="Cost is reported only for MiniMax's own hosts">
   Spend is computed from MiniMax's published pay-as-you-go rates, which describe the global and China hosts.  Point a connection at a gateway or a reseller and turns still run, but their cost is reported blank rather than guessed at a tariff that may not apply.
@@ -36,8 +42,6 @@ One BotFleet workspace can hold several MiniMax connections, each with its own k
 4. Save.  There is no model list to fill in: MiniMax publishes its own catalog, and every connection offers the same models.
 
 Each bot picks its connection in the model picker like any other engine.  The connections are independent: a key rotated on one does not touch the other, and a connection you added can be deleted from its row, while the built-in one cannot.
-
-On the desktop app the key you type goes into the operating system's encrypted credential store and never reaches `~/.botfleet/config.json`.  Running in a browser against a local harness there is no such store, so the key is saved in the config file instead, the same way every other locally-configured credential is.
 
 <Callout type="warn" title="A key is never shared between connections">
   The workspace key reaches only the built-in MiniMax connection.  A connection you added gets the key you entered for it and nothing else, so pointing one at a gateway can never hand that gateway your real MiniMax credential.

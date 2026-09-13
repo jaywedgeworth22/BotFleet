@@ -5026,6 +5026,80 @@ describe("instance CLI override API", () => {
     expect((await api("DELETE", "/api/instances/minimax")).status).toBe(400);
   }, 30_000);
 
+  it("reports the two API-key engines' state and endpoint on /api/config, and saves them", async () => {
+    // Before this, `configStatus()` hand-listed every section and had no
+    // entry for either engine that is configured with an endpoint and a key
+    // instead of a CLI login — so the API Keys panel had no way to show
+    // whether a key was saved, and no way to save one.
+    const boot = (await api("GET", "/api/config")).body;
+    expect(boot.minimax).toEqual({ configured: false, url: "", pending: false });
+    expect(boot.openaiCompat).toEqual({ configured: false, url: "", pending: false });
+
+    try {
+      const saved = await api("PUT", "/api/config", {
+        minimax: { key: "sentinel-workspace-minimax-key", url: "https://api.minimaxi.com/v1" },
+      });
+      expect(saved.status).toBe(200);
+      const after = (await api("GET", "/api/config")).body;
+      // The key is reported as a boolean and never echoed; the endpoint is
+      // configuration, so it comes back in full.
+      expect(after.minimax).toEqual({ configured: true, url: "https://api.minimaxi.com/v1", pending: false });
+      expect(JSON.stringify(after)).not.toContain("sentinel-workspace-minimax-key");
+
+      // …and it reaches the reserved instance, which is the whole point.
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(onDisk.minimax.url).toBe("https://api.minimaxi.com/v1");
+      expect(onDisk.minimax.key).toBe("sentinel-workspace-minimax-key");
+      // Never copied into any instance's persisted environment.
+      for (const entry of Object.values<any>(onDisk.instances ?? {})) {
+        expect(JSON.stringify(entry?.environment ?? {})).not.toContain("sentinel-workspace-minimax-key");
+      }
+
+      // The desktop path: the key goes to the encrypted store, and this
+      // route persists only the tombstone plus the durable marker.
+      const external = await api("PUT", "/api/config?secretStorage=external", {
+        minimax: { key: "sentinel-encrypted-minimax-key" },
+      });
+      expect(external.status).toBe(200);
+      const externalDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(JSON.stringify(externalDisk.minimax)).not.toContain("sentinel-encrypted-minimax-key");
+      expect(externalDisk.minimax.credentialStorage).toBe("external");
+      expect(externalDisk.minimax.key).toBe("");
+      // The endpoint saved a moment ago survives the credential-only save.
+      expect(externalDisk.minimax.url).toBe("https://api.minimaxi.com/v1");
+      // The key stays LIVE in this process — the desktop shell committed it
+      // to the encrypted store and `syncCredentialEnv` keeps the running
+      // harness in step, exactly as it does for every other credential on
+      // this path. The tombstone and the marker just asserted are what make
+      // `pending` true on the NEXT launch, before the shell replays the
+      // store; `engineKeyStatus` in src/lib/engine-key-config.test.ts covers
+      // how the panel renders that state.
+      expect((await api("GET", "/api/config")).body.minimax).toEqual({
+        configured: true,
+        url: "https://api.minimaxi.com/v1",
+        pending: false,
+      });
+
+      // Clearing drops the marker, so an anonymous endpoint stays valid.
+      expect((await api("PUT", "/api/config?secretStorage=external", { minimax: { key: "" } })).status).toBe(200);
+      const cleared = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(cleared.minimax.credentialStorage).toBeUndefined();
+      expect((await api("GET", "/api/config")).body.minimax.pending).toBe(false);
+
+      // `credentialStorage` is the store's to write, never the caller's.
+      expect((await api("PUT", "/api/config", {
+        minimax: { credentialStorage: "external" },
+      })).status).toBe(400);
+    } finally {
+      await api("PUT", "/api/config", { minimax: { key: "", url: "" } });
+    }
+    expect((await api("GET", "/api/config")).body.minimax).toEqual({
+      configured: false,
+      url: "",
+      pending: false,
+    });
+  }, 30_000);
+
   it("routes a MiniMax connection's key through the same encrypted store openai-compat uses", async () => {
     // The desktop shell creates the instance without a key (the bridge holds
     // it) and then PATCHes ?secretStorage=external. Nothing about that path

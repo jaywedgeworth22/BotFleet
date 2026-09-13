@@ -351,6 +351,13 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
   xai?: { configured: boolean };
+  /** The two `install.apiKeyOnly` engines: an endpoint and a key, no CLI to
+   * install and no interactive sign-in.  `url` is configuration, not a
+   * credential, so it comes back in full; `pending` is the packaged-app
+   * state where the encrypted store holds the key but its replay has not
+   * reached the harness yet. */
+  openaiCompat?: { configured: boolean; url: string; pending: boolean };
+  minimax?: { configured: boolean; url: string; pending: boolean };
   deepseek?: { configured: boolean };
   composio: {
     configured: boolean;

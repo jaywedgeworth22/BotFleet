@@ -9,6 +9,11 @@
 // prefers over the file (server/config.ts loadConfig).
 export const WORKSPACE_CREDENTIALS = [
   { section: "xai", field: "key", name: "xaiApiKey", env: "XAI_API_KEY" },
+  // The two engines configured with an endpoint and a key rather than a CLI
+  // login.  Only the key migrates; each one's `url` is configuration and
+  // stays readable in config.json.
+  { section: "openaiCompat", field: "key", name: "openaiCompatApiKey", env: "OPENAI_COMPAT_API_KEY" },
+  { section: "minimax", field: "key", name: "minimaxApiKey", env: "MINIMAX_API_KEY" },
   { section: "deepseek", field: "key", name: "deepseekApiKey", env: "DEEPSEEK_API_KEY" },
   { section: "box", field: "token", name: "boxToken", env: "BOX_TOKEN" },
   { section: "tts", field: "key", name: "ttsKey", env: "OMB_TTS_KEY" },
