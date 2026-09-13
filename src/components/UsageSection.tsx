@@ -74,6 +74,12 @@ function formatUsdBalance(balance: number | null): string {
   return `$${balance.toFixed(2)} remaining`;
 }
 
+function formatSpendUsd(amount: number): string {
+  if (!amount || amount === 0) return "$0.00";
+  if (amount < 0.01) return `<$0.01 ($${amount.toFixed(4)})`;
+  return `$${amount.toFixed(2)}`;
+}
+
 export function UsageSection() {
   const { state, dispatch } = useStore();
   const [telemetryStatus, setTelemetryStatus] = React.useState<TelemetryStatusView | null>(null);
@@ -81,6 +87,7 @@ export function UsageSection() {
   const [quotas, setQuotas] = React.useState<QuotaCooldownInfo[]>([]);
   const [antigravityQuota, setAntigravityQuota] = React.useState<AntigravityUsageSnapshot | null>(null);
   const [deepseekBalance, setDeepSeekBalance] = React.useState<DeepSeekBalanceView | null>(null);
+  const [engineSpend, setEngineSpend] = React.useState<Record<string, { spend5hUsd: number; spend7dUsd: number }>>({});
   const [quotaWindows, setQuotaWindows] = React.useState<Array<{
     id: string;
     provider: string;
@@ -146,6 +153,9 @@ export function UsageSection() {
         }
         if (data?.deepseek && typeof data.deepseek === "object") {
           setDeepSeekBalance(data.deepseek);
+        }
+        if (data?.engineSpend && typeof data.engineSpend === "object") {
+          setEngineSpend(data.engineSpend);
         }
       })
       .catch(() => {});
@@ -303,6 +313,14 @@ export function UsageSection() {
         <div className="flex flex-col divide-y divide-hairline/20">
           {state.instances.filter((instance) => {
             if (instance.enabled === false) return false;
+            const isDeepSeek =
+              instance.driverKind === "deepseekAgent" ||
+              instance.driverKind === "deepseek" ||
+              instance.driverKind === "dshAgent";
+            const spend =
+              engineSpend[instance.driverKind] ??
+              engineSpend[instance.instanceId] ??
+              (isDeepSeek ? (engineSpend["dshAgent"] ?? engineSpend["deepseek"] ?? engineSpend["deepseekAgent"]) : undefined);
             const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
             const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
             const hasQuotaData =
@@ -311,7 +329,8 @@ export function UsageSection() {
               instanceCooldowns.length > 0 ||
               instanceWindows.length > 0 ||
               (instance.instanceId === "antigravity" && (antigravityQuota?.models?.length ?? 0) > 0) ||
-              ((instance.driverKind === "deepseekAgent" || instance.driverKind === "deepseek") && deepseekBalance?.balanceUsd != null);
+              (isDeepSeek && deepseekBalance?.balanceUsd != null) ||
+              Boolean(spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0));
             // A configured engine that has gone unavailable — a Box token set
             // but the API unreachable, a login that expired, a CLI that stops
             // launching — must still show its row with the real failure
@@ -346,7 +365,11 @@ export function UsageSection() {
             // DeepSeek balance only applies to the DeepSeek engine. Surfaced
             // as a third status line so the user can see "$12.34 remaining"
             // (or "Balance unavailable") without expanding the row.
-            const deepseekRow = instance.driverKind === "deepseekAgent" || instance.driverKind === "deepseek"
+            const isDeepSeek =
+              instance.driverKind === "deepseekAgent" ||
+              instance.driverKind === "deepseek" ||
+              instance.driverKind === "dshAgent";
+            const deepseekRow = isDeepSeek
               ? deepseekBalance
               : null;
             // deepseek-balance.ts's own contract: "Set when the key is
@@ -358,10 +381,51 @@ export function UsageSection() {
             const deepseekLine = deepseekRow && !deepseekRow.error && deepseekRow.balanceUsd != null
               ? formatUsdBalance(deepseekRow.balanceUsd)
               : null;
+            const spend =
+              engineSpend[instance.driverKind] ??
+              engineSpend[instance.instanceId] ??
+              (isDeepSeek ? (engineSpend["dshAgent"] ?? engineSpend["deepseek"] ?? engineSpend["deepseekAgent"]) : undefined);
+            let deepseekStatus = deepseekLine;
+            if (deepseekLine && spend) {
+              deepseekStatus = `${deepseekLine}  ·  Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
+            } else if (spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0)) {
+              deepseekStatus = `Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
+            }
             const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
-            const detailLines = agLines.length > 0 ? agLines : windowLines;
+            const baseDetailLines = agLines.length > 0 ? agLines : windowLines;
+            const detailLines = [...baseDetailLines];
+            if (isDeepSeek && deepseekRow && !deepseekRow.error && deepseekRow.balanceUsd != null) {
+              detailLines.unshift({
+                label: "Remaining Balance",
+                value: formatUsdBalance(deepseekRow.balanceUsd),
+                exhausted: deepseekRow.availability === "exhausted" || deepseekRow.balanceUsd <= 0,
+                group: "external" as const,
+              });
+              if (deepseekRow.grantedUsd != null && deepseekRow.toppedUpUsd != null) {
+                detailLines.push({
+                  label: "Granted / Topped Up",
+                  value: `$${deepseekRow.grantedUsd.toFixed(2)} granted · $${deepseekRow.toppedUpUsd.toFixed(2)} topped up`,
+                  exhausted: false,
+                  group: "external" as const,
+                });
+              }
+            }
+            if (spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0 || isDeepSeek)) {
+              detailLines.push({
+                label: "Spend (Past 5 Hours)",
+                value: formatSpendUsd(spend.spend5hUsd),
+                exhausted: false,
+                group: "window" as const,
+              });
+              detailLines.push({
+                label: "Spend (Past Week)",
+                value: formatSpendUsd(spend.spend7dUsd),
+                exhausted: false,
+                group: "window" as const,
+              });
+            }
             const fullSummary = detailLines.length > 0
               ? quotaLinesSummary(detailLines)
               : null;
@@ -408,8 +472,8 @@ export function UsageSection() {
                   const reset = formatResetCountdown(headline.resetAtMs);
                   return reset ? `${headline.display} ${value} · resets in ${reset}` : `${headline.display} ${value}`;
                 });
-            const allHeadlineLines = deepseekLine
-              ? [...headlineLines, deepseekLine]
+            const allHeadlineLines = deepseekStatus
+              ? [...headlineLines, deepseekStatus]
               : headlineLines;
             // The engine's real state — capped, partially capped, disabled,
             // or otherwise unavailable — must win over a headline percentage

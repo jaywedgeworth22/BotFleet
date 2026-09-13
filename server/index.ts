@@ -56,6 +56,7 @@ import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from 
 import { telemetry } from "./telemetry.ts";
 import { usageQuotaPoller } from "./usage-quota.ts";
 import { getDeepSeekBalance } from "./deepseek-balance.ts";
+import { rollingSpendTracker } from "./rolling-spend.ts";
 import {
   lastAntigravityQuotaSnapshot,
   startAntigravityQuotaPoller,
@@ -374,6 +375,7 @@ usageQuotaPoller.configure({
 if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   usageQuotaPoller.start();
 }
+rollingSpendTracker.init(EVENTS_DIR);
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 
@@ -2191,6 +2193,15 @@ bus.subscribe((event: RuntimeEvent) => {
           costUsd: event.cost ?? null,
           billingMode: event.billingMode,
         });
+        if (typeof event.cost === "number" && event.cost > 0) {
+          rollingSpendTracker.recordTurn({
+            at: event.createdAt ? Date.parse(event.createdAt) || Date.now() : Date.now(),
+            provider: event.provider,
+            instanceId: actualSelection.instanceId,
+            costUsd: event.cost,
+            billingMode: event.billingMode,
+          });
+        }
         const currentTask = store.tasks(bot.id).find((t) => t.threadId === event.threadId);
         telemetry.trackTurn({
           botId: bot.id,
@@ -2288,6 +2299,15 @@ bus.subscribe((event: RuntimeEvent) => {
             roomId: group.id,
             roomName: group.name,
           });
+          if (typeof event.cost === "number" && event.cost > 0) {
+            rollingSpendTracker.recordTurn({
+              at: event.createdAt ? Date.parse(event.createdAt) || Date.now() : Date.now(),
+              provider: event.provider,
+              instanceId: actualSelection.instanceId,
+              costUsd: event.cost,
+              billingMode: event.billingMode,
+            });
+          }
         }
       }
       if (speaker && group?.busyBotId === speaker.botId) {
@@ -8693,6 +8713,7 @@ const server = createServer(async (req, res) => {
         antigravity: lastAntigravityQuotaSnapshot(),
         windows: usageQuotaPoller.getWindows(),
         deepseek,
+        engineSpend: rollingSpendTracker.getSpend(),
       });
     }
     if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {

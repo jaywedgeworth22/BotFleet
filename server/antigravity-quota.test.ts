@@ -250,4 +250,20 @@ describe("findAntigravityUsageBin", () => {
     writeFileSync(bin, "");
     expect(findAntigravityUsageBin({ ANTIGRAVITY_USAGE_BIN: bin }, (path) => path === bin)).toBe(bin);
   });
+
+  it("populates secondaryRemainingPercent and windowsLabel from promptCredits", () => {
+    const fixtureWithCredits = {
+      ...FIXTURE,
+      promptCredits: {
+        available: 500,
+        monthly: 50000,
+        usedPercentage: 0.99,
+        remainingPercentage: 0.01,
+      },
+    };
+    const snapshot = parseAntigravityUsageJson(fixtureWithCredits);
+    const overlay = quotaModelsFromSnapshot(snapshot);
+    expect(overlay["claude-sonnet-4-6"]?.secondaryRemainingPercent).toBe(1);
+    expect(overlay["claude-sonnet-4-6"]?.windowsLabel).toBe("5hr/Week");
+  });
 });

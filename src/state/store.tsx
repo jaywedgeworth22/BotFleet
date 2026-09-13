@@ -533,11 +533,14 @@ export interface InstanceInfo {
       capped: boolean;
       resetsAt?: number | null;
       error?: string;
+      windowsLabel?: string;
       models?: Record<string, {
         capped: boolean;
         remainingPercent?: number | null;
+        secondaryRemainingPercent?: number | null;
         resetsAt?: number | null;
         error?: string;
+        windowsLabel?: string;
       }>;
     };
   };

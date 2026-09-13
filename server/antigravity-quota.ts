@@ -229,8 +229,10 @@ export function applyAntigravityUsageToRegistry(
 export interface AntigravityModelQuota {
   capped: boolean;
   remainingPercent?: number | null;
+  secondaryRemainingPercent?: number | null;
   resetsAt?: number | null;
   error?: string;
+  windowsLabel?: string;
 }
 
 export function quotaModelsFromSnapshot(
@@ -239,11 +241,20 @@ export function quotaModelsFromSnapshot(
 ): Record<string, AntigravityModelQuota> {
   const models: Record<string, AntigravityModelQuota> = {};
   if (!snapshot) return models;
+  const promptCredits = snapshot.promptCredits;
+  let secondaryPercent: number | null = null;
+  if (typeof promptCredits?.remainingPercentage === "number" && Number.isFinite(promptCredits.remainingPercentage)) {
+    const raw = promptCredits.remainingPercentage;
+    const pct = raw <= 1 && raw > 0 ? raw * 100 : raw;
+    secondaryPercent = Math.round(pct * 100) / 100;
+  }
   for (const model of routingRows(snapshot, now)) {
     const reset = resetAtMs(model, now);
     models[model.modelId] = {
       capped: activeQuotaCap(model, now),
       remainingPercent: reset !== null && reset <= now ? null : remainingPercentDisplay(model),
+      ...(secondaryPercent != null ? { secondaryRemainingPercent: secondaryPercent } : {}),
+      windowsLabel: "5hr/Week",
       resetsAt: resetAtMs(model, now),
       ...(activeQuotaCap(model, now)
         ? { error: `${model.label} quota exhausted (antigravity-usage)` }
