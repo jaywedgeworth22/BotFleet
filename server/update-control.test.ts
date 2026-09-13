@@ -7,13 +7,17 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  BUSY_REFUSAL,
   createUpdateControl,
+  isAheadOfInstalled,
+  launchdJobIsAlive,
   launchPlanCommand,
   parseProgressRecord,
   runRefusal,
   stepLabel,
   type CommandResult,
   type LaunchPlan,
+  type RuntimeReadiness,
   type UpdateControl,
   type UpdateStatus,
 } from "./update-control.ts";
@@ -59,6 +63,8 @@ function build(
     git?: (args: string[]) => CommandResult;
     processAlive?: (pid: number) => boolean;
     updaterReportsProgress?: boolean;
+    readiness?: RuntimeReadiness;
+    launchDelay?: () => Promise<void>;
     now?: () => Date;
     installedCommit?: string;
   } = {},
@@ -79,9 +85,11 @@ function build(
       return options.git ? options.git(args) : ok();
     },
     launch: async (plan) => {
+      if (options.launchDelay) await options.launchDelay();
       launched.push(plan);
       return { launcher: "launchd" };
     },
+    readiness: () => options.readiness ?? { safeToRestart: true, activeWorkCount: 0 },
     processAlive: options.processAlive ?? (() => true),
     updaterReportsProgress: () => options.updaterReportsProgress ?? true,
     newRunId: () => "run_one",
@@ -223,23 +231,57 @@ describe("refusals", () => {
   const capabilities = { canCheck: true, canRun: true, reasons: [] };
   const available = { sourceCommit: NEW_COMMIT, aheadBy: 3, commits: [] };
   const running = { runId: "run_one", startedAt: "", step: "Building", logTail: [] };
+  const idle: RuntimeReadiness = { safeToRestart: true, activeWorkCount: 0 };
+  const busy: RuntimeReadiness = { safeToRestart: false, activeWorkCount: 2 };
+  const ask = (patch: Partial<Parameters<typeof runRefusal>[0]>) => runRefusal({
+    capabilities,
+    running: null,
+    available,
+    installedCommit: INSTALLED_COMMIT,
+    readiness: idle,
+    dirty: false,
+    force: false,
+    ...patch,
+  });
 
   it("names the one blocking reason", () => {
-    expect(runRefusal({ capabilities, running, available, dirty: false, force: false }))
-      .toBe("An update is already running.");
-    expect(runRefusal({
+    expect(ask({ running })).toBe("An update is already running.");
+    expect(ask({
       capabilities: { canCheck: false, canRun: false, reasons: ["Updating from this computer is macOS only."] },
-      running: null,
-      available,
-      dirty: false,
-      force: false,
     })).toBe("Updating from this computer is macOS only.");
-    expect(runRefusal({ capabilities, running: null, available, dirty: true, force: false }))
-      .toContain("uncommitted changes");
-    expect(runRefusal({ capabilities, running: null, available: null, dirty: false, force: false }))
-      .toBe("BotFleet is already on the newest build.");
-    expect(runRefusal({ capabilities, running: null, available: null, dirty: false, force: true })).toBeNull();
-    expect(runRefusal({ capabilities, running: null, available, dirty: false, force: false })).toBeNull();
+    expect(ask({ dirty: true })).toContain("uncommitted changes");
+    expect(ask({ available: null })).toBe("BotFleet is already on the newest build.");
+    expect(ask({ available: null, force: true })).toBeNull();
+    expect(ask({})).toBeNull();
+  });
+
+  it("will not re-offer the build that is already installed", () => {
+    // What a run leaves behind: available.json naming the commit this very
+    // process is now running.
+    const stale = { sourceCommit: INSTALLED_COMMIT, version: "1.0.31", aheadBy: 3, commits: [] };
+    expect(isAheadOfInstalled(stale, INSTALLED_COMMIT)).toBe(false);
+    expect(isAheadOfInstalled(available, INSTALLED_COMMIT)).toBe(true);
+    expect(isAheadOfInstalled(null, INSTALLED_COMMIT)).toBe(false);
+    expect(ask({ available: stale })).toBe("BotFleet is already on the newest build.");
+    expect(ask({ available: stale, force: true })).toBeNull();
+  });
+
+  it("will not interrupt a turn, and force is the one thing that talks past it", () => {
+    expect(ask({ readiness: busy })).toBe(BUSY_REFUSAL);
+    expect(ask({ readiness: busy, force: true })).toBeNull();
+    // Busy closes canRun too, and forcing past busy must not then trip over
+    // the reason busy itself put in the list.
+    expect(ask({
+      readiness: busy,
+      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL] },
+      force: true,
+    })).toBeNull();
+    // A structural reason still wins, forced or not.
+    expect(ask({
+      readiness: busy,
+      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL, "The updater is not installed."] },
+      force: true,
+    })).toBe("The updater is not installed.");
   });
 
   it("refuses to launch with nothing to install, and force overrides it", async () => {
@@ -262,6 +304,36 @@ describe("refusals", () => {
     const refused = await harness.control.start({ force: true });
     expect(refused.ok).toBe(false);
     expect(harness.launched).toHaveLength(0);
+  });
+
+  it("refuses while a turn is in flight, and says so in the capabilities", async () => {
+    const paths = rig();
+    const harness = build(paths, { readiness: { safeToRestart: false, activeWorkCount: 3 } });
+    const status = harness.control.status();
+    expect(status.capabilities.canRun).toBe(false);
+    expect(status.capabilities.reasons).toContain(BUSY_REFUSAL);
+    expect(status.capabilities.canCheck).toBe(true);
+    const refused = await harness.control.start({ force: true });
+    // force is allowed past readiness; the refusal here is only that there is
+    // nothing newer, which proves readiness was not the blocker.
+    expect(refused.ok).toBe(true);
+
+    const blocked = build(rig(), { readiness: { safeToRestart: false, activeWorkCount: 3 } });
+    expect(await blocked.control.start()).toMatchObject({ ok: false, error: BUSY_REFUSAL });
+    expect(blocked.launched).toHaveLength(0);
+  });
+
+  it("takes the caller's readiness over its own when one is given", async () => {
+    const paths = rig();
+    // The route excludes the admission it holds itself; without that override
+    // every run would see its own request as work it must not interrupt.
+    const harness = build(paths, { readiness: { safeToRestart: false, activeWorkCount: 1 } });
+    const started = await harness.control.start({
+      force: true,
+      readiness: { safeToRestart: true, activeWorkCount: 0 },
+    });
+    expect(started.ok).toBe(true);
+    expect(harness.launched).toHaveLength(1);
   });
 
   it("refuses a second run while one is in flight", async () => {
@@ -304,6 +376,34 @@ describe("the launcher", () => {
     expect(args[10]).toContain("--run-id 'run_one'");
   });
 
+  it("starts exactly one job when two callers race", async () => {
+    const paths = rig();
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const harness = build(paths, { launchDelay: () => gate });
+    // Both land before either has written current-run.json.  Without a
+    // synchronous guard both would launch, and the second submit's
+    // `launchctl remove` would SIGTERM the first mid-install.
+    const first = harness.control.start({ force: true });
+    const second = await harness.control.start({ force: true });
+    expect(second).toMatchObject({ ok: false, error: "An update is already running." });
+    release!();
+    expect((await first).ok).toBe(true);
+    expect(harness.launched).toHaveLength(1);
+  });
+
+  it("reads a live launchd job as alive, and a merely registered one as not", () => {
+    const listed = (stdout: string, code = 0) => ({ code, stdout, stderr: "" });
+    expect(launchdJobIsAlive(listed('{\n\t"PID" = 4321;\n\t"Label" = "com.jay.botfleet-update";\n};'))).toBe(true);
+    // Registered, already exited — safe to clear before the next submit.
+    expect(launchdJobIsAlive(listed('{\n\t"LastExitStatus" = 0;\n\t"Label" = "com.jay.botfleet-update";\n};')))
+      .toBe(false);
+    // No such label at all.
+    expect(launchdJobIsAlive(listed("Could not find service\n", 113))).toBe(false);
+  });
+
   it("hands the run its own progress file and log, and remembers it", async () => {
     const paths = rig();
     const harness = build(paths);
@@ -335,6 +435,37 @@ describe("reconcile on boot", () => {
     expect(status.running?.logTail).toEqual(["Prepared bbbbbbbbbbbb", "starting harness"]);
     // A run in flight closes the door on a second one.
     expect(status.capabilities.canRun).toBe(false);
+  });
+
+  it("drops an available answer that names the commit now installed", () => {
+    const paths = rig();
+    // Exactly what a successful run leaves behind: this process IS the build
+    // that available.json was describing.
+    const gitFor = (args: string[]): CommandResult => {
+      if (args[0] === "rev-parse") return ok(`${NEW_COMMIT}\n`);
+      if (args[0] === "rev-list") return ok("4\n");
+      if (args[0] === "log") return ok(`${NEW_COMMIT}\u001ffeat: something`);
+      if (args[0] === "show") return ok(JSON.stringify({ version: "1.0.31" }));
+      return ok();
+    };
+    const before = build(paths, { git: gitFor });
+    expect((before.control.status()).available).toBeNull();
+    return before.control.check().then(async (checked) => {
+      expect(checked.available?.sourceCommit).toBe(NEW_COMMIT);
+      // Now the harness restarts, running the build that was on offer.
+      const after = build(paths, { git: gitFor, installedCommit: NEW_COMMIT });
+      const status = after.control.status();
+      expect(status.available).toBeNull();
+      // And the invalidation is persisted, so the next boot never sees it.
+      const third = build(paths, { git: gitFor, installedCommit: NEW_COMMIT });
+      expect(third.control.status().available).toBeNull();
+      // Install must not start a whole transaction to arrive where it is.
+      expect(await after.control.start()).toMatchObject({
+        ok: false,
+        error: "BotFleet is already on the newest build.",
+      });
+      expect(after.launched).toHaveLength(0);
+    });
   });
 
   it("folds a finished run into lastRun and forgets the current one", () => {

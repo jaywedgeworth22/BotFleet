@@ -197,6 +197,24 @@ export function bannerIsActionable(status: UpdateStatus | null): boolean {
   return status.lastRun !== null && status.lastRun.outcome !== "verified";
 }
 
+/**
+ * May the old fire-and-forget local updater still be offered?
+ *
+ * `window.ogb.updater.local()` spawns `~/apps/update-botfleet.sh` with no
+ * run id and no progress file, so nothing can describe it, no second caller
+ * can be refused against it, and the harness never learns it happened.  It
+ * stays reachable in exactly one case: the harness gave no answer at all —
+ * an old harness, or one that is down — where it is the only local path
+ * there is.  A harness that answered and said it cannot install has made a
+ * decision, and an untracked update must not talk past it.
+ */
+export function mayUseLegacyLocalUpdate(
+  status: UpdateStatus | null,
+  canLocalUpdate: boolean | undefined,
+): boolean {
+  return Boolean(canLocalUpdate) && status === null;
+}
+
 export interface UpdateControlView {
   status: UpdateStatus | null;
   error: string | null;

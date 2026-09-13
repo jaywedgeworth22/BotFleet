@@ -1,4 +1,11 @@
 import { track } from "@/lib/analytics";
+import {
+  availableLabel,
+  mayUseLegacyLocalUpdate,
+  runningLabel,
+  updateSource,
+  useUpdateControl,
+} from "@/lib/update-control";
 import { Fragment, useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -100,12 +107,15 @@ function profileInitials(profile?: { name?: string; email?: string }): string {
   return email ? email[0]!.toUpperCase() : "?";
 }
 
-/** Manual update check, next to the settings gear. Packaged app only (no
- * bridge in dev/browser). One button, state-dependent: check → download →
- * restart, with a brief "up to date" tick when a check finds nothing so a
- * click is never silent. The bottom-left popup handles the loud cases. */
+/** Manual update check, next to the settings gear.  Packaged app only (no
+ * bridge in dev/browser).  One button, state-dependent, and it has to agree
+ * with the Updates card and the floating popup about which update path is
+ * live — a toolbar button that quietly ran the old untracked local updater
+ * while the card was driving a tracked one is exactly the split this avoids.
+ * A brief "up to date" tick keeps a click from ever being silent. */
 function UpdateButton() {
   const s = useUpdaterState();
+  const local = useUpdateControl();
   const [checkedAt, setCheckedAt] = useState(0);
   const updater = window.ogb?.updater;
   const status = s?.status ?? "idle";
@@ -113,15 +123,63 @@ function UpdateButton() {
   // changes — spin on the click itself, and let the new status clear it
   const [pending, setPending] = useState(false);
   useEffect(() => setPending(false), [status]);
+  const source = updateSource(local.status, Boolean(updater));
+  const harnessStatus = source === "harness" ? local.status : null;
+  const harnessRunning = harnessStatus?.running ?? null;
+  const harnessAvailable = harnessStatus?.available ?? null;
   // a check that found nothing lands back on idle — acknowledge it for 3s
-  const upToDate = Boolean(checkedAt) && (!s || s.status === "idle") && Date.now() - checkedAt < 3000;
+  const upToDate = source === "harness"
+    ? Boolean(checkedAt) && !harnessAvailable && !harnessRunning && Date.now() - checkedAt < 3000
+    : Boolean(checkedAt) && (!s || s.status === "idle") && Date.now() - checkedAt < 3000;
   useEffect(() => {
     if (!upToDate) return;
     const timer = setTimeout(() => setCheckedAt(0), 3000);
     return () => clearTimeout(timer);
   }, [upToDate]);
-  if (!updater) return null;
+  if (source === "none") return null;
 
+  if (harnessStatus) {
+    const busy = local.busy !== null || Boolean(harnessRunning);
+    const label = harnessRunning
+      ? runningLabel(harnessRunning)
+      : harnessAvailable
+        ? `${availableLabel(harnessStatus)} — install`
+        : upToDate
+          ? "You're up to date"
+          : "Check for Updates";
+    return (
+      <button
+        onClick={() => {
+          if (harnessRunning) return;
+          if (harnessAvailable && harnessStatus.capabilities.canRun) return void local.install();
+          setCheckedAt(Date.now());
+          void local.check();
+        }}
+        disabled={busy || !harnessStatus.capabilities.canCheck}
+        title={label}
+        aria-label={label}
+        className="relative flex size-10 items-center justify-center rounded-md text-accent hover:bg-raised disabled:opacity-60"
+      >
+        {busy ? (
+          <Loader2 size={18} className="animate-spin" />
+        ) : upToDate ? (
+          <Check size={18} />
+        ) : harnessAvailable ? (
+          <ArrowDownToLine size={18} />
+        ) : (
+          <RefreshCw size={18} />
+        )}
+        {harnessAvailable && !harnessRunning && (
+          <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-accent" />
+        )}
+      </button>
+    );
+  }
+
+  if (!updater) return null;
+  // The release-feed path.  `updater.local()` survives here only for a
+  // harness that gave no answer at all — see mayUseLegacyLocalUpdate.
+  const legacyLocal = mayUseLegacyLocalUpdate(local.status, s?.canLocalUpdate);
   const working =
     pending || status === "checking" || status === "downloading" || status === "installing";
   const label =
@@ -139,7 +197,7 @@ function UpdateButton() {
               ? "Checking for updates…"
               : upToDate
                 ? "You're up to date"
-                : status === "error" && s?.canLocalUpdate
+                : status === "error" && legacyLocal
                   ? "Update From This Mac"
                   : "Check for Updates";
 
@@ -154,7 +212,7 @@ function UpdateButton() {
           setPending(true);
           return void updater.download();
         }
-        if (status === "error" && s?.canLocalUpdate && updater.local) {
+        if (status === "error" && legacyLocal && updater.local) {
           setPending(true);
           return void updater.local();
         }

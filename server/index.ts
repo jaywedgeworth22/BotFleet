@@ -302,6 +302,10 @@ const updateControl = createUpdateControl({
     sourceCommit: runtimeBuildIdentity.sourceCommit,
     installedAt: packagedInstalledAt(),
   },
+  // What the status route reports, and what makes Install Update unavailable
+  // while a turn is running.  `POST /api/update/run` passes its own reading
+  // instead, excluding the admission that request itself holds.
+  readiness: () => currentRuntimeReadiness(),
   emit: (status) => broadcast({ kind: "update.status", status }),
 });
 // Bound the per-thread transcript logs before anything starts appending to
@@ -5784,19 +5788,34 @@ function phoneCwdConfinement(): CwdConfinement {
 
 /** Who may re-check for an update or start one.
  *
- * Every route on this port is loopback-only already: the desktop renderer
- * and the companion sidecar both speak to 127.0.0.1, and the sidecar has
- * checked the phone's pairing token against its own allowlist before it
- * forwards anything here.  On top of that, a caller holding the harness
- * owner nonce is the app that started this harness and is trusted outright,
- * and every other caller must send JSON — which makes the request
- * non-simple, so a hostile page cannot submit it with a form and its
- * cross-origin JSON dies in a preflight this server never answers.
+ * Three callers, and this says so plainly rather than implying a fourth
+ * factor it does not have:
+ *
+ *   1. the desktop renderer, over loopback from the window on this Mac;
+ *   2. a paired phone, whose pairing token `companion/src/proxy.ts` checked
+ *      against `denyReason` before replaying the request to 127.0.0.1;
+ *   3. any other process running as this user on this Mac.
+ *
+ * That is the harness's standing trust boundary, not a new one: `isLoopbackHost`
+ * and `isAllowedOrigin` gate every request at the top of `createServer` (the
+ * DNS-rebinding and CSRF defences), the listener binds 127.0.0.1 only, and
+ * `PUT /api/config` writes provider API keys behind exactly this much.  The
+ * peer-address check below is the extra half the owner-only runtime routes
+ * also take, so a request that somehow arrived from off-box cannot start an
+ * install even with a forged Host.
+ *
+ * A caller holding the harness owner nonce — the updater's own control plane,
+ * `GET /api/runtime` and `POST /api/runtime/credentials` — is accepted here
+ * too, by construction: it is on loopback.  It is deliberately not *required*,
+ * because neither the renderer nor the sidecar has that nonce, and requiring
+ * it would mean no person could ever press the button.
+ *
+ * An earlier version of this also accepted a JSON content-type as if it were
+ * a second factor.  It is not one: the origin gate above already turns away
+ * browsers, and the sidecar forwards whatever content-type the phone sent.
  */
-function authorizedUpdateControl(req: IncomingMessage): boolean {
-  if (!isLoopbackAddress(req.socket.remoteAddress)) return false;
-  if (authorizedRuntime(harnessOwner, req.headers.authorization)) return true;
-  return String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json");
+function mayControlUpdates(req: IncomingMessage): boolean {
+  return isLoopbackAddress(req.socket.remoteAddress);
 }
 
 function json(res: ServerResponse, status: number, body: unknown) {
@@ -8655,18 +8674,18 @@ const server = createServer(async (req, res) => {
     // ── check for a newer BotFleet, and install it ─────────────────────
     // The three routes the desktop app and the paired phone share.  Reading
     // is open to anything that reaches this loopback port; the two actions
-    // take `authorizedUpdateControl` above.  The run itself is detached and
+    // take `mayControlUpdates` above.  The run itself is detached and
     // survives both this harness and the desktop app — server/update-control.ts
     // explains why it has to be.
     if (method === "GET" && path === "/api/update/status") {
       return json(res, 200, updateControl.status());
     }
     if (method === "POST" && path === "/api/update/check") {
-      if (!authorizedUpdateControl(req)) return json(res, 401, { error: "unauthorized" });
+      if (!mayControlUpdates(req)) return json(res, 401, { error: "unauthorized" });
       return json(res, 200, await updateControl.check());
     }
     if (method === "POST" && path === "/api/update/run") {
-      if (!authorizedUpdateControl(req)) return json(res, 401, { error: "unauthorized" });
+      if (!mayControlUpdates(req)) return json(res, 401, { error: "unauthorized" });
       let force = false;
       try {
         const body = await readBody(req);
@@ -8674,7 +8693,14 @@ const server = createServer(async (req, res) => {
       } catch {
         // An absent or unparseable body is the ordinary "just install it".
       }
-      const started = await updateControl.start({ force });
+      // The same readiness `POST /api/runtime/quiesce` consults, minus this
+      // request's own mutating admission — otherwise the route would always
+      // see itself as the work it must not interrupt.  An update stops the
+      // harness; refusing while a turn is in flight is the whole point.
+      const started = await updateControl.start({
+        force,
+        readiness: currentRuntimeReadiness(ownAdmissionActive),
+      });
       if (!started.ok) return json(res, 409, { error: started.error, status: started.status });
       return json(res, 202, { runId: started.runId, status: started.status });
     }

@@ -11,7 +11,7 @@
 // The reader is the harness (`server/update-control.ts`), which validates
 // everything it reads here rather than trusting the shape.
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 export const UPDATE_PROGRESS_SCHEMA_VERSION = 1;
 
@@ -83,18 +83,6 @@ function atomicWrite(path, value) {
   const temporary = `${path}.${process.pid}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
   renameSync(temporary, path);
-}
-
-/** Where the harness keeps everything it needs to describe a detached run. */
-export function updateControlPaths(stateDirectory, runId) {
-  return {
-    stateDirectory,
-    availablePath: join(stateDirectory, "available.json"),
-    currentRunPath: join(stateDirectory, "current-run.json"),
-    lastRunPath: join(stateDirectory, "last-run.json"),
-    progressPath: join(stateDirectory, "runs", `${runId}.progress.json`),
-    logPath: join(stateDirectory, "runs", `${runId}.log`),
-  };
 }
 
 /**

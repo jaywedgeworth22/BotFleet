@@ -9,6 +9,7 @@ import {
   availableLabel,
   bannerIsActionable,
   lastRunLabel,
+  mayUseLegacyLocalUpdate,
   runningLabel,
   updateSource,
   useUpdateControl,
@@ -84,6 +85,7 @@ export function UpdateBanner() {
   const key = `${s.status}:${s.version ?? ""}`;
   if (dismissed === key) return null;
   const updater = window.ogb!.updater!;
+  const legacyLocal = mayUseLegacyLocalUpdate(local.status, s.canLocalUpdate);
 
   // while busy the card owns the moment: no dismissing, no second click
   const installing = s.status === "installing";
@@ -210,7 +212,9 @@ export function UpdateBanner() {
             <button
               onClick={() => {
                 setPending("check");
-                if (s.canLocalUpdate && updater.local) void updater.local();
+                // The old untracked local updater only survives for a harness
+                // that gave no answer at all — see mayUseLegacyLocalUpdate.
+                if (legacyLocal && updater.local) void updater.local();
                 else void updater.check();
               }}
               disabled={pending !== null}
@@ -220,7 +224,7 @@ export function UpdateBanner() {
                 <>
                   <Loader2 size={13} className="animate-spin" /> Checking…
                 </>
-              ) : s.canLocalUpdate ? (
+              ) : legacyLocal ? (
                 "Update From This Mac"
               ) : (
                 "Try Again"

@@ -88,6 +88,18 @@ export interface UpdateCapabilities {
   reasons: string[];
 }
 
+/** What `currentRuntimeReadiness()` in the harness reports: whether any turn,
+ * queued send, routine run or in-flight mutation would be interrupted. */
+export interface RuntimeReadiness {
+  safeToRestart: boolean;
+  activeWorkCount: number | null;
+}
+
+/** The one refusal `force` is meant to override, so the capability reason and
+ * the refusal are the same string and can be compared. */
+export const BUSY_REFUSAL =
+  "BotFleet is working right now.\u00a0 The updater will not interrupt a turn in flight.";
+
 export interface UpdateInstalled {
   version: string;
   sourceCommit: string;
@@ -138,6 +150,10 @@ export interface UpdateControlDeps {
   git: (args: string[]) => Promise<CommandResult>;
   launch: (plan: LaunchPlan) => Promise<LaunchResult>;
   processAlive: (pid: number) => boolean;
+  /** Whether this harness has work in flight.  The route passes its own,
+   * admission-adjusted reading when it starts a run; this one answers the
+   * status route, which holds no mutating admission of its own. */
+  readiness: () => RuntimeReadiness;
   /** Does the tracked updater in the checkout accept `--progress`?  The
    * harness and the updater advance together (both live in the always-on
    * checkout), so this is only ever false on a Mac whose checkout was moved
@@ -317,6 +333,19 @@ export function lastRunFrom(record: ProgressRecord): UpdateLastRun | null {
   return lastRun;
 }
 
+/** Is this "available" build actually newer than what is installed?
+ *
+ * The answer is persisted, so a run that succeeds leaves a file on disk
+ * saying an update is available — naming the commit that was just installed.
+ * Without this the next harness offers the build it is already running, and
+ * Install starts a whole transaction to arrive where it already is. */
+export function isAheadOfInstalled(
+  available: UpdateAvailable | null,
+  installedCommit: string,
+): available is UpdateAvailable {
+  return Boolean(available) && available!.sourceCommit !== installedCommit;
+}
+
 /** Why `POST /api/update/run` will not start, or null when it will.
  *
  * Pure so the refusal rules can be read and tested in one place — they are
@@ -326,17 +355,25 @@ export function runRefusal(input: {
   capabilities: UpdateCapabilities;
   running: UpdateRunning | null;
   available: UpdateAvailable | null;
+  installedCommit: string;
+  readiness: RuntimeReadiness;
   dirty: boolean;
   force: boolean;
 }): string | null {
   if (input.running) return "An update is already running.";
-  if (!input.capabilities.canRun) {
-    return input.capabilities.reasons[0] ?? "This computer cannot install updates from here.";
-  }
+  // Readiness comes before the structural reasons because it is the one
+  // `force` is meant to override.  Forcing does not make it safe: the
+  // updater's own preflight refuses a busy machine too, and the run then
+  // ends `refused` rather than interrupting a turn.
+  if (!input.readiness.safeToRestart && !input.force) return BUSY_REFUSAL;
+  const structural = input.capabilities.reasons.find((reason) => reason !== BUSY_REFUSAL);
+  if (!input.capabilities.canRun && structural) return structural;
   if (input.dirty) {
     return "The always-on checkout has uncommitted changes, so the updater would refuse.";
   }
-  if (!input.available && !input.force) return "BotFleet is already on the newest build.";
+  if (!input.force && !isAheadOfInstalled(input.available, input.installedCommit)) {
+    return "BotFleet is already on the newest build.";
+  }
   return null;
 }
 
@@ -391,10 +428,25 @@ function execCommand(command: string, args: string[]): Promise<CommandResult> {
   });
 }
 
+/** Is a job with this label registered AND running right now?
+ *
+ * `launchctl list <label>` exits 0 for a label that is merely registered and
+ * prints `"PID" = <n>;` only while it actually has a process.  The
+ * distinction matters: removing a finished label is housekeeping, removing a
+ * live one SIGTERMs an update mid-install. */
+export function launchdJobIsAlive(listed: CommandResult): boolean {
+  return listed.code === 0 && /"PID"\s*=\s*\d+;/.test(listed.stdout);
+}
+
 async function defaultLaunch(plan: LaunchPlan): Promise<LaunchResult> {
+  const listed = await execCommand("/bin/launchctl", ["list", plan.label]);
+  if (launchdJobIsAlive(listed)) {
+    throw new Error(`A ${plan.label} job is already running on this Mac.`);
+  }
   mkdirSync(dirname(plan.logPath), { recursive: true, mode: 0o700 });
   writeFileSync(plan.logPath, "", { mode: 0o600, flag: "a" });
-  // A label left registered by an earlier run makes `submit` fail outright.
+  // A finished label stays registered and makes the next `submit` fail
+  // outright, so it is cleared — but only now that it is known to be dead.
   await execCommand("/bin/launchctl", ["remove", plan.label]);
   const { command, args } = launchPlanCommand(plan);
   const submitted = await execCommand(command, args);
@@ -449,6 +501,7 @@ function defaultDeps(overrides: Partial<UpdateControlDeps>): UpdateControlDeps {
     now: overrides.now ?? (() => new Date()),
     git: overrides.git ?? ((args) => execCommand("git", ["-C", checkout, ...args])),
     launch: overrides.launch ?? defaultLaunch,
+    readiness: overrides.readiness ?? (() => ({ safeToRestart: true, activeWorkCount: 0 })),
     processAlive: overrides.processAlive ?? ((pid) => {
       try {
         process.kill(pid, 0);
@@ -477,7 +530,7 @@ function defaultDeps(overrides: Partial<UpdateControlDeps>): UpdateControlDeps {
 export interface UpdateControl {
   status(): UpdateStatus;
   check(): Promise<UpdateStatus>;
-  start(options?: { force?: boolean }): Promise<
+  start(options?: { force?: boolean; readiness?: RuntimeReadiness }): Promise<
     { ok: true; runId: string; status: UpdateStatus } | { ok: false; error: string; status: UpdateStatus }
   >;
   reconcile(): void;
@@ -501,6 +554,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
   let current: CurrentRunRecord | null = null;
   let lastRun: UpdateLastRun | null = null;
   let lastEmitted = "";
+  let starting = false;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   const capabilities = (running: boolean): UpdateCapabilities => {
@@ -522,8 +576,15 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       );
     }
     if (running) reasons.push("An update is already running.");
+    // Listed last, and the only reason `force` can talk past — see runRefusal.
+    const idle = deps.readiness().safeToRestart;
+    if (!idle) reasons.push(BUSY_REFUSAL);
     const canCheck = darwin && checkoutPresent;
-    return { canCheck, canRun: canCheck && scriptPresent && reportsProgress && !running, reasons };
+    return {
+      canCheck,
+      canRun: canCheck && scriptPresent && reportsProgress && !running && idle,
+      reasons,
+    };
   };
 
   const loadAvailable = () => {
@@ -541,7 +602,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       available = null;
       return;
     }
-    available = {
+    const restored: UpdateAvailable = {
       sourceCommit: value.sourceCommit,
       version: typeof value.version === "string" ? value.version : undefined,
       aheadBy: Number.isInteger(value.aheadBy) ? (value.aheadBy as number) : 0,
@@ -554,6 +615,16 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
             .slice(0, MAX_LISTED_COMMITS)
         : [],
     };
+    // The usual reason this file names the commit we are now running is that
+    // the update it described succeeded — this process IS the result.  Drop
+    // it, and write the invalidation back so the next boot does not have to
+    // work it out again.
+    if (isAheadOfInstalled(restored, deps.installed.sourceCommit)) {
+      available = restored;
+      return;
+    }
+    available = null;
+    writeJsonFile(paths.available, { checkedAt, available: null });
   };
 
   const loadLastRun = () => {
@@ -647,7 +718,9 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     }
     return {
       installed: deps.installed,
-      available,
+      // Belt and braces: nothing may reach a client claiming the installed
+      // commit is also the one waiting to be installed.
+      available: isAheadOfInstalled(available, deps.installed.sourceCommit) ? available : null,
       checkedAt,
       running,
       lastRun,
@@ -737,16 +810,36 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
   };
 
   const start: UpdateControl["start"] = async (options = {}) => {
+    // Set before the first await, and released only once `current` is
+    // written.  Two `POST /api/update/run` landing together would otherwise
+    // both pass the refusal check — they interleave across `dirtyCheckout()`
+    // and `launch()`, neither of which has published a run yet — and the
+    // second launch would take the label out from under the first.
+    if (starting) return { ok: false, error: "An update is already running.", status: buildStatus() };
+    starting = true;
+    try {
+      return await beginRun(options);
+    } finally {
+      starting = false;
+    }
+  };
+
+  const beginRun = async (options: { force?: boolean; readiness?: RuntimeReadiness }) => {
     reconcile();
     const before = buildStatus();
+    const force = options.force === true;
     const refusal = runRefusal({
       capabilities: before.capabilities,
       running: before.running,
       available: before.available,
+      installedCommit: deps.installed.sourceCommit,
+      // The caller's reading wins: the route holds a mutating admission of
+      // its own, which it must not count as work it would be interrupting.
+      readiness: options.readiness ?? deps.readiness(),
       dirty: before.capabilities.canRun ? await dirtyCheckout() : false,
-      force: options.force === true,
+      force,
     });
-    if (refusal) return { ok: false, error: refusal, status: buildStatus() };
+    if (refusal) return { ok: false as const, error: refusal, status: buildStatus() };
 
     const runId = deps.newRunId();
     const files = runPaths(runId);
@@ -764,7 +857,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       });
     } catch (error) {
       const detail = String((error as Error)?.message ?? error).slice(0, 200);
-      return { ok: false, error: `The updater could not be started.${GAP}${detail}`, status: buildStatus() };
+      return { ok: false as const, error: `The updater could not be started.${GAP}${detail}`, status: buildStatus() };
     }
     current = {
       runId,
@@ -777,7 +870,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     writeJsonFile(paths.currentRun, current);
     ensureTimer();
     emitIfChanged();
-    return { ok: true, runId, status: buildStatus() };
+    return { ok: true as const, runId, status: buildStatus() };
   };
 
   loadAvailable();

@@ -28,7 +28,9 @@ The paired iOS companion reaches the same three routes through the sidecar, so a
 - `POST /api/update/check` — `git fetch origin main` in the harness checkout, then compare.
 - `POST /api/update/run` — start the transactional updater.  Returns `202` with a `runId`, or `409` with the reason it will not start.
 
-Both actions must be sent as JSON (`content-type: application/json`).  The sidecar's allowlist carries exactly those three; the updater's own recovery action stays on the Mac.
+The sidecar's allowlist carries exactly those three; the updater's own recovery action stays on the Mac.  `POST /api/update/run` takes an optional JSON body, `{ "force": true }`.
+
+Who may call the two actions: the desktop renderer, a paired phone through the sidecar, and any other process running as you on this Mac.  That is the harness's ordinary loopback trust boundary — the same one `PUT /api/config` writes provider API keys behind — not a separate credential.
 
 Status changes arrive on the existing event stream as `update.status` frames, so the phone and the desktop follow the same run live without polling.
 
@@ -50,5 +52,6 @@ Any failure after the interruption boundary rolls the previous bundle, dependenc
 - **The always-on checkout has uncommitted changes, so the updater would refuse.**  Clean `~/apps/botfleet-server` first — the updater refuses on any `git status --porcelain` output, untracked files included.
 - **BotFleet is already on the newest build.**  Send `{ "force": true }` to build and install the current `origin/main` anyway.
 - **The updater in `~/apps/botfleet-server` predates this build.**  Run it once from a terminal to advance the checkout, after which the button works.
+- **BotFleet is working right now.**  The harness takes the same runtime-readiness reading `POST /api/runtime/quiesce` takes — turns, queued sends, routine runs, in-flight mutations — and will not start an update that would interrupt one.  This is also the only refusal `{ "force": true }` is meant to override, and forcing does not make it safe: the updater's own preflight refuses a busy machine too, and the run then ends `refused` without touching anything.
 
-A run is also refused while any turn is in flight — the updater's own readiness check — so a tap from a phone cannot interrupt work in progress.
+Every one of these also appears in `capabilities.reasons`, so a client can disable **Install Update** and say why before anyone presses it.

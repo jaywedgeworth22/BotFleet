@@ -11,6 +11,7 @@ import {
   installedLabel,
   isUpdateStatus,
   lastRunLabel,
+  mayUseLegacyLocalUpdate,
   requestUpdateCheck,
   requestUpdateRun,
   runningLabel,
@@ -56,6 +57,23 @@ describe("which path drives the card", () => {
     expect(updateSource(useless, false)).toBe("none");
     expect(updateSource(null, true)).toBe("feed");
     expect(updateSource(null, false)).toBe("none");
+  });
+});
+
+describe("the old untracked local updater", () => {
+  it("survives only when the harness gave no answer at all", () => {
+    // No harness answer: an old or down harness, where `updater.local()` is
+    // still the only local path there is.
+    expect(mayUseLegacyLocalUpdate(null, true)).toBe(true);
+    expect(mayUseLegacyLocalUpdate(null, false)).toBe(false);
+    expect(mayUseLegacyLocalUpdate(null, undefined)).toBe(false);
+    // A harness that answered has made a decision, either way — an untracked
+    // update must not talk past it.
+    expect(mayUseLegacyLocalUpdate(status(), true)).toBe(false);
+    expect(mayUseLegacyLocalUpdate(
+      status({ capabilities: { canCheck: false, canRun: false, reasons: ["macOS only."] } }),
+      true,
+    )).toBe(false);
   });
 });
 
