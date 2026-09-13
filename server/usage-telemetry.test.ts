@@ -6,14 +6,15 @@
 // a user as "my tokens are already going there". Second, project
 // classification is the operator's list, not a list of somebody's repos
 // baked into the binary.
-import { readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { parseStoredConfig, usageIngestUrl, usageProjectRules, type AppConfig } from "./config.ts";
-import { inferProject, inferProviderAndService, telemetry, type UsageSettings } from "./telemetry.ts";
+import { inferProject, inferProviderAndService, telemetry, UsageTelemetryManager, type UsageSettings } from "./telemetry.ts";
 
 const ENV_KEYS = ["USAGE_MONITOR_INGEST_URL", "USAGE_MONITOR_INGEST_TOKEN", "USAGE_INGEST_TOKEN"] as const;
 const saved = new Map<string, string | undefined>();
@@ -176,7 +177,10 @@ describe("telemetry probe", () => {
       expect(body.producerId).toBe("botfleet");
       expect(body.events[0]?.label).toMatch(/connection test/i);
       expect(body.events[0]?.metadata?.probe).toBe(true);
-      return new Response("{}", { status: 200 });
+      return new Response(
+        JSON.stringify({ received: 1, persisted: 1, duplicates: 0, pruned: 0, rejected: 0 }),
+        { status: 200 },
+      );
     });
     vi.stubGlobal("fetch", fetchMock);
 
@@ -343,11 +347,11 @@ describe("ingest acknowledgement accounting", () => {
             JSON.stringify({
               ok: true,
               schemaVersion: 2,
-              received: 3,
-              persisted: 1,
+              received: 1,
+              persisted: 0,
               duplicates: 0,
               pruned: 0,
-              rejected: 2,
+              rejected: 1,
             }),
             { status: 200, headers: { "content-type": "application/json" } },
           ),
@@ -358,9 +362,9 @@ describe("ingest acknowledgement accounting", () => {
     const after = telemetry.getStatus();
 
     expect(result.ok).toBe(false);
-    expect(after.totalFailed).toBe(before.totalFailed + 2);
+    expect(after.totalFailed).toBe(before.totalFailed + 1);
     expect(after.totalSent).toBe(before.totalSent);
-    expect(after.lastError).toMatch(/rejected 2 of 3/);
+    expect(after.lastError).toMatch(/rejected 1 of 1/);
     expect(after.lastAckAt).toBeTruthy();
   });
 
@@ -375,8 +379,8 @@ describe("ingest acknowledgement accounting", () => {
             JSON.stringify({
               ok: true,
               schemaVersion: 2,
-              received: 3,
-              persisted: 3,
+              received: 1,
+              persisted: 1,
               duplicates: 0,
               pruned: 0,
               rejected: 0,
@@ -395,7 +399,7 @@ describe("ingest acknowledgement accounting", () => {
     expect(after.lastError).toBeNull();
   });
 
-  it("does not invent a failure when the receiver answers with no counts", async () => {
+  it("retains an ambiguous 2xx response as a failure instead of assuming delivery", async () => {
     withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
     const before = telemetry.getStatus();
     vi.stubGlobal("fetch", vi.fn(async () => new Response("", { status: 200 })));
@@ -403,9 +407,64 @@ describe("ingest acknowledgement accounting", () => {
     const result = await telemetry.probe();
     const after = telemetry.getStatus();
 
-    expect(result.ok).toBe(true);
-    expect(after.totalFailed).toBe(before.totalFailed);
-    expect(after.totalSent).toBe(before.totalSent + 1);
+    expect(result.ok).toBe(false);
+    expect(result.error).toMatch(/ambiguous acknowledgement/i);
+    expect(after.totalFailed).toBe(before.totalFailed + 1);
+    expect(after.totalSent).toBe(before.totalSent);
+  });
+
+  it("keeps a durable turn queued when a 2xx response has no receiver ACK counts", async () => {
+    const root = mkdtempSync(join(tmpdir(), "botfleet-telemetry-ack-"));
+    const manager = new UsageTelemetryManager({
+      enableOutbox: true,
+      outboxPath: join(root, "outbox.json"),
+      retryBaseMs: 60_000,
+    });
+    manager.configure(() => ({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" }));
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 202 })));
+
+    manager.trackTurn({
+      botId: "bot_1",
+      botName: "Scout",
+      threadId: "thread_1",
+      instanceId: "codex",
+      modelId: "gpt-6-astra",
+      driverKind: "codex",
+      inputTokens: 10,
+      outputTokens: 4,
+    });
+    await vi.waitFor(() => expect(manager.getStatus().totalFailed).toBeGreaterThan(0));
+
+    expect(manager.getStatus().queuedBatches).toBe(1);
+    expect(manager.getStatus().oldestQueuedAgeMs).not.toBeNull();
+    await manager.dispose();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("never copies a non-2xx receiver body into status or logs", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("private receiver detail", { status: 500 })));
+
+    const result = await telemetry.probe();
+    const rendered = JSON.stringify({ result, status: telemetry.getStatus(), logs: warn.mock.calls });
+
+    expect(result.error).toBe("Usage Monitor returned HTTP 500");
+    expect(rendered).not.toContain("private receiver detail");
+    warn.mockRestore();
+  });
+
+  it("reports only an exception class for network failures", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("private network detail"); }));
+
+    const result = await telemetry.probe();
+    const rendered = JSON.stringify({ result, status: telemetry.getStatus(), logs: warn.mock.calls });
+
+    expect(result.error).toBe("Usage Monitor dispatch failed (TypeError)");
+    expect(rendered).not.toContain("private network detail");
+    warn.mockRestore();
   });
 });
 
