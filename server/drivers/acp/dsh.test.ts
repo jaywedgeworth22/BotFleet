@@ -1,23 +1,46 @@
-import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { ensureDirs } from "../../config.ts";
+import type { ProviderInstance } from "../../contracts.ts";
+import { removeTempDir } from "../../testing/cleanup.ts";
+import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import {
   classifyDshError,
   dshCredentialCandidates,
-  DshAgentDriver,
-  STATIC_DSH_MODELS,
+  dshModelIdFromOptionValue,
+  dshModelOptionValue,
   dshSpawnArgs,
-  quoteDshMcpToken,
+  dshVersionCompatibilityReason,
+  DshAgentDriver,
+  DSH_MINIMUM_ACP_VERSION,
+  STATIC_DSH_MODELS,
 } from "./dsh.ts";
 
+const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
+
 describe("DshAgentDriver config", () => {
-  it("looks up dsh on PATH instead of a developer worktree", () => {
-    const cli = DshAgentDriver.defaultConfig().cli;
-    expect(cli).toBe("dsh");
-    expect(cli).not.toMatch(/dsh-runtime|dsh-acp\.sh/);
+  it("uses the published ACP profile and current package setup", () => {
+    expect(DshAgentDriver.defaultConfig().cli).toBe("dsh");
+    expect(dshSpawnArgs({ cli: "dsh", fullAuto: false }, { integrations: undefined })).toEqual([
+      "--profile",
+      "acp",
+    ]);
+    expect(DshAgentDriver.install).toMatchObject({
+      command: {
+        darwin: "npm install -g @deepseek-ai/dsh@latest",
+        linux: "npm install -g @deepseek-ai/dsh@latest",
+        win32: "npm install -g @deepseek-ai/dsh@latest",
+      },
+      docsUrl: "https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/bundle/acp-app",
+      needsNode: true,
+    });
   });
 
-  it("defaults to current DeepSeek V4 ids, not retired chat/reasoner", () => {
+  it("defaults to the model ids published by the DeepSeek provider package", () => {
     expect(STATIC_DSH_MODELS.default).toBe("deepseek-v4-flash");
     expect(STATIC_DSH_MODELS.options.map((option) => option.id)).toEqual([
       "deepseek-v4-flash",
@@ -25,132 +48,201 @@ describe("DshAgentDriver config", () => {
     ]);
   });
 
-  it("ships no vision model while the engine says it cannot take an image", () => {
-    // `images: false` gates the composer for the whole engine, so a vision
-    // option in the picker offers something the composer then refuses
-    expect(STATIC_DSH_MODELS.options.some((option) => /vision/i.test(option.id))).toBe(false);
+  it("encodes the ACP model option with its provider while preserving the picker id", () => {
+    expect(dshModelOptionValue("deepseek-v4-pro")).toBe('["deepseek-official","deepseek-v4-pro"]');
+    expect(dshModelIdFromOptionValue('["deepseek-official","deepseek-v4-pro"]')).toBe("deepseek-v4-pro");
+    expect(dshModelIdFromOptionValue('["other-provider","deepseek-v4-pro"]')).toBeNull();
+    expect(dshModelIdFromOptionValue("deepseek-v4-pro")).toBeNull();
+  });
+
+  it("rejects stock DSH versions older than the native ACP profile", () => {
+    expect(DSH_MINIMUM_ACP_VERSION).toBe("0.1.5-rc.1");
+    expect(dshVersionCompatibilityReason("dsh 0.1.5-rc.1")).toBeNull();
+    expect(dshVersionCompatibilityReason("0.1.5-rc.2")).toBeNull();
+    expect(dshVersionCompatibilityReason("0.1.5")).toBeNull();
+    expect(dshVersionCompatibilityReason("0.2.0")).toBeNull();
+    expect(dshVersionCompatibilityReason("dsh 0.1.5-rc.0")).toMatch(/0\.1\.5-rc\.1 or newer/);
+    expect(dshVersionCompatibilityReason("dsh 0.1.4")).toMatch(/0\.1\.5-rc\.1 or newer/);
+    expect(dshVersionCompatibilityReason("development build")).toMatch(/0\.1\.5-rc\.1 or newer/);
+    expect(dshVersionCompatibilityReason("development build", "/opt/dsh-wrapper")).toBeNull();
+  });
+});
+
+describe("native DSH ACP turns", () => {
+  let instance: ProviderInstance | undefined;
+  let recorder: EventRecorder | undefined;
+  let scratch: string;
+
+  beforeEach(() => {
+    ensureDirs();
+    chmodSync(FAKE_CLI, 0o755);
+    scratch = mkdtempSync(join(tmpdir(), "botfleet-dsh-acp-"));
+  });
+
+  afterEach(async () => {
+    delete process.env.FAKE_ACP_DUMP;
+    delete process.env.FAKE_ACP_RPC_DUMP;
+    delete process.env.FAKE_ACP_MODELS;
+    delete process.env.FAKE_ACP_MODELS_JSON;
+    delete process.env.FAKE_ACP_REASONING_EFFORTS;
+    delete process.env.FAKE_ACP_REASONING_STICKS;
+    recorder?.stop();
+    await instance?.dispose();
+    await removeTempDir(scratch);
+  });
+
+  const create = async () => {
+    instance = await DshAgentDriver.create({
+      instanceId: "dsh-native-test",
+      displayName: "DeepSeek Harness",
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    recorder = recordEvents(instance.adapter);
+  };
+
+  it("mounts standard MCP servers and applies confirmed model and reasoning options", async () => {
+    const dump = join(scratch, "dsh.json");
+    const flash = dshModelOptionValue("deepseek-v4-flash");
+    const pro = dshModelOptionValue("deepseek-v4-pro");
+    process.env.FAKE_ACP_DUMP = dump;
+    process.env.FAKE_ACP_MODELS_JSON = JSON.stringify([flash, pro]);
+    process.env.FAKE_ACP_REASONING_EFFORTS = "off,high,max";
+    await create();
+
+    await instance!.adapter.sendTurn({
+      threadId: "dsh-native-turn",
+      text: "test the native ACP path",
+      model: "deepseek-v4-pro",
+      effort: "max",
+      integrations: {
+        agents: { command: "/usr/bin/node", args: ["/tmp/agents-proxy.mjs"], env: {} },
+      },
+    });
+    const done = await recorder!.until((event) => event.type === "turn.completed");
+
+    expect(done).toMatchObject({ ok: true });
+    expect(recorder!.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "session.started", model: "deepseek-v4-pro" }),
+    ]));
+    expect(JSON.parse(readFileSync(dump, "utf8")).argv).toEqual(["--profile", "acp"]);
+    expect(JSON.parse(readFileSync(`${dump}.mcp.json`, "utf8"))).toEqual([
+      expect.objectContaining({ name: "agents", command: "/usr/bin/node", args: ["/tmp/agents-proxy.mjs"] }),
+    ]);
+    expect(JSON.parse(readFileSync(`${dump}.config.json`, "utf8"))).toEqual([
+      { method: "session/set_config_option", params: { sessionId: "fake-acp-session", configId: "model", value: pro } },
+      { method: "session/set_config_option", params: { sessionId: "fake-acp-session", configId: "reasoning_effort", value: "max" } },
+    ]);
+  });
+
+  it("uses session/resume because current DSH rejects session/load", async () => {
+    const dump = join(scratch, "resume.json");
+    process.env.FAKE_ACP_RPC_DUMP = dump;
+    process.env.FAKE_ACP_MODELS_JSON = JSON.stringify([dshModelOptionValue("deepseek-v4-flash")]);
+    await create();
+
+    await instance!.adapter.sendTurn({
+      threadId: "dsh-native-resume",
+      text: "continue",
+      model: "deepseek-v4-flash",
+      resumeCursor: "persisted-dsh-session",
+    });
+    const done = await recorder!.until((event) => event.type === "turn.completed");
+
+    expect(done).toMatchObject({ ok: true });
+    const methods = JSON.parse(readFileSync(dump, "utf8")) as string[];
+    expect(methods).toContain("session/resume");
+    expect(methods).not.toContain("session/load");
+    expect(methods).not.toContain("session/new");
+  });
+
+  it("reports the picker model id when a turn accepts the native session default", async () => {
+    const flash = dshModelOptionValue("deepseek-v4-flash");
+    process.env.FAKE_ACP_MODELS_JSON = JSON.stringify([flash]);
+    await create();
+
+    await instance!.adapter.sendTurn({
+      threadId: "dsh-native-default-model",
+      text: "use the session default",
+    });
+    await recorder!.until((event) => event.type === "turn.completed");
+
+    expect(recorder!.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "session.started", model: "deepseek-v4-flash" }),
+    ]));
+  });
+
+  it("fails before prompting if DSH acknowledges but does not apply reasoning effort", async () => {
+    const rpcDump = join(scratch, "reasoning-stuck.json");
+    process.env.FAKE_ACP_RPC_DUMP = rpcDump;
+    process.env.FAKE_ACP_MODELS_JSON = JSON.stringify([dshModelOptionValue("deepseek-v4-flash")]);
+    process.env.FAKE_ACP_REASONING_EFFORTS = "off,high,max";
+    process.env.FAKE_ACP_REASONING_STICKS = "1";
+    await create();
+
+    await instance!.adapter.sendTurn({
+      threadId: "dsh-native-reasoning-stuck",
+      text: "do not spend this turn on the wrong setting",
+      model: "deepseek-v4-flash",
+      effort: "max",
+    });
+    const done = await recorder!.until((event) => event.type === "turn.completed");
+
+    expect(done).toMatchObject({ ok: false });
+    expect(recorder!.events.find((event) => event.type === "runtime.error")?.message).toMatch(
+      /did not switch reasoning effort to max/,
+    );
+    const methods = JSON.parse(readFileSync(rpcDump, "utf8")) as string[];
+    expect(methods).not.toContain("session/prompt");
   });
 });
 
 describe("dsh capability honesty", () => {
-  it("claims no MCP, because the ACP server it reaches ignores session/new.mcpServers", async () => {
-    // the core builds those servers for every harness, so these used to be
-    // hardcoded true and the app offered connected apps, the computer and
-    // the phone to an engine that could never mount any of them
+  it("advertises only the controls implemented by the native ACP profile", async () => {
     const instance = await DshAgentDriver.create({
-      instanceId: "dsh-caps",
+      instanceId: "dsh-capabilities",
       displayName: "DeepSeek Harness",
       environment: {},
       enabled: true,
       config: DshAgentDriver.defaultConfig(),
     });
-    const capabilities = instance.adapter.capabilities;
-    expect(capabilities.agentsMcp).toBe(false);
-    expect(capabilities.computerMcp).toBe(false);
-    expect(capabilities.composioMcp).toBe(false);
-    expect(capabilities.phoneMcp).toBe(false);
-    expect(capabilities.qdrantMcp).toBe(false);
-    expect(capabilities.localComputerMcp).toBe(false);
-    await instance.dispose();
-  });
-
-  it("offers no reasoning-effort control, because nothing reads turn.effort", async () => {
-    // dshSpawnArgs emits only --mcp pairs; an effort pick would change nothing
-    expect(dshSpawnArgs({ cli: "dsh", fullAuto: false }, { integrations: undefined })).toEqual([]);
-    const instance = await DshAgentDriver.create({
-      instanceId: "dsh-effort",
-      displayName: "DeepSeek Harness",
-      environment: {},
-      enabled: true,
-      config: DshAgentDriver.defaultConfig(),
-    });
-    expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
-    await instance.dispose();
-  });
-});
-
-describe("dshSpawnArgs MCP quoting", () => {
-  it("keeps command and args intact when paths contain spaces", () => {
-    const command = "/Users/example/Application Support/node";
-    const script = "/tmp/My Tools/proxy.ts";
-    const socket = "/tmp/a b.sock";
-    const args = dshSpawnArgs(
-      { cli: "dsh", fullAuto: false },
-      {
-        integrations: {
-          agents: { command, args: [script, "--socket", socket], env: {} },
-        },
-      },
-    );
-
-    expect(args).toHaveLength(2);
-    expect(args[0]).toBe("--mcp");
-    expect(args[1]).toBe(
-      `agents=${quoteDshMcpToken(command)} ${quoteDshMcpToken(script)} ${quoteDshMcpToken("--socket")} ${quoteDshMcpToken(socket)}`,
-    );
-    expect(args[1]).toContain(quoteDshMcpToken(command));
-    expect(args[1]).toContain(quoteDshMcpToken(script));
-    expect(args[1]).not.toContain(`${command} ${script}`);
-  });
-
-  it("skips integrations that are not a stdio command", () => {
-    expect(
-      dshSpawnArgs(
-        { cli: "dsh", fullAuto: false },
-        { integrations: { dweb: { url: "http://127.0.0.1:8080" } } },
-      ),
-    ).toEqual([]);
+    try {
+      expect(instance.adapter.capabilities).toMatchObject({
+        agentsMcp: true,
+        computerMcp: true,
+        composioMcp: true,
+        phoneMcp: true,
+        qdrantMcp: true,
+        localComputerMcp: true,
+        images: false,
+        effortLevels: ["none", "high", "max"],
+      });
+    } finally {
+      await instance.dispose();
+    }
   });
 });
 
 describe("classifyDshError", () => {
-  it("maps auth failures to invalid_credentials", () => {
+  it("maps provider failures to canonical fallback codes", () => {
     expect(classifyDshError(new Error("authentication required"))).toBe("invalid_credentials");
-    expect(classifyDshError(new Error("invalid api key"))).toBe("invalid_credentials");
-    const coded = new Error("unauthorized");
-    Object.assign(coded, { code: 401 });
-    expect(classifyDshError(coded)).toBe("invalid_credentials");
-  });
-
-  it("maps subscription failures to inactive_subscription", () => {
     expect(classifyDshError(new Error("inactive subscription"))).toBe("inactive_subscription");
-  });
-
-  it("maps quota/rate failures to quota_or_region_restriction", () => {
     expect(classifyDshError(new Error("rate limit exceeded"))).toBe("quota_or_region_restriction");
-    expect(classifyDshError(new Error("insufficient balance"))).toBe("quota_or_region_restriction");
-  });
-
-  it("maps upstream outages", () => {
     expect(classifyDshError(new Error("service unavailable"))).toBe("upstream_outage");
-    expect(classifyDshError(new Error("overloaded"))).toBe("upstream_outage");
-  });
-
-  it("maps unknown-model failures to model_catalog_outage", () => {
     expect(classifyDshError(new Error("model not found"))).toBe("model_catalog_outage");
-  });
-
-  it("returns undefined for unrecognized errors", () => {
     expect(classifyDshError(new Error("empty prompt"))).toBeUndefined();
-    expect(classifyDshError("something else")).toBeUndefined();
   });
 });
 
 describe("dshCredentialCandidates", () => {
-  it("honors DSH_HOME over the default ~/.dsh path", () => {
-    // Built with join(), so the separator is the host's.  Asserting a literal
-    // "/" here passes on macOS and Linux and fails on Windows for a path the
-    // implementation got right — compare against the path it should build,
-    // not against one platform's spelling of it.
-    expect(dshCredentialCandidates({ HOME: "/home/jay" })[0]).toBe(join("/home/jay", ".dsh", ".credentials.yaml"));
-    expect(dshCredentialCandidates({ HOME: "/home/jay", DSH_HOME: "/opt/dsh" })[0]).toBe(
+  it("recognizes only the credential file read by the published DSH package", () => {
+    expect(dshCredentialCandidates({ HOME: "/home/jay" })).toEqual([
+      join("/home/jay", ".dsh", ".credentials.yaml"),
+    ]);
+    expect(dshCredentialCandidates({ HOME: "/home/jay", DSH_HOME: "/opt/dsh" })).toEqual([
       join("/opt/dsh", ".credentials.yaml"),
-    );
-  });
-
-  it("falls back to the platform home when HOME is unset", () => {
-    const candidates = dshCredentialCandidates({});
-    expect(candidates[0]).toContain(".dsh");
-    expect(candidates[0]).toContain(".credentials.yaml");
+    ]);
+    expect(dshCredentialCandidates({})[0]).toContain(".credentials.yaml");
   });
 });

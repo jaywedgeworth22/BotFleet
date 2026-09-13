@@ -261,7 +261,7 @@ describe("OpenCode catalog", () => {
     expect(classifyOpenCodeError({ code: -32000 })).toBe("invalid_credentials");
   });
 
-  it("keeps the OpenCode key in the child environment only", async () => {
+  it("strips the OpenCode key from probes but keeps it in the turn child", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "omb-opencode-go-"));
     try {
       const dump = join(scratch, "env.json");
@@ -279,6 +279,15 @@ describe("OpenCode catalog", () => {
         config: { cli: FAKE_CLI, fullAuto: false },
       });
       await instance.snapshot();
+      const probe = JSON.parse(readFileSync(dump, "utf8")) as { env: Record<string, string> };
+      expect(probe.env.OPENCODE_API_KEY).toBeUndefined();
+      expect(probe.env.OPENAI_API_KEY).toBeUndefined();
+      expect(probe.env.ANTHROPIC_API_KEY).toBeUndefined();
+
+      const recorder = recordEvents(instance.adapter);
+      await instance.adapter.sendTurn({ threadId: "opencode-env", text: "hello" });
+      await recorder.until((event) => event.type === "turn.completed");
+      recorder.stop();
       const child = JSON.parse(readFileSync(dump, "utf8")) as { env: Record<string, string> };
       expect(child.env.OPENCODE_API_KEY).toBe("secret-value");
       expect(child.env.OPENAI_API_KEY).toBeUndefined();

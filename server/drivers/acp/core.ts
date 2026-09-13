@@ -16,6 +16,7 @@
 import { homedir } from "node:os";
 
 import { PROVIDER_CREDENTIAL_ENV, WORKSPACE_CREDENTIAL_ENV } from "../../config.ts";
+import { cliProbeEnvironment } from "../../cli-probe-env.ts";
 import { decodeInjectId } from "../local-inject.ts";
 import { toolFields } from "../../tool-fields.ts";
 import { describeResult } from "../../../shared/tool-activity.ts";
@@ -107,13 +108,28 @@ export interface AcpSupport {
   install?: EngineInstall;
   /** CLI argv AFTER the binary name to enter ACP stdio mode. */
   spawnArgs(config: AcpConfig, turn: SendTurnInput): string[];
+  /** Resume RPC used by this ACP server.  Most older harnesses implement
+   * `session/load`; current ACP v1 servers may expose `session/resume`. */
+  resumeMethod?: "session/load" | "session/resume";
+  /** Reject an installed stock CLI whose reported version cannot satisfy the
+   * protocol contract this support relies on.  A custom wrapper can choose
+   * its own compatibility policy by inspecting `config.cli`. */
+  versionCompatibilityReason?(version: string, config: AcpConfig): string | null;
   /** Provider credential variables this ACP child is allowed to inherit. */
   credentialEnv?: readonly string[];
   /** Select the model through a session config option instead of argv, for
    *  harnesses whose ACP subcommand takes no -m (opencode). The agent must
    *  CONFIRM the requested model before we prompt: silently running a model
    *  other than the one the picker shows is the failure this guards. */
-  selectModel?: { configId: string };
+  selectModel?: {
+    configId: string;
+    /** Translate the picker model into the option's opaque ACP wire value.
+     * The UI-facing session event keeps the picker id. */
+    valueForModel?(model: string): string;
+    /** Translate a confirmed opaque ACP value back to the picker model id
+     * when the caller accepts the session default. */
+    modelForValue?(value: unknown): string | null;
+  };
   /** Mutate the child env in place: strip a key, inject a policy. Receives the
    *  instance config so a support can vary with fullAuto. */
   transformEnv?(env: Record<string, string | undefined>, config: AcpConfig): void;
@@ -308,10 +324,17 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         asks: Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>;
       }
       const active = new Map<string, Turn>();
+      let disposed = false;
 
       const emit = (event: RuntimeEvent) => {
         for (const l of [...listeners]) l(event);
       };
+      const cliVersion = (effective: AcpConfig, env: Record<string, string | undefined>) =>
+        new Promise<string | null>((resolve) => {
+          execCli(effective.cli, ["--version"], { timeout: 8000, env: cliProbeEnvironment(env) }, (err, stdout) =>
+            resolve(err ? null : stdout.trim()),
+          );
+        });
       const base = (threadId: string, turnId: string) => ({
         eventId: newEventId(),
         provider: DRIVER_KIND,
@@ -386,6 +409,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
+        if (disposed) throw new Error("provider instance is disposed");
         // Host control means the user's real desktop (the Local VM and a VPS
         // also arrive as `localComputer`, but they are isolated and carry no
         // scope). A full-auto instance keeps its yolo switch for everything
@@ -400,16 +424,70 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         const turnId = newId();
         const cwd = turn.cwd ?? config.workspace ?? homedir();
         const env = childEnv(turnConfig);
-        if (
-          support.requireAuthenticationBeforeSpawn
-          && !skipSubscriptionAuthForLocalInject(turn.model)
-          && !(await support.isAuthenticated(env, turnConfig))
-        ) {
-          emit({ ...base(threadId, turnId), type: "turn.started" });
-          emit({ ...base(threadId, turnId), type: "runtime.error", message: support.loginNote, setup: true });
-          emit({ ...base(threadId, turnId), type: "turn.completed", ok: false, stopReason: "auth_required", cost: null });
-          return { turnId };
+        let preflightCancelled = false;
+        const preflightAsks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>();
+        const cancelPreflight = () => {
+          preflightCancelled = true;
+        };
+        active.set(threadId, {
+          stop: cancelPreflight,
+          interrupt: cancelPreflight,
+          turnId,
+          asks: preflightAsks,
+        });
+        emit({ ...base(threadId, turnId), type: "turn.started" });
+
+        const finishBeforeDispatch = (
+          ok: boolean,
+          stopReason: string,
+          error?: { message: string; setup?: boolean },
+        ) => {
+          if (active.get(threadId)?.turnId === turnId) active.delete(threadId);
+          if (error) emit({ ...base(threadId, turnId), type: "runtime.error", ...error });
+          emit({ ...base(threadId, turnId), type: "turn.completed", ok, stopReason, cost: null });
+          return { turnId, dispatched: false as const };
+        };
+        const cancelledBeforeDispatch = () =>
+          preflightCancelled || disposed
+            ? finishBeforeDispatch(true, "cancelled")
+            : null;
+
+        // Snapshot status is advisory and callers can dispatch directly.  A
+        // provider that requires a minimum stock CLI must enforce that same
+        // contract at the last boundary before spawning a paid turn.
+        if (support.versionCompatibilityReason && turnConfig.cli === support.defaultCli) {
+          let version: string | null;
+          try {
+            version = await cliVersion(turnConfig, env);
+          } catch (error) {
+            if (active.get(threadId)?.turnId === turnId) active.delete(threadId);
+            throw error;
+          }
+          const cancelled = cancelledBeforeDispatch();
+          if (cancelled) return cancelled;
+          const incompatible = version
+            ? support.versionCompatibilityReason(version, turnConfig)
+            : `\`${turnConfig.cli}\` CLI not found`;
+          if (incompatible) {
+            return finishBeforeDispatch(false, "setup_required", { message: incompatible, setup: true });
+          }
         }
+        if (support.requireAuthenticationBeforeSpawn && !skipSubscriptionAuthForLocalInject(turn.model)) {
+          let authenticated: boolean;
+          try {
+            authenticated = await support.isAuthenticated(env, turnConfig);
+          } catch (error) {
+            if (active.get(threadId)?.turnId === turnId) active.delete(threadId);
+            throw error;
+          }
+          const cancelled = cancelledBeforeDispatch();
+          if (cancelled) return cancelled;
+          if (!authenticated) {
+            return finishBeforeDispatch(false, "auth_required", { message: support.loginNote, setup: true });
+          }
+        }
+        const cancelled = cancelledBeforeDispatch();
+        if (cancelled) return cancelled;
         const resolvedModel = support.resolveTurnModel?.(turn.model, env);
         support.applyTurnEnv?.(env, { model: resolvedModel, requestedModel: turn.model });
         const cliTurn =
@@ -418,11 +496,20 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             : turn;
         const mcpServers = acpMcpServers(turn);
 
-        const child = spawnCli(config.cli, support.spawnArgs(turnConfig, cliTurn), {
-          cwd,
-          env,
-          stdio: ["pipe", "pipe", "pipe"],
-        });
+        let child;
+        try {
+          child = spawnCli(config.cli, support.spawnArgs(turnConfig, cliTurn), {
+            cwd,
+            env,
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+        } catch (error) {
+          const failure = describeSpawnFailure(error instanceof Error ? error : new Error(String(error)), config.cli);
+          return finishBeforeDispatch(false, "spawn_error", {
+            message: failure.message,
+            ...(failure.setup ? { setup: true } : {}),
+          });
+        }
 
         const state = { settled: false, deadlineTerminating: false, promptSent: false, text: "" };
         const asks = new Map<string, (behavior: string, source?: "user" | "timeout" | "system") => void>();
@@ -727,7 +814,6 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           interruptTimer.unref?.();
         };
         active.set(threadId, { stop, interrupt, turnId, asks });
-        emit({ ...base(threadId, turnId), type: "turn.started" });
 
         (async () => {
           try {
@@ -764,7 +850,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             if (cursor) {
               try {
                 sessionResult = await request(
-                  "session/load",
+                  support.resumeMethod ?? "session/load",
                   { sessionId: cursor, cwd, mcpServers },
                   LOAD_SESSION_TIMEOUT,
                 );
@@ -796,27 +882,36 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
             try {
               if (support.selectModel) {
-                const { configId } = support.selectModel;
+                const { configId, valueForModel, modelForValue } = support.selectModel;
                 const currentOf = (r: any) =>
                   (Array.isArray(r?.configOptions) ? r.configOptions : []).find((o: any) => o?.id === configId)
                     ?.currentValue ?? null;
-                selectedModel = currentOf(sessionResult);
-                if (cliTurn.model && cliTurn.model !== selectedModel) {
-                  selectedModel = currentOf(
+                let selectedValue = currentOf(sessionResult);
+                const requestedValue = cliTurn.model
+                  ? (valueForModel?.(cliTurn.model) ?? cliTurn.model)
+                  : null;
+                if (requestedValue && requestedValue !== selectedValue) {
+                  selectedValue = currentOf(
                     await request(
                       "session/set_config_option",
-                      { sessionId, configId, value: cliTurn.model },
+                      { sessionId, configId, value: requestedValue },
                       INIT_TIMEOUT,
                     ),
                   );
                   // an agent that answers OK but keeps its old model is worse than
                   // one that errors: it burns a paid turn on the wrong thing
-                  if (selectedModel !== cliTurn.model) {
+                  if (selectedValue !== requestedValue) {
                     throw new Error(
-                      `${DRIVER_KIND} did not switch to ${cliTurn.model} (still ${selectedModel ?? "unknown"})`,
+                      `${DRIVER_KIND} did not switch to ${cliTurn.model} (still ${selectedValue ?? "unknown"})`,
                     );
                   }
                 }
+                // Opaque option values are protocol details.  Persist the
+                // picker id in the task so resume and usage attribution keep
+                // the same model identity the user selected.
+                selectedModel = cliTurn.model ?? modelForValue?.(selectedValue) ?? (
+                  valueForModel === undefined && typeof selectedValue === "string" ? selectedValue : null
+                );
               }
 
               if (support.configureSession) {
@@ -934,12 +1029,10 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
       const snapshot = async (): Promise<ProviderSnapshot> => {
         const env = childEnv();
-        const version = await new Promise<string | null>((resolve) => {
-          execCli(config.cli, ["--version"], { timeout: 8000, env }, (err, stdout) =>
-            resolve(err ? null : stdout.trim()),
-          );
-        });
+        const version = await cliVersion(config, env);
         if (!version) return { state: "unavailable", reason: `\`${config.cli}\` CLI not found` };
+        const incompatible = support.versionCompatibilityReason?.(version, config);
+        if (incompatible) return { state: "unavailable", reason: incompatible, version };
         return { state: "available", version, authenticated: await support.isAuthenticated(env, config) };
       };
 
@@ -989,6 +1082,7 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
           },
         },
         dispose: async () => {
+          disposed = true;
           for (const { stop } of active.values()) stop();
           listeners.clear();
         },

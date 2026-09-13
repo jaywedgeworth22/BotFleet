@@ -6,7 +6,7 @@
 //
 // The fake CLI is a shebang script Windows cannot exec directly —
 // resolveCliSpawn turns it into `node <script>`, so these run everywhere.
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,6 +61,15 @@ const AsyncAuthDriver = createAcpDriver({
   driverKind: "asyncAuthTest",
   selectModel: undefined,
   isAuthenticated: async () => true,
+});
+
+const VersionGateDriver = createAcpDriver({
+  ...SELECT_MODEL_SUPPORT,
+  driverKind: "versionGateTest",
+  defaultCli: FAKE_CLI,
+  selectModel: undefined,
+  credentialEnv: ["DEEPSEEK_API_KEY", "BOX_TOKEN"],
+  versionCompatibilityReason: (version) => version.includes("2.0.0") ? null : "ACP 2.0.0 is required",
 });
 
 /** Proves the initialize flow never spawns the isAuthenticated probe for a
@@ -915,11 +924,10 @@ describe("ACP turns (fake CLI)", () => {
     await create(GrokAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toEqual(["low", "medium", "high"]);
 
-    // DSH declared four and read `turn.effort` nowhere — its spawn args
-    // carry only --mcp pairs — so the picker offered a control that changed
-    // nothing.  contracts.ts: never show a knob the driver cannot turn.
+    // Native DSH exposes the exact model's off/high/max options through ACP.
+    // BotFleet calls its no-reasoning choice "none" and maps it on the wire.
     await create(DshAgentDriver);
-    expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
+    expect(instance.adapter.capabilities.effortLevels).toEqual(["none", "high", "max"]);
 
     await create(KimiAgentDriver);
     expect(instance.adapter.capabilities.effortLevels).toBeUndefined();
@@ -966,6 +974,177 @@ describe("ACP turns (fake CLI)", () => {
 });
 
 describe("ACP snapshot", () => {
+  it("enforces a stock CLI compatibility gate again at dispatch", async () => {
+    process.env.FAKE_ACP_VERSION = "fake-acp 1.0.0";
+    const scratch = mkdtempSync(join(tmpdir(), "omb-version-gate-"));
+    const dump = join(scratch, "version.json");
+    process.env.FAKE_ACP_DUMP = dump;
+    const instance = await VersionGateDriver.create({
+      instanceId: "version-gated",
+      displayName: undefined,
+      environment: {
+        DEEPSEEK_API_KEY: "billing-key-must-not-reach-version-probe",
+        BOX_TOKEN: "workspace-key-must-not-reach-version-probe",
+      },
+      enabled: true,
+      config: VersionGateDriver.defaultConfig(),
+    });
+    const recorder = recordEvents(instance.adapter);
+    try {
+      expect(await instance.snapshot()).toMatchObject({
+        state: "unavailable",
+        reason: "ACP 2.0.0 is required",
+        version: "fake-acp 1.0.0",
+      });
+      const started = await instance.adapter.sendTurn({ threadId: "version-gated", text: "do not dispatch" });
+      expect(started.dispatched).toBe(false);
+      expect(recorder.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "runtime.error", message: "ACP 2.0.0 is required", setup: true }),
+        expect.objectContaining({ type: "turn.completed", ok: false, stopReason: "setup_required" }),
+      ]));
+      expect(JSON.parse(readFileSync(dump, "utf8")).env).not.toHaveProperty("DEEPSEEK_API_KEY");
+      expect(JSON.parse(readFileSync(dump, "utf8")).env).not.toHaveProperty("BOX_TOKEN");
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+      delete process.env.FAKE_ACP_VERSION;
+      delete process.env.FAKE_ACP_DUMP;
+      await removeTempDir(scratch);
+    }
+  });
+
+  it("reserves a delayed version preflight against duplicate turns and interruption", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "omb-version-race-"));
+    const gate = join(scratch, "release-version");
+    const dump = join(scratch, "version.json");
+    const rpcDump = join(scratch, "rpc.json");
+    process.env.FAKE_ACP_VERSION = "fake-acp 2.0.0";
+    process.env.FAKE_ACP_VERSION_GATE_FILE = gate;
+    process.env.FAKE_ACP_DUMP = dump;
+    process.env.FAKE_ACP_RPC_DUMP = rpcDump;
+    const instance = await VersionGateDriver.create({
+      instanceId: "version-race",
+      displayName: undefined,
+      environment: {},
+      enabled: true,
+      config: VersionGateDriver.defaultConfig(),
+    });
+    const recorder = recordEvents(instance.adapter);
+    try {
+      const pending = instance.adapter.sendTurn({ threadId: "version-race", text: "must not dispatch" });
+      await vi.waitFor(() => expect(existsSync(dump)).toBe(true), { timeout: 10_000, interval: 10 });
+      expect(instance.adapter.hasSession("version-race")).toBe(true);
+      await expect(
+        instance.adapter.sendTurn({ threadId: "version-race", text: "duplicate" }),
+      ).rejects.toThrow(/already running/);
+      await instance.adapter.interruptTurn("version-race");
+      writeFileSync(gate, "release");
+      expect(await pending).toMatchObject({ dispatched: false });
+      expect(instance.adapter.hasSession("version-race")).toBe(false);
+      expect(existsSync(rpcDump)).toBe(false);
+      expect(recorder.events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "turn.completed", ok: true, stopReason: "cancelled" }),
+      ]));
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+      delete process.env.FAKE_ACP_VERSION;
+      delete process.env.FAKE_ACP_VERSION_GATE_FILE;
+      delete process.env.FAKE_ACP_DUMP;
+      delete process.env.FAKE_ACP_RPC_DUMP;
+      await removeTempDir(scratch);
+    }
+  });
+
+  it.each(["stopAll", "dispose"] as const)("prevents launch after %s during a delayed version preflight", async (operation) => {
+    const scratch = mkdtempSync(join(tmpdir(), `omb-version-${operation}-`));
+    const gate = join(scratch, "release-version");
+    const dump = join(scratch, "version.json");
+    const rpcDump = join(scratch, "rpc.json");
+    process.env.FAKE_ACP_VERSION = "fake-acp 2.0.0";
+    process.env.FAKE_ACP_VERSION_GATE_FILE = gate;
+    process.env.FAKE_ACP_DUMP = dump;
+    process.env.FAKE_ACP_RPC_DUMP = rpcDump;
+    const instance = await VersionGateDriver.create({
+      instanceId: `version-${operation}`,
+      displayName: undefined,
+      environment: {},
+      enabled: true,
+      config: VersionGateDriver.defaultConfig(),
+    });
+    try {
+      const pending = instance.adapter.sendTurn({ threadId: `version-${operation}`, text: "must not dispatch" });
+      await vi.waitFor(() => expect(existsSync(dump)).toBe(true), { timeout: 10_000, interval: 10 });
+      if (operation === "stopAll") await instance.adapter.stopAll();
+      else await instance.dispose();
+      writeFileSync(gate, "release");
+      expect(await pending).toMatchObject({ dispatched: false });
+      expect(existsSync(rpcDump)).toBe(false);
+      if (operation === "dispose") {
+        await expect(
+          instance.adapter.sendTurn({ threadId: "after-dispose", text: "must reject" }),
+        ).rejects.toThrow(/disposed/);
+      }
+    } finally {
+      await instance.dispose();
+      delete process.env.FAKE_ACP_VERSION;
+      delete process.env.FAKE_ACP_VERSION_GATE_FILE;
+      delete process.env.FAKE_ACP_DUMP;
+      delete process.env.FAKE_ACP_RPC_DUMP;
+      await removeTempDir(scratch);
+    }
+  });
+
+  it("holds the same reservation through an asynchronous authentication preflight", async () => {
+    let authStarted!: () => void;
+    let releaseAuth!: () => void;
+    const startedAuth = new Promise<void>((resolve) => {
+      authStarted = resolve;
+    });
+    const authGate = new Promise<void>((resolve) => {
+      releaseAuth = resolve;
+    });
+    const AsyncPreflightDriver = createAcpDriver({
+      ...SELECT_MODEL_SUPPORT,
+      driverKind: "asyncPreflightTest",
+      selectModel: undefined,
+      requireAuthenticationBeforeSpawn: true,
+      isAuthenticated: async () => {
+        authStarted();
+        await authGate;
+        return true;
+      },
+    });
+    const scratch = mkdtempSync(join(tmpdir(), "omb-auth-race-"));
+    const rpcDump = join(scratch, "rpc.json");
+    process.env.FAKE_ACP_RPC_DUMP = rpcDump;
+    const instance = await AsyncPreflightDriver.create({
+      instanceId: "auth-race",
+      displayName: undefined,
+      environment: {},
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto: false },
+    });
+    try {
+      const pending = instance.adapter.sendTurn({ threadId: "auth-race", text: "must not dispatch" });
+      await startedAuth;
+      expect(instance.adapter.hasSession("auth-race")).toBe(true);
+      await expect(
+        instance.adapter.sendTurn({ threadId: "auth-race", text: "duplicate" }),
+      ).rejects.toThrow(/already running/);
+      await instance.adapter.interruptTurn("auth-race");
+      releaseAuth();
+      expect(await pending).toMatchObject({ dispatched: false });
+      expect(instance.adapter.hasSession("auth-race")).toBe(false);
+      expect(existsSync(rpcDump)).toBe(false);
+    } finally {
+      releaseAuth();
+      await instance.dispose();
+      delete process.env.FAKE_ACP_RPC_DUMP;
+      await removeTempDir(scratch);
+    }
+  });
+
   it("a missing binary is unavailable", async () => {
     const instance = await GrokAgentDriver.create({
       instanceId: "grok-missing",
