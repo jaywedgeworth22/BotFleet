@@ -263,7 +263,10 @@ test("a lock left behind by a dead process is taken over", () => {
   }
 });
 
-test("a lock older than staleMs is taken over even when its pid is alive", () => {
+test("a lock older than staleMs is taken over even when its pid is alive", (t) => {
+  // Filesystem scheduling must not spend the newly acquired lease.  The
+  // cross-process race tests below retain the real clock.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { dir, path } = tempConfig();
   try {
     assert.ok(CONFIG_LOCK_STALE_MS > 0);
@@ -338,7 +341,8 @@ test("a writer gives up with a clear error after timeoutMs while a peer holds th
 // The lease is what makes taking over safe.  A holder that was suspended
 // past the stale window (system sleep, a debugger, a filesystem stall) must
 // not land the snapshot it read before it was suspended.
-test("a holder whose lease ran out refuses to write and leaves its lock for the takeover", () => {
+test("a holder whose lease ran out refuses to write and leaves its lock for the takeover", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { dir, path } = tempConfig();
   try {
     writeFileSync(path, '{"fresh":true}');
@@ -347,7 +351,7 @@ test("a holder whose lease ran out refuses to write and leaves its lock for the 
         updateConfigFile(
           path,
           (disk) => {
-            sleepSync(120); // "suspended" inside the critical section
+            t.mock.timers.tick(120); // "suspended" inside the critical section
             disk.stale = true;
           },
           { staleMs: 50, timeoutMs: 500 },
@@ -368,17 +372,18 @@ test("a holder whose lease ran out refuses to write and leaves its lock for the 
   }
 });
 
-test("a release inside the lease unlinks; one past the usable lease leaves the lock to the takeover", () => {
+test("a release inside the lease unlinks; one past the usable lease leaves the lock to the takeover", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { dir, path } = tempConfig();
   try {
     acquireConfigFileLock(path, { staleMs: 400 }).release();
     assert.equal(existsSync(lockPathFor(path)), false, "released inside the lease");
     const late = acquireConfigFileLock(path, { staleMs: 400 });
-    sleepSync(330); // inside staleMs but past the 100 ms margin
+    t.mock.timers.tick(330); // inside staleMs but past the 100 ms margin
     late.release();
     assert.equal(existsSync(lockPathFor(path)), true, "left in place rather than unlinked by name");
-    // The next writer waits out what is left of the lease, takes over, and
-    // proceeds.
+    // Once the remaining lease passes, the next writer takes over.
+    t.mock.timers.tick(71);
     updateConfigFile(path, (disk) => {
       disk.next = true;
     }, { staleMs: 400, timeoutMs: 2_000 });
