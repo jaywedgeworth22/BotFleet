@@ -331,30 +331,38 @@ export type MiniMaxQuotaView = {
 };
 
 /** One status vocabulary for MiniMax's quota row, whichever of the two
- *  undocumented endpoints answered (server/minimax-balance.ts): sentence
- *  case, "resets in Xh Ym" via the same formatResetCountdown every other
- *  engine's row already uses. Null when there is nothing worth a line
- *  (unavailable source, or a response with no usable figures) — the caller
- *  falls back to its own generic "Active and ready for turns" line, exactly
- *  like deepseek-balance.ts's contract: an absent/errored figure hides the
- *  line, it never fabricates one. */
+ *  undocumented endpoints answered (server/minimax-balance.ts). Null when
+ *  there is nothing worth a line (unavailable source, or a response with no
+ *  usable figures) — the caller falls back to its own generic "Active and
+ *  ready for turns" line, exactly like deepseek-balance.ts's contract: an
+ *  absent/errored figure hides the line, it never fabricates one.
+ *
+ *  Live-verified 2026-09-13: the Token Plan sentence is "N% left this week,
+ *  N% left in the current 5 h window, resets at H:MM" — weekly first, then
+ *  the 5-hour figure, then when the 5-hour window (the recurring, actionable
+ *  one) comes back, as a clock time rather than a countdown, matching the
+ *  "resets at H:MM" convention server/index.ts's own quota line already
+ *  uses. `row.resetsAt` here is specifically the 5-hour window's own reset
+ *  (server/minimax-balance.ts keeps it separate from the "soonest of either
+ *  window" figure the registry.ts per-model merge uses instead). */
 export function minimaxQuotaLine(row: MiniMaxQuotaView): string | null {
   if (row.source === "unavailable") return null;
-  const resetPart = row.resetsAt ? ` · resets in ${formatResetCountdown(row.resetsAt)}` : "";
   if (row.source === "account-balance") {
     if (row.balanceUsd == null) return null;
     const amount = row.balanceUsd <= 0 ? "$0.00 remaining" : `$${row.balanceUsd.toFixed(2)} remaining`;
-    if (row.status === "capped") return `at usage cap — balance exhausted${resetPart}`;
+    if (row.status === "capped") return "at usage cap — balance exhausted";
     if (row.status === "near_cap") return `${amount} · near cap`;
     return amount;
   }
-  // token-plan: up to two figures, 5h and weekly, same "N% available"
-  // wording windowHeadlines already uses for every other engine's windows.
   const parts: string[] = [];
-  if (row.remainingPercent != null) parts.push(`5h ${Math.round(row.remainingPercent)}% available`);
-  if (row.secondaryRemainingPercent != null) parts.push(`week ${Math.round(row.secondaryRemainingPercent)}% available`);
+  if (row.secondaryRemainingPercent != null) parts.push(`${Math.round(row.secondaryRemainingPercent)}% left this week`);
+  if (row.remainingPercent != null) parts.push(`${Math.round(row.remainingPercent)}% left in the current 5 h window`);
   if (parts.length === 0) return null;
-  return `${parts.join(" · ")}${resetPart}`;
+  let line = parts.join(", ");
+  if (row.resetsAt != null) {
+    line += `, resets at ${new Date(row.resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+  }
+  return line;
 }
 
 /** Generalizes the "5hr" / "5hr/Week" dual-window badge — previously

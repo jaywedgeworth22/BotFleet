@@ -303,14 +303,19 @@ describe("ProviderRegistry", () => {
         secondaryRemainingPercent: 40,
         windowsLabel: "5hr/Week",
         models: {
-          "MiniMax-M3": {
+          general: {
             remainingPercent: 62,
             secondaryRemainingPercent: 40,
             windowsLabel: "5hr/Week",
             resetsAt: Date.now() + 3_600_000,
+            intervalResetsAt: Date.now() + 3_600_000,
+            weeklyResetsAt: Date.now() + 86_400_000,
+            intervalStatus: "active",
+            weeklyStatus: "active",
           },
         },
         resetsAt: Date.now() + 3_600_000,
+        weeklyResetsAt: Date.now() + 86_400_000,
         fetchedAt: Date.now(),
         error: null,
       });
@@ -323,7 +328,7 @@ describe("ProviderRegistry", () => {
       // unrelated engine with real dual-window per-model data got no badge
       // at all, no matter what its own models reported.
       expect(described.snapshot.quota?.windowsLabel).toBe("5hr/Week");
-      expect(described.snapshot.quota?.models?.["MiniMax-M3"]).toMatchObject({
+      expect(described.snapshot.quota?.models?.general).toMatchObject({
         remainingPercent: 62,
         secondaryRemainingPercent: 40,
         windowsLabel: "5hr/Week",
@@ -341,9 +346,19 @@ describe("ProviderRegistry", () => {
         secondaryRemainingPercent: null,
         windowsLabel: "5hr",
         models: {
-          "MiniMax-M3": { remainingPercent: 62, secondaryRemainingPercent: null, windowsLabel: "5hr", resetsAt: null },
+          general: {
+            remainingPercent: 62,
+            secondaryRemainingPercent: null,
+            windowsLabel: "5hr",
+            resetsAt: null,
+            intervalResetsAt: null,
+            weeklyResetsAt: null,
+            intervalStatus: "unknown",
+            weeklyStatus: "unknown",
+          },
         },
         resetsAt: null,
+        weeklyResetsAt: null,
         fetchedAt: Date.now(),
         error: null,
       });
@@ -365,6 +380,7 @@ describe("ProviderRegistry", () => {
         windowsLabel: undefined,
         models: null,
         resetsAt: null,
+        weeklyResetsAt: null,
         fetchedAt: Date.now(),
         error: "no key configured",
       });

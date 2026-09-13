@@ -31,6 +31,61 @@ async function loadModule() {
   return await import("./minimax-balance.ts");
 }
 
+const FIVE_HOURS_MS = 5 * 60 * 60 * 1000; // 18,000,000
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000; // 604,800,000
+
+// The coordinator's own example magnitude ("observed 1789275600000 style").
+const INTERVAL_END = 1_789_275_600_000;
+const INTERVAL_START = INTERVAL_END - FIVE_HOURS_MS;
+const WEEKLY_END = 1_789_360_800_000;
+const WEEKLY_START = WEEKLY_END - SEVEN_DAYS_MS;
+
+/** Live-verified 2026-09-13 via `mmx quota show` against a real Token Plan
+ *  account (no secrets involved — only the response shape was recorded).
+ *  Two model rows: "general" (the chat quota, zero counts, 100%/94%
+ *  remaining) and "video" (a separate quota pool, non-zero counts, 85%/88%
+ *  remaining) — proves the two are parsed independently and never blended
+ *  into one number. */
+const TOKEN_PLAN_FIXTURE = {
+  model_remains: [
+    {
+      model_name: "general",
+      start_time: INTERVAL_START,
+      end_time: INTERVAL_END,
+      remains_time: 3_600_000,
+      current_interval_total_count: 0,
+      current_interval_usage_count: 0,
+      current_interval_remaining_percent: 100,
+      current_interval_status: 1,
+      weekly_start_time: WEEKLY_START,
+      weekly_end_time: WEEKLY_END,
+      weekly_remains_time: 259_200_000,
+      current_weekly_total_count: 0,
+      current_weekly_usage_count: 0,
+      current_weekly_remaining_percent: 94,
+      current_weekly_status: 1,
+    },
+    {
+      model_name: "video",
+      start_time: INTERVAL_START,
+      end_time: INTERVAL_END,
+      remains_time: 3_600_000,
+      current_interval_total_count: 20,
+      current_interval_usage_count: 3,
+      current_interval_remaining_percent: 85,
+      current_interval_status: 1,
+      weekly_start_time: WEEKLY_START,
+      weekly_end_time: WEEKLY_END,
+      weekly_remains_time: 259_200_000,
+      current_weekly_total_count: 100,
+      current_weekly_usage_count: 12,
+      current_weekly_remaining_percent: 88,
+      current_weekly_status: 1,
+    },
+  ],
+  base_resp: { status_code: 0, status_msg: "success" },
+};
+
 describe("getMiniMaxBalance", () => {
   it("returns a 'no key configured' snapshot when the key is empty", async () => {
     const mod = await loadModule();
@@ -65,21 +120,8 @@ describe("getMiniMaxBalance", () => {
     expect(result.error).toBeNull();
   });
 
-  it("routes a Token Plan / subscription key to /v1/token_plan/remains", async () => {
-    fetchMock.mockResolvedValueOnce(
-      mockResponse(true, 200, {
-        model_remains: [
-          {
-            model_name: "MiniMax-M3",
-            current_interval_remaining_percent: 62,
-            current_weekly_remaining_percent: 40,
-            end_time: Math.floor(Date.now() / 1000) + 3600,
-            weekly_end_time: Math.floor(Date.now() / 1000) + 86_400 * 3,
-          },
-        ],
-        base_resp: { status_code: 0, status_msg: "success" },
-      }),
-    );
+  it("routes a Token Plan / subscription key to /v1/token_plan/remains and reads 'general' for the headline", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(true, 200, TOKEN_PLAN_FIXTURE));
     const mod = await loadModule();
     const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
     const calledUrl = fetchMock.mock.calls[0][0] as string;
@@ -87,19 +129,90 @@ describe("getMiniMaxBalance", () => {
     expect(result.source).toBe("token-plan");
     expect(result.capExists).toBe(true);
     expect(result.status).toBe("ok");
-    expect(result.remainingPercent).toBeCloseTo(62);
-    expect(result.secondaryRemainingPercent).toBeCloseTo(40);
+    // The headline is "general"'s own figures (100%/94%), not blended with
+    // "video"'s (85%/88%) — they are unrelated quota pools.
+    expect(result.remainingPercent).toBe(100);
+    expect(result.secondaryRemainingPercent).toBe(94);
     expect(result.windowsLabel).toBe("5hr/Week");
-    expect(result.models?.["MiniMax-M3"]?.windowsLabel).toBe("5hr/Week");
-    expect(result.resetsAt).not.toBeNull();
+    // Epoch fields are milliseconds, passed through verbatim — no unit
+    // rescaling. "general"'s own 5-hour window resets at end_time exactly.
+    expect(result.resetsAt).toBe(INTERVAL_END);
+    expect(result.weeklyResetsAt).toBe(WEEKLY_END);
+    // Every row lands in `models`, including "video", for display — it is
+    // just never used for the headline.
+    expect(result.models?.general).toMatchObject({ remainingPercent: 100, secondaryRemainingPercent: 94 });
+    expect(result.models?.video).toMatchObject({ remainingPercent: 85, secondaryRemainingPercent: 88 });
+    expect(result.error).toBeNull();
   });
 
-  it("reports 'capped' status once the most restrictive model hits zero", async () => {
+  it("maps current_interval_status/current_weekly_status: 1 is active, anything else is unknown (never capped)", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(true, 200, TOKEN_PLAN_FIXTURE));
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    expect(result.models?.general?.intervalStatus).toBe("active");
+    expect(result.models?.general?.weeklyStatus).toBe("active");
+
+    // Same (key, url) pair as above — bust the 5-minute cache so this
+    // second fetch actually reaches the mock instead of serving the first
+    // response back.
+    mod.invalidateMiniMaxBalance();
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(true, 200, {
+        model_remains: [{ ...TOKEN_PLAN_FIXTURE.model_remains[0], current_interval_status: 3, current_weekly_status: undefined }],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const unknownResult = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    expect(unknownResult.models?.general?.intervalStatus).toBe("unknown");
+    expect(unknownResult.models?.general?.weeklyStatus).toBe("unknown");
+    // An unrecognized status must never be read as "capped" on its own —
+    // that comes only from the percent fields (still 100 here).
+    expect(unknownResult.status).toBe("ok");
+  });
+
+  it("ignores usage/total counts entirely — never derives a percent from them", async () => {
+    fetchMock.mockResolvedValueOnce(mockResponse(true, 200, TOKEN_PLAN_FIXTURE));
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    // "general" has zero counts and 100% remaining; "video" has non-zero
+    // counts (3/20 used) and only 85% remaining — if percent were ever
+    // derived from counts, "general" would show 100% (0/0) and this
+    // assertion would still pass by coincidence, so the real proof is that
+    // neither model's exposed shape carries a count field at all.
+    expect(result.models?.general).not.toHaveProperty("current_interval_usage_count");
+    expect(result.models?.video?.remainingPercent).toBe(85);
+  });
+
+  it("falls back to remains_time (a duration) when the absolute end_time is missing", async () => {
+    vi.useFakeTimers();
+    const now = Date.now();
     fetchMock.mockResolvedValueOnce(
       mockResponse(true, 200, {
         model_remains: [
-          { model_name: "MiniMax-M3", current_interval_remaining_percent: 62 },
-          { model_name: "MiniMax-M2.7-highspeed", current_interval_remaining_percent: 0 },
+          {
+            model_name: "general",
+            remains_time: 7_200_000,
+            current_interval_remaining_percent: 100,
+            weekly_remains_time: 259_200_000,
+            current_weekly_remaining_percent: 94,
+          },
+        ],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    expect(result.resetsAt).toBe(now + 7_200_000);
+    expect(result.weeklyResetsAt).toBe(now + 259_200_000);
+    vi.useRealTimers();
+  });
+
+  it("reports 'capped' status once general's most restrictive window hits zero, unaffected by a capped 'video' row", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(true, 200, {
+        model_remains: [
+          { model_name: "general", current_interval_remaining_percent: 0, current_weekly_remaining_percent: 50 },
+          { model_name: "video", current_interval_remaining_percent: 0, current_weekly_remaining_percent: 0 },
         ],
         base_resp: { status_code: 0 },
       }),
@@ -110,16 +223,48 @@ describe("getMiniMaxBalance", () => {
     expect(result.remainingPercent).toBe(0);
   });
 
-  it("treats a fractional 0-1 percent as a fraction, not a raw percent", async () => {
+  it("does not go capped when only an unrelated 'video' row is exhausted", async () => {
     fetchMock.mockResolvedValueOnce(
       mockResponse(true, 200, {
-        model_remains: [{ model_name: "MiniMax-M3", current_interval_remaining_percent: 0.62 }],
+        model_remains: [
+          { model_name: "general", current_interval_remaining_percent: 62, current_weekly_remaining_percent: 40 },
+          { model_name: "video", current_interval_remaining_percent: 0, current_weekly_remaining_percent: 0 },
+        ],
         base_resp: { status_code: 0 },
       }),
     );
     const mod = await loadModule();
     const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
-    expect(result.remainingPercent).toBeCloseTo(62);
+    expect(result.status).toBe("ok");
+    expect(result.remainingPercent).toBe(62);
+    expect(result.models?.video?.remainingPercent).toBe(0);
+  });
+
+  it("has no headline when there is no 'general' row, but still keeps the other rows for display", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(true, 200, {
+        model_remains: [{ model_name: "video", current_interval_remaining_percent: 85 }],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    expect(result.status).toBe("unknown");
+    expect(result.remainingPercent).toBeNull();
+    expect(result.capExists).toBe(true);
+    expect(result.models?.video?.remainingPercent).toBe(85);
+  });
+
+  it("clamps an out-of-range percent defensively without rescaling it", async () => {
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(true, 200, {
+        model_remains: [{ model_name: "general", current_interval_remaining_percent: 142 }],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    expect(result.remainingPercent).toBe(100);
   });
 
   it("uses the balance alert threshold as the near-cap signal", async () => {

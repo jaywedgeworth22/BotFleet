@@ -376,30 +376,37 @@ describe("minimaxQuotaLine", () => {
     expect(minimaxQuotaLine({ ...base, source: "account-balance", status: "near_cap", balanceUsd: 4 })).toBe("$4.00 remaining · near cap");
   });
 
-  it("reports a capped balance with its reset time when known", () => {
-    const resetsAt = Date.now() + 3_600_000;
-    const line = minimaxQuotaLine({ ...base, source: "account-balance", status: "capped", balanceUsd: 0, resetsAt });
-    expect(line).toBe("at usage cap — balance exhausted · resets in 1h");
+  it("reports a capped balance as exhausted (a wallet balance has no reset time)", () => {
+    const line = minimaxQuotaLine({ ...base, source: "account-balance", status: "capped", balanceUsd: 0 });
+    expect(line).toBe("at usage cap — balance exhausted");
   });
 
   it("returns null for a pay-as-you-go response with no balance figure at all", () => {
     expect(minimaxQuotaLine({ ...base, source: "account-balance", status: "unknown", balanceUsd: null })).toBeNull();
   });
 
-  it("formats a Token Plan dual-window line", () => {
+  it("formats the live-verified Token Plan sentence: weekly first, then the 5h window, then a clock-time reset", () => {
+    const resetsAt = Date.now() + 3_600_000;
     const line = minimaxQuotaLine({
       ...base,
       source: "token-plan",
       status: "ok",
-      remainingPercent: 62,
-      secondaryRemainingPercent: 40,
+      remainingPercent: 100,
+      secondaryRemainingPercent: 94,
+      resetsAt,
     });
-    expect(line).toBe("5h 62% available · week 40% available");
+    const expectedTime = new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(line).toBe(`94% left this week, 100% left in the current 5 h window, resets at ${expectedTime}`);
   });
 
-  it("formats a Token Plan line with only the 5h window known", () => {
+  it("formats a Token Plan line with only the 5h window known, and no reset clause when the reset is unknown", () => {
     const line = minimaxQuotaLine({ ...base, source: "token-plan", status: "ok", remainingPercent: 62 });
-    expect(line).toBe("5h 62% available");
+    expect(line).toBe("62% left in the current 5 h window");
+  });
+
+  it("formats a Token Plan line with only the weekly window known", () => {
+    const line = minimaxQuotaLine({ ...base, source: "token-plan", status: "ok", secondaryRemainingPercent: 40 });
+    expect(line).toBe("40% left this week");
   });
 
   it("returns null for a Token Plan response with zero usable model rows", () => {

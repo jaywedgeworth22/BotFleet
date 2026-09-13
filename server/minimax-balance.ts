@@ -33,28 +33,69 @@
 // https://api.minimaxi.com for "cn") — NOT the /v1-suffixed apiUrl the
 // minimax.ts driver builds for chat completions.
 //
-// Undocumented means unstable: field shapes, percent vs. fraction, and even
-// which endpoint answers for a given key can change without notice. Every
-// parse here is defensive, and any failure degrades to an "unknown" snapshot
-// with `error` set — it never throws into the /api/quotas response the way a
-// stuck DeepSeek fetch must not either.
+// Live-verified 2026-09-13 by the coordinating agent running `mmx quota
+// show` against a real Token Plan account on this Mac (no secrets involved —
+// only the response SHAPE was recorded).  The `/v1/token_plan/remains` shape
+// is now pinned, not inferred:
+//   - `model_remains[]` has one row per product, `model_name` distinguishing
+//     them ("general" is the chat/text quota this file surfaces as the
+//     headline; other rows — "video" observed — are kept in `models` for
+//     display but never blended into the top-line numbers, since they are
+//     unrelated quota pools).
+//   - `current_interval_remaining_percent` / `current_weekly_remaining_percent`
+//     are always integers 0..100 (observed 100 and 94) — never a fraction.
+//   - `start_time` / `end_time` / `weekly_start_time` / `weekly_end_time` are
+//     always epoch MILLISECONDS (observed ~1.79e12-scale values, and
+//     `end_time - start_time` is exactly 18,000,000 ms = 5 hours;
+//     `weekly_end_time - weekly_start_time` is exactly 7 days).
+//     `remains_time` / `weekly_remains_time` are milliseconds REMAINING
+//     (a duration, not an absolute time) — used only as a fallback when the
+//     absolute `_time` field is missing.
+//   - `current_interval_status` / `current_weekly_status` are integers; only
+//     `1` ("active") is confirmed. Any other value (or absence) is genuinely
+//     unknown and is never read as "capped" — that comes from the percent
+//     fields alone.
+//   - `current_interval_total_count` / `current_interval_usage_count` (and
+//     the weekly pair) are raw counts (0 for "general", small integers for
+//     "video") with no confirmed relationship to the percent fields — never
+//     used to derive a percentage.
+//
+// Undocumented still means unstable elsewhere (which endpoint answers for a
+// given key, whether a field disappears), so parsing stays defensive and any
+// failure degrades to an "unavailable" snapshot with `error` set — it never
+// throws into the /api/quotas response, the same contract deepseek-balance.ts
+// makes.
 
 export type MiniMaxBalanceSource = "account-balance" | "token-plan" | "unavailable";
 export type MiniMaxBalanceStatus = "ok" | "near_cap" | "capped" | "unknown";
 
+/** "active" is the only status value confirmed live; everything else
+ *  (including a field that's absent) is "unknown" rather than a guess. */
+export type MiniMaxWindowStatus = "active" | "unknown";
+
 export type MiniMaxModelQuota = {
-  /** 0–100. The 5-hour ("interval") window, when the Token Plan endpoint
-   *  reported one for this model. */
+  /** 0–100 integer. The 5-hour ("interval") window, when reported for this
+   *  model. */
   remainingPercent: number | null;
-  /** 0–100. The weekly window, when reported. Null (not undefined) when the
-   *  model only has an interval window — matches antigravity-quota.ts's
-   *  contract so the two can share a renderer. */
+  /** 0–100 integer. The weekly window, when reported. Null (not undefined)
+   *  when the model only has an interval window — matches
+   *  antigravity-quota.ts's contract so the two can share a renderer. */
   secondaryRemainingPercent: number | null;
   /** "5hr/Week" when both windows are known, "5hr" when only the interval
    *  is — same vocabulary antigravity-quota.ts uses. */
   windowsLabel: string | undefined;
-  /** Epoch ms of the more restrictive (sooner) of the two window resets. */
+  /** Epoch ms of the sooner of the two window resets — feeds
+   *  registry.ts's per-model dual-window merge, mirroring
+   *  antigravity-quota.ts's single resetsAt-per-model shape. */
   resetsAt: number | null;
+  /** The 5-hour window's own reset, kept separate from the combined
+   *  `resetsAt` above so a caller that specifically means "when does the
+   *  recurring 5h window come back" (minimaxQuotaLine) doesn't have to
+   *  guess which of the two `resetsAt` actually is. */
+  intervalResetsAt: number | null;
+  weeklyResetsAt: number | null;
+  intervalStatus: MiniMaxWindowStatus;
+  weeklyStatus: MiniMaxWindowStatus;
 };
 
 export type MiniMaxBalanceSnapshot = {
@@ -67,16 +108,24 @@ export type MiniMaxBalanceSnapshot = {
   status: MiniMaxBalanceStatus;
   /** USD remaining, pay-as-you-go accounts only. */
   balanceUsd: number | null;
-  /** 0–100, most restrictive across models. Token Plan accounts only. */
+  /** 0–100 integer, the "general" (chat) model's 5-hour window. Token Plan
+   *  accounts only — other model rows ("video", …) are unrelated quota
+   *  pools and never blended into this headline figure; see `models`. */
   remainingPercent: number | null;
+  /** 0–100 integer, the "general" model's weekly window. */
   secondaryRemainingPercent: number | null;
   windowsLabel: string | undefined;
-  /** Per-model breakdown, Token Plan accounts only — mirrors
+  /** Per-model breakdown for EVERY row the endpoint reported (chat, video,
+   *  …), Token Plan accounts only — kept for display even though only
+   *  "general" feeds the headline fields above. Mirrors
    *  antigravity-quota.ts's per-model shape so both can feed the same
    *  registry.ts dual-window merge. */
   models: Record<string, MiniMaxModelQuota> | null;
-  /** Epoch ms of the soonest known reset, across every model. */
+  /** Epoch ms the "general" model's 5-hour window resets — the actionable,
+   *  recurring one minimaxQuotaLine names. */
   resetsAt: number | null;
+  /** Epoch ms the "general" model's weekly window resets. */
+  weeklyResetsAt: number | null;
   fetchedAt: number;
   /** Set when the key is missing, the request failed, or the response was
    *  not parseable. The UI hides quota detail when this is set, the same
@@ -112,6 +161,7 @@ function emptySnapshot(now: number, error: string | null): MiniMaxBalanceSnapsho
     windowsLabel: undefined,
     models: null,
     resetsAt: null,
+    weeklyResetsAt: null,
     fetchedAt: now,
     error,
   };
@@ -124,22 +174,41 @@ function parseAmount(raw: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-/** MiniMax's own field name says "percent", but an undocumented endpoint is
- *  free to report a 0–1 fraction instead — same defensive call
- *  antigravity-quota.ts's secondaryPercent makes for promptCredits. */
+/** Live-verified 2026-09-13: current_interval_remaining_percent and
+ *  current_weekly_remaining_percent are always integers 0..100 (observed
+ *  100 and 94) — never a 0–1 fraction. Clamped defensively in case a future
+ *  response goes out of range; never rescaled. */
 function parsePercent(raw: unknown): number | null {
   if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
-  const pct = raw > 0 && raw <= 1 ? raw * 100 : raw;
-  return Math.round(pct * 100) / 100;
+  return Math.min(100, Math.max(0, Math.round(raw)));
 }
 
-/** MiniMax's epoch fields are unlabeled in the reverse-engineered types —
- *  treat anything past year ~2001 in ms (>1e12) as already milliseconds,
- *  else as seconds. Either reading degrades to "no reset known" rather than
- *  a wrong one: resetsAt is display-only, never routed on. */
+/** Live-verified 2026-09-13: start_time/end_time/weekly_start_time/
+ *  weekly_end_time are always epoch MILLISECONDS (observed ~1.79e12-scale
+ *  values) — never seconds. No unit-guessing: just validate and pass
+ *  through. */
 function parseEpochMs(raw: unknown): number | null {
   if (typeof raw !== "number" || !Number.isFinite(raw) || raw <= 0) return null;
-  return raw > 1e12 ? raw : raw * 1000;
+  return raw;
+}
+
+/** `remains_time` / `weekly_remains_time` are milliseconds REMAINING (a
+ *  duration), used only when the absolute `_time` field is missing. */
+function parseResetMs(absoluteMs: unknown, remainingMs: unknown, now: number): number | null {
+  const absolute = parseEpochMs(absoluteMs);
+  if (absolute != null) return absolute;
+  if (typeof remainingMs === "number" && Number.isFinite(remainingMs) && remainingMs > 0) {
+    return now + remainingMs;
+  }
+  return null;
+}
+
+/** Live-verified 2026-09-13: `1` ("active") is the only confirmed status
+ *  value. Anything else — including a value never seen — is genuinely
+ *  unknown, not a capped signal; "capped" comes only from the percent
+ *  fields via statusFromPercent. */
+function parseWindowStatus(raw: unknown): MiniMaxWindowStatus {
+  return raw === 1 ? "active" : "unknown";
 }
 
 function normalizeBase(url: string | undefined): string {
@@ -184,8 +253,47 @@ function parseAccountBalanceResponse(body: Record<string, unknown>, now: number)
     windowsLabel: undefined,
     models: null,
     resetsAt: null,
+    weeklyResetsAt: null,
     fetchedAt: now,
     error: null,
+  };
+}
+
+/** `model_remains[]` has one row per product ("general" is chat, "video" is
+ *  video generation, …) — genuinely separate quota pools, not alternate
+ *  readings of the same one. The headline fields only ever come from
+ *  "general"; every row (including "general") still lands in `models` so a
+ *  future UI can show "video" quota too. */
+const CHAT_MODEL_NAME = "general";
+
+function parseModelRow(raw: unknown, now: number): { name: string; quota: MiniMaxModelQuota } | null {
+  if (!raw || typeof raw !== "object") return null;
+  const row = raw as Record<string, unknown>;
+  const modelName = typeof row.model_name === "string" && row.model_name ? row.model_name : null;
+  if (!modelName) return null;
+  const interval = parsePercent(row.current_interval_remaining_percent);
+  const weekly = parsePercent(row.current_weekly_remaining_percent);
+  const intervalResetsAt = parseResetMs(row.end_time, row.remains_time, now);
+  const weeklyResetsAt = parseResetMs(row.weekly_end_time, row.weekly_remains_time, now);
+  const resetsAt = intervalResetsAt != null && weeklyResetsAt != null
+    ? Math.min(intervalResetsAt, weeklyResetsAt)
+    : intervalResetsAt ?? weeklyResetsAt;
+  return {
+    name: modelName,
+    quota: {
+      remainingPercent: interval,
+      secondaryRemainingPercent: weekly,
+      windowsLabel: weekly != null ? "5hr/Week" : interval != null ? "5hr" : undefined,
+      resetsAt,
+      intervalResetsAt,
+      weeklyResetsAt,
+      // current_interval_total_count / current_interval_usage_count (and the
+      // weekly pair) are raw counts with no confirmed relationship to the
+      // percent fields — deliberately not read here; never derive a percent
+      // from a count.
+      intervalStatus: parseWindowStatus(row.current_interval_status),
+      weeklyStatus: parseWindowStatus(row.current_weekly_status),
+    },
   };
 }
 
@@ -195,41 +303,46 @@ function parseTokenPlanResponse(body: Record<string, unknown>, now: number): Min
     return { ...emptySnapshot(now, null), source: "token-plan" };
   }
   const models: Record<string, MiniMaxModelQuota> = {};
-  let minInterval: number | null = null;
-  let minWeekly: number | null = null;
-  let earliestReset: number | null = null;
+  let chatModel: MiniMaxModelQuota | null = null;
   for (const raw of rows) {
-    if (!raw || typeof raw !== "object") continue;
-    const row = raw as Record<string, unknown>;
-    const modelName = typeof row.model_name === "string" && row.model_name ? row.model_name : null;
-    if (!modelName) continue;
-    const interval = parsePercent(row.current_interval_remaining_percent);
-    const weekly = parsePercent(row.current_weekly_remaining_percent);
-    const intervalReset = parseEpochMs(row.end_time);
-    const weeklyReset = parseEpochMs(row.weekly_end_time);
-    const resetsAt = intervalReset != null && weeklyReset != null
-      ? Math.min(intervalReset, weeklyReset)
-      : intervalReset ?? weeklyReset;
-    models[modelName] = {
-      remainingPercent: interval,
-      secondaryRemainingPercent: weekly,
-      windowsLabel: weekly != null ? "5hr/Week" : interval != null ? "5hr" : undefined,
-      resetsAt,
-    };
-    if (interval != null) minInterval = minInterval == null ? interval : Math.min(minInterval, interval);
-    if (weekly != null) minWeekly = minWeekly == null ? weekly : Math.min(minWeekly, weekly);
-    if (resetsAt != null) earliestReset = earliestReset == null ? resetsAt : Math.min(earliestReset, resetsAt);
+    const parsed = parseModelRow(raw, now);
+    if (!parsed) continue;
+    models[parsed.name] = parsed.quota;
+    if (parsed.name === CHAT_MODEL_NAME) chatModel = parsed.quota;
   }
+  if (!chatModel) {
+    // No "general" row: MiniMax changed its own schema, or this account has
+    // no chat quota. Every other row (video, …) still lands in `models` for
+    // display — there is just no headline to report.
+    return {
+      source: "token-plan",
+      capExists: Object.keys(models).length > 0,
+      status: "unknown",
+      balanceUsd: null,
+      remainingPercent: null,
+      secondaryRemainingPercent: null,
+      windowsLabel: undefined,
+      models,
+      resetsAt: null,
+      weeklyResetsAt: null,
+      fetchedAt: now,
+      error: null,
+    };
+  }
+  const mostRestrictive = chatModel.remainingPercent != null && chatModel.secondaryRemainingPercent != null
+    ? Math.min(chatModel.remainingPercent, chatModel.secondaryRemainingPercent)
+    : chatModel.remainingPercent ?? chatModel.secondaryRemainingPercent;
   return {
     source: "token-plan",
     capExists: true,
-    status: statusFromPercent(minInterval),
+    status: statusFromPercent(mostRestrictive),
     balanceUsd: null,
-    remainingPercent: minInterval,
-    secondaryRemainingPercent: minWeekly,
-    windowsLabel: minWeekly != null ? "5hr/Week" : minInterval != null ? "5hr" : undefined,
+    remainingPercent: chatModel.remainingPercent,
+    secondaryRemainingPercent: chatModel.secondaryRemainingPercent,
+    windowsLabel: chatModel.windowsLabel,
     models,
-    resetsAt: earliestReset,
+    resetsAt: chatModel.intervalResetsAt,
+    weeklyResetsAt: chatModel.weeklyResetsAt,
     fetchedAt: now,
     error: null,
   };
