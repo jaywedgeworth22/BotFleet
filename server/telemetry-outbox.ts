@@ -5,11 +5,10 @@ import { homedir } from "node:os";
 import { z } from "zod";
 
 export interface DurableTelemetryBatch {
-  [key: string]: unknown;
   schemaVersion: 2;
   producerId: string;
   producerInstanceId: string;
-  events: Array<{ eventId: string; [key: string]: unknown }>;
+  events: Array<{ eventId: string }>;
 }
 
 export interface TelemetryDeliveryResult {
@@ -168,7 +167,7 @@ export class UsageTelemetryOutbox {
       enqueuedAt,
       attempts: 0,
       nextAttemptAt: 0,
-      batch,
+      batch: batch as StoredOutbox["queue"][number]["batch"],
     });
     this.pendingDurability.add(queueId);
     // Stable event ids are on disk before the first network attempt begins.
