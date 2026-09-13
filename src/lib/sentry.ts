@@ -249,6 +249,7 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
     if (!feedback || isCreatingFeedback) return;
     isCreatingFeedback = true;
 
+    let formOpened = false;
     try {
       if (activeFeedbackDialog) {
         try {
@@ -284,6 +285,7 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
         activeFeedbackDialog = dialog;
         dialog.appendToDom();
         dialog.open();
+        formOpened = true;
         if (options?.defaultMessage) {
           try {
             const shadow = (dialog.el as { shadowRoot?: ShadowRoot | null } | undefined)?.shadowRoot;
@@ -299,6 +301,9 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
       }
     } finally {
       isCreatingFeedback = false;
+      if (!formOpened) {
+        Sentry.setContext("reported_problem", null);
+      }
     }
   } catch {
     /* If the feedback dialog cannot be opened, swallow to protect the renderer */
