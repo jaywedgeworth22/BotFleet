@@ -6146,9 +6146,7 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     })).status).toBe(200);
     const bot = (await api("POST", "/api/bots", { name: "Locked Consent Bot" })).body.bot;
     try {
-      expect((await api("PATCH", `/api/bots/${bot.id}`, {
-        computers: ["cloud"], autoApprove: true,
-      })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
       const prompt = await api("PUT", "/api/config", { botDefaults: { computers: ["local"] } });
       expect(prompt.status).toBe(400);
 
@@ -6171,7 +6169,8 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
       const preserved = (await api("GET", "/api/bots?messages=0")).body.bots.find(
         (candidate: { id: string }) => candidate.id === bot.id,
       );
-      expect(preserved).toMatchObject({ name: "Locked Consent Bot", computers: ["cloud"], autoApprove: true });
+      expect(preserved).toMatchObject({ name: "Locked Consent Bot", autoApprove: true });
+      expect(preserved.computers).toBeUndefined();
     } finally {
       releaseBoxTurnGate?.();
       boxTurnGate = null;
