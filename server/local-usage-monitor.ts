@@ -1,4 +1,4 @@
-import { open } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import { constants } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -63,8 +63,12 @@ export async function readLocalQuotaSnapshot(
 ): Promise<RemoteQuotaWindow[]> {
   let file: Awaited<ReturnType<typeof open>> | undefined;
   try {
-    file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const before = await lstat(path);
+    if (!before.isFile()) return [];
+    file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
     const stat = await file.stat();
+    // Windows lacks O_NOFOLLOW; reject links first and verify the opened identity.
+    if (before.dev !== stat.dev || before.ino !== stat.ino) return [];
     if (!stat.isFile() || stat.size > MAX_BYTES || (process.getuid && stat.uid !== process.getuid())) return [];
     const buffer = Buffer.alloc(MAX_BYTES + 1);
     let size = 0;
