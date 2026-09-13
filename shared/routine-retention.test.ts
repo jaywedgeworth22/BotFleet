@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { retainRoutineRuns } from "./routine-retention";
+import { boundPromptSnapshot, boundStalePromptSnapshots, retainRoutineRuns } from "./routine-retention";
 
 it("keeps an old active execution and its receipts beyond 2,000 newer terminal records", () => {
   const owner = { id: "owner", status: "running", createdAt: 1 };
@@ -29,4 +29,86 @@ it("preserves a referenced owner and every queued or waiting receipt without exp
     { id: "new", status: "failed", createdAt: 5 },
   ];
   expect(retainRoutineRuns(runs, 1).map((run) => run.id)).toEqual(["owner", "child", "queued", "new"]);
+});
+
+const INSTRUCTIONS = /\[USER-CONFIGURED WEBHOOK INSTRUCTIONS\]\n([\s\S]*?)\n\[\/USER-CONFIGURED WEBHOOK INSTRUCTIONS\]/;
+const EVENT_DATA = /\[UNTRUSTED WEBHOOK EVENT DATA\]\n([\s\S]*?)\n\[\/UNTRUSTED WEBHOOK EVENT DATA\]/;
+
+function webhookPrompt(payload: string) {
+  return [
+    "Event: deploy.finished",
+    "[USER-CONFIGURED WEBHOOK INSTRUCTIONS]",
+    "Summarize the deploy.",
+    "[/USER-CONFIGURED WEBHOOK INSTRUCTIONS]",
+    "[UNTRUSTED WEBHOOK EVENT DATA]",
+    payload,
+    "[/UNTRUSTED WEBHOOK EVENT DATA]",
+    "Reply in one paragraph.",
+  ].join("\n");
+}
+
+it("bounds a webhook snapshot to a payload preview while keeping everything the UI parses", () => {
+  const full = webhookPrompt("x".repeat(20_000));
+  const bounded = boundPromptSnapshot(full, { dataChars: 500, maxChars: 4_000 });
+  expect(bounded.length).toBeLessThan(800);
+  expect(bounded.startsWith("Event: deploy.finished\n")).toBe(true);
+  expect(bounded.endsWith("\nReply in one paragraph.")).toBe(true);
+  expect(bounded.match(INSTRUCTIONS)?.[1]).toBe("Summarize the deploy.");
+  const data = bounded.match(EVENT_DATA)?.[1] ?? "";
+  expect(data.startsWith("x".repeat(500))).toBe(true);
+  expect(data).toMatch(/\n…\[19500 more characters not kept in history\]$/);
+  expect(boundPromptSnapshot(bounded, { dataChars: 500, maxChars: 4_000 })).toBe(bounded);
+  expect(boundPromptSnapshot(webhookPrompt("short"))).toBe(webhookPrompt("short"));
+});
+
+it("caps a snapshot with no event block and stays put once capped", () => {
+  const plain = "y".repeat(9_000);
+  const capped = boundPromptSnapshot(plain, { dataChars: 500, maxChars: 4_000 });
+  expect(capped.startsWith("y".repeat(4_000) + "\n…[5000 more characters not kept in history]")).toBe(true);
+  expect(boundPromptSnapshot(capped, { dataChars: 500, maxChars: 4_000 })).toBe(capped);
+});
+
+it("bounds settled runs beyond the newest N and leaves active, receipt, and newest runs untouched", () => {
+  const big = webhookPrompt("z".repeat(10_000));
+  const runs = [
+    { id: "running", status: "running", createdAt: 1, prompt: big },
+    { id: "queued", status: "queued", createdAt: 2, prompt: big },
+    { id: "old", status: "completed", createdAt: 3, finishedAt: 10, prompt: big },
+    { id: "mid", status: "failed", createdAt: 4, finishedAt: 20, prompt: big },
+    { id: "new", status: "completed", createdAt: 5, finishedAt: 30, prompt: big },
+    { id: "receipt", status: "completed", createdAt: 0, finishedAt: 1, prompt: big },
+    { id: "bare", status: "cancelled", createdAt: 6, finishedAt: 40 },
+  ];
+  expect(boundStalePromptSnapshots(runs, 2, ["receipt"])).toBe(1);
+  expect(runs).toHaveLength(7);
+  expect(runs.filter((run) => run.prompt === big).map((run) => run.id)).toEqual(["running", "queued", "mid", "new", "receipt"]);
+  const old = runs.find((run) => run.id === "old")!;
+  expect(old.prompt!.length).toBeLessThan(1_000);
+  expect(old.prompt!.match(INSTRUCTIONS)?.[1]).toBe("Summarize the deploy.");
+  expect(boundStalePromptSnapshots(runs, 2, ["receipt"])).toBe(0);
+});
+
+it("orders settled runs by finish time, falls back to creation, and rejects a negative limit", () => {
+  const big = "q".repeat(9_000);
+  const runs = [
+    { id: "a", status: "completed", createdAt: 100, prompt: big },
+    { id: "b", status: "completed", createdAt: 1, finishedAt: 50, prompt: big },
+    { id: "c", status: "completed", createdAt: 2, finishedAt: 200, prompt: big },
+  ];
+  expect(boundStalePromptSnapshots(runs, 1)).toBe(2);
+  expect(runs.filter((run) => run.prompt === big).map((run) => run.id)).toEqual(["c"]);
+  expect(boundStalePromptSnapshots(runs, 0)).toBe(1);
+  expect(runs.every((run) => run.prompt !== big && run.prompt!.length < 4_100)).toBe(true);
+  expect(() => boundStalePromptSnapshots(runs, -1)).toThrow(RangeError);
+});
+
+it("keeps the full prompt on a settled owner while a waiting run still folds into it", () => {
+  const big = "w".repeat(9_000);
+  const runs = [
+    { id: "owner", status: "completed", createdAt: 1, finishedAt: 1, prompt: big },
+    { id: "child", status: "waiting", createdAt: 2, coalescedInto: "owner", prompt: big },
+    { id: "later", status: "completed", createdAt: 3, finishedAt: 3, prompt: big },
+  ];
+  expect(boundStalePromptSnapshots(runs, 0)).toBe(1);
+  expect(runs.map((run) => run.prompt === big)).toEqual([true, true, false]);
 });

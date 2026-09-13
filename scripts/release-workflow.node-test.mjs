@@ -146,7 +146,7 @@ test("validates multiple chunks produced by the installed Electron packager", as
 });
 
 test("release workflow defaults to artifacts and requires explicit release mutation", () => {
-  const workflow = readFileSync(join(ROOT, ".github/workflows/release.yml"), "utf8");
+  const workflow = readFileSync(join(ROOT, ".github/workflows/release.yml"), "utf8").replace(/\r\n/g, "\n");
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 
   assert.equal(pkg.version, VERSION);

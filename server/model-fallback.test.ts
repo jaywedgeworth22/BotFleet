@@ -4,13 +4,17 @@ import { describe, expect, it } from "vitest";
 
 import type { ModelSelection } from "./contracts.ts";
 import {
+  AUTO_FALLBACK_PRIORITY,
+  DEFAULT_QUOTA_COOLDOWN_TTL_MS,
   bootRecoveryTurnOpts,
   isQuotaOrCapText,
   isShortProviderErrorText,
   lastTurnStartIndex,
   parseQuotaResetTime,
+  providerErrorCodeFromStopReason,
   QuotaCooldownRegistry,
   quotaCooldowns,
+  quotaOrCapFromErrorCode,
   selectTurnFallback,
   shouldReplayPersistedStarter,
   sliceIsShortProviderError,
@@ -19,6 +23,7 @@ import {
   turnProducedAssistantOutput,
   type FallbackScanMessage,
 } from "./model-fallback.ts";
+import { eligibleAutoFallbackChain, type AutoFallbackCandidate } from "./turn-safety.ts";
 
 const fallbacks: ModelSelection[] = [
   { instanceId: "grok", model: "grok-4" },
@@ -210,6 +215,21 @@ describe("quota and session-limit failover", () => {
     }
   });
 
+  it("keeps observed Antigravity quota failures eligible for fallback", () => {
+    const text = "Antigravity: Individual quota reached for this account";
+    expect(isQuotaOrCapText(text)).toBe(true);
+    expect(
+      turnQuotaOrCapEvidence([
+        { role: "bot", kind: "activity", tool: { name: `error: ${text}`, ok: false } },
+      ], false),
+    ).toEqual({ text, source: "provider-error" });
+  });
+
+  it("does not promote successful assistant prose after a failed turn into provider evidence", () => {
+    const text = "I added coverage for quota exceeded and rate limit errors.";
+    expect(turnQuotaOrCapEvidence([{ role: "bot", kind: "text", text }], false)).toBeUndefined();
+  });
+
   it("binds quota status to the actual error activity instead of earlier assistant text", () => {
     const afterUser: FallbackScanMessage[] = [
       { role: "bot", kind: "text", text: "The billing review is complete." },
@@ -308,6 +328,140 @@ describe("selectTurnFallback", () => {
       nextUsed: 2,
     });
     expect(decide(afterUser, { ok: false, used: 2 })).toBeUndefined();
+  });
+});
+
+describe("providerErrorCodeFromStopReason", () => {
+  it("parses the error:<code> stopReason a chat-completions driver's loop emits", () => {
+    expect(providerErrorCodeFromStopReason("error:invalid_credentials")).toBe("invalid_credentials");
+    expect(providerErrorCodeFromStopReason("error:quota_or_region_restriction")).toBe(
+      "quota_or_region_restriction",
+    );
+    expect(providerErrorCodeFromStopReason("error:upstream_outage")).toBe("upstream_outage");
+    expect(providerErrorCodeFromStopReason("error:model_catalog_outage")).toBe("model_catalog_outage");
+  });
+
+  it("returns undefined for a CLI engine's plain error stopReason — no structured code at all", () => {
+    expect(providerErrorCodeFromStopReason("error")).toBeUndefined();
+  });
+
+  it("returns undefined for a non-error stopReason and for null/undefined", () => {
+    expect(providerErrorCodeFromStopReason("end_turn")).toBeUndefined();
+    expect(providerErrorCodeFromStopReason("interrupted")).toBeUndefined();
+    expect(providerErrorCodeFromStopReason(null)).toBeUndefined();
+    expect(providerErrorCodeFromStopReason(undefined)).toBeUndefined();
+  });
+});
+
+describe("quotaOrCapFromErrorCode", () => {
+  it("is true for quota_or_region_restriction and upstream_outage — the chain is consulted for an outage too", () => {
+    expect(quotaOrCapFromErrorCode("quota_or_region_restriction")).toBe(true);
+    expect(quotaOrCapFromErrorCode("upstream_outage")).toBe(true);
+  });
+
+  it("is false for invalid_credentials — the setup affordance handles it, not failover", () => {
+    expect(quotaOrCapFromErrorCode("invalid_credentials")).toBe(false);
+  });
+
+  it("is false for model_catalog_outage and inactive_subscription", () => {
+    expect(quotaOrCapFromErrorCode("model_catalog_outage")).toBe(false);
+    expect(quotaOrCapFromErrorCode("inactive_subscription")).toBe(false);
+  });
+
+  it("is undefined when there is no structured code, so the caller falls back to the regex path", () => {
+    expect(quotaOrCapFromErrorCode(undefined)).toBeUndefined();
+  });
+});
+
+describe("structured provider-error code feeds selectTurnFallback exactly as index.ts wires it", () => {
+  // Mirrors index.ts's turn.completed fold exactly: with no CONFIGURED
+  // fallback chain on the bot, the #90 auto chain is only offered when
+  // quotaOrCap is true — this is where invalid_credentials and a plain CLI
+  // "error" are kept off the auto-failover path, not inside
+  // selectTurnFallback's own produced/quotaOrCap gate (that gate only
+  // matters once a chain has already been handed to it).
+  const compose = (stopReason: string, current = { instanceId: "minimax", model: "MiniMax-M3" }) => {
+    const code = providerErrorCodeFromStopReason(stopReason);
+    const quotaOrCap = quotaOrCapFromErrorCode(code) ?? false;
+    const chain = quotaOrCap ? [{ instanceId: "claude", model: "claude-sonnet-5" }] : undefined;
+    return selectTurnFallback({
+      ok: false,
+      stopReason,
+      produced: false,
+      quotaOrCap,
+      fallbacks: chain,
+      used: 0,
+      current,
+    });
+  };
+
+  it("a 429 (quota_or_region_restriction) sets quotaOrCap and consults the chain, where today's regex over an HTTP status string does not", () => {
+    expect(compose("error:quota_or_region_restriction")).toMatchObject({
+      instanceId: "claude",
+      model: "claude-sonnet-5",
+    });
+  });
+
+  it("a 502 (upstream_outage) also consults the chain, where a plain provider_error simply fails today", () => {
+    expect(compose("error:upstream_outage")).toMatchObject({ instanceId: "claude", model: "claude-sonnet-5" });
+  });
+
+  it("a 401 (invalid_credentials) does not fail over — the setup affordance is the correct response, not another engine with no better luck", () => {
+    expect(compose("error:invalid_credentials")).toBeUndefined();
+  });
+
+  it("a CLI engine's plain 'error' stopReason is untouched — no structured code, so no auto chain is offered here either", () => {
+    expect(compose("error")).toBeUndefined();
+  });
+});
+
+describe("AUTO_FALLBACK_PRIORITY — #90 auto-failover ordering", () => {
+  // index.ts's autoFallbackChain hands this exact array to
+  // eligibleAutoFallbackChain, so asserting through that function is
+  // asserting the shipped ordering rather than a parallel copy of it.
+  const candidate = (instanceId: string): AutoFallbackCandidate => ({
+    instanceId,
+    snapshot: { state: "available", authenticated: true },
+    models: { default: `${instanceId}-model` },
+  });
+  const pick = (instanceIds: string[]) =>
+    eligibleAutoFallbackChain(instanceIds.map(candidate), {
+      botId: "bot-1",
+      currentInstanceId: "current",
+      isCooling: () => false,
+      priority: AUTO_FALLBACK_PRIORITY,
+    })[0]?.instanceId;
+
+  it("prefers minimax over the lower-priority openaiCompat and grok instances", () => {
+    expect(pick(["grok", "openaiCompat", "minimax"])).toBe("minimax");
+  });
+
+  it("still prefers codex over minimax — the ladder is codex, then minimax, then openaiCompat", () => {
+    expect(pick(["openaiCompat", "minimax", "codex"])).toBe("codex");
+    expect(pick(["openaiCompat", "minimax"])).toBe("minimax");
+  });
+
+  it("leaves every existing CLI ordering unchanged: claude, antigravity, gemini, codex, openaiCompat, grok", () => {
+    expect(pick(["grok", "codex", "openaiCompat", "claude", "gemini", "antigravity"])).toBe("claude");
+    expect(pick(["grok", "codex", "openaiCompat", "gemini", "antigravity"])).toBe("antigravity");
+    expect(pick(["grok", "codex", "openaiCompat", "gemini"])).toBe("gemini");
+    expect(pick(["grok", "codex", "openaiCompat"])).toBe("codex");
+    expect(pick(["grok", "openaiCompat"])).toBe("openaiCompat");
+  });
+
+  it("sorts an unlisted driver last, behind every named rung of the ladder", () => {
+    expect(pick(["custom-engine", "grok"])).toBe("grok");
+    expect(pick(["custom-engine", "minimax"])).toBe("minimax");
+    expect(pick(["custom-engine"])).toBe("custom-engine");
+  });
+
+  it("places minimax after codex and before openaiCompat in the array itself", () => {
+    const codexIdx = AUTO_FALLBACK_PRIORITY.indexOf("codex");
+    const minimaxIdx = AUTO_FALLBACK_PRIORITY.indexOf("minimax");
+    const openaiCompatIdx = AUTO_FALLBACK_PRIORITY.indexOf("openaiCompat");
+    expect(codexIdx).toBeGreaterThanOrEqual(0);
+    expect(codexIdx).toBeLessThan(minimaxIdx);
+    expect(minimaxIdx).toBeLessThan(openaiCompatIdx);
   });
 });
 
@@ -652,5 +806,22 @@ describe("QuotaCooldownRegistry", () => {
     expect(remaining.length).toBe(1);
     expect(remaining[0].instanceId).toBe("codex");
     expect(registry.forInstance("custom-ollama")).toBeUndefined();
+  });
+
+  it("assigns default 15-minute cooldown TTL when resetsAt is null or undefined for non-usage sources", () => {
+    const registry = new QuotaCooldownRegistry();
+    const now = Date.now();
+    registry.record({
+      botId: "bot1",
+      instanceId: "antigravity",
+      model: "gemini-3.8-flash-high",
+      resetsAt: null,
+      error: "quota exceeded",
+      recordedAt: now,
+    });
+    const cd = registry.get("bot1", "antigravity", "gemini-3.8-flash-high", now);
+    expect(cd).toBeDefined();
+    expect(cd?.resetsAt).toBe(now + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
+    expect(registry.get("bot1", "antigravity", "gemini-3.8-flash-high", now + DEFAULT_QUOTA_COOLDOWN_TTL_MS + 1)).toBeUndefined();
   });
 });
