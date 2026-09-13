@@ -19,7 +19,7 @@ import type {
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
-import { recordExecutedTools, withChatSpan } from "../sentry-ai.ts";
+import { withChatSpan } from "../sentry-ai.ts";
 import { runTurnLoop, type ChatMessage, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
 
 import { httpErrorFor } from "./chat-completions/errors.ts";
@@ -196,17 +196,29 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       if (apiKey) {
         headers.authorization = `Bearer ${apiKey}`;
       }
-      const res = await fetch(`${config.url}/chat/completions`, {
+      const signal = opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+      const request = () => fetch(`${config.url}/chat/completions`, {
         method: "POST",
         headers,
         body: JSON.stringify(bodyPayload),
-        signal: opts.signal ?? AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal,
       });
+      let res = await request();
+      if (!res.ok && opts.stream && (res.status === 400 || res.status === 422)) {
+        // Some compatible endpoints reject this optional OpenAI field.  Retry
+        // only an explicit validation rejection, before any stream or tools
+        // can run, and keep the original cancellation/deadline budget.
+        const rejection = await res.text().catch(() => "");
+        if (/stream_options/i.test(rejection) &&
+            /unsupported|not supported|unrecognized|unknown|unexpected|not permitted|extra_forbidden/i.test(rejection)) {
+          delete bodyPayload.stream_options;
+          res = await request();
+        }
+      }
       if (!res.ok) {
-        const body = await res.text().catch(() => "");
-        throw new Error(
-          `upstream HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`,
-        );
+        // Provider bodies can echo prompts or credentials.  Only the status
+        // and its typed classification are safe to surface in diagnostics.
+        throw httpErrorFor(res.status, "");
       }
       if (!opts.stream) {
         const json: any = await res.json();
@@ -422,7 +434,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         });
         const { text, reasoning, tool_calls, usage } = await withChatSpan(
           { model, conversationId: threadId, provider: sentryProviderForUrl(config.url) },
-          () =>
+          ({ recordUsage }) =>
             complete(roundMessages, model, {
               stream: true,
               signal: opts.signal,
@@ -438,13 +450,12 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
               // round that errors mid-stream after several chunks still gets
               // its usage folded into the terminal event instead of
               // reporting zero.
-              onUsage: (u) => opts.onUsage?.(u),
+              onUsage: (u) => {
+                recordUsage(u);
+                opts.onUsage?.(u);
+              },
             }),
         );
-        const toolNames = (tool_calls ?? [])
-          .map((tc: { function?: { name?: string } }) => tc?.function?.name)
-          .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
-        recordExecutedTools(threadId, toolNames);
         appendNative(threadId, {
           dir: "in",
           source: "openai-compat.chat.completions",

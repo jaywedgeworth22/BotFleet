@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as sentryAi from "../sentry-ai.ts";
 import { recordEvents } from "../testing/events.ts";
 import { startFakeOpenAiServer, type FakeOpenAiServer } from "../testing/fake-openai-server.ts";
 import { OpenAICompatDriver, sentryProviderForUrl } from "./openai-compat.ts";
@@ -459,6 +460,7 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
   });
 
   it("keeps one turn across tool rounds with cumulative usage and an unchanged prefix", async () => {
+    const legacyToolSpans = vi.spyOn(sentryAi, "recordExecutedTools");
     server = await startFakeOpenAiServer();
     server.queueCompletion({
       kind: "sse",
@@ -510,6 +512,9 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
     const requests = server.requests.filter((request) => request.url.endsWith("/chat/completions"));
     expect(requests).toHaveLength(2);
     expect(requestApproval).toHaveBeenCalledOnce();
+    expect(legacyToolSpans).not.toHaveBeenCalled();
+    expect(recorder.events.filter((event) => event.type === "item.started" && event.itemType === "tool")).toHaveLength(1);
+    expect(recorder.events.filter((event) => event.type === "item.completed" && event.itemType === "tool")).toHaveLength(1);
     for (const request of requests) expect(request.body).toMatchObject({ stream_options: { include_usage: true } });
     const first = (requests[0].body as { messages: unknown[] }).messages;
     const second = (requests[1].body as { messages: unknown[] }).messages;
@@ -527,6 +532,11 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
   });
 
   it("retains streamed usage when the provider fails before the round settles", async () => {
+    const recordUsage = vi.fn();
+    vi.spyOn(sentryAi, "withChatSpan").mockImplementation(async (_opts, fn) => fn({
+      recordUsage,
+      span: { setAttribute() {}, end() {} },
+    }));
     let pulls = 0;
     const stream = new ReadableStream<Uint8Array>({
       pull(controller) {
@@ -557,7 +567,69 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
     const completed = await recorder.until((event) => event.type === "turn.completed");
 
     expect(completed).toMatchObject({ ok: false, stopReason: "error", usage: { input: 20, output: 9 } });
+    expect(recordUsage).toHaveBeenCalledWith(expect.objectContaining({ input: 20, output: 9 }));
     expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it.each([400, 422])("retries an explicit unsupported stream_options rejection (%s) once", async (status) => {
+    server = await startFakeOpenAiServer();
+    server.queueCompletion({ kind: "json", status, body: { error: "stream_options: extra inputs are not permitted" } });
+    server.queueCompletion({ kind: "sse", frames: ['{"choices":[{"delta":{"content":"compatible"}}]}', "[DONE]"] });
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "optional-usage", displayName: "Optional usage", enabled: true,
+      config: { url: server.url, models: ["fake-model"] }, environment: {},
+    });
+    const recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "optional-usage", text: "hi", model: "fake-model" });
+    expect(await recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: true });
+    const requests = server.requests.filter((request) => request.url.endsWith("/chat/completions"));
+    expect(requests).toHaveLength(2);
+    expect(requests[0].body).toHaveProperty("stream_options", { include_usage: true });
+    expect(requests[1].body).not.toHaveProperty("stream_options");
+    expect(requests[1].body).toMatchObject({ model: "fake-model", stream: true });
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it.each([
+    [400, "private prompt invalid messages"],
+    [401, "private prompt stream_options unsupported"],
+    [422, "private prompt stream_options must be an object"],
+  ])("does not retry unrelated HTTP %s errors or expose their body", async (status, error) => {
+    server = await startFakeOpenAiServer();
+    server.queueCompletion({ kind: "json", status: Number(status), body: { error } });
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "invalid-request", displayName: "Invalid request", enabled: true,
+      config: { url: server.url, models: ["fake-model"] }, environment: {},
+    });
+    const recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "invalid-request", text: "hi", model: "fake-model" });
+    expect(await recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: false });
+    expect(server.requests.filter((request) => request.url.endsWith("/chat/completions"))).toHaveLength(1);
+    expect(JSON.stringify(recorder.events)).not.toContain("private prompt");
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("bounds the compatibility retry and preserves the original abort signal", async () => {
+    const signals: Array<AbortSignal | null | undefined> = [];
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      signals.push(init?.signal);
+      return new Response('{"error":"stream_options unsupported"}', { status: 400 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "bounded-retry", displayName: "Bounded retry", enabled: true,
+      config: { url: "https://example.test/v1", models: ["fake-model"] }, environment: {},
+    });
+    const recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "bounded-retry", text: "hi", model: "fake-model" });
+    expect(await recorder.until((event) => event.type === "turn.completed")).toMatchObject({ ok: false });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(signals[1]).toBe(signals[0]);
     recorder.stop();
     await instance.dispose();
   });
