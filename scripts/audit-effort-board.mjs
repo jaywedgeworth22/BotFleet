@@ -41,8 +41,18 @@ export function auditEffortBoard({ board, issues, mergedPullRequests, deployment
       findings.push({ kind: "missing-canonical-issue-link", ...summary(row) });
     }
     const prNumbers = [...text.matchAll(/https?:\/\/github\.com\/jaywedgeworth22\/BotFleet\/pull\/(\d+)/gi)].map((match) => Number(match[1]));
-    for (const list of text.matchAll(/\bPRs?\s*(#\d+(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*[&/]\s*)#\d+)*)/gi)) {
-      prNumbers.push(...[...list[1].matchAll(/#(\d+)/g)].map((match) => Number(match[1])));
+    for (const list of text.matchAll(/\bPRs?\s*(#\d+(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*[&/]\s*)#\d+|\s*[-–—]\s*#?\d+)*)/gi)) {
+      for (const reference of list[1].matchAll(/#(\d+)(?:\s*[-–—]\s*#?(\d+))?/g)) {
+        const first = Number(reference[1]);
+        if (reference[2] === undefined) {
+          prNumbers.push(first);
+          continue;
+        }
+        const last = Number(reference[2]);
+        if (!Number.isSafeInteger(first) || !Number.isSafeInteger(last) || last < first) continue;
+        // Bound work by the supplied snapshot, never by an untrusted range.
+        prNumbers.push(...[...merged.keys()].filter((number) => number >= first && number <= last).sort((a, b) => a - b));
+      }
     }
     const references = [...new Set(prNumbers)].flatMap((number) => {
       const pr = merged.get(number);

@@ -40,12 +40,12 @@ test("rejects invalid snapshots and does not copy private URLs into the report",
 });
 
 test("recognizes PR lists without treating later issue numbers or foreign links as PR evidence", () => {
-  const numbers = [314, 316, 324, 332, 339, 47, 49, 99, 100];
+  const numbers = [314, 316, 324, 332, 339, 47, 49, 90, 121, 9999998, 99, 100];
   const report = auditEffortBoard({
-    board: [{ id: "a", app: "botfleet", source_kind: "agent-report", status: "open", title: "Merged PRs #314, #316, and #324; PRs #332 and #339; PRs #46/#47; PRs #48 / #49.  Issue #99 remains.  https://github.com/other/repo/pull/100" }],
+    board: [{ id: "a", app: "botfleet", source_kind: "agent-report", status: "open", title: "Merged PRs #314, #316, and #324; PRs #332 and #339; PRs #46/#47; PRs #48 / #49; PRs #87–#92; PR #120-122; PRs #1000—#9999999.  Issue #99 remains.  https://github.com/other/repo/pull/100" }],
     issues: [],
     mergedPullRequests: numbers.map((number) => ({ number, mergedAt: "2026-09-12", mergeCommit: { oid: "a".repeat(40) } })),
   });
   const finding = report.findings.find((row) => row.kind === "merged-reference-needs-scope-review");
-  assert.deepEqual(finding.references.map((row) => row.number), [314, 316, 324, 332, 339, 47, 49]);
+  assert.deepEqual(finding.references.map((row) => row.number), [314, 316, 324, 332, 339, 47, 49, 90, 121, 9999998]);
 });
