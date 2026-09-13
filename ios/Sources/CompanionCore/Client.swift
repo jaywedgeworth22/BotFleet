@@ -1128,6 +1128,30 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("POST", "/api/groups/\(roomId)/read"))
     }
 
+    // MARK: - Mac update
+
+    /// The paired Mac's current update status: installed build, anything
+    /// newer on `origin/main`, and the last transaction's outcome.
+    public func updateStatus() async throws -> MacUpdateStatus {
+        try await send(try makeRequest("GET", "/api/update/status"), as: MacUpdateStatus.self)
+    }
+
+    /// Ask the harness to look again right now rather than waiting for
+    /// whatever cadence it checks on its own.
+    public func checkForUpdates() async throws -> MacUpdateStatus {
+        try await send(try makeRequest("POST", "/api/update/check"), as: MacUpdateStatus.self)
+    }
+
+    /// Start installing the available update.  The harness answers 202 with
+    /// the run it just started; progress after that arrives on
+    /// `update.status` stream events and by polling `updateStatus()`.  A 409
+    /// refusal — a run already in progress, or one of
+    /// `capabilities.reasons` — surfaces through the same `APIError` every
+    /// other write on this client throws.
+    public func runUpdate() async throws -> MacUpdateRunStarted {
+        try await send(try makeRequest("POST", "/api/update/run"), as: MacUpdateRunStarted.self)
+    }
+
     // MARK: - Events
 
     /// A session for a connection that is meant to stay open for hours.

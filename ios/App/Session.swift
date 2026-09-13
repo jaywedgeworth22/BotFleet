@@ -1443,6 +1443,53 @@ final class Session: ObservableObject {
         registerForRemoteNotificationsIfAllowed()
     }
 
+    // MARK: - Mac update
+
+    /// Fetch the paired Mac's update status once, without asking it to look
+    /// again.  The card calls this on appear; after that, live `update.status`
+    /// events keep `state.macUpdateStatus` current on their own.
+    @discardableResult
+    func loadMacUpdateStatus() async -> MacUpdateStatus? {
+        guard let client else { return nil }
+        do {
+            let status = try await client.updateStatus()
+            state.apply(.updateStatus(status))
+            return status
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// The Check button: ask the harness to look again right now.
+    @discardableResult
+    func checkForMacUpdate() async -> MacUpdateStatus? {
+        guard let client else { return nil }
+        do {
+            let status = try await client.checkForUpdates()
+            state.apply(.updateStatus(status))
+            return status
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Start the install.  Returns whether the harness accepted the request —
+    /// everything that happens after arrives as `update.status` events into
+    /// `state`, which is what the card actually renders progress from.
+    @discardableResult
+    func runMacUpdate() async -> Bool {
+        guard let client else { return false }
+        do {
+            _ = try await client.runUpdate()
+            return true
+        } catch {
+            actionError = error.localizedDescription
+            return false
+        }
+    }
+
     func enableNotifications() async {
         if notificationAuthorization == .denied {
             if let url = URL(string: UIApplication.openSettingsURLString) {

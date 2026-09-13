@@ -41,6 +41,10 @@ struct SettingsView: View {
                 }
             }
 
+            if session.connection != nil {
+                MacUpdateSection()
+            }
+
             Section {
                 if notificationsAreEnabled {
                     notificationRow

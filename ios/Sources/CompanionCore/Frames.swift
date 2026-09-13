@@ -58,13 +58,18 @@ public enum Frame: Sendable {
     case computer(botId: String, state: String)
     case config
     case runtime(RuntimeEvent)
+    /// The paired Mac's update status changed — a check completed, an
+    /// install started, its progress moved, or it finished.  Carries the same
+    /// shape as `GET /api/update/status` so a client never has to follow this
+    /// with a fetch just to see what changed.
+    case updateStatus(MacUpdateStatus)
     case unknown(kind: String)
 }
 
 extension Frame: Decodable {
     private enum CodingKeys: String, CodingKey {
         case kind, cursor, resumed, threadId, message, activeLeafId
-        case bot, botId, group, groupId, notification, png, mime, state, event
+        case bot, botId, group, groupId, notification, png, mime, state, event, status
     }
 
     public init(from decoder: Decoder) throws {
@@ -117,6 +122,18 @@ extension Frame: Decodable {
             self = .config
         case "runtime":
             self = .runtime(try container.decode(RuntimeEvent.self, forKey: .event))
+        case "update.status":
+            // The harness contract for this event's exact shape is still
+            // being finalized alongside the server route.  Try a `status`
+            // wrapper first — the convention `notify` and `runtime` use —
+            // and fall back to the frame's own fields, which is how `screen`
+            // and `computer` are shaped instead.  Either way this decodes
+            // without a second round trip once the server side lands.
+            if let status = try? container.decode(MacUpdateStatus.self, forKey: .status) {
+                self = .updateStatus(status)
+            } else {
+                self = .updateStatus(try MacUpdateStatus(from: decoder))
+            }
         default:
             // routines, and whatever the harness adds next
             self = .unknown(kind: kind)

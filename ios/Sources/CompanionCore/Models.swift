@@ -1108,3 +1108,167 @@ public struct RoomPatch: Encodable, Sendable {
         try values.encodeIfPresent(memberIds, forKey: .memberIds)
     }
 }
+
+// MARK: - Mac update
+//
+// `GET/POST /api/update/*` on the harness — a companion-only view onto the
+// same on-demand transaction `scripts/update-botfleet-mac.mjs` runs from the
+// desktop.  The phone never drives the transaction directly; it only reads
+// this status and asks the harness to check or run it.
+
+/// The Mac's own running build, as the harness sees it right now.
+public struct MacInstalledBuild: Codable, Hashable, Sendable {
+    /// Absent on a harness that predates version stamping — a short commit
+    /// is still worth showing when there is no marketing version to pair it with.
+    public var version: String?
+    public var sourceCommit: String
+    public var installedAt: String?
+
+    public init(version: String? = nil, sourceCommit: String, installedAt: String? = nil) {
+        self.version = version
+        self.sourceCommit = sourceCommit
+        self.installedAt = installedAt
+    }
+}
+
+/// One commit between the installed build and what is available, newest first.
+public struct MacUpdateCommit: Codable, Hashable, Sendable {
+    public var sha: String
+    public var subject: String
+
+    public init(sha: String, subject: String) {
+        self.sha = sha
+        self.subject = subject
+    }
+}
+
+/// What `origin/main` has that the installed build does not.
+public struct MacAvailableUpdate: Codable, Hashable, Sendable {
+    public var sourceCommit: String
+    public var version: String?
+    public var aheadBy: Int
+    public var commits: [MacUpdateCommit]
+
+    public init(sourceCommit: String, version: String? = nil, aheadBy: Int, commits: [MacUpdateCommit] = []) {
+        self.sourceCommit = sourceCommit
+        self.version = version
+        self.aheadBy = aheadBy
+        self.commits = commits
+    }
+}
+
+/// An update transaction while it is still running, mirroring the updater's
+/// own step names rather than inventing a client-side vocabulary for them.
+public struct MacUpdateRun: Codable, Hashable, Sendable {
+    public var runId: String
+    public var startedAt: String
+    public var step: String
+    public var progress: Double?
+    public var logTail: [String]
+
+    public init(runId: String, startedAt: String, step: String, progress: Double? = nil, logTail: [String] = []) {
+        self.runId = runId
+        self.startedAt = startedAt
+        self.step = step
+        self.progress = progress
+        self.logTail = logTail
+    }
+}
+
+/// How the most recently finished transaction ended.
+public enum MacUpdateOutcome: String, Codable, Hashable, Sendable {
+    case verified
+    case rolledBack = "rolled-back"
+    case failed
+    case refused
+    /// An outcome this build has never heard of.  The card still has a
+    /// finished run to report; guessing "failed" would claim something the
+    /// harness never said.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = MacUpdateOutcome(rawValue: raw) ?? .unknown
+    }
+}
+
+/// The most recent update transaction to finish, whether or not one is
+/// running again now.
+public struct MacUpdateLastRun: Codable, Hashable, Sendable {
+    public var runId: String
+    public var startedAt: String
+    public var finishedAt: String
+    public var outcome: MacUpdateOutcome
+    public var message: String
+    public var receiptPath: String?
+
+    public init(
+        runId: String,
+        startedAt: String,
+        finishedAt: String,
+        outcome: MacUpdateOutcome,
+        message: String,
+        receiptPath: String? = nil
+    ) {
+        self.runId = runId
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.outcome = outcome
+        self.message = message
+        self.receiptPath = receiptPath
+    }
+}
+
+/// What this paired device is allowed to do right now.  The card disables its
+/// own buttons from this rather than inferring it from `running`/`lastRun` —
+/// the harness may refuse for reasons that are its own to know and explain,
+/// such as another client already updating or a dirty checkout.
+public struct MacUpdateCapabilities: Codable, Hashable, Sendable {
+    public var canCheck: Bool
+    public var canRun: Bool
+    public var reasons: [String]
+
+    public init(canCheck: Bool, canRun: Bool, reasons: [String] = []) {
+        self.canCheck = canCheck
+        self.canRun = canRun
+        self.reasons = reasons
+    }
+}
+
+/// `GET /api/update/status`, `POST /api/update/check`, and the `update.status`
+/// stream event all answer with this same shape.
+public struct MacUpdateStatus: Codable, Hashable, Sendable {
+    public var installed: MacInstalledBuild
+    public var available: MacAvailableUpdate?
+    public var checkedAt: String
+    public var running: MacUpdateRun?
+    public var lastRun: MacUpdateLastRun?
+    public var capabilities: MacUpdateCapabilities
+
+    public init(
+        installed: MacInstalledBuild,
+        available: MacAvailableUpdate? = nil,
+        checkedAt: String,
+        running: MacUpdateRun? = nil,
+        lastRun: MacUpdateLastRun? = nil,
+        capabilities: MacUpdateCapabilities
+    ) {
+        self.installed = installed
+        self.available = available
+        self.checkedAt = checkedAt
+        self.running = running
+        self.lastRun = lastRun
+        self.capabilities = capabilities
+    }
+}
+
+/// `POST /api/update/run` answers 202 with the run it just started; a 409
+/// refusal surfaces as the ordinary `APIError` every other write on this
+/// client throws, carrying the harness's own reason.
+public struct MacUpdateRunStarted: Codable, Hashable, Sendable {
+    public var runId: String
+
+    public init(runId: String) {
+        self.runId = runId
+    }
+}
