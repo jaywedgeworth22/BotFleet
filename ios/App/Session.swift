@@ -886,6 +886,16 @@ final class Session: ObservableObject {
         // to this main-actor type.  Naming the isolation here is what lets
         // the body read them at all.
         let attempt: @MainActor @Sendable () async throws -> Bool = {
+            // Poll rather than fail on the first check: a cold launch may
+            // still be rebuilding the client — `restore()` reading the
+            // keychain — right now, and one moment later it may well exist.
+            // No inner cap of its own: `run`'s 8 s deadline above is the
+            // only timeout, and cancelling this sleep when that deadline
+            // hits is what reaches `.failed` correctly.
+            while self.client == nil {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                self.connect()
+            }
             guard let client = self.client else { throw ApprovalActionFailed() }
 
             var candidates = self.pendingApprovalRecords()

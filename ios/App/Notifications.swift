@@ -43,9 +43,10 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         content.title = notification.title
         content.body = notification.body
         content.sound = .default
-        content.categoryIdentifier = notification.isBlocking
-            ? NotificationCategoryIdentifier.approval
-            : NotificationCategoryIdentifier.update
+        // `kind`, never `isBlocking` — a question is blocking too, but has
+        // no verdict for Approve/Deny to send.  `isBlocking` still governs
+        // `interruptionLevel` below.
+        content.categoryIdentifier = NotificationCategoryIdentifier.forKind(notification.kind)
         content.threadIdentifier = notification.threadId
         var userInfo: [AnyHashable: Any] = [
             "threadId": notification.threadId,

@@ -9,12 +9,28 @@
 import Foundation
 import UserNotifications
 
-/// The two categories a BotFleet notification can carry, matching
-/// `NotificationFrame.isBlocking` in Frames.swift: a bot blocked on you gets
-/// the approval actions, everything else gets only Open.
+/// The three categories a BotFleet notification can carry.  A permission
+/// card gets Approve/Deny/Open; a question is blocking too but has no
+/// verdict for Approve/Deny to send, so it gets Open alone; everything
+/// else gets Open alone as well.
 public enum NotificationCategoryIdentifier {
     public static let approval = "BOTFLEET_APPROVAL"
+    public static let question = "BOTFLEET_QUESTION"
     public static let update = "BOTFLEET_UPDATE"
+
+    /// Which category a notify frame's `kind` should be delivered under.
+    /// `kind` decides this — never `NotificationFrame.isBlocking` — because
+    /// a question is blocking too, but Approve/Deny answer nothing for a
+    /// free-text request.  `isBlocking` still governs `interruptionLevel`
+    /// separately: a question should still break a Focus, it just must
+    /// never offer a verdict it cannot use.
+    public static func forKind(_ kind: String) -> String {
+        switch kind {
+        case "approval": return approval
+        case "question": return question
+        default: return update
+        }
+    }
 }
 
 /// Action identifiers registered on those categories.  Shared by
@@ -54,13 +70,22 @@ public enum NotificationCategories {
             intentIdentifiers: [],
             options: []
         )
+        // A question is answerable only with free text, which no
+        // notification action can supply — Open is the only honest choice,
+        // never Approve/Deny.
+        let question = UNNotificationCategory(
+            identifier: NotificationCategoryIdentifier.question,
+            actions: [open],
+            intentIdentifiers: [],
+            options: []
+        )
         let update = UNNotificationCategory(
             identifier: NotificationCategoryIdentifier.update,
             actions: [open],
             intentIdentifiers: [],
             options: []
         )
-        return [approval, update]
+        return [approval, question, update]
     }
 }
 

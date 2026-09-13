@@ -7,11 +7,15 @@ import XCTest
 final class NotificationActionsTests: XCTestCase {
     // MARK: - Category registration
 
-    func testRegisteredCategoriesMatchTheApprovalAndUpdateIdentifiers() {
+    func testRegisteredCategoriesMatchApprovalQuestionAndUpdateIdentifiers() {
         let categories = NotificationCategories.all()
         XCTAssertEqual(
             Set(categories.map(\.identifier)),
-            [NotificationCategoryIdentifier.approval, NotificationCategoryIdentifier.update]
+            [
+                NotificationCategoryIdentifier.approval,
+                NotificationCategoryIdentifier.question,
+                NotificationCategoryIdentifier.update,
+            ]
         )
     }
 
@@ -42,6 +46,35 @@ final class NotificationActionsTests: XCTestCase {
         )
         XCTAssertEqual(update.actions.map(\.identifier), [NotificationActionIdentifier.open])
         XCTAssertEqual(update.actions.map(\.title), ["Open"])
+    }
+
+    /// A question is answerable only with free text — no notification
+    /// action can supply that, so unlike the approval category this one
+    /// must never offer Approve or Deny.
+    func testQuestionCategoryHasOnlyOpen() throws {
+        let question = try XCTUnwrap(
+            NotificationCategories.all().first { $0.identifier == NotificationCategoryIdentifier.question }
+        )
+        XCTAssertEqual(question.actions.map(\.identifier), [NotificationActionIdentifier.open])
+        XCTAssertEqual(question.actions.map(\.title), ["Open"])
+    }
+
+    // MARK: - Kind decides the category, not isBlocking
+
+    /// The regression this guards: `isBlocking` is true for both `approval`
+    /// and `question` (see `Frames.swift`), so picking a category from
+    /// `isBlocking` sends a question the same Approve/Deny buttons a
+    /// permission card gets — buttons that answer nothing for free text.
+    /// `kind` alone must decide.
+    func testKindDecidesTheCategoryAndAQuestionNeverGetsApproval() {
+        XCTAssertEqual(NotificationCategoryIdentifier.forKind("approval"), NotificationCategoryIdentifier.approval)
+        XCTAssertEqual(NotificationCategoryIdentifier.forKind("question"), NotificationCategoryIdentifier.question)
+        XCTAssertNotEqual(NotificationCategoryIdentifier.forKind("question"), NotificationCategoryIdentifier.approval)
+        XCTAssertEqual(NotificationCategoryIdentifier.forKind("done"), NotificationCategoryIdentifier.update)
+        XCTAssertEqual(NotificationCategoryIdentifier.forKind("routine-failed"), NotificationCategoryIdentifier.update)
+        // An unrecognised future kind must fail safe to Open-only, not to
+        // an approval category it never asked for.
+        XCTAssertEqual(NotificationCategoryIdentifier.forKind("something-new"), NotificationCategoryIdentifier.update)
     }
 
     // MARK: - Action routing
