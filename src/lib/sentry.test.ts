@@ -4,12 +4,14 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  attachFeedbackEventDetails,
   buildFallbackIssueUrl,
   initSentry,
   initSentryFromRuntime,
   isSentryFeedbackAvailable,
   refreshSentryFromRuntime,
   resetSentryForTests,
+  setActiveFeedbackDetailsForTests,
   setObservabilityReaderForTests,
   setSentryPortForTests,
   type ObservabilityReader,
@@ -250,5 +252,29 @@ describe("renderer diagnostics refresh", () => {
   it("isSentryFeedbackAvailable reflects client initialization state", () => {
     // When reset/uninitialized
     expect(isSentryFeedbackAvailable()).toBe(false);
+  });
+
+  it("attachFeedbackEventDetails binds diagnostic details strictly to feedback events", () => {
+    setActiveFeedbackDetailsForTests("Diagnostic crash stack trace");
+
+    // Standard exception or message event (not feedback)
+    const errorEvent = { message: "Network timeout" } as import("@sentry/react").Event;
+    const processedError = attachFeedbackEventDetails(errorEvent);
+    expect(processedError.contexts).toBeUndefined();
+
+    // Feedback event
+    const feedbackEvent = { type: "feedback", contexts: { user_tag: { value: "user" } } } as import("@sentry/react").Event;
+    const processedFeedback = attachFeedbackEventDetails(feedbackEvent);
+    expect(processedFeedback.contexts).toEqual({
+      user_tag: { value: "user" },
+      reported_problem: {
+        error_details: "Diagnostic crash stack trace",
+      },
+    });
+
+    // When details cleared
+    setActiveFeedbackDetailsForTests(null);
+    const clearedFeedback = attachFeedbackEventDetails({ type: "feedback" } as import("@sentry/react").Event);
+    expect(clearedFeedback.contexts).toBeUndefined();
   });
 });

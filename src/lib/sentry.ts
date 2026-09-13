@@ -171,6 +171,33 @@ interface SentryFeedbackDialog {
 
 let activeFeedbackDialog: SentryFeedbackDialog | null = null;
 let isCreatingFeedback = false;
+let activeFeedbackDetails: string | null = null;
+let feedbackProcessorInstalled = false;
+
+export function attachFeedbackEventDetails<T extends Sentry.Event>(event: T): T {
+  if (event.type === "feedback" && activeFeedbackDetails) {
+    return {
+      ...event,
+      contexts: {
+        ...event.contexts,
+        reported_problem: {
+          error_details: activeFeedbackDetails,
+        },
+      },
+    };
+  }
+  return event;
+}
+
+export function setActiveFeedbackDetailsForTests(details: string | null): void {
+  activeFeedbackDetails = details;
+}
+
+function ensureFeedbackEventProcessor(): void {
+  if (feedbackProcessorInstalled) return;
+  feedbackProcessorInstalled = true;
+  Sentry.addEventProcessor((event) => attachFeedbackEventDetails(event));
+}
 
 function toWellFormedString(val: string): string {
   if (typeof (val as { toWellFormed?: () => string }).toWellFormed === "function") {
@@ -248,6 +275,7 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
     const feedback = Sentry.getFeedback();
     if (!feedback || isCreatingFeedback) return;
     isCreatingFeedback = true;
+    ensureFeedbackEventProcessor();
 
     let formOpened = false;
     try {
@@ -261,16 +289,12 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
         activeFeedbackDialog = null;
       }
 
-      if (options?.defaultMessage) {
-        Sentry.setContext("reported_problem", {
-          error_details: options.defaultMessage,
-        });
-      }
+      activeFeedbackDetails = options?.defaultMessage ?? null;
 
       const cleanup = () => {
         dialog?.removeFromDom();
         activeFeedbackDialog = null;
-        Sentry.setContext("reported_problem", null);
+        activeFeedbackDetails = null;
       };
 
       const dialog = (await feedback.createForm({
@@ -302,7 +326,7 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
     } finally {
       isCreatingFeedback = false;
       if (!formOpened) {
-        Sentry.setContext("reported_problem", null);
+        activeFeedbackDetails = null;
       }
     }
   } catch {
@@ -448,4 +472,7 @@ export function resetSentryForTests(): void {
   runtimeIdentity = null;
   sentryPort = browserPort;
   readObservability = harnessReader;
+  activeFeedbackDetails = null;
+  activeFeedbackDialog = null;
+  isCreatingFeedback = false;
 }
