@@ -92,7 +92,7 @@ describe("browser Sentry", () => {
     expect(src).toMatch(/maskAllText:\s*true/);
     expect(src).toMatch(/blockAllMedia:\s*true/);
     expect(src).toMatch(/feedbackIntegration\(/);
-    expect(src).toMatch(/autoInject:\s*true/);
+    expect(src).toMatch(/autoInject:\s*false/);
     expect(src).toMatch(/enableLogs:\s*true/);
   });
 

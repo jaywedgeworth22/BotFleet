@@ -64,7 +64,7 @@ const browserPort: SentryBrowserPort = {
         Sentry.browserTracingIntegration(),
         Sentry.feedbackIntegration({
           colorScheme: "light",
-          autoInject: true,
+          autoInject: false,
           showBranding: false,
           buttonLabel: "Report a problem",
           submitButtonLabel: "Send",
@@ -154,6 +154,71 @@ export function initSentry(): void {
 export const SentryErrorBoundary = Sentry.ErrorBoundary;
 export const captureException = Sentry.captureException;
 export const captureMessage = Sentry.captureMessage;
+
+export interface OpenFeedbackOptions {
+  formTitle?: string;
+  defaultMessage?: string;
+  defaultEmail?: string;
+  defaultName?: string;
+}
+
+interface SentryFeedbackDialog {
+  appendToDom(): void;
+  open(): void;
+  close(): void;
+  removeFromDom(): void;
+}
+
+let activeFeedbackDialog: SentryFeedbackDialog | null = null;
+
+export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise<void> {
+  if (!globalThis.window) return;
+  try {
+    const feedback = Sentry.getFeedback();
+    if (!feedback) return;
+
+    if (activeFeedbackDialog) {
+      activeFeedbackDialog.appendToDom();
+      activeFeedbackDialog.open();
+      return;
+    }
+
+    const dialog = (await feedback.createForm({
+      formTitle: options?.formTitle ?? "Report a problem",
+      messagePlaceholder: options?.defaultMessage ? `Details: ${options.defaultMessage}` : "What went wrong?",
+      tags: options?.defaultMessage ? { reportedError: options.defaultMessage.slice(0, 200) } : undefined,
+      onFormSubmitted: () => {
+        dialog?.removeFromDom();
+        activeFeedbackDialog = null;
+      },
+      onFormClose: () => {
+        dialog?.removeFromDom();
+        activeFeedbackDialog = null;
+      },
+    })) as unknown as (SentryFeedbackDialog & { el?: unknown }) | undefined;
+
+    if (dialog) {
+      activeFeedbackDialog = dialog;
+      dialog.appendToDom();
+      dialog.open();
+      if (options?.defaultMessage) {
+        try {
+          const shadow = (dialog.el as { shadowRoot?: ShadowRoot | null } | undefined)?.shadowRoot;
+          const textarea = shadow?.querySelector("textarea");
+          if (textarea) {
+            textarea.value = options.defaultMessage;
+            textarea.dispatchEvent(new Event("input", { bubbles: true }));
+          }
+        } catch {
+          /* ignore DOM inspection failures */
+        }
+      }
+    }
+  } catch {
+    /* If the feedback dialog cannot be opened, swallow to protect the renderer */
+  }
+}
+
 
 /** The option set that decides whether the running client is still the right
  * one.  Anything that changes where events go, or how many of them go,

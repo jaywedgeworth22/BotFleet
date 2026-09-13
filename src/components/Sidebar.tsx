@@ -6,6 +6,7 @@ import {
   ArrowDownToLine,
   BellDot,
   Bot as BotIcon,
+  Bug,
   CalendarDays,
   Check,
   ChevronDown,
@@ -58,6 +59,7 @@ import { appendDraftAttachments } from "@/lib/drafts";
 import { botAvatarUrlFromStoredPath } from "../../shared/bot-avatar";
 import { ImagePlus } from "lucide-react";
 import { downloadAllBots } from "@/lib/team-files";
+import { openSentryFeedback } from "@/lib/sentry";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { MIN_QUERY, SearchResults } from "./SearchResults";
 import { TeamLibraryPanel, type TeamImportResult } from "./TeamLibraryPanel";
@@ -2656,6 +2658,17 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             onOpen={() => dispatch(phoneSettingsAction())}
           />
         )}
+        {density === "icons" && (
+          <button
+            type="button"
+            onClick={() => void openSentryFeedback()}
+            className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
+            title="Report a Problem"
+            aria-label="Report a Problem"
+          >
+            <Bug size={18} />
+          </button>
+        )}
         <div className={cn("flex items-center", density === "icons" && "justify-center")}>
           <button
             onClick={() => dispatch({ type: "toggleAppSettings" })}
@@ -2678,6 +2691,17 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
             />
           )}
           {density !== "icons" && <UpdateButton />}
+          {density !== "icons" && (
+            <button
+              type="button"
+              onClick={() => void openSentryFeedback()}
+              className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"
+              title="Report a Problem"
+              aria-label="Report a Problem"
+            >
+              <Bug size={18} />
+            </button>
+          )}
           {density !== "icons" && <button
             onClick={() => dispatch({ type: "toggleAppSettings" })}
             className="flex size-10 items-center justify-center rounded-md text-ink-secondary hover:bg-raised hover:text-ink"

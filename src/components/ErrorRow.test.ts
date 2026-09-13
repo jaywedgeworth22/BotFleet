@@ -124,4 +124,15 @@ describe("ErrorRow recovery", () => {
     expect(second.text).toBe(first.text);
     expect(second.nonce).toBe(first.nonce + 1);
   });
+
+  it("offers Report Problem on turn error rows", () => {
+    const html = renderToStaticMarkup(
+      createElement(ErrorRow, {
+        message: "Antigravity: authentication failed or timed out",
+        onRetry: () => {},
+      }),
+    );
+    expect(html).toContain("Retry");
+    expect(html).toContain("Report Problem");
+  });
 });

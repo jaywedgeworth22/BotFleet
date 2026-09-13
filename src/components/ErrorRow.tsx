@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { InstanceInfo } from "@/state/store";
 
-import { AlertTriangle, RefreshCw, Play, Send, Zap, RotateCcw, Download, Terminal, Laptop, Monitor } from "lucide-react";
+import { AlertTriangle, Bug, RefreshCw, Play, Send, Zap, RotateCcw, Download, Terminal, Laptop, Monitor } from "lucide-react";
 
 import { EngineSetup } from "./EngineSetup";
+import { openSentryFeedback } from "@/lib/sentry";
 
 export const ERROR_RECOVERY_EVENT = "omb-error-recovery";
 
@@ -164,6 +165,22 @@ function RecoveryButton({
   );
 }
 
+function ReportProblemButton({ message }: { message: string }) {
+  return (
+    <button
+      type="button"
+      onClick={() => void openSentryFeedback({
+        formTitle: "Report a Problem",
+        defaultMessage: `Error encountered: ${message}\n\n`,
+      })}
+      className="flex items-center gap-1.5 rounded-full border border-danger/30 px-2.5 py-1 text-[12.5px] hover:bg-danger/15"
+      title="Report this problem"
+    >
+      <Bug size={12} /> Report Problem
+    </button>
+  );
+}
+
 /** A failed turn: a real error block with a retry, not a truncated pill.
  *
  * A `setup` error — CLI missing, or installed but not signed in — shows what
@@ -192,20 +209,24 @@ function ErrorRow({
         {setupInstance && !(setupInstance.snapshot.state === "available" && setupInstance.snapshot.authenticated !== false) ? (
           <EngineSetup instance={setupInstance} className="mt-2 text-ink-secondary" />
         ) : message.includes("stall watchdog timeout") && onRetry ? (
-          <div className="mt-1.5">
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
             <RecoveryButton icon={Play} label="Continue" onClick={onRetry} />
+            <ReportProblemButton message={message} />
           </div>
         ) : message.includes("queued message failed") && onRetry ? (
-          <div className="mt-1.5">
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
             <RecoveryButton icon={Send} label="Send Again" onClick={onRetry} />
+            <ReportProblemButton message={message} />
           </div>
         ) : message.includes("offline missed routine") && onRetry ? (
-          <div className="mt-1.5">
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
             <RecoveryButton icon={Zap} label="Run Missed Routine Now" onClick={onRetry} />
+            <ReportProblemButton message={message} />
           </div>
         ) : message.includes("webhook ingress failed") && onRetry ? (
-          <div className="mt-1.5">
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
             <RecoveryButton icon={RotateCcw} label="Restart Receiver" onClick={onRetry} />
+            <ReportProblemButton message={message} />
           </div>
         ) : message.includes("git checkpoint missing") && onRetry ? (
           <div className="mt-2 p-2 bg-black/10 rounded-md">
@@ -214,11 +235,12 @@ function ErrorRow({
             </div>
           </div>
         ) : message.includes("auto-update failed") && onRetry ? (
-          <div className="flex items-center gap-2 mt-1.5">
+          <div className="flex flex-wrap items-center gap-2 mt-1.5">
             <RecoveryButton icon={RefreshCw} label="Retry" onClick={onRetry} />
             <a href="https://botfleet.io/download" className="flex items-center gap-1.5 rounded-full bg-danger/10 border border-danger/20 px-2.5 py-1 text-[12.5px] hover:bg-danger/20 text-danger">
               <Download size={12} /> Get It From The Website
             </a>
+            <ReportProblemButton message={message} />
           </div>
         ) : isComputerDispatchError(message) ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
@@ -226,6 +248,7 @@ function ErrorRow({
             <RecoveryButton icon={Monitor} label="Open Computer" onClick={() => requestErrorRecovery("open-computer", botId)} />
             <RecoveryButton icon={Laptop} label="Use This Computer" onClick={() => requestErrorRecovery("use-this-computer", botId)} />
             <RecoveryButton icon={Monitor} label="Create Local VM" onClick={() => requestErrorRecovery("create-local-vm", botId)} />
+            <ReportProblemButton message={message} />
           </div>
         ) : isProviderError(message) ? (
           <div className="mt-1.5 flex flex-wrap items-center gap-2">
@@ -234,13 +257,13 @@ function ErrorRow({
             )}
             <RecoveryButton icon={RefreshCw} label="Switch Model" onClick={() => requestErrorRecovery("switch-model", botId)} />
             <RecoveryButton icon={RefreshCw} label="Add API Key" onClick={() => requestErrorRecovery("add-key", botId)} />
+            <ReportProblemButton message={message} />
           </div>
         ) : (
-          onRetry && (
-            <div className="mt-1.5">
-              <RecoveryButton icon={RefreshCw} label="Retry" onClick={onRetry} />
-            </div>
-          )
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            {onRetry && <RecoveryButton icon={RefreshCw} label="Retry" onClick={onRetry} />}
+            <ReportProblemButton message={message} />
+          </div>
         )}
       </div>
     </div>
