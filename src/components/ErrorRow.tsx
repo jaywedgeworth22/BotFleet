@@ -229,9 +229,14 @@ function ErrorRow({
             <ReportProblemButton message={message} />
           </div>
         ) : message.includes("git checkpoint missing") && onRetry ? (
-          <div className="mt-2 p-2 bg-black/10 rounded-md">
-            <div className="flex items-center gap-1.5 text-[12.5px] font-mono text-danger/90">
-              <Terminal size={12} /> git fetch origin && git checkout main
+          <div className="mt-2 flex flex-col gap-2">
+            <div className="p-2 bg-black/10 rounded-md">
+              <div className="flex items-center gap-1.5 text-[12.5px] font-mono text-danger/90">
+                <Terminal size={12} /> git fetch origin && git checkout main
+              </div>
+            </div>
+            <div>
+              <ReportProblemButton message={message} />
             </div>
           </div>
         ) : message.includes("auto-update failed") && onRetry ? (

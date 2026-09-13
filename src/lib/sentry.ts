@@ -171,11 +171,32 @@ interface SentryFeedbackDialog {
 
 let activeFeedbackDialog: SentryFeedbackDialog | null = null;
 
+export function isSentryFeedbackAvailable(): boolean {
+  if (!globalThis.window) return false;
+  return Boolean(Sentry.getFeedback());
+}
+
 export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise<void> {
   if (!globalThis.window) return;
   try {
     const feedback = Sentry.getFeedback();
-    if (!feedback) return;
+    if (!feedback) {
+      const title = encodeURIComponent(options?.formTitle ?? "Bug Report");
+      const body = encodeURIComponent(
+        options?.defaultMessage
+          ? `**Reported Problem:**\n${options.defaultMessage}\n\n*(Submitted via BotFleet)*`
+          : "<!-- Describe the problem and reproduction steps here -->\n\n*(Submitted via BotFleet)*",
+      );
+      const url = `https://github.com/jaywedgeworth22/BotFleet/issues/new?title=${title}&body=${body}`;
+      if (typeof window !== "undefined") {
+        if (window.ogb?.openExternal) {
+          window.ogb.openExternal(url);
+        } else {
+          window.open(url, "_blank", "noopener,noreferrer");
+        }
+      }
+      return;
+    }
 
     if (activeFeedbackDialog) {
       activeFeedbackDialog.appendToDom();

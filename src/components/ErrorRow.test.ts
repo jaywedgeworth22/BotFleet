@@ -134,5 +134,14 @@ describe("ErrorRow recovery", () => {
     );
     expect(html).toContain("Retry");
     expect(html).toContain("Report Problem");
+
+    const checkpointHtml = renderToStaticMarkup(
+      createElement(ErrorRow, {
+        message: "git checkpoint missing for task",
+        onRetry: () => {},
+      }),
+    );
+    expect(checkpointHtml).toContain("git fetch origin &amp;&amp; git checkout main");
+    expect(checkpointHtml).toContain("Report Problem");
   });
 });
