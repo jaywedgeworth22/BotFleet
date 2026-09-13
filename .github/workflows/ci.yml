@@ -95,6 +95,13 @@ jobs:
       - name: packaged server smoke
         if: needs.changes.outputs.docs_only != 'true'
         run: pnpm test:packaged-server
+      # The Mac updater transaction is macOS-only: its tests spawn Mach-O
+      # binaries and read open file references through lsof, so they are
+      # meaningful on the macOS leg alone.  Without this the suite ran
+      # nowhere in CI.
+      - name: Mac updater node tests
+        if: needs.changes.outputs.docs_only != 'true' && matrix.os == 'macos-latest'
+        run: pnpm test:mac-updater
       - if: needs.changes.outputs.docs_only != 'true'
         run: pnpm check:electron
       - name: production UI build
