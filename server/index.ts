@@ -4585,8 +4585,15 @@ async function runGroupMemberTurn(
   // called `sendTurn` bare, so a room was the one place a driver-loop bot
   // was handed a prompt naming list_bots and ask_bot with no way to call
   // either.  A CLI engine is unaffected: it ignores `tools` here exactly as
-  // it does on the 1:1 path, and never gets a host at all.
-  const roomTurnTools = buildTurnTools(integrations);
+  // it does on the 1:1 path, and never gets a host at all.  Gated on
+  // `capabilities.toolLoop` for the same reason the host below is: an HTTP
+  // driver without a tool loop (grok.ts, openai-compat.ts) has no adapter
+  // side executor and the room path never runs the harness-side re-feed
+  // loop the 1:1 path uses for those drivers (`sendTurnWithToolLoop`), so
+  // handing it a catalog here would let the model call a tool nothing can
+  // ever run — the turn settles on a partial reply instead of an error.
+  const roomTurnTools =
+    instance.adapter.capabilities.toolLoop === true ? buildTurnTools(integrations) : [];
   // `commsDepth: hop` — the room's own hop, not zero.  The catalog above
   // already gated on `hop < MAX_COMMS_DEPTH`, and this is the depth the
   // peer hop is charged at, so an ask_bot from a room member is counted
