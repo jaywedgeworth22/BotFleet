@@ -8,12 +8,17 @@
 //                               verbatim and secret-redacted
 //                               (server/drivers/native.ts)
 //
+// Each log is capped and rotated (server/transcript-retention.ts), so a
+// thread's history is the live file plus at most one `.ndjson.1` beside it,
+// and the tail read here spans both.
+//
 // Merged by timestamp so a tool call and the raw message behind it sit
 // next to each other. Newest-`limit` only: a long-lived thread has
 // thousands of native lines and the panel wants the recent ones first.
 import { closeSync, fstatSync, openSync, readSync, type Stats } from "node:fs";
 import { join } from "node:path";
 import type { RuntimeEvent } from "./contracts.ts";
+import { rotatedPath } from "./transcript-retention.ts";
 
 /** One line of native/<threadId>.ndjson (server/drivers/native.ts). */
 export interface NativeRecord {
@@ -37,6 +42,13 @@ const DEFAULT_LIMIT = 300;
 const MAX_LIMIT = 2000;
 const READ_CHUNK = 64 * 1024;
 const MAX_TAIL_BYTES = 8 * 1024 * 1024;
+/** How far back the single-record fallback looks for a line boundary.  This
+ * bounds the SEARCH, never a parse: the fallback deserializes a record only
+ * when it fits inside the tail window, and reports a placeholder otherwise.
+ * Matches the largest a log can be after retention
+ * (server/transcript-retention.ts), so the scan is bounded by the file rather
+ * than by hope. */
+const MAX_RECORD_SCAN_BYTES = 64 * 1024 * 1024;
 
 interface LineCount {
   dev: number;
@@ -68,7 +80,10 @@ function countLines(fd: number, file: string, stat: FileStat): number {
     previous.ino === stat.ino &&
     stat.size >= previous.size &&
     (stat.size > previous.size || stat.mtimeMs === previous.mtimeMs);
-  if (appended && stat.size === previous.size) return previous.complete + Number(previous.trailing);
+  // A torn final line is not counted: both writers append a record and its
+  // newline in one call, so bytes after the last newline are a document cut in
+  // half, not a record the panel could ever show.
+  if (appended && stat.size === previous.size) return previous.complete;
 
   let offset = appended ? previous.size : 0;
   let complete = appended ? previous.complete : 0;
@@ -92,10 +107,49 @@ function countLines(fd: number, file: string, stat: FileStat): number {
   lineCounts.delete(file);
   lineCounts.set(file, next);
   while (lineCounts.size > LINE_COUNT_CACHE_MAX) lineCounts.delete(lineCounts.keys().next().value!);
-  return complete + Number(trailing);
+  return complete;
 }
 
 type RecordGuard<T> = (value: unknown) => value is T;
+
+/** Turns the accumulated tail into text.  A seam, not a strategy: production
+ * always decodes UTF-8, and the test counts what passes through to hold the
+ * scan below to one decode. */
+type Decode = (bytes: Buffer) => string;
+
+const decodeUtf8: Decode = (bytes) => bytes.toString("utf8");
+
+/** How many newlines a chunk holds, counted on the bytes.  A newline cannot
+ * appear inside a multi-byte UTF-8 sequence, so this is exactly the count the
+ * decoded text would give — without decoding anything. */
+function countNewlinesIn(bytes: Buffer): number {
+  let count = 0;
+  let index = bytes.indexOf(0x0a);
+  while (index !== -1) {
+    count += 1;
+    index = bytes.indexOf(0x0a, index + 1);
+  }
+  return count;
+}
+
+/** Builds the stand-in row for a record too wide to read on a request.  It
+ * carries the size and the timestamp the caller supplies; `null` means this
+ * lens would rather show nothing. */
+type OversizedRecord<T> = (bytes: number, at: string) => T | null;
+
+/** What one log file contributes to a page: its newest valid records, and how
+ * many lines it holds in total. */
+interface LogPage<T> {
+  lines: T[];
+  total: number;
+}
+
+interface LogTail<T> extends LogPage<T> {
+  /** True when the backward scan reached byte zero — every line in the file
+   * was considered.  False when it stopped at the tail window, which means
+   * there are older records in THIS file that the page does not show. */
+  exhausted: boolean;
+}
 
 function parseRecent<T>(text: string, includeFirst: boolean, limit: number, valid: RecordGuard<T>): T[] {
   const lines = text.split("\n");
@@ -114,44 +168,194 @@ function parseRecent<T>(text: string, includeFirst: boolean, limit: number, vali
   return out.slice(-limit);
 }
 
-function readRecentLines<T>(file: string, limit: number, valid: RecordGuard<T>): { lines: T[]; total: number } {
+/** The newest `limit` valid records of ONE file, plus its line count.  A
+ * `limit` of zero counts without parsing, which is how the rotated generation
+ * is counted when the live file already filled the page. */
+function readTail<T>(
+  file: string,
+  limit: number,
+  valid: RecordGuard<T>,
+  maxTailBytes: number,
+  oversized: OversizedRecord<T>,
+  decode: Decode,
+): LogTail<T> {
   let fd: number;
   try {
     fd = openSync(file, "r");
   } catch {
-    return { lines: [], total: 0 };
+    return { lines: [], total: 0, exhausted: true };
   }
   try {
     const stat = fstatSync(fd);
     const total = countLines(fd, file, stat);
+    if (limit <= 0) return { lines: [], total, exhausted: stat.size === 0 };
     let position = stat.size;
-    let bytes = Buffer.alloc(0);
+    // Chunks newest-last, concatenated and decoded only when the scan has
+    // something to parse.  Decoding the whole accumulated tail on every 64 KB
+    // step was quadratic — a 12 MB log of 100 KB records at limit 300 decoded
+    // 524 MB and held the event loop for about 150 ms per Inspector request,
+    // on a route the panel refetches after every turn.  Newlines are counted
+    // on the bytes as they arrive instead, which is the only thing that
+    // decode was being asked.
+    const chunks: Buffer[] = [];
+    let buffered = 0;
+    let newlines = 0;
     let lines: T[] = [];
-    while (position > 0 && bytes.length < MAX_TAIL_BYTES) {
-      const remaining = MAX_TAIL_BYTES - bytes.length;
+    while (position > 0 && buffered < maxTailBytes) {
+      const remaining = maxTailBytes - buffered;
       const start = Math.max(0, position - Math.min(READ_CHUNK, remaining));
       const length = position - start;
       const chunk = Buffer.allocUnsafe(length);
       const read = readSync(fd, chunk, 0, length, start);
       if (read <= 0) break;
-      bytes = Buffer.concat([chunk.subarray(0, read), bytes]);
+      const kept = chunk.subarray(0, read);
+      chunks.unshift(kept);
+      buffered += read;
+      newlines += countNewlinesIn(kept);
       position = start;
       // The first line is partial until we reach byte zero. Parse only once
       // enough complete candidates exist; corrupt candidates make us keep
       // walking backwards rather than returning fewer valid rows.
-      const text = bytes.toString("utf8");
-      if (position === 0 || text.split("\n").length - 1 >= limit) {
-        lines = parseRecent(text, position === 0, limit, valid);
+      if (position === 0 || newlines >= limit) {
+        lines = parseRecent(decode(Buffer.concat(chunks)), position === 0, limit, valid);
         if (lines.length >= limit || position === 0) break;
       }
     }
-    if (lines.length === 0 && bytes.length > 0) {
-      lines = parseRecent(bytes.toString("utf8"), position === 0, limit, valid);
+    if (lines.length === 0 && buffered > 0) {
+      lines = parseRecent(decode(Buffer.concat(chunks)), position === 0, limit, valid);
     }
-    return { lines, total };
+    // A record wider than the window leaves the scan above with no newline to
+    // cut on, so it returns nothing at all against a nonzero total — the
+    // panel goes blank for the one thread whose newest message is the reason
+    // anyone opened it.  Walk back past the window to that record's own
+    // boundary instead.
+    let exhausted = position === 0;
+    if (lines.length === 0 && !exhausted) {
+      const newest = readNewestRecord(fd, stat.size, maxTailBytes, valid, oversized, decode);
+      lines = newest.lines;
+      // The fallback may have walked to byte zero even though the windowed
+      // scan did not: that file IS fully read, and the rotated generation
+      // behind it may complete the page.
+      exhausted = newest.fromStart;
+    }
+    return { lines, total, exhausted };
   } finally {
     closeSync(fd);
   }
+}
+
+/** Offset of the last newline strictly before `from`, `-1` when the scan
+ * reached byte zero without meeting one, and `null` when it gave up at
+ * MAX_RECORD_SCAN_BYTES. */
+function lastNewlineBefore(fd: number, from: number): number | null {
+  const buffer = Buffer.allocUnsafe(READ_CHUNK);
+  let position = from;
+  while (position > 0) {
+    if (from - position >= MAX_RECORD_SCAN_BYTES) return null;
+    const start = Math.max(0, position - READ_CHUNK);
+    const read = readSync(fd, buffer, 0, position - start, start);
+    if (read <= 0) return null;
+    const index = buffer.subarray(0, read).lastIndexOf(0x0a);
+    if (index !== -1) return start + index;
+    position = start;
+  }
+  return -1;
+}
+
+interface NewestRecord<T> {
+  lines: T[];
+  /** True when the record that was found starts at byte zero — this file
+   * holds nothing older than what came back. */
+  fromStart: boolean;
+}
+
+/** The newest complete record of a file, for the case the windowed scan above
+ * cannot serve: a record wider than the window, which leaves that scan with
+ * no line boundary to cut on.
+ *
+ * Two bounds, and they are different.  The SEARCH for the record's boundaries
+ * walks back at most MAX_RECORD_SCAN_BYTES.  The PARSE is bounded by the tail
+ * window itself: a record wider than the window is never allocated, read or
+ * deserialized — the panel gets a stand-in row naming its size instead.  That
+ * matters because this runs synchronously on the harness event loop, on a
+ * route the Inspector refetches after every turn, and a multi-megabyte
+ * `JSON.parse` there is the shape of stall that took the harness down on
+ * 2026-09-12.
+ *
+ * Anything after the file's last newline is a torn write — both writers
+ * append a record and its newline in one call — so it is skipped here and not
+ * counted in `total`. */
+function readNewestRecord<T>(
+  fd: number,
+  size: number,
+  maxTailBytes: number,
+  valid: RecordGuard<T>,
+  oversized: OversizedRecord<T>,
+  decode: Decode,
+): NewestRecord<T> {
+  if (size === 0) return { lines: [], fromStart: true };
+  const terminator = lastNewlineBefore(fd, size);
+  // No newline at all, byte zero reached: this file holds nothing complete —
+  // one torn partial from a kill mid-write is the ordinary way that happens.
+  // It IS fully read, so the rotated generation can be spliced on without
+  // opening a gap, and the panel says "showing 100 of 100" rather than
+  // "showing 0 of 100".
+  if (terminator === -1) return { lines: [], fromStart: true };
+  // Gave up at the scan bound instead: there may well be complete records
+  // further back, so this file is not exhausted.
+  if (terminator === null) return { lines: [], fromStart: false };
+  const end = terminator;
+  const previous = end === 0 ? -1 : lastNewlineBefore(fd, end);
+  if (previous === null) return { lines: [], fromStart: false };
+  const start = previous + 1;
+  const fromStart = start === 0;
+  const length = end - start;
+  if (length <= 0) return { lines: [], fromStart };
+  if (length > maxTailBytes) {
+    // Deliberately not read.  `stat.mtime` is the closest timestamp available
+    // without parsing, and it is what this row sorts by.
+    const at = new Date(fstatSync(fd).mtimeMs).toISOString();
+    const placeholder = oversized(length, at);
+    return { lines: placeholder ? [placeholder] : [], fromStart };
+  }
+  const record = Buffer.allocUnsafe(length);
+  const read = readSync(fd, record, 0, length, start);
+  if (read <= 0) return { lines: [], fromStart };
+  try {
+    const value: unknown = JSON.parse(decode(record.subarray(0, read)));
+    return { lines: valid(value) ? [value] : [], fromStart };
+  } catch {
+    return { lines: [], fromStart };
+  }
+}
+
+/** A thread's log spans at most two files: the live one and the single
+ * rotated generation beside it (server/transcript-retention.ts).  Rotation is
+ * what keeps either from growing without bound, so the panel reads across the
+ * seam — the newest lines come from the live file, and the rotated one both
+ * completes a short page and keeps the "showing 200 of 1,687" count honest
+ * about what is still on disk.
+ *
+ * The rotated file is spliced on ONLY when the live file was read to its
+ * first byte.  A live file short of `limit` for any other reason — it hit the
+ * tail window, or its own records failed the guard — still holds records
+ * between what came back and where the rotated file ends, and splicing across
+ * that would hand the panel a page with a silent gap in the middle of it,
+ * looking for all the world like a contiguous history. */
+function readRecentLines<T>(
+  file: string,
+  limit: number,
+  valid: RecordGuard<T>,
+  maxTailBytes: number,
+  oversized: OversizedRecord<T>,
+  decode: Decode,
+): LogPage<T> {
+  const live = readTail(file, limit, valid, maxTailBytes, oversized, decode);
+  const need = live.exhausted ? limit - live.lines.length : 0;
+  // `need` of zero still counts the rotated file's lines, so the footer
+  // describes the history that exists rather than the page that was built.
+  const rotated = readTail(rotatedPath(file), need, valid, maxTailBytes, oversized, decode);
+  return { lines: [...rotated.lines, ...live.lines], total: live.total + rotated.total };
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -243,19 +447,50 @@ function isNativeRecord(value: unknown): value is NativeRecord {
   );
 }
 
+/** Owner-facing: this string is a row in the Inspector. */
+function oversizedMessage(bytes: number): string {
+  const mb = (bytes / (1024 * 1024)).toFixed(1);
+  return `A ${mb} MB record was skipped here — it is larger than the Inspector reads in one page.`;
+}
+
 export function readThreadEvents(input: {
   eventsDir: string;
   nativeDir: string;
   threadId: string;
   limit?: number;
+  /** How far back either file is read before the page is called done.
+   * Defaults to MAX_TAIL_BYTES; tests set it small so the window's edge can
+   * be exercised without an 8 MB fixture. */
+  maxTailBytes?: number;
+  /** How the tail becomes text.  Defaults to UTF-8; the test counts what
+   * passes through it to hold the scan to one decode. */
+  decode?: Decode;
 }): InspectorPage {
   const { eventsDir, nativeDir, threadId } = input;
   assertThreadId(threadId);
   const requested = input.limit ?? DEFAULT_LIMIT;
   const limit = Number.isFinite(requested) ? Math.max(1, Math.min(Math.trunc(requested), MAX_LIMIT)) : DEFAULT_LIMIT;
+  const window = Number.isFinite(input.maxTailBytes) ? Math.max(1, Math.trunc(input.maxTailBytes!)) : MAX_TAIL_BYTES;
+  const decode = input.decode ?? decodeUtf8;
 
-  const runtime = readRecentLines(join(eventsDir, `${threadId}.ndjson`), limit, isRuntimeEvent);
-  const native = readRecentLines(join(nativeDir, `${threadId}.ndjson`), limit, isNativeRecord);
+  // What either lens shows in place of a record too wide to read on a
+  // request.  One row, built rather than parsed, so the panel says what is
+  // there instead of going blank — and the harness never deserializes
+  // megabytes to answer a refresh.
+  const runtime = readRecentLines(join(eventsDir, `${threadId}.ndjson`), limit, isRuntimeEvent, window, (bytes, at): RuntimeEvent => ({
+    eventId: `oversized-${threadId}-${bytes}`,
+    provider: "botfleet",
+    threadId,
+    createdAt: at,
+    type: "runtime.error",
+    message: oversizedMessage(bytes),
+  }), decode);
+  const native = readRecentLines(join(nativeDir, `${threadId}.ndjson`), limit, isNativeRecord, window, (bytes, at): NativeRecord => ({
+    at,
+    dir: "in",
+    source: "botfleet",
+    msg: { skipped: oversizedMessage(bytes), bytes },
+  }), decode);
 
   // cap each log on its own, then merge: the native tee is several times
   // chattier than the runtime stream, and one shared cap would leave the

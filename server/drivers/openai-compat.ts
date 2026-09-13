@@ -20,10 +20,21 @@ import type {
 import { newEventId, newId } from "../contracts.ts";
 import { appendNative } from "./native.ts";
 import { recordExecutedTools, withChatSpan } from "../sentry-ai.ts";
-import { runTurnLoop, type ChatMessage, type TurnLoopDeps } from "./chat-completions/loop.ts";
+import { runTurnLoop, type ChatMessage, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
+
+import { httpErrorFor } from "./chat-completions/errors.ts";
 
 const DRIVER_KIND = "openai-compat";
 const REQUEST_TIMEOUT_MS = 120_000;
+
+/** Cached reads are included in prompt_tokens, never additional tokens. */
+function toTurnUsage(raw: any): TurnUsage {
+  const finiteCount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
+  const usage: TurnUsage = { input: finiteCount(raw?.prompt_tokens), output: finiteCount(raw?.completion_tokens) };
+  const cached = raw?.prompt_tokens_details?.cached_tokens ?? raw?.prompt_cache_hit_tokens;
+  if (typeof cached === "number" && Number.isFinite(cached) && cached >= 0) usage.cachedInput = Math.min(usage.input, Math.round(cached));
+  return usage;
+}
 
 // Default catalog — overwritten by /models when the endpoint answers.
 // Free-tier-friendly defaults so the picker is never empty.
@@ -109,6 +120,7 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
   // No CLI to install — the "install" is getting a free API key.
   install: {
     docsUrl: "https://openrouter.ai/keys",
+    apiKeyOnly: true,
     signInCommand:
       "add {\"openaiCompat\":{\"key\":\"sk-or-v1-…\"}} to ~/.botfleet/config.json (or set OPENAI_COMPAT_API_KEY)",
     command: {
@@ -174,15 +186,15 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         signal?: AbortSignal;
         tools?: any[];
         onDelta?: (d: string, streamKind?: "assistant_text" | "reasoning_text") => void;
-        onUsage?: (usage: { input: number; output: number }) => void;
+        onUsage?: (usage: TurnUsage) => void;
       },
     ): Promise<{
       text: string;
       reasoning: string;
       tool_calls?: any[];
-      usage: { input: number; output: number } | null;
+      usage: TurnUsage | null;
     }> => {
-      const bodyPayload: any = { model, messages, stream: opts.stream };
+      const bodyPayload: any = { model, messages, stream: opts.stream, ...(opts.stream ? { stream_options: { include_usage: true } } : {}) };
       if (opts.tools && opts.tools.length > 0) {
         bodyPayload.tools = opts.tools;
       }
@@ -213,17 +225,12 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           text: mainContent,
           reasoning: reasoningContent,
           tool_calls: msg?.tool_calls,
-          usage: json.usage
-            ? {
-                input: json.usage.prompt_tokens ?? 0,
-                output: json.usage.completion_tokens ?? 0,
-              }
-            : null,
+          usage: json.usage ? toTurnUsage(json.usage) : null,
         };
       }
       let text = "";
       let reasoning = "";
-      let usage: { input: number; output: number } | null = null;
+      let usage: TurnUsage | null = null;
       let streamToolCalls: any[] = [];
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
@@ -269,27 +276,38 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
           }
         }
         if (chunk.usage) {
-          usage = {
-            input: chunk.usage.prompt_tokens ?? 0,
-            output: chunk.usage.completion_tokens ?? 0,
-          };
+          usage = toTurnUsage(chunk.usage);
           opts.onUsage?.(usage);
         }
+        if (chunk.error) {
+          const status = chunk.error.code ?? chunk.error.status;
+          // Error frames may contain request material.  Keep the status,
+          // never the upstream body, in the user-visible failure.
+          if (typeof status === "number" && Number.isInteger(status) && status >= 400 && status <= 599) {
+            throw httpErrorFor(status, "");
+          }
+          throw new Error("upstream reported a streaming error");
+        }
       };
-      for (;;) {
-        const { done, value } = await reader.read();
-        if (done) {
-          buf += decoder.decode();
-          if (buf.trim()) takeSseLine(buf.trim());
-          break;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            buf += decoder.decode();
+            if (buf.trim()) takeSseLine(buf.trim());
+            break;
+          }
+          buf += decoder.decode(value, { stream: true });
+          let nl;
+          while ((nl = buf.indexOf("\n")) !== -1) {
+            const line = buf.slice(0, nl).trim();
+            buf = buf.slice(nl + 1);
+            takeSseLine(line);
+          }
         }
-        buf += decoder.decode(value, { stream: true });
-        let nl;
-        while ((nl = buf.indexOf("\n")) !== -1) {
-          const line = buf.slice(0, nl).trim();
-          buf = buf.slice(nl + 1);
-          takeSseLine(line);
-        }
+      } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
       }
       return { text, reasoning, usage, tool_calls: streamToolCalls.length > 0 ? streamToolCalls : undefined };
     };
@@ -334,8 +352,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
 
     const sendTurn = async (turn: SendTurnInput) => {
       const { threadId } = turn;
-      // Validation throws SYNCHRONOUSLY out of sendTurn, before the loop
-      // exists, so startTurn's catch runs in milliseconds exactly as it does
+      // Validation rejects sendTurn before the loop exists, so startTurn's
+      // catch settles the dispatch exactly as it does
       // for a CLI driver — error chip, watchdog settled, bot idle, all three
       // queue drains.  A rejection here must never become a resolved turn
       // that nothing ever settles.
@@ -460,6 +478,9 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         runRound,
         messages,
         toolHost: turn.toolHost,
+        requestApproval: turn.toolHost?.requestApproval
+          ? (ask) => turn.toolHost!.requestApproval!(ask)
+          : undefined,
         signal: abort.signal,
         // The per-round ceiling this driver has always used, so an
         // OpenRouter or Groq bot waits exactly as long as it did before.
@@ -500,7 +521,8 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         provider: DRIVER_KIND,
         // no MCP server is mounted in this file and respondToRequest answers
         // "unavailable": localComputerMcp would be a knob nothing can turn
-        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true, toolLoop: true },
+        // The driver owns both transcript replay and model-to-tool rounds.
+        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true, toolLoop: true, replaysTranscript: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         sweepStuckTurns: async (olderThanMs: number) => {

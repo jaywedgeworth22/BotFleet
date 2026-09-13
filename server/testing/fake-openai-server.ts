@@ -16,6 +16,12 @@ import { freePortBlock } from "./ports.ts";
 /** One scripted reply to the next `POST /v1/chat/completions`. */
 export type ScriptedCompletion =
   | { kind: "json"; status?: number; body: unknown }
+  /** Accept the request, record it, and never answer — the provider that
+   *  simply stops talking. A caller's own abort (an interrupt, a room turn's
+   *  deadline) is then the only thing that ends it, which is exactly what a
+   *  timeout test needs to observe. `close()` destroys any socket still held
+   *  this way, so a forgotten hang cannot wedge teardown. */
+  | { kind: "hang" }
   | {
       kind: "sse";
       status?: number;
@@ -95,6 +101,7 @@ export async function startFakeOpenAiServer(): Promise<FakeOpenAiServer> {
   const completionQueue: ScriptedCompletion[] = [];
   const modelsQueue: unknown[] = [];
   const requests: RecordedRequest[] = [];
+  const hung = new Set<ServerResponse>();
 
   const server: Server = createServer((req, res) => {
     void (async () => {
@@ -130,6 +137,11 @@ export async function startFakeOpenAiServer(): Promise<FakeOpenAiServer> {
           res.end(JSON.stringify(script.body));
           return;
         }
+        if (script.kind === "hang") {
+          hung.add(res);
+          res.on("close", () => hung.delete(res));
+          return;
+        }
         sendSse(res, script);
         return;
       }
@@ -155,6 +167,13 @@ export async function startFakeOpenAiServer(): Promise<FakeOpenAiServer> {
     requests,
     queueCompletion: (response) => completionQueue.push(response),
     queueModels: (body) => modelsQueue.push(body),
-    close: () => new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve()))),
+    close: () =>
+      new Promise<void>((resolve, reject) => {
+        // A hung response is a socket `server.close()` would wait on
+        // forever.  Drop those first, then let close() settle normally.
+        for (const res of hung) res.destroy();
+        hung.clear();
+        server.close((err) => (err ? reject(err) : resolve()));
+      }),
   };
 }

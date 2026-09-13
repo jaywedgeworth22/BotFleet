@@ -2,6 +2,22 @@ import { describe, expect, it } from "vitest";
 
 import { chiefOfStaffSystemPrompt } from "./chief-of-staff.ts";
 
+// A CLI-shaped bot's tool set: the registry's three plus the five
+// `agents-proxy.ts` still splices in ahead of their PR 7 registry entries.
+const CLI_AGENT_TOOLS = [
+  "list_bots",
+  "ask_bot",
+  "list_routines",
+  "create_bot",
+  "delegate_bot",
+  "request_credential",
+  "propose_routine",
+  "propose_routine_action",
+];
+// A MiniMax-shaped bot's tool set: the registry's HTTP-surface tools only —
+// no create_bot / delegate_bot, because those are not registry entries yet.
+const MINIMAX_AGENT_TOOLS = ["list_bots", "ask_bot", "list_routines"];
+
 describe("chiefOfStaffSystemPrompt roster caps", () => {
   it("clips oversized persona fields instead of interpolating them whole", () => {
     const prompt = chiefOfStaffSystemPrompt(
@@ -15,7 +31,7 @@ describe("chiefOfStaffSystemPrompt roster caps", () => {
           description: "D".repeat(10_000),
         },
       ],
-      true,
+      CLI_AGENT_TOOLS,
     );
     // an imported 10KB description must not ride into the Chief's system
     // prompt — the roster line stays bounded
@@ -26,7 +42,7 @@ describe("chiefOfStaffSystemPrompt roster caps", () => {
 
   it("caps the roster length and says how many were left out", () => {
     const team = Array.from({ length: 60 }, (_, i) => ({ id: `bot${i}`, name: `Bot ${i}` }));
-    const prompt = chiefOfStaffSystemPrompt("chief", [{ id: "chief", name: "Atlas" }, ...team], true);
+    const prompt = chiefOfStaffSystemPrompt("chief", [{ id: "chief", name: "Atlas" }, ...team], CLI_AGENT_TOOLS);
     expect(prompt).toContain("Bot 39");
     expect(prompt).not.toContain("Bot 40 —");
     expect(prompt).toContain("…and 20 more");
@@ -43,7 +59,7 @@ describe("chiefOfStaffSystemPrompt", () => {
   ];
 
   it("describes visible teammates, roles, and availability", () => {
-    const prompt = chiefOfStaffSystemPrompt("chief", bots, true);
+    const prompt = chiefOfStaffSystemPrompt("chief", bots, CLI_AGENT_TOOLS);
 
     expect(prompt).toContain("Chief of Staff for the Work section");
     expect(prompt).toContain("Quill — Writer: Drafts concise copy (available)");
@@ -56,17 +72,30 @@ describe("chiefOfStaffSystemPrompt", () => {
   });
 
   it("does not promise delegation when the engine cannot mount agent tools", () => {
-    const prompt = chiefOfStaffSystemPrompt("chief", bots, false);
+    const prompt = chiefOfStaffSystemPrompt("chief", bots, []);
 
     expect(prompt).toContain("cannot contact teammates");
     expect(prompt).not.toContain("Use ask_bot");
   });
 
+  it("offers ask_bot but not create_bot/delegate_bot for a MiniMax-shaped tool set", () => {
+    // MiniMax's HTTP catalog is the registry's three tools only —
+    // create_bot and delegate_bot are still MCP-only splices (PR 7 gives
+    // them registry entries). Telling a MiniMax Chief it can "use
+    // create_bot" would name a tool its turn cannot call.
+    const prompt = chiefOfStaffSystemPrompt("chief", bots, MINIMAX_AGENT_TOOLS);
+
+    expect(prompt).toContain("Use ask_bot");
+    expect(prompt).not.toContain("create_bot");
+    expect(prompt).not.toContain("delegate_bot");
+    expect(prompt).not.toContain("cannot contact teammates");
+  });
+
   it("includes trusted BotFleet status only when the Chief caller supplies it", () => {
     const status = "TRUSTED BOTFLEET STATUS\nfreshness=fresh; runtime_state=degraded";
 
-    const chiefPrompt = chiefOfStaffSystemPrompt("chief", bots, true, status);
-    const ordinaryPrompt = chiefOfStaffSystemPrompt("writer", bots, true);
+    const chiefPrompt = chiefOfStaffSystemPrompt("chief", bots, CLI_AGENT_TOOLS, status);
+    const ordinaryPrompt = chiefOfStaffSystemPrompt("writer", bots, CLI_AGENT_TOOLS);
 
     expect(chiefPrompt).toContain(status);
     expect(ordinaryPrompt).not.toContain("TRUSTED BOTFLEET STATUS");

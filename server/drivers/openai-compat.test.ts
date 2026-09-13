@@ -26,6 +26,10 @@ describe("OpenAICompatDriver", () => {
     expect(OpenAICompatDriver.metadata.displayName).toMatch(/OpenRouter|Groq/);
   });
 
+  it("marks its install descriptor apiKeyOnly — no CLI, so the setup UI never says install or sign in", () => {
+    expect(OpenAICompatDriver.install?.apiKeyOnly).toBe(true);
+  });
+
   it("falls back to the OpenRouter endpoint by default", () => {
     const cfg = OpenAICompatDriver.defaultConfig();
     expect(cfg.url).toBe("https://openrouter.ai/api/v1");
@@ -285,7 +289,7 @@ describe("OpenAICompatDriver", () => {
         return new Response(
           'data: {"choices":[{"delta":{"reasoning_content":"thinking through the problem"}}]}\n' +
             'data: {"choices":[{"delta":{"content":""}}]}\n' +
-            'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}\n' +
+            'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":4}}}\n' +
             "data: [DONE]\n",
           { status: 200, headers: { "content-type": "text/event-stream" } },
         );
@@ -460,7 +464,7 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
       kind: "sse",
       frames: [
         '{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"list_bots","arguments":"{}"}}]}}]}',
-        '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5}}',
+        '{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":4}}}',
         "[DONE]",
       ],
     });
@@ -468,7 +472,7 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
       kind: "sse",
       frames: [
         '{"choices":[{"delta":{"content":"two bots"}}]}',
-        '{"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":7}}',
+        '{"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":7,"prompt_tokens_details":{"cached_tokens":8}}}',
         "[DONE]",
       ],
     });
@@ -480,13 +484,20 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
       environment: { TEST_KEY: "secret" },
     });
     const recorder = recordEvents(instance.adapter);
+    const requestApproval = vi.fn(async () => "allowed-once" as const);
 
     await instance.adapter.sendTurn({
       threadId: "loop-thread",
       text: "list my bots",
       model: "fake-model",
       tools: [{ name: "list_bots" }],
-      toolHost: { execute: async () => ({ kind: "result", content: "[]" }) },
+      toolHost: {
+        requestApproval,
+        execute: async (_call, runtime) => {
+          const outcome = await runtime.requestApproval({ tool: "list_bots", summary: "Read bot names" });
+          return { kind: "result", content: outcome === "allowed-once" ? "[]" : "denied" };
+        },
+      },
     });
     const completed = await recorder.until((event) => event.type === "turn.completed");
 
@@ -494,10 +505,12 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
     expect(completed).toMatchObject({
       ok: true,
       stopReason: "end_turn",
-      usage: { input: 30, output: 12 },
+      usage: { input: 30, output: 12, cachedInput: 12 },
     });
     const requests = server.requests.filter((request) => request.url.endsWith("/chat/completions"));
     expect(requests).toHaveLength(2);
+    expect(requestApproval).toHaveBeenCalledOnce();
+    for (const request of requests) expect(request.body).toMatchObject({ stream_options: { include_usage: true } });
     const first = (requests[0].body as { messages: unknown[] }).messages;
     const second = (requests[1].body as { messages: unknown[] }).messages;
     expect(second.slice(0, first.length)).toEqual(first);
@@ -545,6 +558,28 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
 
     expect(completed).toMatchObject({ ok: false, stopReason: "error", usage: { input: 20, output: 9 } });
     expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    recorder.stop();
+    await instance.dispose();
+  });
+
+  it("fails on an upstream SSE error while retaining reported cached usage", async () => {
+    server = await startFakeOpenAiServer();
+    server.queueCompletion({ kind: "sse", frames: [
+      '{"choices":[],"usage":{"prompt_tokens":20,"completion_tokens":9,"prompt_tokens_details":{"cached_tokens":6}}}',
+      '{"error":{"code":502,"message":"private request detail"}}',
+      "[DONE]",
+    ] });
+    const instance = await OpenAICompatDriver.create({
+      instanceId: "openai-stream-error", displayName: "Stream error", enabled: true,
+      config: { url: server.url, apiKeyEnv: "TEST_KEY", models: ["fake-model"] },
+      environment: { TEST_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+    await instance.adapter.sendTurn({ threadId: "stream-error", text: "hi", model: "fake-model" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: false, usage: { input: 20, output: 9, cachedInput: 6 } });
+    expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
+    expect(JSON.stringify(recorder.events)).not.toContain("private request detail");
     recorder.stop();
     await instance.dispose();
   });

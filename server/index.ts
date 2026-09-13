@@ -56,17 +56,21 @@ import { RoomTurnDeadline, RoomTurnStallRegistry, roomTurnTimeoutMessage } from 
 import { telemetry } from "./telemetry.ts";
 import { usageQuotaPoller } from "./usage-quota.ts";
 import { getDeepSeekBalance } from "./deepseek-balance.ts";
+import { rollingSpendTracker } from "./rolling-spend.ts";
 import {
   lastAntigravityQuotaSnapshot,
   startAntigravityQuotaPoller,
   stopAntigravityQuotaPoller,
 } from "./antigravity-quota.ts";
 import {
+  AUTO_FALLBACK_PRIORITY,
   enableQuotaCooldownPersist,
   isQuotaOrCapText,
   lastTurnStartIndex,
   parseQuotaResetTime,
+  providerErrorCodeFromStopReason,
   quotaCooldowns,
+  quotaOrCapFromErrorCode,
   selectTurnFallback,
   shouldReplayPersistedStarter,
   bootRecoveryTurnOpts,
@@ -133,6 +137,12 @@ import {
   EVENTS_DIR,
   NATIVE_DIR,
 } from "./config.ts";
+import {
+  describeSweep,
+  startTranscriptRetentionSweeps,
+  sweepTranscriptRetention,
+  removeTranscriptLogs,
+} from "./transcript-retention.ts";
 import { ComputerControl } from "./computer-control.ts";
 import { findCliCandidates, resetPathCache } from "./env-path.ts";
 import { cliProbeEnvironment } from "./cli-probe-env.ts";
@@ -148,6 +158,15 @@ import {
 } from "./contracts.ts";
 import { buildTurnTools } from "./turn-tools.ts";
 import { createTurnToolHost } from "./tools/host.ts";
+import { createPermissionBroker, type ApprovalAnswerSource } from "./tools/approvals.ts";
+import { listAgentsResponse } from "./tools/agents.ts";
+import { toolsFor } from "./tools/registry.ts";
+import {
+  availableAgentToolNames,
+  credentialPromptFor,
+  hasFileTools,
+  routinePromptFor,
+} from "./tools/prompts.ts";
 import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import {
   ActiveTurnOwners,
@@ -234,7 +253,7 @@ import { hasAccessServiceToken } from "./recall-access.ts";
 import { recallStatus } from "./recall-transport.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
-import { RoutineRequestService } from "./routine-requests.ts";
+import { RoutineRequestError, RoutineRequestService } from "./routine-requests.ts";
 import { fetchBotDirectory, matchDirectoryBots, type MatchedDirectoryBot } from "./bot-directory.ts";
 import { scoutProject, suggestTeam } from "./project-scout.ts";
 import { fetchGithubTeam, fetchLibraryTeam, fetchTeamCatalog } from "./team-library.ts";
@@ -250,6 +269,7 @@ import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
+import { installTestParentWatchdog } from "./test-parent-watchdog.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
 const WEBHOOK_PORT = Number(process.env.OMB_WEBHOOK_PORT || PORT + 1);
@@ -269,6 +289,21 @@ const MIME: Record<string, string> = {
 // SQLite, routines, or webhook receivers start.  Health timeouts never release it.
 // The parent startup lock also serializes the one-time legacy directory move.
 const harnessOwner = initializeHarnessOwnership(DATA_DIR, PORT, ensureDirs);
+// Bound the per-thread transcript logs before anything starts appending to
+// them.  Rotation keeps every log THIS run writes inside its cap
+// (server/transcript-retention.ts); this pass is what trims whatever an
+// earlier run left behind — three native logs on the owner's Mac had reached
+// 1.93 GB, 1.68 GB and 1.58 GB, against an Inspector panel that only ever
+// reads the newest few hundred lines.  Synchronous, behind the ownership
+// fence and long before `server.listen`, so no request ever waits on it, and
+// a stat-only no-op on every boot after the first.
+const transcriptDirs = { eventsDir: EVENTS_DIR, nativeDir: NATIVE_DIR };
+const bootTranscriptSweep = describeSweep(sweepTranscriptRetention(transcriptDirs));
+if (bootTranscriptSweep) console.log(bootTranscriptSweep);
+// A harness that stays up for weeks outlives its boot sweep; this catches a
+// log left oversized by anything rotation did not cover.  Unref'd, so it is
+// never the reason the process stays alive.
+const stopTranscriptSweeps = startTranscriptRetentionSweeps(transcriptDirs);
 let runtimeQuiescing = false;
 let activeUpdateAdmissions = 0;
 const cfg = loadConfig();
@@ -339,6 +374,13 @@ usageQuotaPoller.configure({
 if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   usageQuotaPoller.start();
 }
+setImmediate(() => {
+  try {
+    rollingSpendTracker.init(EVENTS_DIR);
+  } catch {
+    // Non-fatal spend history scan failure
+  }
+});
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 
@@ -362,6 +404,15 @@ utilityParentPort?.on("message", (event) => {
 const bus = new EventBus();
 export { bus };
 bus.attach(registry.instances());
+// The in-process permission broker.  A CLI engine asks for permission over
+// its own protocol; a chat-completions driver runs its tool rounds in this
+// process and has no protocol to ask over, so this publishes the SAME
+// `request.opened` on the SAME bus and waits for the answer.  Everything
+// downstream — auto mode, always-allow, the destructive and sensitive
+// guards, the unattended block, auto-review, the decision log, the
+// notification, the watchdog's waiting-on-human exemption — is the existing
+// fold, reached rather than reimplemented.
+const permissionBroker = createPermissionBroker({ publish: (event) => bus.publish(event) });
 // Diagnostics resolve the way telemetry does: a getter over the live config,
 // so a DSN saved in Settings takes effect on the next request rather than the
 // next restart.  The boot line names the ingest host and the project id; the
@@ -1001,6 +1052,31 @@ const askMessageByRequest = new Map<string, string>(); // threadId:requestId -> 
 // model selection can still name the primary after this turn fell back.
 const askInstanceByRequest = new Map<string, string>(); // threadId:requestId -> instanceId
 
+/** The ONE indirection an answer gets: try the in-process broker, and fall
+ * through to the engine's own adapter when the broker does not own this
+ * request.  `respond()` returns null for every CLI requestId, so a CLI
+ * engine's approval takes exactly the path it always took — which is why
+ * the existing approval suites pass unmodified, and why that is the
+ * acceptance criterion for this change.
+ *
+ * The HTTP drivers keep `respondToRequest -> "unavailable"`.  That used to
+ * be a gap (nothing on that lane ever asked); it is now simply correct,
+ * because a request an HTTP bot opened is always the broker's. */
+async function deliverDecision(
+  threadId: string,
+  requestId: string,
+  answer: { behavior: "allow" | "deny" | "answer"; message?: string; source?: ApprovalAnswerSource },
+  instance: ProviderInstance | null | undefined,
+): Promise<RequestOutcome> {
+  const brokered = permissionBroker.respond(threadId, requestId, answer);
+  if (brokered !== null) return brokered;
+  if (!instance) return "unavailable";
+  return await instance.adapter.respondToRequest(threadId, requestId, {
+    behavior: answer.behavior,
+    message: answer.message,
+  });
+}
+
 /** Deliver a person's answer to the engine that asked, and tell the truth
  * about what happened. `unavailable` — the turn ended, the ask timed out,
  * the engine has no asks — is fail-closed: the action was never run. The
@@ -1029,12 +1105,10 @@ async function answerRequest(
   const card = cardMessage?.card;
   const instance = registry.get(askInstanceByRequest.get(requestKey) ?? instanceId);
   let outcome: RequestOutcome = "unavailable";
-  if (instance) {
-    try {
-      outcome = await instance.adapter.respondToRequest(threadId, requestId, { behavior, message });
-    } catch {
-      outcome = "unavailable";
-    }
+  try {
+    outcome = await deliverDecision(threadId, requestId, { behavior, message }, instance);
+  } catch {
+    outcome = "unavailable";
   }
   if (outcome !== "unavailable") askInstanceByRequest.delete(requestKey);
   // The human's verdict, recorded only when it actually reached the engine:
@@ -1085,6 +1159,11 @@ function closeOpenApprovals(threadId: string): void {
   // Peer approvals also hold an in-memory promise. Resolve those first; merely
   // patching their cards would leave the delegation queue waiting 15 minutes.
   cancelPeerApprovalsForThread(threadId);
+  // So does an HTTP-lane tool ask: the tool is sitting inside
+  // `runtime.requestApproval`, and a stopped turn that left that promise
+  // pending would hang the loop behind a card nobody can answer. Settled
+  // as `unavailable`, which the host reads as a deny — the tool never ran.
+  permissionBroker.abandonThread(threadId, "interrupted");
   for (const message of store.messagesFor(threadId)) {
     const card = message.card;
     if (!card?.requestId || card.answered || card.dismissed) continue;
@@ -1433,7 +1512,14 @@ async function reviewPermissionCard(args: {
   if (!card || card.answered) return false;
   let outcome: RequestOutcome = "unavailable";
   try {
-    outcome = await args.instance.adapter.respondToRequest(args.threadId, args.requestId, { behavior: "allow" });
+    // Not a person's click, so the card must not show as one — the reviewer
+    // approved it.
+    outcome = await deliverDecision(
+      args.threadId,
+      args.requestId,
+      { behavior: "allow", source: "auto" },
+      args.instance,
+    );
   } catch {
     return false;
   }
@@ -1463,6 +1549,20 @@ bus.subscribe((event: RuntimeEvent) => {
   else if (event.type === "request.resolved") watchdog.setWaitingOnHuman(event.threadId, false);
   else if (event.type === "turn.completed") watchdog.settle(event.threadId);
   else watchdog.touch(event.threadId);
+});
+
+// Turn teardown: the second of the three ways a pending ask can be
+// abandoned (Stop is the first, via closeOpenApprovals; a fleet dispose is
+// the third, via latchInterruptedTurns).  A turn that settled for ANY
+// reason — the wall clock, a provider error, a driver that gave up — can
+// no longer consume an answer, so anything still open on its thread is
+// resolved `unavailable` here rather than waiting on a person forever.
+// Idempotent with the other two: whichever arrives first settles the ask.
+// Deliberately unguarded on stopReason: a broker ask is only ever awaited
+// from INSIDE a tool call, so by the time any terminal event names this
+// thread there is no tool left to consume an answer.
+bus.subscribe((event: RuntimeEvent) => {
+  if (event.type === "turn.completed") permissionBroker.abandonThread(event.threadId, "teardown");
 });
 
 // Bots currently working with nobody at the keyboard — a webhook turn, or a
@@ -1693,9 +1793,19 @@ bus.subscribe((event: RuntimeEvent) => {
         // answered — and if the provider is gone entirely, forever.
         void (async () => {
           try {
-            if (!instance) throw new Error("provider unavailable");
-            const outcome = await instance.adapter.respondToRequest(event.threadId, requestId, { behavior: "allow" });
-            if (outcome === "unavailable") throw new Error("the ask is no longer open");
+            // The broker answers its own requests whether or not the
+            // instance lookup found anything; an engine's request still
+            // needs its engine.  `deliverDecision` is the one place that
+            // distinction lives.
+            const outcome = await deliverDecision(
+              event.threadId,
+              requestId,
+              { behavior: "allow", source: "auto" },
+              instance,
+            );
+            if (outcome === "unavailable") {
+              throw new Error(instance ? "the ask is no longer open" : "provider unavailable");
+            }
             pushMessage({
               role: "bot",
               kind: "activity",
@@ -1954,15 +2064,28 @@ bus.subscribe((event: RuntimeEvent) => {
         if (lastUserIdx >= 0) fallbackUserMessage = activeMsgs[lastUserIdx];
         const lastMsgText = afterUser.length > 0 ? (afterUser[afterUser.length - 1].text ?? "") : "";
         const quotaInfo = parseQuotaResetTime(reply) || parseQuotaResetTime(lastMsgText);
-        const quotaOrCap = quotaInfo.isQuotaOrCap || turnHitQuotaOrCap(afterUser) || isQuotaOrCapText(reply);
-        const isTextError = sliceIsShortProviderError(afterUser) || quotaOrCap;
+        // A chat-completions driver's loop reports a classified HTTP
+        // failure as an `error:<code>` stopReason (server/drivers/
+        // chat-completions/loop.ts).  When that structured code is
+        // present it decides quotaOrCap outright — real quota/cap or an
+        // outage consults the chain, invalid_credentials never does (the
+        // setup affordance handles that one).  A CLI engine has no such
+        // code, so `structuredQuotaOrCap` is undefined there and the
+        // existing chip-prose regexes decide exactly as they do today.
+        const structuredQuotaOrCap = quotaOrCapFromErrorCode(providerErrorCodeFromStopReason(event.stopReason));
+        const isShortChip = sliceIsShortProviderError(afterUser);
+        const textIsCandidateForQuota = !event.ok || isShortChip;
+        const replyQuota = textIsCandidateForQuota && (quotaInfo.isQuotaOrCap || isQuotaOrCapText(reply));
+        const quotaOrCap = structuredQuotaOrCap
+          ?? (turnHitQuotaOrCap(afterUser) || replyQuota);
+        const isTextError = (textIsCandidateForQuota && isShortChip) || (!event.ok && quotaOrCap);
         const isOk = Boolean(event.ok) && !isTextError;
         if (isOk) {
           fallbackAttemptByTurn.delete(fallbackKey);
           pendingMemberFallback.delete(event.threadId);
           quotaCooldowns.clear(fallbackBot.id, actualSelection.instanceId, actualSelection.model);
         }
-        if (quotaOrCap) {
+        if (quotaOrCap && textIsCandidateForQuota) {
           quotaCooldowns.record({
             botId: fallbackBot.id,
             instanceId: actualSelection.instanceId,
@@ -2071,6 +2194,15 @@ bus.subscribe((event: RuntimeEvent) => {
           costUsd: event.cost ?? null,
           billingMode: event.billingMode,
         });
+        if (typeof event.cost === "number" && event.cost > 0) {
+          rollingSpendTracker.recordTurn({
+            at: event.createdAt ? Date.parse(event.createdAt) || Date.now() : Date.now(),
+            provider: event.provider,
+            instanceId: actualSelection.instanceId,
+            costUsd: event.cost,
+            billingMode: event.billingMode,
+          });
+        }
         const currentTask = store.tasks(bot.id).find((t) => t.threadId === event.threadId);
         telemetry.trackTurn({
           botId: bot.id,
@@ -2168,6 +2300,15 @@ bus.subscribe((event: RuntimeEvent) => {
             roomId: group.id,
             roomName: group.name,
           });
+          if (typeof event.cost === "number" && event.cost > 0) {
+            rollingSpendTracker.recordTurn({
+              at: event.createdAt ? Date.parse(event.createdAt) || Date.now() : Date.now(),
+              provider: event.provider,
+              instanceId: actualSelection.instanceId,
+              costUsd: event.cost,
+              billingMode: event.billingMode,
+            });
+          }
         }
       }
       if (speaker && group?.busyBotId === speaker.botId) {
@@ -2215,13 +2356,15 @@ bus.subscribe((event: RuntimeEvent) => {
  * still runs it through selectTurnFallback, so the produced / quota /
  * stop-reason rules apply exactly as they do for a configured chain. */
 async function autoFallbackChain(botId: string, currentInstanceId: string): Promise<ModelSelection[]> {
-  const priority = ["claude", "antigravity", "gemini", "codex", "openaiCompat", "grok"];
   try {
     const described = await registry.describe({ maxAgeMs: DEFAULT_SELECTION_DESCRIBE_MAX_AGE_MS });
     return eligibleAutoFallbackChain(described, {
       botId,
       currentInstanceId,
-      priority,
+      // The fleet ladder itself lives in model-fallback.ts so the ordering
+      // is unit-testable without booting the server — minimax sits after
+      // codex and ahead of openaiCompat, per the PR 10 owner decision.
+      priority: AUTO_FALLBACK_PRIORITY,
       isCooling: (candidateBotId, instanceId, model) =>
         Boolean(quotaCooldowns.get(candidateBotId, instanceId, model)),
     });
@@ -2691,7 +2834,13 @@ async function startTurn(
     transcript,
     rewound,
     fresh,
-    replaysNatively: instance.driverKind === "grok",
+    // Every chat-completions driver (minimax, openai-compat, grok) rebuilds
+    // its own message history from `turnInput.transcript` each round, same
+    // as a CLI driver replaying its own native session — so inlining the
+    // same history into `turnText` here would send it twice. Driven off the
+    // capability rather than a driverKind string so a new chat-completions
+    // driver gets this for free by declaring it.
+    replaysNatively: instance.adapter.capabilities.replaysTranscript === true,
   });
 
   const isImessageTask = store.tasks(bot.id)?.find((t) => t.threadId === threadId)?.title?.toLowerCase() === "imessage";
@@ -3065,22 +3214,38 @@ async function startTurn(
             sectionPeers,
           )
         : [];
+      // A driver whose ONLY tool surface is the harness catalog (declares
+      // capabilities.toolLoop) has no MCP mount, so it never gets the five
+      // write tools agents-proxy.ts still splices in ahead of their PR 7
+      // registry entries — its agents tools are exactly the registry's
+      // http-surface set. Computed once here and reused below so the
+      // credential/routine/Chief prompts can never name a tool this turn
+      // cannot actually call.
+      const httpOnlyToolSurface = instance.adapter.capabilities.toolLoop === true;
+      const availableAgentTools = availableAgentToolNames({
+        hasAgentsIntegration: Boolean(integrations.agents),
+        mcpSurface: !httpOnlyToolSurface,
+        registryToolNames: integrations.agents
+          ? toolsFor(httpOnlyToolSurface ? "http" : "mcp", {
+              agents: true,
+              commsDepth,
+              maxCommsDepth: MAX_COMMS_DEPTH,
+              chiefOfStaff: Boolean(bot.chiefOfStaff),
+            }).map((registryTool) => registryTool.name)
+          : [],
+      });
       const coordinationPrompt = bot.chiefOfStaff
         ? chiefOfStaffSystemPrompt(
             bot.id,
             store.bots,
-            Boolean(integrations.agents),
+            availableAgentTools,
             botFleetStatusSystemPrompt(),
           )
         : integrations.agents && sectionPeers.length > 0
           ? "You can work with the other bots in your section through the agents tools — list_bots shows who's available, ask_bot sends one of them a message and returns their reply."
           : "";
-      const credentialPrompt = integrations.agents
-        ? " If a supported API key is missing, use request_credential to show the secure in-app card. Never ask the user to paste credentials into chat."
-        : "";
-      const routinePrompt = integrations.agents
-        ? " If the user explicitly asks to list or review, schedule, run, or change routines, use list_routines and propose_routine or propose_routine_action. A proposal is not applied until the user confirms its in-app card, so never claim the action completed before that confirmation."
-        : "";
+      const credentialPrompt = credentialPromptFor(availableAgentTools);
+      const routinePrompt = routinePromptFor(availableAgentTools);
 
       // (activeVpsThreads was already claimed above, before the provision or
       // reuse await, so the backend guards saw this turn the whole time.)
@@ -3103,7 +3268,12 @@ async function startTurn(
       // host will actually run.  Deriving both from the same call is what
       // keeps a hallucinated tool from finding an executor that would run it
       // for a bot whose comms are gated off this turn.
-      const turnTools = buildTurnTools(integrations);
+      // `chiefOfStaff` here is what lets create_bot appear at all: the
+      // registry gates it on `ctx.agents && ctx.chiefOfStaff`, and without
+      // this the catalog would always see `chiefOfStaff: false` and a real
+      // Chief's HTTP-lane turn would never be offered the tool its own
+      // prompt (chiefOfStaffSystemPrompt) tells it it has.
+      const turnTools = buildTurnTools(integrations, { chiefOfStaff: Boolean(bot.chiefOfStaff) });
       const turnInput = {
         threadId,
         text: turnText,
@@ -3128,10 +3298,37 @@ async function startTurn(
               botId: bot.id,
               threadId,
               commsDepth,
+              // Read here, not derived from the catalog above: this is what
+              // gates create_bot inside the host's own executor (the cap and
+              // the chiefOfStaff check both live there), independent of
+              // whatever the model was actually offered this turn.
+              chiefOfStaff: Boolean(bot.chiefOfStaff),
+              // Bound to THIS turn's bot and thread in the same closure
+              // caller identity lives in, and for the same reason: a card
+              // must name the bot that actually asked, and the answer must
+              // come back to the turn that is waiting.  Nothing downstream
+              // supplies either from the model's arguments.
+              requestApproval: (ask) =>
+                permissionBroker.request({
+                  threadId,
+                  botId: bot.id,
+                  provider: instance.driverKind,
+                  providerInstanceId: instance.instanceId,
+                  tool: ask.tool,
+                  summary: ask.summary,
+                  signal: ask.signal,
+                }),
               deps: {
-                bot: (id: string) => store.bot(id),
-                bots: () => store.bots,
+                // The `/api/internal/` bodies themselves — not reimplementations
+                // of them.  A MiniMax bot and a Claude bot run the same code
+                // with the same guards; only the transport differs.
+                executeListAgentsRequest,
                 executeAskBotRequest,
+                executeListRoutinesRequest,
+                executeDelegateBotRequest,
+                executeCreateBotRequest,
+                executeRequestCredentialRequest,
+                executeRoutineRequestRequest,
               },
             })
           : undefined,
@@ -3150,7 +3347,9 @@ async function startTurn(
           credentialPrompt +
           routinePrompt +
           sectionContextSystemPrompt(bot.section) +
-          (privateWorkspace ? memorySystemPrompt(bot.id) + skillsSystemPrompt(bot.id) : "") +
+          (hasFileTools(worksInWorkspace, httpOnlyToolSurface)
+            ? memorySystemPrompt(bot.id) + skillsSystemPrompt(bot.id)
+            : "") +
           skillInstructions +
           packagePlaybooks +
           (opts?.automationSource === "webhook"
@@ -3690,7 +3889,46 @@ const commsBus: CommsBus = { store, broadcast };
 // can call resolvePeerComms without holding a reference back to here.
 const approvalBus: ApprovalBus = { store, broadcast };
 
-/** Guarded ask_bot path used by MCP proxy and the HTTP tool executor.
+/** The `GET /api/internal/agents` body.  ONE implementation: the MCP lane
+ * reaches it over the loopback + COMMS_TOKEN hop, the HTTP lane's tool host
+ * calls it directly as an injected dependency.  The filter itself lives in
+ * `tools/agents.ts` so nothing here can grow a private copy of it — which is
+ * exactly how `list_bots` came to offer a bot its own row on one lane and
+ * hide `busy` on the other. */
+export function executeListAgentsRequest(input: { selfId: string }): {
+  status: number;
+  body: Record<string, unknown>;
+} {
+  return listAgentsResponse(input.selfId, store.bots);
+}
+
+/** The `GET /api/internal/routines` body, factored the same way.  Read-only:
+ * it reports what this bot has scheduled plus the computer's authoritative
+ * clock, which is what makes a model's relative dates resolvable. */
+export function executeListRoutinesRequest(input: {
+  fromBotId: string;
+  fromThreadId?: string;
+}): { status: number; body: Record<string, unknown> } {
+  const from = store.bot(input.fromBotId);
+  if (!from) return { status: 403, body: { error: "unknown sender" } };
+  const fromThreadId = String(input.fromThreadId ?? from.threadId);
+  if (!connectorThread(from.id, fromThreadId)) {
+    return { status: 403, body: { error: "source conversation does not belong to sender" } };
+  }
+  return {
+    status: 200,
+    body: {
+      now: new Date().toISOString(),
+      timeZone: routineTimeZone(),
+      routines: (routines?.listRoutines() ?? [])
+        .filter((routine) => routine.botId === from.id)
+        .slice(0, 100)
+        .map(agentRoutine),
+    },
+  };
+}
+
+/** Guarded ask_bot path used by MCP proxy and the HTTP tool host.
  * Section, hidden, approval, mirroring, and depth all live here so a
  * driver that guessed an id cannot skip the gate. */
 export async function executeAskBotRequest(input: {
@@ -3751,6 +3989,239 @@ export async function executeAskBotRequest(input: {
   const reply = await askBotAndWait(toBotId, prefixed, depth, fromBotId);
   mirrorReply(commsBus, currentTarget, reply, channel);
   return { status: 200, body: { botName: currentTarget.name, text: reply } };
+}
+
+/** The `POST /api/internal/delegate-bot` body, factored the same way as
+ * `executeAskBotRequest`: the MCP proxy reaches it over the loopback hop,
+ * the HTTP lane's tool host calls it directly.  Async handoff — queues the
+ * message and returns immediately; the peer's own turn runs after the
+ * caller's current turn finishes. */
+export function executeDelegateBotRequest(input: {
+  fromBotId: string;
+  toBotId: string;
+  message: string;
+  depth: number;
+  fromThreadId?: string;
+  reason?: string;
+}): { status: number; body: Record<string, unknown> } {
+  const fromBotId = input.fromBotId;
+  const toBotId = input.toBotId;
+  const message = input.message;
+  const reason = input.reason;
+  const depth = input.depth;
+  if (!toBotId || !message) return { status: 400, body: { error: "toBotId and message required" } };
+  const from = store.bot(fromBotId);
+  if (!from) return { status: 404, body: { error: "no such bot" } };
+  const target = store.bot(toBotId);
+  if (!target) return { status: 404, body: { error: "no such bot" } };
+  if (sectionKey(from.section) !== sectionKey(target.section)) {
+    return { status: 403, body: { error: "that bot belongs to a different section" } };
+  }
+  const fromThreadId = String(input.fromThreadId ?? from.threadId);
+  if (!store.taskByThread(from.id, fromThreadId)) {
+    return { status: 403, body: { error: "source thread does not belong to sender" } };
+  }
+  const result = queueDelegation(
+    commsBus,
+    from,
+    { toBotId, message, reason, depth },
+    MAX_COMMS_DEPTH,
+    fromThreadId,
+  );
+  if (result !== "ok") {
+    // the agent reads this string — a bare enum ("too_deep") tells it
+    // nothing about what to do instead
+    const said: Record<Exclude<QueueResult, "ok">, string> = {
+      self: "a bot cannot delegate to itself",
+      too_deep: "delegation chains are limited to one hop — do this one yourself",
+      no_target: "no such bot",
+      too_many: "too many delegations queued on this turn — finish some first",
+    };
+    return { status: 200, body: { error: said[result] } };
+  }
+  const targetName = store.bot(toBotId)?.name ?? toBotId;
+  return {
+    status: 200,
+    body: {
+      queued: true,
+      message: from.approvePeerComms
+        ? `Queued for review — @${targetName} will only pick it up if the user approves after your turn finishes.`
+        : `Delegation queued — @${targetName} will pick it up after your current turn finishes.`,
+    },
+  };
+}
+
+/** The `POST /api/internal/create-bot` body, factored the same way.  The
+ * chiefOfStaff gate and `MAX_WORKSPACE_BOTS` live here, unchanged; the
+ * per-turn creation cap does NOT — it moved to a closure that is scoped to
+ * one turn on each lane (`agents-proxy.ts`'s own process-lifetime counter
+ * for MCP, `agents.ts#createAgentTools`'s fresh closure for HTTP), which is
+ * what makes it turn-scoped on the HTTP lane for the first time. */
+export function executeCreateBotRequest(input: {
+  fromBotId: string;
+  fromThreadId?: string;
+  name: string;
+  role: string;
+  instructions: string;
+}): { status: number; body: Record<string, unknown> } {
+  const chief = store.bot(input.fromBotId);
+  if (!chief) return { status: 403, body: { error: "unknown sender" } };
+  const fromThreadId = String(input.fromThreadId ?? chief.threadId);
+  if (!store.taskByThread(chief.id, fromThreadId)) {
+    return { status: 403, body: { error: "source thread does not belong to sender" } };
+  }
+  if (!chief.chiefOfStaff) {
+    return { status: 403, body: { error: "only a section's Chief of Staff can create operator bots" } };
+  }
+  if (store.bots.length >= MAX_WORKSPACE_BOTS) {
+    return { status: 409, body: { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` } };
+  }
+  const name = input.name.trim();
+  const role = input.role.trim();
+  const instructions = input.instructions.trim();
+  if (!name || !role || !instructions) {
+    return { status: 400, body: { error: "name, role, and instructions are required" } };
+  }
+  if (name.length > 80) return { status: 400, body: { error: "name must be at most 80 characters" } };
+  if (role.length > 120) return { status: 400, body: { error: "role must be at most 120 characters" } };
+  if (instructions.length > 1_000) {
+    return { status: 400, body: { error: "instructions must be at most 1000 characters" } };
+  }
+  const duplicate = store.bots.find(
+    (candidate) =>
+      !candidate.hidden &&
+      sectionKey(candidate.section) === sectionKey(chief.section) &&
+      candidate.name.trim().toLowerCase() === name.toLowerCase(),
+  );
+  if (duplicate) {
+    return { status: 409, body: { error: `@${duplicate.name} already exists in this section; use list_bots` } };
+  }
+  const created = store.createBot(
+    {
+      name,
+      title: role,
+      description: instructions,
+      modelSelection: { ...chief.modelSelection },
+      section: chief.section,
+    },
+    { seedMessages: false },
+  );
+  const safeBot = store.patchBot(created.id, {
+    composio: false,
+    autoApprove: false,
+    approvePeerComms: false,
+  })!;
+  return {
+    status: 201,
+    body: {
+      id: safeBot.id,
+      name: safeBot.name,
+      title: safeBot.title,
+      section: safeBot.section || "General",
+      model: safeBot.modelSelection.model,
+    },
+  };
+}
+
+/** The `POST /api/internal/request-credential` body, factored the same
+ * way.  Never returns the secret — Electron saves it through the OS-backed
+ * store, and this only ever produces a card asking for one, or confirms one
+ * is already configured. */
+export function executeRequestCredentialRequest(input: {
+  fromBotId: string;
+  fromThreadId?: string;
+  credentialId: string;
+  reason?: string;
+}): { status: number; body: Record<string, unknown> } {
+  const from = store.bot(input.fromBotId);
+  if (!from) return { status: 403, body: { error: "unknown sender" } };
+  const fromThreadId = String(input.fromThreadId ?? from.threadId);
+  const owner = connectorThread(from.id, fromThreadId);
+  if (!owner) return { status: 403, body: { error: "source conversation does not belong to sender" } };
+  if (!isCredentialTargetId(input.credentialId)) {
+    return { status: 400, body: { error: "unsupported credential id" } };
+  }
+  const credentialId: CredentialTargetId = input.credentialId;
+  const target = CREDENTIAL_TARGETS[credentialId];
+  if (credentialIsConfigured(cfg, credentialId)) {
+    return { status: 200, body: { alreadyConfigured: true, label: target.label } };
+  }
+  const existing = store.messagesFor(fromThreadId).find((message) =>
+    isReusableCredentialRequest(message, credentialId, from.id, Boolean(owner.group))
+  );
+  if (existing) {
+    return { status: 200, body: { messageId: existing.id, label: target.label } };
+  }
+  const reason = typeof input.reason === "string" ? input.reason.trim().slice(0, 240) : "";
+  const message = store.appendMessage(fromThreadId, {
+    role: "bot",
+    kind: "secret",
+    ...(owner.group ? { from: { botId: from.id, name: from.name, color: from.color } } : {}),
+    secret: {
+      target: credentialId,
+      label: target.label,
+      description: reason ? `${target.description} ${reason}` : target.description,
+      placeholder: target.placeholder,
+      helpUrl: target.helpUrl,
+      requestKey: randomUUID(),
+    },
+  });
+  return { status: 201, body: { messageId: message.id, label: target.label } };
+}
+
+/** The `POST /api/internal/routine-requests` body, factored the same way.
+ * One shape for both `propose_routine` (action `create`) and
+ * `propose_routine_action` (every other action) — `routineRequests.propose`
+ * and the decision-log row it triggers stay the same regardless of which
+ * tool called this. */
+export async function executeRoutineRequestRequest(input: {
+  fromBotId: string;
+  fromThreadId: string;
+  action: "create" | "update" | "pause" | "resume" | "run_now" | "delete";
+  routine?: unknown;
+  routineId?: unknown;
+  changes?: unknown;
+}): Promise<{ status: number; body: Record<string, unknown> }> {
+  const from = store.bot(input.fromBotId);
+  if (!from) return { status: 403, body: { error: "unknown sender" } };
+  const fromThreadId = input.fromThreadId;
+  const owner = connectorThread(from.id, fromThreadId);
+  if (!owner) return { status: 403, body: { error: "source conversation does not belong to sender" } };
+  const persistence = routineProposalPersistence(from.id, fromThreadId);
+  if (!persistence.ok) {
+    return { status: persistence.status, body: { error: persistence.error } };
+  }
+  const proposedInput = input.action === "create"
+    ? { action: input.action, routine: input.routine }
+    : input.action === "update"
+      ? { action: input.action, routineId: input.routineId, changes: input.changes }
+      : { action: input.action, routineId: input.routineId };
+  try {
+    const proposed = await routineRequests.propose({
+      botId: from.id,
+      threadId: fromThreadId,
+      proposal: proposedInput,
+      from: owner.group ? { botId: from.id, name: from.name, color: from.color } : undefined,
+    });
+    const proposedCard = store.messagesFor(fromThreadId).find((message) => message.id === proposed.messageId)?.card;
+    appendDecision(DATA_DIR, {
+      threadId: fromThreadId,
+      requestId: proposed.requestId,
+      botId: from.id,
+      botName: from.name,
+      tool: proposedCard?.tool,
+      // Audit what the human was actually shown, not the shorter tool
+      // response returned to the model.
+      summary: proposedCard?.subtitle ?? proposed.summary,
+      decision: "card-shown",
+      source: "routine",
+    });
+    return { status: 201, body: proposed as unknown as Record<string, unknown> };
+  } catch (error) {
+    const status = error instanceof RoutineRequestError ? error.status : 400;
+    const message = error instanceof Error ? error.message : String(error);
+    return { status, body: { error: message } };
+  }
 }
 
 // Approvals live only in memory, so any peer card still open on disk is one
@@ -3934,6 +4405,22 @@ async function runGroupMemberTurn(
   if (hop < MAX_COMMS_DEPTH && instance.adapter.capabilities.agentsMcp === true) {
     integrations.agents = agentsIntegration(bot.id, threadId, hop);
   }
+  // Same rule as the 1:1 dispatch: a toolLoop driver's agents tools are
+  // exactly the registry's http-surface set, with none of the five write
+  // tools agents-proxy.ts still splices into the MCP lane ahead of PR 7.
+  const httpOnlyToolSurface = instance.adapter.capabilities.toolLoop === true;
+  const availableAgentTools = availableAgentToolNames({
+    hasAgentsIntegration: Boolean(integrations.agents),
+    mcpSurface: !httpOnlyToolSurface,
+    registryToolNames: integrations.agents
+      ? toolsFor(httpOnlyToolSurface ? "http" : "mcp", {
+          agents: true,
+          commsDepth: hop,
+          maxCommsDepth: MAX_COMMS_DEPTH,
+          chiefOfStaff: Boolean(bot.chiefOfStaff),
+        }).map((registryTool) => registryTool.name)
+      : [],
+  });
   const selectedSkills = selectBundledSkills(
     serializeRoomContext(threadId, userName),
     instance.adapter.capabilities.phoneMcp === true ? ["phoneMcp"] : [],
@@ -4031,10 +4518,8 @@ async function runGroupMemberTurn(
       `Associated Workspace Repositories / Folders:\n- Primary: ${group.cwd || "default"}\n${group.extraCwds.map((c) => `- Auxiliary: ${c}`).join("\n")}`,
     "Format replies with clean Github-Flavored Markdown (headers, code fences with language tags, bullet lists, tables, bold/italic). When referencing local files on this Mac, use absolute paths or file links (e.g. `file:///path/to/file`) so they are directly clickable in the UI.",
     `Reply as yourself, briefly and conversationally. To bring a teammate in, mention them like @Name — they'll see the conversation and respond.`,
-    integrations.agents &&
-      "If a supported API key is missing, use request_credential to show the secure in-app card. Never ask the user to paste credentials into chat.",
-    integrations.agents &&
-      "If the user explicitly asks to list or review, schedule, run, or change routines, use list_routines and propose_routine or propose_routine_action. A proposal is not applied until the user confirms its in-app card, so never claim the action completed before that confirmation.",
+    credentialPromptFor(availableAgentTools).trim(),
+    routinePromptFor(availableAgentTools).trim(),
   ]
     .filter(Boolean)
     .join("\n");
@@ -4057,9 +4542,59 @@ async function runGroupMemberTurn(
   const roomSystem =
     system +
     sectionContextSystemPrompt(bot.section) +
-    (workspace ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}` : "") +
+    (hasFileTools(worksInWorkspace, httpOnlyToolSurface)
+      ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}`
+      : "") +
     renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) +
     installedPlaybookInstructions(text, bot.playbooks);
+
+  // Direct and room turns share the catalog and host.  Only driver-loop
+  // engines receive HTTP tool definitions; other engines mount their own
+  // integrations or have no tool executor for this surface.
+  const roomTurnTools =
+    instance.adapter.capabilities.toolLoop === true ? buildTurnTools(integrations) : [];
+  // `commsDepth: hop` — the room's own hop, not zero.  The catalog above
+  // already gated on `hop < MAX_COMMS_DEPTH`, and this is the depth the
+  // peer hop is charged at, so an ask_bot from a room member is counted
+  // where the MCP lane counts it (`agentsIntegration(bot.id, threadId, hop)`
+  // hands the proxy the same number).
+  const roomToolHost =
+    instance.adapter.capabilities.toolLoop === true && roomTurnTools.length > 0
+      ? createTurnToolHost({
+          botId: bot.id,
+          threadId,
+          commsDepth: hop,
+          // Bound to THIS room turn's bot and thread in the same closure
+          // caller identity lives in.  The card must name the member that
+          // asked and land on the room thread — which is also what lets the
+          // waiter's request.opened / request.resolved handling hold the
+          // room deadline instead of burning it under an open card.
+          requestApproval: (ask) =>
+            permissionBroker.request({
+              threadId,
+              botId: bot.id,
+              provider: instance.driverKind,
+              providerInstanceId: instance.instanceId,
+              tool: ask.tool,
+              summary: ask.summary,
+              signal: ask.signal,
+            }),
+          deps: {
+            // The same seven `/api/internal/` bodies the 1:1 host is given.
+            // A room turn is the same bot running the same tools; only the
+            // thread it answers on differs, so withholding four of them here
+            // would give the same bot a smaller toolset in a room than in a
+            // direct message.
+            executeListAgentsRequest,
+            executeAskBotRequest,
+            executeListRoutinesRequest,
+            executeDelegateBotRequest,
+            executeCreateBotRequest,
+            executeRequestCredentialRequest,
+            executeRoutineRequestRequest,
+          },
+        })
+      : undefined;
 
   // run the turn and wait for it to settle, folding the reply text so a
   // chained @mention can be routed afterwards
@@ -4107,6 +4642,8 @@ async function runGroupMemberTurn(
         system: roomSystem,
         cwd,
         integrations,
+        tools: roomTurnTools,
+        toolHost: roomToolHost,
         ...memberTurnSelection(selection),
       })
       .catch((err) => {
@@ -4895,6 +5432,11 @@ function activeInterruptedTurns(instanceId?: string): InterruptedTurn[] {
 
 function latchInterruptedTurns(turns: readonly InterruptedTurn[]): void {
   for (const turn of turns) {
+    // The third abandon source: the fleet these turns are running on is
+    // about to be disposed.  Settled here, BEFORE `registry.disposeAll`,
+    // so an HTTP-lane tool waiting on a card is released while the loop
+    // that would read its answer still exists.
+    permissionBroker.abandonThread(turn.threadId, "disposed");
     stoppedTurns.add(`${turn.botId}:${turn.threadId}`);
     fallbackAttemptByTurn.delete(`${turn.botId}:${turn.threadId}`);
     pendingMemberFallback.delete(turn.threadId);
@@ -5391,84 +5933,40 @@ const server = createServer(async (req, res) => {
         return json(res, 401, { error: "unauthorized" });
       }
       if (method === "GET" && path === "/api/internal/agents") {
-        const self = url.searchParams.get("self");
-        const sender = self ? store.bot(self) : null;
-        if (!sender) return json(res, 403, { error: "unknown sender" });
-        // title/description included so a "chief of staff"-style bot can
-        // judge the team (who does what, who has no job description yet)
-        const bots = store.bots
-          .filter(
-            (b) =>
-              b.id !== self &&
-              !b.hidden &&
-              sectionKey(b.section) === sectionKey(sender.section),
-          )
-          .map((b) => ({
-            id: b.id,
-            name: b.name,
-            model: b.modelSelection.model,
-            busy: !!b.busy,
-            title: b.title || undefined,
-            description: b.description || undefined,
-          }));
-        return json(res, 200, { bots });
+        const result = executeListAgentsRequest({ selfId: url.searchParams.get("self") ?? "" });
+        return json(res, result.status, result.body);
       }
       if (method === "GET" && path === "/api/internal/routines") {
-        const fromBotId = String(url.searchParams.get("fromBotId") ?? "");
-        const from = store.bot(fromBotId);
-        if (!from) return json(res, 403, { error: "unknown sender" });
-        const fromThreadId = String(url.searchParams.get("fromThreadId") ?? from.threadId);
-        if (!connectorThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source conversation does not belong to sender" });
-        }
-        return json(res, 200, {
-          now: new Date().toISOString(),
-          timeZone: routineTimeZone(),
-          routines: routines!.listRoutines()
-            .filter((routine) => routine.botId === from.id)
-            .slice(0, 100)
-            .map(agentRoutine),
+        const fromThreadId = url.searchParams.get("fromThreadId");
+        const result = executeListRoutinesRequest({
+          fromBotId: String(url.searchParams.get("fromBotId") ?? ""),
+          ...(fromThreadId ? { fromThreadId } : {}),
         });
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/routine-requests") {
         const parsed = routineRequestEnvelopeSchema.safeParse(await readBody(req));
         if (!parsed.success) return json(res, 400, { error: "invalid routine proposal" });
         const body = parsed.data;
-        const fromBotId = body.fromBotId;
-        const from = store.bot(fromBotId);
-        if (!from) return json(res, 403, { error: "unknown sender" });
-        const fromThreadId = body.fromThreadId;
-        const owner = connectorThread(from.id, fromThreadId);
-        if (!owner) return json(res, 403, { error: "source conversation does not belong to sender" });
-        const persistence = routineProposalPersistence(from.id, fromThreadId);
-        if (!persistence.ok) {
-          return json(res, persistence.status, { error: persistence.error });
-        }
-        const proposedInput = body.action === "create"
-          ? { action: body.action, routine: body.routine }
-          : body.action === "update"
-            ? { action: body.action, routineId: body.routineId, changes: body.changes }
-            : { action: body.action, routineId: body.routineId };
-        const proposed = await routineRequests.propose({
-          botId: from.id,
-          threadId: fromThreadId,
-          proposal: proposedInput,
-          from: owner.group ? { botId: from.id, name: from.name, color: from.color } : undefined,
-        });
-        const proposedCard = store.messagesFor(fromThreadId).find((message) => message.id === proposed.messageId)?.card;
-        appendDecision(DATA_DIR, {
-          threadId: fromThreadId,
-          requestId: proposed.requestId,
-          botId: from.id,
-          botName: from.name,
-          tool: proposedCard?.tool,
-          // Audit what the human was actually shown, not the shorter tool
-          // response returned to the model.
-          summary: proposedCard?.subtitle ?? proposed.summary,
-          decision: "card-shown",
-          source: "routine",
-        });
-        return json(res, 201, proposed);
+        const result = await executeRoutineRequestRequest(
+          body.action === "create"
+            ? { fromBotId: body.fromBotId, fromThreadId: body.fromThreadId, action: body.action, routine: body.routine }
+            : body.action === "update"
+              ? {
+                  fromBotId: body.fromBotId,
+                  fromThreadId: body.fromThreadId,
+                  action: body.action,
+                  routineId: body.routineId,
+                  changes: body.changes,
+                }
+              : {
+                  fromBotId: body.fromBotId,
+                  fromThreadId: body.fromThreadId,
+                  action: body.action,
+                  routineId: body.routineId,
+                },
+        );
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/ask-bot") {
         const body = await readBody(req);
@@ -5486,144 +5984,36 @@ const server = createServer(async (req, res) => {
       // turn.completed. Returns immediately (the caller does not wait).
       if (method === "POST" && path === "/api/internal/delegate-bot") {
         const body = await readBody(req);
-        const fromBotId = String(body.fromBotId ?? "");
-        const toBotId = String(body.toBotId ?? "");
-        const message = String(body.message ?? "").trim();
-        const reason = typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : undefined;
-        const depth = Number(body.depth ?? 0) || 0;
-        if (!toBotId || !message) return json(res, 400, { error: "toBotId and message required" });
-        const from = store.bot(fromBotId);
-        if (!from) return json(res, 404, { error: "no such bot" });
-        const target = store.bot(toBotId);
-        if (!target) return json(res, 404, { error: "no such bot" });
-        if (sectionKey(from.section) !== sectionKey(target.section)) {
-          return json(res, 403, { error: "that bot belongs to a different section" });
-        }
-        const fromThreadId = String(body.fromThreadId ?? from.threadId);
-        if (!store.taskByThread(from.id, fromThreadId)) {
-          return json(res, 403, { error: "source thread does not belong to sender" });
-        }
-        const result = queueDelegation(
-          commsBus,
-          from,
-          { toBotId, message, reason, depth },
-          MAX_COMMS_DEPTH,
-          fromThreadId,
-        );
-        if (result !== "ok") {
-          // the agent reads this string — a bare enum ("too_deep") tells it
-          // nothing about what to do instead
-          const said: Record<Exclude<QueueResult, "ok">, string> = {
-            self: "a bot cannot delegate to itself",
-            too_deep: "delegation chains are limited to one hop — do this one yourself",
-            no_target: "no such bot",
-            too_many: "too many delegations queued on this turn — finish some first",
-          };
-          return json(res, 200, { error: said[result] });
-        }
-        const targetName = store.bot(toBotId)?.name ?? toBotId;
-        return json(res, 200, {
-          queued: true,
-          message: from.approvePeerComms
-            ? `Queued for review — @${targetName} will only pick it up if the user approves after your turn finishes.`
-            : `Delegation queued — @${targetName} will pick it up after your current turn finishes.`,
+        const result = executeDelegateBotRequest({
+          fromBotId: String(body.fromBotId ?? ""),
+          toBotId: String(body.toBotId ?? ""),
+          message: String(body.message ?? "").trim(),
+          reason: typeof body.reason === "string" && body.reason.trim() ? body.reason.trim() : undefined,
+          depth: Number(body.depth ?? 0) || 0,
+          fromThreadId: typeof body.fromThreadId === "string" ? body.fromThreadId : undefined,
         });
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/create-bot") {
         const body = await readBody(req);
-        const fromBotId = String(body.fromBotId ?? "");
-        const chief = store.bot(fromBotId);
-        if (!chief) return json(res, 403, { error: "unknown sender" });
-        const fromThreadId = String(body.fromThreadId ?? chief.threadId);
-        if (!store.taskByThread(chief.id, fromThreadId)) {
-          return json(res, 403, { error: "source thread does not belong to sender" });
-        }
-        if (!chief.chiefOfStaff) {
-          return json(res, 403, { error: "only a section's Chief of Staff can create operator bots" });
-        }
-        if (store.bots.length >= MAX_WORKSPACE_BOTS) {
-          return json(res, 409, { error: `this workspace is limited to ${MAX_WORKSPACE_BOTS} bots` });
-        }
-        const name = String(body.name ?? "").trim();
-        const role = String(body.role ?? "").trim();
-        const instructions = String(body.instructions ?? "").trim();
-        if (!name || !role || !instructions) {
-          return json(res, 400, { error: "name, role, and instructions are required" });
-        }
-        if (name.length > 80) return json(res, 400, { error: "name must be at most 80 characters" });
-        if (role.length > 120) return json(res, 400, { error: "role must be at most 120 characters" });
-        if (instructions.length > 1_000) {
-          return json(res, 400, { error: "instructions must be at most 1000 characters" });
-        }
-        const duplicate = store.bots.find(
-          (candidate) =>
-            !candidate.hidden &&
-            sectionKey(candidate.section) === sectionKey(chief.section) &&
-            candidate.name.trim().toLowerCase() === name.toLowerCase(),
-        );
-        if (duplicate) {
-          return json(res, 409, { error: `@${duplicate.name} already exists in this section; use list_bots` });
-        }
-        const created = store.createBot(
-          {
-            name,
-            title: role,
-            description: instructions,
-            modelSelection: { ...chief.modelSelection },
-            section: chief.section,
-          },
-          { seedMessages: false },
-        );
-        const safeBot = store.patchBot(created.id, {
-          composio: false,
-          autoApprove: false,
-          approvePeerComms: false,
-        })!;
-        return json(res, 201, {
-          id: safeBot.id,
-          name: safeBot.name,
-          title: safeBot.title,
-          section: safeBot.section || "General",
-          model: safeBot.modelSelection.model,
+        const result = executeCreateBotRequest({
+          fromBotId: String(body.fromBotId ?? ""),
+          fromThreadId: typeof body.fromThreadId === "string" ? body.fromThreadId : undefined,
+          name: String(body.name ?? ""),
+          role: String(body.role ?? ""),
+          instructions: String(body.instructions ?? ""),
         });
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/request-credential") {
         const body = await readBody(req);
-        const fromBotId = String(body.fromBotId ?? "");
-        const from = store.bot(fromBotId);
-        if (!from) return json(res, 403, { error: "unknown sender" });
-        const fromThreadId = String(body.fromThreadId ?? from.threadId);
-        const owner = connectorThread(from.id, fromThreadId);
-        if (!owner) return json(res, 403, { error: "source conversation does not belong to sender" });
-        if (!isCredentialTargetId(body.credentialId)) {
-          return json(res, 400, { error: "unsupported credential id" });
-        }
-        const credentialId: CredentialTargetId = body.credentialId;
-        const target = CREDENTIAL_TARGETS[credentialId];
-        if (credentialIsConfigured(cfg, credentialId)) {
-          return json(res, 200, { alreadyConfigured: true, label: target.label });
-        }
-        const existing = store.messagesFor(fromThreadId).find((message) =>
-          isReusableCredentialRequest(message, credentialId, from.id, Boolean(owner.group))
-        );
-        if (existing) {
-          return json(res, 200, { messageId: existing.id, label: target.label });
-        }
-        const reason = typeof body.reason === "string" ? body.reason.trim().slice(0, 240) : "";
-        const message = store.appendMessage(fromThreadId, {
-          role: "bot",
-          kind: "secret",
-          ...(owner.group ? { from: { botId: from.id, name: from.name, color: from.color } } : {}),
-          secret: {
-            target: credentialId,
-            label: target.label,
-            description: reason ? `${target.description} ${reason}` : target.description,
-            placeholder: target.placeholder,
-            helpUrl: target.helpUrl,
-            requestKey: randomUUID(),
-          },
+        const result = executeRequestCredentialRequest({
+          fromBotId: String(body.fromBotId ?? ""),
+          fromThreadId: typeof body.fromThreadId === "string" ? body.fromThreadId : undefined,
+          credentialId: body.credentialId,
+          reason: typeof body.reason === "string" ? body.reason : undefined,
         });
-        return json(res, 201, { messageId: message.id, label: target.label });
+        return json(res, result.status, result.body);
       }
       if (method === "POST" && path === "/api/internal/connectors/mcp") {
         const body = await readBody(req);
@@ -6666,6 +7056,10 @@ const server = createServer(async (req, res) => {
       cancelRoomRounds((round) => round.threadId === m![2]);
       const updated = store.deleteGroupTask(group.id, m[2]);
       if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
+      // The thread is gone from the store, so its logs have nothing left to
+      // name them (server/transcript-retention.ts).  A task that MOVED keeps
+      // its thread id and never reaches this branch.
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, [m[2]!]);
       const fresh = groupWithThread(updated);
       broadcast({ kind: "group", group: fresh });
       return json(res, 200, { group: fresh });
@@ -6842,13 +7236,10 @@ const server = createServer(async (req, res) => {
       const threadIds = new Set([group.threadId, ...(group.tasks ?? []).map((task) => task.threadId)]);
       for (const threadId of threadIds) lastReply.delete(threadId);
       store.deleteGroup(group.id);
-      for (const threadId of threadIds) {
-        for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-          try {
-            unlinkSync(join(dir, `${threadId}.ndjson`));
-          } catch {}
-        }
-      }
+      // Both generations and any temp file, for every task this room had: a
+      // `.ndjson.1` or a killed trim's `.tmp` left behind would outlive the
+      // room it belonged to (server/transcript-retention.ts).
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, threadIds);
       return json(res, 200, { ok: true });
     }
     m = path.match(/^\/api\/groups\/([\w-]+)\/messages$/);
@@ -7304,6 +7695,8 @@ const server = createServer(async (req, res) => {
       // container — orphaning it forever.  Claimed before the first await,
       // exactly like that route claims it, so two requests cannot both
       // pass the check.
+      // Read off the record while it still exists, not after the delete.
+      const botThreadIds = new Set([bot.threadId, ...(bot.tasks ?? []).map((task) => task.threadId)]);
       const localVmTarget = perBotLocalVmTarget(bot.id);
       if (localVmLifecycleBusy.has(localVmTarget.key)) {
         return json(res, 409, { error: "this bot's Local VM setup action is still running — retry the delete after it finishes" });
@@ -7333,15 +7726,25 @@ const server = createServer(async (req, res) => {
         // Best-effort: no container runtime, or no such container, is the
         // ordinary case and must not fail the delete.
         await containerComputerAction("remove", undefined, undefined, localVmTarget).catch(() => {});
+        // The snapshot above was taken before two awaits.  A task created
+        // while they ran has a record the delete below removes and a pair of
+        // logs the snapshot never heard of, so take the union rather than
+        // either list alone.
+        const current = store.bot(bot.id);
+        if (current) {
+          botThreadIds.add(current.threadId);
+          for (const task of current.tasks ?? []) botThreadIds.add(task.threadId);
+        }
         store.deleteBot(bot.id);
       } finally {
         localVmLifecycleBusy.delete(localVmTarget.key);
       }
-      for (const dir of [EVENTS_DIR, NATIVE_DIR]) {
-        try {
-          unlinkSync(join(dir, `${bot.threadId}.ndjson`));
-        } catch {}
-      }
+      // Every task is its own thread with its own pair of logs, and
+      // `bot.threadId` names only the active one — deleting just that left
+      // every other task's transcript on disk forever, which was already true
+      // on `main` for the single generation it knew about.  Same set
+      // `store.deleteBot` uses to drop the message records.
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, botThreadIds);
       return json(res, 200, { ok: true });
     }
 
@@ -7876,6 +8279,12 @@ const server = createServer(async (req, res) => {
             error: "those conversations cannot merge — a bot keeps its last one",
           });
         }
+        // A merge COPIES the source's messages into the target and then
+        // deletes the source task, so — unlike the moves below, which keep
+        // their thread id — the source thread id names nothing afterwards and
+        // its logs would sit on disk forever.  The target keeps its own
+        // (server/transcript-retention.ts).
+        for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, [m[2]!]);
         broadcast({ kind: "bot", bot: botWithThread(merged) });
         return json(res, 200, { bot: botWithThread(merged) });
       }
@@ -7937,6 +8346,7 @@ const server = createServer(async (req, res) => {
       }
       const updated = store.deleteTask(m[1], m[2]);
       if (!updated) return json(res, 400, { error: "a bot keeps at least one task" });
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, [m[2]!]);
       const fresh = botWithThread(updated);
       broadcast({ kind: "bot", bot: fresh });
       return json(res, 200, { bot: fresh });
@@ -8280,6 +8690,7 @@ const server = createServer(async (req, res) => {
         antigravity: lastAntigravityQuotaSnapshot(),
         windows: usageQuotaPoller.getWindows(),
         deepseek,
+        engineSpend: rollingSpendTracker.getSpend(),
       });
     }
     if (method === "GET" && (path === "/api/qdrant/status" || path === "/api/recall/status")) {
@@ -9649,11 +10060,36 @@ server.listen(PORT, "127.0.0.1", () => {
   console.log(`botfleet server on http://127.0.0.1:${PORT}`);
 });
 
+// Test-only safety net (see server/test-parent-watchdog.ts): a harness
+// spawned by the suite via server/testing/cleanup.ts's spawnDetached carries
+// BOTFLEET_TEST_CHILD, and self-terminates the moment its recorded parent —
+// the vitest worker that spawned it — is gone, whether that worker exited
+// cleanly or was SIGKILLed outright and never got to signal anything. It
+// re-sends itself SIGTERM rather than exiting directly so it goes through
+// the exact same graceful shutdown below, driver CLIs and MCP proxies
+// included, that a real caller's SIGTERM already gets.
+//
+// Gated strictly on the marker: the always-on launchd harness
+// (com.jay.botfleet-server) never sets it, so this is a no-op in production,
+// where the parent legitimately is launchd for the process's whole life.
+if (process.env.BOTFLEET_TEST_CHILD === "1") {
+  const parentPidAtBoot = Number(process.env.BOTFLEET_TEST_PARENT_PID) || process.ppid;
+  installTestParentWatchdog(parentPidAtBoot, () => {
+    console.error(`[test-child] parent pid ${parentPidAtBoot} is gone — self-terminating`);
+    try {
+      process.kill(process.pid, "SIGTERM");
+    } catch {
+      process.exit(1);
+    }
+  });
+}
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.on(signal, () => {
     for (const idle of localVmIdles.values()) idle.cancel();
     vps.closeAllVpsDesktopTunnels();
     watchdog.stop();
+    stopTranscriptSweeps();
     routines?.stop();
     stopAntigravityQuotaPoller();
     usageQuotaPoller.stop();
