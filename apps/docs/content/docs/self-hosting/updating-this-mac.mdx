@@ -19,13 +19,14 @@ A locally built app has no release feed at all, so **Check for Updates** could o
 - **Update Available: `<version>`, N commits ahead** once a check finds `origin/main` past the installed commit, with the newest commit subjects behind it.
 - Live progress while an update runs: the step the updater is on, a percentage when it has one, and the tail of the updater's own log.
 - The last run's outcome — verified, rolled back, failed, or refused — with the updater's own sentence.
+- `checkError`, when the last check could not reach the source.  `checkedAt` does not move in that case, so the previous answer and its age both stay honest.
 
 ## Starting one from your phone
 
 The paired iOS companion reaches the same three routes through the sidecar, so an update can be started from a pocket:
 
 - `GET /api/update/status` — everything the card shows.
-- `POST /api/update/check` — `git fetch origin main` in the harness checkout, then compare.
+- `POST /api/update/check` — `git fetch origin main` in the harness checkout, then compare.  Answers `502` with `{ error, status }` when the fetch could not reach the source, rather than a false "up to date": the stale `origin/main` left on disk by the last good fetch would happily produce one.
 - `POST /api/update/run` — start the transactional updater.  Returns `202` with a `runId`, or `409` with the reason it will not start.
 
 The sidecar's allowlist carries exactly those three; the updater's own recovery action stays on the Mac.  `POST /api/update/run` takes an optional JSON body, `{ "force": true }`.
