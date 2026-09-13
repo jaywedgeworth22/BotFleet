@@ -181,10 +181,11 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
   try {
     const feedback = Sentry.getFeedback();
     if (!feedback) {
-      const title = encodeURIComponent(options?.formTitle ?? "Bug Report");
+      const truncatedMsg = options?.defaultMessage ? options.defaultMessage.slice(0, 1500) : "";
+      const title = encodeURIComponent((options?.formTitle ?? "Bug Report").slice(0, 100));
       const body = encodeURIComponent(
-        options?.defaultMessage
-          ? `**Reported Problem:**\n${options.defaultMessage}\n\n*(Submitted via BotFleet)*`
+        truncatedMsg
+          ? `**Reported Problem:**\n${truncatedMsg}\n\n*(Submitted via BotFleet)*`
           : "<!-- Describe the problem and reproduction steps here -->\n\n*(Submitted via BotFleet)*",
       );
       const url = `https://github.com/jaywedgeworth22/BotFleet/issues/new?title=${title}&body=${body}`;
@@ -199,9 +200,13 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
     }
 
     if (activeFeedbackDialog) {
-      activeFeedbackDialog.appendToDom();
-      activeFeedbackDialog.open();
-      return;
+      try {
+        activeFeedbackDialog.close();
+        activeFeedbackDialog.removeFromDom();
+      } catch {
+        /* ignore cleanup failure */
+      }
+      activeFeedbackDialog = null;
     }
 
     const dialog = (await feedback.createForm({
