@@ -41,6 +41,31 @@ describe("buildTurnContext", () => {
     const out = buildTurnContext({ text: "hi", transcript: [], rewound: false, fresh: true, replaysNatively: false });
     expect(out).toEqual({ turnText: "hi", resume: false });
   });
+
+  describe("the chat-completions capabilities.replaysTranscript contract", () => {
+    // index.ts derives `replaysNatively` from
+    // `instance.adapter.capabilities.replaysTranscript === true` rather than
+    // from `driverKind === "grok"`. minimax, openai-compat and grok all
+    // declare that capability because their driver already rebuilds the
+    // message history from SendTurnInput.transcript every round — so
+    // inlining the same history here as well would send it twice. A CLI
+    // driver never declares it, so its path (inline replay on rewind/fresh)
+    // must stay exactly as it is today.
+    it("a chat-completions driver (replaysTranscript: true) never gets the transcript inlined", () => {
+      for (const flags of [{ rewound: true, fresh: false }, { rewound: false, fresh: true }]) {
+        const out = buildTurnContext({ text: "hi", transcript, ...flags, replaysNatively: true });
+        expect(out.turnText).toBe("hi");
+        expect(out.turnText).not.toContain("Biscuit");
+      }
+    });
+
+    it("a CLI driver's path (no replaysTranscript capability) is unchanged: still inlined", () => {
+      const rewoundOut = buildTurnContext({ text: "hi", transcript, rewound: true, fresh: false, replaysNatively: false });
+      expect(rewoundOut.turnText).toContain("User: my dog is named Biscuit");
+      const freshOut = buildTurnContext({ text: "hi", transcript, rewound: false, fresh: true, replaysNatively: false });
+      expect(freshOut.turnText).toContain("Assistant: Noted — Biscuit.");
+    });
+  });
 });
 
 describe("engineIsFresh", () => {

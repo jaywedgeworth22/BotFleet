@@ -2,7 +2,7 @@
 // errors. The command has one inline copy action and one primary next step;
 // unusable model lists stay out of the way until the engine is ready.
 import { useState } from "react";
-import { Check, Copy, Download, ExternalLink, LogIn, TerminalSquare } from "lucide-react";
+import { Check, Copy, Download, ExternalLink, KeyRound, LogIn, TerminalSquare } from "lucide-react";
 import type { EngineInstall, InstanceInfo } from "@/state/store";
 import { cn } from "@/lib/cn";
 
@@ -34,9 +34,62 @@ export function needsCli(instance: InstanceInfo | undefined): boolean {
   return instance?.snapshot.state !== "available";
 }
 
-function CommandRow({ command, actionLabel }: { command: string; actionLabel: string }) {
+/** No CLI, no interactive login — this driver reads a bare API key from the
+ * environment or a config file. `install.command` on one of these is
+ * guidance text ("get a key, then set …"), never a runnable shell line, so
+ * the card must not call it an "install" or offer to paste it into a
+ * terminal — see EngineInstall.apiKeyOnly in server/contracts.ts. */
+export function isApiKeyOnly(instance: InstanceInfo | undefined): boolean {
+  return instance?.install?.apiKeyOnly === true;
+}
+
+/** Title and body for the setup card, factored out of the component so a
+ * MiniMax- or openai-compat-shaped instance can be asserted on directly. */
+export function engineSetupCopy(instance: InstanceInfo, intent: "cloud" | "inject") {
+  const install = instance.install;
+  const signInCommand = install?.signInCommand;
+  const apiKeyOnly = isApiKeyOnly(instance);
+  const signInOnly = !apiKeyOnly && intent === "cloud" && needsSignIn(instance);
+
+  if (apiKeyOnly) {
+    return {
+      title: `Add a ${instance.displayName} API key`,
+      description:
+        `${instance.displayName} runs on an API key, not a CLI install.  Set it as shown below, ` +
+        "then reopen this menu — Settings → Engines has more on how this engine runs.",
+    };
+  }
+  if (signInOnly) {
+    return {
+      title: `Sign in to ${instance.displayName}`,
+      description: "Finish the account sign-in in Terminal. Reopen this menu afterward and we’ll check again.",
+    };
+  }
+  if (intent === "inject") {
+    return {
+      title: `Install ${instance.displayName}`,
+      description: "Install the engine once, then you can run it with local models—no cloud sign-in required.",
+    };
+  }
+  return {
+    title: `Install ${instance.displayName}`,
+    description: `Install the command-line app once. Models will appear here as soon as it’s ready${signInCommand ? "; sign-in may follow" : ""}.`,
+  };
+}
+
+function CommandRow({
+  command,
+  actionLabel,
+  copyOnly,
+}: {
+  command: string;
+  actionLabel: string;
+  /** True when `command` is guidance text, not a shell one-liner — offer
+   * Copy only, never "open a terminal and run this." */
+  copyOnly?: boolean;
+}) {
   const [status, setStatus] = useState<"copied" | "opened" | null>(null);
-  const canOpen = Boolean(window.ogb?.openInstallTerminal);
+  const canOpen = !copyOnly && Boolean(window.ogb?.openInstallTerminal);
 
   const settle = (next: "copied" | "opened") => {
     setStatus(next);
@@ -118,14 +171,10 @@ export function EngineSetup({
   const install = instance.install;
   const installCommand = installCommandFor(install);
   const signInCommand = install?.signInCommand;
-  const signInOnly = intent === "cloud" && needsSignIn(instance);
+  const apiKeyOnly = isApiKeyOnly(instance);
+  const signInOnly = !apiKeyOnly && intent === "cloud" && needsSignIn(instance);
   const command = signInOnly ? signInCommand : installCommand;
-  const title = signInOnly ? `Sign in to ${instance.displayName}` : `Install ${instance.displayName}`;
-  const description = signInOnly
-    ? "Finish the account sign-in in Terminal. Reopen this menu afterward and we’ll check again."
-    : intent === "inject"
-      ? "Install the engine once, then you can run it with local models—no cloud sign-in required."
-      : `Install the command-line app once. Models will appear here as soon as it’s ready${signInCommand ? "; sign-in may follow" : ""}.`;
+  const { title, description } = engineSetupCopy(instance, intent);
 
   // Some engines are configured elsewhere (for example, a cloud computer
   // token) and intentionally have no install descriptor.
@@ -144,7 +193,7 @@ export function EngineSetup({
     <div className={cn("rounded-xl border border-hairline/40 bg-control/30 p-3", className)}>
       <div className="flex items-start gap-2.5">
         <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-lg bg-inset text-ink-secondary">
-          {signInOnly ? <LogIn size={14} /> : <Download size={14} />}
+          {apiKeyOnly ? <KeyRound size={14} /> : signInOnly ? <LogIn size={14} /> : <Download size={14} />}
         </span>
         <div className="min-w-0">
           <div className="text-[13px] font-semibold text-ink">{title}</div>
@@ -153,7 +202,11 @@ export function EngineSetup({
       </div>
 
       {command ? (
-        <CommandRow command={command} actionLabel={signInOnly ? "Open sign-in in Terminal" : "Open install in Terminal"} />
+        <CommandRow
+          command={command}
+          actionLabel={signInOnly ? "Open sign-in in Terminal" : "Open install in Terminal"}
+          copyOnly={apiKeyOnly}
+        />
       ) : (
         <p className="mt-3 rounded-lg bg-inset px-2.5 py-2 text-[12px] leading-relaxed text-ink-secondary">
           There isn’t a one-line installer for this platform. Use the setup guide below.

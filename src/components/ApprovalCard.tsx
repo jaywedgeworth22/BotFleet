@@ -21,7 +21,7 @@ const ROUTINE_SETTLED_LABEL = {
   delete: "Routine deleted",
 } as const;
 
-/** The tool's own name is noise to a human: mcp__ogb__computer_batch is
+/** The tool's own name is noise to a human: mcp__botfleet__computer_batch is
  * "computer batch", Bash is "run a command". */
 function toolLabel(tool?: string): string {
   if (!tool) return "an action";
