@@ -234,10 +234,10 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
   if (!globalThis.window) return;
   try {
     if (!isSentryFeedbackAvailable()) {
-      const url = buildFallbackIssueUrl(options?.formTitle ?? "Bug Report", options?.defaultMessage);
+      const url = buildFallbackIssueUrl(options?.formTitle ?? "Report a Problem", options?.defaultMessage);
       if (typeof window !== "undefined") {
         if (window.ogb?.openExternal) {
-          window.ogb.openExternal(url);
+          await window.ogb.openExternal(url);
         } else {
           window.open(url, "_blank", "noopener,noreferrer");
         }
@@ -274,7 +274,7 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
       };
 
       const dialog = (await feedback.createForm({
-        formTitle: options?.formTitle ?? "Report a problem",
+        formTitle: options?.formTitle ?? "Report a Problem",
         messagePlaceholder: options?.defaultMessage ? `Details: ${options.defaultMessage}` : "What went wrong?",
         tags: options?.defaultMessage ? { reportedError: options.defaultMessage.slice(0, 200) } : undefined,
         onFormSubmitted: cleanup,
