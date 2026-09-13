@@ -197,7 +197,7 @@ export async function probeHarness({
  * @returns {Promise<
  *   | { mode: "attached", port: number, pid: number, static: boolean }
  *   | { mode: "spawned", port: number, proc: unknown }
- *   | { mode: "failed", conflictOnly: boolean }
+ *   | { mode: "failed", conflictOnly: boolean, unresponsiveOwner?: { pid: number, port: number } }
  * >}
  */
 export async function resolvePackagedServer({
@@ -214,12 +214,23 @@ export async function resolvePackagedServer({
   // true only while every failed port was held by a non-BotFleet program —
   // decides which error-page message renders when nothing works out.
   let everyPortForeignOwned = true;
+  // The live data-root owner that never answered, so the error page can name
+  // it instead of blaming slow startup.  The common shape: an always-on
+  // harness whose event loop stalls (a huge synchronous save under memory
+  // pressure), the accept backlog fills, and every probe sees a reset.
+  // Nothing is spawned on purpose — a second harness on the same data is
+  // worse than no window.
+  let unresponsiveOwner = null;
   for (let attempt = 0; attempt < attempts; attempt++) {
     let currentOwner;
     try { currentOwner = owner?.() ?? null; } catch {
       log("cannot validate data ownership; refusing to spawn another harness");
       return { mode: "failed", conflictOnly: false };
     }
+    // Each pass re-reads the owner, so the diagnosis must follow this pass:
+    // a harness that died during the settle gap must not be named on the
+    // page as "running but not answering".
+    unresponsiveOwner = null;
     const candidatePorts = currentOwner ? [currentOwner.port] : ports;
     const freePorts = [];
     let uncertain = Boolean(currentOwner);
@@ -257,7 +268,17 @@ export async function resolvePackagedServer({
       if (seen.kind === "unavailable") {
         uncertain = true;
         everyPortForeignOwned = false;
+        if (currentOwner) {
+          unresponsiveOwner = { pid: currentOwner.pid, port };
+          log(`the harness that owns this data (pid ${currentOwner.pid}) is alive but did not answer health checks on port ${port}; not spawning a second harness`);
+        } else {
+          log(`port ${port} has a listener that did not answer health checks; not spawning on it`);
+        }
       } else {
+        if (currentOwner) {
+          unresponsiveOwner = { pid: currentOwner.pid, port };
+          log(`the harness that owns this data (pid ${currentOwner.pid}) is alive but nothing is listening on port ${port} yet; not spawning a second harness`);
+        }
         freePorts.push(port);
       }
     }
@@ -271,5 +292,8 @@ export async function resolvePackagedServer({
     }
     if (attempt < attempts - 1) await sleep(retrySettleMs);
   }
-  return { mode: "failed", conflictOnly: everyPortForeignOwned };
+  log(unresponsiveOwner
+    ? `no usable harness after ${attempts} attempts: the data owner (pid ${unresponsiveOwner.pid}, port ${unresponsiveOwner.port}) never answered`
+    : `no usable harness after ${attempts} attempts: ${everyPortForeignOwned ? "every port was held by another program" : "no child answered /api/health in time"}`);
+  return { mode: "failed", conflictOnly: everyPortForeignOwned, ...(unresponsiveOwner ? { unresponsiveOwner } : {}) };
 }

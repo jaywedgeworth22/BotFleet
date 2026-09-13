@@ -1,15 +1,20 @@
-// The tool host is the harness side of a driver-owned turn.  Two things
-// have to be true of it: `list_bots` must tell an HTTP bot exactly what the
-// MCP lane tells a CLI bot, and `ask_bot` must go through
-// `executeAskBotRequest` rather than reimplementing the peer hop — every
-// guard that matters (depth cap, section, thread ownership, approval,
-// mirroring) lives in there.
+// The tool host is the harness side of a driver-owned turn, and after the
+// registry landed it owns exactly three things: caller identity, the gate
+// that decides which catalog entry a call may reach, and the promise that
+// `execute` never throws.  The tool BODIES are tested in `agents.test.ts`
+// and the two lanes' definitions in `registry.test.ts`; what is left here is
+// the join.
+//
+// The pinned copy of the `/api/internal/agents` body that used to live in
+// this file is gone.  It was a drift detector for a divergence that can no
+// longer happen: the host now receives the endpoint function itself.
 import { describe, expect, it, vi } from "vitest";
 
-import { createTurnToolHost, type TurnToolBot, type TurnToolHostDeps } from "./host.ts";
-import { sectionKey } from "../store.ts";
+import type { RequestOutcome } from "../contracts.ts";
+import { createTurnToolHost, type TurnToolHostDeps } from "./host.ts";
+import { listAgentsResponse, type AgentBot, type AgentRequestResult } from "./agents.ts";
 
-const bots: TurnToolBot[] = [
+const bots: AgentBot[] = [
   { id: "bot-self", name: "self", section: "ops", modelSelection: { model: "m" }, title: "self title" },
   { id: "bot-peer", name: "peer", section: "ops", modelSelection: { model: "m" }, title: "peer title" },
   { id: "bot-busy", name: "busy", section: "ops", modelSelection: { model: "m" }, busy: true },
@@ -17,67 +22,96 @@ const bots: TurnToolBot[] = [
   { id: "bot-other", name: "other", section: "research", modelSelection: { model: "m" } },
 ];
 
-/** A pinned copy of the `/api/internal/agents` endpoint body (server/index.ts,
- *  the `GET /api/internal/agents` branch) — the single implementation the MCP
- *  lane serves to CLI bots.  The host must produce the same rows.  PR 4
- *  replaces both with one registry entry and deletes this copy; until then
- *  this is the drift test that would have caught the divergence where the
- *  HTTP executor offered a bot its own row and hid `busy`. */
-function endpointAgents(selfId: string, all: TurnToolBot[]) {
-  const sender = all.find((b) => b.id === selfId);
-  if (!sender) return null;
-  return all
-    .filter((b) => b.id !== selfId && !b.hidden && sectionKey(b.section) === sectionKey(sender.section))
-    .map((b) => ({
-      id: b.id,
-      name: b.name,
-      model: b.modelSelection.model,
-      busy: !!b.busy,
-      title: b.title || undefined,
-      description: b.description || undefined,
-    }));
-}
-
 function deps(over: Partial<TurnToolHostDeps> = {}): TurnToolHostDeps {
   return {
-    bot: (id) => bots.find((b) => b.id === id),
-    bots: () => bots,
+    // The real endpoint bodies, bound to a fixture roster — the same
+    // functions `index.ts` exports and binds to the live store.
+    executeListAgentsRequest: ({ selfId }) => listAgentsResponse(selfId, bots),
     executeAskBotRequest: vi.fn(
-      async (): Promise<{ status: number; body: Record<string, unknown> }> => ({ status: 200, body: {} }),
+      async (): Promise<AgentRequestResult> => ({ status: 200, body: {} }),
+    ),
+    executeListRoutinesRequest: () => ({
+      status: 200,
+      body: { now: "2026-09-12T10:00:00.000Z", timeZone: "UTC", routines: [] },
+    }),
+    executeDelegateBotRequest: vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 200, body: { queued: true, message: "Delegation queued." } }),
+    ),
+    executeCreateBotRequest: vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { id: "bot-new", name: "Pixel", section: "Work" } }),
+    ),
+    executeRequestCredentialRequest: vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { messageId: "msg-1", label: "OpenCode API key" } }),
+    ),
+    executeRoutineRequestRequest: vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { summary: "Weekdays at 09:00" } }),
     ),
     ...over,
   };
 }
 
-const hostFor = (over: Partial<TurnToolHostDeps> = {}, ctx: { commsDepth?: number } = {}) =>
+const hostFor = (
+  over: Partial<TurnToolHostDeps> = {},
+  ctx: { commsDepth?: number; chiefOfStaff?: boolean } = {},
+) =>
   createTurnToolHost({
     botId: "bot-self",
     threadId: "thread-1",
     commsDepth: ctx.commsDepth ?? 0,
+    chiefOfStaff: ctx.chiefOfStaff,
     deps: deps(over),
   });
 
-const runtime = { signal: new AbortController().signal, requestApproval: async () => "unavailable" as const };
+/** The loop's runtime, with a broker that says yes.  The rows in "the host
+ *  asks before a write tool runs" cover deny and no-broker explicitly; the
+ *  rest of this file is about what happens once a call is allowed. */
+const runtime = { signal: new AbortController().signal, requestApproval: async () => "allowed-once" as const };
 
-describe("list_bots", () => {
+/** A runtime that records what it was asked and answers with `verdict`. */
+function askingRuntime(verdict: RequestOutcome) {
+  const asks: Array<{ tool: string; summary: string }> = [];
+  return {
+    asks,
+    runtime: {
+      signal: new AbortController().signal,
+      requestApproval: async (ask: { tool: string; summary: string }) => {
+        asks.push(ask);
+        return verdict;
+      },
+    },
+  };
+}
+
+describe("the host runs what the catalog advertised", () => {
+  it("serves the registry's three agents tools", async () => {
+    const host = hostFor();
+    for (const name of ["list_bots", "ask_bot", "list_routines"]) {
+      const outcome = await host.execute({ id: "1", name, arguments: { bot_id: "bot-peer", task: "x" } }, runtime);
+      expect(outcome.content, name).not.toContain("is not available to this bot");
+    }
+  });
+
   it("matches the /api/internal/agents rows the MCP lane serves", async () => {
     const outcome = await hostFor().execute({ id: "1", name: "list_bots", arguments: {} }, runtime);
     expect(outcome.kind).toBe("result");
-    expect(JSON.parse(outcome.content).bots).toEqual(endpointAgents("bot-self", bots));
+    expect(JSON.parse(outcome.content).bots).toEqual(listAgentsResponse("bot-self", bots).body.bots);
   });
 
-  it("excludes the caller itself — a bot asking itself for help is a wasted round", async () => {
+  it("serves `section` alongside the rows, as it did before the registry", async () => {
+    // The host is the lane that regressed: `host.ts` used to build
+    // `{ section, bots }` inline.  Pinned here as well as in
+    // `agents.test.ts` so neither side can drop it alone.
     const outcome = await hostFor().execute({ id: "1", name: "list_bots", arguments: {} }, runtime);
-    const ids = JSON.parse(outcome.content).bots.map((b: { id: string }) => b.id);
-    expect(ids).not.toContain("bot-self");
-    expect(ids).toContain("bot-peer");
+    const payload = JSON.parse(outcome.content);
+    expect(payload.section).toBe("ops");
+    expect(payload.section).toBe(listAgentsResponse("bot-self", bots).body.section);
   });
 
-  it("reports busy, so the model does not spend a round on a peer that cannot answer", async () => {
+  it("excludes the caller and reports busy — the two facts that save a round", async () => {
     const outcome = await hostFor().execute({ id: "1", name: "list_bots", arguments: {} }, runtime);
     const rows: Array<{ id: string; busy: boolean }> = JSON.parse(outcome.content).bots;
+    expect(rows.map((b) => b.id)).not.toContain("bot-self");
     expect(rows.find((b) => b.id === "bot-busy")?.busy).toBe(true);
-    expect(rows.find((b) => b.id === "bot-peer")?.busy).toBe(false);
   });
 
   it("hides other sections and hidden bots", async () => {
@@ -99,10 +133,10 @@ describe("list_bots", () => {
   });
 });
 
-describe("ask_bot", () => {
-  it("delegates to executeAskBotRequest with the turn's own identity, never the model's", async () => {
+describe("caller identity is the turn's, never the model's", () => {
+  it("bakes botId, threadId and depth into ask_bot at dispatch", async () => {
     const executeAskBotRequest = vi.fn(
-      async (): Promise<{ status: number; body: Record<string, unknown> }> => ({
+      async (): Promise<AgentRequestResult> => ({
         status: 200,
         body: { botName: "peer", text: "here you go" },
       }),
@@ -114,7 +148,6 @@ describe("ask_bot", () => {
       deps: deps({ executeAskBotRequest }),
     });
     const outcome = await host.execute(
-      // the model also passes a fromBotId; it must be ignored
       { id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "summarize", fromBotId: "bot-other" } },
       runtime,
     );
@@ -128,50 +161,16 @@ describe("ask_bot", () => {
     expect(outcome).toMatchObject({ kind: "result", content: "peer replied:\nhere you go" });
   });
 
-  it("accepts an id as well as an @name", async () => {
-    const executeAskBotRequest = vi.fn(
-      async (): Promise<{ status: number; body: Record<string, unknown> }> => ({
-        status: 200,
-        body: { botName: "peer", text: "ok" },
-      }),
-    );
-    await hostFor({ executeAskBotRequest }).execute(
-      { id: "1", name: "ask_bot", arguments: { bot_id: "bot-peer", task: "x" } },
+  it("ignores a thread the model names for list_routines", async () => {
+    const executeListRoutinesRequest = vi.fn(() => ({ status: 200, body: { routines: [] } }));
+    await hostFor({ executeListRoutinesRequest }).execute(
+      { id: "1", name: "list_routines", arguments: { fromThreadId: "thread-9" } },
       runtime,
     );
-    expect(executeAskBotRequest).toHaveBeenCalledWith(expect.objectContaining({ toBotId: "bot-peer" }));
-  });
-
-  it("requires both arguments", async () => {
-    const outcome = await hostFor().execute(
-      { id: "1", name: "ask_bot", arguments: { bot_id: "@peer" } },
-      runtime,
-    );
-    expect(outcome.kind).toBe("error");
-    expect(JSON.parse(outcome.content).error).toMatch(/requires both/);
-  });
-
-  it("names an unknown peer rather than failing silently", async () => {
-    const outcome = await hostFor().execute(
-      { id: "1", name: "ask_bot", arguments: { bot_id: "@nobody", task: "x" } },
-      runtime,
-    );
-    expect(JSON.parse(outcome.content).error).toMatch(/no bot matches/);
-  });
-
-  it("turns a busy peer into something the model can act on", async () => {
-    const outcome = await hostFor({
-      executeAskBotRequest: async () => ({ status: 200, body: { busy: true } }),
-    }).execute({ id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "x" } }, runtime);
-    expect(outcome.kind).toBe("error");
-    expect(JSON.parse(outcome.content).error).toMatch(/busy/);
-  });
-
-  it("passes the peer path's own refusal straight through", async () => {
-    const outcome = await hostFor({
-      executeAskBotRequest: async () => ({ status: 200, body: { error: "denied by user" } }),
-    }).execute({ id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "x" } }, runtime);
-    expect(JSON.parse(outcome.content).error).toBe("denied by user");
+    expect(executeListRoutinesRequest).toHaveBeenCalledWith({
+      fromBotId: "bot-self",
+      fromThreadId: "thread-1",
+    });
   });
 });
 
@@ -190,5 +189,191 @@ describe("the host's contract", () => {
     const outcome = await hostFor().execute({ id: "1", name: "delete_everything", arguments: {} }, runtime);
     expect(outcome.kind).toBe("error");
     expect(outcome.content).toContain("delete_everything");
+  });
+
+  it("carries the harness's broker so the driver's loop can pause its clock around it", () => {
+    const requestApproval = async () => "allowed-once" as const;
+    const host = createTurnToolHost({
+      botId: "bot-self",
+      threadId: "thread-1",
+      commsDepth: 0,
+      deps: deps(),
+      requestApproval,
+    });
+    expect(host.requestApproval).toBe(requestApproval);
+    // absent when no broker was mounted, so the loop can tell
+    expect(hostFor().requestApproval).toBeUndefined();
+  });
+
+  it("refuses a tool that exists but was never in this turn's catalog", async () => {
+    // create_bot's executor exists now, but its registry gate requires
+    // chiefOfStaff, and this turn's default context does not carry it — a
+    // non-chief bot must not find an executor waiting for a tool it was
+    // never offered.
+    const outcome = await hostFor().execute({ id: "1", name: "create_bot", arguments: {} }, runtime);
+    expect(outcome.kind).toBe("error");
+    expect(outcome.content).toContain("is not available to this bot");
+  });
+
+  it("still refuses a genuinely unknown name outright", async () => {
+    const outcome = await hostFor().execute({ id: "1", name: "delete_everything", arguments: {} }, runtime);
+    expect(outcome.kind).toBe("error");
+    expect(outcome.content).toContain("delete_everything");
+  });
+});
+
+describe("the six tools PR 7 added", () => {
+  it("offers create_bot to an actual Chief of Staff and runs it", async () => {
+    const executeCreateBotRequest = vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 201, body: { id: "bot-new", name: "Pixel", section: "Work" } }),
+    );
+    const host = hostFor({ executeCreateBotRequest }, { chiefOfStaff: true });
+    const outcome = await host.execute(
+      { id: "1", name: "create_bot", arguments: { name: "Pixel", role: "Designer", instructions: "Design." } },
+      runtime,
+    );
+    expect(outcome.kind).toBe("result");
+    expect(executeCreateBotRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("gives create_bot's per-turn cap a fresh count on a second turn's host", async () => {
+    let created = 0;
+    const executeCreateBotRequest = vi.fn(async (): Promise<AgentRequestResult> => {
+      created += 1;
+      return { status: 201, body: { id: `bot-${created}`, name: `Bot${created}`, section: "Work" } };
+    });
+    const args = { name: "N", role: "R", instructions: "I" };
+    const firstTurnHost = hostFor({ executeCreateBotRequest }, { chiefOfStaff: true });
+    for (let i = 0; i < 4; i++) {
+      const outcome = await firstTurnHost.execute({ id: String(i), name: "create_bot", arguments: args }, runtime);
+      expect(outcome.kind, `create #${i + 1}`).toBe("result");
+    }
+    const capped = await firstTurnHost.execute({ id: "5", name: "create_bot", arguments: args }, runtime);
+    expect(capped.kind).toBe("error");
+    expect(capped.content).toMatch(/at most 4 bots/);
+
+    // A brand-new `createTurnToolHost` call — what dispatching a SECOND
+    // turn does — must not remember the first turn's count.
+    const secondTurnHost = hostFor({ executeCreateBotRequest }, { chiefOfStaff: true });
+    const fresh = await secondTurnHost.execute({ id: "6", name: "create_bot", arguments: args }, runtime);
+    expect(fresh.kind).toBe("result");
+  });
+
+  it("delegate_bot asks before it runs, carrying the target and the first 120 chars", async () => {
+    const executeDelegateBotRequest = vi.fn(
+      async (): Promise<AgentRequestResult> => ({ status: 200, body: { queued: true, message: "Delegation queued." } }),
+    );
+    const asking = askingRuntime("allowed-once");
+    const longTask = "x".repeat(200);
+    const outcome = await hostFor({ executeDelegateBotRequest }).execute(
+      { id: "1", name: "delegate_bot", arguments: { bot_id: "bot-peer", message: longTask } },
+      asking.runtime,
+    );
+    expect(asking.asks).toHaveLength(1);
+    expect(asking.asks[0].tool).toBe("delegate_bot");
+    expect(asking.asks[0].summary).toContain("bot-peer");
+    expect(asking.asks[0].summary.length).toBeLessThan(longTask.length);
+    expect(outcome.kind).toBe("result");
+    expect(executeDelegateBotRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it("a denied delegate_bot never reaches the endpoint — nothing is queued", async () => {
+    const executeDelegateBotRequest = vi.fn(async (): Promise<AgentRequestResult> => ({ status: 200, body: {} }));
+    const asking = askingRuntime("rejected");
+    const outcome = await hostFor({ executeDelegateBotRequest }).execute(
+      { id: "1", name: "delegate_bot", arguments: { bot_id: "bot-peer", message: "do it" } },
+      asking.runtime,
+    );
+    expect(executeDelegateBotRequest).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ kind: "error", detail: "denied" });
+  });
+
+  it("request_credential's suspend outcome passes through the host untouched", async () => {
+    const outcome = await hostFor().execute(
+      { id: "1", name: "request_credential", arguments: { credential_id: "opencodeGoApiKey" } },
+      runtime,
+    );
+    expect(outcome).toMatchObject({ kind: "suspend", stopReason: "awaiting_human" });
+  });
+
+  it("propose_routine's suspend outcome passes through the host untouched", async () => {
+    const outcome = await hostFor().execute(
+      {
+        id: "1",
+        name: "propose_routine",
+        arguments: { name: "Brief", instructions: "x", schedule: { type: "daily", time: "09:00" } },
+      },
+      runtime,
+    );
+    expect(outcome).toMatchObject({ kind: "suspend", stopReason: "awaiting_human" });
+  });
+});
+
+// Before PR 6 nothing on this lane ever asked for permission: an HTTP bot
+// ran whatever the model called.  The host is where that changed, and the
+// policy is a FIELD ON THE TOOL — not a switch here — so a read tool
+// cannot start carding by accident and a write tool cannot stop.
+describe("the host asks before a write tool runs", () => {
+  it("opens an ask carrying the registry's own summary, and only then runs the tool", async () => {
+    const executeAskBotRequest = vi.fn(async () => ({ status: 200, body: { botName: "peer", text: "ok" } }));
+    const asking = askingRuntime("allowed-once");
+    const outcome = await hostFor({ executeAskBotRequest }).execute(
+      { id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "summarise  the   log" } },
+      asking.runtime,
+    );
+
+    expect(asking.asks).toEqual([{ tool: "ask_bot", summary: "ask @peer: summarise the log" }]);
+    expect(executeAskBotRequest).toHaveBeenCalledTimes(1);
+    expect(outcome.kind).toBe("result");
+  });
+
+  it("a deny never reaches the executor, and the model is told why", async () => {
+    const executeAskBotRequest = vi.fn(async () => ({ status: 200, body: {} }));
+    const asking = askingRuntime("rejected");
+    const outcome = await hostFor({ executeAskBotRequest }).execute(
+      { id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "spend the budget" } },
+      asking.runtime,
+    );
+
+    // the side effect never happened — an approval that arrives after the
+    // fact is a receipt, not a decision
+    expect(executeAskBotRequest).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ kind: "error", detail: "denied" });
+    expect(outcome.content).toContain("was not approved");
+  });
+
+  it("no broker mounted is fail-closed — nobody asked is not nobody objected", async () => {
+    const executeAskBotRequest = vi.fn(async () => ({ status: 200, body: {} }));
+    const asking = askingRuntime("unavailable");
+    const outcome = await hostFor({ executeAskBotRequest }).execute(
+      { id: "1", name: "ask_bot", arguments: { bot_id: "@peer", task: "x" } },
+      asking.runtime,
+    );
+
+    expect(executeAskBotRequest).not.toHaveBeenCalled();
+    expect(outcome).toMatchObject({ kind: "error", detail: "approval unavailable" });
+  });
+
+  it("a tool with no approval record never asks", async () => {
+    const asking = askingRuntime("rejected");
+    for (const name of ["list_bots", "list_routines"]) {
+      const outcome = await hostFor().execute({ id: "1", name, arguments: {} }, asking.runtime);
+      expect(outcome.kind, name).toBe("result");
+    }
+    // a denying broker proves it: these ran anyway, because they never
+    // reached it
+    expect(asking.asks).toEqual([]);
+  });
+
+  it("asks even when the summary cannot be built", async () => {
+    // A card nobody can read is bad; running a write tool unasked is worse.
+    const executeAskBotRequest = vi.fn(async () => ({ status: 200, body: {} }));
+    const asking = askingRuntime("rejected");
+    await hostFor({ executeAskBotRequest }).execute(
+      { id: "1", name: "ask_bot", arguments: { bot_id: { nested: "object" }, task: 42 } },
+      asking.runtime,
+    );
+    expect(asking.asks).toHaveLength(1);
+    expect(executeAskBotRequest).not.toHaveBeenCalled();
   });
 });

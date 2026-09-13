@@ -25,6 +25,10 @@ describe("OpenAICompatDriver", () => {
     expect(OpenAICompatDriver.metadata.displayName).toMatch(/OpenRouter|Groq/);
   });
 
+  it("marks its install descriptor apiKeyOnly — no CLI, so the setup UI never says install or sign in", () => {
+    expect(OpenAICompatDriver.install?.apiKeyOnly).toBe(true);
+  });
+
   it("falls back to the OpenRouter endpoint by default", () => {
     const cfg = OpenAICompatDriver.defaultConfig();
     expect(cfg.url).toBe("https://openrouter.ai/api/v1");

@@ -7,7 +7,7 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 import { writeFileAtomic } from "./atomic.ts";
-import type { ModelSelection } from "./contracts.ts";
+import type { ModelSelection, ProviderErrorCode } from "./contracts.ts";
 
 export interface FallbackScanMessage {
   role: string;
@@ -28,9 +28,11 @@ const SHORT_PROVIDER_ERROR =
 // the corpus in model-fallback.test.ts.  Do not match "approaching … limit"
 // warnings — those are near-cap, not a hit.
 const QUOTA_OR_CAP =
-  /session limit|hit your session limit|hit your usage limit|usage cap|usage limit|quota exceeded|insufficient.?quota|insufficient.?balance|insufficient.?funds|zero balance|resource.?exhausted|resource.{0,24}exhausted|resource_exhausted|exhausted your.*quota|daily quota|credits exhausted|credits? (?:are )?depleted|credits? (?:exhausted|depleted|empty|insufficient|zero)|out of (?:usage|credits)|credit balance (?:is )?(?:too )?low|message limit reached|messaging allowance|5-hour limit reached|reached your .{0,80}limit|monthly limit|weekly (?:\([^)]+\) )?usage limit|slow pool|upgrade (?:your )?plan|upgrade to (?:plus|pro)|\b402\b|\b429\b|\bbilling\b|\bsubscription\b|payment required|plan limit|tier limit|free tier limit|spend limit|budget exceeded|rate.?limit|rate_limit_error|usage_limit_exceeded|too many requests|overloaded|capacity|concurrency limit|account_inactive|enforced_spend_limit/i;
+  /session limit|hit your session limit|hit your usage limit|usage cap|usage limit|(?:individual\s+)?quota reached|quota exceeded|insufficient.?quota|insufficient.?balance|insufficient.?funds|zero balance|resource.?exhausted|resource.{0,24}exhausted|resource_exhausted|(?:exhausted|exceeded) your.*quota|daily quota|credits exhausted|credits? (?:are )?depleted|credits? (?:exhausted|depleted|empty|insufficient|zero)|out of (?:usage|credits)|credit balance (?:is )?(?:too )?low|message limit reached|messaging allowance|5-hour limit reached|reached your .{0,80}limit|monthly limit|weekly (?:\([^)]+\) )?usage limit|slow pool|upgrade (?:your )?(?:plan|subscription)|upgrade to (?:plus|pro)|\b402\b|\b429\b|payment required|plan limit|tier limit|free tier limit|spend limit|budget exceeded|rate.?limit|rate_limit_error|usage_limit_exceeded|too many requests|overloaded|(?:server|service|provider) (?:is )?(?:overloaded|at capacity)|capacity (?:reached|exceeded|unavailable)|concurrency limit|account_inactive|enforced_spend_limit/i;
 
 const QUOTA_TEXT_MAX = 500;
+
+export const DEFAULT_QUOTA_COOLDOWN_TTL_MS = 15 * 60 * 1000;
 
 /** Short error-chip text that must not count as a real assistant reply. */
 export function isShortProviderErrorText(text: string): boolean {
@@ -43,7 +45,11 @@ export function isShortProviderErrorText(text: string): boolean {
 export function isQuotaOrCapText(text: string): boolean {
   const trimmed = text.trim();
   if (!trimmed || trimmed.length >= QUOTA_TEXT_MAX) return false;
-  return QUOTA_OR_CAP.test(trimmed);
+  const stripped = trimmed.replace(
+    /^(?:error:\s*)?(?:(?:antigravity|grok|claude|codex|gemini|cursor|deepseek|openai):\s*)?/i,
+    "",
+  );
+  return QUOTA_OR_CAP.test(stripped);
 }
 
 /** The last message that actually started a turn — a human's "user" message,
@@ -162,6 +168,57 @@ export function bootRecoveryTurnOpts(
 function sameEngine(a: { instanceId: string; model: string }, b: { instanceId: string; model: string }): boolean {
   return a.instanceId === b.instanceId && a.model === b.model;
 }
+
+// ── structured provider-error codes (chat-completions/errors.ts) ────────
+// A chat-completions driver's loop (server/drivers/chat-completions/loop.ts)
+// classifies an HTTP failure onto a ProviderErrorCode and reports it as an
+// `error:<code>` terminal stopReason.  CLI/ACP engines have no such code —
+// their turns end on a plain "error" or on chip prose the regexes above
+// already parse — so these two helpers are strictly ADDITIVE: they return
+// undefined whenever there is no structured code, and the caller is the one
+// that falls back to the regex path in that case.
+
+/** Parses the `error:<code>` stopReason a chat-completions driver's loop
+ *  emits back into the ProviderErrorCode it was classified from.
+ *  Undefined for every other stopReason, including a CLI engine's plain
+ *  "error" (no colon) — it has no structured code at all. */
+export function providerErrorCodeFromStopReason(stopReason: string | null | undefined): ProviderErrorCode | undefined {
+  if (!stopReason || !stopReason.startsWith("error:")) return undefined;
+  const code = stopReason.slice("error:".length).trim();
+  return code ? (code as ProviderErrorCode) : undefined;
+}
+
+/** Whether a STRUCTURED provider-error code should consult the fallback
+ *  chain.  True for a real quota/cap AND for an outage — model-fallback.ts's
+ *  QUOTA_OR_CAP regex has never covered a bare "HTTP 502", which is exactly
+ *  why a 5xx used to just fail instead of trying the next engine.
+ *  invalid_credentials is deliberately NOT included: that failure is
+ *  answered by the setup affordance (`runtime.error.setup`), not by
+ *  wandering to a different engine with the same bad key story.  Returns
+ *  undefined when there is no structured code, so the caller falls back to
+ *  the regex path rather than this turning INTO false and suppressing a CLI
+ *  engine's existing text-chip detection. */
+export function quotaOrCapFromErrorCode(code: ProviderErrorCode | undefined): boolean | undefined {
+  if (code === undefined) return undefined;
+  return code === "quota_or_region_restriction" || code === "upstream_outage";
+}
+
+// ── #90 auto-failover priority (server/index.ts's autoFallbackChain) ────
+// Most-preferred first, handed straight to turn-safety.ts's
+// eligibleAutoFallbackChain.  It lives here rather than inline in index.ts
+// so the ordering is unit-testable without booting the server.  minimax
+// sits after codex and ahead of openaiCompat — the owner-approved default:
+// the cheap metered lane a capped subscription engine should reach for
+// first.  An instanceId absent from this array sorts last.
+export const AUTO_FALLBACK_PRIORITY: readonly string[] = [
+  "claude",
+  "antigravity",
+  "gemini",
+  "codex",
+  "minimax",
+  "openaiCompat",
+  "grok",
+];
 
 /** Next saved fallback engine, or undefined when this turn must not fail over.
  * Quota/cap chips ignore prior tool activity.  Chain entries that match the
@@ -307,6 +364,15 @@ export class QuotaCooldownRegistry {
     }
   }
 
+  private isExpired(cd: BotQuotaCooldown, now: number): boolean {
+    if (typeof cd.resetsAt === "number" && cd.resetsAt > 0) {
+      return now >= cd.resetsAt;
+    }
+    if (cd.resetsAt === null && cd.source === "antigravity-usage") return false;
+    const recorded = typeof cd.recordedAt === "number" && cd.recordedAt > 0 ? cd.recordedAt : now;
+    return now >= recorded + DEFAULT_QUOTA_COOLDOWN_TTL_MS;
+  }
+
   private load(): void {
     if (!this.persistPath) return;
     try {
@@ -320,7 +386,7 @@ export class QuotaCooldownRegistry {
       for (const cd of parsed.cooldowns) {
         if (!cd || typeof cd !== "object") continue;
         if (typeof cd.botId !== "string" || typeof cd.instanceId !== "string" || typeof cd.model !== "string") continue;
-        if (cd.resetsAt && now >= cd.resetsAt) continue;
+        if (this.isExpired(cd, now)) continue;
         this.cooldowns.set(`${cd.botId}:${cd.instanceId}:${cd.model}`, cd);
       }
     } catch {
@@ -329,7 +395,10 @@ export class QuotaCooldownRegistry {
   }
 
   record(cooldown: BotQuotaCooldown): void {
-    this.cooldowns.set(`${cooldown.botId}:${cooldown.instanceId}:${cooldown.model}`, cooldown);
+    const recordedAt = cooldown.recordedAt ?? Date.now();
+    const resetsAt = cooldown.resetsAt != null ? cooldown.resetsAt : (recordedAt + DEFAULT_QUOTA_COOLDOWN_TTL_MS);
+    const normalized: BotQuotaCooldown = { ...cooldown, recordedAt, resetsAt };
+    this.cooldowns.set(`${normalized.botId}:${normalized.instanceId}:${normalized.model}`, normalized);
     this.persist();
   }
 
@@ -338,13 +407,17 @@ export class QuotaCooldownRegistry {
     model = "*",
     opts: { resetsAt?: number | null; error?: string; source?: string } = {},
   ): void {
+    const recordedAt = Date.now();
+    const resetsAt = opts.source === "antigravity-usage"
+      ? (opts.resetsAt ?? null)
+      : (opts.resetsAt != null ? opts.resetsAt : (recordedAt + DEFAULT_QUOTA_COOLDOWN_TTL_MS));
     const cd: BotQuotaCooldown = {
       botId: "*",
       instanceId,
       model,
-      resetsAt: opts.resetsAt ?? null,
+      resetsAt,
       error: opts.error ?? "Session limit or usage cap reached",
-      recordedAt: Date.now(),
+      recordedAt,
       source: opts.source,
     };
     this.cooldowns.set(`*:${instanceId}:${model}`, cd);
@@ -355,7 +428,7 @@ export class QuotaCooldownRegistry {
     const key = `${botId}:${instanceId}:${model}`;
     const cd = this.cooldowns.get(key) ?? this.cooldowns.get(`*:${instanceId}:${model}`) ?? this.cooldowns.get(`*:${instanceId}:*`);
     if (!cd) return undefined;
-    if (cd.resetsAt && now >= cd.resetsAt) {
+    if (this.isExpired(cd, now)) {
       if (this.cooldowns.get(key) === cd) this.cooldowns.delete(key);
       if (this.cooldowns.get(`*:${instanceId}:${model}`) === cd) this.cooldowns.delete(`*:${instanceId}:${model}`);
       if (this.cooldowns.get(`*:${instanceId}:*`) === cd) this.cooldowns.delete(`*:${instanceId}:*`);
@@ -369,7 +442,7 @@ export class QuotaCooldownRegistry {
     const active: BotQuotaCooldown[] = [];
     let expired = false;
     for (const [key, cd] of [...this.cooldowns.entries()]) {
-      if (cd.resetsAt && now >= cd.resetsAt) {
+      if (this.isExpired(cd, now)) {
         this.cooldowns.delete(key);
         expired = true;
       } else {

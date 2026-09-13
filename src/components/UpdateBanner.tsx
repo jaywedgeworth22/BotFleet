@@ -21,6 +21,8 @@ function friendlyError(message?: string): string {
   if (!message) return "Something went wrong.";
   if (/cannot find .*\.yml|404/i.test(message))
     return "No update has been published for this platform yet.";
+  if (/ENOENT.*app-update\.yml/i.test(message))
+    return "No update configuration found for this build.";
   if (/ENOTFOUND|ECONNREFUSED|ETIMEDOUT|net::/i.test(message))
     return "Couldn't reach the update server.";
   return message.split("\n")[0].slice(0, 140);

@@ -319,9 +319,12 @@ export interface TurnToolRuntime {
   /** Aborted when the turn is interrupted, swept, or torn down.  A tool that
    *  makes a network call must pass this through so Stop reaches it. */
   signal: AbortSignal;
-  /** Ask a person.  Resolves `"unavailable"` when no broker is mounted —
-   *  fail-closed, and the caller treats it as a deny.  The real broker
-   *  arrives with the permission work; until then every host stubs it. */
+  /** Ask a person.  Resolves `"allowed-once"` only when somebody actually
+   *  allowed it; `"unavailable"` — no broker mounted, or the turn ended
+   *  under an open card — is fail-closed and the caller treats it as a
+   *  deny.  The driver's loop supplies this: it pauses the per-tool clock
+   *  for as long as the card is open, then delegates to the harness's
+   *  permission broker (`TurnToolHost.requestApproval`). */
   requestApproval(ask: { tool: string; summary: string }): Promise<RequestOutcome>;
 }
 
@@ -338,6 +341,19 @@ export interface TurnToolHost {
   /** Hard ceiling on model-to-tool rounds for this turn.  Absent = the
    *  driver's own default. */
   maxRounds?: number;
+  /** The harness's permission broker for THIS turn, bound at dispatch to
+   *  the turn's own bot — the same closure that owns caller identity, for
+   *  the same reason.  A driver that runs its own tool loop hands this to
+   *  the loop, which pauses its per-tool clock around the ask and passes it
+   *  back in as `TurnToolRuntime.requestApproval`.  Absent means no broker
+   *  is mounted and every ask is fail-closed `"unavailable"`. */
+  requestApproval?(ask: {
+    tool: string;
+    summary: string;
+    /** The tool call's own signal, so an interrupted turn settles the ask
+     *  instead of leaving a card nobody can answer. */
+    signal?: AbortSignal;
+  }): Promise<RequestOutcome>;
 }
 
 export interface TurnStartResult {
@@ -396,6 +412,15 @@ export interface ProviderAdapter {
      * `SendTurnInput.toolHost` only to such a driver, and dispatches it on
      * the same one-line path it uses for a CLI engine. */
     toolLoop?: boolean;
+    /** True when the driver builds its own message history from
+     * `SendTurnInput.transcript` every turn — every chat-completions driver
+     * does this, the way a CLI driver replays its own native session.  A
+     * driver that lacks this flag gets the transcript INLINED into the
+     * turn text as well, which is correct only because such a driver never
+     * also expands `transcript` itself.  Absent = inline (today's CLI
+     * default); a driver that sets this and also inlines the transcript
+     * would send it twice. */
+    replaysTranscript?: boolean;
   };
   sendTurn(input: SendTurnInput): Promise<TurnStartResult>;
   interruptTurn(threadId: ThreadId, turnId?: TurnId): Promise<void>;
@@ -437,13 +462,16 @@ export interface ProviderSnapshot {
     capped: boolean;
     resetsAt?: number | null;
     error?: string;
-    /** Per-model remaining from antigravity-usage.  Instance `capped` is a
+    windowsLabel?: string;
+    /** Per-model remaining from antigravity-usage or quota windows.  Instance `capped` is a
      *  wildcard cap, not "any one model is exhausted". */
     models?: Record<string, {
       capped: boolean;
       remainingPercent?: number | null;
+      secondaryRemainingPercent?: number | null;
       resetsAt?: number | null;
       error?: string;
+      windowsLabel?: string;
     }>;
   };
 }
@@ -468,6 +496,12 @@ export interface EngineInstall {
   signInCommand?: string;
   /** `command` needs npm on PATH, so the UI can say so when Node is absent. */
   needsNode?: boolean;
+  /** This driver has no CLI and no interactive login — it authenticates with
+   * a bare credential (an API key), so `command` is guidance text ("get a
+   * key, then set this env var or config file"), not a shell one-liner.
+   * The setup UI reads this to say "add a key" instead of "install" or
+   * "sign in," and skips offering to paste the guidance into a terminal. */
+  apiKeyOnly?: boolean;
 }
 
 // ── driver SPI (upstream ProviderDriver — a plain record, not a service) ─
