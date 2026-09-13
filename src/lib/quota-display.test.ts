@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   antigravityGroupSummary,
   antigravityQuotaLines,
+  formatDualQuotaBadge,
   formatResetCountdown,
   isEngineUnconfigured,
   quotaLinesSummary,
@@ -305,6 +306,20 @@ describe("windowHeadlines + formatResetCountdown", () => {
     expect(formatResetCountdown(now + 14 * 60 * 1000, now)).toBe("14m");
     expect(formatResetCountdown(now - 1, now)).toBe("resetting now");
     expect(formatResetCountdown(null)).toBeNull();
+  });
+});
+
+describe("formatDualQuotaBadge", () => {
+  it("formats dual percentage when both primary and secondary exist", () => {
+    expect(formatDualQuotaBadge(75, 100)).toBe("(75%/100%)");
+    expect(formatDualQuotaBadge(92.24, 1.4)).toBe("(92%/1%)");
+  });
+
+  it("formats single percentage with windows label or left suffix", () => {
+    expect(formatDualQuotaBadge(75, null, { windowsLabel: "5hr/Week" })).toBe("(75%)");
+    expect(formatDualQuotaBadge(75, null)).toBe("75% left");
+    expect(formatDualQuotaBadge(null, 50)).toBe("(50%)");
+    expect(formatDualQuotaBadge(null, null)).toBeNull();
   });
 });
 
