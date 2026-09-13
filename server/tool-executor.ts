@@ -1,6 +1,6 @@
 // HTTP-driver tool executor: closes the loop the CLI drivers handle natively.
 //
-// CLI drivers (Claude, Codex, DSH, Droid, Pi) spawn MCP servers at turn
+// CLI drivers (Claude, Codex, Droid, Pi) spawn MCP servers at turn
 // time and call the model's tool requests directly.  HTTP drivers (MiniMax,
 // OpenAI-compatible) get the same tool list on the wire but the model
 // call returns, and the harness has to make the call itself and re-feed
@@ -259,13 +259,13 @@ export async function runHttpLaneTool(
   if (call.name === "COMPOSIO_SEARCH_TOOLS"
     || call.name === "COMPOSIO_GET_TOOL_SCHEMAS"
     || call.name === "COMPOSIO_MULTI_EXECUTE_TOOL") {
-    return `Composio tools are not wired to the HTTP tool executor yet.  The model called ${call.name}; the executor returned this string so the model can stop calling it.  Use a CLI driver (Claude, Codex, DSH, Droid, Pi) to call Composio.`;
+    return `Composio tools are not wired to the HTTP tool executor yet.  The model called ${call.name}; the executor returned this string so the model can stop calling it.  Use a CLI driver (Claude, Codex, Droid, Pi) to call Composio.`;
   }
 
   if (call.name === "computer_screenshot"
     || call.name === "computer_click"
     || call.name === "computer_type") {
-    return `Computer-use tools are not wired to the HTTP tool executor yet.  The model called ${call.name}; the executor returned this string so the model can stop calling it.  Use a CLI driver (Claude, Codex, DSH, Droid, Pi) to drive a browser.`;
+    return `Computer-use tools are not wired to the HTTP tool executor yet.  The model called ${call.name}; the executor returned this string so the model can stop calling it.  Use a CLI driver (Claude, Codex, Droid, Pi) to drive a browser.`;
   }
 
   return `Tool ${call.name} is not implemented in the HTTP tool executor.`;
