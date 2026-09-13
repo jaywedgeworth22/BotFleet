@@ -215,6 +215,59 @@ export function mayUseLegacyLocalUpdate(
   return Boolean(canLocalUpdate) && status === null;
 }
 
+/** How long to wait before asking again after a status fetch came back with
+ * nothing.  A miss is usually a harness that is restarting — which is exactly
+ * what an update does to it — so the first retries are quick and the tail is
+ * a slow heartbeat rather than a poll. */
+export const STATUS_RETRY_DELAYS_MS = [5_000, 15_000, 60_000] as const;
+export const STATUS_RETRY_STEADY_MS = 5 * 60_000;
+
+export function statusRetryDelay(attempt: number): number {
+  return STATUS_RETRY_DELAYS_MS[attempt] ?? STATUS_RETRY_STEADY_MS;
+}
+
+/**
+ * Keep asking until the harness answers, then stop.
+ *
+ * One failed fetch used to leave `status` null for the whole session, and a
+ * null status means `updateSource` reports "feed" — so a single blip during
+ * the restart an update performs would flip the UI back to the release feed
+ * and re-enable the old untracked local updater.  The retry is what makes
+ * "the harness is temporarily gone" temporary.
+ *
+ * Returns a disposer.  Injectable timers so the schedule is testable.
+ */
+export function scheduleStatusRetries(options: {
+  fetchStatus: () => Promise<UpdateStatus | null>;
+  onStatus: (status: UpdateStatus) => void;
+  setTimer?: (handler: () => void, ms: number) => unknown;
+  clearTimer?: (handle: never) => void;
+}): () => void {
+  const setTimer = options.setTimer ?? ((handler, ms) => setTimeout(handler, ms));
+  const clearTimer = options.clearTimer ?? ((handle) => clearTimeout(handle));
+  let stopped = false;
+  let handle: unknown = null;
+  let attempt = 0;
+
+  const tick = () => {
+    void options.fetchStatus().then((status) => {
+      if (stopped) return;
+      if (status) {
+        options.onStatus(status);
+        return;
+      }
+      handle = setTimer(tick, statusRetryDelay(attempt));
+      attempt += 1;
+    });
+  };
+
+  tick();
+  return () => {
+    stopped = true;
+    if (handle !== null) clearTimer(handle as never);
+  };
+}
+
 export interface UpdateControlView {
   status: UpdateStatus | null;
   error: string | null;
@@ -241,17 +294,29 @@ export function useUpdateControl(pollMs = 5_000): UpdateControlView {
 
   useEffect(() => {
     alive.current = true;
-    void fetchUpdateStatus().then((next) => {
-      if (alive.current && next) setStatus(next);
+    const stopRetries = scheduleStatusRetries({
+      fetchStatus: () => fetchUpdateStatus(),
+      onStatus: setStatus,
     });
     const onPush = (event: Event) => {
       const detail = (event as CustomEvent<unknown>).detail;
       if (isUpdateStatus(detail)) setStatus(detail);
     };
+    // Coming back to the window is the moment the answer is most likely to
+    // have changed — an update finished, or a harness came back — and it is
+    // free compared with polling for it.
+    const onFocus = () => {
+      void fetchUpdateStatus().then((next) => {
+        if (alive.current && next) setStatus(next);
+      });
+    };
     window.addEventListener(UPDATE_STATUS_EVENT, onPush);
+    window.addEventListener("focus", onFocus);
     return () => {
       alive.current = false;
+      stopRetries();
       window.removeEventListener(UPDATE_STATUS_EVENT, onPush);
+      window.removeEventListener("focus", onFocus);
     };
   }, []);
 

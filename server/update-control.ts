@@ -333,17 +333,42 @@ export function lastRunFrom(record: ProgressRecord): UpdateLastRun | null {
   return lastRun;
 }
 
-/** Is this "available" build actually newer than what is installed?
+/** Is this remembered "available" answer still worth offering?
  *
- * The answer is persisted, so a run that succeeds leaves a file on disk
- * saying an update is available — naming the commit that was just installed.
- * Without this the next harness offers the build it is already running, and
- * Install starts a whole transaction to arrive where it already is. */
-export function isAheadOfInstalled(
-  available: UpdateAvailable | null,
-  installedCommit: string,
-): available is UpdateAvailable {
-  return Boolean(available) && available!.sourceCommit !== installedCommit;
+ * The answer is persisted, so it outlives the harness that wrote it — and the
+ * usual reason it outlives one is that the update it described succeeded.
+ * Two ways it goes wrong, and the inequality alone catches only the first:
+ *
+ *   - it names the commit now installed (this process IS the result);
+ *   - it names an OLDER commit than the one installed.  `check()` recorded X,
+ *     `origin/main` moved on to Y, the install that ran took Y, and X is now
+ *     behind us — different from the installed commit, and still nothing to
+ *     install.
+ *
+ * The second is caught by time: the answer was recorded before this build was
+ * installed, so it cannot describe anything newer than it.  `installedAt`
+ * dates a packaged build; a source run has none, and the last run's finish is
+ * the same boundary.  `start()` confirms with `git merge-base` before it
+ * launches anything, which is the authoritative check — this one is the cheap
+ * synchronous one that keeps a stale answer off every status response. */
+export function availableIsStale(input: {
+  available: UpdateAvailable | null;
+  installedCommit: string;
+  checkedAt: string | null;
+  installedAt?: string;
+  lastRunFinishedAt?: string;
+}): boolean {
+  if (!input.available) return true;
+  if (input.available.sourceCommit === input.installedCommit) return true;
+  const recorded = input.checkedAt ? Date.parse(input.checkedAt) : Number.NaN;
+  // An answer with no readable timestamp cannot be placed relative to the
+  // install, and an unplaceable answer is not one to act on.
+  if (!Number.isFinite(recorded)) return true;
+  for (const boundary of [input.installedAt, input.lastRunFinishedAt]) {
+    const at = boundary ? Date.parse(boundary) : Number.NaN;
+    if (Number.isFinite(at) && recorded <= at) return true;
+  }
+  return false;
 }
 
 /** Why `POST /api/update/run` will not start, or null when it will.
@@ -355,7 +380,6 @@ export function runRefusal(input: {
   capabilities: UpdateCapabilities;
   running: UpdateRunning | null;
   available: UpdateAvailable | null;
-  installedCommit: string;
   readiness: RuntimeReadiness;
   dirty: boolean;
   force: boolean;
@@ -371,9 +395,7 @@ export function runRefusal(input: {
   if (input.dirty) {
     return "The always-on checkout has uncommitted changes, so the updater would refuse.";
   }
-  if (!input.force && !isAheadOfInstalled(input.available, input.installedCommit)) {
-    return "BotFleet is already on the newest build.";
-  }
+  if (!input.force && !input.available) return "BotFleet is already on the newest build.";
   return null;
 }
 
@@ -555,22 +577,71 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
   let lastRun: UpdateLastRun | null = null;
   let lastEmitted = "";
   let starting = false;
+  /** An invalidation worked out in memory that disk has not heard about yet.
+   * Never written during construction: `createUpdateControl` runs at module
+   * scope in server/index.ts, so a throw here is a harness that does not
+   * boot — and an unwritable cache directory must never be that. */
+  let availableNeedsWrite = false;
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  const capabilities = (running: boolean): UpdateCapabilities => {
-    const reasons: string[] = [];
+  /** Persist, or carry on without it.  Every file this module writes is a
+   * convenience for the NEXT process; none of them is load-bearing for this
+   * one, whose state is already in memory. */
+  const persist = (path: string, value: unknown): boolean => {
+    try {
+      writeJsonFile(path, value);
+      return true;
+    } catch (error) {
+      console.warn(`BotFleet could not record update state at ${path}: ${(error as Error)?.message ?? error}`);
+      return false;
+    }
+  };
+
+  const flushAvailable = () => {
+    if (!availableNeedsWrite) return;
+    if (persist(paths.available, { checkedAt, available })) availableNeedsWrite = false;
+  };
+
+  /** Is the remembered answer one this process should still offer? */
+  const staleAvailable = (candidate: UpdateAvailable | null) => availableIsStale({
+    available: candidate,
+    installedCommit: deps.installed.sourceCommit,
+    checkedAt,
+    installedAt: deps.installed.installedAt,
+    lastRunFinishedAt: lastRun?.finishedAt,
+  });
+
+  /** What this Mac is equipped to do, before anything about what it is doing
+   * right now.  Separated from `capabilities` because the dirty-checkout
+   * precheck has to run on a busy machine too: `force` talks past readiness,
+   * and a forced run on a dirty checkout must be refused here rather than
+   * launched for the updater to refuse a minute later. */
+  const structural = () => {
     const darwin = deps.platform === "darwin";
-    if (!darwin) reasons.push("Updating from this computer is macOS only.");
     const checkoutPresent = darwin && existsSync(join(deps.checkout, ".git"));
-    if (darwin && !checkoutPresent) {
+    const scriptPresent = existsSync(deps.scriptPath);
+    const reportsProgress = !darwin || !checkoutPresent || deps.updaterReportsProgress(deps.checkout);
+    return {
+      darwin,
+      checkoutPresent,
+      scriptPresent,
+      reportsProgress,
+      canCheck: darwin && checkoutPresent,
+      canRun: darwin && checkoutPresent && scriptPresent && reportsProgress,
+    };
+  };
+
+  const capabilities = (running: boolean): UpdateCapabilities => {
+    const able = structural();
+    const reasons: string[] = [];
+    if (!able.darwin) reasons.push("Updating from this computer is macOS only.");
+    if (able.darwin && !able.checkoutPresent) {
       reasons.push(`The always-on checkout is not at ${deps.checkout}.`);
     }
-    const scriptPresent = existsSync(deps.scriptPath);
-    if (darwin && checkoutPresent && !scriptPresent) {
+    if (able.darwin && able.checkoutPresent && !able.scriptPresent) {
       reasons.push(`The updater is not installed at ${deps.scriptPath}.`);
     }
-    const reportsProgress = !darwin || !checkoutPresent || deps.updaterReportsProgress(deps.checkout);
-    if (darwin && checkoutPresent && scriptPresent && !reportsProgress) {
+    if (able.darwin && able.checkoutPresent && able.scriptPresent && !able.reportsProgress) {
       reasons.push(
         `The updater in ${deps.checkout} predates this build.${GAP}Run it once from a terminal to pick up the new one.`,
       );
@@ -579,12 +650,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     // Listed last, and the only reason `force` can talk past — see runRefusal.
     const idle = deps.readiness().safeToRestart;
     if (!idle) reasons.push(BUSY_REFUSAL);
-    const canCheck = darwin && checkoutPresent;
-    return {
-      canCheck,
-      canRun: canCheck && scriptPresent && reportsProgress && !running && idle,
-      reasons,
-    };
+    return { canCheck: able.canCheck, canRun: able.canRun && !running && idle, reasons };
   };
 
   const loadAvailable = () => {
@@ -615,16 +681,15 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
             .slice(0, MAX_LISTED_COMMITS)
         : [],
     };
-    // The usual reason this file names the commit we are now running is that
-    // the update it described succeeded — this process IS the result.  Drop
-    // it, and write the invalidation back so the next boot does not have to
-    // work it out again.
-    if (isAheadOfInstalled(restored, deps.installed.sourceCommit)) {
+    if (!staleAvailable(restored)) {
       available = restored;
       return;
     }
+    // Drop it, and remember that disk still says otherwise.  The write itself
+    // waits for the first status or check, because this runs on the
+    // constructor path and an EACCES here would stop the harness booting.
     available = null;
-    writeJsonFile(paths.available, { checkedAt, available: null });
+    availableNeedsWrite = true;
   };
 
   const loadLastRun = () => {
@@ -668,12 +733,13 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       outcome: "failed",
       message: fallbackMessage,
     };
-    writeJsonFile(paths.lastRun, lastRun);
+    persist(paths.lastRun, lastRun);
     current = null;
     try {
       rmSync(paths.currentRun, { force: true });
     } catch {
-      /* already gone */
+      /* already gone, or a cache directory we cannot write — neither matters
+       * here: `current` is null in memory and that is what answers callers. */
     }
   };
 
@@ -718,9 +784,9 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     }
     return {
       installed: deps.installed,
-      // Belt and braces: nothing may reach a client claiming the installed
-      // commit is also the one waiting to be installed.
-      available: isAheadOfInstalled(available, deps.installed.sourceCommit) ? available : null,
+      // Belt and braces: an answer recorded before this build was installed
+      // never reaches a client, whichever commit it names.
+      available: staleAvailable(available) ? null : available,
       checkedAt,
       running,
       lastRun,
@@ -804,7 +870,8 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
           : [],
       };
     }
-    writeJsonFile(paths.available, { checkedAt, available });
+    availableNeedsWrite = true;
+    flushAvailable();
     emitIfChanged();
     return buildStatus();
   };
@@ -826,20 +893,44 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
 
   const beginRun = async (options: { force?: boolean; readiness?: RuntimeReadiness }) => {
     reconcile();
+    flushAvailable();
     const before = buildStatus();
     const force = options.force === true;
     const refusal = runRefusal({
       capabilities: before.capabilities,
       running: before.running,
       available: before.available,
-      installedCommit: deps.installed.sourceCommit,
       // The caller's reading wins: the route holds a mutating admission of
       // its own, which it must not count as work it would be interrupting.
       readiness: options.readiness ?? deps.readiness(),
-      dirty: before.capabilities.canRun ? await dirtyCheckout() : false,
+      // Asked whenever this Mac is equipped to run one at all, not only when
+      // it is free to: `force` talks past readiness, and a forced run on a
+      // dirty checkout has to be refused here rather than launched for the
+      // updater to refuse a minute later.
+      dirty: structural().canRun ? await dirtyCheckout() : false,
       force,
     });
     if (refusal) return { ok: false as const, error: refusal, status: buildStatus() };
+
+    // The authoritative staleness check, and the last thing before a launch.
+    // `availableIsStale` is a timestamp heuristic; git knows.  An `available`
+    // that is an ancestor of what is installed is already in this build.
+    if (!force && before.available) {
+      const contained = await deps.git([
+        "merge-base", "--is-ancestor", before.available.sourceCommit, deps.installed.sourceCommit,
+      ]);
+      if (contained.code === 0) {
+        available = null;
+        availableNeedsWrite = true;
+        flushAvailable();
+        emitIfChanged();
+        return {
+          ok: false as const,
+          error: "BotFleet is already on the newest build.",
+          status: buildStatus(),
+        };
+      }
+    }
 
     const runId = deps.newRunId();
     const files = runPaths(runId);
@@ -867,14 +958,16 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       launcher: result.launcher,
       targetCommit: before.available?.sourceCommit ?? null,
     };
-    writeJsonFile(paths.currentRun, current);
+    persist(paths.currentRun, current);
     ensureTimer();
     emitIfChanged();
     return { ok: true as const, runId, status: buildStatus() };
   };
 
-  loadAvailable();
+  // Order matters: the remembered "available" answer is judged against the
+  // last run's finish, so that has to be read first.
   loadLastRun();
+  loadAvailable();
   loadCurrent();
   reconcile();
   ensureTimer();
@@ -882,6 +975,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
   return {
     status: () => {
       reconcile();
+      flushAvailable();
       return buildStatus();
     },
     check,

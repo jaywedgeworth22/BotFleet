@@ -1,15 +1,16 @@
 // The four things that decide whether "install the update" is safe: the
 // status shape both clients render, the refusals, what the launcher actually
 // runs, and the reconcile that lets a run survive the restart it performs.
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { chmodSync } from "node:fs";
 import {
+  availableIsStale,
   BUSY_REFUSAL,
   createUpdateControl,
-  isAheadOfInstalled,
   launchdJobIsAlive,
   launchPlanCommand,
   parseProgressRecord,
@@ -65,6 +66,7 @@ function build(
     updaterReportsProgress?: boolean;
     readiness?: RuntimeReadiness;
     launchDelay?: () => Promise<void>;
+    installedAt?: string;
     now?: () => Date;
     installedCommit?: string;
   } = {},
@@ -73,7 +75,11 @@ function build(
   const emitted: UpdateStatus[] = [];
   const git: string[][] = [];
   const control = createUpdateControl({
-    installed: { version: "1.0.30", sourceCommit: options.installedCommit ?? INSTALLED_COMMIT },
+    installed: {
+      version: "1.0.30",
+      sourceCommit: options.installedCommit ?? INSTALLED_COMMIT,
+      ...(options.installedAt ? { installedAt: options.installedAt } : {}),
+    },
     checkout: paths.checkout,
     stateDirectory: paths.stateDirectory,
     scriptPath: paths.scriptPath,
@@ -237,7 +243,6 @@ describe("refusals", () => {
     capabilities,
     running: null,
     available,
-    installedCommit: INSTALLED_COMMIT,
     readiness: idle,
     dirty: false,
     force: false,
@@ -256,14 +261,32 @@ describe("refusals", () => {
   });
 
   it("will not re-offer the build that is already installed", () => {
-    // What a run leaves behind: available.json naming the commit this very
-    // process is now running.
-    const stale = { sourceCommit: INSTALLED_COMMIT, version: "1.0.31", aheadBy: 3, commits: [] };
-    expect(isAheadOfInstalled(stale, INSTALLED_COMMIT)).toBe(false);
-    expect(isAheadOfInstalled(available, INSTALLED_COMMIT)).toBe(true);
-    expect(isAheadOfInstalled(null, INSTALLED_COMMIT)).toBe(false);
-    expect(ask({ available: stale })).toBe("BotFleet is already on the newest build.");
-    expect(ask({ available: stale, force: true })).toBeNull();
+    expect(ask({ available: null })).toBe("BotFleet is already on the newest build.");
+    expect(ask({ available: null, force: true })).toBeNull();
+  });
+
+  it("calls an answer stale when it cannot describe anything newer", () => {
+    const at = (iso: string) => iso;
+    const answer = { sourceCommit: NEW_COMMIT, aheadBy: 3, commits: [] };
+    const base = {
+      available: answer,
+      installedCommit: INSTALLED_COMMIT,
+      checkedAt: at("2026-09-13T12:00:00.000Z"),
+    };
+    expect(availableIsStale(base)).toBe(false);
+    expect(availableIsStale({ ...base, available: null })).toBe(true);
+    // Names the commit now installed: this process IS the result.
+    expect(availableIsStale({ ...base, installedCommit: NEW_COMMIT })).toBe(true);
+    // Recorded before this build was installed, so it cannot describe
+    // anything newer than it — the X-then-Y case, where check() saw X,
+    // origin/main moved to Y, and Y is what got installed.
+    expect(availableIsStale({ ...base, installedAt: at("2026-09-13T12:30:00.000Z") })).toBe(true);
+    expect(availableIsStale({ ...base, installedAt: at("2026-09-13T11:30:00.000Z") })).toBe(false);
+    // A source build has no installedAt; the last run's finish is the same line.
+    expect(availableIsStale({ ...base, lastRunFinishedAt: at("2026-09-13T12:30:00.000Z") })).toBe(true);
+    // An answer with no usable timestamp cannot be placed, so it is not acted on.
+    expect(availableIsStale({ ...base, checkedAt: null })).toBe(true);
+    expect(availableIsStale({ ...base, checkedAt: "not a date" })).toBe(true);
   });
 
   it("will not interrupt a turn, and force is the one thing that talks past it", () => {
@@ -334,6 +357,21 @@ describe("refusals", () => {
     });
     expect(started.ok).toBe(true);
     expect(harness.launched).toHaveLength(1);
+  });
+
+  it("checks the checkout even on a busy machine a caller is forcing past", async () => {
+    // `force` talks past readiness, which used to skip the dirty precheck
+    // with it — so a forced run on a dirty checkout launched a whole
+    // transaction for the updater to refuse a minute later.
+    const paths = rig();
+    const harness = build(paths, {
+      readiness: { safeToRestart: false, activeWorkCount: 2 },
+      git: (args) => (args[0] === "status" ? ok(" M electron/vendor/electron-updater.cjs\n") : ok()),
+    });
+    const refused = await harness.control.start({ force: true });
+    expect(refused.ok).toBe(false);
+    expect(refused.ok === false && refused.error).toContain("uncommitted changes");
+    expect(harness.launched).toHaveLength(0);
   });
 
   it("refuses a second run while one is in flight", async () => {
@@ -437,35 +475,128 @@ describe("reconcile on boot", () => {
     expect(status.capabilities.canRun).toBe(false);
   });
 
-  it("drops an available answer that names the commit now installed", () => {
+  it("still boots and answers when the state directory cannot be written", async () => {
+    // `createUpdateControl` runs at module scope in server/index.ts, so a
+    // throw on this path is a harness that does not start.  Reproduced with
+    // a read-only state directory carrying an answer that must be dropped.
     const paths = rig();
-    // Exactly what a successful run leaves behind: this process IS the build
-    // that available.json was describing.
+    mkdirSync(paths.stateDirectory, { recursive: true });
+    writeFileSync(join(paths.stateDirectory, "available.json"), JSON.stringify({
+      checkedAt: "2026-09-13T11:00:00.000Z",
+      available: { sourceCommit: INSTALLED_COMMIT, version: "1.0.30", aheadBy: 1, commits: [] },
+    }));
+    chmodSync(paths.stateDirectory, 0o500);
+    const warnings: unknown[] = [];
+    const warn = console.warn;
+    console.warn = (...args: unknown[]) => void warnings.push(args);
+    try {
+      const harness = build(paths);
+      const status = harness.control.status();
+      expect(status.available).toBeNull();
+      expect(status.installed.version).toBe("1.0.30");
+      expect(status.capabilities.canRun).toBe(true);
+      // A run still refuses for the right reason rather than throwing.
+      expect(await harness.control.start()).toMatchObject({
+        ok: false,
+        error: "BotFleet is already on the newest build.",
+      });
+      // The write really did fail — the stale answer is still on disk, and
+      // the failure was reported rather than swallowed.
+      const onDisk = JSON.parse(readFileSync(join(paths.stateDirectory, "available.json"), "utf8"));
+      expect(onDisk.available.sourceCommit).toBe(INSTALLED_COMMIT);
+      expect(warnings.length).toBeGreaterThan(0);
+    } finally {
+      console.warn = warn;
+      chmodSync(paths.stateDirectory, 0o700);
+    }
+  });
+
+  it("drops an available answer that names the commit now installed", async () => {
+    const paths = rig();
     const gitFor = (args: string[]): CommandResult => {
       if (args[0] === "rev-parse") return ok(`${NEW_COMMIT}\n`);
       if (args[0] === "rev-list") return ok("4\n");
-      if (args[0] === "log") return ok(`${NEW_COMMIT}\u001ffeat: something`);
+      if (args[0] === "log") return ok(`${NEW_COMMIT}${UNIT}feat: something`);
       if (args[0] === "show") return ok(JSON.stringify({ version: "1.0.31" }));
       return ok();
     };
     const before = build(paths, { git: gitFor });
-    expect((before.control.status()).available).toBeNull();
-    return before.control.check().then(async (checked) => {
-      expect(checked.available?.sourceCommit).toBe(NEW_COMMIT);
-      // Now the harness restarts, running the build that was on offer.
-      const after = build(paths, { git: gitFor, installedCommit: NEW_COMMIT });
-      const status = after.control.status();
-      expect(status.available).toBeNull();
-      // And the invalidation is persisted, so the next boot never sees it.
-      const third = build(paths, { git: gitFor, installedCommit: NEW_COMMIT });
-      expect(third.control.status().available).toBeNull();
-      // Install must not start a whole transaction to arrive where it is.
-      expect(await after.control.start()).toMatchObject({
-        ok: false,
-        error: "BotFleet is already on the newest build.",
-      });
-      expect(after.launched).toHaveLength(0);
+    expect(before.control.status().available).toBeNull();
+    expect((await before.control.check()).available?.sourceCommit).toBe(NEW_COMMIT);
+
+    // Now the harness restarts, running the build that was on offer.
+    const after = build(paths, { git: gitFor, installedCommit: NEW_COMMIT });
+    expect(after.control.status().available).toBeNull();
+    // And the invalidation reaches disk, so the next boot never sees it.
+    const third = build(paths, { git: gitFor, installedCommit: NEW_COMMIT });
+    expect(third.control.status().available).toBeNull();
+    // Install must not start a whole transaction to arrive where it is.
+    expect(await after.control.start()).toMatchObject({
+      ok: false,
+      error: "BotFleet is already on the newest build.",
     });
+    expect(after.launched).toHaveLength(0);
+  });
+
+  it("drops an answer recorded before the build that is now installed", async () => {
+    // check() records X.  origin/main moves on to Y.  The install that runs
+    // takes Y, and X is now BEHIND us — a different commit from the installed
+    // one, and still nothing to install.
+    const paths = rig();
+    const OLDER = "d".repeat(40);
+    const gitForX = (args: string[]): CommandResult => {
+      if (args[0] === "rev-parse") return ok(`${OLDER}\n`);
+      if (args[0] === "rev-list") return ok("2\n");
+      if (args[0] === "log") return ok(`${OLDER}${UNIT}feat: x`);
+      if (args[0] === "show") return ok(JSON.stringify({ version: "1.0.31" }));
+      return ok();
+    };
+    const early = build(paths, {
+      git: gitForX,
+      now: () => new Date("2026-09-13T12:00:00.000Z"),
+    });
+    expect((await early.control.check()).available?.sourceCommit).toBe(OLDER);
+
+    // The harness comes back as Y, installed after that answer was recorded.
+    const gitCalls: string[][] = [];
+    const later = build(paths, {
+      installedCommit: NEW_COMMIT,
+      installedAt: "2026-09-13T12:30:00.000Z",
+      git: (args) => {
+        gitCalls.push(args);
+        return args[0] === "merge-base" ? ok() : gitForX(args);
+      },
+    });
+    expect(later.control.status().available).toBeNull();
+    expect(await later.control.start()).toMatchObject({
+      ok: false,
+      error: "BotFleet is already on the newest build.",
+    });
+    expect(later.launched).toHaveLength(0);
+  });
+
+  it("asks git before launching, and refuses an answer already contained in this build", async () => {
+    const paths = rig();
+    const OLDER = "d".repeat(40);
+    // Timestamps say the answer is fresh, so only git can catch this one.
+    const harness = build(paths, {
+      git: (args) => {
+        if (args[0] === "rev-parse") return ok(`${OLDER}\n`);
+        if (args[0] === "rev-list") return ok("2\n");
+        if (args[0] === "log") return ok(`${OLDER}${UNIT}feat: x`);
+        if (args[0] === "show") return ok(JSON.stringify({ version: "1.0.31" }));
+        // `merge-base --is-ancestor` exits 0: already in this build.
+        if (args[0] === "merge-base") return ok();
+        return ok();
+      },
+    });
+    await harness.control.check();
+    expect(harness.control.status().available?.sourceCommit).toBe(OLDER);
+    const refused = await harness.control.start();
+    expect(refused).toMatchObject({ ok: false, error: "BotFleet is already on the newest build." });
+    expect(harness.launched).toHaveLength(0);
+    // And the answer is gone afterwards, not re-offered on the next status.
+    expect(harness.control.status().available).toBeNull();
   });
 
   it("folds a finished run into lastRun and forgets the current one", () => {

@@ -1,7 +1,7 @@
 // The renderer half: which update path the card uses, and the sentences it
 // says.  Both are pure, which is the point — the components render them and
 // the phone renders the same server fields, so the wording is checked once.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
   availableLabel,
@@ -15,7 +15,11 @@ import {
   requestUpdateCheck,
   requestUpdateRun,
   runningLabel,
+  scheduleStatusRetries,
   shortCommit,
+  STATUS_RETRY_DELAYS_MS,
+  STATUS_RETRY_STEADY_MS,
+  statusRetryDelay,
   updateSource,
   type UpdateStatus,
 } from "./update-control";
@@ -57,6 +61,63 @@ describe("which path drives the card", () => {
     expect(updateSource(useless, false)).toBe("none");
     expect(updateSource(null, true)).toBe("feed");
     expect(updateSource(null, false)).toBe("none");
+  });
+});
+
+describe("retrying a status that did not arrive", () => {
+  afterEach(() => vi.useRealTimers());
+
+  it("backs off on the published schedule and then heartbeats", () => {
+    expect(statusRetryDelay(0)).toBe(STATUS_RETRY_DELAYS_MS[0]);
+    expect(statusRetryDelay(1)).toBe(STATUS_RETRY_DELAYS_MS[1]);
+    expect(statusRetryDelay(2)).toBe(STATUS_RETRY_DELAYS_MS[2]);
+    expect(statusRetryDelay(3)).toBe(STATUS_RETRY_STEADY_MS);
+    expect(statusRetryDelay(99)).toBe(STATUS_RETRY_STEADY_MS);
+  });
+
+  it("keeps asking until the harness answers, then stops", async () => {
+    vi.useFakeTimers();
+    const answers: (UpdateStatus | null)[] = [null, null, null, null, status()];
+    const delays: number[] = [];
+    let attempt = 0;
+    const seen: UpdateStatus[] = [];
+    const stop = scheduleStatusRetries({
+      fetchStatus: async () => answers[attempt++] ?? null,
+      onStatus: (next) => seen.push(next),
+      setTimer: (handler, ms) => {
+        delays.push(ms);
+        return setTimeout(handler, ms);
+      },
+    });
+    // One failed fetch used to leave the UI on the release feed for the whole
+    // session; four here, and it still recovers.
+    for (let round = 0; round < 4; round += 1) {
+      await vi.advanceTimersByTimeAsync(STATUS_RETRY_STEADY_MS);
+    }
+    expect(delays).toEqual([5_000, 15_000, 60_000, STATUS_RETRY_STEADY_MS]);
+    expect(seen).toHaveLength(1);
+    // Answered: no further timer is armed.
+    const armed = delays.length;
+    await vi.advanceTimersByTimeAsync(STATUS_RETRY_STEADY_MS * 3);
+    expect(delays).toHaveLength(armed);
+    stop();
+  });
+
+  it("stops asking once disposed", async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    const stop = scheduleStatusRetries({
+      fetchStatus: async () => {
+        calls += 1;
+        return null;
+      },
+      onStatus: () => {},
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toBe(1);
+    stop();
+    await vi.advanceTimersByTimeAsync(STATUS_RETRY_STEADY_MS * 3);
+    expect(calls).toBe(1);
   });
 });
 
