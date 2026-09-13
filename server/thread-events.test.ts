@@ -350,6 +350,68 @@ describe("readThreadEvents", () => {
     expect(page.total.runtime).toBe(1);
   });
 
+  // A kill mid-write can leave a live file holding one partial record and no
+  // newline at all.  Nothing complete is in there, so the file IS fully read
+  // and the rotated generation behind it completes the page — the panel must
+  // not say "showing 0 of 100" while a hundred records sit beside it.
+  it("completes the page from the rotated generation when the live file is one torn partial", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    let rotatedBody = "";
+    const rotated: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      const eventId = `rotated-${String(i).padStart(4, "0")}`;
+      rotated.push(eventId);
+      rotatedBody += line(runtime({ eventId, createdAt: String(i).padStart(6, "0"), type: "turn.started" }));
+    }
+    writeFileSync(join(eventsDir, "t1.ndjson.1"), rotatedBody);
+    // the same shape as a 9 MB partial against the 8 MB production window,
+    // sized to the window this test injects
+    writeFileSync(join(eventsDir, "t1.ndjson"), `{"eventId":"torn","text":"${"x".repeat(200_000)}`);
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(rotated);
+    expect(page.total.runtime).toBe(100);
+  });
+
+  // The backward scan used to decode the whole accumulated tail on every
+  // 64 KB step, which is quadratic in the window: 12 MB of 100 KB records
+  // decoded 524 MB and blocked the event loop for about 150 ms per request.
+  it("decodes the tail once, not once per chunk", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    let body = "";
+    for (let i = 0; i < 12; i++) {
+      body += line(runtime({ eventId: `e${i}`, createdAt: String(i).padStart(6, "0"), type: "turn.started", text: "x".repeat(100_000) }));
+    }
+    writeFileSync(join(eventsDir, "t1.ndjson"), body);
+
+    const window = 512 * 1024;
+    let calls = 0;
+    let decoded = 0;
+    const page = readThreadEvents({
+      eventsDir,
+      nativeDir,
+      threadId: "t1",
+      limit: 300,
+      maxTailBytes: window,
+      decode: (bytes) => {
+        calls += 1;
+        decoded += bytes.length;
+        return bytes.toString("utf8");
+      },
+    });
+
+    // the page is still the newest records the window holds
+    expect(page.entries.length).toBeGreaterThan(1);
+    expect((page.entries.at(-1)!.data as { eventId: string }).eventId).toBe("e11");
+    expect(page.total.runtime).toBe(12);
+    // one pass over the window, not one per chunk: the old scan decoded
+    // 64 + 128 + … + 512 KB for this same fixture
+    expect(calls).toBeLessThanOrEqual(2);
+    expect(decoded).toBeLessThanOrEqual(window + 64 * 1024);
+  });
+
   it("refuses a thread id that could escape the log directory", () => {
     const eventsDir = tmp();
     const nativeDir = tmp();
