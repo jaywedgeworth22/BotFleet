@@ -1100,4 +1100,58 @@ describe("pairing, end to end", () => {
       await new Promise<void>((r) => control.close(() => r()));
     }
   });
+  it("answers push health locally, to a paired device only", async () => {
+    const TOKEN = "push-health-token";
+    const healthServer = createServer(
+      createProxyHandler({
+        // No harness on this port: a 200 proves the sidecar terminated the
+        // route itself rather than forwarding it.
+        harnessPort: 1,
+        authenticate: (token) => (token === TOKEN ? { cloudDesktopAccess: false } : null),
+        redeem: () => ({ error: "not used" }),
+        serverName: () => "Test computer",
+        pushHealth: () => ({
+          configured: true,
+          production: true,
+          tokensRegistered: 2,
+          sent: 5,
+          failed: 1,
+          lastSentAt: 1_700_000_000_000,
+          lastErrorAt: 1_700_000_001_000,
+          lastError: "403 ExpiredProviderToken",
+        }),
+      }),
+    );
+    await new Promise<void>((resolve) => healthServer.listen(0, "127.0.0.1", resolve));
+    // SAFETY: an IP server that has completed listen() has an AddressInfo
+    // object with a numeric port.
+    const port = (healthServer.address() as { port: number }).port;
+    const load = (token?: string) =>
+      fetch(`http://127.0.0.1:${port}/api/companion/push-health`, {
+        headers: token ? { authorization: `Bearer ${token}` } : {},
+      });
+
+    try {
+      expect((await load()).status).toBe(401);
+      expect((await load("wrong-token")).status).toBe(401);
+
+      const answer = await load(TOKEN);
+      expect(answer.status).toBe(200);
+      const body = await answer.text();
+      expect(JSON.parse(body)).toEqual({
+        configured: true,
+        production: true,
+        tokensRegistered: 2,
+        sent: 5,
+        failed: 1,
+        lastSentAt: 1_700_000_000_000,
+        lastErrorAt: 1_700_000_001_000,
+        lastError: "403 ExpiredProviderToken",
+      });
+      // Nothing about the signing key may cross this boundary.
+      expect(body).not.toMatch(/PRIVATE KEY|keyId|teamId|p8/i);
+    } finally {
+      await new Promise<void>((r) => healthServer.close(() => r()));
+    }
+  });
 });
