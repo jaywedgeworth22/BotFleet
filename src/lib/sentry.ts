@@ -170,6 +170,7 @@ interface SentryFeedbackDialog {
 }
 
 let activeFeedbackDialog: SentryFeedbackDialog | null = null;
+let isCreatingFeedback = false;
 
 function toWellFormedString(val: string): string {
   if (typeof (val as { toWellFormed?: () => string }).toWellFormed === "function") {
@@ -245,48 +246,59 @@ export async function openSentryFeedback(options?: OpenFeedbackOptions): Promise
     }
 
     const feedback = Sentry.getFeedback();
-    if (!feedback) return;
+    if (!feedback || isCreatingFeedback) return;
+    isCreatingFeedback = true;
 
-    if (activeFeedbackDialog) {
-      try {
-        activeFeedbackDialog.close();
-        activeFeedbackDialog.removeFromDom();
-      } catch {
-        /* ignore cleanup failure */
-      }
-      activeFeedbackDialog = null;
-    }
-
-    const dialog = (await feedback.createForm({
-      formTitle: options?.formTitle ?? "Report a problem",
-      messagePlaceholder: options?.defaultMessage ? `Details: ${options.defaultMessage}` : "What went wrong?",
-      tags: options?.defaultMessage ? { reportedError: options.defaultMessage.slice(0, 200) } : undefined,
-      onFormSubmitted: () => {
-        dialog?.removeFromDom();
-        activeFeedbackDialog = null;
-      },
-      onFormClose: () => {
-        dialog?.removeFromDom();
-        activeFeedbackDialog = null;
-      },
-    })) as unknown as (SentryFeedbackDialog & { el?: unknown }) | undefined;
-
-    if (dialog) {
-      activeFeedbackDialog = dialog;
-      dialog.appendToDom();
-      dialog.open();
-      if (options?.defaultMessage) {
+    try {
+      if (activeFeedbackDialog) {
         try {
-          const shadow = (dialog.el as { shadowRoot?: ShadowRoot | null } | undefined)?.shadowRoot;
-          const textarea = shadow?.querySelector("textarea");
-          if (textarea) {
-            textarea.value = options.defaultMessage;
-            textarea.dispatchEvent(new Event("input", { bubbles: true }));
-          }
+          activeFeedbackDialog.close();
+          activeFeedbackDialog.removeFromDom();
         } catch {
-          /* ignore DOM inspection failures */
+          /* ignore cleanup failure */
+        }
+        activeFeedbackDialog = null;
+      }
+
+      if (options?.defaultMessage) {
+        Sentry.setContext("reported_problem", {
+          error_details: options.defaultMessage,
+        });
+      }
+
+      const cleanup = () => {
+        dialog?.removeFromDom();
+        activeFeedbackDialog = null;
+        Sentry.setContext("reported_problem", null);
+      };
+
+      const dialog = (await feedback.createForm({
+        formTitle: options?.formTitle ?? "Report a problem",
+        messagePlaceholder: options?.defaultMessage ? `Details: ${options.defaultMessage}` : "What went wrong?",
+        tags: options?.defaultMessage ? { reportedError: options.defaultMessage.slice(0, 200) } : undefined,
+        onFormSubmitted: cleanup,
+        onFormClose: cleanup,
+      })) as unknown as (SentryFeedbackDialog & { el?: unknown }) | undefined;
+
+      if (dialog) {
+        activeFeedbackDialog = dialog;
+        dialog.appendToDom();
+        dialog.open();
+        if (options?.defaultMessage) {
+          try {
+            const shadow = (dialog.el as { shadowRoot?: ShadowRoot | null } | undefined)?.shadowRoot;
+            const textarea = shadow?.querySelector("textarea");
+            if (textarea) {
+              textarea.value = options.defaultMessage;
+              textarea.dispatchEvent(new Event("input", { bubbles: true }));
+            }
+          } catch {
+            /* ignore DOM inspection failures */
+          }
         }
       }
+    } finally {
+      isCreatingFeedback = false;
     }
   } catch {
     /* If the feedback dialog cannot be opened, swallow to protect the renderer */
