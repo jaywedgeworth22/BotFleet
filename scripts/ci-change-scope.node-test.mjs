@@ -105,3 +105,14 @@ test("the weekly full run is registered with the Sentry cron reporter", () => {
   assert.equal(reporter.schedules.CI, schedule);
   assert.ok(reporter.margins.CI >= maxJobTimeout + 15);
 });
+
+test("every host runs the canonical complete test chain without masking failures", () => {
+  const workflow = parse(readFileSync(join(ROOT, ".github/workflows/ci.yml"), "utf8"));
+  const job = workflow.jobs.test;
+  assert.deepEqual(job.strategy.matrix.os, ["macos-latest", "ubuntu-latest", "windows-latest"]);
+  assert.notEqual(job["continue-on-error"], true);
+  const gates = job.steps.filter((step) => step.run?.trim() === "pnpm test");
+  assert.equal(gates.length, 1, "CI must call the package test chain, not a copied subset");
+  assert.equal(gates[0].if, "needs.changes.outputs.docs_only != 'true'");
+  assert.notEqual(gates[0]["continue-on-error"], true);
+});

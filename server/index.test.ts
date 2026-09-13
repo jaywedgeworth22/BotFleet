@@ -40,6 +40,8 @@ let fakeClaudeDump: string;
 let fakeCrashCli: string;
 /** wrapper CLI that returns a successful-looking quota message */
 let fakeQuotaCli: string;
+/** wrapper CLI that returns ordinary prose containing former quota keywords */
+let fakeQuotaProseCli: string;
 /** successful subscription CLI that reports an API-equivalent cost */
 let fakePricedClaudeCli: string;
 /** quota CLI held behind a file gate so work can queue before completion */
@@ -110,8 +112,8 @@ const statusWithHeaders = (headers: Record<string, string>): Promise<number> =>
 
 const writeFakeClaudeWrapper = (
   file: string,
-  mode: "exit-early" | "hang" | "quota",
-  options: { keepDump?: boolean; quotaGate?: string; launchLog?: string } = {},
+  mode: "exit-early" | "hang" | "happy" | "quota",
+  options: { keepDump?: boolean; quotaGate?: string; launchLog?: string; replyText?: string } = {},
 ): string => {
   const lines = [
     "#!/usr/bin/env node",
@@ -126,6 +128,9 @@ const writeFakeClaudeWrapper = (
   if (!options.keepDump) lines.push("delete process.env.FAKE_CLAUDE_DUMP;");
   if (options.quotaGate) {
     lines.push(`process.env.FAKE_CLAUDE_QUOTA_GATE = ${JSON.stringify(options.quotaGate)};`);
+  }
+  if (options.replyText) {
+    lines.push(`process.env.FAKE_CLAUDE_REPLY = ${JSON.stringify(options.replyText)};`);
   }
   lines.push(`await import(${JSON.stringify(pathToFileURL(FAKE_CLAUDE_CLI).href)});`, "");
   writeFileSync(file, lines.join("\n"), { mode: 0o755 });
@@ -143,6 +148,9 @@ beforeAll(async () => {
   // so this engine never clobbers the argv dump other tests assert on.
   fakeCrashCli = writeFakeClaudeWrapper(join(home, "fake-claude-crash"), "exit-early");
   fakeQuotaCli = writeFakeClaudeWrapper(join(home, "fake-claude-quota"), "quota");
+  fakeQuotaProseCli = writeFakeClaudeWrapper(join(home, "fake-claude-quota-prose"), "happy", {
+    replyText: "The subscription accounting review is complete.",
+  });
   fakePricedClaudeCli = join(home, "fake-claude-priced");
   writeFileSync(
     fakePricedClaudeCli,
@@ -228,6 +236,7 @@ beforeAll(async () => {
         claude2: { driver: "claudeAgent", displayName: "Fixture Claude Two", config: { cli: FAKE_CLAUDE_CLI } },
         crasher: { driver: "claudeAgent", displayName: "Fixture Crasher", config: { cli: fakeCrashCli } },
         quota: { driver: "claudeAgent", displayName: "Fixture Quota", enabled: false, config: { cli: fakeQuotaCli } },
+        quotaProse: { driver: "claudeAgent", displayName: "Fixture Quota Prose", enabled: false, config: { cli: fakeQuotaProseCli } },
         pricedClaude: { driver: "claudeAgent", displayName: "Fixture Priced Claude", enabled: false, config: { cli: fakePricedClaudeCli } },
         gatedQuota: { driver: "claudeAgent", displayName: "Fixture Gated Quota", enabled: false, config: { cli: fakeGatedQuotaCli } },
         slowProbe: { driver: "claudeAgent", displayName: "Fixture Slow Probe", enabled: false, config: { cli: fakeSlowProbeCli } },
@@ -2346,6 +2355,97 @@ describe("harness HTTP API", () => {
     }
   }, 30_000);
 
+  it("does not cool down or replay a successful reply that discusses subscription accounting", async () => {
+    expect((await api("PATCH", "/api/instances/quotaProse", { enabled: true })).status).toBe(200);
+    expect((await api("PATCH", "/api/instances/quota", { enabled: true })).status).toBe(200);
+    const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+    const quotaProse = instances.find((instance: { instanceId: string }) => instance.instanceId === "quotaProse");
+    const quota = instances.find((instance: { instanceId: string }) => instance.instanceId === "quota");
+    expect(quotaProse?.snapshot.state).toBe("available");
+    expect(quota?.snapshot.state).toBe("available");
+
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "quotaProse",
+          model: quotaProse.models.default,
+          fallbacks: [{ instanceId: "quota", model: quota.models.default }],
+        },
+      })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "summarize the accounting work" })).status).toBe(202);
+      await expect.poll(async () => {
+        const current = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return current?.busy;
+      }, { timeout: 10_000 }).toBe(false);
+
+      const transcript = (await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`)).body.messages as Array<{
+        text?: string;
+        tool?: { name?: string };
+      }>;
+      expect(transcript.filter((message) => message.text === "The subscription accounting review is complete.")).toHaveLength(1);
+      expect(transcript.some((message) => message.text?.includes("You've hit your session limit"))).toBe(false);
+      expect(transcript.some((message) => message.tool?.name?.startsWith("Fell over to "))).toBe(false);
+      const cooldowns = (await api("GET", "/api/quotas")).body.cooldowns as Array<{ botId: string }>;
+      expect(cooldowns.some((cooldown) => cooldown.botId === bot.id)).toBe(false);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PATCH", "/api/instances/quotaProse", { enabled: false })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/quota", { enabled: false })).status).toBe(200);
+    }
+  }, 30_000);
+
+  it("still falls over from a successful-looking standalone quota chip", async () => {
+    expect((await api("PATCH", "/api/instances/quota", { enabled: true })).status).toBe(200);
+    expect((await api("PATCH", "/api/instances/pricedClaude", { enabled: true })).status).toBe(200);
+    const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+    const quota = instances.find((instance: { instanceId: string }) => instance.instanceId === "quota");
+    const pricedClaude = instances.find((instance: { instanceId: string }) => instance.instanceId === "pricedClaude");
+    expect(quota?.snapshot.state).toBe("available");
+    expect(pricedClaude?.snapshot.state).toBe("available");
+
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "quota",
+          model: quota.models.default,
+          fallbacks: [{ instanceId: "pricedClaude", model: pricedClaude.models.default }],
+        },
+      })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "exercise the terminal quota chip" })).status).toBe(202);
+      await expect.poll(async () => {
+        const transcript = (await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`)).body.messages as Array<{
+          text?: string;
+        }>;
+        return transcript.some((message) => message.text === "hello from fake claude");
+      }, { timeout: 15_000 }).toBe(true);
+
+      const transcript = (await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`)).body.messages as Array<{
+        text?: string;
+        tool?: { name?: string };
+      }>;
+      expect(transcript.some((message) => message.text?.includes("You've hit your session limit"))).toBe(true);
+      expect(transcript.some((message) => message.tool?.name?.startsWith("Fell over to "))).toBe(true);
+      const cooldowns = (await api("GET", "/api/quotas")).body.cooldowns as Array<{
+        botId: string;
+        instanceId: string;
+        error: string;
+      }>;
+      expect(cooldowns).toContainEqual(expect.objectContaining({
+        botId: bot.id,
+        instanceId: "quota",
+        error: "You've hit your session limit · resets in 30 minutes",
+      }));
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PATCH", "/api/instances/quota", { enabled: false })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/pricedClaude", { enabled: false })).status).toBe(200);
+    }
+  }, 30_000);
+
   it("keeps Claude subscription-equivalent prices out of the task's actual-spend total", async () => {
     expect((await api("PATCH", "/api/instances/pricedClaude", { enabled: true })).status).toBe(200);
     const pricedClaude = (await api("GET", "/api/instances?fresh=1")).body.instances.find(
@@ -3141,7 +3241,13 @@ describe("harness HTTP API", () => {
     try {
       const before = await api("GET", "/api/observability");
       expect(before.status).toBe(200);
-      expect(before.body).toMatchObject({ configured: false, enabled: false, source: "none", dsn: null });
+      expect(before.body).toMatchObject({
+        configured: false,
+        enabled: false,
+        requestedEnabled: true,
+        source: "none",
+        dsn: null,
+      });
 
       const unconfigured = await api("POST", "/api/observability/test");
       expect(unconfigured.status).toBe(200);
@@ -3181,6 +3287,7 @@ describe("harness HTTP API", () => {
       expect(off.body.observability).toMatchObject({ configured: true, hasDsn: true, enabled: false });
       const afterOff = await api("GET", "/api/observability");
       expect(afterOff.body.enabled).toBe(false);
+      expect(afterOff.body.requestedEnabled).toBe(false);
       const refused = await api("POST", "/api/observability/test");
       expect(refused.body.ok).toBe(false);
       expect(String(refused.body.error)).toMatch(/turned off/i);

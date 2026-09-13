@@ -27,6 +27,8 @@ export interface ObservabilityStatusView {
   /** Reporting is actually meant to be happening: a DSN is stored and the
    * kill switch is on.  The Settings pill reads straight off this. */
   enabled: boolean;
+  /** The stored switch before DSN/configuration validity is folded in. */
+  requestedEnabled: boolean;
   configured: boolean;
   /** `"infisical"` is the fourth answer the Sentry lane never had: the
    * secret store holds the DSN, so neither the environment nor this
@@ -116,6 +118,7 @@ class ObservabilityManager {
     const malformed = input.dsn !== null && parsed === null;
     return {
       enabled: input.enabled && input.dsn !== null && !malformed,
+      requestedEnabled: input.enabled,
       configured: input.dsn !== null,
       source: this.dsnFromVault() ? "infisical" : input.source,
       host: parsed?.host ?? null,
