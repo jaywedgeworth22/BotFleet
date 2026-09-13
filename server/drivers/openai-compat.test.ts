@@ -579,7 +579,7 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
     server.queueCompletion({ kind: "sse", frames: ['{"choices":[{"delta":{"content":"compatible"}}]}', "[DONE]"] });
     const instance = await OpenAICompatDriver.create({
       instanceId: "optional-usage", displayName: "Optional usage", enabled: true,
-      config: { url: server.url, models: ["fake-model"] }, environment: {},
+      config: { url: server.url, apiKeyEnv: "UNSET_OPTIONAL_KEY", models: ["fake-model"] }, environment: {},
     });
     const recorder = recordEvents(instance.adapter);
     await instance.adapter.sendTurn({ threadId: "optional-usage", text: "hi", model: "fake-model" });
@@ -602,7 +602,7 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
     server.queueCompletion({ kind: "json", status: Number(status), body: { error } });
     const instance = await OpenAICompatDriver.create({
       instanceId: "invalid-request", displayName: "Invalid request", enabled: true,
-      config: { url: server.url, models: ["fake-model"] }, environment: {},
+      config: { url: server.url, apiKeyEnv: "UNSET_OPTIONAL_KEY", models: ["fake-model"] }, environment: {},
     });
     const recorder = recordEvents(instance.adapter);
     await instance.adapter.sendTurn({ threadId: "invalid-request", text: "hi", model: "fake-model" });
@@ -622,7 +622,7 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
     vi.stubGlobal("fetch", fetchMock);
     const instance = await OpenAICompatDriver.create({
       instanceId: "bounded-retry", displayName: "Bounded retry", enabled: true,
-      config: { url: "https://example.test/v1", models: ["fake-model"] }, environment: {},
+      config: { url: "https://example.test/v1", apiKeyEnv: "UNSET_OPTIONAL_KEY", models: ["fake-model"] }, environment: {},
     });
     const recorder = recordEvents(instance.adapter);
     await instance.adapter.sendTurn({ threadId: "bounded-retry", text: "hi", model: "fake-model" });
