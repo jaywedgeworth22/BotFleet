@@ -889,14 +889,24 @@ public extension Routine {
 public struct NotificationTarget: Equatable, Sendable {
     public let botId: String
     public let threadId: String
+    /// The pending request this notification answers, when the harness sent
+    /// one (see `NotificationFrame.requestId`).  Nil for an older harness,
+    /// or for a notification that never carried one to begin with.
+    public let requestId: String?
+    /// approval · question · done · routine-failed — carried through so
+    /// Approve/Deny can tell a permission card from a free-text question
+    /// without a network round trip.
+    public let kind: String?
 
-    public init?(botId: String?, threadId: String?) {
+    public init?(botId: String?, threadId: String?, requestId: String? = nil, kind: String? = nil) {
         guard let botId, let threadId,
               !botId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !threadId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
         self.botId = botId
         self.threadId = threadId
+        self.requestId = requestId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? requestId : nil
+        self.kind = kind
     }
 
     public init?(payload: [String: String]) {
@@ -904,7 +914,8 @@ public struct NotificationTarget: Equatable, Sendable {
     }
 
     /// Local banners store flat string keys.  APNs also nests `thread-id`
-    /// under `aps`.  Either shape must open the same bot and task.
+    /// under `aps`.  Either shape must open the same bot and task — and,
+    /// when present, answer the same pending request.
     public static func fromRemoteUserInfo(_ userInfo: [AnyHashable: Any]) -> NotificationTarget? {
         func string(from value: Any?) -> String? {
             guard let value = value as? String else { return nil }
@@ -914,7 +925,12 @@ public struct NotificationTarget: Equatable, Sendable {
         let botId = string(from: userInfo["botId"])
         let nested = userInfo["aps"] as? [AnyHashable: Any]
         let threadId = string(from: userInfo["threadId"]) ?? string(from: nested?["thread-id"])
-        return NotificationTarget(botId: botId, threadId: threadId)
+        return NotificationTarget(
+            botId: botId,
+            threadId: threadId,
+            requestId: string(from: userInfo["requestId"]),
+            kind: string(from: userInfo["kind"])
+        )
     }
 
     public func requiresTaskSwitch(activeThreadId: String) -> Bool {

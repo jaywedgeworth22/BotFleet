@@ -119,7 +119,12 @@ final class Session: ObservableObject {
             Task { @MainActor in await self?.openNotification(target) }
         }
         NotificationCoordinator.shared.approvalActionHandler = { [weak self] target, approve in
-            await self?.answerPendingRequest(threadId: target.threadId, approve: approve)
+            await self?.answerPendingRequest(
+                threadId: target.threadId,
+                requestId: target.requestId,
+                kind: target.kind,
+                approve: approve
+            )
         }
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-store-preview"),
@@ -824,29 +829,41 @@ final class Session: ObservableObject {
     }
 
     /// Approve or deny from a notification action — Approve/Deny on a lock
-    /// screen banner, or the equivalent remote push. Unlike the Live
-    /// Activity's buttons, the notification payload carries only `threadId`
-    /// and `botId` (see `NotificationFrame`, which has no `requestId`), so
-    /// this resolves today's pending card for the thread first, then defers
-    /// to the same `answer(threadId:requestId:choice:isPermission:)` above —
+    /// screen banner, or the equivalent remote push.  A harness new enough
+    /// to send `requestId` (see `NotificationFrame`) answers that exact
+    /// request directly.  An older harness sends only `threadId`/`botId`,
+    /// so this falls back to resolving the thread's current pending card —
+    /// the only option before `requestId` existed.  Either way this defers
+    /// to the same `answer(threadId:requestId:choice:isPermission:)` above,
     /// the one `AnswerApprovalIntent` calls.
-    func answerPendingRequest(threadId: String, approve: Bool) async {
-        guard let client else { return }
-        func pendingCard() -> OptionCard? {
+    func answerPendingRequest(threadId: String, requestId: String?, kind: String?, approve: Bool) async {
+        let choice = approve ? "Approve" : "Deny"
+        func cardInMemory() -> OptionCard? {
             state.pendingApprovals.first { $0.threadId == threadId }?.message.card
         }
+
+        if let requestId {
+            // A permission card allows/denies; a question answers with
+            // text.  A card already in memory knows which; otherwise the
+            // frame's kind is the only signal available.
+            let isPermission = cardInMemory()?.isPermission ?? (kind == "approval")
+            await answer(threadId: threadId, requestId: requestId, choice: choice, isPermission: isPermission)
+            return
+        }
+
+        guard let client else { return }
         // A cold-launched process has not hydrated yet; the notification
         // action may be this session's first sign the request even exists.
-        var card = pendingCard()
+        var card = cardInMemory()
         if card?.requestId == nil {
             _ = try? await hydrateSnapshot(using: client)
-            card = pendingCard()
+            card = cardInMemory()
         }
-        guard let requestId = card?.requestId else { return }
+        guard let resolvedRequestId = card?.requestId else { return }
         await answer(
             threadId: threadId,
-            requestId: requestId,
-            choice: approve ? "Approve" : "Deny",
+            requestId: resolvedRequestId,
+            choice: choice,
             isPermission: card?.isPermission ?? false
         )
     }

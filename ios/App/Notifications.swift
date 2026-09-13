@@ -47,11 +47,17 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
             ? NotificationCategoryIdentifier.approval
             : NotificationCategoryIdentifier.update
         content.threadIdentifier = notification.threadId
-        content.userInfo = [
+        var userInfo: [AnyHashable: Any] = [
             "threadId": notification.threadId,
             "botId": notification.botId,
             "kind": notification.kind,
         ]
+        // Only approval/question frames carry these — added conditionally
+        // so an absent value never becomes an `NSNull` a reader has to
+        // filter back out.
+        if let requestId = notification.requestId { userInfo["requestId"] = requestId }
+        if let tool = notification.tool { userInfo["tool"] = tool }
+        content.userInfo = userInfo
         if notification.isBlocking { content.interruptionLevel = .timeSensitive }
 
         // A replay after a short disconnect must reconcile a missed alert,

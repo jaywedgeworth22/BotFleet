@@ -46,24 +46,51 @@ final class NotificationActionsTests: XCTestCase {
 
     // MARK: - Action routing
 
-    private let payload: [AnyHashable: Any] = ["threadId": "task-2", "botId": "bot-1", "kind": "approval"]
+    /// A harness new enough to send `requestId` — see `NotificationFrame`.
+    private let payload: [AnyHashable: Any] = [
+        "threadId": "task-2", "botId": "bot-1", "kind": "approval", "requestId": "req-9",
+    ]
+    /// An older harness: the same notification, minus `requestId`.  Both
+    /// shapes must route the same way — only the carried identity differs.
+    private let payloadWithoutRequestId: [AnyHashable: Any] = [
+        "threadId": "task-2", "botId": "bot-1", "kind": "approval",
+    ]
 
-    func testApproveActionRoutesToApprove() {
+    func testApproveActionRoutesToApproveCarryingTheRequestId() {
         XCTAssertEqual(
             NotificationTarget.actionRoute(actionIdentifier: NotificationActionIdentifier.approve, userInfo: payload),
-            .approve(NotificationTarget(botId: "bot-1", threadId: "task-2")!)
+            .approve(NotificationTarget(botId: "bot-1", threadId: "task-2", requestId: "req-9", kind: "approval")!)
         )
     }
 
-    func testDenyActionRoutesToDeny() {
+    func testDenyActionRoutesToDenyCarryingTheRequestId() {
         XCTAssertEqual(
             NotificationTarget.actionRoute(actionIdentifier: NotificationActionIdentifier.deny, userInfo: payload),
-            .deny(NotificationTarget(botId: "bot-1", threadId: "task-2")!)
+            .deny(NotificationTarget(botId: "bot-1", threadId: "task-2", requestId: "req-9", kind: "approval")!)
         )
+    }
+
+    /// An older harness never sent `requestId` at all.  Routing must still
+    /// reach `.approve` — with the id absent, not a crash — so
+    /// `Session.answerPendingRequest` can fall back to resolving the
+    /// thread's pending card.
+    func testApproveActionWithoutRequestIdStillRoutesWithTheIdAbsent() {
+        let route = NotificationTarget.actionRoute(
+            actionIdentifier: NotificationActionIdentifier.approve,
+            userInfo: payloadWithoutRequestId
+        )
+        guard case let .approve(target) = route else {
+            return XCTFail("expected .approve, got \(route)")
+        }
+        XCTAssertNil(target.requestId)
+        XCTAssertEqual(target.threadId, "task-2")
+        XCTAssertEqual(target.botId, "bot-1")
     }
 
     func testOpenActionAndDefaultTapBothRouteToOpen() {
-        let expected = NotificationActionRoute.open(NotificationTarget(botId: "bot-1", threadId: "task-2")!)
+        let expected = NotificationActionRoute.open(
+            NotificationTarget(botId: "bot-1", threadId: "task-2", requestId: "req-9", kind: "approval")!
+        )
         XCTAssertEqual(
             NotificationTarget.actionRoute(actionIdentifier: NotificationActionIdentifier.open, userInfo: payload),
             expected
