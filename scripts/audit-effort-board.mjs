@@ -41,7 +41,7 @@ export function auditEffortBoard({ board, issues, mergedPullRequests, deployment
       findings.push({ kind: "missing-canonical-issue-link", ...summary(row) });
     }
     const prNumbers = [...text.matchAll(/https?:\/\/github\.com\/jaywedgeworth22\/BotFleet\/pull\/(\d+)/gi)].map((match) => Number(match[1]));
-    for (const list of text.matchAll(/\bPRs?\s*(#\d+(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*&\s*)#\d+)*)/gi)) {
+    for (const list of text.matchAll(/\bPRs?\s*(#\d+(?:(?:\s*,\s*(?:and\s+)?|\s+and\s+|\s*[&/]\s*)#\d+)*)/gi)) {
       prNumbers.push(...[...list[1].matchAll(/#(\d+)/g)].map((match) => Number(match[1])));
     }
     const references = [...new Set(prNumbers)].flatMap((number) => {
