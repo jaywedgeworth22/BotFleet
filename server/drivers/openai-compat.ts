@@ -23,18 +23,10 @@ import { recordExecutedTools, withChatSpan } from "../sentry-ai.ts";
 import { runTurnLoop, type ChatMessage, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
 
 import { httpErrorFor } from "./chat-completions/errors.ts";
+import { toTurnUsage } from "./chat-completions/usage.ts";
 
 const DRIVER_KIND = "openai-compat";
 const REQUEST_TIMEOUT_MS = 120_000;
-
-/** Cached reads are included in prompt_tokens, never additional tokens. */
-function toTurnUsage(raw: any): TurnUsage {
-  const finiteCount = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : 0;
-  const usage: TurnUsage = { input: finiteCount(raw?.prompt_tokens), output: finiteCount(raw?.completion_tokens) };
-  const cached = raw?.prompt_tokens_details?.cached_tokens ?? raw?.prompt_cache_hit_tokens;
-  if (typeof cached === "number" && Number.isFinite(cached) && cached >= 0) usage.cachedInput = Math.min(usage.input, Math.round(cached));
-  return usage;
-}
 
 // Default catalog — overwritten by /models when the endpoint answers.
 // Free-tier-friendly defaults so the picker is never empty.
