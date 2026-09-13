@@ -772,13 +772,28 @@ public struct RoutineSchedule: Codable, Hashable, Sendable {
     public var at: Double?
     public var time: String?
     public var weekdays: [Int]?
+    public var timeZone: String?
 
-    public static func once(at: Date) -> Self {
-        .init(type: .once, at: at.timeIntervalSince1970 * 1_000, time: nil, weekdays: nil)
+    public init(
+        type: Kind,
+        at: Double? = nil,
+        time: String? = nil,
+        weekdays: [Int]? = nil,
+        timeZone: String? = nil
+    ) {
+        self.type = type
+        self.at = at
+        self.time = time
+        self.weekdays = weekdays
+        self.timeZone = timeZone
     }
 
-    public static func daily(time: String, weekdays: [Int]) -> Self {
-        .init(type: .daily, at: nil, time: time, weekdays: weekdays)
+    public static func once(at: Date) -> Self {
+        .init(type: .once, at: at.timeIntervalSince1970 * 1_000)
+    }
+
+    public static func daily(time: String, weekdays: [Int], timeZone: String? = nil) -> Self {
+        .init(type: .daily, time: time, weekdays: weekdays, timeZone: timeZone)
     }
 }
 
@@ -790,6 +805,7 @@ public struct Routine: Codable, Hashable, Identifiable, Sendable {
     public var runOn: String
     public var enabled: Bool
     public var schedule: RoutineSchedule
+    public var scheduleTimeZoneSource: String? = nil
     public var durationMinutes: Int
     public var nextRunAt: Double?
     public var createdAt: Double

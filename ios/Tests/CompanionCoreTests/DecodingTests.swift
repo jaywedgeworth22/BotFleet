@@ -147,12 +147,13 @@ final class DecodingTests: XCTestCase {
     func testFutureRoutineScheduleKindRemainsVisibleAsUnknown() throws {
         let schedule = try JSONDecoder().decode(
             RoutineSchedule.self,
-            from: Data(#"{"type":"weekly","time":"09:00","weekdays":[1]}"#.utf8)
+            from: Data(#"{"type":"weekly","time":"09:00","weekdays":[1],"timeZone":"Asia/Tokyo"}"#.utf8)
         )
 
         XCTAssertEqual(schedule.type, .unknown)
         XCTAssertEqual(schedule.time, "09:00")
         XCTAssertEqual(schedule.weekdays, [1])
+        XCTAssertEqual(schedule.timeZone, "Asia/Tokyo")
     }
 
     func testNotificationTargetRequiresBothExactIds() {

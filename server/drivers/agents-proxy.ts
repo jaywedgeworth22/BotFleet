@@ -79,7 +79,7 @@ const ROUTINE_SCHEDULE_SCHEMA = {
     },
     timeZone: {
       type: "string",
-      description: "Optional IANA timezone for a weekly or daily schedule, for example America/Chicago. Omit it to use the computer timezone returned by list_routines.",
+      description: "Optional IANA timezone for a weekly or daily schedule, for example America/Chicago. On create, omit it to use the computer timezone returned by list_routines. On update, omit it to preserve the routine's existing timezone; send a different IANA timezone to change it.",
     },
   },
   required: ["type"],
