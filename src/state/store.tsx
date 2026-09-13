@@ -2651,6 +2651,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // could not fill the gap, so queue subsequent frames behind a hydrate.
       if (frame.kind === "hello") {
         clearTimeout(hydrationFallback);
+        if (frame.resumed !== true) {
+          // The snapshot replaces the pre-gap transcript.  Discard both
+          // rendered fragments and queued deltas from that older boundary.
+          deltaBuffer.current.clear();
+          if (deltaFlush.current !== null) {
+            cancelAnimationFrame(deltaFlush.current);
+            deltaFlush.current = null;
+          }
+          setStream(EMPTY_STREAM);
+          pendingFrames.length = 0;
+        }
         if (shouldHydrateAfterHello(frame.resumed === true, hydrationFailed)) hydrate();
         return;
       }
