@@ -3,8 +3,10 @@
 #
 # Automatic git deploys:
 #   - skip every preview
-#   - skip when this commit did not change site files
-#   - production at most once per hour
+#   - skip when this commit did not change site files (effort logs / STATUS /
+#     iOS / docs-only merges must not ship the website)
+#   - production at most once per hour (stops agent spam even when they keep
+#     touching CSS/copy)
 # Manual: VERCEL_FORCE_DEPLOY=1, or Dashboard Redeploy with Ignore Build Step unchecked.
 set -euo pipefail
 
@@ -21,15 +23,15 @@ fi
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 git_root="$(git rev-parse --show-toplevel 2>/dev/null || true)"
 
-# Paths to treat as "the website".  Nested scripts (apps/site, site/, web/)
-# watch their own folder.  A repo-root script (DealDex) watches the tree
-# minus native/docs/CI so an iOS or effort-log commit does not ship the site.
+# Nested scripts (site/, web/, apps/site) watch their own folder.
+# A repo-root script (DealDex) watches the tree minus native/docs/CI.
 watch_args=()
 if [[ -n "${VERCEL_IGNORE_WATCH:-}" ]]; then
   # shellcheck disable=SC2206
   watch_args=(${VERCEL_IGNORE_WATCH})
 elif [[ -n "$git_root" && "$script_dir" != "$git_root" ]]; then
-  watch_args=(":(top)${script_dir#"$git_root"/}")
+  rel="${script_dir#"$git_root"/}"
+  watch_args=(":(top)${rel}" "${rel}")
 else
   watch_args=(
     .
@@ -40,6 +42,9 @@ else
     ":(exclude).github"
     ":(exclude)Apps"
     ":(exclude)*.xcodeproj"
+    ":(exclude)STATUS.md"
+    ":(exclude)docs/EFFORT-LOG.md"
+    ":(exclude)PLAN.md"
   )
 fi
 
@@ -82,10 +87,11 @@ if [[ -n "${VERCEL_TOKEN:-}" && -n "${VERCEL_PROJECT_ID:-}" ]]; then
   fi
   created=$(curl -fsS -H "Authorization: Bearer ${VERCEL_TOKEN}" \
     "https://api.vercel.com/v6/deployments?${qs}" \
-    | node -e 'let d="";process.stdin.on("data",c=>d+=c);process.stdin.on("end",()=>{try{const j=JSON.parse(d);console.log(j.deployments?.[0]?.created||0);}catch{console.log(0);}});' 2>/dev/null \
-    || python3 -c "import json,sys; d=json.load(sys.stdin); deps=d.get('deployments') or []; print(deps[0]['created'] if deps else 0)" 2>/dev/null \
-    || echo 0)
-  now_ms=$(node -e 'console.log(Date.now())' 2>/dev/null || python3 -c "import time; print(int(time.time()*1000))")
+    | python3 -c "import json,sys
+d=json.load(sys.stdin)
+deps=d.get('deployments') or []
+print(deps[0]['created'] if deps else 0)" 2>/dev/null || echo 0)
+  now_ms=$(python3 -c "import time; print(int(time.time()*1000))")
   if [[ "$created" =~ ^[0-9]+$ ]] && [[ "$created" -gt 0 ]]; then
     age=$(( (now_ms - created) / 1000 ))
     if [[ "$age" -lt 3600 ]]; then
