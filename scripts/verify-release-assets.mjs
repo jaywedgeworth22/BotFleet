@@ -128,7 +128,8 @@ export function verifyReleaseAssets(directory, version) {
     `BotFleet-${version}-x64.dmg`,
   ];
   const windows = [`BotFleet-${version}-setup.exe`];
-  const linux = [`BotFleet-${version}-x86_64.AppImage`];
+  const deb = `BotFleet-${version}-amd64.deb`;
+  const linux = [`BotFleet-${version}-x86_64.AppImage`, deb];
 
   verifyFeed(root, "latest-mac.yml", version, mac, mac);
   verifyFeed(root, "latest.yml", version, windows, windows);
@@ -149,7 +150,6 @@ export function verifyReleaseAssets(directory, version) {
     }
   }
 
-  const deb = `BotFleet-${version}-amd64.deb`;
   if (!existsSync(join(root, deb))) throw new Error(`missing Linux package ${deb}`);
   const checksumPath = join(root, "SHA256SUMS-ubuntu-x64.txt");
   if (!existsSync(checksumPath)) throw new Error("missing SHA256SUMS-ubuntu-x64.txt");

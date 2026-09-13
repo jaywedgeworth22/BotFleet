@@ -425,6 +425,8 @@ export interface ConfigStatus {
   observability?: {
     configured: boolean;
     enabled: boolean;
+    /** Stored switch before DSN availability is folded into `enabled`. */
+    requestedEnabled?: boolean;
     hasDsn: boolean;
     host: string | null;
     // "infisical" mirrors server/observability.ts's ObservabilityStatusView:
