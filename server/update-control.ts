@@ -154,6 +154,11 @@ export interface UpdateControlDeps {
    * admission-adjusted reading when it starts a run; this one answers the
    * status route, which holds no mutating admission of its own. */
   readiness: () => RuntimeReadiness;
+  /** How a state file reaches disk.  A seam rather than a detail: the
+   * behaviour that matters here is what happens when it THROWS, and a test
+   * that arranged that with directory permissions would only be testing them
+   * on the platforms where they work that way. */
+  writeState: (path: string, value: unknown) => void;
   /** Does the tracked updater in the checkout accept `--progress`?  The
    * harness and the updater advance together (both live in the always-on
    * checkout), so this is only ever false on a Mac whose checkout was moved
@@ -524,6 +529,7 @@ function defaultDeps(overrides: Partial<UpdateControlDeps>): UpdateControlDeps {
     git: overrides.git ?? ((args) => execCommand("git", ["-C", checkout, ...args])),
     launch: overrides.launch ?? defaultLaunch,
     readiness: overrides.readiness ?? (() => ({ safeToRestart: true, activeWorkCount: 0 })),
+    writeState: overrides.writeState ?? writeJsonFile,
     processAlive: overrides.processAlive ?? ((pid) => {
       try {
         process.kill(pid, 0);
@@ -589,7 +595,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
    * one, whose state is already in memory. */
   const persist = (path: string, value: unknown): boolean => {
     try {
-      writeJsonFile(path, value);
+      deps.writeState(path, value);
       return true;
     } catch (error) {
       console.warn(`BotFleet could not record update state at ${path}: ${(error as Error)?.message ?? error}`);
@@ -934,7 +940,19 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
 
     const runId = deps.newRunId();
     const files = runPaths(runId);
-    mkdirSync(join(deps.stateDirectory, "runs"), { recursive: true, mode: 0o700 });
+    try {
+      mkdirSync(join(deps.stateDirectory, "runs"), { recursive: true, mode: 0o700 });
+    } catch (error) {
+      // Unlike the bookkeeping files, this one IS load-bearing: without a
+      // place for the progress file the run would be one nothing could
+      // describe, which is the thing this module exists to prevent.
+      const detail = String((error as Error)?.message ?? error).slice(0, 200);
+      return {
+        ok: false as const,
+        error: `The update could not be recorded, so it was not started.${GAP}${detail}`,
+        status: buildStatus(),
+      };
+    }
     const startedAt = deps.now().toISOString();
     let result: LaunchResult;
     try {

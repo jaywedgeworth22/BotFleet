@@ -67,6 +67,7 @@ function build(
     readiness?: RuntimeReadiness;
     launchDelay?: () => Promise<void>;
     installedAt?: string;
+    writeState?: (path: string, value: unknown) => void;
     now?: () => Date;
     installedCommit?: string;
   } = {},
@@ -96,6 +97,7 @@ function build(
       return { launcher: "launchd" };
     },
     readiness: () => options.readiness ?? { safeToRestart: true, activeWorkCount: 0 },
+    ...(options.writeState ? { writeState: options.writeState } : {}),
     processAlive: options.processAlive ?? (() => true),
     updaterReportsProgress: () => options.updaterReportsProgress ?? true,
     newRunId: () => "run_one",
@@ -475,40 +477,86 @@ describe("reconcile on boot", () => {
     expect(status.capabilities.canRun).toBe(false);
   });
 
-  it("still boots and answers when the state directory cannot be written", async () => {
-    // `createUpdateControl` runs at module scope in server/index.ts, so a
-    // throw on this path is a harness that does not start.  Reproduced with
-    // a read-only state directory carrying an answer that must be dropped.
-    const paths = rig();
+  /** A state directory carrying an answer this process must drop — the case
+   * that used to write during construction. */
+  function seedStaleAnswer(paths: ReturnType<typeof rig>) {
     mkdirSync(paths.stateDirectory, { recursive: true });
     writeFileSync(join(paths.stateDirectory, "available.json"), JSON.stringify({
       checkedAt: "2026-09-13T11:00:00.000Z",
       available: { sourceCommit: INSTALLED_COMMIT, version: "1.0.30", aheadBy: 1, commits: [] },
     }));
-    chmodSync(paths.stateDirectory, 0o500);
+  }
+
+  async function expectSurvivesUnwritableState(harness: Harness, paths: ReturnType<typeof rig>) {
+    const status = harness.control.status();
+    expect(status.available).toBeNull();
+    expect(status.installed.version).toBe("1.0.30");
+    expect(status.capabilities.canRun).toBe(true);
+    // A run still refuses for the right reason rather than throwing.
+    expect(await harness.control.start()).toMatchObject({
+      ok: false,
+      error: "BotFleet is already on the newest build.",
+    });
+    // The write really did fail — the stale answer is still on disk.
+    const onDisk = JSON.parse(readFileSync(join(paths.stateDirectory, "available.json"), "utf8"));
+    expect(onDisk.available?.sourceCommit).toBe(INSTALLED_COMMIT);
+  }
+
+  it("still boots and answers when a state write throws", async () => {
+    // `createUpdateControl` runs at module scope in server/index.ts, so a
+    // throw on this path is a harness that does not start.  The failure is
+    // injected rather than arranged with directory permissions: what matters
+    // is that a throwing write is survived, and `chmod 0o500` does not deny
+    // a directory write on Windows at all.
+    const paths = rig();
+    seedStaleAnswer(paths);
     const warnings: unknown[] = [];
     const warn = console.warn;
     console.warn = (...args: unknown[]) => void warnings.push(args);
     try {
-      const harness = build(paths);
-      const status = harness.control.status();
-      expect(status.available).toBeNull();
-      expect(status.installed.version).toBe("1.0.30");
-      expect(status.capabilities.canRun).toBe(true);
-      // A run still refuses for the right reason rather than throwing.
-      expect(await harness.control.start()).toMatchObject({
-        ok: false,
-        error: "BotFleet is already on the newest build.",
+      const harness = build(paths, {
+        writeState: () => {
+          throw Object.assign(new Error("EACCES: permission denied, open 'available.json'"), { code: "EACCES" });
+        },
       });
-      // The write really did fail — the stale answer is still on disk, and
-      // the failure was reported rather than swallowed.
-      const onDisk = JSON.parse(readFileSync(join(paths.stateDirectory, "available.json"), "utf8"));
-      expect(onDisk.available.sourceCommit).toBe(INSTALLED_COMMIT);
+      await expectSurvivesUnwritableState(harness, paths);
       expect(warnings.length).toBeGreaterThan(0);
+    } finally {
+      console.warn = warn;
+    }
+  });
+
+  // The same property against the real filesystem, where permissions mean
+  // what this asks of them.  Windows ignores the mode, and root is not
+  // denied by it either.
+  const permissionsApply = process.platform !== "win32" && process.getuid?.() !== 0;
+  it.skipIf(!permissionsApply)("survives a state directory the OS will not let it write", async () => {
+    const paths = rig();
+    seedStaleAnswer(paths);
+    const warn = console.warn;
+    console.warn = () => {};
+    chmodSync(paths.stateDirectory, 0o500);
+    try {
+      await expectSurvivesUnwritableState(build(paths), paths);
     } finally {
       console.warn = warn;
       chmodSync(paths.stateDirectory, 0o700);
     }
+  });
+
+  it("refuses to start a run it would not be able to describe", async () => {
+    // The runs directory is the one write that IS load-bearing: with nowhere
+    // to put the progress file the run would be one nothing could report on,
+    // which is the failure this whole module exists to prevent.  A plain file
+    // where the state directory should be denies the mkdir on every platform.
+    const base = rig();
+    const blocker = join(base.root, "blocked");
+    writeFileSync(blocker, "not a directory");
+    const harness = build({ ...base, stateDirectory: blocker });
+    const started = await harness.control.start({ force: true });
+    expect(started.ok).toBe(false);
+    expect(started.ok === false && started.error).toContain("could not be recorded");
+    expect(harness.launched).toHaveLength(0);
   });
 
   it("drops an available answer that names the commit now installed", async () => {
