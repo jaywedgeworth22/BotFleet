@@ -3,6 +3,7 @@
 
 export type QuotaWindowMatch = {
   provider: string;
+  providerKey?: string | null;
   sourceApp?: string | null;
   label: string;
   modelId?: string | null;
@@ -21,6 +22,8 @@ export type QuotaPollerInstanceLike = {
 
 export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   const hay = `${window.provider} ${window.sourceApp ?? ""} ${window.label}`.toLowerCase();
+  // Grok Bot has its own Cursor-hosted allowance and cannot run in BotFleet.
+  if (/grok[-_ ]?bot/i.test(`${window.providerKey ?? ""} ${hay}`)) return [];
   if (hay.includes("cursor")) return ["cursorAgent"];
   if (hay.includes("antigravity") || hay.includes("gemini")) return ["antigravityAgent"];
   // "openai-compat" is the provider token Usage Monitor's own telemetry

@@ -2,9 +2,11 @@ import { describe, expect, it } from "vitest";
 
 import {
   antigravityQuotaHeadlines,
+  antigravityQuotaCapped,
   antigravityQuotaLines,
   antigravityQuotaWindows,
   isBotFleetQuotaWindow,
+  isMiniMaxVideoQuotaWindow,
   type UsageMonitorQuotaWindow,
 } from "./usage-monitor-quota";
 
@@ -51,6 +53,34 @@ describe("Usage Monitor BotFleet quota integration", () => {
     expect(rows.find((row) => row.label === "Third-Party Models · Weekly")?.skip).toBe(false);
   });
 
+  it("prefers the newest observation before applying the conservative percentage tie-break", () => {
+    const old = "2026-09-13T08:00:00.000Z";
+    const fresh = "2026-09-13T09:00:00.000Z";
+    const rows = antigravityQuotaWindows([
+      window({ id: "old", label: "Gemini Models · 5-hour", window: "5h", remainingPercent: 10, occurredAt: old }),
+      window({ id: "fresh", label: "Gemini Models · 5-hour", window: "5h", remainingPercent: 80, occurredAt: fresh }),
+      window({ id: "tie-high", label: "Third-Party Models · Weekly", window: "weekly", remainingPercent: 80, occurredAt: fresh }),
+      window({ id: "tie-low", label: "Third-Party Models · Weekly", window: "weekly", remainingPercent: 20, occurredAt: fresh }),
+    ]);
+
+    expect(rows[0].id).toBe("fresh");
+    expect(rows[3].id).toBe("tie-low");
+  });
+
+  it("caps Antigravity only when both shared pools have an exhausted period", () => {
+    const onePool = [
+      window({ label: "Gemini Models · 5-hour", window: "5h", remainingPercent: 0 }),
+      window({ label: "Gemini Models · Weekly", window: "weekly", remainingPercent: 80 }),
+      window({ label: "Third-Party Models · 5-hour", window: "5h", remainingPercent: 40 }),
+      window({ label: "Third-Party Models · Weekly", window: "weekly", remainingPercent: 60 }),
+    ];
+    expect(antigravityQuotaCapped(onePool)).toBe(false);
+    expect(antigravityQuotaCapped([
+      ...onePool,
+      window({ id: "third-exhausted", label: "Third-Party Models · 5-hour", window: "5h", remainingPercent: 0 }),
+    ])).toBe(true);
+  });
+
   it("uses the selected window reset in the headline without changing pool identity", () => {
     const resetAt = new Date(Date.now() + 3_660_000).toISOString();
     const lines = antigravityQuotaHeadlines([
@@ -70,9 +100,20 @@ describe("Usage Monitor BotFleet quota integration", () => {
     }
   });
 
+  it("recognizes legacy subscriptions without borrowing Antigravity's Claude models", () => {
+    expect(isBotFleetQuotaWindow(window({ provider: "claude-code", providerKey: undefined }))).toBe(true);
+    expect(antigravityQuotaWindows([window({ provider: "anthropic", providerKey: undefined, via: "antigravity", label: "Third-Party Models · Weekly", window: "weekly" })])).toHaveLength(4);
+    expect(isBotFleetQuotaWindow(window({ provider: "Grok Bot", providerKey: "xai" }))).toBe(false);
+  });
+
   it("requires a Codex source identity for a bare OpenAI provider", () => {
     expect(isBotFleetQuotaWindow(window({ provider: "openai", providerKey: "openai", sourceApp: "codex-cli", label: "Codex 5h" }))).toBe(true);
     expect(isBotFleetQuotaWindow(window({ provider: "openai", providerKey: "openai", sourceApp: "openrouter", label: "GPT 5h" }))).toBe(false);
   });
-});
 
+  it("deemphasizes MiniMax video and Hailuo windows", () => {
+    expect(isMiniMaxVideoQuotaWindow({ provider: "minimax", label: "Hailuo Video" })).toBe(true);
+    expect(isMiniMaxVideoQuotaWindow({ provider: "minimax", label: "M3" })).toBe(false);
+    expect(isMiniMaxVideoQuotaWindow({ provider: "xai", label: "Hailuo Video" })).toBe(false);
+  });
+});

@@ -6,12 +6,16 @@ export type UsageMonitorQuotaWindow = {
   providerKey?: string | null;
   providerLabel?: string | null;
   sourceApp?: string | null;
+  source?: string | null;
+  via?: string | null;
   label: string;
   remainingPercent?: number | null;
   resetAt?: string | null;
   skip: boolean;
   status?: string | null;
   window?: string | null;
+  occurredAt?: string | null;
+  modelId?: string | null;
 };
 
 const BOTFLEET_PROVIDERS = new Set([
@@ -42,14 +46,15 @@ function normalized(value: string | null | undefined): string {
 }
 
 function providerKey(window: UsageMonitorQuotaWindow): string {
+  if (normalized(window.via) === "antigravity") return "google-antigravity";
   const key = normalized(window.providerKey || window.provider);
-  if (key === "antigravity") return "google-antigravity";
-  return key;
+  return ({ antigravity: "google-antigravity", "antigravity-cli": "google-antigravity", "claude-code": "anthropic", "openai-codex": "openai", "grok-build": "xai", "minimax-code": "minimax" } as Record<string, string>)[key] ?? key;
 }
 
 /** Only providers with a BotFleet engine may appear in its quota section. */
 export function isBotFleetQuotaWindow(window: UsageMonitorQuotaWindow): boolean {
   const key = providerKey(window);
+  if (/grok[-_ ]?bot/i.test(`${window.providerKey ?? ""} ${window.provider} ${window.sourceApp ?? ""}`)) return false;
   if (EXCLUDED_PROVIDERS.has(key)) return false;
   if (BOTFLEET_PROVIDERS.has(key)) {
     // A bare OpenAI provider is ambiguous for custom OpenAI-compatible engines.
@@ -80,11 +85,28 @@ function periodFor(window: UsageMonitorQuotaWindow): AntigravityPeriod | null {
 }
 
 function finitePercent(value: number | null | undefined): number | null {
-  return typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
+  return value != null && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
 }
 
 function periodLabel(period: AntigravityPeriod): string {
   return period === "5h" ? "5-hour" : "Weekly";
+}
+
+function observedAt(window: UsageMonitorQuotaWindow): number | null {
+  if (!window.occurredAt) return null;
+  const parsed = Date.parse(window.occurredAt);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isMoreRecent(candidate: UsageMonitorQuotaWindow, prior: UsageMonitorQuotaWindow): boolean {
+  const candidateAt = observedAt(candidate);
+  const priorAt = observedAt(prior);
+  if (candidateAt != null || priorAt != null) {
+    if (candidateAt == null) return false;
+    if (priorAt == null) return true;
+    if (candidateAt !== priorAt) return candidateAt > priorAt;
+  }
+  return (finitePercent(candidate.remainingPercent) ?? 101) < (finitePercent(prior.remainingPercent) ?? 101);
 }
 
 /**
@@ -104,7 +126,7 @@ export function antigravityQuotaWindows(
     if (!pool || !period) continue;
     const key = `${pool}:${period}`;
     const prior = selected.get(key);
-    if (!prior || (finitePercent(window.remainingPercent) ?? 101) < (finitePercent(prior.remainingPercent) ?? 101)) {
+    if (!prior || isMoreRecent(window, prior)) {
       selected.set(key, window);
     }
   }
@@ -134,6 +156,42 @@ export function antigravityQuotaWindows(
     }
   }
   return result;
+}
+
+function isExhausted(window: UsageMonitorQuotaWindow): boolean {
+  return window.skip || finitePercent(window.remainingPercent) === 0;
+}
+
+function windowsForPool(
+  windows: UsageMonitorQuotaWindow[],
+  pool: AntigravityPool,
+): UsageMonitorQuotaWindow[] {
+  return antigravityQuotaWindows(windows).filter((window) => poolFor(window) === pool);
+}
+
+/** A pool is blocked when any of its reported periods is exhausted. */
+export function antigravityPoolBlocked(
+  windows: UsageMonitorQuotaWindow[],
+  pool: AntigravityPool,
+): boolean {
+  return windowsForPool(windows, pool).some(isExhausted);
+}
+
+/** Both independent Antigravity pools must be blocked before the engine is capped. */
+export function antigravityQuotaCapped(windows: UsageMonitorQuotaWindow[]): boolean {
+  return antigravityPoolBlocked(windows, "gemini") && antigravityPoolBlocked(windows, "third-party");
+}
+
+/** MiniMax video/Hailuo limits remain available as secondary details. */
+export function isMiniMaxVideoQuotaWindow(window: {
+  provider: string;
+  providerKey?: string | null;
+  providerLabel?: string | null;
+  label: string;
+  modelId?: string | null;
+}): boolean {
+  const key = normalized(window.providerKey || window.provider);
+  return key === "minimax" && /\bvideo\b|hailuo/i.test(`${window.label} ${window.providerLabel ?? ""} ${window.modelId ?? ""}`);
 }
 
 export function antigravityQuotaLines(windows: UsageMonitorQuotaWindow[]): QuotaDisplayLine[] {

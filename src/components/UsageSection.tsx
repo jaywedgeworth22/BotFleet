@@ -10,16 +10,17 @@ import { MausAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
 import { ProviderMark } from "./ProviderIcons";
 import { SecretSourceBadge } from "./SecretSourceBadge";
+import { UsageMonitorQuotaGrid } from "./UsageMonitorQuotaGrid";
 import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { minimaxPriceRows } from "@/lib/minimax-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
 import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, quotaLinesSummary, usageWindowLines, windowHeadlines } from "@/lib/quota-display";
 import {
-  antigravityQuotaHeadlines as usageMonitorAntigravityHeadlines,
-  antigravityQuotaLines as usageMonitorAntigravityLines,
+  antigravityQuotaCapped,
   antigravityQuotaWindows,
   isBotFleetQuotaWindow,
+  isMiniMaxVideoQuotaWindow,
 } from "@/lib/usage-monitor-quota";
 import { isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
@@ -100,6 +101,7 @@ export function UsageSection() {
     providerKey?: string | null;
     providerLabel?: string | null;
     sourceApp?: string | null;
+    source?: string | null;
     via?: string | null;
     label: string;
     remainingPercent: number | null;
@@ -107,6 +109,7 @@ export function UsageSection() {
     skip: boolean;
     status: string;
     window?: string | null;
+    occurredAt?: string | null;
     modelId?: string | null;
     skipReason?: string | null;
   }>>([]);
@@ -336,7 +339,8 @@ export function UsageSection() {
               engineSpend[instance.instanceId] ??
               (isDeepSeek ? (engineSpend["deepseek"] ?? engineSpend["deepseekAgent"]) : undefined);
             const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
-            const instanceWindows = windowsForDriver(botFleetQuotaWindows, instance.driverKind);
+            const instanceWindows = windowsForDriver(botFleetQuotaWindows, instance.driverKind)
+              .filter((window) => !(instance.instanceId === "minimax" && isMiniMaxVideoQuotaWindow(window)));
             const hasQuotaData =
               Boolean(instance.snapshot.quota?.capped) ||
               Boolean(instance.snapshot.quota?.models && Object.keys(instance.snapshot.quota.models).length > 0) ||
@@ -364,22 +368,23 @@ export function UsageSection() {
               : [];
             const agGroups = antigravityGroupSummary(agModels, antigravityQuota?.promptCredits);
             const agLines = antigravityQuotaLines(agModels, antigravityQuota?.promptCredits);
-            const instanceWindows = windowsForDriver(botFleetQuotaWindows, instance.driverKind);
+            const allInstanceWindows = windowsForDriver(botFleetQuotaWindows, instance.driverKind);
+            const miniMaxVideoWindows = instance.instanceId === "minimax"
+              ? allInstanceWindows.filter(isMiniMaxVideoQuotaWindow)
+              : [];
+            const instanceWindows = allInstanceWindows.filter((window) => !miniMaxVideoWindows.includes(window));
             const usageMonitorAGWindows = instance.instanceId === "antigravity"
               ? antigravityQuotaWindows(botFleetQuotaWindows)
               : [];
-            const usageMonitorAGLines = usageMonitorAntigravityLines(usageMonitorAGWindows);
             const hasUsageMonitorAG = usageMonitorAGWindows.length > 0;
             const headlines = windowHeadlines(instanceWindows);
             const windowLines = usageWindowLines(instanceWindows);
             const planSkip = instanceWindows.some((window) => isPlanLevelSkip(window));
             const agExhausted = agGroups.filter((line) => line.exhausted);
-            // The cap verdict accounts for Antigravity group exhaustion too:
-            // the user's complaint was a four-name slice hiding an all-spent
-            // group behind a "70% remaining" average. With the two-line
-            // summary, an all-spent group reads as exhausted directly.
+            // The cap verdict accounts for each shared Antigravity pool:
+            // both pools must have an exhausted period before the engine is capped.
             const isCapped = wildcardCap || planSkip || (hasUsageMonitorAG
-              ? usageMonitorAGWindows.every((window) => window.skip || window.remainingPercent === 0)
+              ? antigravityQuotaCapped(botFleetQuotaWindows)
               : agGroups.length > 0
                 ? agExhausted.length === agGroups.length
                 : instanceCooldowns.some((q) => q.model === "*"));
@@ -417,7 +422,7 @@ export function UsageSection() {
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
             const baseDetailLines = hasUsageMonitorAG
-              ? usageMonitorAGLines
+              ? []
               : agLines.length > 0
                 ? agLines
                 : windowLines;
@@ -455,14 +460,11 @@ export function UsageSection() {
             const fullSummary = detailLines.length > 0
               ? quotaLinesSummary(detailLines)
               : null;
-            // The "headline" lines sit directly under the engine name: for
-            // Antigravity, "Gemini %" and "Third-Party %" (with 5h and monthly countdowns); for
-            // every other engine, the most-restrictive window per bucket
-            // with the time-until-reset next to it. The chip on the right
-            // (Available / At Usage Cap / …) is the verdict; the headline
-            // is the numbers behind it.
+            // Headline lines sit directly under the engine name for ordinary
+            // engines.  Usage Monitor Antigravity windows render in the
+            // always-visible four-cell grid below the row.
             const headlineLines = hasUsageMonitorAG
-              ? usageMonitorAntigravityHeadlines(usageMonitorAGWindows)
+              ? []
               : agGroups.length > 0
               ? agGroups.map((group) => {
                   if (group.headline) return group.headline;
@@ -568,6 +570,7 @@ export function UsageSection() {
                     />
                   </div>
                 </button>
+                {hasUsageMonitorAG && <UsageMonitorQuotaGrid windows={usageMonitorAGWindows} />}
                 {open && detailLines.length > 0 && (
                   <div className="mb-1.5 ml-9 flex flex-col gap-1 rounded-lg border border-hairline/20 bg-inset/30 p-2.5">
                     {detailLines.map((line) => (
@@ -580,12 +583,38 @@ export function UsageSection() {
                     ))}
                   </div>
                 )}
+                {miniMaxVideoWindows.length > 0 && (
+                  <details className="ml-9 mt-1.5 rounded-lg border border-hairline/20 bg-inset/20 px-2.5 py-1.5 text-[11px]">
+                    <summary className="cursor-pointer text-ink-secondary">Video quota ({miniMaxVideoWindows.length})</summary>
+                    <div className="mt-1.5 flex flex-col gap-1">
+                      {miniMaxVideoWindows.map((window) => {
+                        // SAFETY: `/api/quotas` windows include id/resetAt; QuotaWindowMatch omits these optional transport fields.
+                        const quotaWindow = window as typeof window & { id?: string; resetAt?: string | null };
+                        const resetAt = quotaWindow.resetAt;
+                        const windowId = quotaWindow.id ?? `${window.provider}:${window.label}:${window.modelId ?? ""}`;
+                        const percent = window.remainingPercent != null && Number.isFinite(window.remainingPercent) && window.remainingPercent >= 0 && window.remainingPercent <= 100
+                          ? `${Math.round(window.remainingPercent)}% remaining`
+                          : "not reported";
+                        const reset = resetAt ? Date.parse(resetAt) : Number.NaN;
+                        const countdown = Number.isFinite(reset) ? formatResetCountdown(reset) : "reset unknown";
+                        return (
+                          <div key={windowId} className="flex items-center justify-between gap-2">
+                            <span className="min-w-0 truncate text-ink" title={window.label}>{window.label}</span>
+                            <span className="shrink-0 tabular-nums text-ink-secondary" title={resetAt ?? undefined}>
+                              {percent} · {countdown}
+                            </span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </details>
+                )}
               </div>
             );
           })}
         </div>
         <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-          Antigravity remaining percent is read locally from the antigravity-usage CLI every minute and shown as "Gemini" and "Third-Party" only — with rolling 5-hour session windows and monthly pool resets.{'\u00A0'} Other engines surface their weekly and 5-hour caps directly.{'\u00A0'} Exhausted models fail over to the saved chain before the next turn.
+          Usage Monitor quota snapshots are read while the app is open and considered fresh for 10 minutes.{'\u00A0'} Antigravity shows four shared windows: Gemini Models and Third-Party Models across 5-hour and weekly periods.{'\u00A0'} Exhausted models fail over to the saved chain before the next turn.
         </div>
       </Card>
 
