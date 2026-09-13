@@ -180,6 +180,7 @@ export class UsageQuotaPoller {
     try {
       const response = await fetch(url, {
         headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+        signal: AbortSignal.timeout(10_000),
       });
       const body = (await response.json().catch(() => null)) as QuotaWindowsPayload | { error?: string } | null;
       if (!response.ok || !body || typeof body !== "object" || !("ok" in body) || body.ok !== true) {
