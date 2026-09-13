@@ -13,6 +13,7 @@ import type {
   TurnToolOutcome,
 } from "../../contracts.ts";
 import { ProviderError } from "../../contracts.ts";
+import { RETRY_AFTER_CAP_MS, httpErrorFor } from "./errors.ts";
 import {
   DEFAULT_TURN_LOOP_BUDGET,
   STOP_REASON,
@@ -65,10 +66,13 @@ interface Harness {
   abort: AbortController;
   messages: ChatMessage[];
   roundsSeen: ChatMessage[][];
+  /** One entry per REQUEST the loop actually issued, retries included. */
+  attempts: Array<{ round: number; attempt: number }>;
   run: (over?: {
     toolHost?: TurnToolHost;
     budget?: Partial<TurnLoopBudget>;
     now?: () => number;
+    retryDelayScale?: number;
     emit?: (event: RuntimeEvent) => void;
     computeCost?: (usage: { input: number; output: number; cachedInput?: number }) => number | null;
     requestApproval?: (ask: {
@@ -84,6 +88,8 @@ type ScriptedRound =
   | ((opts: {
       signal: AbortSignal;
       round: number;
+      attempt: number;
+      onPublished?: () => void;
       onUsage?: (usage: { input: number; output: number; cachedInput?: number }) => void;
     }) => Promise<TurnRoundResult>);
 
@@ -102,6 +108,7 @@ function harness(rounds: ScriptedRound[]): Harness {
   const abort = new AbortController();
   const messages: ChatMessage[] = [{ role: "user", content: "hello" }];
   const roundsSeen: ChatMessage[][] = [];
+  const attempts: Array<{ round: number; attempt: number }> = [];
   let seq = 0;
   const base = (): RuntimeEventBase => ({
     eventId: `ev-${++seq}`,
@@ -115,6 +122,7 @@ function harness(rounds: ScriptedRound[]): Harness {
     abort,
     messages,
     roundsSeen,
+    attempts,
     run: (over) =>
       runTurnLoop({
         base,
@@ -125,9 +133,11 @@ function harness(rounds: ScriptedRound[]): Harness {
         requestApproval: over?.requestApproval,
         budget: over?.budget,
         now: over?.now,
+        retryDelayScale: over?.retryDelayScale,
         computeCost: over?.computeCost,
         runRound: async (roundMessages, opts) => {
           roundsSeen.push(roundMessages.map((m) => ({ ...m })));
+          attempts.push({ round: opts.round, attempt: opts.attempt });
           const scripted = rounds[Math.min(opts.round - 1, rounds.length - 1)];
           if (typeof scripted === "function") return scripted(opts);
           return scripted;
@@ -740,6 +750,7 @@ describe("the shipped budget", () => {
       toolTimeoutMs: 90_000,
       wallClockMs: 900_000,
       toolConcurrency: 4,
+      maxRequestAttempts: 3,
     });
   });
 });
@@ -931,5 +942,327 @@ describe("the per-tool clock pauses under an open card", () => {
     const completed = terminals(h.events);
     expect(completed).toHaveLength(1);
     expect(completed[0]).toMatchObject({ ok: false, stopReason: "interrupted" });
+  });
+});
+
+// ── bounded retry with backoff ─────────────────────────────────────────
+// The rule the rest of this file already enforces holds through every one
+// of these: a retried round is still ONE turn with ONE terminal event.
+// What is new is what happens between the attempts — which failures earn
+// one, which never do, and what stops one from starting.
+describe("runTurnLoop — bounded retry with backoff", () => {
+  const retries = (events: RuntimeEvent[]) =>
+    events.filter((e): e is Extract<RuntimeEvent, { type: "turn.retrying" }> => e.type === "turn.retrying");
+
+  /** A response whose only header is a `Retry-After`, in the read-only
+   *  shape `httpErrorFor` asks for. */
+  const retryAfter = (value: string) => ({ get: (name: string) => (name === "retry-after" ? value : null) });
+
+  /** Fails the first `failures` attempts with `error`, then answers. */
+  const failsThenAnswers = (failures: number, error: () => Error, reply: TurnRoundResult) => {
+    let seen = 0;
+    return async (): Promise<TurnRoundResult> => {
+      if (seen++ < failures) throw error();
+      return reply;
+    };
+  };
+
+  it("rides out a 502 and reports the turn that eventually worked, once", async () => {
+    const h = harness([
+      failsThenAnswers(1, () => httpErrorFor(502, "bad gateway"), answer("here you go", { input: 7, output: 3 })),
+    ]);
+    const exit = await h.run({ retryDelayScale: 0.001 });
+
+    expect(exit).toBe("settled");
+    expect(h.attempts).toEqual([
+      { round: 1, attempt: 1 },
+      { round: 1, attempt: 2 },
+    ]);
+    const retried = retries(h.events);
+    expect(retried).toHaveLength(1);
+    expect(retried[0]).toMatchObject({ attempt: 1, reason: "server_error" });
+    expect(retried[0].delayMs).toBeGreaterThan(0);
+    // nothing chat-visible about the hiccup, and exactly one answer
+    expect(h.events.filter((e) => e.type === "runtime.error")).toHaveLength(0);
+    expect(h.events.filter((e) => e.type === "item.completed" && e.itemType === "assistant_text")).toHaveLength(1);
+    const completed = terminals(h.events);
+    expect(completed).toHaveLength(1);
+    // the failed attempt contributed nothing; only the one that answered
+    expect(completed[0]).toMatchObject({ ok: true, stopReason: "end_turn", usage: { input: 7, output: 3 } });
+  });
+
+  it("honours a 429's Retry-After instead of its own schedule", async () => {
+    const h = harness([
+      failsThenAnswers(1, () => httpErrorFor(429, "slow down", retryAfter("2")), answer("ok")),
+    ]);
+    const exit = await h.run({ retryDelayScale: 0.001 });
+
+    expect(exit).toBe("settled");
+    // 2000 is the header's own number; the schedule's first step is
+    // 1000 ± 25%, so this can only have come from Retry-After
+    expect(retries(h.events).map((e) => ({ delayMs: e.delayMs, reason: e.reason }))).toEqual([
+      { delayMs: 2_000, reason: "rate_limited" },
+    ]);
+    expect(h.attempts).toHaveLength(2);
+  });
+
+  it("caps a Retry-After a provider set past the ceiling", async () => {
+    const h = harness([
+      failsThenAnswers(1, () => httpErrorFor(429, "slow down", retryAfter("600")), answer("ok")),
+    ]);
+    await h.run({ retryDelayScale: 0.001 });
+
+    expect(retries(h.events)[0].delayMs).toBe(RETRY_AFTER_CAP_MS);
+  });
+
+  it("spends exactly one polite retry on a 429 that named no cool-down, then reads as quota", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(429, "rate limit exceeded");
+      },
+    ]);
+    const exit = await h.run({ retryDelayScale: 0.001 });
+
+    expect(exit).toBe("provider_error");
+    expect(h.attempts).toHaveLength(2);
+    // the fallback ladder reads this code — a real quota wall has to reach
+    // it rather than disappearing into a backoff nobody's balance outlasts
+    const completed = terminals(h.events);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ ok: false, stopReason: "error:quota_or_region_restriction" });
+  });
+
+  it("gives up after three attempts and still ends as upstream_outage, once", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(502, "bad gateway");
+      },
+    ]);
+    const exit = await h.run({ retryDelayScale: 0.001 });
+
+    expect(exit).toBe("provider_error");
+    expect(h.attempts).toEqual([
+      { round: 1, attempt: 1 },
+      { round: 1, attempt: 2 },
+      { round: 1, attempt: 3 },
+    ]);
+    expect(retries(h.events).map((e) => e.attempt)).toEqual([1, 2]);
+    const completed = terminals(h.events);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ ok: false, stopReason: "error:upstream_outage" });
+    expect(h.events.filter((e) => e.type === "runtime.error")).toHaveLength(1);
+  });
+
+  it("honours a cool-down a 503 named, instead of its own schedule", async () => {
+    const h = harness([
+      failsThenAnswers(1, () => httpErrorFor(503, "back soon", retryAfter("2")), answer("ok")),
+    ]);
+    await h.run({ retryDelayScale: 0.001 });
+
+    expect(retries(h.events).map((e) => e.delayMs)).toEqual([2_000]);
+  });
+
+  it("carries THIS failure's own attempt ceiling, so the chip never promises a try that is not coming", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(429, "rate limit exceeded");
+      },
+    ]);
+    await h.run({ retryDelayScale: 0.001 });
+
+    // a 429 with no cool-down is worth two attempts, not the global three
+    expect(retries(h.events).map((e) => e.maxAttempts)).toEqual([2]);
+
+    const outage = harness([
+      async () => {
+        throw httpErrorFor(502, "bad gateway");
+      },
+    ]);
+    await outage.run({ retryDelayScale: 0.001 });
+    expect(retries(outage.events).map((e) => e.maxAttempts)).toEqual([3, 3]);
+  });
+
+  it("gives a 429 that reached it as bare text the same one polite retry", async () => {
+    // a driver still throwing `new Error("HTTP 429")` instead of going
+    // through httpErrorFor must not get a MORE generous policy than one
+    // that reports its status properly
+    const h = harness([
+      async () => {
+        throw new Error("HTTP 429: rate limit exceeded");
+      },
+    ]);
+    await h.run({ retryDelayScale: 0.001 });
+
+    expect(h.attempts).toHaveLength(2);
+    expect(retries(h.events).map((e) => ({ reason: e.reason, maxAttempts: e.maxAttempts }))).toEqual([
+      { reason: "rate_limited", maxAttempts: 2 },
+    ]);
+  });
+
+  it("lowers the named ceiling to the budget's, never above it", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(502, "bad gateway");
+      },
+    ]);
+    await h.run({ budget: { maxRequestAttempts: 2 }, retryDelayScale: 0.001 });
+
+    expect(h.attempts).toHaveLength(2);
+    expect(retries(h.events).map((e) => e.maxAttempts)).toEqual([2]);
+  });
+
+  it("retries a bare network failure through the same classifier the CLI drivers use", async () => {
+    const h = harness([failsThenAnswers(1, () => new TypeError("fetch failed"), answer("ok"))]);
+    const exit = await h.run({ retryDelayScale: 0.001 });
+
+    expect(exit).toBe("settled");
+    expect(retries(h.events).map((e) => e.reason)).toEqual(["connection_reset"]);
+  });
+
+  it("never retries a bad key — a 401 is not a hiccup, and the setup chip has to arrive", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(401, "invalid api key");
+      },
+    ]);
+    const exit = await h.run({ retryDelayScale: 0.001 });
+
+    expect(exit).toBe("provider_error");
+    expect(h.attempts).toHaveLength(1);
+    expect(retries(h.events)).toHaveLength(0);
+    expect(h.events.find((e) => e.type === "runtime.error")).toMatchObject({ setup: true });
+    expect(terminals(h.events)).toHaveLength(1);
+    expect(terminals(h.events)[0]).toMatchObject({ ok: false, stopReason: "error:invalid_credentials" });
+  });
+
+  it("never retries 400, 404, 413 or 422 either", async () => {
+    for (const status of [400, 404, 413, 422]) {
+      const h = harness([
+        async () => {
+          throw httpErrorFor(status, "no");
+        },
+      ]);
+      await h.run({ retryDelayScale: 0.001 });
+      expect(h.attempts, `status ${status}`).toHaveLength(1);
+      expect(terminals(h.events), `status ${status}`).toHaveLength(1);
+    }
+  });
+
+  it("never retries a round that already put a delta on the bus", async () => {
+    // the duplicate-output hazard: replaying this round would show the
+    // person the half-answer they have already read a second time
+    const h = harness([
+      async (opts) => {
+        opts.onPublished?.();
+        throw httpErrorFor(502, "died mid-stream");
+      },
+    ]);
+    const exit = await h.run({ retryDelayScale: 0.001 });
+
+    expect(exit).toBe("provider_error");
+    expect(h.attempts).toHaveLength(1);
+    expect(retries(h.events)).toHaveLength(0);
+    const completed = terminals(h.events);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ ok: false, stopReason: "error:upstream_outage" });
+  });
+
+  it("never retries an attempt that already reported usage, and still bills it", async () => {
+    const h = harness([
+      async (opts) => {
+        opts.onUsage?.({ input: 20, output: 9 });
+        throw httpErrorFor(503, "gone");
+      },
+    ]);
+    await h.run({ retryDelayScale: 0.001 });
+
+    expect(h.attempts).toHaveLength(1);
+    expect(retries(h.events)).toHaveLength(0);
+    // an attempt real enough to be billed is settled and accounted for,
+    // never silently redone
+    expect(terminals(h.events)[0]).toMatchObject({ ok: false, usage: { input: 20, output: 9 } });
+  });
+
+  it("a Stop during the backoff settles the turn at once, with no further request", async () => {
+    const h = harness([
+      async () => {
+        // lands well inside the ~1s first backoff, which this row runs at
+        // full length on purpose
+        setTimeout(() => h.abort.abort(), 5);
+        throw httpErrorFor(503, "service unavailable");
+      },
+    ]);
+    const exit = await h.run();
+
+    expect(exit).toBe("interrupted");
+    expect(h.attempts).toHaveLength(1);
+    expect(retries(h.events)).toHaveLength(1);
+    // an interrupt is not an error — no chip, one terminal event
+    expect(h.events.filter((e) => e.type === "runtime.error")).toHaveLength(0);
+    const completed = terminals(h.events);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ ok: false, stopReason: "interrupted" });
+  });
+
+  it("declines a retry it could not finish inside the round's own ceiling", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(502, "bad gateway");
+      },
+    ]);
+    // 5s left on the request ceiling against a ~1s backoff plus the 20s of
+    // headroom an attempt needs to be worth starting
+    const exit = await h.run({ budget: { requestTimeoutMs: 5_000 }, retryDelayScale: 0.001 });
+
+    expect(exit).toBe("provider_error");
+    expect(h.attempts).toHaveLength(1);
+    expect(retries(h.events)).toHaveLength(0);
+    // the provider's real error, not a timeout it was slept into
+    expect(terminals(h.events)[0]).toMatchObject({ ok: false, stopReason: "error:upstream_outage" });
+  });
+
+  it("declines a retry the whole-turn wall clock could not finish either", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(502, "bad gateway");
+      },
+    ]);
+    const exit = await h.run({ budget: { wallClockMs: 5_000 }, retryDelayScale: 0.001 });
+
+    expect(exit).toBe("provider_error");
+    expect(h.attempts).toHaveLength(1);
+    expect(retries(h.events)).toHaveLength(0);
+  });
+
+  it("retries each ROUND on its own budget, so a long turn is not starved by an early hiccup", async () => {
+    const h = harness([
+      failsThenAnswers(1, () => httpErrorFor(502, "x"), wantsTools([call("c1")])),
+      failsThenAnswers(1, () => httpErrorFor(502, "x"), answer("done")),
+    ]);
+    const exit = await h.run({
+      retryDelayScale: 0.001,
+      toolHost: hostReturning({ kind: "result", content: "[]" }),
+    });
+
+    expect(exit).toBe("settled");
+    expect(h.attempts).toEqual([
+      { round: 1, attempt: 1 },
+      { round: 1, attempt: 2 },
+      { round: 2, attempt: 1 },
+      { round: 2, attempt: 2 },
+    ]);
+    expect(terminals(h.events)).toHaveLength(1);
+  });
+
+  it("can be switched off entirely by the budget", async () => {
+    const h = harness([
+      async () => {
+        throw httpErrorFor(502, "bad gateway");
+      },
+    ]);
+    await h.run({ budget: { maxRequestAttempts: 1 }, retryDelayScale: 0.001 });
+
+    expect(h.attempts).toHaveLength(1);
+    expect(retries(h.events)).toHaveLength(0);
   });
 });

@@ -32,6 +32,19 @@
 //      the host returns — never `ok: true` for work the driver did not do.
 //   5. The turn's abort signal is checked between rounds and raced inside
 //      every tool call, so Stop terminates from any point in the loop.
+//   6. A round's request is RETRIED, in here, for the transient failures a
+//      CLI engine already rides out silently — a 502, a reset socket, a
+//      429 that named its own cool-down.  The retry is INSIDE one round,
+//      so it changes nothing about invariant 1: the attempt loop's every
+//      exit still falls through to the same single `finally`.  Two rules
+//      keep it honest.  It never retries a request that already PUBLISHED
+//      anything (a text delta, a reasoning delta, a tool call announced
+//      off the stream) — replaying that round would duplicate output a
+//      person already read, which is worse than the failure.  And it never
+//      starts an attempt it cannot finish: the round's own 180s ceiling
+//      and the turn's 900s wall clock both have to have real headroom
+//      left, and the sleep between attempts aborts with the turn, so Stop
+//      during a backoff settles immediately instead of after the wait.
 
 import type {
   RequestOutcome,
@@ -43,6 +56,8 @@ import type {
 } from "../../contracts.ts";
 import { ProviderError } from "../../contracts.ts";
 import { parseToolArguments, toolFields } from "../../tool-fields.ts";
+import { RETRY_MAX_ATTEMPTS, classifyError, computeBackoff, interruptibleDelay } from "../retry.ts";
+import { UNHINTED_RATE_LIMIT_ATTEMPTS, httpFailureOf, httpRetryPolicy } from "./errors.ts";
 
 /** Every way a turn can end.  Closed on purpose: `STOP_REASON` and
  *  `TERMINAL_OK` are `Record<TurnLoopExit, …>`, so adding a member without
@@ -103,6 +118,12 @@ export interface TurnLoopBudget {
   wallClockMs: number;
   /** Tool calls from one round that may run at once. */
   toolConcurrency: number;
+  /** Attempts ONE round's model request may spend, the first one included:
+   *  3 is one request plus two retries.  A status can ask for fewer (a 429
+   *  with no `Retry-After` is worth exactly one polite retry, see
+   *  errors.ts's httpRetryPolicy) but never for more.  Set to 1 to turn
+   *  retrying off entirely. */
+  maxRequestAttempts: number;
 }
 
 export const DEFAULT_TURN_LOOP_BUDGET: TurnLoopBudget = {
@@ -111,7 +132,17 @@ export const DEFAULT_TURN_LOOP_BUDGET: TurnLoopBudget = {
   toolTimeoutMs: 90_000,
   wallClockMs: 900_000,
   toolConcurrency: 4,
+  maxRequestAttempts: RETRY_MAX_ATTEMPTS,
 };
+
+/** An attempt that cannot plausibly finish is not worth starting, so a
+ *  retry is declined unless this much budget survives the backoff — on
+ *  BOTH the round's own request ceiling and the turn's wall clock.
+ *  Without it the last retry of a slow round reliably burns its sleep and
+ *  then dies to the very deadline that was already visible when it was
+ *  scheduled, turning one honest provider error into a timeout the person
+ *  waited an extra few seconds for. */
+export const RETRY_HEADROOM_MS = 20_000;
 
 /** One OpenAI chat message.  The loop owns the array; the driver only turns
  *  it into a request body. */
@@ -157,7 +188,24 @@ export interface TurnLoopDeps {
    *  real tokens before failing is never billed as zero. */
   runRound: (
     messages: ChatMessage[],
-    opts: { signal: AbortSignal; round: number; onUsage?: (usage: TurnUsage) => void },
+    opts: {
+      signal: AbortSignal;
+      round: number;
+      /** 1-based attempt at THIS round's request; > 1 means the previous
+       *  attempt failed transiently and was retried.  Informational — the
+       *  driver re-sends the same `messages` either way. */
+      attempt: number;
+      /** Called by the driver the first time this request puts something
+       *  on the bus that cannot be taken back: a content delta, or an
+       *  `item.started` announced off the stream.  It is what makes the
+       *  no-retry-after-first-delta rule enforceable from in here, where
+       *  the loop cannot otherwise see what the driver emitted.  A driver
+       *  that never calls it simply never gets a round retried after it
+       *  started streaming — the safe direction; one that calls it too
+       *  eagerly loses a retry, never duplicates output. */
+      onPublished?: () => void;
+      onUsage?: (usage: TurnUsage) => void;
+    },
   ) => Promise<TurnRoundResult>;
   /** Round 1's messages.  The loop appends to this array in place. */
   messages: ChatMessage[];
@@ -202,6 +250,11 @@ export interface TurnLoopDeps {
    *  the driver could not price. */
   computeCost?: (usage: TurnUsage) => number | null;
   now?: () => number;
+  /** Multiplier on every retry backoff, for tests only: the
+   *  `turn.retrying` event still reports the REAL policy delay, so a test
+   *  asserts the policy without paying its seconds.  Production leaves it
+   *  at 1. */
+  retryDelayScale?: number;
 }
 
 /** A tool's arguments are declared as a JSON object schema; anything else on
@@ -302,6 +355,48 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
   // red chip.  An unclassified provider_error (a plain Error) leaves this
   // unset and keeps today's bare "error" stopReason.
   let errorSetup = false;
+
+  const retryDelayScale = deps.retryDelayScale ?? 1;
+
+  /** What a rejected round is worth trying again, or `undefined` for "this
+   *  is terminal — classify it and end the turn".
+   *
+   *  Two classifiers, in order of how much they know.  An error built by
+   *  errors.ts's `httpErrorFor` carries its real status and its parsed
+   *  `Retry-After`, so the policy is read from the status table directly.
+   *  Anything else — a `fetch failed`, a socket reset, a stream that died
+   *  mid-body — goes through the SAME text classifier drivers/retry.ts
+   *  already applies to every CLI engine, so a provider hiccup is judged
+   *  the same way on both lanes instead of by a second private policy. */
+  const retryPlanFor = (
+    error: Error,
+    attempt: number,
+  ): { delayMs: number; reason: string; maxAttempts: number } | undefined => {
+    const failure = httpFailureOf(error);
+    let maxAttempts: number;
+    let reason: string;
+    let retryAfterMs: number | undefined;
+    if (failure) {
+      const policy = httpRetryPolicy(failure);
+      if (!policy) return undefined;
+      ({ maxAttempts, reason, retryAfterMs } = policy);
+    } else {
+      const verdict = classifyError(error);
+      if (!verdict.transient) return undefined;
+      // A rate limit that reached us as bare text — a driver still
+      // throwing `new Error("HTTP 429")` instead of going through
+      // `httpErrorFor` — carries no cool-down by definition, so it gets
+      // the same one polite retry the parsed no-`Retry-After` 429 gets.
+      // The policy must not depend on which driver threw it.
+      maxAttempts = verdict.reason === "rate_limited" ? UNHINTED_RATE_LIMIT_ATTEMPTS : RETRY_MAX_ATTEMPTS;
+      reason = verdict.reason;
+    }
+    const ceiling = Math.min(maxAttempts, budget.maxRequestAttempts);
+    if (attempt >= ceiling) return undefined;
+    // The provider's own cool-down wins over our schedule when it named
+    // one — it knows when it will serve us and we do not.
+    return { delayMs: retryAfterMs ?? computeBackoff(attempt - 1), reason, maxAttempts: ceiling };
+  };
 
   const emitToolStarted = (call: ChatToolCall) => {
     if (!call.id || announced.has(call.id)) return;
@@ -469,7 +564,7 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
   };
 
   try {
-    for (let round = 1; round <= maxRounds; round++) {
+    rounds: for (let round = 1; round <= maxRounds; round++) {
       if (turnSignal.aborted) {
         exit = "interrupted";
         break;
@@ -486,50 +581,119 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
         request.abort();
       }, budget.requestTimeoutMs);
       unrefTimer(requestTimer);
+      // The round's deadline, shared by EVERY attempt at it rather than
+      // re-armed per try: `requestTimeoutMs` is what a person is willing
+      // to wait for this round's answer, and a fresh 180s per retry would
+      // silently turn that into nine minutes.  It is also the ceiling the
+      // retry budget guard measures headroom against.
+      const roundDeadline = now() + budget.requestTimeoutMs;
+      const roundSignal = AbortSignal.any([turnSignal, wall.signal, request.signal]);
+      // Set by the driver through `onPublished` the moment this round puts
+      // a delta or a streamed tool call on the bus.  From then on the round
+      // can never be retried: the person has already read that text, and a
+      // replay would show it to them twice.
+      let published = false;
       let result: TurnRoundResult;
-      // Latest usage this round's request reported, kept OUTSIDE the
-      // `runRound` promise so a later rejection (timeout, mid-stream
-      // provider error) does not take it down too — see the `onUsage`
-      // doc on `TurnLoopDeps`.  Boxed in an object: a bare `let` here reads
-      // back as `never` under strict mode because TS's flow analysis does
-      // not follow the reassignment happening inside the callback closure.
-      const roundState: { usage: TurnUsage | null } = { usage: null };
       try {
-        result = await deps.runRound(messages, {
-          signal: AbortSignal.any([turnSignal, wall.signal, request.signal]),
-          round,
-          onUsage: (usage) => {
-            roundState.usage = usage;
-          },
-        });
-      } catch (e) {
-        const error = e instanceof Error ? e : new Error(String(e));
-        if (roundState.usage) {
-          sawUsage = true;
-          totals.input += roundState.usage.input;
-          totals.output += roundState.usage.output;
-          const cached = roundState.usage.cachedInput;
-          if (cached !== undefined) totals.cachedInput = (totals.cachedInput ?? 0) + cached;
-          // These tokens are in `totals`, so they must be in `costSoFar`
-          // too — see priceRound's own comment.
-          priceRound(roundState.usage);
-        }
-        if (turnSignal.aborted) exit = "interrupted";
-        else if (wallHit) {
-          exit = "wall_clock";
-          errorMessage = `the turn ran past its ${Math.round(budget.wallClockMs / 1000)}s budget and was stopped`;
-        } else if (requestTimedOut) {
-          exit = "request_timeout";
-          errorMessage = `the model did not answer within ${Math.round(budget.requestTimeoutMs / 1000)}s`;
-        } else {
-          exit = "provider_error";
-          errorMessage = error.message;
-          if (error instanceof ProviderError) {
-            stopReasonOverride = `error:${error.code}`;
-            errorSetup = error.code === "invalid_credentials";
+        for (let attempt = 1; ; attempt++) {
+          // Latest usage this ATTEMPT reported, kept OUTSIDE the
+          // `runRound` promise so a later rejection (timeout, mid-stream
+          // provider error) does not take it down too — see the `onUsage`
+          // doc on `TurnLoopDeps`.  Boxed in an object: a bare `let` here
+          // reads back as `never` under strict mode because TS's flow
+          // analysis does not follow the reassignment happening inside the
+          // callback closure.
+          const roundState: { usage: TurnUsage | null } = { usage: null };
+          try {
+            result = await deps.runRound(messages, {
+              signal: roundSignal,
+              round,
+              attempt,
+              onPublished: () => {
+                published = true;
+              },
+              onUsage: (usage) => {
+                roundState.usage = usage;
+              },
+            });
+            break;
+          } catch (e) {
+            const error = e instanceof Error ? e : new Error(String(e));
+            // A retry has to be invisible to be correct.  It is only
+            // considered when the turn is still live (an interrupt, the
+            // wall clock and the round's own deadline each mean stop, not
+            // try again), when nothing reached the bus, and when the
+            // attempt reported no usage — the last is what keeps
+            // "usage from a failed attempt is not summed" true by
+            // construction rather than by throwing tokens away: an
+            // attempt that got far enough to be billed is one we settle
+            // and account for, never one we silently redo.
+            const live = !turnSignal.aborted && !wallHit && !requestTimedOut;
+            const plan = live && !published && !roundState.usage ? retryPlanFor(error, attempt) : undefined;
+            if (plan) {
+              // Headroom on the tighter of the two clocks.  Declining here
+              // is deliberate: failing now with the provider's real error
+              // beats sleeping into a deadline that was already visible.
+              const left = Math.min(roundDeadline, startedAt + budget.wallClockMs) - now();
+              if (plan.delayMs + RETRY_HEADROOM_MS <= left) {
+                // One observability line per retry — the same event every
+                // CLI driver already emits, so an HTTP retry is treated
+                // exactly as a Claude or Codex one is: the routine receipt
+                // stays quiet and keeps the run running, the Sentry span
+                // takes a warning breadcrumb, and index.ts renders its
+                // standard "retrying — attempt N/3" ACTIVITY chip so the
+                // bot stays visibly busy through the backoff instead of
+                // looking hung.  No assistant text, no runtime.error, no
+                // second terminal event: the turn has not failed yet.
+                deps.emit({
+                  ...deps.base(),
+                  type: "turn.retrying",
+                  attempt,
+                  delayMs: plan.delayMs,
+                  reason: plan.reason,
+                  // THIS failure's own ceiling, not the global one: a 429
+                  // with no cool-down is worth two attempts, and a chip
+                  // reading "attempt 2/3" right before the turn fails
+                  // after attempt 2 promises a try that is never coming.
+                  maxAttempts: plan.maxAttempts,
+                });
+                // Abort-aware: Stop, a sweep or the round deadline during
+                // the wait resolves it at once, and the classification
+                // below then names the real exit instead of launching an
+                // attempt nobody is waiting for any more.
+                const wait = interruptibleDelay(Math.max(1, Math.round(plan.delayMs * retryDelayScale)), roundSignal);
+                const outcome = await wait.promise;
+                if (outcome === "elapsed" && !roundSignal.aborted) continue;
+              }
+            }
+            if (roundState.usage) {
+              sawUsage = true;
+              totals.input += roundState.usage.input;
+              totals.output += roundState.usage.output;
+              const cached = roundState.usage.cachedInput;
+              if (cached !== undefined) totals.cachedInput = (totals.cachedInput ?? 0) + cached;
+              // These tokens are in `totals`, so they must be in `costSoFar`
+              // too — see priceRound's own comment.
+              priceRound(roundState.usage);
+            }
+            if (turnSignal.aborted) exit = "interrupted";
+            else if (wallHit) {
+              exit = "wall_clock";
+              errorMessage = `the turn ran past its ${Math.round(budget.wallClockMs / 1000)}s budget and was stopped`;
+            } else if (requestTimedOut) {
+              exit = "request_timeout";
+              errorMessage = `the model did not answer within ${Math.round(budget.requestTimeoutMs / 1000)}s`;
+            } else {
+              exit = "provider_error";
+              errorMessage = error.message;
+              if (error instanceof ProviderError) {
+                stopReasonOverride = `error:${error.code}`;
+                errorSetup = error.code === "invalid_credentials";
+              }
+            }
+            break rounds;
           }
         }
-        break;
       } finally {
         clearTimeout(requestTimer);
       }
