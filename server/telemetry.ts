@@ -3,6 +3,12 @@ import { homedir, hostname } from "node:os";
 import { basename } from "node:path";
 
 import type { TurnBillingMode } from "./contracts.ts";
+import { getSentry, isSentryActive } from "./sentry.ts";
+import {
+  UsageTelemetryOutbox,
+  usageTelemetryDestinationHash,
+  type DurableTelemetryBatch,
+} from "./telemetry-outbox.ts";
 
 export interface TelemetryTurnParams {
   botId: string;
@@ -37,6 +43,17 @@ export interface TelemetryStatus {
   ingestUrl: string | null;
   totalSent: number;
   totalFailed: number;
+  queuedBatches: number;
+  oldestQueuedAt: string | null;
+  oldestQueuedAgeMs: number | null;
+  droppedBatches: number;
+  overflowDroppedBatches: number;
+  destinationChangeDroppedBatches: number;
+  rejectedEvents: number;
+  failedAttempts: number;
+  persistenceFailures: number;
+  nonDurableBatches: number;
+  corruptFilesQuarantined: number;
   lastAckAt: string | null;
   lastError: string | null;
 }
@@ -88,7 +105,7 @@ export interface TelemetryV2Event {
  * name Usage Monitor keys idempotency on, and `producerInstanceId` is this
  * computer — together with each event id they make a resend a duplicate
  * rather than a second charge. */
-interface TelemetryV2Batch {
+interface TelemetryV2Batch extends DurableTelemetryBatch {
   schemaVersion: 2;
   producerId: string;
   producerInstanceId: string;
@@ -409,11 +426,28 @@ export function buildTurnEvents(
   });
 }
 
-class UsageTelemetryManager {
+export class UsageTelemetryManager {
   private totalSent = 0;
   private totalFailed = 0;
   private lastAckAt: string | null = null;
   private lastError: string | null = null;
+  private readonly outbox: UsageTelemetryOutbox | null;
+
+  constructor(options: { enableOutbox?: boolean; outboxPath?: string; retryBaseMs?: number } = {}) {
+    const enableOutbox = options.enableOutbox ?? process.env.NODE_ENV !== "test";
+    this.outbox = enableOutbox
+      ? new UsageTelemetryOutbox({
+        path: options.outboxPath ?? process.env.BOTFLEET_USAGE_OUTBOX_PATH,
+        retryBaseMs: options.retryBaseMs,
+        onDiagnostic: (outcome, count) => {
+          if (!isSentryActive()) return;
+          getSentry()?.metrics.count("usage_telemetry.outbox", count, {
+            attributes: { outcome },
+          });
+        },
+      })
+      : null;
+  }
 
   /** Live view of app config, installed by the server at boot. A getter (not
    * a snapshot) so a settings change takes effect without a restart. */
@@ -421,6 +455,18 @@ class UsageTelemetryManager {
 
   configure(provider: (() => UsageSettings | undefined) | null): void {
     this.settingsProvider = provider;
+    this.outbox?.configure(provider
+      ? () => {
+          const config = this.getIngestConfig();
+          if (!config) return null;
+          const endpoint = `${config.baseUrl}${INGEST_PATH}`;
+          return {
+            destinationHash: usageTelemetryDestinationHash(endpoint),
+            deliver: (batch: DurableTelemetryBatch) =>
+              this.postBatch(endpoint, config.token, batch),
+          };
+        }
+      : null);
   }
 
   private settings(): UsageSettings {
@@ -451,6 +497,19 @@ class UsageTelemetryManager {
 
   getStatus(): TelemetryStatus {
     const config = this.getIngestConfig();
+    const outbox = this.outbox?.status() ?? {
+      queuedBatches: 0,
+      oldestQueuedAt: null,
+      oldestQueuedAgeMs: null,
+      droppedBatches: 0,
+      overflowDroppedBatches: 0,
+      destinationChangeDroppedBatches: 0,
+      rejectedEvents: 0,
+      failedAttempts: 0,
+      persistenceFailures: 0,
+      nonDurableBatches: 0,
+      corruptFilesQuarantined: 0,
+    };
     return {
       enabled: config !== null,
       ingestUrl: config ? `${config.baseUrl}${INGEST_PATH}` : null,
@@ -458,6 +517,7 @@ class UsageTelemetryManager {
       totalFailed: this.totalFailed,
       lastAckAt: this.lastAckAt,
       lastError: this.lastError,
+      ...outbox,
     };
   }
 
@@ -516,14 +576,23 @@ class UsageTelemetryManager {
       events,
     };
 
-    void this.postBatch(`${config.baseUrl}${INGEST_PATH}`, config.token, batch);
+    const endpoint = `${config.baseUrl}${INGEST_PATH}`;
+    if (this.outbox) {
+      this.outbox.enqueue(usageTelemetryDestinationHash(endpoint), batch);
+      return;
+    }
+    void this.postBatch(endpoint, config.token, batch);
+  }
+
+  async dispose(): Promise<void> {
+    await this.outbox?.dispose();
   }
 
   private async postBatch(
     endpoint: string,
     token: string,
-    batch: TelemetryV2Batch,
-  ): Promise<{ ok: boolean; error: string | null }> {
+    batch: DurableTelemetryBatch,
+  ): Promise<{ ok: boolean; error: string | null; acknowledged: boolean; rejected: number }> {
     try {
       const res = await fetch(endpoint, {
         method: "POST",
@@ -538,11 +607,18 @@ class UsageTelemetryManager {
         // A 200 is not the same as "kept".  Usage Monitor answers with per
         // batch counts, and a batch it validated but refused comes back as
         // 200 with `rejected` set — which used to be filed as a clean send.
-        // SAFETY: the parsed body is read only through ackCount(), which
-        // returns 0 for anything that is not a positive finite number, so a
-        // receiver that answers with a different shape degrades to "no
-        // counts reported" rather than corrupting the tallies.
+        // A complete count invariant is the durable-delivery boundary.  A
+        // malformed or partial 2xx body remains queued for idempotent replay.
+        // SAFETY: isCompleteUsageIngestAck validates every field and the
+        // count invariant before any value is treated as acknowledged.
         const ack = (await res.json().catch(() => null)) as UsageIngestAck | null;
+        if (!isCompleteUsageIngestAck(ack, batch.events.length)) {
+          const error = "Usage Monitor returned an ambiguous acknowledgement";
+          this.totalFailed += 1;
+          this.lastError = error;
+          console.warn(`[telemetry] ${error}`);
+          return { ok: false, error, acknowledged: false, rejected: 0 };
+        }
         const rejected = ackCount(ack?.rejected);
         const received = ackCount(ack?.received);
         this.lastAckAt = new Date().toISOString();
@@ -551,24 +627,29 @@ class UsageTelemetryManager {
           this.totalFailed += rejected;
           this.lastError = error;
           console.warn(`[telemetry] ingest rejected ${rejected} of ${received || rejected} events`);
-          return { ok: false, error };
+          return { ok: false, error, acknowledged: true, rejected };
         }
         this.totalSent += 1;
         this.lastError = null;
-        return { ok: true, error: null };
+        return { ok: true, error: null, acknowledged: true, rejected: 0 };
       }
-      const text = await res.text().catch(() => "");
-      const error = `HTTP ${res.status}: ${text.slice(0, 200)}`;
+      const error = `Usage Monitor returned HTTP ${res.status}`;
       this.totalFailed += 1;
       this.lastError = error;
-      console.warn(`[telemetry] Usage Monitor returned status ${res.status} (${error})`);
-      return { ok: false, error };
+      console.warn(`[telemetry] ${error}`);
+      return {
+        ok: false,
+        error,
+        acknowledged: false,
+        rejected: 0,
+      };
     } catch (err) {
-      const error = err instanceof Error ? err.message : String(err);
+      const reason = err instanceof Error && err.name ? err.name : "unknown";
+      const error = `Usage Monitor dispatch failed (${reason})`;
       this.totalFailed += 1;
       this.lastError = error;
-      console.warn(`[telemetry] Usage Monitor dispatch failed: ${error}`);
-      return { ok: false, error };
+      console.warn(`[telemetry] ${error}`);
+      return { ok: false, error, acknowledged: false, rejected: 0 };
     }
   }
 }
@@ -579,6 +660,18 @@ class UsageTelemetryManager {
 function ackCount(value: number | undefined): number {
   if (value === undefined || !Number.isFinite(value) || value <= 0) return 0;
   return Math.floor(value);
+}
+
+function isCompleteUsageIngestAck(
+  ack: UsageIngestAck | null,
+  expectedReceived: number,
+): ack is Required<UsageIngestAck> {
+  if (!ack) return false;
+  const counts = [ack.received, ack.persisted, ack.duplicates, ack.pruned, ack.rejected];
+  if (!counts.every((value) => Number.isInteger(value) && Number(value) >= 0)) return false;
+  const received = Number(ack.received);
+  return received === expectedReceived &&
+    Number(ack.persisted) + Number(ack.duplicates) + Number(ack.pruned) + Number(ack.rejected) === received;
 }
 
 export const telemetry = new UsageTelemetryManager();
