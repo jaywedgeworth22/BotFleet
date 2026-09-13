@@ -15,6 +15,12 @@ import { minimaxPriceRows } from "@/lib/minimax-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
 import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, quotaLinesSummary, usageWindowLines, windowHeadlines } from "@/lib/quota-display";
+import {
+  antigravityQuotaHeadlines as usageMonitorAntigravityHeadlines,
+  antigravityQuotaLines as usageMonitorAntigravityLines,
+  antigravityQuotaWindows,
+  isBotFleetQuotaWindow,
+} from "@/lib/usage-monitor-quota";
 import { isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
@@ -91,7 +97,10 @@ export function UsageSection() {
   const [quotaWindows, setQuotaWindows] = React.useState<Array<{
     id: string;
     provider: string;
+    providerKey?: string | null;
+    providerLabel?: string | null;
     sourceApp?: string | null;
+    via?: string | null;
     label: string;
     remainingPercent: number | null;
     resetAt: string | null;
@@ -262,6 +271,7 @@ export function UsageSection() {
     });
   const total = sumUsage(rows.map((r) => r.usage));
   const billings = new Set(rows.map((r) => r.billing));
+  const botFleetQuotaWindows = quotaWindows.filter(isBotFleetQuotaWindow);
 
   return (
     <div className="flex flex-col gap-4">
@@ -326,7 +336,7 @@ export function UsageSection() {
               engineSpend[instance.instanceId] ??
               (isDeepSeek ? (engineSpend["deepseek"] ?? engineSpend["deepseekAgent"]) : undefined);
             const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
-            const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
+            const instanceWindows = windowsForDriver(botFleetQuotaWindows, instance.driverKind);
             const hasQuotaData =
               Boolean(instance.snapshot.quota?.capped) ||
               Boolean(instance.snapshot.quota?.models && Object.keys(instance.snapshot.quota.models).length > 0) ||
@@ -354,7 +364,12 @@ export function UsageSection() {
               : [];
             const agGroups = antigravityGroupSummary(agModels, antigravityQuota?.promptCredits);
             const agLines = antigravityQuotaLines(agModels, antigravityQuota?.promptCredits);
-            const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
+            const instanceWindows = windowsForDriver(botFleetQuotaWindows, instance.driverKind);
+            const usageMonitorAGWindows = instance.instanceId === "antigravity"
+              ? antigravityQuotaWindows(botFleetQuotaWindows)
+              : [];
+            const usageMonitorAGLines = usageMonitorAntigravityLines(usageMonitorAGWindows);
+            const hasUsageMonitorAG = usageMonitorAGWindows.length > 0;
             const headlines = windowHeadlines(instanceWindows);
             const windowLines = usageWindowLines(instanceWindows);
             const planSkip = instanceWindows.some((window) => isPlanLevelSkip(window));
@@ -363,9 +378,11 @@ export function UsageSection() {
             // the user's complaint was a four-name slice hiding an all-spent
             // group behind a "70% remaining" average. With the two-line
             // summary, an all-spent group reads as exhausted directly.
-            const isCapped = wildcardCap || planSkip || (agGroups.length > 0
-              ? agExhausted.length === agGroups.length
-              : instanceCooldowns.some((q) => q.model === "*"));
+            const isCapped = wildcardCap || planSkip || (hasUsageMonitorAG
+              ? usageMonitorAGWindows.every((window) => window.skip || window.remainingPercent === 0)
+              : agGroups.length > 0
+                ? agExhausted.length === agGroups.length
+                : instanceCooldowns.some((q) => q.model === "*"));
             // DeepSeek balance only applies to the DeepSeek engine. Surfaced
             // as a third status line so the user can see "$12.34 remaining"
             // (or "Balance unavailable") without expanding the row.
@@ -394,10 +411,16 @@ export function UsageSection() {
             } else if (spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0)) {
               deepseekStatus = `Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
             }
-            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
+            const isPartial = !isCapped && (hasUsageMonitorAG
+              ? usageMonitorAGWindows.some((window) => window.skip || window.remainingPercent === 0)
+              : agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
-            const baseDetailLines = agLines.length > 0 ? agLines : windowLines;
+            const baseDetailLines = hasUsageMonitorAG
+              ? usageMonitorAGLines
+              : agLines.length > 0
+                ? agLines
+                : windowLines;
             const detailLines = [...baseDetailLines];
             if (isDeepSeek && deepseekRow && !deepseekRow.error && deepseekRow.balanceUsd != null) {
               detailLines.unshift({
@@ -438,7 +461,9 @@ export function UsageSection() {
             // with the time-until-reset next to it. The chip on the right
             // (Available / At Usage Cap / …) is the verdict; the headline
             // is the numbers behind it.
-            const headlineLines = agGroups.length > 0
+            const headlineLines = hasUsageMonitorAG
+              ? usageMonitorAntigravityHeadlines(usageMonitorAGWindows)
+              : agGroups.length > 0
               ? agGroups.map((group) => {
                   if (group.headline) return group.headline;
                   const value = group.remainingPercent == null
