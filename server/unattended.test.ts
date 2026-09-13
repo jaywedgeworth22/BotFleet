@@ -162,6 +162,7 @@ posixOnly("unattended turns keep asking", () => {
         (
           await api("PATCH", `/api/bots/${bot.id}`, {
             autoApprove: true,
+            computers: [],
             modelSelection: { instanceId: "grok", model: "fake-model" },
           })
         ).status,
@@ -207,6 +208,7 @@ posixOnly("unattended turns keep asking", () => {
           await api("PATCH", `/api/bots/${bot.id}`, {
             name: "Night owl",
             autoApprove: true,
+            computers: [],
             modelSelection: { instanceId: "grok", model: "fake-model" },
           })
         ).status,
@@ -303,12 +305,13 @@ posixOnly("unattended turns keep asking", () => {
       // payload and releases the bot that ACTS on it.
       const created = await api("POST", "/api/bots");
       const teammate = created.body.bot;
-      await api("PATCH", `/api/bots/${teammate.id}`, { name: "Teammate", autoApprove: true });
+      await api("PATCH", `/api/bots/${teammate.id}`, { name: "Teammate", autoApprove: true, computers: [] });
 
       const delegator = (await api("POST", "/api/bots")).body.bot;
       await api("PATCH", `/api/bots/${delegator.id}`, {
         name: "Delegator",
         autoApprove: true,
+        computers: [],
         modelSelection: { instanceId: "delegator", model: "fake-model" },
       });
 
@@ -359,6 +362,7 @@ posixOnly("unattended turns keep asking", () => {
       await api("PATCH", `/api/bots/${target.id}`, {
         name: "Answerer",
         autoApprove: true,
+        computers: [],
         modelSelection: { instanceId: "grok", model: "fake-model" },
       });
 
@@ -366,6 +370,7 @@ posixOnly("unattended turns keep asking", () => {
       await api("PATCH", `/api/bots/${asker.id}`, {
         name: "Asker",
         autoApprove: true,
+        computers: [],
         hidden: true, // keep it out of its own peer list's way
         modelSelection: { instanceId: "asker", model: "fake-model" },
       });

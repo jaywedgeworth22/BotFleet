@@ -1503,6 +1503,7 @@ describe("harness HTTP API", () => {
       color: "purple",
       mascotExpression: "focused",
       autoApprove: true,
+      computers: [],
       alwaysAllow: ["Bash:git"],
     });
     await api("PATCH", `/api/bots/${second.id}`, {
@@ -2922,7 +2923,7 @@ describe("harness HTTP API", () => {
   it("grants Auto on this computer only through the warning acknowledgement", async () => {
     const created = await api("POST", "/api/bots");
     const bot = created.body.bot;
-    expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).body.bot.autoApprove).toBe(
+    expect((await api("PATCH", `/api/bots/${bot.id}`, { computers: ["cloud"], autoApprove: true })).body.bot.autoApprove).toBe(
       true,
     );
 
@@ -5877,6 +5878,84 @@ describe("PATCH /api/terminology", () => {
   });
 });
 
+describe("local Auto consent for inherited and discovered computers", () => {
+  it("guards config defaults and per-bot Auto while preserving explicit Off", async () => {
+    expect((await api("PUT", "/api/config", {
+      botDefaults: { computers: ["cloud"], allowedComputers: null },
+    })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots", { name: "Inherited Auto" })).body.bot;
+    try {
+      // A cloud-only inherited default has no host path, so Auto itself is
+      // harmless and gives the config route a clean before-state.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
+
+      // An empty default restores automatic discovery, including the host
+      // fallback.  The config write must bind consent to the exact fleet and
+      // leave the prior default untouched on refusal.
+      const discovered = await api("PUT", "/api/config", {
+        botDefaults: { computers: [], allowedComputers: null },
+        profile: { name: "Must Not Persist Before Consent" },
+      });
+      expect(discovered.status).toBe(400);
+      expect(discovered.body.needsAcknowledgement).toEqual(expect.arrayContaining([
+        { id: bot.id, name: "Inherited Auto" },
+      ]));
+      const refusedConfig = (await api("GET", "/api/config")).body;
+      expect(refusedConfig.botDefaults.computers).toEqual(["cloud"]);
+      expect(refusedConfig.profile?.name).not.toBe("Must Not Persist Before Consent");
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { computers: [], allowedComputers: null },
+        acknowledgeLocalAuto: true,
+        acknowledgedBots: [],
+      })).status).toBe(409);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { computers: [], allowedComputers: null },
+        acknowledgeLocalAuto: true,
+        acknowledgedBots: discovered.body.needsAcknowledgement,
+      })).status).toBe(200);
+
+      // The per-bot route must see the same automatic host fallback when
+      // Auto is enabled after the default has already become empty.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: false })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        autoApprove: true,
+        acknowledgeLocalAuto: true,
+      })).status).toBe(200);
+
+      // With Auto off, inheriting an explicit Local default is allowed; the
+      // later Auto toggle is the transition that creates the pair.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: false })).status).toBe(200);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { computers: ["local"], allowedComputers: null },
+      })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(400);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        autoApprove: true,
+        acknowledgeLocalAuto: true,
+      })).status).toBe(200);
+
+      // Explicit Off wins over both the workspace default and automatic
+      // discovery, so enabling Auto cannot grant this bot a computer.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computers: [],
+        autoApprove: false,
+      })).status).toBe(200);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
+      const stored = (await api("GET", "/api/bots")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(stored.computers).toEqual([]);
+      expect(stored.autoApprove).toBe(true);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { computers: ["cloud"], allowedComputers: null },
+      })).status).toBe(200);
+    }
+  });
+});
+
 describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
   it("applies the workspace default to every bot, filtered through the allowlist", async () => {
     const ada = (await api("POST", "/api/bots", { name: "Ada Apply" })).body.bot;
@@ -6006,6 +6085,7 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     const acked = await api("POST", "/api/bots/apply-defaults", {
       botDefaults: { computers: ["local"] },
       acknowledgeLocalAuto: true,
+      acknowledgedBots: blocked.body.needsAcknowledgement,
     });
     expect(acked.status).toBe(200);
     expect(acked.body.computers).toEqual([]);
@@ -6025,6 +6105,84 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     });
     expect(restore.status).toBe(200);
   });
+
+  it("requires fresh consent when the displayed fleet changes before confirmation", async () => {
+    expect((await api("PUT", "/api/config", { botDefaults: { allowedComputers: null, computers: ["cloud"] } })).status).toBe(200);
+    const first = (await api("POST", "/api/bots", { name: "Consent First" })).body.bot;
+    const second = (await api("POST", "/api/bots", { name: "Consent Second" })).body.bot;
+    const defaults = { computers: ["local"] };
+    try {
+      await api("PATCH", `/api/bots/${first.id}`, { computers: ["cloud"], autoApprove: true });
+      const initial = await api("POST", "/api/bots/apply-defaults", { botDefaults: defaults });
+      expect(initial.status).toBe(400);
+      await api("PATCH", `/api/bots/${second.id}`, { computers: ["cloud"], autoApprove: true });
+      const stale = await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: defaults, acknowledgeLocalAuto: true, acknowledgedBots: initial.body.needsAcknowledgement,
+      });
+      expect(stale.status).toBe(409);
+      expect(stale.body.needsAcknowledgement).toEqual(expect.arrayContaining([
+        { id: first.id, name: "Consent First" }, { id: second.id, name: "Consent Second" },
+      ]));
+      const unchecked = await api("POST", "/api/bots/apply-defaults", { botDefaults: defaults, acknowledgeLocalAuto: true });
+      expect(unchecked.status).toBe(409);
+      const config = (await api("GET", "/api/config")).body;
+      expect(config.botDefaults.computers).toEqual(["cloud"]);
+      const bots = (await api("GET", "/api/bots")).body.bots;
+      for (const id of [first.id, second.id]) expect(bots.find((bot: { id: string }) => bot.id === id).computers).toEqual(["cloud"]);
+      const accepted = await api("POST", "/api/bots/apply-defaults", {
+        botDefaults: defaults, acknowledgeLocalAuto: true, acknowledgedBots: stale.body.needsAcknowledgement,
+      });
+      expect(accepted.status).toBe(200);
+    } finally {
+      await api("DELETE", `/api/bots/${first.id}`);
+      await api("DELETE", `/api/bots/${second.id}`);
+      expect((await api("POST", "/api/bots/apply-defaults", { botDefaults: { computers: ["cloud"] } })).status).toBe(200);
+    }
+  }, 90_000);
+
+  it("fences consent-relevant bot edits while an acknowledged config save awaits", async () => {
+    expect((await api("PUT", "/api/config", {
+      botDefaults: { allowedComputers: null, computers: ["cloud"] },
+    })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots", { name: "Locked Consent Bot" })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
+      const prompt = await api("PUT", "/api/config", { botDefaults: { computers: ["local"] } });
+      expect(prompt.status).toBe(400);
+
+      boxTurnRequests = 0;
+      boxTurnGate = new Promise<void>((resolve) => { releaseBoxTurnGate = resolve; });
+      const saving = api("PUT", "/api/config", {
+        botDefaults: { computers: ["local"] },
+        box: { token: "box_gate" },
+        acknowledgeLocalAuto: true,
+        acknowledgedBots: prompt.body.needsAcknowledgement,
+      });
+      await expect.poll(() => boxTurnRequests, { timeout: 5_000 }).toBe(1);
+
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { name: "Renamed Mid-Save" })).status).toBe(409);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"] })).status).toBe(409);
+      expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(409);
+
+      releaseBoxTurnGate?.();
+      expect((await saving).status).toBe(200);
+      const preserved = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(preserved).toMatchObject({ name: "Locked Consent Bot", autoApprove: true });
+      expect(preserved.computers).toBeUndefined();
+    } finally {
+      releaseBoxTurnGate?.();
+      boxTurnGate = null;
+      releaseBoxTurnGate = null;
+      await api("PATCH", `/api/bots/${bot.id}`, { computers: ["cloud"], autoApprove: false });
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { allowedComputers: null, computers: ["cloud"] },
+        box: { token: "" },
+      })).status).toBe(200);
+    }
+  }, 90_000);
 
   it("skips a bot that would gain unacknowledged auto host control, and names it", async () => {
     // The per-bot PATCH refuses "This Computer" plus auto-approve without a
@@ -6067,6 +6225,7 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     const acked = await api("POST", "/api/bots/apply-defaults", {
       botDefaults: { computers: ["local"] },
       acknowledgeLocalAuto: true,
+      acknowledgedBots: apply.body.needsAcknowledgement,
     });
     expect(acked.status).toBe(200);
     const host = (await api("GET", "/api/bots")).body.bots.find((b: { id: string }) => b.id === auto.id);
