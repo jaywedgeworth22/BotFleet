@@ -139,26 +139,31 @@ export function UsageSection() {
         setTelemetryFetchError("Failed to fetch telemetry status");
       });
 
-    fetch("/api/quotas")
-      .then((res) => res.json())
-      .then((data) => {
-        if (data?.ok && Array.isArray(data.cooldowns)) {
-          setQuotas(data.cooldowns);
-        }
-        if (data?.antigravity && Array.isArray(data.antigravity.models)) {
-          setAntigravityQuota(data.antigravity);
-        }
-        if (Array.isArray(data?.windows)) {
-          setQuotaWindows(data.windows);
-        }
-        if (data?.deepseek && typeof data.deepseek === "object") {
-          setDeepSeekBalance(data.deepseek);
-        }
-        if (data?.engineSpend && typeof data.engineSpend === "object") {
-          setEngineSpend(data.engineSpend);
-        }
-      })
-      .catch(() => {});
+    const fetchQuotas = () => {
+      fetch("/api/quotas")
+        .then((res) => res.json())
+        .then((data) => {
+          if (data?.ok && Array.isArray(data.cooldowns)) {
+            setQuotas(data.cooldowns);
+          }
+          if (data?.antigravity && Array.isArray(data.antigravity.models)) {
+            setAntigravityQuota(data.antigravity);
+          }
+          if (Array.isArray(data?.windows)) {
+            setQuotaWindows(data.windows);
+          }
+          if (data?.deepseek && typeof data.deepseek === "object") {
+            setDeepSeekBalance(data.deepseek);
+          }
+          if (data?.engineSpend && typeof data.engineSpend === "object") {
+            setEngineSpend(data.engineSpend);
+          }
+        })
+        .catch(() => {});
+    };
+    fetchQuotas();
+    const quotaInterval = setInterval(fetchQuotas, 30_000);
+    return () => clearInterval(quotaInterval);
   }, []);
   const badge = telemetryBadge(telemetryStatus, telemetryFetchError);
   // Whatever host the operator pointed this at — never a built-in name.
@@ -315,12 +320,11 @@ export function UsageSection() {
             if (instance.enabled === false) return false;
             const isDeepSeek =
               instance.driverKind === "deepseekAgent" ||
-              instance.driverKind === "deepseek" ||
-              instance.driverKind === "dshAgent";
+              instance.driverKind === "deepseek";
             const spend =
               engineSpend[instance.driverKind] ??
               engineSpend[instance.instanceId] ??
-              (isDeepSeek ? (engineSpend["dshAgent"] ?? engineSpend["deepseek"] ?? engineSpend["deepseekAgent"]) : undefined);
+              (isDeepSeek ? (engineSpend["deepseek"] ?? engineSpend["deepseekAgent"]) : undefined);
             const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
             const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
             const hasQuotaData =
@@ -367,8 +371,7 @@ export function UsageSection() {
             // (or "Balance unavailable") without expanding the row.
             const isDeepSeek =
               instance.driverKind === "deepseekAgent" ||
-              instance.driverKind === "deepseek" ||
-              instance.driverKind === "dshAgent";
+              instance.driverKind === "deepseek";
             const deepseekRow = isDeepSeek
               ? deepseekBalance
               : null;
@@ -384,7 +387,7 @@ export function UsageSection() {
             const spend =
               engineSpend[instance.driverKind] ??
               engineSpend[instance.instanceId] ??
-              (isDeepSeek ? (engineSpend["dshAgent"] ?? engineSpend["deepseek"] ?? engineSpend["deepseekAgent"]) : undefined);
+              (isDeepSeek ? (engineSpend["deepseek"] ?? engineSpend["deepseekAgent"]) : undefined);
             let deepseekStatus = deepseekLine;
             if (deepseekLine && spend) {
               deepseekStatus = `${deepseekLine}  ·  Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;

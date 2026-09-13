@@ -63,8 +63,8 @@ describe("rolling spend calculation", () => {
     // DeepSeek turn within 5 hours
     tracker.recordTurn({
       at: now - 30 * 60 * 1000,
-      provider: "dshAgent",
-      instanceId: "deepseek",
+      provider: "deepseek",
+      instanceId: "deepseekAgent",
       costUsd: 0.02,
     });
 
@@ -73,11 +73,7 @@ describe("rolling spend calculation", () => {
       spend5hUsd: 0.5,
       spend7dUsd: 1.75,
     });
-    // dshAgent, deepseek, and deepseekAgent should all reflect the DeepSeek spend
-    expect(spend.dshAgent).toEqual({
-      spend5hUsd: 0.02,
-      spend7dUsd: 0.02,
-    });
+    // deepseek and deepseekAgent reflect the DeepSeek spend
     expect(spend.deepseek).toEqual({
       spend5hUsd: 0.02,
       spend7dUsd: 0.02,
@@ -123,10 +119,10 @@ describe("rolling spend calculation", () => {
 
   it("aggregates spend from multiple provider aliases without double-counting", () => {
     const tracker = new RollingSpendTracker();
-    // dshAgent recorded 0.05
+    // deepseek recorded 0.05
     tracker.recordTurn({
       at: now - 1000,
-      provider: "dshAgent",
+      provider: "deepseek",
       costUsd: 0.05,
     });
     // deepseekAgent recorded 0.03
@@ -135,11 +131,17 @@ describe("rolling spend calculation", () => {
       provider: "deepseekAgent",
       costUsd: 0.03,
     });
+    // dshAgent recorded 0.10 (independent billing domain)
+    tracker.recordTurn({
+      at: now - 3000,
+      provider: "dshAgent",
+      costUsd: 0.10,
+    });
 
     const spend = tracker.getSpend(now);
-    expect(spend.dshAgent).toEqual({ spend5hUsd: 0.08, spend7dUsd: 0.08 });
     expect(spend.deepseekAgent).toEqual({ spend5hUsd: 0.08, spend7dUsd: 0.08 });
     expect(spend.deepseek).toEqual({ spend5hUsd: 0.08, spend7dUsd: 0.08 });
+    expect(spend.dshAgent).toEqual({ spend5hUsd: 0.10, spend7dUsd: 0.10 });
   });
 
   it("preserves precision when aggregating small fractional turns", () => {

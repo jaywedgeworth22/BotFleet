@@ -132,7 +132,7 @@ export class RollingSpendTracker {
     };
 
     // Ensure DeepSeek alias keys are aggregated together across all aliases
-    const dsKeys = ["deepseekAgent", "deepseek", "dshAgent"];
+    const dsKeys = ["deepseekAgent", "deepseek"];
     let dsSpend5h = 0;
     let dsSpend7d = 0;
     let hasDsEntry = false;
