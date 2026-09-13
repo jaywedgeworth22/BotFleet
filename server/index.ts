@@ -8278,6 +8278,12 @@ const server = createServer(async (req, res) => {
             error: "those conversations cannot merge — a bot keeps its last one",
           });
         }
+        // A merge COPIES the source's messages into the target and then
+        // deletes the source task, so — unlike the moves below, which keep
+        // their thread id — the source thread id names nothing afterwards and
+        // its logs would sit on disk forever.  The target keeps its own
+        // (server/transcript-retention.ts).
+        for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, [m[2]!]);
         broadcast({ kind: "bot", bot: botWithThread(merged) });
         return json(res, 200, { bot: botWithThread(merged) });
       }

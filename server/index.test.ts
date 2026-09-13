@@ -4092,6 +4092,23 @@ describe("transcript logs on delete", () => {
     await api("DELETE", `/api/bots/${bot.id}`);
   });
 
+  it("removes the merged-away thread's logs when two tasks are merged", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const kept = bot.threadId;
+    const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Folded in" });
+    expect(task.status).toBe(201);
+    const gone = task.body.task.threadId;
+    for (const file of [...logFiles(kept), ...logFiles(gone)]) writeFileSync(file, "{}\n");
+
+    // a merge copies the source's messages into the target and deletes the
+    // source task, so nothing names the source thread afterwards
+    const merged = await api("PATCH", `/api/bots/${bot.id}/tasks/${gone}`, { mergeInto: kept });
+    expect(merged.status).toBe(200);
+    expect(logFiles(gone).filter((file) => existsSync(file))).toEqual([]);
+    expect(logFiles(kept).every((file) => existsSync(file))).toBe(true);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
   it("removes a room task's logs when just that task is deleted", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     const room = (await api("POST", "/api/groups", { name: "Task cleanup", memberIds: [bot.id] })).body.group;
