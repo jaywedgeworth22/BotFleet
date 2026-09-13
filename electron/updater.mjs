@@ -8,7 +8,7 @@
 // the packaged app ships no node_modules.
 import { app, ipcMain } from "electron";
 import { spawn } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createRequire } from "node:module";
 import { join } from "node:path";
@@ -194,6 +194,27 @@ export function startUpdater(mainWindow) {
     updaterCoordinator = null;
     setState({ status: "error", message: "updater unavailable" });
     return;
+  }
+  const updateConfigInResources = join(process.resourcesPath, "app-update.yml");
+  if (!existsSync(updateConfigInResources)) {
+    try {
+      const fallbackDir = app.getPath("userData");
+      mkdirSync(fallbackDir, { recursive: true, mode: 0o700 });
+      const fallbackConfig = join(fallbackDir, "app-update.yml");
+      if (!existsSync(fallbackConfig)) {
+        const content = [
+          "owner: jaywedgeworth22",
+          "repo: BotFleet",
+          "provider: github",
+          "updaterCacheDirName: botfleet-updater",
+          "",
+        ].join("\n");
+        writeFileSync(fallbackConfig, content, { mode: 0o600, encoding: "utf8" });
+      }
+      autoUpdater.updateConfigPath = fallbackConfig;
+    } catch {
+      /* best-effort fallback */
+    }
   }
   autoUpdater.autoDownload = false; // button-driven download
   // Squirrel.Mac has a second, native staging pass after the ZIP download.

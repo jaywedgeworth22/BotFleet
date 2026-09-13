@@ -514,6 +514,8 @@ export interface EngineInstall {
   docsUrl?: string;
   signInCommand?: string;
   needsNode?: boolean;
+  /** No CLI, no interactive login — authenticates with a bare API key. */
+  apiKeyOnly?: boolean;
 }
 
 /** One row of GET /api/instances — the model picker's data. */
@@ -533,11 +535,14 @@ export interface InstanceInfo {
       capped: boolean;
       resetsAt?: number | null;
       error?: string;
+      windowsLabel?: string;
       models?: Record<string, {
         capped: boolean;
         remainingPercent?: number | null;
+        secondaryRemainingPercent?: number | null;
         resetsAt?: number | null;
         error?: string;
+        windowsLabel?: string;
       }>;
     };
   };

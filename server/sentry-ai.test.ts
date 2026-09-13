@@ -153,12 +153,27 @@ describe("Sentry AI observability", () => {
   });
 
   it("deduplicates a runtime error when diagnostics starts after the turn span", () => {
-    const { sink, exceptions } = recordingSink();
+    configureTurnIdentity(() => ({
+      botId: "bot-1",
+      instanceId: "instance-1",
+      model: "model-1",
+      roomId: "room-1",
+    }));
+    const { sink, exceptions, contexts } = recordingSink();
     observeRuntimeEvent(base({ type: "runtime.error", message: "provider process exited" }), sink);
     observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "exit code 1" }), sink);
 
     expect(exceptions).toHaveLength(1);
     expect(String(exceptions[0])).toContain("provider process exited");
+    expect(contexts[0]?.tags).toMatchObject({
+      "botfleet.bot.id": "bot-1",
+      "botfleet.instance.id": "instance-1",
+      "botfleet.room.id": "room-1",
+      "botfleet.provider": "openai-compat",
+      "botfleet.thread.id": "thread-1",
+      "gen_ai.provider.name": "openai-compat",
+      "gen_ai.request.model": "model-1",
+    });
   });
 
   it("does not carry runtime-error suppression into a later turn on the same thread", () => {

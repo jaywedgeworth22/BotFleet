@@ -300,17 +300,22 @@ export class ProviderRegistry {
             error: cd.error,
           };
         }
+        let windowsLabel: string | undefined;
         if (inst.instanceId === "antigravity") {
-          Object.assign(models, quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot()));
+          const agModels = quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot());
+          Object.assign(models, agModels);
+          const dual = Object.values(agModels).find((m) => m.windowsLabel?.includes("/"));
+          windowsLabel = dual?.windowsLabel ?? Object.values(agModels)[0]?.windowsLabel;
         }
         const catalogIds = inst.models?.options?.map((option) => option.id) ?? [];
         const allCatalogCapped =
           catalogIds.length > 0 && catalogIds.every((id) => models[id]?.capped === true);
-        if (wildcard || Object.keys(models).length > 0) {
+        if (wildcard || Object.keys(models).length > 0 || windowsLabel) {
           snapshot.quota = {
             capped: Boolean(wildcard) || allCatalogCapped,
             resetsAt: wildcard?.resetsAt,
             error: wildcard?.error,
+            ...(windowsLabel ? { windowsLabel } : {}),
             ...(Object.keys(models).length > 0 ? { models } : {}),
           };
         }

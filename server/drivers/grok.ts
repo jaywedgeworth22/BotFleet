@@ -365,7 +365,10 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
         // no MCP server is mounted anywhere in this file and respondToRequest
         // answers "unavailable", so localComputerMcp would be a knob the
         // driver cannot turn — contracts.ts is explicit that we never show one
-        capabilities: { sessionModelSwitch: "in-session" },
+        // replaysTranscript: this driver builds its message array from
+        // `turn.transcript` every round (see the flatMap below), so the
+        // harness must not also inline the same history into the turn text.
+        capabilities: { sessionModelSwitch: "in-session", replaysTranscript: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const, // this engine has no asks to answer

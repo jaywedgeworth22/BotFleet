@@ -464,7 +464,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
       if (!providerTurnFailure || !reportedProviderErrors.has(key)) {
         sink.captureException(
           new Error(event.message.slice(0, 500)),
-          turn ? { tags: failureTags(event, provider, turn) } : undefined,
+          { tags: failureTags(event, provider, turn) },
         );
         if (providerTurnFailure) reportedProviderErrors.add(key);
       }
