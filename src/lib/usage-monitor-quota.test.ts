@@ -104,6 +104,7 @@ describe("Usage Monitor BotFleet quota integration", () => {
     expect(isBotFleetQuotaWindow(window({ provider: "claude-code", providerKey: undefined }))).toBe(true);
     expect(antigravityQuotaWindows([window({ provider: "anthropic", providerKey: undefined, via: "antigravity", label: "Third-Party Models · Weekly", window: "weekly" })])).toHaveLength(4);
     expect(isBotFleetQuotaWindow(window({ provider: "Grok Bot", providerKey: "xai" }))).toBe(false);
+    expect(isBotFleetQuotaWindow(window({ provider: "xai", providerKey: undefined, sourceApp: "cursor", label: "Grok Bot weekly" }))).toBe(false);
   });
 
   it("requires a Codex source identity for a bare OpenAI provider", () => {

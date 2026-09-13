@@ -54,7 +54,7 @@ function providerKey(window: UsageMonitorQuotaWindow): string {
 /** Only providers with a BotFleet engine may appear in its quota section. */
 export function isBotFleetQuotaWindow(window: UsageMonitorQuotaWindow): boolean {
   const key = providerKey(window);
-  if (/grok[-_ ]?bot/i.test(`${window.providerKey ?? ""} ${window.provider} ${window.sourceApp ?? ""}`)) return false;
+  if (/grok[-_ ]?bot/i.test(`${window.providerKey ?? ""} ${window.provider} ${window.sourceApp ?? ""} ${window.label}`)) return false;
   if (EXCLUDED_PROVIDERS.has(key)) return false;
   if (BOTFLEET_PROVIDERS.has(key)) {
     // A bare OpenAI provider is ambiguous for custom OpenAI-compatible engines.

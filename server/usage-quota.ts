@@ -91,7 +91,11 @@ export class UsageQuotaPoller {
   private lastOkAt: string | null = null;
   private inFlight = false;
 
-  constructor(private readonly readNativeQuota = readLocalQuotaSnapshot) {}
+  private readonly readNativeQuota: typeof readLocalQuotaSnapshot;
+
+  constructor(readNativeQuota = readLocalQuotaSnapshot) {
+    this.readNativeQuota = readNativeQuota;
+  }
 
   configure(opts: {
     settings: () => QuotaPollerSettings;
