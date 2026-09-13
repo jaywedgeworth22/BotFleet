@@ -34,12 +34,14 @@
 //      every tool call, so Stop terminates from any point in the loop.
 
 import type {
+  RequestOutcome,
   RuntimeEvent,
   RuntimeEventBase,
   TurnToolCall,
   TurnToolHost,
   TurnToolOutcome,
 } from "../../contracts.ts";
+import { ProviderError } from "../../contracts.ts";
 import { parseToolArguments, toolFields } from "../../tool-fields.ts";
 
 /** Every way a turn can end.  Closed on purpose: `STOP_REASON` and
@@ -160,6 +162,17 @@ export interface TurnLoopDeps {
   /** Round 1's messages.  The loop appends to this array in place. */
   messages: ChatMessage[];
   toolHost?: TurnToolHost;
+  /** The harness's permission broker for this turn — normally
+   *  `toolHost.requestApproval`, handed across by the driver.  The loop
+   *  wraps it (see `runOneTool`) so the per-tool clock stops while a card
+   *  is in front of a person, then passes the wrapper to the host as
+   *  `TurnToolRuntime.requestApproval`.  Absent = no broker mounted, and
+   *  every ask is fail-closed `"unavailable"`. */
+  requestApproval?: (ask: {
+    tool: string;
+    summary: string;
+    signal?: AbortSignal;
+  }) => Promise<RequestOutcome>;
   /** The turn's interrupt signal — `interruptTurn`, `stopAll`, `dispose`. */
   signal: AbortSignal;
   /** Tool ids the streaming reader already announced with `item.started`,
@@ -281,6 +294,14 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
   let exit: TurnLoopExit = "internal_error";
   let stopReasonOverride: string | null = null;
   let errorMessage: string | null = null;
+  // Set only when a round rejects with a `ProviderError` (chat-completions/
+  // errors.ts classifyHttpError, thrown by the driver's HTTP call) — a
+  // classified failure gets `error:<code>` as its stopReason and, for
+  // invalid_credentials, `setup: true` on the runtime.error chip so a
+  // revoked key reaches the setup affordance instead of idling behind a
+  // red chip.  An unclassified provider_error (a plain Error) leaves this
+  // unset and keeps today's bare "error" stopReason.
+  let errorSetup = false;
 
   const emitToolStarted = (call: ChatToolCall) => {
     if (!call.id || announced.has(call.id)) return;
@@ -315,22 +336,58 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
     }
     const toolAbort = new AbortController();
     let toolTimedOut = false;
-    const toolTimer = setTimeout(() => {
-      toolTimedOut = true;
-      toolAbort.abort();
-    }, budget.toolTimeoutMs);
-    unrefTimer(toolTimer);
+    // The per-tool clock, and it PAUSES.  The 90s ceiling is there to catch
+    // a call that has hung; a card sitting in front of a person is neither
+    // hung nor the model's fault, and killing the tool out from under a
+    // human who is still reading would make approvals unusable on this
+    // lane.  So the clock stops while a card is open and resumes with the
+    // time it had left — the tool gets its full budget of RUNNING time,
+    // however long the person took.  The whole-turn wall clock deliberately
+    // keeps running: something has to bound a turn nobody ever answers, and
+    // the watchdog's stall detector is separately exempted for an open card
+    // (`setWaitingOnHuman`), which is what makes this pause safe.
+    let remainingMs = budget.toolTimeoutMs;
+    let clockStartedAt = now();
+    let toolTimer: ReturnType<typeof setTimeout> | null = null;
+    const startClock = () => {
+      if (toolTimer !== null || toolAbort.signal.aborted) return;
+      clockStartedAt = now();
+      toolTimer = setTimeout(() => {
+        toolTimedOut = true;
+        toolAbort.abort();
+      }, Math.max(0, remainingMs));
+      unrefTimer(toolTimer);
+    };
+    const stopClock = () => {
+      if (toolTimer === null) return;
+      clearTimeout(toolTimer);
+      toolTimer = null;
+      remainingMs = Math.max(0, remainingMs - (now() - clockStartedAt));
+    };
+    startClock();
     const signal = AbortSignal.any([turnSignal, wall.signal, toolAbort.signal]);
     const race = abortRejection(signal);
+    /** The host's channel to a person.  The loop owns the clock semantics;
+     *  the broker owns the card.  No broker mounted is fail-closed: the
+     *  host reads `"unavailable"` as a deny and the tool never runs. */
+    const requestApproval = async (ask: { tool: string; summary: string }): Promise<RequestOutcome> => {
+      const broker = deps.requestApproval;
+      if (!broker) return "unavailable";
+      stopClock();
+      try {
+        // The tool call's own signal travels with the ask, so an interrupt
+        // settles the card instead of leaving one nobody can answer.
+        return await broker({ ...ask, signal });
+      } finally {
+        startClock();
+      }
+    };
     try {
       return await Promise.race([
         // the contract says a host never throws; this normalises the one
         // that does rather than letting it end the turn
         host
-          .execute(decoded, {
-            signal,
-            requestApproval: async () => "unavailable",
-          })
+          .execute(decoded, { signal, requestApproval })
           .catch((e: unknown) => {
             const message = e instanceof Error ? e.message : String(e);
             return { kind: "error", content: `Tool ${decoded.name} failed: ${message}`, detail: message } as TurnToolOutcome;
@@ -349,7 +406,7 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
       }
       throw e;
     } finally {
-      clearTimeout(toolTimer);
+      stopClock();
       race.dispose();
     }
   };
@@ -467,6 +524,10 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
         } else {
           exit = "provider_error";
           errorMessage = error.message;
+          if (error instanceof ProviderError) {
+            stopReasonOverride = `error:${error.code}`;
+            errorSetup = error.code === "invalid_credentials";
+          }
         }
         break;
       } finally {
@@ -560,7 +621,12 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
     // saying what happened, because "the bot went idle for no stated
     // reason" is the failure mode this whole file exists to end.
     if (errorMessage && exit !== "interrupted") {
-      deps.emit({ ...deps.base(), type: "runtime.error", message: errorMessage });
+      deps.emit({
+        ...deps.base(),
+        type: "runtime.error",
+        message: errorMessage,
+        ...(errorSetup ? { setup: true } : {}),
+      });
     }
     const completed = {
       ...deps.base(),
