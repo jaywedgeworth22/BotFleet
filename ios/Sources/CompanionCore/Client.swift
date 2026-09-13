@@ -1128,6 +1128,52 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("POST", "/api/groups/\(roomId)/read"))
     }
 
+    // MARK: - Mac update
+
+    /// The paired Mac's current update status: installed build, anything
+    /// newer on `origin/main`, and the last transaction's outcome.
+    public func updateStatus() async throws -> MacUpdateStatus {
+        try await send(try makeRequest("GET", "/api/update/status"), as: MacUpdateStatus.self)
+    }
+
+    /// Ask the harness to look again right now rather than waiting for
+    /// whatever cadence it checks on its own.
+    ///
+    /// The harness's authorization for this route is either the desktop's
+    /// own owner credential or a plain JSON content type — proof the request
+    /// is not a hostile page's cross-origin form submission, since a form
+    /// cannot set `content-type: application/json` without tripping a
+    /// preflight this server never answers.  `body: [:]` is what makes
+    /// `makeRequest` send that header; an empty object is all the harness
+    /// needs to see.
+    public func checkForUpdates() async throws -> MacUpdateStatus {
+        try await send(try makeRequest("POST", "/api/update/check", body: [:]), as: MacUpdateStatus.self)
+    }
+
+    /// Start installing the available update.  The harness answers 202 with
+    /// the run it just started, or 409 with why it refused — a run already
+    /// in progress, or one of `capabilities.reasons`.  Both bodies carry a
+    /// full `MacUpdateStatus`, so this hands it back either way rather than
+    /// making the caller re-fetch just to find out what changed: a success
+    /// throws nothing and returns it on `MacUpdateRunStarted`, a refusal
+    /// throws `MacUpdateRunRefusal` carrying both the reason and the status.
+    /// Anything else (401 unpaired, 5xx, an unreadable body) falls through
+    /// to the ordinary `APIError` path every other write on this client uses.
+    public func runUpdate() async throws -> MacUpdateRunStarted {
+        let request = try makeRequest("POST", "/api/update/run", body: [:])
+        let (data, response) = try await perform(request)
+        if let http = response as? HTTPURLResponse, http.statusCode == 409,
+           let refusal = try? JSONDecoder().decode(MacUpdateRunRefusalBody.self, from: data) {
+            throw MacUpdateRunRefusal(message: refusal.error, status: refusal.status)
+        }
+        try Self.check(response, data)
+        do {
+            return try JSONDecoder().decode(MacUpdateRunStarted.self, from: data)
+        } catch {
+            throw APIError.transport("The computer sent something this app couldn't read.")
+        }
+    }
+
     // MARK: - Events
 
     /// A session for a connection that is meant to stay open for hours.

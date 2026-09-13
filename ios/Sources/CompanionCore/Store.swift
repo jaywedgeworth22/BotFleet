@@ -49,6 +49,10 @@ public struct CompanionState: Sendable {
     public var pendingQueued: [String: [QueuedSend]] = [:]
     /// queueIds whose drain frame beat the POST continuation. One-shot.
     public var consumedQueueIds: Set<String> = []
+    /// The paired Mac's update status, from the last fetch or `update.status`
+    /// event.  `nil` until the first of either arrives — not the same as "up
+    /// to date", which is a real answer this has to wait for.
+    public var macUpdateStatus: MacUpdateStatus?
     /// Monotonic reducer position used to reject snapshots fetched before a
     /// newer stream frame was folded.
     private let hydrationStateID = UUID()
@@ -274,7 +278,7 @@ public struct CompanionState: Sendable {
         switch frame {
         case .message, .messagePatch, .thread, .bot, .botDeleted, .room, .roomDeleted:
             hydrationRevision &+= 1
-        case .hello, .notify, .screen, .computer, .config, .runtime, .unknown:
+        case .hello, .notify, .screen, .computer, .config, .runtime, .updateStatus, .unknown:
             break
         }
         switch frame {
@@ -401,6 +405,9 @@ public struct CompanionState: Sendable {
 
         case let .screen(botId, png, mime):
             screens[botId] = ScreenFrame(png: png, mime: mime)
+
+        case let .updateStatus(status):
+            macUpdateStatus = status
 
         // Nothing to fold: config and provisioning state are not part of
         // this client's job yet.

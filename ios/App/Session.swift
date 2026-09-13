@@ -1443,6 +1443,63 @@ final class Session: ObservableObject {
         registerForRemoteNotificationsIfAllowed()
     }
 
+    // MARK: - Mac update
+
+    /// Fetch the paired Mac's update status once, without asking it to look
+    /// again.  The card calls this on appear; after that, live `update.status`
+    /// events keep `state.macUpdateStatus` current on their own.
+    @discardableResult
+    func loadMacUpdateStatus() async -> MacUpdateStatus? {
+        guard let client else { return nil }
+        do {
+            let status = try await client.updateStatus()
+            state.apply(.updateStatus(status))
+            return status
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// The Check button: ask the harness to look again right now.
+    @discardableResult
+    func checkForMacUpdate() async -> MacUpdateStatus? {
+        guard let client else { return nil }
+        do {
+            let status = try await client.checkForUpdates()
+            state.apply(.updateStatus(status))
+            return status
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Start the install.  Returns the harness's own reason when it refused
+    /// (a run already in progress, or one of `capabilities.reasons`) so the
+    /// card can show that sentence inline — `nil` on success, and also on
+    /// any other failure, which already went to `actionError` above.
+    /// Everything after a successful start arrives as `update.status` events
+    /// into `state`, which is what the card actually renders progress from;
+    /// both outcomes fold their own copy of `status` in immediately so the
+    /// card never has to wait on that stream (or a follow-up GET) just to
+    /// know why a refusal happened.
+    @discardableResult
+    func runMacUpdate() async -> String? {
+        guard let client else { return nil }
+        do {
+            let started = try await client.runUpdate()
+            state.apply(.updateStatus(started.status))
+            return nil
+        } catch let refusal as MacUpdateRunRefusal {
+            state.apply(.updateStatus(refusal.status))
+            return refusal.message
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
     func enableNotifications() async {
         if notificationAuthorization == .denied {
             if let url = URL(string: UIApplication.openSettingsURLString) {

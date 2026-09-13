@@ -14,6 +14,7 @@ import UserNotifications
 struct CompanionApp: App {
     @UIApplicationDelegateAdaptor(CompanionAppDelegate.self) private var appDelegate
     @StateObject private var session: Session
+    @StateObject private var testFlightUpdate = TestFlightUpdateMonitor()
     @Environment(\.scenePhase) private var scenePhase
     @State private var liveActivities = LiveActivityCoordinator()
 
@@ -34,11 +35,16 @@ struct CompanionApp: App {
             RootView()
                 .preferredColorScheme(.light)
                 .environmentObject(session)
+                .environmentObject(testFlightUpdate)
+                .safeAreaInset(edge: .top) {
+                    TestFlightUpdateBanner(monitor: testFlightUpdate)
+                }
                 .onAppear {
                     session.connect()
                     session.registerForRemoteNotificationsIfAllowed()
                     liveActivities.attach(to: session)
                     liveActivities.transition(to: liveActivityPhase(scenePhase))
+                    Task { await testFlightUpdate.checkIfDue() }
                 }
                 .onOpenURL { session.receiveOpenURL($0) }
                 .onChange(of: scenePhase) { _, phase in
@@ -47,6 +53,7 @@ struct CompanionApp: App {
                     case .active:
                         session.connect()
                         Task { await session.refreshNotificationAuthorization() }
+                        Task { await testFlightUpdate.checkIfDue() }
                     case .background: session.linger()
                     case .inactive: break
                     @unknown default: break
