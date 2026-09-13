@@ -14,6 +14,7 @@
 // withhold.
 import { createServer, type Server, type ServerResponse } from "node:http";
 
+import type { PushSenderHealth } from "./apns.ts";
 import type { DeviceRegistry } from "./devices.ts";
 import { companionEndpointCandidates, hostedCompanionUrl } from "./endpoints.ts";
 import { lanAddresses, tailnetName, tailscaleAddress } from "./listener.ts";
@@ -35,6 +36,9 @@ export interface ControlOptions {
   connectedDeviceIds?: () => string[];
   /** Terminate every authenticated event stream owned by a revoked device. */
   disconnectDevice?: (deviceId: string) => void;
+  /** How closed-app phone wake is doing — configured, last send, last error,
+   * tokens registered.  Never anything about the signing key. */
+  pushHealth?: () => PushSenderHealth;
 }
 
 /** The host out of a `Host` header, port removed.
@@ -198,6 +202,9 @@ export function companionState(options: ControlOptions) {
     devices: options.devices.list(),
     connectedDeviceIds: options.connectedDeviceIds?.() ?? [],
     discovery: options.discovery(),
+    // A push path that quietly stopped working looks exactly like a quiet
+    // fleet from the pairing page.  This is the difference.
+    push: options.pushHealth?.() ?? null,
   };
 }
 

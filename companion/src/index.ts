@@ -140,6 +140,17 @@ const service = (): ServiceInfo => ({
 });
 
 const connectedDevices = createConnectedDeviceTracker();
+// Started before the proxy so both servers can report the sender's health:
+// the pairing page shows it to whoever is at the computer, and the phone
+// reads it to explain why a closed-app notification never arrived.
+const pushWatch = watchHarnessNotifications({
+  harnessPort: HARNESS_PORT,
+  connectedIds: connectedDevices.ids,
+  tokensForDisconnected: () => devices.pushTokens(),
+  forgetToken: (id) => {
+    devices.clearPushToken(id);
+  },
+});
 const proxy = createProxyHandler({
     harnessPort: HARNESS_PORT,
     // `authenticate` also stamps lastSeenAt, which is what makes the control
@@ -154,15 +165,8 @@ const proxy = createProxyHandler({
     endpoints: () => companionEndpointCandidates(COMPANION_PORT, undefined, undefined, hostedUrl),
     connected: connectedDevices.open,
     setPushToken: (id, token) => devices.setPushToken(id, token),
+    pushHealth: pushWatch.health,
   });
-watchHarnessNotifications({
-  harnessPort: HARNESS_PORT,
-  connectedIds: connectedDevices.ids,
-  tokensForDisconnected: () => devices.pushTokens(),
-  forgetToken: (id) => {
-    devices.clearPushToken(id);
-  },
-});
 const companion = createServer(proxy);
 const managedOrigin = PRIVATE_ORIGIN ? createServer(proxy) : null;
 
@@ -176,6 +180,7 @@ const control = createControlServer({
   discovery: () => ({ advertising: mdns.advertising, name: service().name }),
   connectedDeviceIds: connectedDevices.ids,
   disconnectDevice: connectedDevices.disconnect,
+  pushHealth: pushWatch.health,
 });
 
 /** Bind a server, turning a bind failure into a sentence rather than a stack

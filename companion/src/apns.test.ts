@@ -1,7 +1,18 @@
 import { generateKeyPairSync } from "node:crypto";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
-import { apnsJwt, sendApnsAlert, watchHarnessNotifications, type ApnsConfig } from "./apns.ts";
+import {
+  apnsJwt,
+  apnsPayload,
+  deliveryForKind,
+  providerToken,
+  resetProviderTokens,
+  retryAfterMs,
+  sendApnsAlert,
+  watchHarnessNotifications,
+  type ApnsConfig,
+  type ApnsPayload,
+} from "./apns.ts";
 
 function testP8(): string {
   const { privateKey } = generateKeyPairSync("ec", { namedCurve: "P-256" });
@@ -19,6 +30,24 @@ function testConfig(overrides: Partial<ApnsConfig> = {}): ApnsConfig {
   };
 }
 
+/** Never sleep for real in a test; record what the sender asked for. */
+function recordingSleep() {
+  const waits: number[] = [];
+  return {
+    waits,
+    sleep: async (ms: number) => {
+      waits.push(ms);
+    },
+  };
+}
+
+const rejection = (status: number, reason: string, headers: Record<string, string> = {}): Response =>
+  new Response(JSON.stringify({ reason }), { status, headers });
+
+beforeEach(() => {
+  resetProviderTokens();
+});
+
 describe("apnsJwt", () => {
   it("builds a three-part ES256 token from a p8", () => {
     const jwt = apnsJwt({ keyId: "ABC123", teamId: "TEAMID1", p8: testP8() }, 1_700_000_000);
@@ -32,36 +61,107 @@ describe("apnsJwt", () => {
   });
 });
 
+describe("deliveryForKind", () => {
+  it("breaks a Focus only for the kinds that are blocked on you", () => {
+    expect(deliveryForKind("approval").interruptionLevel).toBe("time-sensitive");
+    expect(deliveryForKind("question").interruptionLevel).toBe("time-sensitive");
+    for (const kind of ["done", "routine-failed", "takeover", undefined, "something-new"]) {
+      expect(deliveryForKind(kind).interruptionLevel).toBe("active");
+    }
+  });
+
+  it("ranks approvals above every other kind", () => {
+    const scores = (["approval", "question", "takeover", "routine-failed", "done"] as const).map(
+      (kind) => deliveryForKind(kind).relevanceScore,
+    );
+    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+    expect(deliveryForKind("approval").relevanceScore).toBe(1);
+    expect(deliveryForKind(undefined).relevanceScore).toBeLessThan(deliveryForKind("done").relevanceScore);
+  });
+
+  it("routes blocking kinds to the approval category and the rest to updates", () => {
+    expect(deliveryForKind("approval").category).toBe("BOTFLEET_APPROVAL");
+    expect(deliveryForKind("question").category).toBe("BOTFLEET_APPROVAL");
+    expect(deliveryForKind("done").category).toBe("BOTFLEET_UPDATE");
+    expect(deliveryForKind("routine-failed").category).toBe("BOTFLEET_UPDATE");
+    expect(deliveryForKind("takeover").category).toBe("BOTFLEET_UPDATE");
+  });
+});
+
+describe("apnsPayload", () => {
+  it("carries the same three userInfo keys the in-app path uses", () => {
+    const payload = apnsPayload({ title: "Scout", body: "needs you", kind: "approval", threadId: "t1", botId: "b1" });
+    expect(payload.threadId).toBe("t1");
+    expect(payload.botId).toBe("b1");
+    expect(payload.kind).toBe("approval");
+  });
+
+  it("stamps an approval as time-sensitive, top-ranked, and actionable", () => {
+    const { aps } = apnsPayload({ title: "Scout", body: "needs you", kind: "approval", threadId: "t1" });
+    expect(aps.category).toBe("BOTFLEET_APPROVAL");
+    expect(aps["interruption-level"]).toBe("time-sensitive");
+    expect(aps["relevance-score"]).toBe(1);
+    expect(aps["thread-id"]).toBe("t1");
+    expect(aps["content-available"]).toBe(1);
+    expect(aps.alert).toEqual({ title: "Scout", body: "needs you" });
+  });
+
+  it("keeps a report quiet and in the update category", () => {
+    const { aps } = apnsPayload({ title: "Scout", body: "done", kind: "done" });
+    expect(aps.category).toBe("BOTFLEET_UPDATE");
+    expect(aps["interruption-level"]).toBe("active");
+    expect(aps["relevance-score"]).toBe(0.4);
+  });
+});
+
+describe("providerToken", () => {
+  it("reuses one token for twenty minutes and signs a new one after", () => {
+    const config = testConfig();
+    const first = providerToken(config, 1_000_000);
+    expect(providerToken(config, 1_000_000 + 19 * 60_000)).toBe(first);
+    expect(providerToken(config, 1_000_000 + 21 * 60_000)).not.toBe(first);
+  });
+
+  it("keeps a rotated key apart from the one it replaced", () => {
+    const first = providerToken(testConfig(), 1_000_000);
+    const second = providerToken(testConfig(), 1_000_000);
+    expect(second).not.toBe(first);
+  });
+});
+
 describe("sendApnsAlert", () => {
   it("posts an alert with content-available so a suspended app can reconnect", async () => {
     const config = testConfig();
     const token = "ab".repeat(32);
     let url = "";
     let headers: Headers | undefined;
-    let body: {
-      aps?: { alert?: { title?: string; body?: string }; "content-available"?: number };
-      threadId?: string;
-      botId?: string;
-    } = {};
+    let body: Partial<ApnsPayload> = {};
     const result = await sendApnsAlert(
       config,
       token,
-      { title: "Scout finished", body: "done", threadId: "t1", botId: "b1" },
-      async (input, init) => {
-        url = String(input);
-        headers = new Headers(init?.headers);
-        body = JSON.parse(String(init?.body ?? "{}")) as typeof body;
-        return new Response("{}", { status: 200 });
+      { title: "Scout finished", body: "done", kind: "done", threadId: "t1", botId: "b1" },
+      {
+        fetchImpl: async (input, init) => {
+          url = String(input);
+          headers = new Headers(init?.headers);
+          // SAFETY: the body is the JSON this very call just serialised, so
+          // the assertion restates what was written rather than trusting
+          // anything that came off a network.
+          body = JSON.parse(String(init?.body ?? "{}")) as ApnsPayload;
+          return new Response("{}", { status: 200 });
+        },
       },
     );
-    expect(result).toEqual({ ok: true, status: 200 });
+    expect(result).toEqual({ ok: true, status: 200, attempts: 1 });
     expect(url).toBe(`https://api.push.apple.com/3/device/${token}`);
     expect(headers?.get("apns-push-type")).toBe("alert");
     expect(headers?.get("apns-topic")).toBe("app.botfleet");
     expect(body.aps?.alert).toEqual({ title: "Scout finished", body: "done" });
     expect(body.aps?.["content-available"]).toBe(1);
+    expect(body.aps?.category).toBe("BOTFLEET_UPDATE");
     expect(body.threadId).toBe("t1");
     expect(body.botId).toBe("b1");
+    expect(body.kind).toBe("done");
   });
 
   it("uses the sandbox host when production is off", async () => {
@@ -70,24 +170,157 @@ describe("sendApnsAlert", () => {
       testConfig({ production: false }),
       "cd".repeat(32),
       { title: "Hi", body: "there" },
-      async (input) => {
-        url = String(input);
-        return new Response("{}", { status: 200 });
+      {
+        fetchImpl: async (input) => {
+          url = String(input);
+          return new Response("{}", { status: 200 });
+        },
       },
     );
     expect(url.startsWith("https://api.sandbox.push.apple.com/3/device/")).toBe(true);
   });
+
+  it("reuses the cached provider token across sends inside the window", async () => {
+    const config = testConfig();
+    const authorizations: string[] = [];
+    const fetchImpl = async (_input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get("authorization") ?? "");
+      return new Response("{}", { status: 200 });
+    };
+    let clock = 5_000_000;
+    await sendApnsAlert(config, "ab".repeat(32), { title: "a", body: "b" }, { fetchImpl, now: () => clock });
+    clock += 10 * 60_000;
+    await sendApnsAlert(config, "ab".repeat(32), { title: "a", body: "b" }, { fetchImpl, now: () => clock });
+    expect(authorizations).toHaveLength(2);
+    expect(authorizations[0]).toBe(authorizations[1]);
+  });
+
+  it("re-signs immediately when Apple says the provider token expired", async () => {
+    const config = testConfig();
+    const authorizations: string[] = [];
+    const { waits, sleep } = recordingSleep();
+    let call = 0;
+    const result = await sendApnsAlert(
+      config,
+      "ab".repeat(32),
+      { title: "a", body: "b" },
+      {
+        sleep,
+        now: () => 6_000_000,
+        fetchImpl: async (_input, init) => {
+          authorizations.push(new Headers(init?.headers).get("authorization") ?? "");
+          call += 1;
+          return call === 1 ? rejection(403, "ExpiredProviderToken") : new Response("{}", { status: 200 });
+        },
+      },
+    );
+    expect(result.ok).toBe(true);
+    expect(result.attempts).toBe(2);
+    expect(authorizations[0]).not.toBe(authorizations[1]);
+    // A stale token is not congestion — the retry goes straight back out.
+    expect(waits).toEqual([]);
+  });
+
+  it("retries a 429 after the Retry-After Apple asked for", async () => {
+    const { waits, sleep } = recordingSleep();
+    let call = 0;
+    const result = await sendApnsAlert(
+      testConfig(),
+      "ab".repeat(32),
+      { title: "a", body: "b" },
+      {
+        sleep,
+        fetchImpl: async () => {
+          call += 1;
+          return call === 1
+            ? rejection(429, "TooManyRequests", { "retry-after": "7" })
+            : new Response("{}", { status: 200 });
+        },
+      },
+    );
+    expect(result).toEqual({ ok: true, status: 200, attempts: 2 });
+    expect(waits).toEqual([7000]);
+  });
+
+  it("backs off exponentially on a 503 and gives up after the attempt budget", async () => {
+    const { waits, sleep } = recordingSleep();
+    let calls = 0;
+    const result = await sendApnsAlert(
+      testConfig(),
+      "ab".repeat(32),
+      { title: "a", body: "b" },
+      {
+        sleep,
+        fetchImpl: async () => {
+          calls += 1;
+          return rejection(503, "ServiceUnavailable");
+        },
+      },
+    );
+    expect(calls).toBe(3);
+    expect(waits).toEqual([1000, 2000]);
+    expect(result).toEqual({ ok: false, status: 503, reason: "ServiceUnavailable", attempts: 3 });
+  });
+
+  it("does not retry a 400 — the same request fails the same way", async () => {
+    const { waits, sleep } = recordingSleep();
+    let calls = 0;
+    const result = await sendApnsAlert(
+      testConfig(),
+      "ab".repeat(32),
+      { title: "a", body: "b" },
+      {
+        sleep,
+        fetchImpl: async () => {
+          calls += 1;
+          return rejection(400, "BadDeviceToken");
+        },
+      },
+    );
+    expect(calls).toBe(1);
+    expect(waits).toEqual([]);
+    expect(result).toEqual({ ok: false, status: 400, reason: "BadDeviceToken", attempts: 1 });
+  });
+
+  it("returns a 410 with its reason so the caller can drop the token", async () => {
+    let calls = 0;
+    const result = await sendApnsAlert(
+      testConfig(),
+      "ab".repeat(32),
+      { title: "a", body: "b" },
+      {
+        fetchImpl: async () => {
+          calls += 1;
+          return rejection(410, "Unregistered");
+        },
+      },
+    );
+    expect(calls).toBe(1);
+    expect(result).toEqual({ ok: false, status: 410, reason: "Unregistered", attempts: 1 });
+  });
+});
+
+describe("retryAfterMs", () => {
+  it("reads seconds, caps them, and ignores anything else", () => {
+    expect(retryAfterMs("3")).toBe(3000);
+    expect(retryAfterMs("99999")).toBe(30_000);
+    expect(retryAfterMs("-1")).toBeNull();
+    expect(retryAfterMs("Wed, 21 Oct 2026 07:28:00 GMT")).toBeNull();
+    expect(retryAfterMs(null)).toBeNull();
+  });
 });
 
 describe("watchHarnessNotifications", () => {
-  it("APNs-wakes disconnected phones on notify frames and drops 410 tokens", async () => {
-    const sent: { token: string; title: string }[] = [];
-    const forgotten: string[] = [];
-    const frame = `data: ${JSON.stringify({
+  const notifyFrame = (kind: string) =>
+    `data: ${JSON.stringify({
       kind: "notify",
-      notification: { title: "Scout finished", body: "done", threadId: "t1", botId: "b1" },
+      notification: { kind, title: "Scout finished", body: "done", threadId: "t1", botId: "b1" },
     })}\n\n`;
-    const stop = watchHarnessNotifications({
+
+  it("APNs-wakes disconnected phones on notify frames and drops 410 tokens", async () => {
+    const sent: { token: string; title: string; kind?: string }[] = [];
+    const forgotten: string[] = [];
+    const watch = watchHarnessNotifications({
       harnessPort: 1,
       connectedIds: () => ["online"],
       tokensForDisconnected: () => [
@@ -97,13 +330,15 @@ describe("watchHarnessNotifications", () => {
       ],
       config: testConfig(),
       fetchImpl: async () =>
-        new Response(frame, {
+        new Response(notifyFrame("approval"), {
           status: 200,
           headers: { "content-type": "text/event-stream" },
         }),
       send: async (_config, token, alert) => {
-        sent.push({ token, title: alert.title });
-        return token === "cc".repeat(32) ? { ok: false, status: 410 } : { ok: true, status: 200 };
+        sent.push({ token, title: alert.title, kind: alert.kind });
+        return token === "cc".repeat(32)
+          ? { ok: false, status: 410, reason: "Unregistered", attempts: 1 }
+          : { ok: true, status: 200, attempts: 1 };
       },
       forgetToken: (id) => forgotten.push(id),
     });
@@ -111,9 +346,116 @@ describe("watchHarnessNotifications", () => {
     while (sent.length < 2 && Date.now() - started < 2000) {
       await new Promise((resolve) => setTimeout(resolve, 10));
     }
-    stop();
+    watch.stop();
     expect(sent.map((row) => row.token).sort()).toEqual(["bb".repeat(32), "cc".repeat(32)].sort());
     expect(sent.every((row) => row.title === "Scout finished")).toBe(true);
+    // The kind is what decides how the push lands; it has to survive the hop.
+    expect(sent.every((row) => row.kind === "approval")).toBe(true);
     expect(forgotten).toEqual(["stale"]);
+  });
+
+  it("reports health: configured, tokens, the last send and the last error", async () => {
+    const tokens = [
+      { deviceId: "offline", token: "bb".repeat(32) },
+      { deviceId: "broken", token: "cc".repeat(32) },
+    ];
+    let sends = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => tokens,
+      config: testConfig(),
+      now: () => 1_700_000_000_000,
+      fetchImpl: async () =>
+        new Response(notifyFrame("done"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      send: async (_config, token) => {
+        sends += 1;
+        return token === "cc".repeat(32)
+          ? { ok: false, status: 403, reason: "BadCollapseId", attempts: 1 }
+          : { ok: true, status: 200, attempts: 1 };
+      },
+    });
+    expect(watch.health().configured).toBe(true);
+    expect(watch.health().production).toBe(true);
+    expect(watch.health().tokensRegistered).toBe(2);
+    const started = Date.now();
+    while (sends < 2 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    const health = watch.health();
+    expect(health.sent).toBeGreaterThanOrEqual(1);
+    expect(health.failed).toBeGreaterThanOrEqual(1);
+    expect(health.lastSentAt).toBe(1_700_000_000_000);
+    expect(health.lastError).toBe("403 BadCollapseId");
+  });
+
+  it("reports itself unconfigured when the key is missing, without sending", async () => {
+    let streams = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "bb".repeat(32) }],
+      loadConfig: () => null,
+      keyRecheckMs: 50,
+      fetchImpl: async () => {
+        streams += 1;
+        return new Response(notifyFrame("done"), { status: 200 });
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    watch.stop();
+    expect(watch.health().configured).toBe(false);
+    expect(watch.health().tokensRegistered).toBe(1);
+    expect(streams).toBe(0);
+  });
+
+  it("starts working once a key that was missing at startup appears", async () => {
+    let available: ApnsConfig | null = null;
+    const sent: string[] = [];
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "bb".repeat(32) }],
+      loadConfig: () => available,
+      keyRecheckMs: 10,
+      fetchImpl: async () =>
+        new Response(notifyFrame("approval"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      send: async (_config, token) => {
+        sent.push(token);
+        return { ok: true, status: 200, attempts: 1 };
+      },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(watch.health().configured).toBe(false);
+    available = testConfig();
+    const started = Date.now();
+    while (sent.length === 0 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(sent).toEqual(["bb".repeat(32)]);
+    expect(watch.health().configured).toBe(true);
+  });
+
+  it("stays off, and stays quiet, when the sender is pinned off", () => {
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [],
+      config: null,
+      fetchImpl: async () => {
+        throw new Error("must not stream");
+      },
+    });
+    expect(watch.health().configured).toBe(false);
+    expect(watch.health().production).toBeNull();
+    watch.stop();
   });
 });
