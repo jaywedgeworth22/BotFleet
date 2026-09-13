@@ -375,7 +375,13 @@ usageQuotaPoller.configure({
 if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   usageQuotaPoller.start();
 }
-rollingSpendTracker.init(EVENTS_DIR);
+setImmediate(() => {
+  try {
+    rollingSpendTracker.init(EVENTS_DIR);
+  } catch {
+    // Non-fatal spend history scan failure
+  }
+});
 const bundledSkills = loadBundledSkills();
 const availableSkills = () => mergeSkills(bundledSkills, loadUserSkills(join(DATA_DIR, "skills")));
 

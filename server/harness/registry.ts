@@ -304,10 +304,8 @@ export class ProviderRegistry {
         if (inst.instanceId === "antigravity") {
           const agModels = quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot());
           Object.assign(models, agModels);
-          const first = Object.values(agModels)[0];
-          if (first?.windowsLabel) {
-            windowsLabel = first.windowsLabel;
-          }
+          const dual = Object.values(agModels).find((m) => m.windowsLabel?.includes("/"));
+          windowsLabel = dual?.windowsLabel ?? Object.values(agModels)[0]?.windowsLabel;
         }
         const catalogIds = inst.models?.options?.map((option) => option.id) ?? [];
         const allCatalogCapped =
