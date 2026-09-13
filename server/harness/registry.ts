@@ -16,6 +16,36 @@ import type {
   ProviderSnapshot,
 } from "../contracts.ts";
 
+/** The instance id the default fleet reserves for each driver whose reserved
+ * id is not simply its own kind.  `isCustom` — which drives the delete button,
+ * the "added by you" callout and the engine rail — asks whether an instance is
+ * one the operator added rather than one the default fleet ships.
+ *
+ * Only the exceptions live here.  Every other driver's reserved id IS its
+ * driver kind (`claude`/`claudeAgent` aside, the default fleet names each
+ * instance after its engine), so the fallback below answers for a driver
+ * nobody remembered to list — and answers the SAFE way: an id that is not the
+ * reserved one is treated as operator-added, which offers a delete button for
+ * something deletable rather than hiding one for something that is. */
+const RESERVED_INSTANCE_ID = new Map<string, InstanceId>([
+  ["openai-compat", "openaiCompat"],
+  ["claudeAgent", "claude"],
+  ["grokAgent", "grok"],
+  ["dshAgent", "dsh"],
+  ["droidAgent", "droid"],
+  ["cursorAgent", "cursor"],
+  ["antigravityAgent", "antigravity"],
+  ["boxAgent", "computer"],
+  ["kimiAgent", "kimi"],
+  ["qwenAgent", "qwen"],
+  ["hermesAgent", "hermes"],
+  ["piAgent", "pi"],
+]);
+
+export function isCustomInstance(driverKind: string, instanceId: InstanceId): boolean {
+  return instanceId !== (RESERVED_INSTANCE_ID.get(driverKind) ?? driverKind);
+}
+
 export interface ShadowInstance {
   instanceId: InstanceId;
   driverKind: string;
@@ -274,7 +304,7 @@ export class ProviderRegistry {
         cliCandidates: candidatesFor(driver),
         fullAuto: this.fullAutoByInstance.get(entry.instanceId) ?? false,
         iconUrl: undefined,
-        isCustom: entry.shadow.driverKind === "openai-compat" && entry.instanceId !== "openaiCompat",
+        isCustom: isCustomInstance(entry.shadow.driverKind, entry.instanceId),
       };
     }
     const inst = entry.live!;
@@ -351,7 +381,7 @@ export class ProviderRegistry {
       cliCandidates: candidatesFor(driver),
       fullAuto: this.fullAutoByInstance.get(inst.instanceId) ?? false,
       iconUrl: inst.iconUrl,
-      isCustom: inst.driverKind === "openai-compat" && inst.instanceId !== "openaiCompat",
+      isCustom: isCustomInstance(inst.driverKind, inst.instanceId),
     };
   }
 

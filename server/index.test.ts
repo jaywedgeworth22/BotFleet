@@ -4873,7 +4873,7 @@ describe("instance CLI override API", () => {
     // a dynamic per-instance key. The live instance still gets it (via
     // instanceKeyOverrides → its environment map), just never through
     // config.json.
-    const created = await api("POST", "/api/instances", {
+    const created = await api("POST", "/api/instances?secretStorage=external", {
       name: "Encrypted Key Engine",
       endpoint: "http://localhost:11498/v1",
       models: ["encrypted-model"],
@@ -4940,6 +4940,257 @@ describe("instance CLI override API", () => {
       expect(persistedEntry?.config?.key).toBe("sk-plain-dev-fallback");
     } finally {
       await api("DELETE", `/api/instances/${instanceId}`);
+    }
+  }, 30_000);
+
+  it("adds a second MiniMax connection with its own key and endpoint", async () => {
+    // The second engine that can carry more than one instance. Everything
+    // the openai-compat path already proves has to hold here too — the key
+    // never lands in the persisted `environment`, the encrypted-store PATCH
+    // keeps it off disk entirely — and the driver choice itself has to be
+    // validated, or POST /api/instances becomes a way to mint a second
+    // instance of an engine that cannot arbitrate one.
+    expect((await api("POST", "/api/instances", {
+      name: "Not A Driver",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "definitely-not-a-driver",
+      key: "sk-refused",
+    })).status).toBe(400);
+    // boxAgent declares supportsMultipleInstances: false.
+    expect((await api("POST", "/api/instances", {
+      name: "Second Computer",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "boxAgent",
+      key: "sk-refused",
+    })).status).toBe(400);
+    // These three DO declare supportsMultipleInstances, and every one of them
+    // would be handed a workspace credential it reads from process.env or a
+    // CLI login in the user's home directory. A second instance pointed at an
+    // endpoint typed into this route would receive it, so the gate is
+    // `supportsMultipleInstances` AND `install.apiKeyOnly`.
+    for (const driver of ["grok", "piAgent", "antigravityAgent", "claudeAgent", "codex"]) {
+      const refused = await api("POST", "/api/instances", {
+        name: `Second ${driver}`,
+        endpoint: "http://127.0.0.1:11497/v1",
+        driver,
+        key: "sk-refused",
+      });
+      expect(refused.status, driver).toBe(400);
+      expect(refused.body.error, driver).toContain("can only be configured once");
+    }
+    // A paid hosted API still needs a key of its own: no workspace credential
+    // will ever reach a non-reserved instance, so a keyless one could do
+    // nothing but fail every turn.
+    const keyless = await api("POST", "/api/instances", {
+      name: "Keyless MiniMax",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+    });
+    expect(keyless.status).toBe(400);
+    expect(keyless.body.error).toContain("API key is required");
+    // …unless the desktop shell is about to commit one to its encrypted
+    // store, which is the one keyless create that is not a broken engine.
+    const declared = await api("POST", "/api/instances?secretStorage=external", {
+      name: "Declared MiniMax",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+    });
+    expect(declared.status).toBe(201);
+    expect((await api("DELETE", `/api/instances/${declared.body.instanceId}`)).status).toBe(200);
+    // openai-compat is the exception: an endpoint needing no auth at all —
+    // Ollama, LM Studio, vLLM — is a first-class use, and safe because the
+    // driver refuses the workspace key for a non-reserved instance.
+    const anonymous = await api("POST", "/api/instances", {
+      name: "Anonymous Local",
+      endpoint: "http://127.0.0.1:11494/v1",
+      models: ["local-model"],
+    });
+    expect(anonymous.status).toBe(201);
+    expect(
+      JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"))
+        .instances[anonymous.body.instanceId].config.credentialStorage,
+    ).toBeUndefined();
+    expect((await api("DELETE", `/api/instances/${anonymous.body.instanceId}`)).status).toBe(200);
+
+    const created = await api("POST", "/api/instances", {
+      name: "MiniMax China",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+      key: "sk-minimax-second-instance",
+    });
+    expect(created.status).toBe(201);
+    const instanceId = created.body.instanceId;
+    expect(instanceId).toContain("custom-minimax-china");
+    try {
+      const found = (await api("GET", "/api/instances")).body.instances
+        .find((i: any) => i.instanceId === instanceId);
+      expect(found).toBeDefined();
+      expect(found.driverKind).toBe("minimax");
+      expect(found.displayName).toBe("MiniMax China");
+      // The reserved `minimax` instance is not custom; this one is, which is
+      // what puts a Delete button on its row.
+      expect(found.isCustom).toBe(true);
+      expect((await api("GET", "/api/instances")).body.instances
+        .find((i: any) => i.instanceId === "minimax").isCustom).toBe(false);
+      // MiniMax ships its own catalog — a second connection offers the same
+      // models without anybody retyping them.
+      expect(found.models.options.length).toBeGreaterThan(0);
+
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      const entry = (onDisk.instances ?? {})[instanceId];
+      expect(entry.driver).toBe("minimax");
+      expect(entry.config.url).toBe("http://127.0.0.1:11497/v1");
+      // Dev/browser fallback shape, exactly as openai-compat stores it.
+      expect(entry.config.key).toBe("sk-minimax-second-instance");
+      // …and never a second copy in the persisted environment: that copy is
+      // injected for the live driver and stripped again on the way to disk,
+      // so a rotated key can never leave a stale one behind.
+      expect(entry.environment?.MINIMAX_API_KEY).toBeUndefined();
+      for (const persisted of Object.values<any>(onDisk.instances ?? {})) {
+        expect(JSON.stringify(persisted?.environment ?? {})).not.toContain("sk-minimax-second-instance");
+      }
+
+      // Rotating it leaves exactly one copy behind, in config.
+      expect((await api("PATCH", `/api/instances/${instanceId}`, { key: "sk-minimax-rotated" })).status).toBe(200);
+      const rotated = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(JSON.stringify(rotated.instances ?? {})).not.toContain("sk-minimax-second-instance");
+      expect((rotated.instances ?? {})[instanceId].config.key).toBe("sk-minimax-rotated");
+      expect((rotated.instances ?? {})[instanceId].environment?.MINIMAX_API_KEY).toBeUndefined();
+
+      // A bot can be pointed at it by instance id like any other engine.
+      const bot = (await api("POST", "/api/bots", {
+        name: "China Bot",
+        modelSelection: { instanceId, model: "MiniMax-M3" },
+      })).body.bot;
+      try {
+        expect(bot.modelSelection.instanceId).toBe(instanceId);
+      } finally {
+        await api("DELETE", `/api/bots/${bot.id}`);
+      }
+    } finally {
+      expect((await api("DELETE", `/api/instances/${instanceId}`)).status).toBe(200);
+    }
+    expect((await api("GET", "/api/instances")).body.instances
+      .find((i: any) => i.instanceId === instanceId)).toBeUndefined();
+    // The default connection is still protected from deletion.
+    expect((await api("DELETE", "/api/instances/minimax")).status).toBe(400);
+  }, 30_000);
+
+  it("reports the two API-key engines' state and endpoint on /api/config, and saves them", async () => {
+    // Before this, `configStatus()` hand-listed every section and had no
+    // entry for either engine that is configured with an endpoint and a key
+    // instead of a CLI login — so the API Keys panel had no way to show
+    // whether a key was saved, and no way to save one.
+    const boot = (await api("GET", "/api/config")).body;
+    expect(boot.minimax).toEqual({ configured: false, url: "", pending: false });
+    expect(boot.openaiCompat).toEqual({ configured: false, url: "", pending: false });
+
+    try {
+      const saved = await api("PUT", "/api/config", {
+        minimax: { key: "sentinel-workspace-minimax-key", url: "https://api.minimaxi.com/v1" },
+      });
+      expect(saved.status).toBe(200);
+      const after = (await api("GET", "/api/config")).body;
+      // The key is reported as a boolean and never echoed; the endpoint is
+      // configuration, so it comes back in full.
+      expect(after.minimax).toEqual({ configured: true, url: "https://api.minimaxi.com/v1", pending: false });
+      expect(JSON.stringify(after)).not.toContain("sentinel-workspace-minimax-key");
+
+      // …and it reaches the reserved instance, which is the whole point.
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(onDisk.minimax.url).toBe("https://api.minimaxi.com/v1");
+      expect(onDisk.minimax.key).toBe("sentinel-workspace-minimax-key");
+      // Never copied into any instance's persisted environment.
+      for (const entry of Object.values<any>(onDisk.instances ?? {})) {
+        expect(JSON.stringify(entry?.environment ?? {})).not.toContain("sentinel-workspace-minimax-key");
+      }
+
+      // The desktop path: the key goes to the encrypted store, and this
+      // route persists only the tombstone plus the durable marker.
+      const external = await api("PUT", "/api/config?secretStorage=external", {
+        minimax: { key: "sentinel-encrypted-minimax-key" },
+      });
+      expect(external.status).toBe(200);
+      const externalDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(JSON.stringify(externalDisk.minimax)).not.toContain("sentinel-encrypted-minimax-key");
+      expect(externalDisk.minimax.credentialStorage).toBe("external");
+      expect(externalDisk.minimax.key).toBe("");
+      // The endpoint saved a moment ago survives the credential-only save.
+      expect(externalDisk.minimax.url).toBe("https://api.minimaxi.com/v1");
+      // The key stays LIVE in this process — the desktop shell committed it
+      // to the encrypted store and `syncCredentialEnv` keeps the running
+      // harness in step, exactly as it does for every other credential on
+      // this path. The tombstone and the marker just asserted are what make
+      // `pending` true on the NEXT launch, before the shell replays the
+      // store; `engineKeyStatus` in src/lib/engine-key-config.test.ts covers
+      // how the panel renders that state.
+      expect((await api("GET", "/api/config")).body.minimax).toEqual({
+        configured: true,
+        url: "https://api.minimaxi.com/v1",
+        pending: false,
+      });
+
+      // Clearing drops the marker, so an anonymous endpoint stays valid.
+      expect((await api("PUT", "/api/config?secretStorage=external", { minimax: { key: "" } })).status).toBe(200);
+      const cleared = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(cleared.minimax.credentialStorage).toBeUndefined();
+      expect((await api("GET", "/api/config")).body.minimax.pending).toBe(false);
+
+      // `credentialStorage` is the store's to write, never the caller's.
+      expect((await api("PUT", "/api/config", {
+        minimax: { credentialStorage: "external" },
+      })).status).toBe(400);
+    } finally {
+      await api("PUT", "/api/config", { minimax: { key: "", url: "" } });
+    }
+    expect((await api("GET", "/api/config")).body.minimax).toEqual({
+      configured: false,
+      url: "",
+      pending: false,
+    });
+  }, 30_000);
+
+  it("routes a MiniMax connection's key through the same encrypted store openai-compat uses", async () => {
+    // The desktop shell creates the instance without a key (the bridge holds
+    // it) and then PATCHes ?secretStorage=external. Nothing about that path
+    // was openai-compat-specific except the driver check it used to make.
+    const created = await api("POST", "/api/instances?secretStorage=external", {
+      name: "MiniMax Gateway",
+      endpoint: "http://127.0.0.1:11496/v1",
+      driver: "minimax",
+    });
+    expect(created.status).toBe(201);
+    // Marked at CREATE time, not by the follow-up PATCH: otherwise there is a
+    // window in which the instance exists keyless AND unmarked, which is the
+    // one state that reads as an intentionally anonymous engine.
+    expect(
+      JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"))
+        .instances[created.body.instanceId].config.credentialStorage,
+    ).toBe("external");
+    const instanceId = created.body.instanceId;
+    try {
+      expect((await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, {
+        key: "sk-minimax-never-touches-disk",
+      })).status).toBe(200);
+
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      const entry = (onDisk.instances ?? {})[instanceId];
+      expect(JSON.stringify(entry)).not.toContain("sk-minimax-never-touches-disk");
+      expect(entry.config.credentialStorage).toBe("external");
+      expect(entry.config.key).toBeUndefined();
+      expect(entry.environment?.MINIMAX_API_KEY).toBeUndefined();
+
+      // An unrelated PATCH must not drop the live-only override.
+      expect((await api("PATCH", `/api/instances/${instanceId}`, { fullAuto: false })).status).toBe(200);
+      const after = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(JSON.stringify((after.instances ?? {})[instanceId])).not.toContain("sk-minimax-never-touches-disk");
+      expect((after.instances ?? {})[instanceId].config.credentialStorage).toBe("external");
+
+      expect((await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, { key: "" })).status).toBe(200);
+      const cleared = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect((cleared.instances ?? {})[instanceId].config.credentialStorage).toBeUndefined();
+    } finally {
+      expect((await api("DELETE", `/api/instances/${instanceId}`)).status).toBe(200);
     }
   }, 30_000);
 

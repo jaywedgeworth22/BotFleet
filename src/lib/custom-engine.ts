@@ -17,13 +17,24 @@
  * `server/harness/registry.test.ts` injects a fake driver instead of a real
  * one. */
 export type EngineCredentialDeps = {
-  createInstance: (body: {
-    name: string;
-    endpoint: string;
-    key?: string;
-    models: string[];
-    iconUrl?: string;
-  }) => Promise<{ instanceId: string }>;
+  createInstance: (
+    body: {
+      name: string;
+      endpoint: string;
+      /** `driverKind` of the engine this instance rides. Omitted entirely for
+       * openai-compat, which is the route's own default — the body an older
+       * client sends is byte-for-byte what it always sent. */
+      driver?: string;
+      key?: string;
+      models: string[];
+      iconUrl?: string;
+    },
+    /** `secretStorage: "external"` tells the route the key is not in the body
+     * because it is about to be committed to the desktop's encrypted store.
+     * The route refuses a keyless create without it — an engine with no key
+     * from either source could only fail every turn. */
+    options?: { secretStorage?: "external" },
+  ) => Promise<{ instanceId: string }>;
   deleteInstance: (instanceId: string) => Promise<unknown>;
   /** Absent entirely outside the desktop shell — the dev/browser fallback
    * never routes a key through the encrypted store. */
@@ -48,16 +59,27 @@ export type EngineCredentialDeps = {
  * alongside it. */
 export async function createCustomEngine(
   deps: EngineCredentialDeps,
-  input: { name: string; endpoint: string; key: string; models: string[]; iconUrl?: string },
+  input: { name: string; endpoint: string; driver?: string; key: string; models: string[]; iconUrl?: string },
 ): Promise<{ instanceId: string }> {
   const hasBridge = Boolean(deps.setInstanceCredential);
-  const created = await deps.createInstance({
+  const body: Parameters<EngineCredentialDeps["createInstance"]>[0] = {
     name: input.name,
     endpoint: input.endpoint,
     key: hasBridge ? undefined : input.key || undefined,
     models: input.models,
     iconUrl: input.iconUrl,
-  });
+  };
+  // Sent only when it is not the route's own default, so the body an older
+  // client produced stays byte-for-byte what it always was.
+  if (input.driver && input.driver !== "openai-compat") body.driver = input.driver;
+  // Declared only when there is actually a key to commit.  Declaring it for a
+  // deliberately anonymous engine (a local Ollama on the desktop, where the
+  // bridge exists but no key was typed) would mark the instance as waiting
+  // for a credential that is never coming, and refuse its every turn.
+  const created = await deps.createInstance(
+    body,
+    hasBridge && input.key ? { secretStorage: "external" } : undefined,
+  );
   if (hasBridge && input.key) {
     try {
       await deps.setInstanceCredential!(created.instanceId, input.key);
@@ -111,4 +133,124 @@ export async function deleteCustomEngine(
     }
   }
   return { credentialClearError };
+}
+
+// ── Which engine a new instance rides ─────────────────────────────────
+// `POST /api/instances` accepts any registered driver that declares
+// `supportsMultipleInstances`; these are the two the Add Engine form offers,
+// because they are the two a person can finish configuring from a form — an
+// endpoint and a key, no CLI to install and no interactive sign-in. The
+// shapes below are the renderer's copy of what that route validates, kept
+// deliberately small for the same reason src/lib/secret-source.ts keeps its
+// own copy of the server's source union: the renderer cannot import a server
+// module, and a test on each side is cheaper than a shared build step.
+
+export interface AddEngineDriverOption {
+  /** `driverKind` on the wire — what the POST body's `driver` field carries. */
+  driver: string;
+  /** Title Case: this is a button label. */
+  label: string;
+  /** Sentence case: the line under the picker. */
+  blurb: string;
+  endpointPlaceholder: string;
+  /** Offered as the endpoint when the field is still empty. */
+  suggestedEndpoint?: string;
+  /** True when the operator has to name the models: the driver has no
+   * catalog it can trust for an endpoint it has never seen. MiniMax ships
+   * its own published catalog, so asking would only invite typos. */
+  requiresModels: boolean;
+  /** True when a keyless instance could only ever fail.  False only for
+   * openai-compat, where an endpoint needing no auth at all — Ollama, LM
+   * Studio, vLLM — is a first-class use; that is safe because the driver
+   * refuses to fall back to the workspace key for a non-reserved instance. */
+  requiresKey: boolean;
+}
+
+export const ADD_ENGINE_DRIVERS: readonly AddEngineDriverOption[] = [
+  {
+    driver: "openai-compat",
+    label: "OpenAI-Compatible",
+    blurb: "Any endpoint that speaks the OpenAI chat/completions shape — OpenRouter, Groq, Together, Ollama, vLLM, LM Studio.",
+    endpointPlaceholder: "https://api.together.xyz/v1 or http://localhost:11434/v1",
+    requiresModels: true,
+    requiresKey: false,
+  },
+  {
+    driver: "minimax",
+    label: "MiniMax",
+    blurb: "A second MiniMax connection with its own key and endpoint — the China host, a gateway, or a separate billing account.",
+    endpointPlaceholder: "https://api.minimax.io/v1 or https://api.minimaxi.com/v1",
+    suggestedEndpoint: "https://api.minimaxi.com/v1",
+    requiresModels: false,
+    requiresKey: true,
+  },
+];
+
+export function addEngineDriverOption(driver: string): AddEngineDriverOption {
+  return ADD_ENGINE_DRIVERS.find((option) => option.driver === driver) ?? ADD_ENGINE_DRIVERS[0];
+}
+
+/** Everything the Add Engine form refuses before it ever reaches the server,
+ * as one pure function: the modal shows the string, the server re-checks it
+ * all anyway. Returns null when the form is good to send. */
+export function validateAddEngine(input: {
+  driver: string;
+  name: string;
+  endpoint: string;
+  key: string;
+  models: string[];
+}): string | null {
+  if (!input.name.trim()) return "Engine name is required";
+  if (!input.endpoint.trim()) return "Endpoint URL is required";
+  const option = addEngineDriverOption(input.driver);
+  // A paid hosted API is given no workspace credential for a connection the
+  // operator added, so one without a key of its own could only fail every
+  // turn.  The server refuses it too; this is the same rule said earlier.
+  if (option.requiresKey && !input.key.trim()) return "An API key is required";
+  if (option.requiresModels && input.models.length === 0) {
+    return "At least one model ID is required (e.g. meta-llama/llama-3.3-70b-instruct)";
+  }
+  if (input.models.length > 15) return "At most 15 model IDs can be configured";
+  return null;
+}
+
+/** The reserved instance id for each driver whose reserved id is not simply
+ * its own kind. The renderer's copy of server/harness/registry.ts's own table
+ * — the server already sets `isCustom` on every described instance, and this
+ * is the fallback for a payload that predates it.
+ *
+ * A driver missing from BOTH tables falls through to "reserved id equals the
+ * driver kind", which is how the default fleet names every other instance.
+ * That is the safe answer: an unlisted driver's second instance reads as
+ * operator-added and offers a delete button, rather than hiding one for an
+ * engine the operator really did add. */
+const RESERVED_INSTANCE_ID = new Map<string, string>([
+  ["openai-compat", "openaiCompat"],
+  ["claudeAgent", "claude"],
+  ["grokAgent", "grok"],
+  ["dshAgent", "dsh"],
+  ["droidAgent", "droid"],
+  ["cursorAgent", "cursor"],
+  ["antigravityAgent", "antigravity"],
+  ["boxAgent", "computer"],
+  ["kimiAgent", "kimi"],
+  ["qwenAgent", "qwen"],
+  ["hermesAgent", "hermes"],
+  ["piAgent", "pi"],
+]);
+
+export function isCustomEngineInstance(instance: {
+  driverKind: string;
+  instanceId: string;
+  isCustom?: boolean;
+}): boolean {
+  if (instance.isCustom) return true;
+  return instance.instanceId !== (RESERVED_INSTANCE_ID.get(instance.driverKind) ?? instance.driverKind);
+}
+
+/** Heading for the "this one was added by you" callout on an engine row.
+ * It used to say "OpenAI-Compatible" unconditionally, which is wrong copy on
+ * a second MiniMax connection. */
+export function customEngineCalloutTitle(driverKind: string): string {
+  return driverKind === "minimax" ? "Added MiniMax Connection." : "Custom OpenAI-Compatible Engine.";
 }

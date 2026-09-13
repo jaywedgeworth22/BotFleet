@@ -4,7 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { makeFakeDriver } from "../testing/fake-driver.ts";
-import { ProviderRegistry } from "./registry.ts";
+import { isCustomInstance, ProviderRegistry } from "./registry.ts";
 
 describe("ProviderRegistry", () => {
   it("creates live instances for known drivers", async () => {
@@ -255,5 +255,35 @@ describe("ProviderRegistry", () => {
 
     expect(fresh.find((i) => i.instanceId === "a")?.displayName).toBe("A v2");
     expect(fresh.find((i) => i.instanceId === "b")?.displayName).toBe("B v1");
+  });
+});
+
+describe("isCustomInstance", () => {
+  it("calls an instance custom when it is not its driver's reserved one", () => {
+    // `isCustom` is what puts a Delete button on an engine row and what the
+    // "added by you" callout keys off, so it has to follow the DRIVER, not a
+    // single hard-coded id. MiniMax is the second driver that can carry more
+    // than one instance; before this it could carry them and never say so.
+    expect(isCustomInstance("openai-compat", "openaiCompat")).toBe(false);
+    expect(isCustomInstance("openai-compat", "custom-ollama")).toBe(true);
+    expect(isCustomInstance("minimax", "minimax")).toBe(false);
+    expect(isCustomInstance("minimax", "custom-minimax-china")).toBe(true);
+  });
+
+  it("knows the default fleet's own ids for every driver whose id is not its kind", () => {
+    expect(isCustomInstance("claudeAgent", "claude")).toBe(false);
+    expect(isCustomInstance("boxAgent", "computer")).toBe(false);
+    expect(isCustomInstance("cursorAgent", "cursor")).toBe(false);
+    expect(isCustomInstance("codex", "codex")).toBe(false);
+  });
+
+  it("fails SAFE for a driver nobody remembered to list", () => {
+    // The old table listed two drivers and answered false for every other
+    // driver's non-reserved id, hiding the delete button on an instance the
+    // operator really did add. The fallback is "reserved id IS the driver
+    // kind", which is how the default fleet names every remaining instance.
+    expect(isCustomInstance("not-a-real-driver", "not-a-real-driver")).toBe(false);
+    expect(isCustomInstance("not-a-real-driver", "custom-something")).toBe(true);
+    expect(isCustomInstance("someFutureDriver", "someFutureDriver-2")).toBe(true);
   });
 });

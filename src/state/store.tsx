@@ -351,6 +351,13 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
   xai?: { configured: boolean };
+  /** The two `install.apiKeyOnly` engines: an endpoint and a key, no CLI to
+   * install and no interactive sign-in.  `url` is configuration, not a
+   * credential, so it comes back in full; `pending` is the packaged-app
+   * state where the encrypted store holds the key but its replay has not
+   * reached the harness yet. */
+  openaiCompat?: { configured: boolean; url: string; pending: boolean };
+  minimax?: { configured: boolean; url: string; pending: boolean };
   deepseek?: { configured: boolean };
   composio: {
     configured: boolean;
@@ -1769,6 +1776,10 @@ export interface SecretFieldRow {
   infisicalName: string;
   inVault: boolean;
   source: "infisical" | "env" | "file" | "none";
+  /** A file outside BotFleet that holds this value when nothing BotFleet
+   * manages does — `~/.mmx/config.json` for the MiniMax key.  Server-probed;
+   * null whenever a managed source already has the value. */
+  elsewhere?: string | null;
   hasValue: boolean;
   hasLocalCopy: boolean;
   managed: boolean;
@@ -1815,7 +1826,19 @@ export function fetchSecrets(): Promise<InfisicalStatusPayload> {
  * connection reads this instead of each polling `/api/infisical/status` on
  * its own. Empty until the first fetch resolves, which reads as "unknown"
  * everywhere a caller checks the map rather than throwing. */
-export function useSecretSources(): Map<string, { source: SecretFieldRow["source"]; managed: boolean; infisicalName: string }> {
+/** One provenance row per mapped credential, keyed by `SecretFieldSpec.id`.
+ * `elsewhere` travels with it: a field whose only value lives in a file the
+ * driver reads on its own (`~/.mmx/config.json`) has to be nameable wherever
+ * a badge is rendered, or a row says "Not set" beside an engine whose turns
+ * visibly work. */
+export interface SecretSourceRow {
+  source: SecretFieldRow["source"];
+  managed: boolean;
+  infisicalName: string;
+  elsewhere: string | null;
+}
+
+export function useSecretSources(): Map<string, SecretSourceRow> {
   const [rows, setRows] = useState<SecretFieldRow[]>([]);
 
   useEffect(() => {
@@ -1835,7 +1858,18 @@ export function useSecretSources(): Map<string, { source: SecretFieldRow["source
   }, []);
 
   return useMemo(
-    () => new Map(rows.map((row) => [row.id, { source: row.source, managed: row.managed, infisicalName: row.infisicalName }])),
+    () =>
+      new Map(
+        rows.map((row) => [
+          row.id,
+          {
+            source: row.source,
+            managed: row.managed,
+            infisicalName: row.infisicalName,
+            elsewhere: row.elsewhere ?? null,
+          },
+        ]),
+      ),
     [rows],
   );
 }

@@ -146,7 +146,9 @@ describe("MinimaxDriver", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const instance = await MinimaxDriver.create({
-      instanceId: "minimax-test",
+      // The RESERVED id: ~/.mmx/config.json is a machine-wide file, so only
+      // the built-in connection may fall back to it.
+      instanceId: "minimax",
       displayName: "MiniMax",
       enabled: true,
       config: MinimaxDriver.defaultConfig(),
@@ -160,6 +162,54 @@ describe("MinimaxDriver", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ headers: { Authorization: "Bearer local-key" } });
     await instance.dispose();
+  });
+
+  it("never hands the workspace key to a connection the operator added", async () => {
+    // process.env is process-wide and ~/.mmx/config.json is one file for the
+    // whole machine, but a second MiniMax connection points at whatever
+    // endpoint somebody typed in — the China host, a gateway, a reseller.
+    // Falling through to either would send the workspace's real key to that
+    // endpoint as a bearer token.  Same gate openai-compat.ts applies to its
+    // own process.env lookup.
+    const dir = mkdtempSync(join(tmpdir(), "mmx-scope-"));
+    mkdirSync(join(dir, ".mmx"), { recursive: true });
+    writeFileSync(join(dir, ".mmx", "config.json"), JSON.stringify({ api_key: "sentinel-workspace-local" }));
+    process.env.MINIMAX_API_KEY = "sentinel-workspace-env";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const added = await MinimaxDriver.create({
+      instanceId: "custom-minimax-china",
+      displayName: "MiniMax China",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: {},
+    });
+    // No key from anywhere, so it reads unavailable and never probes — rather
+    // than probing an arbitrary endpoint with the workspace credential.
+    await expect(added.snapshot()).resolves.toMatchObject({ state: "unavailable" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(added.adapter.sendTurn({ threadId: "t", text: "hi" })).rejects.toThrow(/no MiniMax key/);
+    await added.dispose();
+
+    // Its own key still reaches it, through its isolated instance environment
+    // — the ONLY channel a non-reserved instance has.
+    const withOwnKey = await MinimaxDriver.create({
+      instanceId: "custom-minimax-china",
+      displayName: "MiniMax China",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "sentinel-its-own" },
+    });
+    fetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({ data: [] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    await expect(withOwnKey.snapshot()).resolves.toMatchObject({ state: "available" });
+    const sent = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+    expect(sent["Authorization"]).toContain("sentinel-its-own");
+    expect(JSON.stringify(sent)).not.toContain("sentinel-workspace");
+    await withOwnKey.dispose();
   });
 
   it("a truly keyless instance (no env, no local config) reads unavailable without ever probing", async () => {

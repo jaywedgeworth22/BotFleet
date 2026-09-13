@@ -126,6 +126,7 @@ import {
   patchInstanceConfig,
   deleteInstanceConfig,
   persistableInstanceConfigs,
+  INSTANCE_API_KEY_ENV,
   isAbsoluteHttpUrl,
   usageIngestUrl,
   usageProjectRules,
@@ -182,6 +183,10 @@ import {
 } from "./turn-safety.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
+// Read-only probe for the Secrets card: whether ~/.mmx/config.json holds a
+// MiniMax key at all.  The driver's own resolver is the authority on
+// precedence; this only reports what the secret map structurally cannot see.
+import { loadLocalMiniMaxConfig } from "./drivers/minimax.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
 import { searchMessages } from "./message-db.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
@@ -5244,12 +5249,25 @@ function blankSecretField(target: object, spec: SecretFieldSpec): void {
  * that are identifiers rather than secrets — the value itself, exactly as
  * `/api/config` already returns the Access client id.  A field marked secret
  * always reports `null`, on every route, in every state. */
+/** Files BotFleet does not own but a driver reads on its own, mapped to the
+ * field they can supply.  The secret map deliberately cannot see these — it
+ * is a pure function over config, environment and the vault — so a key that
+ * lives only here would make the card say "Not set" while every turn works,
+ * which is the exact confusion the card exists to prevent.  Probed, never
+ * read out: only whether a value is there, and the path that holds it. */
+const EXTERNAL_SECRET_SOURCES = new Map<string, () => string | null>([
+  ["minimax.key", () => (loadLocalMiniMaxConfig().apiKey ? "~/.mmx/config.json" : null)],
+]);
+
 function secretFieldRows() {
   const provenance = secretProvenance();
   const inVault = new Set(vaultNames());
   return SECRET_FIELDS.map((spec) => {
     const row = provenance.find((entry) => entry.id === spec.id);
     const source = row?.source ?? "none";
+    // Only when nothing this table CAN see holds the value — a real config,
+    // environment or vault value always wins and is always what gets used.
+    const elsewhere = source === "none" ? (EXTERNAL_SECRET_SOURCES.get(spec.id)?.() ?? null) : null;
     return {
       id: spec.id,
       label: spec.label,
@@ -5261,6 +5279,7 @@ function secretFieldRows() {
       hasValue: row?.hasValue ?? false,
       hasLocalCopy: row?.hasLocalCopy ?? false,
       managed: source === "infisical",
+      elsewhere,
       value: spec.secret ? null : (readSecretField(cfg, spec) ?? ""),
     };
   });
@@ -5277,6 +5296,23 @@ function configStatus() {
       managedSetup: composio.managedSetup(),
     },
     box: { configured: Boolean(cfg.box?.token) },
+    // The two `install.apiKeyOnly` engines: no CLI to install, no sign-in,
+    // just an endpoint and a key.  The key is reported the same
+    // configured-or-not way as every other credential here; the endpoint is
+    // configuration, not a credential, so it is returned in full.
+    // `pending` is the packaged-app state where the encrypted store holds
+    // the key but its replay has not reached this harness yet — the panel
+    // shows "waiting" rather than an untrue "not set".
+    openaiCompat: {
+      configured: Boolean(cfg.openaiCompat?.key),
+      url: cfg.openaiCompat?.url ?? "",
+      pending: workspaceCredentialPending(cfg, "openaiCompatApiKey"),
+    },
+    minimax: {
+      configured: Boolean(cfg.minimax?.key),
+      url: cfg.minimax?.url ?? "",
+      pending: workspaceCredentialPending(cfg, "minimaxApiKey"),
+    },
     vps: {
       configured: Boolean(vpsSshAlias(cfg)),
       sshAlias: vpsSshAlias(cfg) ?? "",
@@ -5662,24 +5698,38 @@ let providerConfigBusy = false;
 function externalCredentialPending(instanceId: string): boolean {
   if (instanceKeyOverrides.has(instanceId)) return false;
   const entry = instanceConfigs(cfg)[instanceId];
-  if (!entry || entry.driver !== "openai-compat") return false;
+  // Every driver that can carry more than one instance keeps its per-instance
+  // key in its own environment variable (INSTANCE_API_KEY_ENV) — openai-compat
+  // in OPENAI_COMPAT_API_KEY, MiniMax in MINIMAX_API_KEY.  A driver absent
+  // from that table has no per-instance key to be waiting for.
+  const keyEnv = entry ? INSTANCE_API_KEY_ENV.get(entry.driver) : undefined;
+  if (!entry || !keyEnv) return false;
   const config = entry.config && typeof entry.config === "object" && !Array.isArray(entry.config)
     ? entry.config as Record<string, unknown>
     : {};
   if (config.credentialStorage !== "external") return false;
-  return !config.key && !entry.environment?.OPENAI_COMPAT_API_KEY;
+  return !config.key && !entry.environment?.[keyEnv];
 }
 
 function fixedProviderCredentialPending(instanceId: string, runOn?: RoutineRunOn): boolean {
   if (runOn === "cloud") return workspaceCredentialPending(cfg, "boxToken");
   const driver = instanceConfigs(cfg)[instanceId]?.driver;
+  // The two multi-instance drivers are gated on the RESERVED instance id as
+  // well as the driver, exactly as injectedEnvironment() is: only that one
+  // instance is backed by the workspace credential, so a connection the
+  // operator added — which carries its own key — must never be held back
+  // waiting for a replay that was never going to reach it.
   const credential = driver === "grok"
     ? "xaiApiKey"
     : driver === "boxAgent"
       ? "boxToken"
       : driver === "opencodeGo"
         ? "opencodeGoApiKey"
-        : null;
+        : driver === "openai-compat" && instanceId === "openaiCompat"
+          ? "openaiCompatApiKey"
+          : driver === "minimax" && instanceId === "minimax"
+            ? "minimaxApiKey"
+            : null;
   return credential ? workspaceCredentialPending(cfg, credential) : false;
 }
 
@@ -5751,8 +5801,9 @@ function drainCredentialFallbacks(): void {
 function withInstanceKeyOverrides(map: InstanceConfigMap): InstanceConfigMap {
   for (const [instanceId, key] of instanceKeyOverrides) {
     const entry = map[instanceId];
-    if (entry && entry.driver === "openai-compat") {
-      entry.environment = { ...entry.environment, OPENAI_COMPAT_API_KEY: key };
+    const keyEnv = entry ? INSTANCE_API_KEY_ENV.get(entry.driver) : undefined;
+    if (entry && keyEnv) {
+      entry.environment = { ...entry.environment, [keyEnv]: key };
     }
   }
   return map;
@@ -8885,11 +8936,15 @@ const server = createServer(async (req, res) => {
         const id = instancePatch[1];
         const current = withInstanceKeyOverrides(instanceConfigs(cfg))[id];
         if (!current) return json(res, 404, { error: "Instance no longer exists" });
-        if (current.driver !== "openai-compat" || !body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "key") || !patchOptions.key?.trim() || patchOptions.key.length > 16_384) {
+        // Restores only into a driver that reads a per-instance key — the
+        // same table the live override rides on, so a replay can never push a
+        // key into an engine that has nowhere to read it from.
+        const restoreKeyEnv = INSTANCE_API_KEY_ENV.get(current.driver);
+        if (!restoreKeyEnv || !body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "key") || !patchOptions.key?.trim() || patchOptions.key.length > 16_384) {
           return json(res, 400, { error: "Invalid instance credential restore payload" });
         }
         const configuredKey = current.config && typeof current.config === "object" && "key" in current.config ? current.config.key : undefined;
-        if (configuredKey || current.environment?.OPENAI_COMPAT_API_KEY) return json(res, 200, { retained: true });
+        if (configuredKey || current.environment?.[restoreKeyEnv]) return json(res, 200, { retained: true });
         if (!currentRuntimeReadiness(ownAdmissionActive, true).safeToRestart) return json(res, 409, { error: "Credential restoration waits for current work to finish" });
         providerConfigBusy = true;
         try {
@@ -8957,8 +9012,22 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    // ── add custom OpenAI-compatible engine ──
-    // POST /api/instances {name: string, endpoint: string, key?: string, models: string[] | string, iconUrl?: string}
+    // ── add a second instance of a multi-instance engine ──
+    // POST /api/instances {name: string, endpoint: string, driver?: string,
+    //                      key?: string, models?: string[] | string, iconUrl?: string}
+    //
+    // `driver` defaults to "openai-compat" — the only engine this route could
+    // add before — so an older client's body behaves exactly as it always has.
+    //
+    // `supportsMultipleInstances` alone is NOT the gate.  Fifteen drivers
+    // declare it, and most of them — grok, antigravity, pi, every ACP engine —
+    // have no per-instance credential at all: they read a workspace key from
+    // process.env or a CLI login from the user's home directory.  A second
+    // instance of one of those, pointed at an endpoint somebody typed into
+    // this route, would be handed the workspace's real credential.  So the
+    // gate is `supportsMultipleInstances` AND `install.apiKeyOnly`: the driver
+    // must be one whose whole configuration is an endpoint and a key it reads
+    // per instance.  openai-compat and minimax today.
     if (method === "POST" && path === "/api/instances") {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
@@ -8968,12 +9037,46 @@ const server = createServer(async (req, res) => {
       if (!name || name.length > 64) {
         return json(res, 400, { error: "name is required and must be 1–64 characters" });
       }
+      // Matched against the registry rather than narrowed by hand: a body
+      // with no `driver`, or one carrying something that is not a string at
+      // all, simply fails to match and is refused with the same message.
+      const requestedDriver = body?.driver ?? "openai-compat";
+      const driverRecord = BUILT_IN_DRIVERS.find((d) => d.driverKind === requestedDriver);
+      if (!driverRecord) {
+        return json(res, 400, { error: `unknown engine driver "${String(requestedDriver).slice(0, 64)}"` });
+      }
+      const driverKind = driverRecord.driverKind;
+      if (driverRecord.metadata.supportsMultipleInstances !== true || driverRecord.install?.apiKeyOnly !== true) {
+        return json(res, 400, {
+          error: `engine "${driverRecord.metadata.displayName}" can only be configured once`,
+        });
+      }
       const endpoint = typeof body?.endpoint === "string" ? body.endpoint.trim() : "";
       if (!endpoint || !isAbsoluteHttpUrl(endpoint)) {
         return json(res, 400, { error: "endpoint must be a valid http:// or https:// URL" });
       }
       const rawKey = typeof body?.key === "string" ? body.key.trim() : undefined;
       const rawIcon = typeof body?.iconUrl === "string" ? body.iconUrl.trim() : undefined;
+      // Every instance this route creates is non-reserved, so no workspace
+      // credential will ever reach it — by design, and enforced in both
+      // drivers.  A key therefore has to arrive with the request, or with the
+      // declaration that one is about to be committed to the desktop's
+      // encrypted store (the same `?secretStorage=external` the credential
+      // PATCH uses).
+      //
+      // openai-compat is the one exception, and deliberately: an endpoint
+      // needing no auth at all is a first-class use of it — Ollama, LM
+      // Studio, vLLM, a local llama.cpp server — so a keyless instance there
+      // is an ANONYMOUS engine, not a broken one.  That is safe precisely
+      // because the driver refuses to fall back to the workspace key for a
+      // non-reserved instance.  Every other engine on this route is a paid
+      // hosted API with no anonymous endpoint, where keyless can only mean an
+      // instance that fails every turn it is ever given.
+      const externalCredential = url.searchParams.get("secretStorage") === "external";
+      const keyRequired = driverKind !== "openai-compat";
+      if (keyRequired && !rawKey && !externalCredential) {
+        return json(res, 400, { error: "an API key is required for this engine" });
+      }
 
       let rawModels: string[] = [];
       if (Array.isArray(body?.models)) {
@@ -8981,7 +9084,12 @@ const server = createServer(async (req, res) => {
       } else if (typeof body?.models === "string") {
         rawModels = body.models.split(/[\n,]+/).map((s: string) => s.trim()).filter(Boolean);
       }
-      if (rawModels.length === 0) {
+      // openai-compat points at an arbitrary vendor and has no catalog it can
+      // trust for that endpoint, so the caller has to name the models. A
+      // driver that ships its own published catalog — MiniMax — does not:
+      // asking for a model list there would make the operator retype names
+      // the driver already knows, and get them wrong.
+      if (rawModels.length === 0 && driverKind === "openai-compat") {
         return json(res, 400, { error: "at least one model ID is required" });
       }
       if (rawModels.length > 15) {
@@ -8999,15 +9107,29 @@ const server = createServer(async (req, res) => {
           instanceId = `custom-${slug}-${counter++}`;
         }
 
-        const customConfig: Record<string, unknown> = {
-          url: endpoint,
-          models: rawModels,
-        };
+        const customConfig: Record<string, unknown> = { url: endpoint };
+        // Only where the driver reads them. MiniMax's own config schema has
+        // exactly one field (`url`), so an ignored `models` array on disk
+        // would read as configuration that does nothing.
+        if (rawModels.length > 0) customConfig.models = rawModels;
+        // `key` is the dev/browser fallback shape for every multi-instance
+        // driver: openai-compat reads it out of its own config, MiniMax gets
+        // it as MINIMAX_API_KEY through injectedEnvironment(). With the
+        // desktop bridge present the client omits it entirely and the key
+        // rides the encrypted store instead — marked here rather than by the
+        // follow-up PATCH, so there is no window in which the instance exists
+        // keyless AND unmarked, which is the one state that reads as an
+        // intentionally anonymous engine and dispatches turns.
         if (rawKey) customConfig.key = rawKey;
+        // Only when the caller actually declared it.  A keyless create with
+        // no declaration is an anonymous engine, and marking THAT external
+        // would make `externalCredentialPending` refuse its every turn while
+        // it waited for a replay that is never coming.
+        else if (externalCredential) customConfig.credentialStorage = "external";
         if (rawIcon) customConfig.iconUrl = rawIcon;
 
         const newInstanceEntry = {
-          driver: "openai-compat",
+          driver: driverKind,
           displayName: name,
           config: customConfig,
         };
@@ -9610,11 +9732,17 @@ const server = createServer(async (req, res) => {
         // never survive the merge in config.json.
         const persisted = structuredClone(patch);
         const externalCredentialSections: Partial<Record<
-          "xai" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical",
+          "xai" | "openaiCompat" | "minimax" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical",
           boolean
         >> = {};
         const externalFields = [
           ["xai", "key"],
+          // The two engines that are configured with an endpoint and a key
+          // rather than a CLI login.  Only the KEY goes to the store — each
+          // one's `url` is configuration and stays readable in config.json,
+          // the way the Access client id does.
+          ["openaiCompat", "key"],
+          ["minimax", "key"],
           ["composio", "apiKey"],
           ["box", "token"],
           ["opencodeGo", "apiKey"],

@@ -22,7 +22,7 @@ import {
 } from "../../shared/conversation-mode";
 import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
 import { showToolCallsEnabled, skillRecorderEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
-import { ApiKeyRow, VpsConnection } from "./ApiKeys";
+import { ApiKeyRow, EngineKeyRow, VpsConnection } from "./ApiKeys";
 import { useUpdaterState } from "@/lib/updater";
 import { EnginesSettings } from "./EnginesSettings";
 import { FleetModelsSection } from "./FleetModelsSection";
@@ -1057,6 +1057,8 @@ export function SettingsModal() {
                   <VpsConnection />
                   <ApiKeyRow section="opencodeGo" />
                   <ApiKeyRow section="deepseek" />
+                  <EngineKeyRow engine="minimax" />
+                  <EngineKeyRow engine="openaiCompat" />
                   <QdrantRagConnection />
                   <details className="rounded-lg border border-hairline/40 bg-inset px-3 py-2">
                     <summary className="cursor-pointer text-[13px] text-ink-secondary">Custom Webhook Domain / Ingress</summary>
