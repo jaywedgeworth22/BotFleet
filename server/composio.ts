@@ -217,12 +217,15 @@ export function managedSetup(): ManagedBrokerSetup {
 
 export function setManagedBrokerAccess(access: unknown): void {
   if (access === null) {
+    if (managedBrokerAccess === null) return;
     managedBrokerAccess = null;
     managedBrokerGeneration += 1;
     return;
   }
   const parsed = z.object({ url: z.string().url(), token: z.string().regex(managedBrokerToken) }).strict().parse(access);
-  managedBrokerAccess = { url: normalizeManagedBrokerUrl(parsed.url), token: parsed.token };
+  const normalized = { url: normalizeManagedBrokerUrl(parsed.url), token: parsed.token };
+  if (managedBrokerAccess?.url === normalized.url && managedBrokerAccess.token === normalized.token) return;
+  managedBrokerAccess = normalized;
   managedBrokerGeneration += 1;
 }
 

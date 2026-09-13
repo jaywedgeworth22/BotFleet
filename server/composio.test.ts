@@ -1,5 +1,5 @@
 import { createServer, type Server } from "node:http";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
 import type { AppConfig } from "./config.ts";
 import {
@@ -240,6 +240,35 @@ describe.sequential("Composio Sessions", () => {
     expect(managedSetup()).toEqual({ status: "unconfigured" });
     setManagedBrokerAccess(null);
   });
+  it("preserves the last verified inventory across identical managed credential sync", async () => {
+    const fetchStub = vi.spyOn(globalThis, "fetch");
+    const access = { url: "https://broker.example/root/", token: "a".repeat(64) };
+    const cfg: AppConfig = {};
+    try {
+      setManagedBrokerAccess(access);
+      fetchStub.mockResolvedValueOnce(new Response(JSON.stringify({ services: {} }), {
+        headers: { "content-type": "application/json" },
+      }));
+      const verified = await connectedInventoryStatus(cfg);
+      expect(verified.readiness.ready).toBe(true);
+      expect(verified.readiness.lastSuccessAt).not.toBeNull();
+      // Reconnection can repeat the same credential with an equivalent URL.
+      setManagedBrokerAccess({ ...access, url: "https://broker.example/root" });
+      fetchStub.mockRejectedValueOnce(new TypeError("fetch failed"));
+      const degraded = await connectedInventoryStatus(cfg);
+      expect(degraded.readiness).toMatchObject({
+        state: "degraded", lastSuccessAt: verified.readiness.lastSuccessAt,
+      });
+      setManagedBrokerAccess({ ...access, token: "b".repeat(64) });
+      fetchStub.mockRejectedValueOnce(new TypeError("fetch failed"));
+      const changed = await connectedInventoryStatus(cfg);
+      expect(changed.readiness.lastSuccessAt).toBeNull();
+    } finally {
+      fetchStub.mockRestore();
+      setManagedBrokerAccess(null);
+    }
+  });
+
   it("accepts only project API keys", async () => {
     await expect(prepareProjectSession("old_key")).rejects.toThrow(/start with ak_/i);
     await expect(prepareProjectSession("ak_wrong")).rejects.toThrow(/invalid project key/i);
