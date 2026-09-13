@@ -195,6 +195,10 @@ describe("quota and session-limit failover", () => {
       "You've reached the end of the billing review.",
       "Quota exceeded handling is documented.",
       "Rate limit parsing is tested.",
+      "Your subscription limit fix is merged.",
+      "You've hit your usage limit handling in a regression test.",
+      "This request would exceed the old timeout, so I increased it.",
+      "HTTP 429 handling is covered by tests.",
       "> Quota exceeded, please upgrade your plan.",
       'The provider may say "You have reached your usage limit".',
     ];

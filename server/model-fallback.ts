@@ -22,7 +22,7 @@ export interface TurnFallbackPick extends ModelSelection {
 }
 
 const SHORT_PROVIDER_ERROR =
-  /^(?:error:\s*)?(?:internal server error|bad gateway|service unavailable|account_inactive|resource_exhausted|too many requests|(?:server|service|provider) (?:is )?(?:overloaded|at capacity)|capacity (?:reached|exceeded|unavailable)|(?:http\s*)?(?:402|429)\b)/i;
+  /^(?:error:\s*)?(?:internal server error|bad gateway|service unavailable|account_inactive|resource_exhausted|too many requests|(?:server|service|provider) (?:is )?(?:overloaded|at capacity)|capacity (?:reached|exceeded|unavailable))\b/i;
 
 // Standalone terminal provider chips (docs + observed CLIs).  These patterns
 // are deliberately anchored: a successful answer may discuss billing,
@@ -30,15 +30,15 @@ const SHORT_PROVIDER_ERROR =
 // Keep this in sync with the corpus in model-fallback.test.ts.  Do not match
 // "approaching … limit" warnings — those are near-cap, not a hit.
 const QUOTA_OR_CAP_TERMINAL = [
-  /^(?:you(?:'ve| have)?|you are|you're)\s+(?:hit|reached|exceeded|exhausted|out of)\b.{0,120}\b(?:session|usage|message|messaging|quota|limit|allowance|credits?|funds?|balance|plan|tier|spend|budget|requests?)\b/i,
-  /^your\s+(?:credit|prepayment|message|messaging|usage|quota|billing|subscription|plan|tier|spend|budget)\b.{0,120}\b(?:low|depleted|empty|exhausted|insufficient|exceeded|reached|limit|cap)\b/i,
-  /^this request would exceed\b/i,
+  /^(?:you(?:'ve| have)?|you are|you're)\s+(?:hit|reached|exceeded|exhausted|out of)\b.{0,120}\b(?:session|usage|message|messaging|quota|limit|allowance|credits?|funds?|balance|plan|tier|spend|budget|requests?)\b(?!\s+(?:session|usage|message|messaging|quota|limit|allowance|credits?|funds?|balance|plan|tier|spend|budget|requests?|fix|handling|parser|parsing|test|tests|coverage|review|work|logic|implementation|documentation|code)\b)/i,
+  /^your\s+(?:credit|prepayment|message|messaging|usage|quota|plan|tier|spend|budget)\b.{0,120}\b(?:low|depleted|empty|exhausted|insufficient|exceeded|reached|limit|cap)\b(?!\s+(?:fix|handling|parser|parsing|test|tests|coverage|review|work|logic|implementation|documentation|code)\b)/i,
+  /^this request would exceed\b.{0,120}\b(?:rate|usage|quota|plan|tier|spend|budget|token|request)\s+(?:limit|cap|quota|allowance|budget)\b/i,
   /^(?:codex|claude|grok|cursor|deepseek|kimi|gemini|antigravity)\s+(?:session|usage|message)\s+(?:limit|cap|quota)\s+(?:reached|exceeded|exhausted)\b/i,
   /^(?:session|usage|message|monthly|daily|plan|tier|free tier|spend|budget|concurrency)\s+(?:limit|cap|quota)(?:\s+(?:reached|exceeded|exhausted))?(?:\s+(?:for|on|in|until)\b.{0,120})?[.!]?$/i,
   /^(?:session limit or usage cap reached|quota exceeded|daily quota exceeded)(?:\s*[.:,!·—-]|\s*$|\s+(?:for|please|retry|try|upgrade|check|on|at|because|due)\b)/i,
   /^(?:insufficient.?quota|insufficient.?balance|insufficient.?funds|zero balance|credits exhausted|out of (?:usage|credits)|payment required)(?:\s*[.:,!·—-]|\s*$|\s+(?:for|to|please|on)\b)/i,
   /^(?:resource.{0,24}exhausted|resource_exhausted|rate.?limit(?:_error|\s+(?:reached|exceeded|hit))|usage_limit_exceeded|enforced_spend_limit(?:_reached)?|account_inactive)\b/i,
-  /^(?:http\s*)?(?:402|429)\b/i,
+  /^(?:http\s*)?(?:402|429)(?:\s*[:—-]\s*|\s+)(?:too many requests|rate limit|payment required|insufficient|resource_exhausted|quota|error\b)/i,
   /^5-hour limit reached\b/i,
   /^increase limits for faster responses\b/i,
   /^upgrade (?:your )?plan to continue\b/i,
