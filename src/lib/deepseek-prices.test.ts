@@ -1,20 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { DEEPSEEK_PRICE_PER_MILLION, deepSeekPriceRows, formatPerMillionUsd } from "./deepseek-prices";
+import { deepSeekPriceRows, formatPerMillionUsd } from "./deepseek-prices";
 
 describe("DeepSeek published rates", () => {
+  it("preserves sub-cent cache prices in readable ranges", () => {
+    expect(formatPerMillionUsd(0.003)).toBe("$0.003");
+    expect(formatPerMillionUsd(0.006)).toBe("$0.006");
+    expect(formatPerMillionUsd(0.3)).toBe("$0.30");
+    expect(formatPerMillionUsd(2)).toBe("$2");
+  });
 
-  it("formats the usage table from those same numbers", () => {
-    const { flash, pro } = DEEPSEEK_PRICE_PER_MILLION;
-    expect(formatPerMillionUsd(flash.input)).toBe("$0.70");
-    expect(formatPerMillionUsd(flash.cache)).toBe("$0.175");
-    expect(formatPerMillionUsd(flash.output)).toBe("$1.40");
-    expect(formatPerMillionUsd(pro.input)).toBe("$1.40");
-    expect(formatPerMillionUsd(pro.cache)).toBe("$0.14");
-    expect(formatPerMillionUsd(pro.output)).toBe("$2.80");
+  it("labels off-peak–peak rates and the current Flash generation", () => {
     expect(deepSeekPriceRows().map((row) => [row.model, row.input, row.cache, row.output, row.badge])).toEqual([
-      ["DeepSeek V4 Flash", "$0.70", "$0.175", "$1.40", "API"],
-      ["DeepSeek V4 Pro", "$1.40", "$0.14", "$2.80", "Default MoE"],
+      ["DeepSeek V4.1 Flash", "$0.15–$0.30", "$0.003–$0.006", "$0.60–$1.20", "Off-Peak–Peak"],
+      ["DeepSeek V4 Pro", "$0.66–$1.32", "$0.022–$0.044", "$1.98–$3.96", "Off-Peak–Peak"],
     ]);
   });
 });
