@@ -4077,6 +4077,37 @@ describe("transcript logs on delete", () => {
     expect(files.filter((file) => existsSync(file))).toEqual([]);
   });
 
+  it("removes a bot task's logs when just that task is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const kept = bot.threadId;
+    const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Throwaway" });
+    expect(task.status).toBe(201);
+    const gone = task.body.task.threadId;
+    for (const file of [...logFiles(kept), ...logFiles(gone)]) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/bots/${bot.id}/tasks/${gone}`)).status).toBe(200);
+    expect(logFiles(gone).filter((file) => existsSync(file))).toEqual([]);
+    // the task that stayed keeps its history
+    expect(logFiles(kept).every((file) => existsSync(file))).toBe(true);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
+  it("removes a room task's logs when just that task is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Task cleanup", memberIds: [bot.id] })).body.group;
+    const kept = room.threadId;
+    const task = await api("POST", `/api/groups/${room.id}/tasks`, { title: "Throwaway" });
+    expect(task.status).toBe(201);
+    const gone = task.body.task.threadId;
+    for (const file of [...logFiles(kept), ...logFiles(gone)]) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/groups/${room.id}/tasks/${gone}`)).status).toBe(200);
+    expect(logFiles(gone).filter((file) => existsSync(file))).toEqual([]);
+    expect(logFiles(kept).every((file) => existsSync(file))).toBe(true);
+    await api("DELETE", `/api/groups/${room.id}`);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
   it("removes every task's logs when a room is deleted", async () => {
     const bot = (await api("POST", "/api/bots")).body.bot;
     const room = (await api("POST", "/api/groups", { name: "Log cleanup", memberIds: [bot.id] })).body.group;

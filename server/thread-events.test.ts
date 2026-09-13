@@ -252,8 +252,11 @@ describe("readThreadEvents", () => {
 
   // A single record wider than the window leaves the backward scan with no
   // newline to cut on.  Returning nothing there blanks the panel for exactly
-  // the thread whose newest message is the reason it was opened.
-  it("returns the newest record even when it is wider than the tail window", () => {
+  // the thread whose newest message is the reason it was opened — but reading
+  // and parsing the record instead would put a multi-megabyte JSON.parse on
+  // the event loop, on a route the panel refetches after every turn.  So the
+  // page says what is there without touching it.
+  it("stands in for a record wider than the window instead of parsing it", () => {
     const eventsDir = tmp();
     const nativeDir = tmp();
     writeFileSync(
@@ -263,13 +266,18 @@ describe("readThreadEvents", () => {
     );
 
     const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
-    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["huge"]);
-    expect((page.entries[0]!.data as { text: string }).text).toHaveLength(200_000);
-    // the count never lied about what is on disk; now the page agrees
+    expect(page.entries).toHaveLength(1);
+    const standIn = page.entries[0]!.data as { type: string; message: string; text?: string };
+    expect(standIn.type).toBe("runtime.error");
+    expect(standIn.message).toMatch(/0\.2 MB record was skipped/);
+    // the record itself was never read, so none of its payload is here
+    expect(standIn.text).toBeUndefined();
+    expect(JSON.stringify(page).length).toBeLessThan(2_000);
+    // the count never lied about what is on disk
     expect(page.total.runtime).toBe(2);
   });
 
-  it("returns the newest record when it is the only one and it is wider than the window", () => {
+  it("stands in for an oversized native record too, naming its size", () => {
     const eventsDir = tmp();
     const nativeDir = tmp();
     writeFileSync(
@@ -279,7 +287,67 @@ describe("readThreadEvents", () => {
 
     const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
     expect(page.entries).toHaveLength(1);
-    expect((page.entries[0]!.data as { msg: { blob: string } }).msg.blob).toHaveLength(200_000);
+    const standIn = page.entries[0]!.data as { msg: { skipped: string; bytes: number } };
+    expect(standIn.msg.skipped).toMatch(/record was skipped/);
+    expect(standIn.msg.bytes).toBeGreaterThan(200_000);
+  });
+
+  // The fallback reads to byte zero when the oversized record is the file's
+  // first: that live file IS fully read, so the rotated generation behind it
+  // still completes the page.
+  it("completes the page from the rotated generation when the oversized record starts the live file", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    let rotatedBody = "";
+    const rotated: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      const eventId = `rotated-${String(i).padStart(4, "0")}`;
+      rotated.push(eventId);
+      rotatedBody += line(runtime({ eventId, createdAt: String(i).padStart(6, "0"), type: "turn.started" }));
+    }
+    writeFileSync(join(eventsDir, "t1.ndjson.1"), rotatedBody);
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "huge", createdAt: "999999", type: "turn.started", text: "x".repeat(200_000) })),
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    expect(page.entries).toHaveLength(101);
+    expect(page.entries.slice(0, 100).map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(rotated);
+    expect((page.entries[100]!.data as { message: string }).message).toMatch(/record was skipped/);
+    expect(page.total.runtime).toBe(101);
+  });
+
+  // Both writers append a record and its newline in one call, so bytes after
+  // the last newline are a document cut in half by a kill, not a record.
+  it("ignores a torn last line and does not count it", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "e1", createdAt: "000001", type: "turn.started" })) +
+        line(runtime({ eventId: "e2", createdAt: "000002", type: "turn.started" })) +
+        '{"eventId":"torn","provider":"test","threa',
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["e1", "e2"]);
+    expect(page.total.runtime).toBe(2);
+  });
+
+  it("ignores a torn last line behind an oversized record", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "huge", createdAt: "000002", type: "turn.started", text: "x".repeat(200_000) })) +
+        '{"eventId":"torn","provider":"test","threa',
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    expect(page.entries).toHaveLength(1);
+    expect((page.entries[0]!.data as { message: string }).message).toMatch(/record was skipped/);
+    expect(page.total.runtime).toBe(1);
   });
 
   it("refuses a thread id that could escape the log directory", () => {

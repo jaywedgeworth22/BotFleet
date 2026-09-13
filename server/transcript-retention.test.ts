@@ -200,11 +200,19 @@ describe("sweepTranscriptLogs", () => {
     expect(readFileSync(file, "utf8")).toBe(record(1));
   });
 
-  it("says nothing when there was nothing to do", () => {
+  it("says nothing when there was nothing to do, and leads with what happened when there was", () => {
     expect(describeSweep({ scanned: 4, trimmed: 0, bytesReclaimed: 0, tempRemoved: 0, failed: 0 })).toBeNull();
-    expect(describeSweep({ scanned: 4, trimmed: 2, bytesReclaimed: 3 * 1024 * 1024, tempRemoved: 0, failed: 1 })).toContain("3.0 MB");
-    // a sweep that only reaped a killed trim's leftovers still has something to say
-    expect(describeSweep({ scanned: 4, trimmed: 0, bytesReclaimed: 0, tempRemoved: 2, failed: 0 })).toContain("2 stale temp files");
+    expect(describeSweep({ scanned: 4, trimmed: 2, bytesReclaimed: 3 * 1024 * 1024, tempRemoved: 0, failed: 0 })).toBe(
+      "[transcripts] Trimmed 2 of 4 thread logs to their size cap, reclaiming 3.0 MB.",
+    );
+    // a sweep that only reaped a killed trim's leftovers must not open by
+    // announcing that it trimmed nothing
+    expect(describeSweep({ scanned: 4, trimmed: 0, bytesReclaimed: 2048, tempRemoved: 1, failed: 0 })).toBe(
+      "[transcripts] Removed 1 stale temp file from an interrupted trim, reclaiming 0.0 MB.",
+    );
+    expect(describeSweep({ scanned: 4, trimmed: 2, bytesReclaimed: 3 * 1024 * 1024, tempRemoved: 2, failed: 1 })).toBe(
+      "[transcripts] Trimmed 2 of 4 thread logs to their size cap, reclaiming 3.0 MB.  Removed 2 stale temp files from an interrupted trim.  1 log could not be trimmed.",
+    );
   });
 
   it("survives a directory that does not exist", () => {
@@ -271,6 +279,8 @@ describe("stale temp files", () => {
 
     const result = sweepTranscriptLogs(dir, 1024);
     expect(result.tempRemoved).toBe(2);
+    // what a killed trim was holding is reclaimed disk like any other
+    expect(result.bytesReclaimed).toBe(Buffer.byteLength("half a tail\n") * 2);
     expect(existsSync(dead)).toBe(false);
     expect(existsSync(old)).toBe(false);
     // a live writer's fresh temp file is a trim in flight, not litter
@@ -283,10 +293,21 @@ describe("stale temp files", () => {
     const dir = tmp();
     const decoy = join(dir, "notes.tmp");
     const unowned = join(dir, "t1.ndjson.tmp");
-    for (const file of [decoy, unowned]) writeFileSync(file, "keep me\n");
+    // a pid wider than any system assigns is not a pid this sweep wrote
+    const absurd = join(dir, tempName("t2.ndjson", 123_456_789_012_345));
+    for (const file of [decoy, unowned, absurd]) writeFileSync(file, "keep me\n");
     expect(sweepTranscriptLogs(dir, 1024).tempRemoved).toBe(0);
-    expect(existsSync(decoy)).toBe(true);
-    expect(existsSync(unowned)).toBe(true);
+    for (const file of [decoy, unowned, absurd]) expect(existsSync(file)).toBe(true);
+  });
+
+  it("reaps a temp file whose pid is a number no process can hold", () => {
+    const dir = tmp();
+    // ten digits, so the name matches, but past int32 — `process.kill` answers
+    // this with an argument complaint rather than ESRCH
+    const beyond = join(dir, tempName("t1.ndjson", 9_999_999_999));
+    writeFileSync(beyond, "half a tail\n");
+    expect(() => sweepTranscriptLogs(dir, 1024)).not.toThrow();
+    expect(existsSync(beyond)).toBe(false);
   });
 
   it("trims logs and reaps temps in the same pass", () => {

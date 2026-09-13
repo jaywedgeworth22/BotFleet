@@ -7055,6 +7055,10 @@ const server = createServer(async (req, res) => {
       cancelRoomRounds((round) => round.threadId === m![2]);
       const updated = store.deleteGroupTask(group.id, m[2]);
       if (!updated) return json(res, 400, { error: "a channel keeps at least one task" });
+      // The thread is gone from the store, so its logs have nothing left to
+      // name them (server/transcript-retention.ts).  A task that MOVED keeps
+      // its thread id and never reaches this branch.
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, [m[2]!]);
       const fresh = groupWithThread(updated);
       broadcast({ kind: "group", group: fresh });
       return json(res, 200, { group: fresh });
@@ -7721,6 +7725,15 @@ const server = createServer(async (req, res) => {
         // Best-effort: no container runtime, or no such container, is the
         // ordinary case and must not fail the delete.
         await containerComputerAction("remove", undefined, undefined, localVmTarget).catch(() => {});
+        // The snapshot above was taken before two awaits.  A task created
+        // while they ran has a record the delete below removes and a pair of
+        // logs the snapshot never heard of, so take the union rather than
+        // either list alone.
+        const current = store.bot(bot.id);
+        if (current) {
+          botThreadIds.add(current.threadId);
+          for (const task of current.tasks ?? []) botThreadIds.add(task.threadId);
+        }
         store.deleteBot(bot.id);
       } finally {
         localVmLifecycleBusy.delete(localVmTarget.key);
@@ -8326,6 +8339,7 @@ const server = createServer(async (req, res) => {
       }
       const updated = store.deleteTask(m[1], m[2]);
       if (!updated) return json(res, 400, { error: "a bot keeps at least one task" });
+      for (const dir of [EVENTS_DIR, NATIVE_DIR]) removeTranscriptLogs(dir, [m[2]!]);
       const fresh = botWithThread(updated);
       broadcast({ kind: "bot", bot: fresh });
       return json(res, 200, { bot: fresh });

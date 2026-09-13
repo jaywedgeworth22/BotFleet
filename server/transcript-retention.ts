@@ -68,7 +68,7 @@ const DAILY_SWEEP_MS = 24 * 60 * 60 * 1000;
  * leaves the temp file behind with nothing to reclaim it, so the sweep does:
  * a temp file whose writer is gone, or that is older than an hour, is not a
  * trim in flight. */
-const TEMP_NAME = /^(?:.+)\.ndjson(?:\.1)?\.(\d+)\.[0-9a-f-]{36}\.tmp$/;
+const TEMP_NAME = /^(?:.+)\.ndjson(?:\.1)?\.(\d{1,10})\.[0-9a-f-]{36}\.tmp$/;
 const STALE_TEMP_MS = 60 * 60 * 1000;
 
 /** Live byte counts, so the cap costs an arithmetic compare per append rather
@@ -96,18 +96,22 @@ export function transcriptLogPaths(dir: string, threadId: string): string[] {
   return [live, rotatedPath(live)];
 }
 
-/** True when `pid` names a process that still exists.  EPERM means it exists
- * and belongs to someone else, which is still alive. */
+/** True when `pid` names a process that still exists.  A pid this process may
+ * not signal answers EPERM, which is still alive; ESRCH is gone.  `TEMP_NAME`
+ * already bounds the digits to ten, so the int32 range `process.kill` accepts
+ * is the only thing left to check — outside it, and for any other argument
+ * complaint, the answer is "not a live writer" rather than a throw out of the
+ * boot sweep. */
 function isProcessAlive(pid: number): boolean {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!Number.isInteger(pid) || pid <= 0 || pid > 2_147_483_647) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (error) {
-    // SAFETY: `process.kill` rejects only with a system error, whose `code` is
-    // the string libuv set — reading it off a non-Error would give undefined,
-    // which answers "not alive" rather than throwing.
-    return (error as NodeJS.ErrnoException).code === "EPERM";
+    // SAFETY: read as a possible system error and nothing more — a value with
+    // no `code`, or a code that is not EPERM (ESRCH, ERR_INVALID_ARG_TYPE, or
+    // anything Node adds later), answers "not alive".
+    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
   }
 }
 
@@ -317,7 +321,11 @@ export function sweepTranscriptLogs(dir: string, maxBytes: number, now: number =
   for (const name of names) {
     const temp = TEMP_NAME.exec(name);
     if (temp) {
-      if (reapStaleTemp(join(dir, name), Number(temp[1]), now)) result.tempRemoved += 1;
+      const reaped = reapStaleTemp(join(dir, name), Number(temp[1]), now);
+      if (reaped.removed) {
+        result.tempRemoved += 1;
+        result.bytesReclaimed += reaped.bytes;
+      }
       continue;
     }
     if (!isTranscriptLogName(name)) continue;
@@ -339,18 +347,27 @@ export function sweepTranscriptLogs(dir: string, maxBytes: number, now: number =
   return result;
 }
 
+interface ReapedTemp {
+  removed: boolean;
+  /** what it was holding, counted as reclaimed disk like a trim's bytes */
+  bytes: number;
+}
+
 /** Remove one temp file when the trim that wrote it cannot still be running.
  * A live harness cannot meet its own temp file here — a trim is synchronous
  * and the ownership fence keeps a second harness off this directory — but the
  * rule is "its writer is gone, or it is older than an hour" rather than "any
  * temp file I find", so a future concurrent writer is not robbed mid-copy. */
-function reapStaleTemp(file: string, pid: number, now: number): boolean {
+function reapStaleTemp(file: string, pid: number, now: number): ReapedTemp {
   try {
-    if (isProcessAlive(pid) && now - statSync(file).mtimeMs < STALE_TEMP_MS) return false;
+    const stat = statSync(file);
+    if (isProcessAlive(pid) && now - stat.mtimeMs < STALE_TEMP_MS) return { removed: false, bytes: 0 };
     unlinkSync(file);
-    return true;
+    // An empty temp file is still a file removed, so the count and the bytes
+    // are reported separately rather than inferred from each other.
+    return { removed: true, bytes: stat.size };
   } catch {
-    return false;
+    return { removed: false, bytes: 0 };
   }
 }
 
@@ -375,10 +392,21 @@ export function sweepTranscriptRetention(dirs: TranscriptDirs): SweepResult {
 /** One line for the boot log, or null when there was nothing to say. */
 export function describeSweep(result: SweepResult): string | null {
   if (result.trimmed === 0 && result.failed === 0 && result.tempRemoved === 0) return null;
-  const mb = (result.bytesReclaimed / (1024 * 1024)).toFixed(1);
-  const temps = result.tempRemoved > 0 ? `, ${result.tempRemoved} stale temp files removed` : "";
-  const failed = result.failed > 0 ? `, ${result.failed} could not be trimmed` : "";
-  return `[transcripts] trimmed ${result.trimmed} of ${result.scanned} thread logs to their size cap, reclaiming ${mb} MB${temps}${failed}`;
+  const reclaimed = `${(result.bytesReclaimed / (1024 * 1024)).toFixed(1)} MB`;
+  const temps = `${result.tempRemoved} stale temp ${result.tempRemoved === 1 ? "file" : "files"} from an interrupted trim`;
+  const sentences: string[] = [];
+  // Lead with what actually happened: a sweep that only reaped leftovers must
+  // not open by announcing that it trimmed nothing.
+  if (result.trimmed > 0) {
+    sentences.push(`Trimmed ${result.trimmed} of ${result.scanned} thread logs to their size cap, reclaiming ${reclaimed}.`);
+    if (result.tempRemoved > 0) sentences.push(`Removed ${temps}.`);
+  } else if (result.tempRemoved > 0) {
+    sentences.push(`Removed ${temps}, reclaiming ${reclaimed}.`);
+  }
+  if (result.failed > 0) {
+    sentences.push(`${result.failed} ${result.failed === 1 ? "log" : "logs"} could not be trimmed.`);
+  }
+  return `[transcripts] ${sentences.join("  ")}`;
 }
 
 /** Re-run the sweep once a day, for a harness that stays up long enough to
