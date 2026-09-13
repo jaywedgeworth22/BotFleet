@@ -249,6 +249,30 @@ describe("renderer diagnostics refresh", () => {
     expect(harness.calls()).toBe(4);
   });
 
+  it("does not start the packaged client before the saved opt-out is known", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    let finishBoot: ((value: RuntimeObservability) => void) | undefined;
+    setObservabilityReaderForTests(() => new Promise((resolve) => { finishBoot = resolve; }));
+
+    const boot = initSentryFromRuntime();
+    expect(sentry.record.inits).toHaveLength(0);
+
+    finishBoot?.({ enabled: false, requestedEnabled: false, dsn: null });
+    await boot;
+    expect(sentry.record.inits).toHaveLength(0);
+    expect(sentry.record.closes).toBe(0);
+  });
+
+  it("starts the packaged default only after a successful enabled runtime read", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null });
+
+    await initSentryFromRuntime();
+
+    expect(sentry.record.inits).toHaveLength(1);
+    expect(sentry.record.inits[0]).toMatchObject({ dsn: BUILD_DSN });
+  });
+
   it("keeps a packaged client running when the runtime status is unavailable", async () => {
     vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
     initSentry();

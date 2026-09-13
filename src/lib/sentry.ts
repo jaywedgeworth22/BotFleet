@@ -1,11 +1,11 @@
 /**
  * Sentry client observability for BotFleet.
  *
- * `initSentry()` starts promptly from a VITE_SENTRY_DSN inlined at build
- * time.  The renderer then asks the harness through
- * `initSentryFromRuntime()` at boot and `refreshSentryFromRuntime()` after
- * Settings > Observability changes, so the operator's runtime switch stays
- * authoritative.  A failed runtime read leaves the current client alone.
+ * `initSentryFromRuntime()` asks the harness for the saved switch before it
+ * starts either a runtime client or the VITE_SENTRY_DSN packaged default.
+ * `refreshSentryFromRuntime()` reapplies that choice after Settings >
+ * Observability changes.  A failed boot read leaves the window inert, while
+ * a failed refresh leaves the current client alone.
  * Completely inert in dev/CI when neither path finds a DSN.
  *
  * Replay stays 100% on error / 10% session with mask-all privacy.
@@ -120,11 +120,9 @@ function viteEnvText(value: string | undefined): string | undefined {
   return value?.trim() || undefined;
 }
 
-export function initSentry(): void {
-  if (initialized || !globalThis.window) return;
-
+function packagedClientOptions(): SentryClientOptions | null {
   const dsn = viteEnvText(import.meta.env.VITE_SENTRY_DSN);
-  if (!dsn) return;
+  if (!dsn) return null;
 
   const env = viteEnvText(import.meta.env.VITE_SENTRY_ENV) || viteEnvText(import.meta.env.MODE) || "production";
 
@@ -134,7 +132,7 @@ export function initSentry(): void {
   const replaysSessionSampleRate = Number(viteEnvText(import.meta.env.VITE_SENTRY_REPLAY_SESSION_SAMPLE_RATE) ?? "0.1");
   const replaysOnErrorSampleRate = Number(viteEnvText(import.meta.env.VITE_SENTRY_REPLAY_ERROR_SAMPLE_RATE) ?? "1.0");
 
-  const options: SentryClientOptions = {
+  return {
     dsn,
     environment: env,
     tracesSampleRate: Number.isFinite(tracesSampleRate) ? Math.min(Math.max(tracesSampleRate, 0), 1) : 0.2,
@@ -142,6 +140,12 @@ export function initSentry(): void {
     replaysSessionSampleRate: !replayDisabled && Number.isFinite(replaysSessionSampleRate) ? replaysSessionSampleRate : 0,
     replaysOnErrorSampleRate: !replayDisabled && Number.isFinite(replaysOnErrorSampleRate) ? replaysOnErrorSampleRate : 0,
   };
+}
+
+export function initSentry(): void {
+  if (initialized || !globalThis.window) return;
+  const options = packagedClientOptions();
+  if (!options) return;
   sentryPort.init(options);
 
   initialized = true;
@@ -269,6 +273,10 @@ function applyRuntimeObservability(data: RuntimeObservability | null): void {
  */
 export async function initSentryFromRuntime(): Promise<void> {
   if (!globalThis.window || (initialized && !buildTimeClientActive)) return;
+  // Prepare the fallback without starting it.  `applyRuntimeObservability`
+  // may start it only after the harness has answered that diagnostics were
+  // not explicitly disabled.
+  buildTimeOptions ??= packagedClientOptions();
   const generation = ++observabilityReadGeneration;
 
   try {
