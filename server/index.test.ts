@@ -6140,6 +6140,51 @@ describe("POST /api/bots/apply-defaults (set all bots to default)", () => {
     }
   }, 90_000);
 
+  it("fences consent-relevant bot edits while an acknowledged config save awaits", async () => {
+    expect((await api("PUT", "/api/config", {
+      botDefaults: { allowedComputers: null, computers: ["cloud"] },
+    })).status).toBe(200);
+    const bot = (await api("POST", "/api/bots", { name: "Locked Consent Bot" })).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        computers: ["cloud"], autoApprove: true,
+      })).status).toBe(200);
+      const prompt = await api("PUT", "/api/config", { botDefaults: { computers: ["local"] } });
+      expect(prompt.status).toBe(400);
+
+      boxTurnRequests = 0;
+      boxTurnGate = new Promise<void>((resolve) => { releaseBoxTurnGate = resolve; });
+      const saving = api("PUT", "/api/config", {
+        botDefaults: { computers: ["local"] },
+        box: { token: "box_gate" },
+        acknowledgeLocalAuto: true,
+        acknowledgedBots: prompt.body.needsAcknowledgement,
+      });
+      await expect.poll(() => boxTurnRequests, { timeout: 5_000 }).toBe(1);
+
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { name: "Renamed Mid-Save" })).status).toBe(409);
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { computers: ["local"] })).status).toBe(409);
+      expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(409);
+
+      releaseBoxTurnGate?.();
+      expect((await saving).status).toBe(200);
+      const preserved = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+        (candidate: { id: string }) => candidate.id === bot.id,
+      );
+      expect(preserved).toMatchObject({ name: "Locked Consent Bot", computers: ["cloud"], autoApprove: true });
+    } finally {
+      releaseBoxTurnGate?.();
+      boxTurnGate = null;
+      releaseBoxTurnGate = null;
+      await api("PATCH", `/api/bots/${bot.id}`, { computers: ["cloud"], autoApprove: false });
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PUT", "/api/config", {
+        botDefaults: { allowedComputers: null, computers: ["cloud"] },
+        box: { token: "" },
+      })).status).toBe(200);
+    }
+  }, 90_000);
+
   it("skips a bot that would gain unacknowledged auto host control, and names it", async () => {
     // The per-bot PATCH refuses "This Computer" plus auto-approve without a
     // confirmed warning.  Applying a workspace default used to go straight to

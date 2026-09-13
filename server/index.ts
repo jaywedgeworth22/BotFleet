@@ -5674,6 +5674,14 @@ async function applyResolvedSecrets(reason: RefreshReason): Promise<void> {
 // another's changes or dispose a fleet while another reload is creating it.
 let providerConfigBusy = false;
 
+// An acknowledged workspace-default save binds host Auto consent to the
+// exact bot identities displayed by the renderer.  Provider and vault checks
+// below can await, so consent-relevant bot edits must not change that set
+// after validation and before the config is persisted.
+let localAutoConsentConfigBusy = false;
+const localAutoConsentConfigBusyError =
+  "bot computer and identity settings are locked while workspace settings finish saving";
+
 // Runtime-only per-instance credential overrides for openai-compat custom
 // engines saved through the desktop shell's encrypted credential store
 // (?secretStorage=external on PATCH /api/instances/:id): the key never
@@ -7497,6 +7505,9 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const parsed = parseBotProfilePatch(body, true);
       if (!parsed.ok) return json(res, 400, { error: parsed.error });
+      if (localAutoConsentConfigBusy && parsed.patch.name !== undefined) {
+        return json(res, 409, { error: localAutoConsentConfigBusyError });
+      }
       if (parsed.patch.avatarUrl && !storedAvatarExists(parsed.patch.avatarUrl)) {
         return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
       }
@@ -7556,6 +7567,15 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
+      }
+      if (
+        localAutoConsentConfigBusy &&
+        (body.name !== undefined ||
+          body.computers !== undefined ||
+          body.computer !== undefined ||
+          body.autoApprove !== undefined)
+      ) {
+        return json(res, 409, { error: localAutoConsentConfigBusyError });
       }
       const existingBot = store.bot(m[1]);
       if (body.requireAvailableModel !== undefined && typeof body.requireAvailableModel !== "boolean") {
@@ -7749,6 +7769,9 @@ const server = createServer(async (req, res) => {
     }
     m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "DELETE") {
+      if (localAutoConsentConfigBusy) {
+        return json(res, 409, { error: localAutoConsentConfigBusyError });
+      }
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       // Fenced against the SAME lock `/local-computer/run|stop|remove`
@@ -9533,6 +9556,7 @@ const server = createServer(async (req, res) => {
         });
       }
       providerConfigBusy = true;
+      localAutoConsentConfigBusy = true;
             try {
       // A project key is useful only if it can create/reuse the Session that
       // powers both the connections UI and the agent MCP. Validate it before
@@ -9795,7 +9819,7 @@ const server = createServer(async (req, res) => {
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
       } finally {
-        
+        localAutoConsentConfigBusy = false;
         providerConfigBusy = false;
       }
     }

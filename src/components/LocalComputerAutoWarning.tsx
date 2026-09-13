@@ -4,6 +4,13 @@ import { AlertTriangle } from "lucide-react";
 export const LOCAL_COMPUTER_AUTO_WARNING =
   "Auto mode will let this bot click, type, and run tools on this computer without asking first.\u00a0 Destructive and sensitive actions still stop.\u00a0 Continue only if you are watching.";
 
+export function shouldWarnBeforeAddingLocalAuto(
+  computers: readonly string[] | undefined,
+  autoApprove: boolean | undefined,
+): boolean {
+  return autoApprove === true && !computers?.includes("local");
+}
+
 export function LocalComputerAutoWarning({
   open,
   onCancel,

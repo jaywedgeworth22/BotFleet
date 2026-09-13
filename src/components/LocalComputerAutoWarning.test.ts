@@ -1,7 +1,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
+import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./LocalComputerAutoWarning";
 
 describe("LocalComputerAutoWarning", () => {
   const props = { open: true, onCancel() {}, onConfirm() {} };
@@ -22,5 +22,13 @@ describe("LocalComputerAutoWarning", () => {
     expect(html).not.toContain("Bots gaining Auto access");
     expect(html.match(/disabled=""/g)).toHaveLength(2);
     expect(html).toContain("Applying…");
+  });
+});
+
+describe("shouldWarnBeforeAddingLocalAuto", () => {
+  it("warns only when Auto is adding a new host grant", () => {
+    expect(shouldWarnBeforeAddingLocalAuto(["cloud"], true)).toBe(true);
+    expect(shouldWarnBeforeAddingLocalAuto(["cloud", "local"], true)).toBe(false);
+    expect(shouldWarnBeforeAddingLocalAuto(["cloud"], false)).toBe(false);
   });
 });

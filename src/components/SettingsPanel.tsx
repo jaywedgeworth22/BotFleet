@@ -11,7 +11,7 @@ import { botUsage, costCaption, formatTokens, formatUsd, hasFiniteCost } from "@
 import { shortPath } from "@/lib/short-path";
 import { computerDestinationDisabledReason, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
 import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
-import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
+import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./LocalComputerAutoWarning";
 import { VoiceSettings } from "./VoiceSettings";
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
 import { requiresLocalAutoConsent } from "../../shared/local-auto-consent";
@@ -677,7 +677,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                       patch({ computers: [] });
                       return;
                     }
-                    if (mode === "local" && bot.autoApprove) {
+                    if (mode === "local" && shouldWarnBeforeAddingLocalAuto(bot.computers, bot.autoApprove)) {
                       setLocalAutoWarning("local");
                       return;
                     }
