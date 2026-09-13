@@ -224,6 +224,24 @@ describe("gating", () => {
       "propose_routine_action",
     ]);
   });
+
+  it("offers computer tools on HTTP lane when localComputer is enabled", () => {
+    const withoutComputer = httpToolDefinitions(gate({ localComputer: false })).map((t) => t.name);
+    expect(withoutComputer).not.toContain("bash");
+    expect(withoutComputer).not.toContain("read_file");
+    expect(withoutComputer).not.toContain("write_file");
+    expect(withoutComputer).not.toContain("edit_file");
+
+    const withComputer = httpToolDefinitions(gate({ localComputer: true })).map((t) => t.name);
+    expect(withComputer).toContain("bash");
+    expect(withComputer).toContain("read_file");
+    expect(withComputer).toContain("write_file");
+    expect(withComputer).toContain("edit_file");
+
+    // Computer tools are on the HTTP surface only (CLI engines bring their own)
+    const mcpWithComputer = mcpToolDefinitions(gate({ localComputer: true })).map((t) => t.name);
+    expect(mcpWithComputer).not.toContain("bash");
+  });
 });
 
 describe("the import cycle stays broken", () => {

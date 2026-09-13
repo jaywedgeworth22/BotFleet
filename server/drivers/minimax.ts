@@ -685,8 +685,9 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        // no MCP server is mounted in this file and respondToRequest answers
-        // "unavailable": localComputerMcp would be a knob nothing can turn
+        // localComputerMcp: true allows mounting host computer tools (bash, files)
+        // for MiniMax turns, routed through the turn tool host with permission broker
+        // approval cards.
         // toolLoop: this driver runs the harness tool loop inside sendTurn and
         // emits exactly one turn.started / turn.completed pair per user turn,
         // the way every CLI driver does — so the harness hands it a toolHost
@@ -699,6 +700,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
           agentsMcp: true,
           toolLoop: true,
           replaysTranscript: true,
+          localComputerMcp: true,
         },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),

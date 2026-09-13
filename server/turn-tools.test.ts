@@ -62,4 +62,13 @@ describe("buildTurnTools", () => {
     expect(names).not.toContain("computer_click");
     expect(names).not.toContain("computer_type");
   });
+
+  it("exposes host computer tools (bash, read_file, write_file, edit_file) when localComputer is set", () => {
+    const tools = buildTurnTools({ agents: {}, localComputer: true });
+    const names = tools.map((t) => t.name);
+    expect(names).toContain("bash");
+    expect(names).toContain("read_file");
+    expect(names).toContain("write_file");
+    expect(names).toContain("edit_file");
+  });
 });

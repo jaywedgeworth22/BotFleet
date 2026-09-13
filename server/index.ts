@@ -3034,12 +3034,13 @@ async function startTurn(
           hostPlatform: process.platform,
           providerSupportsLocal: true,
         });
+        const isToolLoopDriver = instance.adapter.capabilities.toolLoop === true;
         const cua = hostSupportsLocal && mountsLocalComputer ? readCuaConnection() : null;
         const unavailable = !hostSupportsLocal
           ? "local computer control is not available on this platform"
           : !mountsLocalComputer
             ? "this model engine has no approval channel for actions on this computer, so BotFleet did not mount it"
-            : !cua
+            : !cua && !isToolLoopDriver
               ? "CUA Driver is not ready for this computer — check permissions and restart BotFleet"
               : null;
         if (unavailable) {
@@ -3288,7 +3289,11 @@ async function startTurn(
       // this the catalog would always see `chiefOfStaff: false` and a real
       // Chief's HTTP-lane turn would never be offered the tool its own
       // prompt (chiefOfStaffSystemPrompt) tells it it has.
-      const turnTools = buildTurnTools(integrations, { chiefOfStaff: Boolean(bot.chiefOfStaff) });
+      const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
+      const turnTools = buildTurnTools(
+        { ...integrations, localComputer: hasHostComputer },
+        { chiefOfStaff: Boolean(bot.chiefOfStaff) },
+      );
       const turnInput = {
         threadId,
         text: turnText,
@@ -3313,6 +3318,8 @@ async function startTurn(
               botId: bot.id,
               threadId,
               commsDepth,
+              localComputer: hasHostComputer,
+              cwd: cwd ?? bot.cwd ?? undefined,
               // Read here, not derived from the catalog above: this is what
               // gates create_bot inside the host's own executor (the cap and
               // the chiefOfStaff check both live there), independent of
@@ -3364,7 +3371,7 @@ async function startTurn(
           credentialPrompt +
           routinePrompt +
           sectionContextSystemPrompt(bot.section) +
-          (hasFileTools(worksInWorkspace, httpOnlyToolSurface)
+          (hasFileTools(worksInWorkspace, httpOnlyToolSurface, hasHostComputer)
             ? memorySystemPrompt(bot.id) + skillsSystemPrompt(bot.id)
             : "") +
           skillInstructions +
@@ -4564,10 +4571,20 @@ async function runGroupMemberTurn(
   // but must not decide the pin: the room's desk is a property of the
   // room, not of whichever member happened to speak first.
   const cwd = groupTurnCwd(workspace, () => store.pinGroupCwd(group.id, threadId));
+  const allowedDestinations = allowedBotComputers(cfg);
+  const { granted } = resolveGrants(
+    bot.computers,
+    undefined,
+    cfg.botDefaults?.computers,
+    allowedDestinations,
+  );
+  const wantsLocal = granted.includes("local");
+  const mountsLocalComputer = instance.adapter.capabilities.localComputerMcp === true;
+  const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
   const roomSystem =
     system +
     sectionContextSystemPrompt(bot.section) +
-    (hasFileTools(worksInWorkspace, httpOnlyToolSurface)
+    (hasFileTools(worksInWorkspace, httpOnlyToolSurface, hasHostComputer)
       ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}`
       : "") +
     renderSkillInstructions(selectedSkills, { includeRoot: Boolean(workspace) }) +
@@ -4587,7 +4604,12 @@ async function runGroupMemberTurn(
   // handing it a catalog here would let the model call a tool nothing can
   // ever run — the turn settles on a partial reply instead of an error.
   const roomTurnTools =
-    instance.adapter.capabilities.toolLoop === true ? buildTurnTools(integrations) : [];
+    instance.adapter.capabilities.toolLoop === true
+      ? buildTurnTools(
+          { ...integrations, localComputer: hasHostComputer },
+          { chiefOfStaff: Boolean(bot.chiefOfStaff) },
+        )
+      : [];
   // `commsDepth: hop` — the room's own hop, not zero.  The catalog above
   // already gated on `hop < MAX_COMMS_DEPTH`, and this is the depth the
   // peer hop is charged at, so an ask_bot from a room member is counted
@@ -4599,6 +4621,9 @@ async function runGroupMemberTurn(
           botId: bot.id,
           threadId,
           commsDepth: hop,
+          localComputer: hasHostComputer,
+          cwd: cwd ?? bot.cwd ?? undefined,
+          chiefOfStaff: Boolean(bot.chiefOfStaff),
           // Bound to THIS room turn's bot and thread in the same closure
           // caller identity lives in.  The card must name the member that
           // asked and land on the room thread — which is also what lets the
