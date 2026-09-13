@@ -57,6 +57,20 @@ describe("decodeCodexSelection", () => {
 });
 
 describe("readCodexModelCatalog", () => {
+  it("keeps the static fallback aligned with the current visible Codex rows", () => {
+    expect(STATIC_CODEX_MODELS).toEqual({
+      default: "gpt-5.6-sol",
+      options: [
+        { id: "gpt-6-astra", label: "GPT-6 Astra" },
+        { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+        { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
+        { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
+        { id: "gpt-5.5", label: "GPT-5.5" },
+        { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
+      ],
+    });
+  });
+
   it("returns the static cloud fallback when there is no config or CLI probe", async () => {
     expect(await readCodexModelCatalog({ HOME: join(tmpdir(), "omb-codex-missing-home") })).toEqual(
       STATIC_CODEX_MODELS,
@@ -135,6 +149,39 @@ name = "oMLX"
     expect(decodeCodexSelection(catalog.default)).toEqual({
       model: "gpt-5.4",
       modelProvider: "omlx",
+    });
+  });
+
+  it.each(['model_provider = "openai"', ""])("preserves a retired official slug with provider config %j", async (provider) => {
+    const home = scratchHome({
+      "config.toml": `
+${provider}
+model = "gpt-5.4"
+`,
+    });
+
+    const catalog = await readCodexModelCatalog({ HOME: home });
+    const stored = encodeCodexSelection("openai", "gpt-5.4");
+
+    expect(catalog.default).toBe(stored);
+    expect(catalog.options).toContainEqual({
+      id: stored,
+      label: "gpt-5.4",
+      custom: true,
+    });
+  });
+
+  it("preserves profile models when the main provider defaults to OpenAI", async () => {
+    const home = scratchHome({
+      "config.toml": 'model = "gpt-5.6-sol"\n',
+      "legacy.config.toml": 'model = "gpt-5.4"\n',
+    });
+    const catalog = await readCodexModelCatalog({ HOME: home });
+    expect(catalog.default).toBe("gpt-5.6-sol");
+    expect(catalog.options).toContainEqual({
+      id: encodeCodexSelection("openai", "gpt-5.4"),
+      label: "gpt-5.4",
+      custom: true,
     });
   });
 
