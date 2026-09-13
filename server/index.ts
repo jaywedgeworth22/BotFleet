@@ -1948,7 +1948,16 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!card || card.answered) return;
         // the bot is not working now — it is waiting on a person
         if (asker.busy) store.setActivity(asker.id, "waiting-on-you");
-        notify(buildNotification(permission ? "approval" : "question", asker, event.threadId, event.summary));
+        // The request id travels with the frame so a phone can answer THIS
+        // card from a lock screen rather than looking for whatever is
+        // pending on the thread — which is the wrong card as soon as two
+        // are open at once.
+        notify(
+          buildNotification(permission ? "approval" : "question", asker, event.threadId, event.summary, {
+            requestId: event.requestId,
+            tool: event.tool,
+          }),
+        );
       };
       if (reviewTask && reviewMode === "enforce") {
         // Avoid buzzing the owner for a card the reviewer is about to answer.

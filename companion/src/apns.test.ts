@@ -89,11 +89,29 @@ describe("deliveryForKind", () => {
 });
 
 describe("apnsPayload", () => {
-  it("carries the same three userInfo keys the in-app path uses", () => {
-    const payload = apnsPayload({ title: "Scout", body: "needs you", kind: "approval", threadId: "t1", botId: "b1" });
+  it("carries the same userInfo keys the in-app path uses", () => {
+    const payload = apnsPayload({
+      title: "Scout",
+      body: "needs you",
+      kind: "approval",
+      threadId: "t1",
+      botId: "b1",
+      requestId: "req-7",
+      tool: "Bash",
+    });
     expect(payload.threadId).toBe("t1");
     expect(payload.botId).toBe("b1");
     expect(payload.kind).toBe("approval");
+    expect(payload.requestId).toBe("req-7");
+    expect(payload.tool).toBe("Bash");
+  });
+
+  it("leaves the request id absent when the harness did not send one", () => {
+    // An older harness sends no identity, and the phone falls back to the
+    // thread's pending card — so absent has to stay a real shape.
+    const payload = apnsPayload({ title: "Scout", body: "done", kind: "done", threadId: "t1" });
+    expect(payload.requestId).toBeUndefined();
+    expect(payload.tool).toBeUndefined();
   });
 
   it("stamps an approval as time-sensitive, top-ranked, and actionable", () => {
@@ -311,10 +329,10 @@ describe("retryAfterMs", () => {
 });
 
 describe("watchHarnessNotifications", () => {
-  const notifyFrame = (kind: string) =>
+  const notifyFrame = (kind: string, identity: { requestId?: string; tool?: string } = {}) =>
     `data: ${JSON.stringify({
       kind: "notify",
-      notification: { kind, title: "Scout finished", body: "done", threadId: "t1", botId: "b1" },
+      notification: { kind, title: "Scout finished", body: "done", threadId: "t1", botId: "b1", ...identity },
     })}\n\n`;
 
   it("APNs-wakes disconnected phones on notify frames and drops 410 tokens", async () => {
@@ -352,6 +370,31 @@ describe("watchHarnessNotifications", () => {
     // The kind is what decides how the push lands; it has to survive the hop.
     expect(sent.every((row) => row.kind === "approval")).toBe(true);
     expect(forgotten).toEqual(["stale"]);
+  });
+
+  it("forwards the request identity from the harness frame to the alert", async () => {
+    const sent: { requestId?: string; tool?: string; kind?: string }[] = [];
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "bb".repeat(32) }],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(notifyFrame("approval", { requestId: "req-7", tool: "Bash" }), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      send: async (_config, _token, alert) => {
+        sent.push({ requestId: alert.requestId, tool: alert.tool, kind: alert.kind });
+        return { ok: true, status: 200, attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (sent.length === 0 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(sent[0]).toEqual({ requestId: "req-7", tool: "Bash", kind: "approval" });
   });
 
   it("reports health: configured, tokens, the last send and the last error", async () => {

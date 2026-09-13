@@ -111,6 +111,12 @@ export interface ApnsAlert {
   kind?: string;
   threadId?: string;
   botId?: string;
+  /** The request waiting on an answer, on an approval or a question.  A
+   * phone answering from a lock screen has no transcript to search, so
+   * without this it has to guess which card the banner meant. */
+  requestId?: string;
+  /** The tool that asked — display only. */
+  tool?: string;
 }
 
 export interface ApnsDelivery {
@@ -161,6 +167,8 @@ export interface ApnsPayload {
   threadId?: string;
   botId?: string;
   kind?: string;
+  requestId?: string;
+  tool?: string;
 }
 
 /** The JSON body for one alert.  Exported so a test can read the shape
@@ -180,11 +188,13 @@ export function apnsPayload(alert: ApnsAlert): ApnsPayload {
       // A force-quit app still needs the lock-screen alert (user tap).
       "content-available": 1,
     },
-    // The same three keys the in-app path puts in `content.userInfo`, so one
+    // The same keys the in-app path puts in `content.userInfo`, so one
     // routing function on the phone covers a local and a remote delivery.
     threadId: alert.threadId,
     botId: alert.botId,
     kind: alert.kind,
+    requestId: alert.requestId,
+    tool: alert.tool,
   };
 }
 
@@ -461,6 +471,8 @@ export function watchHarnessNotifications(options: {
     kind?: string;
     threadId?: string;
     botId?: string;
+    requestId?: string;
+    tool?: string;
   }) => {
     const connected = new Set(options.connectedIds());
     for (const row of options.tokensForDisconnected()) {
@@ -472,6 +484,8 @@ export function watchHarnessNotifications(options: {
           kind: notification.kind,
           threadId: notification.threadId,
           botId: notification.botId,
+          requestId: notification.requestId,
+          tool: notification.tool,
         });
         if (result.ok) {
           health.recordSent(now());
@@ -530,7 +544,15 @@ export function watchHarnessNotifications(options: {
             if (!line) continue;
             let frame: {
               kind?: string;
-              notification?: { title?: string; body?: string; kind?: string; threadId?: string; botId?: string };
+              notification?: {
+                title?: string;
+                body?: string;
+                kind?: string;
+                threadId?: string;
+                botId?: string;
+                requestId?: string;
+                tool?: string;
+              };
             };
             try {
               // SAFETY: the frame came off the harness's own loopback stream
