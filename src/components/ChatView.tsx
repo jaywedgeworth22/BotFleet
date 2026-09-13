@@ -998,6 +998,22 @@ export function ChatView({ bot }: { bot: Bot }) {
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const [findOpen, setFindOpen] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [composerHeight, setComposerHeight] = useState(140);
+  const composerContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = composerContainerRef.current;
+    if (!el) return;
+    const update = () => {
+      const height = Math.round(el.offsetHeight);
+      if (height > 0) setComposerHeight((prev) => (prev !== height ? height : prev));
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => update());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [bot.id]);
   useEffect(() => setFindOpen(false), [bot.threadId]);
   useEffect(() => setReplyTo(null), [bot.threadId]);
   useEffect(() => {
@@ -1231,7 +1247,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     if (!el || !followRef.current) return;
     el.scrollTo({ top: el.scrollHeight });
     previousScrollTop.current = el.scrollTop;
-  }, [bot.id, bot.threadId, messages.length, streaming, reasoning, bot.busy, follow]);
+  }, [bot.id, bot.threadId, messages.length, streaming, reasoning, bot.busy, follow, composerHeight]);
 
   // Expanding prepends rows: capture the height first, then after the commit
   // shift scrollTop by the growth so the message under the cursor stays put
@@ -1435,7 +1451,8 @@ export function ChatView({ bot }: { bot: Bot }) {
         }}
       >
         <div
-          className="flex w-full flex-col gap-3 pb-56"
+          className="flex w-full flex-col gap-3"
+          style={{ paddingBottom: `${Math.max(composerHeight + 24, 224)}px` }}
           role="log"
           aria-live="polite"
           aria-label={`Conversation with ${bot.name}`}
@@ -1536,7 +1553,10 @@ export function ChatView({ bot }: { bot: Bot }) {
           the previous bot's half-written message over. ArrowUp-to-edit is
           gated on busy like the pencil button — editing rewinds the thread,
           which a live turn forbids (the server 409s it). */}
-      <div className="absolute inset-x-0 bottom-0 z-[2] flex flex-col items-center">
+      <div
+        ref={composerContainerRef}
+        className="absolute inset-x-0 bottom-0 z-[2] flex flex-col items-center"
+      >
       {!follow && (
         <button
           onClick={jumpToLatest}
