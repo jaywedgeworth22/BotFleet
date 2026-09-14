@@ -75,9 +75,15 @@ export const RETRY_AFTER_CAP_MS = 30_000;
 /** Statuses worth a second attempt with the full backoff schedule.  501
  *  (Not Implemented) and 505 are deliberately absent: they are permanent
  *  statements about the endpoint, not the transient overload 500/502/503/
- *  504 describe, even though errors.ts maps all of them to
- *  `upstream_outage`. */
-const RETRYABLE_SERVER_STATUSES = new Set([500, 502, 503, 504]);
+ *  504/529 describe, even though errors.ts maps all of them to
+ *  `upstream_outage`.
+ *
+ *  529 is not an IANA status, but it is what several providers return for
+ *  "overloaded, come back" — and it is the status the plan's own
+ *  completion criterion names (docs/plans/agent-harness-upgrades-v2.md
+ *  §3.4: "a simulated 529 produces a visible retry and a completed turn"),
+ *  so a lane that failed it outright would be retry in name only. */
+const RETRYABLE_SERVER_STATUSES = new Set([500, 502, 503, 504, 529]);
 
 /** What a failed HTTP round knows about itself beyond its message.
  *  Carried ON the error `httpErrorFor` builds, so the loop classifies a
@@ -105,6 +111,48 @@ const HTTP_FAILURES = new WeakMap<Error, HttpFailure>();
  *  back to the shared text classifier in drivers/retry.ts. */
 export function httpFailureOf(error: Error): HttpFailure | undefined {
   return HTTP_FAILURES.get(error);
+}
+
+/** Undici's own identifier for "the socket went away underneath a request
+ *  that had already been accepted".  Matched on the CODE rather than the
+ *  prose so a Node release rewording the message cannot silently turn a
+ *  retryable disconnect back into a failed turn. */
+const UNDICI_SOCKET_ERROR_CODE = "UND_ERR_SOCKET";
+
+/** True for the way Node's built-in fetch reports a 200 response whose
+ *  connection died before the body finished — `TypeError: terminated`,
+ *  with a `SocketError: other side closed` cause carrying
+ *  `UND_ERR_SOCKET`.
+ *
+ *  This shape needs naming HERE because it says nothing the shared text
+ *  classifier in drivers/retry.ts recognises: there is no status, no
+ *  "reset", no "hang up", no "fetch failed" — just the word "terminated",
+ *  which matches no transient pattern and so reads as terminal.  Yet it is
+ *  the single most common way a streaming chat-completions round dies
+ *  before its first delta, and a round that published nothing is exactly
+ *  the round a retry is safe for.  The caller still owns that second
+ *  condition: this function only identifies the shape, it does not decide
+ *  that replaying is safe.
+ *
+ *  Deliberately narrow.  `UND_ERR_ABORTED` is NOT here — an abort is the
+ *  person pressing Stop, and the loop must settle it as an interrupt
+ *  rather than quietly trying again. */
+export function isPrematureCloseError(error: Error): boolean {
+  const { cause } = error;
+  if (typeof cause === "object" && cause !== null && "code" in cause) {
+    const { code } = cause as { code?: unknown };
+    // A cause that named itself IS the answer, both ways: `UND_ERR_ABORTED`
+    // must not fall through to the message check below and be read as a
+    // disconnect, because `TypeError: terminated` is also what an aborted
+    // fetch throws.
+    if (typeof code === "string") return code === UNDICI_SOCKET_ERROR_CODE;
+  }
+  // Some Node builds surface the same failure with the cause stripped, so
+  // the bare `TypeError: terminated` fetch throws is worth recognising on
+  // its own — the message is exact, not a substring match, so an unrelated
+  // error merely containing the word does not qualify.  Safe here only
+  // because the loop checks `!turnSignal.aborted` before it ever asks.
+  return error.name === "TypeError" && error.message.trim() === "terminated";
 }
 
 /** Minimal read side of `Headers` — so a driver passes `res.headers`

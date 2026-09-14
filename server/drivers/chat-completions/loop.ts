@@ -57,7 +57,7 @@ import type {
 import { ProviderError } from "../../contracts.ts";
 import { parseToolArguments, toolFields } from "../../tool-fields.ts";
 import { RETRY_MAX_ATTEMPTS, classifyError, computeBackoff, interruptibleDelay } from "../retry.ts";
-import { UNHINTED_RATE_LIMIT_ATTEMPTS, httpFailureOf, httpRetryPolicy } from "./errors.ts";
+import { UNHINTED_RATE_LIMIT_ATTEMPTS, httpFailureOf, httpRetryPolicy, isPrematureCloseError } from "./errors.ts";
 
 /** Every way a turn can end.  Closed on purpose: `STOP_REASON` and
  *  `TERMINAL_OK` are `Record<TurnLoopExit, …>`, so adding a member without
@@ -361,13 +361,16 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
   /** What a rejected round is worth trying again, or `undefined` for "this
    *  is terminal — classify it and end the turn".
    *
-   *  Two classifiers, in order of how much they know.  An error built by
+   *  Three classifiers, in order of how much they know.  An error built by
    *  errors.ts's `httpErrorFor` carries its real status and its parsed
    *  `Retry-After`, so the policy is read from the status table directly.
-   *  Anything else — a `fetch failed`, a socket reset, a stream that died
-   *  mid-body — goes through the SAME text classifier drivers/retry.ts
-   *  already applies to every CLI engine, so a provider hiccup is judged
-   *  the same way on both lanes instead of by a second private policy. */
+   *  An Undici premature close is a known STRUCTURE rather than a status —
+   *  recognised by its cause's code, because its message says nothing any
+   *  text rule matches.  Anything else — a `fetch failed`, a socket reset,
+   *  a stream that died mid-body — goes through the SAME text classifier
+   *  drivers/retry.ts already applies to every CLI engine, so a provider
+   *  hiccup is judged the same way on both lanes instead of by a second
+   *  private policy. */
   const retryPlanFor = (
     error: Error,
     attempt: number,
@@ -380,6 +383,15 @@ export async function runTurnLoop(deps: TurnLoopDeps): Promise<TurnLoopExit> {
       const policy = httpRetryPolicy(failure);
       if (!policy) return undefined;
       ({ maxAttempts, reason, retryAfterMs } = policy);
+    } else if (isPrematureCloseError(error)) {
+      // A 200 whose socket died before the body finished.  It carries no
+      // status for the table above and none of the vocabulary the text
+      // classifier below looks for, so without this branch the commonest
+      // pre-output disconnect there is would read as terminal and skip the
+      // retry it most deserves.  Judged on the shape, not the prose — see
+      // errors.ts's `isPrematureCloseError`.
+      maxAttempts = RETRY_MAX_ATTEMPTS;
+      reason = "connection_reset";
     } else {
       const verdict = classifyError(error);
       if (!verdict.transient) return undefined;

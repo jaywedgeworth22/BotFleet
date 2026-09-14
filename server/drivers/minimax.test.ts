@@ -556,6 +556,47 @@ describe("MinimaxDriver", () => {
     }
   }, 30_000);
 
+  it("rides out a real socket that closes before the first frame", async () => {
+    // The finding this test exists for: a provider that accepts the
+    // request, sends a 200 SSE head and then vanishes.  No mock — a real
+    // socket destroyed mid-body, so Node's own fetch produces the actual
+    // `TypeError: terminated` / `UND_ERR_SOCKET` shape rather than a
+    // hand-built stand-in.  Nothing was published, so the replay is safe.
+    const server = await startFakeOpenAiServer();
+    try {
+      server.queueCompletion({ kind: "close" });
+      server.queueCompletion({
+        kind: "sse",
+        frames: [
+          JSON.stringify({ choices: [{ delta: { content: "recovered" } }] }),
+          JSON.stringify({ choices: [], usage: { prompt_tokens: 9, completion_tokens: 2 } }),
+          "[DONE]",
+        ],
+      });
+      const instance = await MinimaxDriver.create({
+        instanceId: "minimax-wire-close",
+        displayName: "MiniMax",
+        enabled: true,
+        config: decodeMinimaxConfig({ url: server.url }),
+        environment: { MINIMAX_API_KEY: "secret" },
+      });
+      const recorder = recordEvents(instance.adapter);
+
+      await instance.adapter.sendTurn({ threadId: "thread-wire-close", text: "hi" });
+      const completed = await recorder.until((event) => event.type === "turn.completed");
+
+      expect(completed).toMatchObject({ ok: true, stopReason: "end_turn", usage: { input: 9, output: 2 } });
+      expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(2);
+      expect(recorder.events.filter((e) => e.type === "turn.retrying").map((e) => e.reason)).toEqual(["connection_reset"]);
+      expect(recorder.events.filter((e) => e.type === "runtime.error")).toHaveLength(0);
+      expect(recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "assistant_text")).toHaveLength(1);
+      recorder.stop();
+      await instance.dispose();
+    } finally {
+      await server.close();
+    }
+  }, 30_000);
+
   it("never retries a stream that already showed the person text", async () => {
     // The duplicate-output hazard, on the wire: one delta reaches the bus
     // and THEN the socket dies.  Retrying would replay "half an " on top

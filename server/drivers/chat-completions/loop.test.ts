@@ -1082,6 +1082,47 @@ describe("runTurnLoop — bounded retry with backoff", () => {
     expect(retries(outage.events).map((e) => e.maxAttempts)).toEqual([3, 3]);
   });
 
+  it("rides out a 529 — the overloaded status the plan's criterion names", async () => {
+    // docs/plans/agent-harness-upgrades-v2.md §3.4 is done only when a
+    // simulated 529 produces a VISIBLE retry and a COMPLETED turn.  Both
+    // halves are asserted here, on the same path a 502 takes.
+    const h = harness([
+      failsThenAnswers(1, () => httpErrorFor(529, "overloaded"), answer("recovered", { input: 5, output: 2 })),
+    ]);
+    const exit = await h.run({ retryDelayScale: 0.001 });
+
+    expect(exit).toBe("settled");
+    expect(h.attempts).toHaveLength(2);
+    expect(retries(h.events).map((e) => ({ reason: e.reason, maxAttempts: e.maxAttempts }))).toEqual([
+      { reason: "server_error", maxAttempts: 3 },
+    ]);
+    expect(terminals(h.events)[0]).toMatchObject({ ok: true, stopReason: "end_turn", usage: { input: 5, output: 2 } });
+  });
+
+  it("retries a stream that died before its first delta", async () => {
+    // Node's fetch reports an abrupt close of an already-200 response as
+    // `TypeError: terminated` — a shape with no status and no wording the
+    // text classifier matches, so it used to read as terminal.  Nothing
+    // was published, so replaying it shows the person nothing twice.
+    const prematureClose = () => {
+      const cause = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+      cause.name = "SocketError";
+      return Object.assign(new TypeError("terminated"), { cause });
+    };
+    const h = harness([failsThenAnswers(1, prematureClose, answer("recovered"))]);
+    const exit = await h.run({ retryDelayScale: 0.001 });
+
+    expect(exit).toBe("settled");
+    expect(h.attempts).toHaveLength(2);
+    expect(retries(h.events).map((e) => ({ reason: e.reason, maxAttempts: e.maxAttempts }))).toEqual([
+      { reason: "connection_reset", maxAttempts: 3 },
+    ]);
+    // one answer, one terminal event, nothing chat-visible about the drop
+    expect(h.events.filter((e) => e.type === "runtime.error")).toHaveLength(0);
+    expect(h.events.filter((e) => e.type === "item.completed" && e.itemType === "assistant_text")).toHaveLength(1);
+    expect(terminals(h.events)).toHaveLength(1);
+  });
+
   it("gives a 429 that reached it as bare text the same one polite retry", async () => {
     // a driver still throwing `new Error("HTTP 429")` instead of going
     // through httpErrorFor must not get a MORE generous policy than one

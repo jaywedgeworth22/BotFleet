@@ -1,12 +1,14 @@
 import { describe, expect, it } from "vitest";
 
 import { ProviderError } from "../../contracts.ts";
+import { classifyError } from "../retry.ts";
 import {
   RETRY_AFTER_CAP_MS,
   classifyHttpError,
   httpErrorFor,
   httpFailureOf,
   httpRetryPolicy,
+  isPrematureCloseError,
   parseRetryAfter,
 } from "./errors.ts";
 
@@ -108,10 +110,24 @@ describe("parseRetryAfter", () => {
 
 describe("httpRetryPolicy", () => {
   it("spends the full schedule on the transient server statuses", () => {
-    for (const status of [500, 502, 503, 504]) {
+    for (const status of [500, 502, 503, 504, 529]) {
       expect(httpRetryPolicy({ status }), `status ${status}`).toEqual({ maxAttempts: 3, reason: "server_error" });
     }
     expect(httpRetryPolicy({ status: 408 })).toEqual({ maxAttempts: 3, reason: "timeout" });
+  });
+
+  it("retries a 529 — the overloaded status the plan's own criterion names", () => {
+    // docs/plans/agent-harness-upgrades-v2.md §3.4 is done only when "a
+    // simulated 529 produces a visible retry and a completed turn", so a
+    // 529 that failed outright would make this lane retry in name only.
+    // It classifies like every other 5xx, and now it is spent like one.
+    expect(classifyHttpError(529)).toEqual({ code: "upstream_outage", setup: false });
+    expect(httpRetryPolicy({ status: 529 })).toEqual({ maxAttempts: 3, reason: "server_error" });
+    expect(httpRetryPolicy({ status: 529, retryAfterMs: 3_000 })).toEqual({
+      maxAttempts: 3,
+      reason: "server_error",
+      retryAfterMs: 3_000,
+    });
   });
 
   it("leaves the permanent 5xx statuses alone", () => {
@@ -172,5 +188,49 @@ describe("httpFailureOf", () => {
   it("reads anything it did not build as no detail, so the text classifier decides", () => {
     expect(httpFailureOf(new Error("socket hang up"))).toBeUndefined();
     expect(httpFailureOf(new TypeError("fetch failed"))).toBeUndefined();
+  });
+});
+
+describe("isPrematureCloseError", () => {
+  /** The shape Node's fetch actually throws when a 200's socket dies
+   *  mid-body: `TypeError: terminated`, cause `SocketError: other side
+   *  closed` carrying `UND_ERR_SOCKET`. */
+  const undiciClose = () => {
+    const cause = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+    cause.name = "SocketError";
+    return Object.assign(new TypeError("terminated"), { cause });
+  };
+
+  it("recognises the Undici premature close, which no text rule matches", () => {
+    const error = undiciClose();
+    expect(isPrematureCloseError(error)).toBe(true);
+    // the point of naming the shape: the shared text classifier reads this
+    // exact error as terminal, so without this the retry never happens
+    expect(classifyError(error)).toEqual({ transient: false, reason: "unknown" });
+  });
+
+  it("recognises the cause-stripped form some Node builds throw", () => {
+    expect(isPrematureCloseError(new TypeError("terminated"))).toBe(true);
+  });
+
+  it("matches on the cause's code, not its prose", () => {
+    // a Node release rewording "other side closed" must not silently turn
+    // a retryable disconnect back into a failed turn
+    const cause = Object.assign(new Error("the peer went away"), { code: "UND_ERR_SOCKET" });
+    expect(isPrematureCloseError(Object.assign(new TypeError("terminated"), { cause }))).toBe(true);
+  });
+
+  it("never claims an abort — Stop must settle as an interrupt, not retry", () => {
+    const cause = Object.assign(new Error("This operation was aborted"), { code: "UND_ERR_ABORTED" });
+    expect(isPrematureCloseError(Object.assign(new TypeError("terminated"), { cause }))).toBe(false);
+  });
+
+  it("leaves every other failure to the classifiers that already own it", () => {
+    expect(isPrematureCloseError(new TypeError("fetch failed"))).toBe(false);
+    expect(isPrematureCloseError(new Error("socket hang up"))).toBe(false);
+    expect(isPrematureCloseError(httpErrorFor(502, "bad gateway"))).toBe(false);
+    // an unrelated error merely CONTAINING the word is not this shape
+    expect(isPrematureCloseError(new TypeError("stream terminated early"))).toBe(false);
+    expect(isPrematureCloseError(new Error("terminated"))).toBe(false);
   });
 });
