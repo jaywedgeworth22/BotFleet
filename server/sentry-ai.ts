@@ -73,6 +73,10 @@ type AgentTurn = {
 };
 
 const turns = new Map<string, AgentTurn>();
+// Diagnostics can be enabled after turn.started was emitted.  Keep the
+// provider-error boundary independently from span state so a later failed
+// completion still deduplicates against the captured runtime error.
+const reportedProviderErrors = new Set<string>();
 
 let identityResolver: ((threadId: string) => TurnIdentity | null) | null = null;
 
@@ -266,6 +270,7 @@ export function genAiProvider(driverKind: string): string {
 
 function endTurn(key: string, ok: boolean, usage?: { input?: number; output?: number; cachedInput?: number }): void {
   const turn = turns.get(key);
+  reportedProviderErrors.delete(key);
   if (!turn) return;
   for (const tool of turn.tools.values()) tool.end();
   turn.tools.clear();
@@ -277,6 +282,23 @@ function endTurn(key: string, ok: boolean, usage?: { input?: number; output?: nu
   turns.delete(key);
 }
 
+function failureTags(
+  event: RuntimeEvent,
+  provider: string,
+  turn: AgentTurn | undefined,
+): TurnFailureTags {
+  const identity = turn?.identity ?? identityFor(event.threadId);
+  const tags: TurnFailureTags = {
+    "botfleet.provider": event.provider,
+    "botfleet.thread.id": event.threadId,
+    "gen_ai.provider.name": provider,
+    ...identityAttributes(identity),
+  };
+  const model = clean(turn?.model) ?? clean(identity?.model);
+  if (model) tags["gen_ai.request.model"] = model;
+  return tags;
+}
+
 /** Map a harness runtime event onto gen_ai spans.  No-op without a sink. */
 export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | null = liveSink()): void {
   if (!sink) return;
@@ -286,6 +308,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
 
   switch (event.type) {
     case "turn.started": {
+      reportedProviderErrors.delete(key);
       const identity = identityFor(event.threadId);
       const span = sink.startInactiveSpan({
         op: "gen_ai.invoke_agent",
@@ -433,10 +456,22 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
         });
         break;
       }
-      sink.captureException(new Error(event.message.slice(0, 500)));
+      const turn = turns.get(key);
+      // EventBus reports canonical-log I/O separately from the provider
+      // turn.  Capture that infrastructure failure, but do not let it consume
+      // the provider turn's one-error boundary.
+      const providerTurnFailure = event.raw?.source !== "botfleet.event-log";
+      if (!providerTurnFailure || !reportedProviderErrors.has(key)) {
+        sink.captureException(
+          new Error(event.message.slice(0, 500)),
+          { tags: failureTags(event, provider, turn) },
+        );
+        if (providerTurnFailure) reportedProviderErrors.add(key);
+      }
       break;
     }
     case "turn.completed": {
+      const runtimeErrorReported = reportedProviderErrors.has(key);
       if (!event.ok) {
         // A failed turn is the thing an operator wants an Issue for.  Most
         // drivers report the failure only here — they never emit
@@ -452,18 +487,11 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
             level: "warning",
             data: { provider: event.provider, threadId: event.threadId },
           });
-        } else {
+        } else if (!runtimeErrorReported) {
           const turn = turns.get(key);
-          const identity = turn?.identity ?? identityFor(event.threadId);
-          const tags: TurnFailureTags = {
-            "botfleet.provider": event.provider,
-            "botfleet.thread.id": event.threadId,
-            "gen_ai.provider.name": provider,
-            ...identityAttributes(identity),
-          };
-          const model = clean(turn?.model) ?? clean(identity?.model);
-          if (model) tags["gen_ai.request.model"] = model;
-          sink.captureException(new Error(`bot turn failed: ${stopReason}`), { tags });
+          sink.captureException(new Error(`bot turn failed: ${stopReason}`), {
+            tags: failureTags(event, provider, turn),
+          });
         }
       }
       endTurn(key, event.ok, event.usage);
@@ -480,6 +508,7 @@ export function resetSentryAiForTests(): void {
     turn.span.end();
   }
   turns.clear();
+  reportedProviderErrors.clear();
   identityResolver = null;
 }
 

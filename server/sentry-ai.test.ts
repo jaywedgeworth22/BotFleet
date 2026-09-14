@@ -126,6 +126,96 @@ describe("Sentry AI observability", () => {
     expect(JSON.stringify(spans)).not.toMatch(/sk-|password|BEGIN /);
   });
 
+  it("reports one attributed actual error for repeated runtime errors and the failed completion of the same turn", () => {
+    configureTurnIdentity(() => ({
+      botId: "bot-1",
+      instanceId: "instance-1",
+      model: "model-1",
+      roomId: "room-1",
+    }));
+    const { sink, exceptions, contexts } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "runtime.error", message: "upstream HTTP 500" }), sink);
+    observeRuntimeEvent(base({ type: "runtime.error", message: "child exited after HTTP 500" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "exit code 1" }), sink);
+
+    expect(exceptions).toHaveLength(1);
+    expect(String(exceptions[0])).toContain("upstream HTTP 500");
+    expect(contexts[0]?.tags).toMatchObject({
+      "botfleet.bot.id": "bot-1",
+      "botfleet.instance.id": "instance-1",
+      "botfleet.room.id": "room-1",
+      "botfleet.provider": "openai-compat",
+      "botfleet.thread.id": "thread-1",
+      "gen_ai.provider.name": "openai-compat",
+      "gen_ai.request.model": "model-1",
+    });
+  });
+
+  it("deduplicates a runtime error when diagnostics starts after the turn span", () => {
+    configureTurnIdentity(() => ({
+      botId: "bot-1",
+      instanceId: "instance-1",
+      model: "model-1",
+      roomId: "room-1",
+    }));
+    const { sink, exceptions, contexts } = recordingSink();
+    observeRuntimeEvent(base({ type: "runtime.error", message: "provider process exited" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "exit code 1" }), sink);
+
+    expect(exceptions).toHaveLength(1);
+    expect(String(exceptions[0])).toContain("provider process exited");
+    expect(contexts[0]?.tags).toMatchObject({
+      "botfleet.bot.id": "bot-1",
+      "botfleet.instance.id": "instance-1",
+      "botfleet.room.id": "room-1",
+      "botfleet.provider": "openai-compat",
+      "botfleet.thread.id": "thread-1",
+      "gen_ai.provider.name": "openai-compat",
+      "gen_ai.request.model": "model-1",
+    });
+  });
+
+  it("does not carry runtime-error suppression into a later turn on the same thread", () => {
+    const { sink, exceptions } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "runtime.error", message: "first turn failed" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "exit code 1" }), sink);
+    observeRuntimeEvent(base({ type: "turn.started", turnId: "turn-2" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", turnId: "turn-2", ok: false, stopReason: "exit code 2" }), sink);
+
+    expect(exceptions).toHaveLength(2);
+    expect(String(exceptions[0])).toContain("first turn failed");
+    expect(String(exceptions[1])).toContain("bot turn failed: exit code 2");
+  });
+
+  it("does not let an event-log warning hide the provider failure for the same turn", () => {
+    const { sink, exceptions } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({
+      type: "runtime.error",
+      message: "Canonical event history is incomplete",
+      raw: { source: "botfleet.event-log", payload: { kind: "write-failed" } },
+    }), sink);
+    observeRuntimeEvent(base({ type: "runtime.error", message: "provider process exited" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: false, stopReason: "exit code 1" }), sink);
+
+    expect(exceptions).toHaveLength(2);
+    expect(String(exceptions[0])).toContain("event history is incomplete");
+    expect(String(exceptions[1])).toContain("provider process exited");
+  });
+
+  it("clears an unterminated turn's error boundary when its session exits", () => {
+    const { sink, exceptions } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "runtime.error", message: "session one failed" }), sink);
+    observeRuntimeEvent(base({ type: "session.exited", reason: "child exited" }), sink);
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "runtime.error", message: "session two failed" }), sink);
+
+    expect(exceptions).toHaveLength(2);
+  });
+
   it("does not Issue a setup runtime.error (operator login)", () => {
     const { sink, exceptions, breadcrumbs } = recordingSink();
     observeRuntimeEvent(
