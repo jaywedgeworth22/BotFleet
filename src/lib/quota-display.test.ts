@@ -254,7 +254,7 @@ describe("antigravity group summary", () => {
       ],
       { remainingPercentage: 0.46 },
     );
-    expect(groups[0].headline).toBe("Gemini: 90% available (5h window, resets in 3h 21m); 46% available (monthly pool, resets on ~17th)");
+    expect(groups[0].headline).toBe("Gemini: 90% available (5h window, resets in 3h 21m)");
     expect(groups[1].headline).toBe("Third-Party: 46% available (5h window, resets in 3h 21m)");
   });
 
