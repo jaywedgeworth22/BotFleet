@@ -127,10 +127,6 @@ export function antigravityGroupSummary(
       } else {
         headline += ` (5h window)`;
       }
-      if (group === "gemini" && promptCredits?.remainingPercentage != null) {
-        const monthlyPct = Math.round(promptCredits.remainingPercentage * 100);
-        headline += `; ${monthlyPct}% available (monthly pool, resets on ~17th)`;
-      }
       entry.headline = headline;
     }
 

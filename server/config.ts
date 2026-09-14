@@ -888,6 +888,10 @@ export function syncCredentialEnv(patch: Partial<AppConfig>): void {
     [patch.deepseek?.key, "DEEPSEEK_API_KEY"],
     [patch.tts?.key, "OMB_TTS_KEY"],
     [patch.imageGen?.key, "OMB_OPENAI_IMAGE_KEY"],
+    [patch.usage?.ingestUrl, "USAGE_MONITOR_INGEST_URL"],
+    [patch.usage?.ingestToken, "USAGE_MONITOR_INGEST_TOKEN"],
+    [patch.usage?.readToken, "USAGE_READ_TOKEN"],
+    [patch.observability?.sentryDsn, "SENTRY_DSN"],
     // Without this, an identity injected by a plist or a shell export would
     // keep shadowing the one just saved in Settings, and the card would report
     // a store the operator has already replaced.
