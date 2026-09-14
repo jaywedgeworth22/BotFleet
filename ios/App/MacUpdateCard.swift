@@ -71,6 +71,14 @@ struct MacUpdateSection: View {
                     if let checkedAt = status.checkedAt {
                         Text(Self.checkedAtText(checkedAt))
                     }
+                    if let checkError = status.checkError, !Self.rowShowsCheckError(status) {
+                        // The row above is showing a real update or a run in
+                        // progress, so it has something true to say and keeps
+                        // saying it.  The failure still belongs on screen,
+                        // right beside the timestamp it explains — that
+                        // "Checked …" line is the stale one.
+                        Text(checkError)
+                    }
                     if status.running == nil, status.capabilities.canRun == false,
                        let reason = status.capabilities.reasons.first {
                         Text(reason)
@@ -137,6 +145,14 @@ struct MacUpdateSection: View {
             runningRow(running)
         } else if let available = status.available {
             availableRow(available)
+        } else if let checkError = status.checkError {
+            // The harness could not reach the update source, so `available`
+            // and `checkedAt` are both still whatever the last check that
+            // *did* work left behind.  Neither "Up to date" nor "Not checked
+            // yet" is true here, and the first of those is the dangerous one:
+            // it is exactly the sentence someone reads as confirmation right
+            // after pressing Check.
+            checkFailedRow(checkError)
         } else if status.checkedAt == nil {
             // `available == nil` is also what a Mac that has never checked
             // looks like — "Up to date" is a claim about a check that has
@@ -155,6 +171,21 @@ struct MacUpdateSection: View {
                     .foregroundStyle(.primary)
                 Spacer()
             }
+        }
+    }
+
+    private func checkFailedRow(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                MacUpdateIcon(symbol: "exclamationmark.triangle.fill", color: .orange)
+                Text("Could not check")
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            Text(message)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 40)
         }
     }
 
@@ -275,6 +306,13 @@ struct MacUpdateSection: View {
     }
 
     // MARK: - Formatting
+
+    /// Whether `availabilityRow` is itself rendering `checkError`, which is
+    /// the case exactly when it has no truthful alternative to show.  The
+    /// footer consults this so the same sentence never appears twice.
+    private static func rowShowsCheckError(_ status: MacUpdateStatus) -> Bool {
+        status.checkError != nil && status.running == nil && status.available == nil
+    }
 
     private static func checkedAtText(_ checkedAt: String) -> String {
         guard let date = ISO8601DateFormatter().date(from: checkedAt) else {

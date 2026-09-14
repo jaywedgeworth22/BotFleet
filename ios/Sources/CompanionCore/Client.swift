@@ -1146,8 +1146,27 @@ public struct CompanionClient: Sendable {
     /// preflight this server never answers.  `body: [:]` is what makes
     /// `makeRequest` send that header; an empty object is all the harness
     /// needs to see.
+    ///
+    /// A check that could not reach the update source answers 502 with the
+    /// reason and the status it would have returned anyway, and that is a
+    /// failure rather than "nothing new": the Mac's `origin/main` ref is
+    /// still whatever the last good fetch left behind, so the comparison
+    /// this returns would otherwise pass off a week-old answer as one the
+    /// person just asked for.  `MacUpdateCheckFailure` carries both halves,
+    /// the same way `runUpdate()`'s 409 does.
     public func checkForUpdates() async throws -> MacUpdateStatus {
-        try await send(try makeRequest("POST", "/api/update/check", body: [:]), as: MacUpdateStatus.self)
+        let request = try makeRequest("POST", "/api/update/check", body: [:])
+        let (data, response) = try await perform(request)
+        if let http = response as? HTTPURLResponse, http.statusCode == 502,
+           let failure = try? JSONDecoder().decode(MacUpdateCheckFailureBody.self, from: data) {
+            throw MacUpdateCheckFailure(message: failure.error, status: failure.status)
+        }
+        try Self.check(response, data)
+        do {
+            return try JSONDecoder().decode(MacUpdateStatus.self, from: data)
+        } catch {
+            throw APIError.transport("The computer sent something this app couldn't read.")
+        }
     }
 
     /// Start installing the available update.  The harness answers 202 with

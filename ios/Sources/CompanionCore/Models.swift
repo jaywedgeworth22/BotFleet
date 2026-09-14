@@ -1244,6 +1244,17 @@ public struct MacUpdateStatus: Codable, Hashable, Sendable {
     /// long-ago timestamp, and worth its own "Not checked yet" copy rather
     /// than folding it into `available == nil`.
     public var checkedAt: String?
+    /// Why the last check produced no answer, `nil` when it produced one.
+    ///
+    /// A failed `git fetch` leaves the Mac's `origin/main` ref exactly where
+    /// the last good fetch left it, so the comparison behind `available`
+    /// would report a computer that has been offline for a week as up to
+    /// date.  The harness deliberately does not move `checkedAt` in that
+    /// case and sets this instead, so the card can say the check failed
+    /// rather than repeat a stale answer as if it were fresh.  Absent on a
+    /// harness that predates the field, which decodes as `nil` — the same
+    /// as a check that worked.
+    public var checkError: String?
     public var running: MacUpdateRun?
     public var lastRun: MacUpdateLastRun?
     public var capabilities: MacUpdateCapabilities
@@ -1252,6 +1263,7 @@ public struct MacUpdateStatus: Codable, Hashable, Sendable {
         installed: MacInstalledBuild,
         available: MacAvailableUpdate? = nil,
         checkedAt: String? = nil,
+        checkError: String? = nil,
         running: MacUpdateRun? = nil,
         lastRun: MacUpdateLastRun? = nil,
         capabilities: MacUpdateCapabilities
@@ -1259,6 +1271,7 @@ public struct MacUpdateStatus: Codable, Hashable, Sendable {
         self.installed = installed
         self.available = available
         self.checkedAt = checkedAt
+        self.checkError = checkError
         self.running = running
         self.lastRun = lastRun
         self.capabilities = capabilities
@@ -1276,6 +1289,32 @@ public struct MacUpdateRunStarted: Codable, Hashable, Sendable {
         self.runId = runId
         self.status = status
     }
+}
+
+/// `POST /api/update/check`'s 502 body — why the harness could not reach
+/// the update source, plus the same status shape a 200 would have carried.
+struct MacUpdateCheckFailureBody: Decodable, Sendable {
+    var error: String
+    var status: MacUpdateStatus
+}
+
+/// A check the harness could not complete.  Not an `APIError.status` for the
+/// same reason `MacUpdateRunRefusal` is not: the 502 body carries a full
+/// `MacUpdateStatus`, and the card needs that as much as the sentence — the
+/// installed build and the capabilities are still current, only the
+/// comparison is missing.  Modelled as a throw rather than a field on a
+/// returned status so a caller cannot mistake a failed check for a
+/// successful one just by ignoring `checkError`.
+public struct MacUpdateCheckFailure: Error, LocalizedError, Sendable {
+    public var message: String
+    public var status: MacUpdateStatus
+
+    public init(message: String, status: MacUpdateStatus) {
+        self.message = message
+        self.status = status
+    }
+
+    public var errorDescription: String? { message }
 }
 
 /// `POST /api/update/run`'s 409 body — the harness's reason plus the same

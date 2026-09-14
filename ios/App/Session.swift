@@ -1487,6 +1487,15 @@ final class Session: ObservableObject {
     }
 
     /// The Check button: ask the harness to look again right now.
+    ///
+    /// A check the harness could not complete still answers with a status —
+    /// the installed build and the capabilities are current, only the
+    /// comparison is missing — so that status is folded in exactly like a
+    /// successful one, carrying `checkError` for the card to render in place
+    /// of the answer it does not have.  It deliberately does not go to
+    /// `actionError`: an unreachable update source is an ordinary thing for
+    /// a laptop to report, and the card says so inline rather than throwing
+    /// an alert over the screen, the same as a refused run.
     @discardableResult
     func checkForMacUpdate() async -> MacUpdateStatus? {
         guard let client else { return nil }
@@ -1495,6 +1504,10 @@ final class Session: ObservableObject {
             state.apply(.updateStatus(status))
             pollMacUpdateWhileRunning()
             return status
+        } catch let failure as MacUpdateCheckFailure {
+            state.apply(.updateStatus(failure.status))
+            pollMacUpdateWhileRunning()
+            return failure.status
         } catch {
             actionError = error.localizedDescription
             return nil

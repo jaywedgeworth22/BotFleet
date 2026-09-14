@@ -163,6 +163,54 @@ final class MacUpdateTests: XCTestCase {
         XCTAssertEqual(refusal.status.installed.sourceCommit, "abc1234")
     }
 
+    // MARK: - A check the harness could not complete
+
+    /// `checkError` is the harness saying the comparison in this very reply
+    /// is stale — `available` and `checkedAt` are both left where the last
+    /// check that worked put them, so a client that ignores the field
+    /// reports a week-old answer as a fresh one.
+    func testCheckErrorCarriesTheReasonTheComparisonIsStale() throws {
+        let json = Data(#"""
+        {
+          "installed": {"version": "1.0.30", "sourceCommit": "abc1234"},
+          "available": null,
+          "checkedAt": "2026-09-06T09:00:00Z",
+          "checkError": "Could not reach the update source.\u00a0 fatal: could not resolve host: github.com",
+          "running": null,
+          "lastRun": null,
+          "capabilities": {"canCheck": true, "canRun": false, "reasons": []}
+        }
+        """#.utf8)
+        let status = try JSONDecoder().decode(MacUpdateStatus.self, from: json)
+        let checkError = try XCTUnwrap(status.checkError)
+        XCTAssertTrue(checkError.hasPrefix("Could not reach the update source."))
+        // The stale pair the field exists to contradict is still populated —
+        // this is exactly the payload that would read as "Up to date".
+        XCTAssertNil(status.available)
+        XCTAssertEqual(status.checkedAt, "2026-09-06T09:00:00Z")
+    }
+
+    /// A harness that predates the field omits it, and that is a check that
+    /// worked, not one that failed — the optional has to decode as `nil`
+    /// rather than making every older Mac undecodable.
+    func testAStatusWithoutCheckErrorDecodesAsNil() throws {
+        let status = try JSONDecoder().decode(MacUpdateStatus.self, from: Data(sampleStatusJSON.utf8))
+        XCTAssertNil(status.checkError)
+    }
+
+    /// The 502 body is `{ error, status }` — the same pairing the 409
+    /// refusal uses, so `checkForUpdates()` can hand back both the sentence
+    /// and a status whose installed build and capabilities are still current.
+    func testCheckFailureBodyCarriesTheReasonAndAFullStatus() throws {
+        let json = Data(#"""
+        {"error": "Could not read origin/main in /Users/jay/Code/BotFleet.", "status": \#(sampleStatusJSON)}
+        """#.utf8)
+        let failure = try JSONDecoder().decode(MacUpdateCheckFailureBody.self, from: json)
+        XCTAssertEqual(failure.error, "Could not read origin/main in /Users/jay/Code/BotFleet.")
+        XCTAssertEqual(failure.status.installed.sourceCommit, "abc1234")
+        XCTAssertTrue(failure.status.capabilities.canCheck)
+    }
+
     // MARK: - The `update.status` stream frame
 
     private var sampleStatusJSON: String {
