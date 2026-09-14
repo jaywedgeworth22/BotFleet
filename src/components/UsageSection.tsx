@@ -326,8 +326,8 @@ export function UsageSection() {
       </Card>
 
       <Card
-        title="Fleet Quotas & Provider Caps"
-        subtitle="Live quota tracking and session limits across fleet engines.  Hover or click a row for the full remaining breakdown."
+        title="Engine Quotas"
+        subtitle="Live remaining usage for each engine.  Hover or click a row for the full remaining breakdown."
       >
         <div className="flex flex-col divide-y divide-hairline/20">
           {state.instances.filter((instance) => {
