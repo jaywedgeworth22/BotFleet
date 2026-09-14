@@ -57,7 +57,7 @@ export function LocalComputerAutoWarning({
           <AlertTriangle size={18} className="mt-0.5 shrink-0 text-warning" />
           <div>
             <h2 id="local-auto-warning-title" className="text-[15px] font-semibold text-ink">
-              Allow Auto mode on this computer?
+              Allow Auto Mode on This Computer?
             </h2>
             <p id="local-auto-warning-body" className="mt-1.5 text-[13px] leading-relaxed text-ink-secondary">
               {bots
@@ -65,11 +65,10 @@ export function LocalComputerAutoWarning({
                 : LOCAL_COMPUTER_AUTO_WARNING}
             </p>
             {bots && (
-              <ul aria-label="Bots gaining Auto access" className="mt-3 max-h-48 overflow-y-auto space-y-1 text-[13px] text-ink">
+              <ul aria-label="Bots Gaining Auto Access" className="mt-3 max-h-48 overflow-y-auto space-y-1 text-[13px] text-ink">
                 {bots.map((bot) => (
                   <li key={bot.id} className="break-words">
-                    <span>{bot.name}</span>
-                    <span className="block break-all font-mono text-[11px] text-ink-secondary">{bot.id}</span>
+                    {bot.name}
                   </li>
                 ))}
               </ul>
