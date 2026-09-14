@@ -4,10 +4,14 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  attachFeedbackEventDetails,
+  buildFallbackIssueUrl,
   initSentry,
   initSentryFromRuntime,
+  isSentryFeedbackAvailable,
   refreshSentryFromRuntime,
   resetSentryForTests,
+  setActiveFeedbackDetailsForTests,
   setObservabilityReaderForTests,
   setSentryPortForTests,
   type ObservabilityReader,
@@ -92,7 +96,7 @@ describe("browser Sentry", () => {
     expect(src).toMatch(/maskAllText:\s*true/);
     expect(src).toMatch(/blockAllMedia:\s*true/);
     expect(src).toMatch(/feedbackIntegration\(/);
-    expect(src).toMatch(/autoInject:\s*true/);
+    expect(src).toMatch(/autoInject:\s*false/);
     expect(src).toMatch(/enableLogs:\s*true/);
   });
 
@@ -323,5 +327,62 @@ describe("renderer diagnostics refresh", () => {
     await refreshSentryFromRuntime();
     expect(sentry.record.inits).toHaveLength(0);
     expect(sentry.record.closes).toBe(0);
+  });
+
+  it("buildFallbackIssueUrl bounds total encoded length and safely handles surrogate pairs and lone surrogates", () => {
+    const hugeMessageWithEmoji = "Error: 🔥 something crashed 🚨 " + "x".repeat(10000) + " 💥";
+    const url = buildFallbackIssueUrl("Error in Bot", hugeMessageWithEmoji, 2000);
+    expect(url.length).toBeLessThanOrEqual(2000);
+    expect(url).toContain("https://github.com/jaywedgeworth22/BotFleet/issues/new?title=");
+    expect(url).toContain("Error%20in%20Bot");
+    // Verify decodeURIComponent does not throw (meaning surrogate pairs were not split)
+    expect(() => decodeURIComponent(url)).not.toThrow();
+
+    // Lone surrogate string
+    const loneSurrogate = "Broken surrogate: \uD800 invalid character";
+    expect(() => buildFallbackIssueUrl("Issue \uD800", loneSurrogate)).not.toThrow();
+    const loneUrl = buildFallbackIssueUrl("Issue \uD800", loneSurrogate);
+    expect(() => decodeURIComponent(loneUrl)).not.toThrow();
+
+    // Verify without native toWellFormed (Safari < 16.4 fallback path)
+    const orig = (String.prototype as unknown as Record<string, unknown>).toWellFormed;
+    try {
+      delete (String.prototype as unknown as Record<string, unknown>).toWellFormed;
+      const fallbackUrl = buildFallbackIssueUrl("Fallback \uD800", "Lone \uDC00 and pair \uD83D\uDE00");
+      expect(() => decodeURIComponent(fallbackUrl)).not.toThrow();
+      expect(fallbackUrl).toContain(encodeURIComponent("\uFFFD"));
+      expect(fallbackUrl).toContain(encodeURIComponent("😀"));
+    } finally {
+      (String.prototype as unknown as Record<string, unknown>).toWellFormed = orig;
+    }
+  });
+
+  it("isSentryFeedbackAvailable reflects client initialization state", () => {
+    // When reset/uninitialized
+    expect(isSentryFeedbackAvailable()).toBe(false);
+  });
+
+  it("attachFeedbackEventDetails binds diagnostic details strictly to feedback events", () => {
+    setActiveFeedbackDetailsForTests("Diagnostic crash stack trace");
+
+    // Standard exception or message event (not feedback)
+    const errorEvent = { message: "Network timeout" } as import("@sentry/react").Event;
+    const processedError = attachFeedbackEventDetails(errorEvent);
+    expect(processedError.contexts).toBeUndefined();
+
+    // Feedback event
+    const feedbackEvent = { type: "feedback", contexts: { user_tag: { value: "user" } } } as import("@sentry/react").Event;
+    const processedFeedback = attachFeedbackEventDetails(feedbackEvent);
+    expect(processedFeedback.contexts).toEqual({
+      user_tag: { value: "user" },
+      reported_problem: {
+        error_details: "Diagnostic crash stack trace",
+      },
+    });
+
+    // When details cleared
+    setActiveFeedbackDetailsForTests(null);
+    const clearedFeedback = attachFeedbackEventDetails({ type: "feedback" } as import("@sentry/react").Event);
+    expect(clearedFeedback.contexts).toBeUndefined();
   });
 });
