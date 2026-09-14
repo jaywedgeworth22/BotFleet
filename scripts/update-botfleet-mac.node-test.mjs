@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { chmod, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
@@ -32,8 +32,8 @@ test("prepare and apply expose an explicit reusable stage", () => {
     {
       command: "prepare",
       target: "abc",
-      source: "/tmp/source",
-      stage: "/tmp/stage",
+      source: resolve("/tmp/source"),
+      stage: resolve("/tmp/stage"),
       bundle: undefined,
       dependencies: undefined,
       openApplication: true,
@@ -43,7 +43,7 @@ test("prepare and apply expose an explicit reusable stage", () => {
     command: "apply",
     target: "origin/main",
     source: undefined,
-    stage: "/tmp/stage",
+    stage: resolve("/tmp/stage"),
     bundle: undefined,
     dependencies: undefined,
     openApplication: false,
@@ -64,11 +64,11 @@ test("prepare and apply expose an explicit reusable stage", () => {
       "--bundle", "/tmp/source/release/BotFleet.app",
       "--dependencies", "/tmp/source/node_modules",
     ]).bundle,
-    "/tmp/source/release/BotFleet.app",
+    resolve("/tmp/source/release/BotFleet.app"),
   );
 });
 
-test("prepared stages reject symlink directories and public manifests", async (t) => {
+test("prepared stages reject symlink directories", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "botfleet-update-stage-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const stage = join(root, "stage");
@@ -76,7 +76,11 @@ test("prepared stages reject symlink directories and public manifests", async (t
   await mkdir(stage, { mode: 0o700 });
   await symlink(stage, link);
   await assert.rejects(loadPrepared(link), /must be a real directory/);
+});
 
+test("prepared stages reject public manifests", { skip: process.platform === "win32" ? "Mac updater requires POSIX ownership and modes" : false }, async (t) => {
+  const stage = await mkdtemp(join(tmpdir(), "botfleet-update-stage-"));
+  t.after(() => rm(stage, { recursive: true, force: true }));
   const manifest = join(stage, "prepared.json");
   await writeFile(manifest, "{}\n", { mode: 0o600 });
   await chmod(manifest, 0o644);
@@ -157,7 +161,7 @@ test("desktop local-update UI does not report normal packaging latency as failur
   assert.match(source, /updater lock before retrying/);
   assert.match(source, /still preparing\.\\u00A0 Do not start another update/);
   assert.match(source, /expected\.\\u00A0 Check its updater lock/);
-  assert.match(source, /status: "installing",\n\s+message: "The local updater is taking longer/);
+  assert.match(source, /status: "installing",\r?\n\s+message: "The local updater is taking longer/);
   assert.doesNotMatch(source, /did not finish\. Quit the app and try again/);
 });
 
@@ -234,7 +238,7 @@ test("rollback refuses to interrupt an active or unprovable replacement", () => 
   assert.match(pendingRecoveryReceiptPath({ stageDirectory: "/private/stage" }), /pending-recovery\.json$/);
   assert.equal(
     credentialPreparationReceiptPath({ stageDirectory: "/private/stage" }),
-    "/private/stage/credential-migration.json",
+    join("/private/stage", "credential-migration.json"),
   );
 });
 
