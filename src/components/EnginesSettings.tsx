@@ -407,10 +407,21 @@ function EngineRow({
           <strong className="text-ink">Native HTTP API.</strong>
           {"  "}Optimized for fast, low-cost text turns with up to a 1M-token context window.
           {"  "}Streams token-level responses and supports the OpenAI function-calling shape.
-          {"  "}The harness gives it two tools today — <code>list_bots</code> and{" "}
-          <code>ask_bot</code>, run through the HTTP tool loop — and no file, shell, or browser tools.
-          {"  "}For bots that need those, pick an ACP engine (Claude, Codex, DSH, Droid) instead —
-          they spawn MCP servers natively and execute the calls.
+          {"  "}The harness gives it up to seven tools in a turn it starts itself —{" "}
+          <code>list_bots</code>, <code>ask_bot</code>, <code>list_routines</code>,{" "}
+          <code>delegate_bot</code>, <code>request_credential</code>, <code>propose_routine</code>,{" "}
+          and <code>propose_routine_action</code> — and none of them in a turn another
+          bot invoked through <code>ask_bot</code> or <code>delegate_bot</code>, the harness's
+          hard stop against bot-to-bot recursion.
+          {"  "}A section's Chief of Staff also gets <code>create_bot</code>, but only in a
+          direct chat — rooms don't grant it yet.
+          {"  "}<code>ask_bot</code> and <code>delegate_bot</code> go through the same{" "}
+          approval flow as any other engine; <code>request_credential</code> and the routine tools
+          show their own confirmation card; <code>create_bot</code> runs immediately, with no card
+          at all.
+          {"  "}It has no file, shell, web, Composio, computer-use, or image tools, because
+          those come from a vendor CLI this engine never spawns.
+          {"  "}For that work, pick a CLI engine (Claude, Codex, Antigravity, Cursor) instead.
         </div>
       )}
       {isCustom && (

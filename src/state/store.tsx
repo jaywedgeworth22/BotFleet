@@ -2,6 +2,7 @@
 // it dispatches typed commands over HTTP and folds the one SSE event
 // stream from the harness server into local state. The reducer stays
 // pure; everything async lives in the wrapped dispatch + SSE fold.
+import { UPDATE_STATUS_EVENT } from "@/lib/update-control";
 import {
   createContext,
   useCallback,
@@ -425,6 +426,8 @@ export interface ConfigStatus {
   observability?: {
     configured: boolean;
     enabled: boolean;
+    /** Stored switch before DSN availability is folded into `enabled`. */
+    requestedEnabled?: boolean;
     hasDsn: boolean;
     host: string | null;
     // "infisical" mirrors server/observability.ts's ObservabilityStatusView:
@@ -2525,6 +2528,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "message.patch":
           rawDispatch({ type: "messagePatched", threadId: frame.threadId, message: frame.message });
           break;
+        // An update runs detached and takes minutes; the harness pushes a
+        // new status on every step so the Updates card and the floating
+        // banner follow it live.  It is not reducer state — only the two
+        // update components want it — so it goes out as a window event
+        // rather than growing the store.
+        case "update.status":
+          window.dispatchEvent(new CustomEvent(UPDATE_STATUS_EVENT, { detail: frame.status }));
+          break;
         case "thread":
           rawDispatch({ type: "threadActive", threadId: frame.threadId, activeLeafId: frame.activeLeafId });
           // a rewind also invalidates any half-streamed text from the old branch
@@ -2664,6 +2675,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // could not fill the gap, so queue subsequent frames behind a hydrate.
       if (frame.kind === "hello") {
         clearTimeout(hydrationFallback);
+        if (frame.resumed !== true) {
+          // The snapshot replaces the pre-gap transcript.  Discard both
+          // rendered fragments and queued deltas from that older boundary.
+          deltaBuffer.current.clear();
+          if (deltaFlush.current !== null) {
+            cancelAnimationFrame(deltaFlush.current);
+            deltaFlush.current = null;
+          }
+          setStream(EMPTY_STREAM);
+          pendingFrames.length = 0;
+        }
         if (shouldHydrateAfterHello(frame.resumed === true, hydrationFailed)) hydrate();
         return;
       }
