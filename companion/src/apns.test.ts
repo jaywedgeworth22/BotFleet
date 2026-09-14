@@ -908,6 +908,90 @@ describe("watchHarnessNotifications", () => {
     expect(loads).toBe(2);
   });
 
+  it("resumes from the hello frame's cursor when the link drops before any event", async () => {
+    // The harness opens with `{"kind":"hello","cursor":…}` and no `id:` line
+    // of its own.  Without taking that cursor the reconnect carries no
+    // Last-Event-ID at all, and every notification raised during the
+    // four-second retry is silently skipped.
+    const cursors: (string | null)[] = [];
+    let connections = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [],
+      config: testConfig(),
+      fetchImpl: async (_input, init) => {
+        connections += 1;
+        cursors.push(new Headers(init?.headers).get("last-event-id"));
+        // Baseline only, then the stream ends — exactly the shape a harness
+        // restart leaves behind.
+        return new Response(`data: ${JSON.stringify({ kind: "hello", cursor: "abc12345:41", resumed: false })}\n\n`, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+    const started = Date.now();
+    while (connections < 2 && Date.now() - started < 12_000) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    watch.stop();
+    expect(cursors[0]).toBeNull();
+    expect(cursors[1]).toBe("abc12345:41");
+  }, 15_000);
+
+  it("ignores a key rejection signed with a key that has already been replaced", async () => {
+    // A rotation can land while a request signed with the old key is still
+    // in flight.  Reading that request's answer as a verdict on the new key
+    // disables the new key, and keeps it disabled: the fault clears only for
+    // a key file that differs from the recorded stamp, and the file on disk
+    // is already the new one.
+    const keyA = testConfig({ keyId: "KEYAAA" });
+    const keyB = testConfig({ keyId: "KEYBBB" });
+    let stamp = "key-a";
+    const gate = deferred();
+    const signedWith: string[] = [];
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "phone", token: "aa".repeat(32) }],
+      loadConfig: () => (stamp === "key-a" ? keyA : keyB),
+      keyStamp: () => stamp,
+      keyRecheckMs: 10,
+      fetchImpl: async () =>
+        new Response(notifyFrame("approval") + notifyFrame("done"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      send: async (config) => {
+        signedWith.push(config.keyId);
+        if (signedWith.length > 1) return { ok: true, status: 200, attempts: 1 };
+        gate.started = true;
+        await gate.promise;
+        return { ok: false, status: 403, reason: "InvalidProviderToken", attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (!gate.started && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // Rotate under the in-flight request, and give the key timer time to
+    // notice before that request comes back refused.
+    stamp = "key-b";
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    gate.resolve();
+    while (signedWith.length < 2 && Date.now() - started < 4000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    // The replacement is what the next send signs with, and nothing on the
+    // health says the key was refused.
+    expect(signedWith).toEqual(["KEYAAA", "KEYBBB"]);
+    const health = watch.health();
+    expect(health.keyRejected).toBeNull();
+    expect(health.configured).toBe(true);
+  });
+
   it("stays off, and stays quiet, when the sender is pinned off", () => {
     const watch = watchHarnessNotifications({
       harnessPort: 1,

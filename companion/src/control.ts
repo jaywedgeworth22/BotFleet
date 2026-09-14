@@ -424,18 +424,18 @@ function render(s) {
   // when it breaks: a phone that is paired, reachable and simply never
   // buzzes looks exactly like a quiet fleet.
   el("push").innerHTML =
-    "<h2>Closed-app notifications</h2>" +
+    "<h2>Closed-App Notifications</h2>" +
     (!s.push
       ? "<p class=dim>Not reported by this sidecar.</p>"
       : s.push.keyRejected
-        ? "<p>Apple refused the signing key (<code>" + esc(s.push.keyRejected) + "</code>). " +
+        ? "<p>Apple refused the signing key (<code>" + esc(s.push.keyRejected) + "</code>).&nbsp; " +
           "Replace the key file to turn pushes back on.</p>"
         : !s.push.configured
-          ? "<p class=dim>No signing key found, so a phone that is not open will not be woken. " +
+          ? "<p class=dim>No signing key found, so a phone that is not open will not be woken.&nbsp; " +
             "The key is looked for again every few minutes.</p>"
           : "<p>On, for " + s.push.tokensRegistered + " " +
             (s.push.tokensRegistered === 1 ? "phone" : "phones") + "." +
-            (s.push.lastSentAt ? " Last sent " + ago(s.push.lastSentAt) + "." : " Nothing sent yet.") +
+            (s.push.lastSentAt ? "&nbsp; Last sent " + ago(s.push.lastSentAt) + "." : "&nbsp; Nothing sent yet.") +
             "</p>" +
             (s.push.lastError
               ? "<p class=dim>Last error: <code>" + esc(String(s.push.lastError)) + "</code> " + ago(s.push.lastErrorAt) + ".</p>"

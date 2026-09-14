@@ -1574,6 +1574,10 @@ final class Session: ObservableObject {
     }
 
     func refreshNotificationAuthorization() async {
+        // Before reading the status: an install authorized before the app
+        // asked for `.timeSensitive` needs the added option requested once,
+        // and the request cannot lower a grant it already holds.
+        await NotificationCoordinator.shared.requestTimeSensitiveIfNeeded()
         notificationAuthorization = await NotificationCoordinator.shared.authorizationStatus()
         notificationAuthorizationResolved = true
         registerForRemoteNotificationsIfAllowed()

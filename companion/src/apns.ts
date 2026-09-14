@@ -640,7 +640,17 @@ export function watchHarnessNotifications(options: {
 
     // The key, not the phone: every device is about to fail the same way.
     if (result.reason === INVALID_PROVIDER_TOKEN) {
-      onKeyFault(result.reason);
+      // Only when the key that signed THIS request is still the one in use.
+      // A rotation can land while a request signed with the old key is in
+      // flight, and reading that request's rejection as a verdict on the
+      // replacement would disable the replacement — then hold it disabled,
+      // because the fault only clears for a key file that differs from the
+      // recorded stamp and the file on disk is already the replacement.
+      if (config === (fixed ?? discovered)) {
+        onKeyFault(result.reason);
+      } else if (!keyFault) {
+        console.warn("companion: APNs refused a signing key that has since been replaced; the replacement stands");
+      }
       return;
     }
 
@@ -768,6 +778,7 @@ export function watchHarnessNotifications(options: {
             if (!line) continue;
             let frame: {
               kind?: string;
+              cursor?: string;
               notification?: {
                 title?: string;
                 body?: string;
@@ -786,6 +797,12 @@ export function watchHarnessNotifications(options: {
             } catch {
               continue;
             }
+            // The harness's opening frame carries the stream's current
+            // position but no `id:` line of its own, and a hello is always
+            // that stream's baseline.  Without taking it, a link that drops
+            // before the first real event reconnects with no cursor at all,
+            // and every notification raised in between is never pushed.
+            if (frame.kind === "hello" && frame.cursor) lastEventId = frame.cursor;
             if (frame.kind !== "notify" || !frame.notification) continue;
             // Returns at once: the sends happen on each device's own queue,
             // so a reader that has to keep up with the harness never waits

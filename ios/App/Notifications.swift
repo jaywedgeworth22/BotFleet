@@ -6,6 +6,9 @@ import CompanionCore
 /// companion frames, and from APNs when the sidecar wakes a killed app.
 final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate {
     static let shared = NotificationCoordinator()
+    /// Set once the added `.timeSensitive` option has been asked for on an
+    /// install that was already authorized.
+    private static let timeSensitiveRequestedKey = "botfleet.timeSensitiveAuthorizationRequested"
     private let center = UNUserNotificationCenter.current()
     /// Set by `Session`; kept as an id-only value so the notification layer
     /// does not know about SwiftUI navigation or mutable fleet state.
@@ -30,8 +33,27 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         await center.notificationSettings().authorizationStatus
     }
 
+    /// `.timeSensitive` is asked for alongside the rest because approval and
+    /// question alerts are sent at that interruption level; without the
+    /// option granted, iOS quietly demotes them to an ordinary banner that a
+    /// Focus mode will hold back.
     func requestAuthorization() async -> Bool {
-        (try? await center.requestAuthorization(options: [.alert, .badge, .sound])) == true
+        (try? await center.requestAuthorization(options: [.alert, .badge, .sound, .timeSensitive])) == true
+    }
+
+    /// Installs that granted notifications before `.timeSensitive` joined the
+    /// set above keep the old grant: iOS adds a new option to an
+    /// already-authorized app without prompting again, but only when the app
+    /// actually asks for it.  Ask once per install — the flag is what stops
+    /// every launch from asking forever.
+    func requestTimeSensitiveIfNeeded() async {
+        let defaults = UserDefaults.standard
+        if defaults.bool(forKey: Self.timeSensitiveRequestedKey) { return }
+        // Only an existing grant: a phone that has never been asked, or that
+        // said no, must not be prompted by a launch it did not initiate.
+        guard await authorizationStatus() == .authorized else { return }
+        _ = await requestAuthorization()
+        defaults.set(true, forKey: Self.timeSensitiveRequestedKey)
     }
 
     func deliver(_ notification: NotificationFrame, sequence: Int?) {
