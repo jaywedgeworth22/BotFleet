@@ -97,7 +97,7 @@ export class ProviderRegistry {
    *  the reserved instance's (resolveMinimaxCredentials's global
    *  process.env/~/.mmx/config.json fallback has no instance concept of
    *  its own). Only ever set for driver "minimax". */
-  private minimaxContextByInstance = new Map<InstanceId, { environment: Record<string, string>; url: string | undefined }>();
+  private minimaxContextByInstance = new Map<InstanceId, { environment: Record<string, string>; url: string | undefined; rawUrl: string | undefined }>();
   private driversByKind: Map<string, AnyProviderDriver>;
 
   constructor(drivers: readonly AnyProviderDriver[]) {
@@ -142,7 +142,15 @@ export class ProviderRegistry {
         const url = typeof (config as { url?: unknown } | undefined)?.url === "string"
           ? (config as { url: string }).url
           : undefined;
-        this.minimaxContextByInstance.set(instanceId, { environment: entry.environment ?? {}, url });
+        // The RAW url as well as the decoded one: decodeConfig always fills
+        // `url` in, so the decoded value alone cannot say whether THIS
+        // instance actually chose a host or simply inherited the default —
+        // and that is exactly the distinction the driver's own host
+        // precedence turns on (see describeEntry's balance lookup).
+        const rawUrl = typeof (entry.config as { url?: unknown } | undefined)?.url === "string"
+          ? ((entry.config as { url: string }).url.trim() || undefined)
+          : undefined;
+        this.minimaxContextByInstance.set(instanceId, { environment: entry.environment ?? {}, url, rawUrl });
       } else {
         this.minimaxContextByInstance.delete(instanceId);
       }
@@ -341,9 +349,23 @@ export class ProviderRegistry {
         // reaches the client via `minimaxSummary` below for a future
         // "video quota" display; it just never enters this dict.
         let minimaxSummary: NonNullable<ProviderSnapshot["quota"]>["minimax"] | undefined;
+        let minimaxInstanceCapped = false;
         if (inst.driverKind === "minimax") {
           const ctx = this.minimaxContextByInstance.get(inst.instanceId);
           const local = getCachedLocalMiniMaxConfig();
+          // Same host the instance's TURNS go to: MinimaxDriver.create()
+          // (server/drivers/minimax.ts:220) swaps its decoded config.url for
+          // `mmx auth login`'s ~/.mmx/config.json host ONLY while nothing
+          // has chosen a host — neither this instance's own config.url nor
+          // MINIMAX_BASE_URL. Reproduced from those two inputs because the
+          // driver's DEFAULT_URL constant is private to that file (a
+          // keep-out), so an instance pointed at the China region, or a
+          // second instance with its own host, is balance-checked where it
+          // actually bills instead of at the global default.
+          const envBaseUrl = process.env.MINIMAX_BASE_URL?.trim();
+          const instanceUrl = ctx?.url ?? envBaseUrl ?? local.url;
+          const hostWasChosen = Boolean(ctx?.rawUrl) || Boolean(envBaseUrl);
+          const balanceUrl = hostWasChosen ? instanceUrl : (local.url || instanceUrl);
           // TODO(#387): resolveMinimaxCredentials is gaining an instance id
           // argument that restricts the process.env / ~/.mmx/config.json
           // fallback to the reserved "minimax" instance only. Pass
@@ -354,18 +376,62 @@ export class ProviderRegistry {
           // already fixes the common case (a second instance WITH its own
           // key/url is resolved correctly today).
           const key = resolveMinimaxCredentials(ctx?.environment ?? {}, local);
-          const balanceUrl = ctx?.url || process.env.MINIMAX_BASE_URL?.trim() || local.url;
           const balance = await getMiniMaxBalance(key, balanceUrl);
           const general = balance.models?.general;
-          if (general) {
+          // A pay-as-you-go account with an empty wallet has no "general"
+          // pool at all (server/minimax-balance.ts never populates `models`
+          // for an account-balance response) — without this, every catalog
+          // model kept reading as uncapped while the account could not
+          // actually place a call, so auto-fallback kept routing turns at
+          // it instead of failing over.
+          const walletExhausted = !general && balance.source === "account-balance" && balance.status === "capped";
+          // BOTH of MiniMax's windows bind. A weekly allowance at 0% blocks
+          // every call even while a fresh 5-hour interval still reads 100%,
+          // so the per-model verdict takes the more restrictive of the two
+          // (the same "most restrictive wins" rule the snapshot's own
+          // status uses) and reports the reset of whichever window is
+          // actually holding the account back — never the 5-hour one when
+          // the week is the one that has run out.
+          const generalCapped = general
+            ? Math.min(general.remainingPercent ?? 100, general.secondaryRemainingPercent ?? 100) <= 0
+            : walletExhausted;
+          const weeklyBinds = general != null && (general.secondaryRemainingPercent ?? 100) <= 0;
+          const generalResetsAt = general
+            ? (weeklyBinds ? general.weeklyResetsAt ?? general.resetsAt : general.resetsAt)
+            : null;
+          // ModelPicker.tsx and turn-safety.ts's eligibleAutoFallbackChain
+          // read only the top-level and per-model `capped` fields, never
+          // `quota.minimax.status` — so an account MiniMax already reports
+          // as exhausted has to reach the top-level verdict too, including
+          // when this instance's catalog is momentarily empty and the
+          // per-model loop below writes nothing at all.
+          minimaxInstanceCapped = generalCapped;
+          if (general || walletExhausted) {
             for (const id of catalogIds) {
-              models[id] = {
-                capped: (general.remainingPercent ?? 100) <= 0,
-                remainingPercent: general.remainingPercent,
-                secondaryRemainingPercent: general.secondaryRemainingPercent,
-                windowsLabel: general.windowsLabel,
-                resetsAt: general.resetsAt,
-              };
+              // A live cooldown (server/index.ts's quotaCooldowns.record, a
+              // REAL 429/quota error from an actual turn) is the more
+              // authoritative, real-time signal — never overwritten, only
+              // filled in with the balance check's remaining-percent and
+              // window label, which the cooldown loop above never sets.
+              const existing = models[id];
+              if (existing) {
+                models[id] = {
+                  ...existing,
+                  remainingPercent: general?.remainingPercent ?? existing.remainingPercent,
+                  secondaryRemainingPercent: general?.secondaryRemainingPercent ?? existing.secondaryRemainingPercent,
+                  windowsLabel: general?.windowsLabel ?? existing.windowsLabel,
+                };
+              } else if (general) {
+                models[id] = {
+                  capped: generalCapped,
+                  remainingPercent: general.remainingPercent,
+                  secondaryRemainingPercent: general.secondaryRemainingPercent,
+                  windowsLabel: general.windowsLabel,
+                  resetsAt: generalResetsAt,
+                };
+              } else {
+                models[id] = { capped: true, remainingPercent: 0, secondaryRemainingPercent: null, resetsAt: null };
+              }
             }
           }
           minimaxSummary = {
@@ -394,7 +460,7 @@ export class ProviderRegistry {
           catalogIds.length > 0 && catalogIds.every((id) => models[id]?.capped === true);
         if (wildcard || Object.keys(models).length > 0 || windowsLabel || minimaxSummary) {
           snapshot.quota = {
-            capped: Boolean(wildcard) || allCatalogCapped,
+            capped: Boolean(wildcard) || allCatalogCapped || minimaxInstanceCapped,
             resetsAt: wildcard?.resetsAt,
             error: wildcard?.error,
             ...(windowsLabel ? { windowsLabel } : {}),

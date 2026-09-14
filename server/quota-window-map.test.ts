@@ -45,6 +45,15 @@ describe("engineMeterNote", () => {
     expect(engineMeterNote("cursorAgent")).toBeNull();
   });
 
+  it("does not claim Qwen/DashScope as the sole biller for qwenAgent — its injected-model path can point at any endpoint", () => {
+    // qwen.ts's `host::model` inject path can reach a local host or any
+    // OpenAI-compatible endpoint the owner registered, not only Alibaba's
+    // own Qwen Cloud/DashScope API — the copy must not name a single vendor
+    // as if BotFleet knows who actually bills.
+    const copy = engineMeterNote("qwenAgent")?.copy ?? "";
+    expect(copy).not.toMatch(/billed to your own Qwen\/DashScope key/i);
+  });
+
   it("returns null for an unknown driver kind", () => {
     expect(engineMeterNote("someFutureEngine")).toBeNull();
   });

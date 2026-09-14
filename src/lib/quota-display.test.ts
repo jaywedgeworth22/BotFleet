@@ -362,6 +362,7 @@ describe("minimaxQuotaLine", () => {
     remainingPercent: null,
     secondaryRemainingPercent: null,
     resetsAt: null,
+    weeklyResetsAt: null,
   };
 
   it("returns null when the source is unavailable", () => {
@@ -430,6 +431,32 @@ describe("minimaxQuotaLine", () => {
       now,
     );
     expect(line).toBe("100% left in the current 5 h window, resets soon");
+  });
+
+  it("names the WEEKLY reset when the week is the window that has run out", () => {
+    // The 5-hour window refilling in twenty minutes is not what the owner
+    // is waiting on when the weekly allowance underneath it is at zero —
+    // quoting the 5-hour reset there reads as "back shortly" while the
+    // account actually cannot place a call for days.
+    const now = Date.now();
+    const weeklyResetsAt = now + (3 * 86_400_000);
+    const line = minimaxQuotaLine(
+      { ...base, source: "token-plan", status: "capped", remainingPercent: 100, secondaryRemainingPercent: 0, resetsAt: now + 1_200_000, weeklyResetsAt },
+      now,
+    );
+    const expectedTime = new Date(weeklyResetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(line).toBe(`0% left this week, 100% left in the current 5 h window, resets at ${expectedTime}`);
+  });
+
+  it("keeps naming the 5-hour reset while the weekly window still has room", () => {
+    const now = Date.now();
+    const resetsAt = now + 1_200_000;
+    const line = minimaxQuotaLine(
+      { ...base, source: "token-plan", status: "ok", remainingPercent: 4, secondaryRemainingPercent: 80, resetsAt, weeklyResetsAt: now + (3 * 86_400_000) },
+      now,
+    );
+    const expectedTime = new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+    expect(line).toBe(`80% left this week, 4% left in the current 5 h window, resets at ${expectedTime}`);
   });
 
   it("still shows a clock time for a reset that has not passed yet", () => {

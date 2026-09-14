@@ -101,7 +101,11 @@ export const ENGINE_METER_NOTES: Readonly<Record<string, EngineMeterNote>> = {
   },
   qwenAgent: {
     kind: "metered",
-    copy: "metered — billed to your own Qwen/DashScope key, custom-only in BotFleet with no Qwen Cloud quota window",
+    // Never name Qwen/DashScope specifically: qwen.ts's injected-model path
+    // (a `host::model` pick) can point at any local or remote endpoint the
+    // owner registered, not only Alibaba's own API — the copy must not
+    // claim who bills when BotFleet genuinely does not know.
+    copy: "metered by whichever provider you've configured (Qwen Cloud, a local host, or another endpoint) — custom-only in BotFleet with no fleet-wide quota window",
   },
   hermesAgent: {
     kind: "metered",

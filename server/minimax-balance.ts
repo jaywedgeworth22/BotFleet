@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -147,14 +148,26 @@ const FETCH_TIMEOUT_MS = 4_000;
 const NEAR_CAP_PERCENT = 10;
 
 type CacheEntry = {
-  key: string;
-  url: string;
   expiresAt: number;
   inflight: Promise<MiniMaxBalanceSnapshot> | null;
   value: MiniMaxBalanceSnapshot;
 };
 
-let entry: CacheEntry | null = null;
+/** One slot per (key, url) pair, not one shared slot — a single module-level
+ *  slot meant two MiniMax instances would fight over it: instance B's fetch
+ *  would overwrite instance A's cache entry, so A's next 30s poll missed
+ *  the cache too, and neither instance was ever actually served from
+ *  cache. Keyed by a HASH of (key, url), never the raw key itself, so the
+ *  API key never sits in memory as a plain-text map key. */
+const cacheByHash = new Map<string, CacheEntry>();
+
+function cacheKeyFor(key: string, url: string): string {
+  // JSON.stringify a tuple rather than concatenating with a separator
+  // character: any fixed separator risks a collision between (key + url)
+  // pairs that differ only in where the boundary falls, and JSON already
+  // escapes both strings unambiguously.
+  return createHash("sha256").update(JSON.stringify([key, url])).digest("hex");
+}
 
 function emptySnapshot(now: number, error: string | null): MiniMaxBalanceSnapshot {
   return {
@@ -402,17 +415,19 @@ async function fetchOnce(key: string, url: string | undefined, signal: AbortSign
 
 /** Returns the cached snapshot when the same (key, url) is requested within
  *  the TTL; otherwise fetches fresh and shares the in-flight promise across
- *  concurrent callers — identical contract to getDeepSeekBalance, so a
- *  Settings panel that mounts twice in 5 minutes does not double-ping
- *  MiniMax, and registry.ts's per-describe call rides the same cache the
- *  /api/quotas route does. */
+ *  concurrent callers for that SAME (key, url) — identical contract to
+ *  getDeepSeekBalance, so a Settings panel that mounts twice in 5 minutes
+ *  does not double-ping MiniMax, and each MiniMax instance's per-describe
+ *  call rides its own cache slot independently of every other instance's. */
 export async function getMiniMaxBalance(key: string | undefined, url: string | undefined): Promise<MiniMaxBalanceSnapshot> {
   const safeKey = (key ?? "").trim();
   const safeUrl = (url ?? "").trim();
   const now = Date.now();
-  if (entry && entry.key === safeKey && entry.url === safeUrl) {
-    if (entry.expiresAt > now && entry.inflight === null) return entry.value;
-    if (entry.inflight) return entry.inflight;
+  const hash = cacheKeyFor(safeKey, safeUrl);
+  const existing = cacheByHash.get(hash);
+  if (existing) {
+    if (existing.expiresAt > now && existing.inflight === null) return existing.value;
+    if (existing.inflight) return existing.inflight;
   }
   const inflight = (async () => {
     const ac = new AbortController();
@@ -428,19 +443,23 @@ export async function getMiniMaxBalance(key: string | undefined, url: string | u
       clearTimeout(timer);
     }
     if (timedOut) value = { ...value, error: "timeout" };
-    if (entry && entry.key === safeKey && entry.url === safeUrl) {
-      entry.inflight = null;
-      entry.expiresAt = Date.now() + CACHE_TTL_MS;
-      entry.value = value;
+    // Look the slot up fresh by hash rather than closing over the object
+    // created below — a concurrent call for a DIFFERENT (key, url) never
+    // touches this hash's slot, so this always updates the right one.
+    const current = cacheByHash.get(hash);
+    if (current) {
+      current.inflight = null;
+      current.expiresAt = Date.now() + CACHE_TTL_MS;
+      current.value = value;
     }
     return value;
   })();
-  entry = { key: safeKey, url: safeUrl, expiresAt: now + CACHE_TTL_MS, inflight, value: emptySnapshot(0, safeKey ? null : "no key configured") };
+  cacheByHash.set(hash, { expiresAt: now + CACHE_TTL_MS, inflight, value: emptySnapshot(0, safeKey ? null : "no key configured") });
   return inflight;
 }
 
 export function invalidateMiniMaxBalance(): void {
-  entry = null;
+  cacheByHash.clear();
 }
 
 type LocalMiniMaxConfig = ReturnType<typeof loadLocalMiniMaxConfig>;

@@ -421,9 +421,16 @@ export function UsageSection() {
             } else if (isMiniMax && spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0)) {
               minimaxStatus = `Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
             }
-            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*") || minimaxRow?.status === "near_cap");
+            const isPartial = !isCapped && (agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
+            // Near cap is its own state, distinct from a partial hard cap:
+            // MiniMax reports it when a pay-as-you-go balance has dropped
+            // below the owner's own alert threshold, or a Token Plan
+            // window is low but not yet at zero — nothing is actually
+            // blocked yet, unlike isPartial's "some models really are
+            // capped right now".
+            const isNearCap = !isCapped && !isPartial && minimaxRow?.status === "near_cap";
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
-            const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
+            const isAvailable = instance.snapshot.state === "available" && !isCapped && !isPartial && !isNearCap && !isDisabled;
             const baseDetailLines = agLines.length > 0 ? agLines : windowLines;
             const detailLines = [...baseDetailLines];
             if (minimaxRow && minimaxLine) {
@@ -537,9 +544,17 @@ export function UsageSection() {
             // The headline/fullSummary lines are shown only for the healthy,
             // uncapped path they were designed for.
             const statusLine = isCapped
-              ? `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
+              // MiniMax's own line already names the binding window's real
+              // reset time (minimaxQuotaLine); the generic cooldown-based
+              // wording below has nothing for MiniMax specifically and
+              // fell back to "Rolling refresh window" for it.
+              ? (isMiniMax && minimaxRow?.status === "capped" && minimaxLine
+                  ? minimaxLine
+                  : `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`)
               : isPartial
               ? `${quotaCooldown?.error ?? "Some models are at a usage cap"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
+              : isNearCap
+              ? (minimaxLine ?? "Approaching its usage cap")
               : isDisabled
               ? "Disabled in settings · subscription inactive"
               : !isAvailable
@@ -585,6 +600,8 @@ export function UsageSection() {
                           ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
                           : isPartial
                           ? "bg-amber-500/10 text-amber-800 dark:text-amber-200"
+                          : isNearCap
+                          ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
                           : isDisabled
                           ? "bg-inset text-ink-secondary"
                           : isAvailable
@@ -592,7 +609,7 @@ export function UsageSection() {
                           : "bg-inset text-ink-secondary"
                       }`}
                     >
-                      {isCapped ? "At Usage Cap" : isPartial ? "Partial cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
+                      {isCapped ? "At Usage Cap" : isPartial ? "Partial cap" : isNearCap ? "Near cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
                     </span>
                     <ChevronDown
                       size={14}

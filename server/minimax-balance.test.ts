@@ -240,6 +240,23 @@ describe("getMiniMaxBalance", () => {
     expect(result.models?.video?.remainingPercent).toBe(0);
   });
 
+  it("goes capped when the WEEKLY window hits zero even while the 5-hour interval still has quota", async () => {
+    // The weekly cap binds regardless of which window still has room: a
+    // fresh 5-hour interval does not mean the account can place a call
+    // when the weekly allowance underneath it is exhausted.
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(true, 200, {
+        model_remains: [{ model_name: "general", current_interval_remaining_percent: 100, current_weekly_remaining_percent: 0 }],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    expect(result.status).toBe("capped");
+    expect(result.remainingPercent).toBe(100);
+    expect(result.secondaryRemainingPercent).toBe(0);
+  });
+
   it("has no headline when there is no 'general' row, but still keeps the other rows for display", async () => {
     fetchMock.mockResolvedValueOnce(
       mockResponse(true, 200, {
@@ -265,6 +282,24 @@ describe("getMiniMaxBalance", () => {
     const mod = await loadModule();
     const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
     expect(result.remainingPercent).toBe(100);
+  });
+
+  it("reads a bare 1 as 1%, not as a 0-1 fraction rescaled to 100%", async () => {
+    // The boundary an inferred-unit heuristic gets exactly backwards: a
+    // `*_remaining_percent` field of 1 means the account is nearly out, and
+    // rescaling it to 100% hid the near-cap state precisely when it
+    // mattered most. Live-verified integers 0..100, never fractions.
+    fetchMock.mockResolvedValueOnce(
+      mockResponse(true, 200, {
+        model_remains: [{ model_name: "general", current_interval_remaining_percent: 1, current_weekly_remaining_percent: 1 }],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const mod = await loadModule();
+    const result = await mod.getMiniMaxBalance("subscription-token", "https://api.minimax.io/v1");
+    expect(result.remainingPercent).toBe(1);
+    expect(result.secondaryRemainingPercent).toBe(1);
+    expect(result.status).toBe("near_cap");
   });
 
   it("scales the weekly percent by weekly_boost_permille (a 1500 boost = 1.5x) — matching mmx-cli's own client", async () => {
@@ -385,6 +420,60 @@ describe("getMiniMaxBalance", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("caches two instances' (key, url) pairs independently instead of one fighting over a shared slot", async () => {
+    // Regression: a single module-level cache slot meant instance B's fetch
+    // overwrote instance A's entry, so A's next poll missed the cache too —
+    // neither instance was ever actually served from cache.
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+      const percent = url.includes("minimaxi.com") ? 10 : 90;
+      return mockResponse(true, 200, {
+        model_remains: [{ model_name: "general", current_interval_remaining_percent: percent }],
+        base_resp: { status_code: 0 },
+      });
+    });
+    const mod = await loadModule();
+    const [a1, b1] = await Promise.all([
+      mod.getMiniMaxBalance("key-a", "https://api.minimax.io/v1"),
+      mod.getMiniMaxBalance("key-b", "https://api.minimaxi.com/v1"),
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(a1.remainingPercent).toBe(90);
+    expect(b1.remainingPercent).toBe(10);
+    fetchMock.mockClear();
+    // Second round, still within the 5-minute TTL: both instances are
+    // served from their OWN cache slot — zero further fetches, and each
+    // still reports its own account's number.
+    const [a2, b2] = await Promise.all([
+      mod.getMiniMaxBalance("key-a", "https://api.minimax.io/v1"),
+      mod.getMiniMaxBalance("key-b", "https://api.minimaxi.com/v1"),
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(a2).toEqual(a1);
+    expect(b2).toEqual(b1);
+  });
+
+  it("shares one in-flight request across concurrent callers for the SAME (key, url)", async () => {
+    let resolveFetch!: (value: FetchResponse) => void;
+    const pending = new Promise<FetchResponse>((resolve) => {
+      resolveFetch = resolve;
+    });
+    fetchMock.mockReturnValueOnce(pending);
+    const mod = await loadModule();
+    const p1 = mod.getMiniMaxBalance("key-a", "https://api.minimax.io/v1");
+    const p2 = mod.getMiniMaxBalance("key-a", "https://api.minimax.io/v1");
+    resolveFetch(
+      mockResponse(true, 200, {
+        model_remains: [{ model_name: "general", current_interval_remaining_percent: 50 }],
+        base_resp: { status_code: 0 },
+      }),
+    );
+    const [r1, r2] = await Promise.all([p1, p2]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(r1).toEqual(r2);
+    expect(r1.remainingPercent).toBe(50);
   });
 });
 

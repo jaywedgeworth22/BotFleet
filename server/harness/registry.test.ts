@@ -11,8 +11,16 @@ import { ProviderRegistry } from "./registry.ts";
 // stubbed here so a real key sitting in either on the machine running these
 // tests can never make describe() reach the real network. getMiniMaxBalance
 // itself is mocked per-test below.
+// One mutable object behind both mocks so a test can move the "local
+// ~/.mmx/config.json" host (the China region, a custom base_url) and assert
+// where the balance lookup lands. vi.hoisted because vi.mock factories run
+// before ordinary top-level consts exist.
+const { localMiniMaxConfig } = vi.hoisted(() => ({
+  localMiniMaxConfig: { apiKey: "", url: "https://api.minimax.io/v1", defaultModel: "" },
+}));
+const GLOBAL_URL = "https://api.minimax.io/v1";
 vi.mock("../drivers/minimax.ts", () => ({
-  loadLocalMiniMaxConfig: () => ({ apiKey: "", url: "https://api.minimax.io/v1", defaultModel: "" }),
+  loadLocalMiniMaxConfig: () => localMiniMaxConfig,
   // vi.fn (not a plain arrow) so tests can inspect what it was called
   // WITH — the resolved key stays a constant, but the environment argument
   // is the real per-instance value registry.ts passed in.
@@ -24,11 +32,48 @@ vi.mock("../minimax-balance.ts", () => ({
   // it `undefined` and throw inside describeEntry's try/catch, silently
   // reporting every MiniMax instance as unavailable instead of failing the
   // test loudly. Real value: same as loadLocalMiniMaxConfig's mock above.
-  getCachedLocalMiniMaxConfig: () => ({ apiKey: "", url: "https://api.minimax.io/v1", defaultModel: "" }),
+  getCachedLocalMiniMaxConfig: () => localMiniMaxConfig,
 }));
 
 import { resolveMinimaxCredentials } from "../drivers/minimax.ts";
+import { quotaCooldowns } from "../model-fallback.ts";
 import { getMiniMaxBalance } from "../minimax-balance.ts";
+
+/** A Token Plan snapshot with one "general" pool, overridable per test. */
+function tokenPlanBalance(general: Partial<{
+  remainingPercent: number | null;
+  secondaryRemainingPercent: number | null;
+  windowsLabel: string | undefined;
+  resetsAt: number | null;
+  intervalResetsAt: number | null;
+  weeklyResetsAt: number | null;
+}> = {}) {
+  const pool = {
+    remainingPercent: 62,
+    secondaryRemainingPercent: 40,
+    windowsLabel: "5hr/Week",
+    resetsAt: null,
+    intervalResetsAt: null,
+    weeklyResetsAt: null,
+    intervalStatus: "active" as const,
+    weeklyStatus: "active" as const,
+    ...general,
+  };
+  return {
+    source: "token-plan" as const,
+    capExists: true,
+    status: "ok" as const,
+    balanceUsd: null,
+    remainingPercent: pool.remainingPercent,
+    secondaryRemainingPercent: pool.secondaryRemainingPercent,
+    windowsLabel: pool.windowsLabel,
+    models: { general: pool },
+    resetsAt: pool.intervalResetsAt,
+    weeklyResetsAt: pool.weeklyResetsAt,
+    fetchedAt: Date.now(),
+    error: null,
+  };
+}
 
 describe("ProviderRegistry", () => {
   it("creates live instances for known drivers", async () => {
@@ -529,6 +574,133 @@ describe("ProviderRegistry", () => {
       // A non-MiniMax, non-Antigravity engine must never trigger the
       // MiniMax balance lookup at all.
       expect(getMiniMaxBalance).not.toHaveBeenCalled();
+    });
+
+    it("caps every chat model when the WEEKLY window is exhausted even though the 5-hour one is full", async () => {
+      // Regression: the per-model verdict read only the interval percent,
+      // so an account with a spent weekly allowance kept showing every
+      // model as available and stayed in the auto-fallback chain.
+      const now = Date.now();
+      const weeklyResetsAt = now + (3 * 86_400_000);
+      vi.mocked(getMiniMaxBalance).mockResolvedValue(
+        tokenPlanBalance({ remainingPercent: 100, secondaryRemainingPercent: 0, intervalResetsAt: now + 1_200_000, weeklyResetsAt }),
+      );
+      const fake = makeFakeDriver({
+        kind: "minimax",
+        models: { default: "MiniMax-M3", options: [{ id: "MiniMax-M3", label: "MiniMax M3" }] },
+      });
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ minimax: { driver: "minimax" } });
+      const [described] = await registry.describe();
+      expect(described.snapshot.quota?.models?.["MiniMax-M3"]?.capped).toBe(true);
+      // The reset the row reports is the WEEKLY one — the 5-hour window
+      // refilling in twenty minutes changes nothing while the week is out.
+      expect(described.snapshot.quota?.models?.["MiniMax-M3"]?.resetsAt).toBe(weeklyResetsAt);
+      expect(described.snapshot.quota?.capped).toBe(true);
+    });
+
+    it("publishes a top-level cap for an exhausted pay-as-you-go wallet, which reports no pools at all", async () => {
+      // An `sk-api-` account answers /account/query_balance, which has no
+      // per-model rows — so nothing used to reach `models`, allCatalogCapped
+      // stayed false, and ModelPicker plus eligibleAutoFallbackChain kept
+      // offering an account with no money in it.
+      vi.mocked(getMiniMaxBalance).mockResolvedValue({
+        source: "account-balance",
+        capExists: true,
+        status: "capped",
+        balanceUsd: 0,
+        remainingPercent: null,
+        secondaryRemainingPercent: null,
+        windowsLabel: undefined,
+        models: null,
+        resetsAt: null,
+        weeklyResetsAt: null,
+        fetchedAt: Date.now(),
+        error: null,
+      });
+      const fake = makeFakeDriver({
+        kind: "minimax",
+        models: { default: "MiniMax-M3", options: [{ id: "MiniMax-M3", label: "MiniMax M3" }, { id: "MiniMax-M2.7-highspeed", label: "MiniMax M2.7 Highspeed" }] },
+      });
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ minimax: { driver: "minimax" } });
+      const [described] = await registry.describe();
+      expect(described.snapshot.quota?.capped).toBe(true);
+      expect(described.snapshot.quota?.models?.["MiniMax-M3"]?.capped).toBe(true);
+      expect(described.snapshot.quota?.models?.["MiniMax-M2.7-highspeed"]?.capped).toBe(true);
+    });
+
+    it("keeps a live per-model cooldown's cap and reset, only filling in the window figures the balance check knows", async () => {
+      // quotaCooldowns.record is a REAL 429 from a real turn — the more
+      // authoritative signal. The pool mapping must merge into it, never
+      // overwrite it back to "available" because the account-wide quota
+      // still looks healthy.
+      const resetsAt = Date.now() + 900_000;
+      quotaCooldowns.record({
+        botId: "*",
+        instanceId: "minimax",
+        model: "MiniMax-M3",
+        resetsAt,
+        error: "Rate limit reached for MiniMax-M3",
+        recordedAt: Date.now(),
+      });
+      try {
+        vi.mocked(getMiniMaxBalance).mockResolvedValue(tokenPlanBalance({ remainingPercent: 62, secondaryRemainingPercent: 40 }));
+        const fake = makeFakeDriver({
+          kind: "minimax",
+          models: { default: "MiniMax-M3", options: [{ id: "MiniMax-M3", label: "MiniMax M3" }, { id: "MiniMax-M2.7-highspeed", label: "MiniMax M2.7 Highspeed" }] },
+        });
+        const registry = new ProviderRegistry([fake.driver]);
+        await registry.load({ minimax: { driver: "minimax" } });
+        const [described] = await registry.describe();
+        const capped = described.snapshot.quota?.models?.["MiniMax-M3"];
+        expect(capped?.capped).toBe(true);
+        expect(capped?.resetsAt).toBe(resetsAt);
+        expect(capped?.error).toBe("Rate limit reached for MiniMax-M3");
+        // …and it still gains the window figures the cooldown never had.
+        expect(capped?.remainingPercent).toBe(62);
+        expect(capped?.windowsLabel).toBe("5hr/Week");
+        // The model with no cooldown reads the healthy pool as usual.
+        expect(described.snapshot.quota?.models?.["MiniMax-M2.7-highspeed"]?.capped).toBe(false);
+      } finally {
+        quotaCooldowns.clear("*", "minimax", "MiniMax-M3");
+      }
+    });
+
+    it("balance-checks the host the instance's turns use: the local mmx config's region when nothing else chose one", async () => {
+      // MinimaxDriver.create() swaps the built-in default for the host in
+      // ~/.mmx/config.json (a China-region or custom base_url login), so a
+      // lookup pinned to the global default would send this key to the
+      // wrong region and report quota as unavailable.
+      localMiniMaxConfig.url = "https://api.minimaxi.com/v1";
+      try {
+        vi.mocked(getMiniMaxBalance).mockResolvedValue(tokenPlanBalance());
+        const fake = makeFakeDriver({ kind: "minimax" });
+        const registry = new ProviderRegistry([fake.driver]);
+        await registry.load({ minimax: { driver: "minimax" } });
+        await registry.describe();
+        expect(getMiniMaxBalance).toHaveBeenCalledWith("test-minimax-key", "https://api.minimaxi.com/v1");
+      } finally {
+        localMiniMaxConfig.url = GLOBAL_URL;
+      }
+    });
+
+    it("prefers MINIMAX_BASE_URL over the local mmx config, exactly as a turn resolves its host", async () => {
+      const previous = process.env.MINIMAX_BASE_URL;
+      process.env.MINIMAX_BASE_URL = "https://minimax.internal.example/v1";
+      localMiniMaxConfig.url = "https://api.minimaxi.com/v1";
+      try {
+        vi.mocked(getMiniMaxBalance).mockResolvedValue(tokenPlanBalance());
+        const fake = makeFakeDriver({ kind: "minimax" });
+        const registry = new ProviderRegistry([fake.driver]);
+        await registry.load({ minimax: { driver: "minimax" } });
+        await registry.describe();
+        expect(getMiniMaxBalance).toHaveBeenCalledWith("test-minimax-key", "https://minimax.internal.example/v1");
+      } finally {
+        if (previous === undefined) delete process.env.MINIMAX_BASE_URL;
+        else process.env.MINIMAX_BASE_URL = previous;
+        localMiniMaxConfig.url = GLOBAL_URL;
+      }
     });
   });
 });

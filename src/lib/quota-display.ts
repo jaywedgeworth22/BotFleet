@@ -327,7 +327,13 @@ export type MiniMaxQuotaView = {
   balanceUsd: number | null;
   remainingPercent: number | null;
   secondaryRemainingPercent: number | null;
+  /** The 5-hour ("interval") window's own reset. */
   resetsAt: number | null;
+  /** The weekly window's own reset — kept separate so the line can name
+   *  whichever window is actually BINDING (at 0%) rather than always the
+   *  5-hour one, e.g. when the weekly allowance is exhausted but the 5-hour
+   *  window still has quota left. */
+  weeklyResetsAt: number | null;
 };
 
 /** One status vocabulary for MiniMax's quota row, whichever of the two
@@ -369,10 +375,17 @@ export function minimaxQuotaLine(row: MiniMaxQuotaView, now: number = Date.now()
   if (row.remainingPercent != null) parts.push(`${Math.round(row.remainingPercent)}% left in the current 5 h window`);
   if (parts.length === 0) return null;
   let line = parts.join(", ");
-  if (row.resetsAt != null) {
-    line += row.resetsAt <= now
+  // Name whichever window is actually BINDING: if the weekly allowance is
+  // the one at 0% (even while the 5-hour window still has room), its reset
+  // is what the user is actually waiting on — not the 5-hour window's,
+  // which would read as "back in 20 minutes" while the account still
+  // cannot place a call for days.
+  const weeklyBinds = row.secondaryRemainingPercent != null && row.secondaryRemainingPercent <= 0;
+  const bindingResetsAt = weeklyBinds ? row.weeklyResetsAt : row.resetsAt;
+  if (bindingResetsAt != null) {
+    line += bindingResetsAt <= now
       ? ", resets soon"
-      : `, resets at ${new Date(row.resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+      : `, resets at ${new Date(bindingResetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
   }
   return line;
 }
