@@ -826,11 +826,11 @@ export { store };
  * so a new broadcast cannot forget. */
 const wireTask = ({ resumeCursors, lastInstanceId, ...task }: TaskRecord) => {
   const last = store.messagesFor(task.threadId).at(-1);
-  return { ...task, lastActivity: last?.at ?? task.createdAt };
+  return { ...task, lastActivity: last?.at ?? task.createdAt, lastMessage: last };
 };
 const wireGroupTask = (task: GroupTaskRecord) => {
   const last = store.messagesFor(task.threadId).at(-1);
-  return { ...task, lastActivity: last?.at ?? task.createdAt };
+  return { ...task, lastActivity: last?.at ?? task.createdAt, lastMessage: last };
 };
 
 const wireBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
