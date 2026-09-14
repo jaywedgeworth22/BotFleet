@@ -231,6 +231,7 @@ public struct BotTask: Codable, Hashable, Sendable {
     public var createdAt: Double
     /// Last message in this task's thread. Absent on older harnesses.
     public var lastActivity: Double?
+    public var lastMessage: Message?
     public var usage: TaskUsage?
     public var modelSelection: ModelSelection?
 }
