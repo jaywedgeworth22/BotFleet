@@ -66,8 +66,10 @@ test("ios-ship.yml targets botfleet / ios on GitHub-hosted macos-latest", () => 
   assert.doesNotMatch(yml, /--version /);
   assert.doesNotMatch(yml, /--build /);
 
-  const ci = read(".github/workflows/ci.yml");
-  assert.match(ci, /pnpm test:ios-ship/);
+  // CI invokes the complete package test chain; ci-change-scope checks that
+  // workflow contract.  Keep this ship contract included in the same chain.
+  const testChain = JSON.parse(read("package.json")).scripts.test.split("&&").map((part) => part.trim());
+  assert.ok(testChain.includes("pnpm test:ios-ship"));
 
   const project = read("ios/project.yml");
   assert.match(project, /DEVELOPMENT_TEAM:\s*CC8UTF7ATG/);
@@ -180,4 +182,3 @@ test("scheduled-ship-gate skips empty last-ship on schedule", () => {
   assert.equal(run.status, 0, run.stdout + run.stderr);
   assert.match(run.stdout, /scheduled-ship-gate: all tests passed/);
 });
-
