@@ -396,16 +396,15 @@ export class ProviderRegistry {
           const instanceUrl = ctx?.url ?? envBaseUrl ?? local.url;
           const hostWasChosen = Boolean(ctx?.rawUrl) || Boolean(envBaseUrl);
           const balanceUrl = hostWasChosen ? instanceUrl : (local.url || instanceUrl);
-          // TODO(#387): resolveMinimaxCredentials is gaining an instance id
-          // argument that restricts the process.env / ~/.mmx/config.json
-          // fallback to the reserved "minimax" instance only. Pass
-          // inst.instanceId here once that lands — until then, a second
-          // MiniMax instance with no key of its own still (incorrectly)
-          // inherits the reserved instance's key and therefore its quota,
-          // which is exactly the gap #387 is meant to close; ctx?.environment
-          // already fixes the common case (a second instance WITH its own
-          // key/url is resolved correctly today).
-          const key = resolveMinimaxCredentials(ctx?.environment ?? {}, local);
+          // resolveMinimaxCredentials's third arg restricts the
+          // process.env / ~/.mmx/config.json fallback to the reserved
+          // "minimax" instance only — passing inst.instanceId closes the
+          // quota-bleed gap a second MiniMax instance would otherwise have
+          // (it no longer silently inherits the reserved instance's key
+          // and therefore its quota when its own key is unset; ctx?.environment
+          // already covers the common case where the second instance has its
+          // own key/url).
+          const key = resolveMinimaxCredentials(ctx?.environment ?? {}, local, inst.instanceId);
           const balance = await getMiniMaxBalance(key, balanceUrl);
           const general = balance.models?.general;
           // A pay-as-you-go account with an empty wallet has no "general"
