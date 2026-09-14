@@ -30,6 +30,7 @@ struct ChatListView: View {
     @AppStorage("companion.chats.botsExpanded") private var botsExpanded = true
     /// Mac Bot Chats is default-collapsed.  Same first-open on the phone.
     @AppStorage("companion.chats.botChatsExpanded") private var botChatsExpanded = false
+    @AppStorage("companion.chats.collapsedSections") private var collapsedSectionsStr = ""
     @FocusState private var searchFocused: Bool
 
     /// Room for the floating bar, so the last row can scroll clear of it.
@@ -179,7 +180,7 @@ struct ChatListView: View {
                                             at: summary.lastActivity,
                                             state: MausState.forChat(summary.chat, in: session.state),
                                             waiting: waitingChats.contains(summary.chat.id),
-                                            last: index == roomSummaries.count - 1 && !botsExpanded && !showingBotChats
+                                            last: index == roomSummaries.count - 1 && !botsExpanded && customSectionNames.isEmpty && !showingBotChats
                                         )
                                     }
                                 }
@@ -234,7 +235,7 @@ struct ChatListView: View {
                                     at: summary.lastActivity,
                                     state: MausState.forChat(summary.chat, in: session.state),
                                     waiting: waitingChats.contains(summary.chat.id),
-                                    last: index == rows.count - 1 && nestedTasks(for: summary.chat).isEmpty && !showingBotChats
+                                    last: index == rows.count - 1 && nestedTasks(for: summary.chat).isEmpty && (query.isEmpty ? customSectionNames.isEmpty && !showingBotChats : true)
                                 )
                             }
                             if session.config?.allowsMultipleBotThreads == true {
@@ -249,9 +250,49 @@ struct ChatListView: View {
                             }
                         }
 
+                        if query.isEmpty {
+                            ForEach(customSectionNames, id: \.self) { section in
+                                let sectionRows = summaries(forSection: section)
+                                if !sectionRows.isEmpty {
+                                    let isExpanded = sectionBinding(for: section)
+                                    sectionToggle(
+                                        title: section,
+                                        count: sectionRows.count,
+                                        expanded: isExpanded
+                                    )
+                                    .padding(.top, 14)
+
+                                    if isExpanded.wrappedValue {
+                                        ForEach(Array(sectionRows.enumerated()), id: \.element.id) { index, summary in
+                                            chatOpener(for: summary.chat) {
+                                                ChatRow(
+                                                    chat: summary.chat,
+                                                    preview: summary.preview,
+                                                    at: summary.lastActivity,
+                                                    state: MausState.forChat(summary.chat, in: session.state),
+                                                    waiting: waitingChats.contains(summary.chat.id),
+                                                    last: index == sectionRows.count - 1 && nestedTasks(for: summary.chat).isEmpty && (section == customSectionNames.last ? !showingBotChats : false)
+                                                )
+                                            }
+                                            if session.config?.allowsMultipleBotThreads == true {
+                                                ForEach(nestedTasks(for: summary.chat), id: \.threadId) { task in
+                                                    Button {
+                                                        Task { await openTask(task, in: summary.chat) }
+                                                    } label: {
+                                                        ThreadRow(task: task, active: summary.chat.threadId == task.threadId)
+                                                    }
+                                                    .buttonStyle(.plain)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         if query.isEmpty, !botChatSummaries.isEmpty {
                             sectionToggle(
-                                title: "Bot Chats",
+                                title: "Bot ↔ Bot",
                                 count: botChatSummaries.count,
                                 expanded: $botChatsExpanded
                             )
@@ -470,16 +511,73 @@ struct ChatListView: View {
         }
     }
 
-    private var botSummaries: [ChatSummary] {
-        session.state.chatSummaries.filter { if case .bot = $0.chat { return true } else { return false } }
+    private func isUnsectioned(_ chat: Chat) -> Bool {
+        let section = chat.section?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return section.isEmpty
     }
 
-    /// User rooms only.  Bot-to-bot DMs sit in Bot Chats, like the Mac sidebar.
+    private var botSummaries: [ChatSummary] {
+        session.state.chatSummaries.filter { 
+            if case .bot = $0.chat { return isUnsectioned($0.chat) }
+            return false 
+        }
+    }
+
+    /// User rooms only.  Bot-to-bot DMs sit in Bot ↔ Bot, like the Mac sidebar.
     private var roomSummaries: [ChatSummary] {
         session.state.chatSummaries.filter {
-            if case .room = $0.chat { return !$0.chat.isBotToBot }
+            if case .room = $0.chat { return !$0.chat.isBotToBot && isUnsectioned($0.chat) }
             return false
         }
+    }
+
+    private var customSectionNames: [String] {
+        var names = Set<String>()
+        for summary in session.state.chatSummaries {
+            if !summary.chat.isBotToBot, let section = summary.chat.section?.trimmingCharacters(in: .whitespacesAndNewlines), !section.isEmpty {
+                names.insert(section)
+            }
+        }
+        
+        let sorted = Array(names).sorted()
+        // If the user has a manually ordered list of sections (from Mac), respect it.
+        // Sections present in customSectionNames but missing from order go to the end.
+        let order = session.config?.sidebarSectionOrder ?? []
+        var result = [String]()
+        for name in order {
+            if names.contains(name) {
+                result.append(name)
+                names.remove(name)
+            }
+        }
+        result.append(contentsOf: names.sorted())
+        return result
+    }
+
+    private func summaries(forSection section: String) -> [ChatSummary] {
+        session.state.chatSummaries.filter {
+            !$0.chat.isBotToBot && $0.chat.section?.trimmingCharacters(in: .whitespacesAndNewlines) == section
+        }
+    }
+
+    private var collapsedSections: Set<String> {
+        get { Set(collapsedSectionsStr.split(separator: ",").map(String.init)) }
+        set { collapsedSectionsStr = Array(newValue).joined(separator: ",") }
+    }
+
+    private func sectionBinding(for section: String) -> Binding<Bool> {
+        Binding(
+            get: { !collapsedSections.contains(section) },
+            set: { expanded in
+                var set = collapsedSections
+                if expanded {
+                    set.remove(section)
+                } else {
+                    set.insert(section)
+                }
+                collapsedSections = set
+            }
+        )
     }
 
     private var botChatSummaries: [ChatSummary] {
