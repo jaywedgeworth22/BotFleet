@@ -8520,7 +8520,8 @@ const server = createServer(async (req, res) => {
       if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(SHARED_LOCAL_VM_TARGET.key)) {
         return json(res, 409, { error: "another Local VM setup action is still running" });
       }
-      if (false && action === "run") {
+      const perBot = cfg.localVm?.mode === "per-bot";
+      if (perBot && (action === "run" || action === "start")) {
         return json(res, 409, { error: "Per-bot mode creates each desktop from that bot's Computer panel" });
       }
       const vmOwner = localVmLeaseFor(SHARED_LOCAL_VM_TARGET).current(localVmOwnerBusy);
