@@ -13,7 +13,7 @@ import { SecretSourceBadge } from "./SecretSourceBadge";
 import { minimaxPriceRows } from "@/lib/minimax-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
-import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, minimaxQuotaLine, quotaLinesSummary, usageWindowLines, windowHeadlines, windowsLabelFromHeadlines } from "@/lib/quota-display";
+import { antigravityGroupSummary, formatResetCountdown, isEngineUnconfigured, minimaxQuotaLine, quotaLinesSummary, usageWindowLines, windowHeadlines, windowsLabelFromHeadlines } from "@/lib/quota-display";
 import { engineMeterNote, isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
@@ -367,7 +367,6 @@ export function UsageSection() {
               ? (antigravityQuota?.models ?? []).filter((model) => !model.isAutocompleteOnly)
               : [];
             const agGroups = antigravityGroupSummary(agModels, antigravityQuota?.promptCredits);
-            const agLines = antigravityQuotaLines(agModels, antigravityQuota?.promptCredits);
             const instanceWindows = windowsForDriver(quotaWindows, instance.driverKind);
             const headlines = windowHeadlines(instanceWindows);
             const windowLines = usageWindowLines(instanceWindows);
