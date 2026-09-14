@@ -4015,7 +4015,7 @@ export async function executeAskBotRequest(input: {
     return { status: 403, body: { error: "that bot belongs to a different section" } };
   }
   const fromThreadId = String(input.fromThreadId ?? from.threadId);
-  if (!store.taskByThread(from.id, fromThreadId)) {
+  if (!store.threadBelongsToBot(from.id, fromThreadId)) {
     return { status: 403, body: { error: "source thread does not belong to sender" } };
   }
   let currentFrom = from;
@@ -4078,7 +4078,7 @@ export function executeDelegateBotRequest(input: {
     return { status: 403, body: { error: "that bot belongs to a different section" } };
   }
   const fromThreadId = String(input.fromThreadId ?? from.threadId);
-  if (!store.taskByThread(from.id, fromThreadId)) {
+  if (!store.threadBelongsToBot(from.id, fromThreadId)) {
     return { status: 403, body: { error: "source thread does not belong to sender" } };
   }
   const result = queueDelegation(
@@ -4127,7 +4127,7 @@ export function executeCreateBotRequest(input: {
   const chief = store.bot(input.fromBotId);
   if (!chief) return { status: 403, body: { error: "unknown sender" } };
   const fromThreadId = String(input.fromThreadId ?? chief.threadId);
-  if (!store.taskByThread(chief.id, fromThreadId)) {
+  if (!store.threadBelongsToBot(chief.id, fromThreadId)) {
     return { status: 403, body: { error: "source thread does not belong to sender" } };
   }
   if (!chief.chiefOfStaff) {
