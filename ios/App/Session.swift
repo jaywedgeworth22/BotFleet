@@ -1804,6 +1804,13 @@ enum Chat: Identifiable, Hashable {
         }
     }
 
+    var section: String? {
+        switch self {
+        case let .bot(bot): return bot.section
+        case let .room(room): return room.section
+        }
+    }
+
     var isBot: Bool {
         if case .bot = self { return true }
         return false

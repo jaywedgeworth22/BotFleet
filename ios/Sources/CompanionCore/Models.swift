@@ -257,6 +257,7 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     public var hidden: Bool?
     public var chiefOfStaff: Bool?
     public var approvePeerComms: Bool?
+    public var section: String?
     public var autoApprove: Bool?
     public var autoReview: String?
     public var alwaysAllow: [String]?
@@ -323,6 +324,7 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var createdAt: Double
     public var dm: Bool?
     public var avatarUrl: String?
+    public var section: String?
     public var avatarCrop: AvatarCrop?
     public var cwd: String?
     public var extraCwds: [String]?
@@ -611,6 +613,7 @@ public struct ConfigStatus: Codable, Sendable {
     /// `simple` or `projects`.  Absent means simple.  A leftover `fleet`
     /// value is treated as projects.
     public var conversationMode: String?
+    public var sidebarSectionOrder: [String]?
 
     public var isProjectsMode: Bool {
         let raw = conversationMode?.lowercased()
@@ -692,6 +695,12 @@ public struct BotProfilePatch: Encodable, Sendable {
     public var voice: String?
     public var speakReplies: Bool?
     public var modelSelection: ModelSelection?
+    public var section: SectionString?
+
+    public enum SectionString: Equatable, Sendable {
+        case set(String)
+        case clear
+    }
 
     /// `avatarUrl` needs three wire states: omitted, a stored path, or JSON
     /// null to clear. A nested optional would technically represent that, but
@@ -710,7 +719,8 @@ public struct BotProfilePatch: Encodable, Sendable {
         avatarCrop: AvatarCrop? = nil,
         voice: String? = nil,
         speakReplies: Bool? = nil,
-        modelSelection: ModelSelection? = nil
+        modelSelection: ModelSelection? = nil,
+        section: SectionString? = nil
     ) {
         self.name = name
         self.title = title
@@ -721,10 +731,11 @@ public struct BotProfilePatch: Encodable, Sendable {
         self.voice = voice
         self.speakReplies = speakReplies
         self.modelSelection = modelSelection
+        self.section = section
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection
+        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection, section
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -743,6 +754,12 @@ public struct BotProfilePatch: Encodable, Sendable {
         try values.encodeIfPresent(voice, forKey: .voice)
         try values.encodeIfPresent(speakReplies, forKey: .speakReplies)
         try values.encodeIfPresent(modelSelection, forKey: .modelSelection)
+        if let section {
+            switch section {
+            case let .set(val): try values.encode(val, forKey: .section)
+            case .clear: try values.encodeNil(forKey: .section)
+            }
+        }
     }
 }
 
@@ -1083,6 +1100,7 @@ public struct RoomPatch: Encodable, Sendable {
     public var extraCwds: [String]?
     public var defaultResponder: GroupResponder?
     public var memberIds: [String]?
+    public var section: BotProfilePatch.SectionString?
 
     public init(
         name: String? = nil,
@@ -1092,7 +1110,8 @@ public struct RoomPatch: Encodable, Sendable {
         cwd: String? = nil,
         extraCwds: [String]? = nil,
         defaultResponder: GroupResponder? = nil,
-        memberIds: [String]? = nil
+        memberIds: [String]? = nil,
+        section: BotProfilePatch.SectionString? = nil
     ) {
         self.name = name
         self.bulletin = bulletin
@@ -1102,10 +1121,11 @@ public struct RoomPatch: Encodable, Sendable {
         self.extraCwds = extraCwds
         self.defaultResponder = defaultResponder
         self.memberIds = memberIds
+        self.section = section
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, bulletin, avatarUrl, avatarCrop, cwd, extraCwds, defaultResponder, memberIds
+        case name, bulletin, avatarUrl, avatarCrop, cwd, extraCwds, defaultResponder, memberIds, section
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1123,6 +1143,12 @@ public struct RoomPatch: Encodable, Sendable {
         try values.encodeIfPresent(extraCwds, forKey: .extraCwds)
         try values.encodeIfPresent(defaultResponder, forKey: .defaultResponder)
         try values.encodeIfPresent(memberIds, forKey: .memberIds)
+        if let section {
+            switch section {
+            case let .set(val): try values.encode(val, forKey: .section)
+            case .clear: try values.encodeNil(forKey: .section)
+            }
+        }
     }
 }
 
