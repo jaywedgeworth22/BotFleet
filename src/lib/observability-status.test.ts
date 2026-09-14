@@ -37,6 +37,13 @@ describe("observabilityBadge", () => {
     });
   });
 
+  it("shows an explicit opt-out even when the harness has no runtime DSN", () => {
+    expect(observabilityBadge({ configured: false, enabled: false, requestedEnabled: false })).toEqual({
+      label: "Turned off",
+      tone: "off",
+    });
+  });
+
   it("says Waiting before the first fetch resolves", () => {
     expect(observabilityBadge(null)).toEqual({ label: "Waiting", tone: "waiting" });
   });
