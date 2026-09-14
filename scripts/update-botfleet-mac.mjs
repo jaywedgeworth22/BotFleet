@@ -1873,6 +1873,9 @@ export async function main(argv = process.argv.slice(2)) {
   // The detached run is the only kind the desktop app and the phone can
   // start, and neither can be its parent — so a progress file is the whole
   // channel.  Instrumenting the adapter keeps the coordinator untouched.
+  // Creating the recorder writes that file once, and throws if it cannot:
+  // the channel is proven here, before `perform` touches anything, because an
+  // install nobody can report on is worse than an install that never ran.
   const progress = parsed.progress
     ? createUpdateProgress({
         path: parsed.progress,

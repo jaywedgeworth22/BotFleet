@@ -224,6 +224,26 @@ export function idleLabel(status: UpdateStatus): string {
 }
 
 /**
+ * The check failure a person should be reading, from either place it lives.
+ *
+ * A failed check leaves two traces, and only one of them survives a remount.
+ * The hook catches the 502 and holds the reason in its own state; the harness
+ * holds the same sentence on the status as `checkError` until a check
+ * succeeds.  Closing and reopening Settings remounts the hook, which hydrates
+ * from `GET /api/update/status` — so the local reason was gone while the
+ * status still knew, and the card went back to "Update Available" or "on the
+ * newest build this computer knows about" over a comparison that never
+ * happened.  Reading both means the sentence after a remount is the sentence
+ * from right after the failed check.
+ *
+ * The local error wins when there is one: it is the newer of the two, and an
+ * install failure has no `checkError` of its own to be mistaken for.
+ */
+export function visibleUpdateError(local: string | null, status: UpdateStatus | null): string | null {
+  return local ?? status?.checkError ?? null;
+}
+
+/**
  * What a dismissal of the floating banner should be remembered against.
  *
  * Dismissing "1.0.31 is available" must not also dismiss "that install
@@ -411,5 +431,7 @@ export function useUpdateControl(pollMs = 5_000): UpdateControlView {
     }
   }, []);
 
-  return { status, error, busy, check, install };
+  // `error` is this session's own failure; the status carries the harness's
+  // memory of the last failed check.  A remount has only the second one.
+  return { status, error: visibleUpdateError(error, status), busy, check, install };
 }

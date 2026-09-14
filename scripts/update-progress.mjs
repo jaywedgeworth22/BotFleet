@@ -128,10 +128,32 @@ export function createUpdateProgress({
     try {
       write(path, record);
     } catch {
-      // Progress is a courtesy.  An unwritable cache directory must never
-      // be the reason an update stops half-installed.
+      // Once the run is under way progress IS a courtesy: an unwritable cache
+      // directory, or one that fills mid-build, must never be the reason an
+      // update stops half-installed.  The first write, below, is the half of
+      // this that is not a courtesy.
     }
   };
+
+  // The first write is mandatory, and it happens before the caller has an
+  // instrumented adapter to run anything with.
+  //
+  // A run whose progress file never lands is a run nothing can describe: the
+  // harness waits out its launch grace period, settles the job as "never
+  // started" and drops the record, while the updater goes on to replace the
+  // app, restart the harness and reboot the desktop — and the person is told
+  // nothing happened.  Proving the channel first turns that silent divergence
+  // into a run that refuses to begin, with the reason in the updater's own
+  // log.  The record it writes names the run but no step yet, which is
+  // exactly true: the transaction has not started.
+  try {
+    write(path, record);
+  } catch (error) {
+    throw new Error(
+      `Cannot record update progress at ${path}: ${String(error?.message ?? error)}.`
+      + "  Refusing to start an update that nothing could report on.",
+    );
+  }
 
   const begin = (name) => {
     record.step = name;

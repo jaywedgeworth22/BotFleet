@@ -4,7 +4,7 @@
 // a real Mac, so these drive it with a fake operations adapter — the same
 // shape `createOperations` returns — and assert on what lands in the file the
 // harness reads.
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -131,6 +131,62 @@ describe("the progress file", () => {
     const failed = record.steps.find((step) => step.name === "installDependencies");
     expect(failed.ok).toBe(false);
     expect(record.outcome).toBe("failed");
+  });
+});
+
+describe("the reporting channel itself", () => {
+  /** A regular file where the progress file's parent directory belongs.  Both
+   * the recursive mkdir and the write fail on it, on every OS the suite runs
+   * on, so this needs no permission bits and behaves the same on Windows. */
+  function blockedPath() {
+    const root = mkdtempSync(join(tmpdir(), "bf-update-progress-"));
+    roots.push(root);
+    const occupied = join(root, "occupied");
+    writeFileSync(occupied, "not a directory\n");
+    return join(occupied, "run.progress.json");
+  }
+
+  it("refuses the run when the first write cannot land", () => {
+    expect(() => createUpdateProgress({ path: blockedPath(), runId: "run_one" }))
+      .toThrow(/Cannot record update progress/);
+  });
+
+  it("aborts before the transaction, so nothing is half-installed unreported", async () => {
+    const path = blockedPath();
+    const called = [];
+    const { operations } = fakeOperations();
+    const watched = Object.fromEntries(Object.entries(operations).map(([name, operation]) => [
+      name,
+      async (...args) => {
+        called.push(name);
+        return operation(...args);
+      },
+    ]));
+    // The same order `main` uses: make the recorder, instrument the adapter,
+    // then run.  The recorder is what the adapter needs, so a channel that
+    // cannot be written means no operation ever gets the chance to run.
+    await expect((async () => {
+      const progress = createUpdateProgress({ path, runId: "run_one" });
+      return prepareUpdate({ target: "origin/main" }, instrumentOperations(watched, progress));
+    })()).rejects.toThrow(/Cannot record update progress/);
+    expect(called).toEqual([]);
+  });
+
+  it("keeps the rest of the run going when a later write fails", async () => {
+    // Disk full after the channel was proven: the install is already under way
+    // and must finish, so every write after the first stays best-effort.
+    const seen = [];
+    const write = (_target, value) => {
+      seen.push(value.step ?? value.outcome ?? null);
+      if (seen.length > 1) throw new Error("ENOSPC: no space left on device");
+    };
+    const progress = createUpdateProgress({ path: "/nowhere/run.progress.json", runId: "run_one", write });
+    const { operations } = fakeOperations();
+    await prepareUpdate({ target: "origin/main" }, instrumentOperations(operations, progress));
+    progress.finish("verified", "The update was prepared.");
+    expect(seen.length).toBeGreaterThan(1);
+    expect(progress.record.outcome).toBe("verified");
+    expect(progress.record.steps.at(-1).name).toBe("releaseSource");
   });
 });
 

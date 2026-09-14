@@ -22,6 +22,7 @@ import {
   STATUS_RETRY_STEADY_MS,
   statusRetryDelay,
   updateSource,
+  visibleUpdateError,
   type UpdateStatus,
 } from "./update-control";
 
@@ -225,6 +226,24 @@ describe("what it says", () => {
     expect(idleLabel(status({
       capabilities: { canCheck: false, canRun: false, reasons: ["Updating from this computer is macOS only."] },
     }))).toBe("Updating from this computer is macOS only.");
+  });
+
+  it("keeps a failed check on screen across a remount", () => {
+    const reason = "Could not reach the update source.\u00a0 fatal: unable to access origin.";
+    // Right after the failed check: the hook holds the 502's reason.
+    expect(visibleUpdateError(reason, status({ checkError: reason }))).toBe(reason);
+    // After Settings is closed and reopened: only the hydrated status knows.
+    expect(visibleUpdateError(null, status({ checkError: reason }))).toBe(reason);
+    // A stale "up to date" must never be the only thing a remount shows.
+    expect(idleLabel(status({ checkError: reason }))).toBe("BotFleet is on the newest build this computer knows about.");
+    // A check that worked, and a status from a harness that never sends the
+    // field, both say nothing is wrong.
+    expect(visibleUpdateError(null, status())).toBeNull();
+    expect(visibleUpdateError(null, status({ checkError: undefined }))).toBeNull();
+    expect(visibleUpdateError(null, null)).toBeNull();
+    // An install failure is this session's own, and outranks the older check.
+    expect(visibleUpdateError("Could not start the update.", status({ checkError: reason })))
+      .toBe("Could not start the update.");
   });
 
   it("only floats the popup when something is worth interrupting for", () => {
