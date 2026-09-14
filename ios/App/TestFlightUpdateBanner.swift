@@ -71,11 +71,18 @@ final class TestFlightUpdateMonitor: ObservableObject {
                 return
             }
             available = candidate
-            // A build newer than the one already dismissed reopens the
-            // banner — dismissing "1.0.30" must not silently swallow "1.0.31".
-            if defaults.string(forKey: Keys.dismissedBuild) != candidate.build {
-                dismissed = false
-            }
+            // Restore the persisted dismissal rather than only ever
+            // clearing it: a fresh monitor (every relaunch) starts with
+            // `dismissed == false` regardless of what was on record, so
+            // only ever setting it back to `false` here left a dismissed
+            // build's banner reappearing on the very next launch while it
+            // was still current.  A build newer than the one on record
+            // still correctly comes back false, which is what lets it
+            // reopen the banner.
+            dismissed = TestFlightUpdateCheck.isDismissed(
+                candidateBuild: candidate.build,
+                dismissedBuild: defaults.string(forKey: Keys.dismissedBuild)
+            )
         } catch {
             // offline, DNS hiccup, GitHub Pages blip — none of it is worth
             // surfacing for a feature nobody asked to see right now

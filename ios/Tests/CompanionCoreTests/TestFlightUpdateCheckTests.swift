@@ -105,6 +105,22 @@ final class TestFlightUpdateCheckTests: XCTestCase {
         XCTAssertNil(TestFlightUpdateCheck.availableUpdate(in: manifest, running: running))
     }
 
+    // MARK: - Dismissal survives a relaunch
+
+    func testACandidateMatchingTheRecordedDismissalIsDismissed() {
+        XCTAssertTrue(TestFlightUpdateCheck.isDismissed(candidateBuild: "202609130933", dismissedBuild: "202609130933"))
+    }
+
+    func testNothingRecordedIsNotDismissed() {
+        XCTAssertFalse(TestFlightUpdateCheck.isDismissed(candidateBuild: "202609130933", dismissedBuild: nil))
+    }
+
+    /// The point of the whole comparison: a build that supersedes the one
+    /// dismissed must reopen the banner rather than inheriting its dismissal.
+    func testANewerCandidateThanTheRecordedDismissalIsNotDismissed() {
+        XCTAssertFalse(TestFlightUpdateCheck.isDismissed(candidateBuild: "202609140000", dismissedBuild: "202609130933"))
+    }
+
     // MARK: - Throttle
 
     func testFirstCheckEverIsAlwaysDue() {

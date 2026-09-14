@@ -115,6 +115,20 @@ public enum TestFlightUpdateCheck {
         let candidate = AppBuildInfo(marketingVersion: marketingVersion, build: build)
         return isNewer(candidate, than: running) ? candidate : nil
     }
+
+    /// Whether `candidateBuild` already has a matching dismissal on record.
+    ///
+    /// This is the comparison that makes a dismissal survive a relaunch:
+    /// a fresh `TestFlightUpdateMonitor` starts with no in-memory memory of
+    /// what was dismissed, so restoring that state on launch means reading
+    /// the persisted dismissed build back and comparing it to the candidate
+    /// — not merely defaulting to "not dismissed" and waiting for some later
+    /// signal to say otherwise, which never arrives when the two already
+    /// match.  A build newer than the one on record is correctly not
+    /// dismissed, which is what lets a later build reopen the banner.
+    public static func isDismissed(candidateBuild: String, dismissedBuild: String?) -> Bool {
+        dismissedBuild == candidateBuild
+    }
 }
 
 /// A pure, UserDefaults-free rate limiter — the caller owns persisting

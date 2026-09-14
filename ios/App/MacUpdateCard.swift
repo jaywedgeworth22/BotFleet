@@ -14,11 +14,28 @@ struct MacUpdateSection: View {
     @State private var checking = false
     @State private var installing = false
     @State private var confirmingInstall = false
+    /// Set when the initial (or a retried) status fetch comes back with
+    /// nothing to show — offline, an older harness without these routes, or
+    /// a malformed reply.  Kept apart from `status == nil`, which is also
+    /// true for the brief moment before the very first fetch finishes: that
+    /// case reads as "checking", this one as "not available", and the two
+    /// must not look identical or the card spins forever on a Mac it will
+    /// never hear from.
+    @State private var loadFailed = false
     /// The harness's own reason the last `runUpdate()` refused (a 409) —
     /// shown right here rather than only in the app-wide error alert, since
     /// it is a normal, expected answer ("an update is already running"),
     /// not a failure worth interrupting the screen for.
     @State private var installError: String?
+    /// The status `installError` was reported against.  A live
+    /// `update.status` event only ever touches `session.state`, never this
+    /// view's own `installError` — without this snapshot there is no way to
+    /// tell "the status that just changed is the very one the refusal
+    /// carried" (leave the message alone) apart from "something moved past
+    /// it since" (clear it), and a refusal like "An update is already
+    /// running" would otherwise sit there, stale, long after that run
+    /// finished.
+    @State private var installErrorStatus: MacUpdateStatus?
 
     private var status: MacUpdateStatus? { session.state.macUpdateStatus }
 
@@ -36,6 +53,8 @@ struct MacUpdateSection: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
+            } else if loadFailed {
+                unavailableRow
             } else {
                 HStack {
                     Text("Checking for updates…")
@@ -49,7 +68,9 @@ struct MacUpdateSection: View {
         } footer: {
             if let status {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(Self.checkedAtText(status.checkedAt))
+                    if let checkedAt = status.checkedAt {
+                        Text(Self.checkedAtText(checkedAt))
+                    }
                     if status.running == nil, status.capabilities.canRun == false,
                        let reason = status.capabilities.reasons.first {
                         Text(reason)
@@ -57,7 +78,14 @@ struct MacUpdateSection: View {
                 }
             }
         }
-        .task { await session.loadMacUpdateStatus() }
+        .task { await loadStatus() }
+        .onChange(of: status) { _, newStatus in
+            // A stale refusal is only ever cleared by something that is not
+            // the exact status it arrived with — see `installErrorStatus`.
+            guard installError != nil, newStatus != installErrorStatus else { return }
+            installError = nil
+            installErrorStatus = nil
+        }
         .confirmationDialog(
             "Install Mac Update?",
             isPresented: $confirmingInstall,
@@ -73,6 +101,19 @@ struct MacUpdateSection: View {
     }
 
     // MARK: - Rows
+
+    private var unavailableRow: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Mac Update Not Available", systemImage: "exclamationmark.triangle")
+                .foregroundStyle(.secondary)
+            Text("Could not reach this computer's update status.  It may be offline or running an older BotFleet.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Retry") {
+                Task { await loadStatus() }
+            }
+        }
+    }
 
     private func installedRow(_ status: MacUpdateStatus) -> some View {
         HStack(spacing: 12) {
@@ -96,6 +137,17 @@ struct MacUpdateSection: View {
             runningRow(running)
         } else if let available = status.available {
             availableRow(available)
+        } else if status.checkedAt == nil {
+            // `available == nil` is also what a Mac that has never checked
+            // looks like — "Up to date" is a claim about a check that has
+            // not happened, so this reads as "not checked" instead of
+            // reusing the same row copy the footer already shows for it.
+            HStack(spacing: 12) {
+                MacUpdateIcon(symbol: "questionmark.circle", color: .secondary)
+                Text("Not checked yet")
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
         } else {
             HStack(spacing: 12) {
                 MacUpdateIcon(symbol: "checkmark.circle.fill", color: .green)
@@ -198,16 +250,33 @@ struct MacUpdateSection: View {
         }
     }
 
+    /// The initial (or retried) fetch.  Distinguishes "nothing to show yet"
+    /// from "asked, and there is still nothing" — `session.loadMacUpdateStatus()`
+    /// already routed the failure to the app-wide alert, so this only needs
+    /// to notice `state.macUpdateStatus` is still nil once it is done, not
+    /// re-decode the error itself.
+    private func loadStatus() async {
+        loadFailed = false
+        if await session.loadMacUpdateStatus() == nil, session.state.macUpdateStatus == nil {
+            loadFailed = true
+        }
+    }
+
     private func startInstall() async {
         installing = true
-        installError = await session.runMacUpdate()
+        let message = await session.runMacUpdate()
+        installError = message
+        // Snapshot the status the refusal arrived with, not "no status" —
+        // `onChange(of:)` above needs something to compare the next live
+        // update against.  A success (`message == nil`) needs no snapshot;
+        // there is nothing left to keep stale.
+        installErrorStatus = message != nil ? status : nil
         installing = false
     }
 
     // MARK: - Formatting
 
-    private static func checkedAtText(_ checkedAt: String?) -> String {
-        guard let checkedAt else { return "Not checked yet" }
+    private static func checkedAtText(_ checkedAt: String) -> String {
         guard let date = ISO8601DateFormatter().date(from: checkedAt) else {
             return "Checked \(checkedAt)"
         }

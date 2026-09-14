@@ -221,6 +221,31 @@ final class MacUpdateTests: XCTestCase {
         }
     }
 
+    /// A `status`-keyed payload missing a required field (here, `installed`)
+    /// fails both the wrapped and the flat decode attempt.  This must fold
+    /// to `.unknown` — like any other kind this build cannot make sense
+    /// of — rather than throwing out of `Frame.init(from:)` and taking the
+    /// whole `StreamFrame` decode down with it.
+    func testAMalformedStatusPayloadFoldsToUnknownRatherThanThrowing() throws {
+        let json = Data(#"""
+        {"kind": "update.status", "seq": 9, "status": {"checkedAt": null}}
+        """#.utf8)
+        let frame = try JSONDecoder().decode(StreamFrame.self, from: json)
+        guard case .unknown(kind: "update.status") = frame.frame else {
+            return XCTFail("expected .unknown(kind: \"update.status\"), got \(frame.frame)")
+        }
+    }
+
+    /// Same claim, at the flat shape: no `status` key at all, and the
+    /// top-level object is missing every required field too.
+    func testACompletelyUnrecognisableUpdateStatusFrameFoldsToUnknown() throws {
+        let json = Data(#"{"kind": "update.status", "seq": 9}"#.utf8)
+        let frame = try JSONDecoder().decode(StreamFrame.self, from: json)
+        guard case .unknown(kind: "update.status") = frame.frame else {
+            return XCTFail("expected .unknown(kind: \"update.status\"), got \(frame.frame)")
+        }
+    }
+
     // MARK: - The fold
 
     func testApplyingTheFrameStoresStatusOnState() {

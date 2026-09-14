@@ -75,6 +75,14 @@ final class Session: ObservableObject {
     /// Best-effort authenticated route refresh started by the latest live SSE
     /// hello. Kept separate so endpoint discovery never stalls event delivery.
     private var endpointRefreshTask: Task<Void, Never>?
+    /// Polls `state.macUpdateStatus` on a short interval while a run is in
+    /// progress.  The updater stops the harness partway through and restarts
+    /// it — see `docs/rollouts/2026-09-12-safe-mac-updater.md` — which drops
+    /// this event stream along with whatever frame would have said the run
+    /// finished.  The reconnect below asks once more on its own; this is the
+    /// backstop for the stretch in between, and for a phone that stays
+    /// backgrounded through the whole restart and never sees a reconnect at all.
+    private var macUpdatePollTask: Task<Void, Never>?
     /// Identifies the task currently stored in `streamTask`. A cancelled task
     /// can finish after its replacement starts; its cleanup must not clear
     /// the replacement's handle.
@@ -302,6 +310,8 @@ final class Session: ObservableObject {
         streamTask = nil
         endpointRefreshTask?.cancel()
         endpointRefreshTask = nil
+        macUpdatePollTask?.cancel()
+        macUpdatePollTask = nil
         restorePending = false
         pendingNotification = nil
         pairingInvite = CompanionPairingInvitePolicy.nextInvite(
@@ -414,6 +424,8 @@ final class Session: ObservableObject {
         streamTask = nil
         endpointRefreshTask?.cancel()
         endpointRefreshTask = nil
+        macUpdatePollTask?.cancel()
+        macUpdatePollTask = nil
         endLinger()
     }
 
@@ -501,6 +513,15 @@ final class Session: ObservableObject {
                         // Refresh provider marks after reconnect — instances
                         // may have changed while the phone was backgrounded.
                         Task { await self.warmInstanceDriverKinds() }
+                        // The last frame this phone saw before the gap may
+                        // have said a run was in progress — and the restart
+                        // that gap likely IS took the connection down with
+                        // whatever frame would have said it finished.  Ask
+                        // once, here, rather than waiting on the poll loop's
+                        // own interval to notice the reconnect happened.
+                        if state.macUpdateStatus?.running != nil {
+                            Task { await self.loadMacUpdateStatus() }
+                        }
                         continue
                     }
                     state.apply(frame)
@@ -509,6 +530,9 @@ final class Session: ObservableObject {
                     }
                     NotificationCoordinator.shared.setBadge(state.unreadCount)
                     state.advance(to: frame.seq)
+                    if case .updateStatus = frame.frame {
+                        pollMacUpdateWhileRunning()
+                    }
                 }
                 // the stream ended without an error — the harness went away
                 log.notice("stream ended without an error")
@@ -1454,6 +1478,7 @@ final class Session: ObservableObject {
         do {
             let status = try await client.updateStatus()
             state.apply(.updateStatus(status))
+            pollMacUpdateWhileRunning()
             return status
         } catch {
             actionError = error.localizedDescription
@@ -1468,6 +1493,7 @@ final class Session: ObservableObject {
         do {
             let status = try await client.checkForUpdates()
             state.apply(.updateStatus(status))
+            pollMacUpdateWhileRunning()
             return status
         } catch {
             actionError = error.localizedDescription
@@ -1490,13 +1516,37 @@ final class Session: ObservableObject {
         do {
             let started = try await client.runUpdate()
             state.apply(.updateStatus(started.status))
+            pollMacUpdateWhileRunning()
             return nil
         } catch let refusal as MacUpdateRunRefusal {
             state.apply(.updateStatus(refusal.status))
+            pollMacUpdateWhileRunning()
             return refusal.message
         } catch {
             actionError = error.localizedDescription
             return nil
+        }
+    }
+
+    /// Keeps `state.macUpdateStatus` moving while a run is in progress, on a
+    /// plain interval — no-op if a poll is already running or nothing is.
+    /// The updater's restart drops the event stream along with whatever
+    /// frame would have said the run finished (the reconnect handler above
+    /// asks once on its own for exactly that reason), and a phone that never
+    /// backgrounds during the restart may see no reconnect at all to hang
+    /// that ask off of.  Five seconds is short enough that a Settings screen
+    /// left open does not read as stuck, and cheap enough that polling a
+    /// GET for the couple of minutes an install takes costs nothing worth
+    /// avoiding.
+    private func pollMacUpdateWhileRunning() {
+        guard macUpdatePollTask == nil, state.macUpdateStatus?.running != nil else { return }
+        macUpdatePollTask = Task { [weak self] in
+            while let self, !Task.isCancelled, self.state.macUpdateStatus?.running != nil {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { break }
+                _ = await self.loadMacUpdateStatus()
+            }
+            self?.macUpdatePollTask = nil
         }
     }
 
