@@ -188,5 +188,26 @@ describe("computer tools", () => {
       expect(result.kind).toBe("error");
       expect(result.content).toContain("matched 2 times");
     });
+
+    it("writes replacement-pattern characters literally", async () => {
+      const filePath = join(scratchDir, "target.txt");
+      writeFileSync(filePath, "PLACEHOLDER", "utf8");
+
+      const tools = createComputerTools({ cwd: scratchDir });
+      const call: TurnToolCall = {
+        id: "call-11",
+        name: "edit_file",
+        arguments: {
+          path: "target.txt",
+          old_string: "PLACEHOLDER",
+          new_string: "$& costs $$5",
+        },
+      };
+      const result = await tools.edit_file(call, dummyIdentity, dummyRuntime);
+      expect(result.kind).toBe("result");
+
+      const updated = readFileSync(filePath, "utf8");
+      expect(updated).toBe("$& costs $$5");
+    });
   });
 });

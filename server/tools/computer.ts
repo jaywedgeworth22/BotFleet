@@ -194,7 +194,10 @@ export function createComputerTools(options: ComputerToolsOptions = {}): Record<
         };
       }
 
-      const replaced = existing.replace(oldStr, newStr);
+      // Use a function replacement so `$` sequences in the model-supplied
+      // new_string (e.g. `$&`, `$1`, `$$`) are written literally instead of
+      // being interpreted as special replacement patterns.
+      const replaced = existing.replace(oldStr, () => newStr);
       writeFileSync(fullPath, replaced, "utf8");
       return {
         kind: "result",
