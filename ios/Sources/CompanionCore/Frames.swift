@@ -16,6 +16,13 @@ public struct NotificationFrame: Codable, Hashable, Sendable {
     public var threadId: String
     public var title: String
     public var body: String
+    /// The pending request this notification answers.  Set only for
+    /// approval/question kinds by a harness new enough to send it; an older
+    /// harness omits it, and Approve/Deny falls back to resolving the
+    /// thread's current pending card instead.
+    public var requestId: String?
+    /// The tool name, display/telemetry only — nothing depends on it.
+    public var tool: String?
 
     /// A bot blocked on you, as opposed to one reporting in.
     public var isBlocking: Bool { kind == "approval" || kind == "question" }

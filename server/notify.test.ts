@@ -51,6 +51,37 @@ describe("buildNotification", () => {
     // no profile image → the frame stays exactly as before
     expect(buildNotification("done", bot, "thread-1", "pushed")?.avatarUrl).toBeUndefined();
   });
+
+  it("carries the request identity on the two kinds where one is waiting", () => {
+    const extra = { requestId: "req-7", tool: "Bash" };
+    for (const kind of ["approval", "question"] as const) {
+      expect(buildNotification(kind, bot, "thread-1", "rm -rf ./build", extra)).toMatchObject({
+        kind,
+        requestId: "req-7",
+        tool: "Bash",
+      });
+    }
+  });
+
+  it("refuses to put a request id on a frame where nothing is waiting", () => {
+    // A `done` frame carrying a request id would invite a client to answer
+    // a request that is already settled — so the builder drops it rather
+    // than trusting every call site never to pass one.
+    for (const kind of ["done", "routine-failed", "takeover"] as const) {
+      const frame = buildNotification(kind, bot, "thread-1", "finished", { requestId: "req-7", tool: "Bash" });
+      expect(frame?.requestId).toBeUndefined();
+      expect(frame?.tool).toBeUndefined();
+    }
+  });
+
+  it("leaves both fields absent for an older caller that passes neither", () => {
+    // The phone falls back to resolving the thread's pending card when the
+    // id is absent, so "absent" has to stay a real, reachable shape.
+    const frame = buildNotification("approval", bot, "thread-1", "rm -rf ./build");
+    expect(frame?.requestId).toBeUndefined();
+    expect(frame?.tool).toBeUndefined();
+    expect(Object.hasOwn(frame ?? {}, "requestId")).toBe(false);
+  });
 });
 
 describe("summarize", () => {

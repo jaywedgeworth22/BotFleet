@@ -22,6 +22,14 @@ export type ScriptedCompletion =
    *  timeout test needs to observe. `close()` destroys any socket still held
    *  this way, so a forgotten hang cannot wedge teardown. */
   | { kind: "hang" }
+  /** Send the 200 SSE head, then destroy the socket before a single frame —
+   *  the provider that accepts the request, opens a stream and vanishes.
+   *  Node's own fetch surfaces this as `TypeError: terminated` with a
+   *  `SocketError: other side closed` (`UND_ERR_SOCKET`) cause, which is
+   *  the exact shape `isPrematureCloseError` exists to recognise.  A clean
+   *  `res.end()` would not do: that is a finished empty stream, not a
+   *  premature close. */
+  | { kind: "close" }
   | {
       kind: "sse";
       status?: number;
@@ -140,6 +148,14 @@ export async function startFakeOpenAiServer(): Promise<FakeOpenAiServer> {
         if (script.kind === "hang") {
           hung.add(res);
           res.on("close", () => hung.delete(res));
+          return;
+        }
+        if (script.kind === "close") {
+          res.writeHead(200, { "content-type": "text/event-stream" });
+          // Flush the head so the client has a real 200 in hand, then kill
+          // the socket on the next tick with no frame and no terminator.
+          res.flushHeaders();
+          setImmediate(() => res.destroy());
           return;
         }
         sendSse(res, script);

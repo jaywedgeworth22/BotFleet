@@ -186,6 +186,41 @@ final class DecodingTests: XCTestCase {
         XCTAssertNil(NotificationTarget.fromRemoteUserInfo(["botId": "bot-1"]))
     }
 
+    func testNotificationTargetFromRemoteUserInfoCarriesRequestIdAndKindWhenPresent() {
+        let target = NotificationTarget.fromRemoteUserInfo([
+            "botId": "bot-1", "threadId": "task-2", "kind": "approval", "requestId": "req-9",
+        ])
+        XCTAssertEqual(target?.requestId, "req-9")
+        XCTAssertEqual(target?.kind, "approval")
+    }
+
+    /// An older harness never sends `requestId`/`tool` on the notify frame.
+    /// Both are optional, so decoding must still succeed.
+    func testNotificationFrameWithoutRequestIdOrToolStillDecodes() throws {
+        let notification = try JSONDecoder().decode(
+            NotificationFrame.self,
+            from: Data(#"""
+            {"kind":"approval","botId":"bot-1","botName":"Scout","threadId":"task-2",
+             "title":"Scout needs approval","body":"rm -rf"}
+            """#.utf8)
+        )
+        XCTAssertNil(notification.requestId)
+        XCTAssertNil(notification.tool)
+        XCTAssertTrue(notification.isBlocking)
+    }
+
+    func testNotificationFrameWithRequestIdAndToolDecodesBoth() throws {
+        let notification = try JSONDecoder().decode(
+            NotificationFrame.self,
+            from: Data(#"""
+            {"kind":"approval","botId":"bot-1","botName":"Scout","threadId":"task-2",
+             "title":"Scout needs approval","body":"rm -rf","requestId":"req-9","tool":"Bash"}
+            """#.utf8)
+        )
+        XCTAssertEqual(notification.requestId, "req-9")
+        XCTAssertEqual(notification.tool, "Bash")
+    }
+
     func testDecodesTheCloudBackendAndItsAbsence() throws {
         // The cloud-desktop button hides on cloudBackend == "vps", so both
         // sides of that gate must decode: a harness that sends the field, and

@@ -96,6 +96,10 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // locally; it never becomes a newly exposed harness route.
   { method: "GET", path: /^\/api\/companion\/endpoints$/ },
   { method: "POST", path: /^\/api\/companion\/push-token$/ },
+  // Whether closed-app wake is actually working, so the phone can say so in
+  // Settings instead of leaving a silent push path looking healthy.  Counts
+  // and Apple's own status strings only — never anything about the key.
+  { method: "GET", path: /^\/api\/companion\/push-health$/ },
 
   // the fleet, and making a bot
   { method: "GET", path: /^\/api\/bots$/ },
