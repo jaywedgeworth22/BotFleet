@@ -22,6 +22,23 @@ export const WORKSPACE_CREDENTIALS = [
   { section: "infisical", field: "clientSecret", name: "infisicalClientSecret", env: "INFISICAL_CLIENT_SECRET" },
 ];
 
+/** The per-instance environment variable each driver that can carry more than
+ * one instance reads its API key from.  Lives here, in JS, because both sides
+ * need it: server/config.ts re-exports it for the instance routes, and the
+ * desktop shell's boot-time marker repair cannot import TypeScript.  A driver
+ * absent from this table has no per-instance key. */
+export const INSTANCE_API_KEY_ENV = new Map([
+  ["openai-compat", "OPENAI_COMPAT_API_KEY"],
+  ["minimax", "MINIMAX_API_KEY"],
+]);
+
+/** True when this instance entry belongs to a driver that keeps a key of its
+ * own — the entries the encrypted store can hold a credential for. */
+export function instanceKeyedDriver(entry) {
+  return Boolean(entry && typeof entry === "object" && !Array.isArray(entry) &&
+    INSTANCE_API_KEY_ENV.has(entry.driver));
+}
+
 /** Every fixed credential held in credentials.bin.  Composio has its own
  * legacy migration, but it needs the same durable external-storage marker. */
 export const EXTERNAL_WORKSPACE_CREDENTIALS = [

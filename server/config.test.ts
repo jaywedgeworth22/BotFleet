@@ -177,7 +177,12 @@ describe("default fleet", () => {
     const map = instanceConfigs({
       openaiCompat: { key: "secret", url: "https://models.example.test/v1" },
     });
-    expect(map.openaiCompat.config).toEqual({ url: "https://models.example.test/v1" });
+    expect(map.openaiCompat.config).toEqual({
+      url: "https://models.example.test/v1",
+      // Stamped so the persist paths can tell a resolved fallback from a
+      // typed endpoint without comparing the two values.
+      urlSource: "workspace",
+    });
     expect(map.openaiCompat.environment).toEqual({
       OPENAI_COMPAT_API_KEY: "secret",
       OPENAI_COMPAT_URL: "https://models.example.test/v1",
@@ -210,10 +215,12 @@ describe("default fleet", () => {
 
     expect(instanceConfigs(config).custom.config).toEqual({
       url: "https://first.example.test/v1",
+      urlSource: "workspace",
     });
     config.openaiCompat = { url: "https://second.example.test/v1" };
     expect(instanceConfigs(config).custom.config).toEqual({
       url: "https://second.example.test/v1",
+      urlSource: "workspace",
     });
     expect(config.instances?.custom.config).toBeUndefined();
   });
@@ -319,7 +326,7 @@ describe("Instance CLI override", () => {
       minimax: { key: "SECRET-MINIMAX", url: "https://api.minimaxi.com/v1" },
     });
     expect(map.minimax.environment).toEqual({ MINIMAX_API_KEY: "SECRET-MINIMAX" });
-    expect(map.minimax.config).toEqual({ url: "https://api.minimaxi.com/v1" });
+    expect(map.minimax.config).toEqual({ url: "https://api.minimaxi.com/v1", urlSource: "workspace" });
   });
 
   it("never injects the workspace MiniMax key into a second MiniMax connection", () => {
@@ -373,6 +380,53 @@ describe("Instance CLI override", () => {
     }
   });
 
+  it("keeps a typed endpoint that happens to equal the workspace one", () => {
+    // The repro: two connections, one deliberately pointed at the SAME
+    // endpoint the workspace uses.  Deciding provenance by comparing values
+    // could not tell it apart from a resolved fallback, so it was stripped —
+    // and the next workspace change silently re-pointed it somewhere the
+    // operator never chose.
+    const cfg: AppConfig = {
+      minimax: { url: "https://api.minimax.io/v1" },
+      instances: {
+        minimax: { driver: "minimax" },
+        "custom-same": {
+          driver: "minimax",
+          config: { url: "https://api.minimax.io/v1", urlSource: "instance", key: "K1" },
+        },
+        "custom-other": {
+          driver: "minimax",
+          config: { url: "https://gateway.example.test/v1", urlSource: "instance", key: "K2" },
+        },
+      },
+    };
+    // Patching an unrelated instance must not rewrite either of the others.
+    const patched = patchInstanceConfig(cfg, "minimax", { enabled: false });
+    expect(patched.ok).toBe(true);
+    const after = patched.config.instances!;
+    expect(after["custom-same"].config).toEqual({
+      url: "https://api.minimax.io/v1",
+      urlSource: "instance",
+      key: "K1",
+    });
+    expect(after["custom-other"].config).toEqual({
+      url: "https://gateway.example.test/v1",
+      urlSource: "instance",
+      key: "K2",
+    });
+
+    // Move the workspace endpoint: the typed one stays where it was typed,
+    // and only the instance that never had one follows.
+    const moved: AppConfig = { minimax: { url: "https://api.minimaxi.com/v1" }, instances: after };
+    const live = instanceConfigs(moved);
+    expect(live["custom-same"].config).toMatchObject({ url: "https://api.minimax.io/v1" });
+    expect(live["custom-other"].config).toMatchObject({ url: "https://gateway.example.test/v1" });
+    expect(live.minimax.config).toEqual({
+      url: "https://api.minimaxi.com/v1",
+      urlSource: "workspace",
+    });
+  });
+
   it("never persists a workspace endpoint onto the instance that only falls back to it", () => {
     // The workspace endpoint is a FALLBACK, resolved at load time.  Baking
     // the resolved value into the entry turns it into a per-instance
@@ -385,7 +439,10 @@ describe("Instance CLI override", () => {
 
     // …and the fallback still resolves, now against the NEW workspace value.
     const moved: AppConfig = { minimax: { url: "https://api.minimaxi.com/v1" }, instances: patched.config.instances };
-    expect(instanceConfigs(moved).minimax.config).toEqual({ url: "https://api.minimaxi.com/v1" });
+    expect(instanceConfigs(moved).minimax.config).toEqual({
+      url: "https://api.minimaxi.com/v1",
+      urlSource: "workspace",
+    });
 
     // A per-instance override the operator really typed survives untouched.
     const overridden: AppConfig = {
@@ -394,6 +451,14 @@ describe("Instance CLI override", () => {
     };
     const keptOverride = patchInstanceConfig(overridden, "minimax", { enabled: false });
     expect(keptOverride.config.instances!.minimax.config).toEqual({ url: "https://gateway.example.test/v1" });
+    // A url written before the marker existed is left alone rather than
+    // guessed at — the strip only removes what THIS load materialised.
+    const legacy: AppConfig = {
+      minimax: { url: "https://api.minimax.io/v1" },
+      instances: { minimax: { driver: "minimax", config: { url: "https://api.minimax.io/v1" } } },
+    };
+    expect(patchInstanceConfig(legacy, "minimax", { enabled: false }).config.instances!.minimax.config)
+      .toEqual({ url: "https://api.minimax.io/v1" });
   });
 
   it("keeps the fallback out of the persistable base on a default install", () => {

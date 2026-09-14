@@ -9057,6 +9057,17 @@ const server = createServer(async (req, res) => {
       }
       const rawKey = typeof body?.key === "string" ? body.key.trim() : undefined;
       const rawIcon = typeof body?.iconUrl === "string" ? body.iconUrl.trim() : undefined;
+      // A custom icon reaches the engine rail only through the live
+      // instance's own `iconUrl`, which a driver has to read out of its
+      // config and expose.  openai-compat does; MiniMax does not, and its
+      // config schema has exactly one field.  Persisting an icon it can never
+      // render would be configuration that silently does nothing, so the
+      // route refuses it rather than swallowing it.
+      if (rawIcon && driverKind !== "openai-compat") {
+        return json(res, 400, {
+          error: `engine "${driverRecord.metadata.displayName}" does not support a custom icon`,
+        });
+      }
       // Every instance this route creates is non-reserved, so no workspace
       // credential will ever reach it — by design, and enforced in both
       // drivers.  A key therefore has to arrive with the request, or with the
@@ -9153,9 +9164,19 @@ const server = createServer(async (req, res) => {
         // global reloadProviders(): that disposes EVERY provider and marks
         // every currently-busy bot's turn as interrupted, so adding one
         // independent engine would kill every other bot's active work.
-        const newEntry = instanceConfigs(cfg)[instanceId];
-        const newLive = newEntry ? await registry.reloadInstance(instanceId, newEntry) : null;
-        if (newLive) bus.attach([newLive]);
+        //
+        // …and not even that one, when its key is still on its way to the
+        // encrypted store.  Creating it here would have the registry probe
+        // the endpoint with no credential, so the engine's first reported
+        // state is a 401 it was never going to avoid.  The credential PATCH
+        // that follows does the same detach-reload-attach with the key in
+        // hand (runInstanceProviderReload), and the config row written above
+        // is all that PATCH needs to find it.
+        if (!externalCredential) {
+          const newEntry = instanceConfigs(cfg)[instanceId];
+          const newLive = newEntry ? await registry.reloadInstance(instanceId, newEntry) : null;
+          if (newLive) bus.attach([newLive]);
+        }
         resetPathCache();
         return json(res, 201, {
           ok: true,

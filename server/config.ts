@@ -1118,19 +1118,23 @@ export function patchInstanceConfig(
   // comes off the URL, where `__proto__` passes the route's [\w.-]+ regex)
   if (!Object.hasOwn(map, instanceId)) return { ok: false, config: cfg };
 
-  // Strip BEFORE reading the config this patch is layered onto.  `map` came
-  // out of instanceConfigs(), so each entry carries what workspace config
-  // materialized onto it: the injected credential env, and a `config.url`
-  // resolved from the workspace endpoint.  The environment half matters
-  // because a driver whose injected key comes from `config.key` (MiniMax)
-  // would otherwise have its PREVIOUS key left behind in the persisted
-  // environment, still shadowing the one just saved.  The url half matters
-  // because reading the LIVE config here — rather than the stripped one —
-  // would copy a resolved fallback into `nextConfig` and persist it as a
-  // per-instance override, which is how a later workspace endpoint change
-  // stopped reaching the instance it was set for.
-  const persistable = stripInjectedDefaults(next, map);
-  const persisted = persistable[instanceId];
+  // Every OTHER instance is carried through in the form it already has on
+  // disk, untouched.  This function used to hand back a stripped copy of the
+  // whole live map, which meant patching one engine's CLI path rewrote every
+  // other engine's entry too — and stripped anything that happened to look
+  // like a workspace default in all of them.  A patch changes one instance.
+  const persistable: InstanceConfigMap = { ...persistableInstanceConfigs(next) };
+
+  // The one being patched is read in PERSISTABLE form, never live: `map` came
+  // out of instanceConfigs(), so its entry carries what workspace config
+  // materialized onto it — the injected credential env, and a `config.url`
+  // resolved from the workspace endpoint.  Layering the patch onto that would
+  // copy both into `nextConfig` and persist them: the key half leaves a
+  // PREVIOUS key behind in the persisted environment, still shadowing the one
+  // just saved, and the url half turns a fallback into a per-instance
+  // override that the next workspace change can no longer reach.
+  const persisted = { ...(persistable[instanceId] ?? stripInjectedDefaults(next, { [instanceId]: map[instanceId] })[instanceId]) };
+  persistable[instanceId] = persisted;
 
   const currentConfig = jsonObjectSchema.safeParse(persisted.config);
   const nextConfig: JsonObject = currentConfig.success ? { ...currentConfig.data } : {};
@@ -1264,11 +1268,15 @@ function injectedEnvironment(
 /** One string field out of an instance's opaque `config` blob.  The blob is
  * `z.json()` in the schema, so this IS its parse boundary — the same shape
  * `cliOfRaw` and `fullAutoOfRaw` already use in the registry. */
-const instanceTextSchema = z.object({ key: z.string().optional(), url: z.string().optional() });
+const instanceTextSchema = z.object({
+  key: z.string().optional(),
+  url: z.string().optional(),
+  urlSource: z.string().optional(),
+});
 
 function readInstanceConfigText(
   raw: InstanceConfig["config"],
-  field: "key" | "url",
+  field: "key" | "url" | "urlSource",
 ): string | undefined {
   const parsed = instanceTextSchema.safeParse(raw);
   if (!parsed.success) return undefined;
@@ -1277,13 +1285,12 @@ function readInstanceConfigText(
 }
 
 /** The per-instance environment variable each driver that supports more than
- * one instance reads its API key from.  Shared with server/index.ts so the
- * encrypted-credential routes and this module cannot drift on which variable
- * carries which driver's key. */
-export const INSTANCE_API_KEY_ENV = new Map<string, string>([
-  ["openai-compat", "OPENAI_COMPAT_API_KEY"],
-  ["minimax", "MINIMAX_API_KEY"],
-]);
+ * one instance reads its API key from.  Declared in
+ * electron/workspace-credentials.mjs and re-exported here: the desktop shell's
+ * boot-time marker repair walks the same table and cannot import TypeScript,
+ * and two copies of it is exactly the drift that left MiniMax instances out
+ * of that repair. */
+export { INSTANCE_API_KEY_ENV } from "../electron/workspace-credentials.mjs";
 
 /** Strip everything instanceConfigs() materialized onto an entry from
  * WORKSPACE config, before that entry is persisted.
@@ -1302,17 +1309,23 @@ export const INSTANCE_API_KEY_ENV = new Map<string, string>([
  * load time.  Persisting the resolved value turns that fallback into a
  * per-instance override, so the next change to the workspace endpoint
  * silently stops reaching the instance it was set for, and Settings reports
- * an endpoint the engine is no longer using.  A per-instance url the operator
- * really did type is indistinguishable from the fallback only when the two
- * are equal — in which case dropping it changes nothing that resolves. */
+ * an endpoint the engine is no longer using.
+ *
+ * Which url is which is decided by PROVENANCE, never by comparing values.
+ * instanceConfigs() stamps `urlSource: "workspace"` on exactly the entries it
+ * resolved one onto, and only those are stripped.  Comparing values instead
+ * was its own bug in both directions: a connection the operator deliberately
+ * pointed at the workspace's own endpoint looked identical to a resolved
+ * fallback, so it was stripped and then silently re-pointed by the next
+ * workspace change — and an entry written before this marker existed has no
+ * way to prove it was typed, so it is left alone rather than guessed at. */
 export function stripInjectedDefaults(cfg: AppConfig, map: InstanceConfigMap): InstanceConfigMap {
   const stripped: InstanceConfigMap = {};
   for (const [id, entry] of Object.entries(map)) {
     const next = { ...entry };
-    const fallbackUrl = workspaceDriverUrl(cfg, entry.driver)?.trim();
-    if (fallbackUrl && readInstanceConfigText(entry.config, "url") === fallbackUrl) {
+    if (readInstanceConfigText(entry.config, "urlSource") === WORKSPACE_URL_SOURCE) {
       const parsed = jsonObjectSchema.safeParse(entry.config);
-      const { url: _resolved, ...rest } = parsed.success ? parsed.data : {};
+      const { url: _resolved, urlSource: _marker, ...rest } = parsed.success ? parsed.data : {};
       next.config = Object.keys(rest).length ? rest : undefined;
     }
     if (!entry.environment) {
@@ -1330,6 +1343,13 @@ export function stripInjectedDefaults(cfg: AppConfig, map: InstanceConfigMap): I
   }
   return stripped;
 }
+
+/** Stamped by instanceConfigs() onto an entry whose `config.url` it resolved
+ * from workspace config, and read by stripInjectedDefaults() on the way back
+ * out.  Transient by construction: it never survives a persist, so an entry
+ * on disk carrying it would have to have been written by a build that had
+ * this materialiser and not this strip. */
+const WORKSPACE_URL_SOURCE = "workspace";
 
 /** The workspace-level endpoint a driver's instances fall back to, if it has
  * one.  Only the two engines configured with an endpoint and a key do. */
@@ -1415,20 +1435,16 @@ export function instanceConfigs(cfg: AppConfig): InstanceConfigMap {
     // openai-compat here because its own `decodeMinimaxConfig` reads
     // `config.url` first and only then `MINIMAX_BASE_URL` from process env —
     // a workspace URL saved in Settings would otherwise never reach it.
-    const workspaceUrl = entry.driver === "openai-compat"
-      ? cfg.openaiCompat?.url
-      : entry.driver === "minimax"
-        ? cfg.minimax?.url
-        : undefined;
+    const workspaceUrl = workspaceDriverUrl(cfg, entry.driver);
     if (workspaceUrl) {
-      const raw = entry.config;
-      if (raw === undefined) {
-        entry.config = { url: workspaceUrl };
-      } else if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
-        const current = raw as Record<string, unknown>;
-        if (typeof current.url !== "string" || !current.url.trim()) {
-          entry.config = { ...current, url: workspaceUrl };
-        }
+      const parsed = jsonObjectSchema.safeParse(entry.config);
+      const current = parsed.success ? parsed.data : {};
+      // Stamped as workspace-resolved so the persist paths can tell this url
+      // apart from one the operator typed, WITHOUT comparing the two values —
+      // they are frequently equal, and guessing from that is how a typed
+      // endpoint got silently re-pointed.
+      if (typeof current.url !== "string" || !current.url.trim()) {
+        entry.config = { ...current, url: workspaceUrl, urlSource: WORKSPACE_URL_SOURCE };
       }
     }
   }

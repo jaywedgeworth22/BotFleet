@@ -21,6 +21,7 @@ import { readConfigFile, updateConfigFile } from "./config-file-lock.mjs";
 import { buildDiagnosticsReport, decodeLogTail, diagnosticsFileName } from "./diagnostics.mjs";
 import {
   assertExternalWorkspaceCredentialMarkers,
+  instanceKeyedDriver,
   markExternalWorkspaceCredentials,
   migrateWorkspaceCredentials,
   workspaceCredentialEnv,
@@ -389,7 +390,7 @@ function secureCredentialMarkers({ strict = false } = {}) {
     const markerNames = assertExternalWorkspaceCredentialMarkers(stored, secureCredentials);
     for (const id of ids) {
       if (stored?.instances?.[id]?.config?.credentialStorage === "external") markerNames.push(`instance.${id}`);
-      else if (stored?.instances?.[id]?.driver === "openai-compat") {
+      else if (instanceKeyedDriver(stored?.instances?.[id])) {
         throw new Error(`Custom credential marker was not durably written for ${id}`);
       }
     }

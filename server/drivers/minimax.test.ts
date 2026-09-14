@@ -212,6 +212,101 @@ describe("MinimaxDriver", () => {
     await withOwnKey.dispose();
   });
 
+  it("never redirects a connection the operator added to the machine-wide mmx endpoint", async () => {
+    // ~/.mmx/config.json is ONE file for the whole machine, so the endpoint
+    // beside that key is a workspace-wide default.  A connection whose
+    // operator deliberately typed the global URL matched DEFAULT_URL exactly,
+    // so the fallback fired and re-pointed it at whatever region or custom
+    // base_url that file names — with its own key along for the ride.
+    mkdirSync(join(home, ".mmx"), { recursive: true });
+    writeFileSync(
+      join(home, ".mmx", "config.json"),
+      JSON.stringify({ api_key: "sentinel-workspace-local", base_url: "https://profile.gateway.example/v1" }),
+    );
+    const fetchMock = vi.fn(async (_input: string | URL | Request) => new Response(
+      JSON.stringify({ data: [] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const added = await MinimaxDriver.create({
+      instanceId: "custom-minimax-global",
+      displayName: "MiniMax Global",
+      enabled: true,
+      config: decodeMinimaxConfig({ url: "https://api.minimax.io/v1" }),
+      environment: { MINIMAX_API_KEY: "sentinel-its-own" },
+    });
+    await expect(added.snapshot()).resolves.toMatchObject({ state: "available" });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("api.minimax.io");
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("profile.gateway.example");
+    await added.dispose();
+
+    // The reserved connection still follows that profile — reading it is the
+    // whole reason the file is consulted at all.
+    fetchMock.mockClear();
+    const reserved = await MinimaxDriver.create({
+      instanceId: "minimax",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: {},
+    });
+    await expect(reserved.snapshot()).resolves.toMatchObject({ state: "available" });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("profile.gateway.example");
+    await reserved.dispose();
+  });
+
+  it("tells each connection the remedy that can actually reach it", async () => {
+    // MINIMAX_API_KEY and `mmx auth login` are workspace-wide, and a
+    // non-reserved connection reads neither.  Offering them there sends the
+    // operator somewhere that cannot fix anything.
+    const fetchMock = vi.fn(async () => new Response("unauthorized", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const added = await MinimaxDriver.create({
+      instanceId: "custom-minimax-remedy",
+      displayName: "MiniMax Gateway",
+      enabled: true,
+      config: decodeMinimaxConfig({ url: "https://gateway.example.test/v1" }),
+      environment: {},
+    });
+    const addedSnapshot = await added.snapshot();
+    expect(addedSnapshot).toMatchObject({ state: "unavailable" });
+    const addedReason = (addedSnapshot as { reason: string }).reason;
+    expect(addedReason).toContain("Settings");
+    expect(addedReason).not.toContain("MINIMAX_API_KEY");
+    expect(addedReason).not.toContain("mmx auth login");
+    await expect(added.adapter.sendTurn({ threadId: "t", text: "hi" })).rejects.toThrow(/Settings/);
+    await added.dispose();
+
+    // A rejected key on an added connection points at the same place.
+    const rejected = await MinimaxDriver.create({
+      instanceId: "custom-minimax-rejected",
+      displayName: "MiniMax Gateway",
+      enabled: true,
+      config: decodeMinimaxConfig({ url: "https://gateway.example.test/v1" }),
+      environment: { MINIMAX_API_KEY: "sentinel-its-own" },
+    });
+    const rejectedSnapshot = await rejected.snapshot();
+    expect(rejectedSnapshot).toMatchObject({ state: "unavailable" });
+    expect((rejectedSnapshot as { reason: string }).reason).toContain("Settings");
+    expect((rejectedSnapshot as { reason: string }).reason).not.toContain("mmx auth login");
+    await rejected.dispose();
+
+    // The built-in connection keeps the workspace remedies, which do reach it.
+    const reserved = await MinimaxDriver.create({
+      instanceId: "minimax",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: {},
+    });
+    const reservedSnapshot = await reserved.snapshot();
+    expect(reservedSnapshot).toMatchObject({ state: "unavailable" });
+    expect((reservedSnapshot as { reason: string }).reason).toContain("MINIMAX_API_KEY");
+    await reserved.dispose();
+  });
+
   it("a truly keyless instance (no env, no local config) reads unavailable without ever probing", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

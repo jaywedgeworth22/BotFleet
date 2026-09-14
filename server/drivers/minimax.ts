@@ -236,7 +236,26 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
 
     const local = loadLocalMiniMaxConfig();
     const apiKey = resolveMinimaxCredentials(input.environment, local, instanceId);
-    const apiUrl = config.url === DEFAULT_URL && local.url !== DEFAULT_URL ? local.url : config.url;
+    // ~/.mmx/config.json is ONE file for the whole machine, so its endpoint is
+    // a workspace-wide default and reaches only the reserved instance — the
+    // same gate resolveMinimaxCredentials applies to the key it sits beside.
+    // Without it, a connection whose operator typed exactly the default URL
+    // was silently redirected to whatever region or custom base_url that file
+    // names, and its own key was sent there.
+    const isReservedInstance = instanceId === RESERVED_INSTANCE_ID;
+    const apiUrl = isReservedInstance && config.url === DEFAULT_URL && local.url !== DEFAULT_URL
+      ? local.url
+      : config.url;
+    // What the operator can actually DO about a missing or refused key here.
+    // The workspace remedies — MINIMAX_API_KEY, `mmx auth login` — reach only
+    // the reserved instance, so telling a connection the operator added to
+    // try either one sends them somewhere that cannot help.
+    const keylessRemedy = isReservedInstance
+      ? `set ${API_KEY_ENV} or run mmx auth login --api-key …`
+      : "set a key for this connection in Settings \u2192 API Keys";
+    const rejectedRemedy = isReservedInstance
+      ? `run mmx auth login --api-key … or update ${API_KEY_ENV}`
+      : "update this connection's key in Settings \u2192 API Keys";
     // Resolved once, from the endpoint this instance actually calls, so a
     // gateway or proxy never gets MiniMax's own tariff reported as its
     // authoritative spend.
@@ -433,7 +452,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       // for a CLI driver — error chip, watchdog settled, bot idle, all three
       // queue drains.  A rejection here must never become a resolved turn
       // that nothing ever settles.
-      if (!apiKey) throw new Error(`no MiniMax key — set ${API_KEY_ENV} or run mmx auth login --api-key …`);
+      if (!apiKey) throw new Error(`no MiniMax key — ${keylessRemedy}`);
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
 
       const turnId = newId();
@@ -657,10 +676,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
 
     const snapshot = async (): Promise<ProviderSnapshot> => {
       if (!apiKey) {
-        return {
-          state: "unavailable",
-          reason: `no MiniMax API key — run mmx auth login --api-key … or set ${API_KEY_ENV}`,
-        };
+        return { state: "unavailable", reason: `no MiniMax API key — ${keylessRemedy}` };
       }
       const probe = await probeModels();
       if (probe.ok) {
@@ -671,7 +687,7 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
       if (probe.classification?.code === "invalid_credentials") {
         return {
           state: "unavailable",
-          reason: `MiniMax key rejected (HTTP ${probe.status}) — run mmx auth login --api-key … or update ${API_KEY_ENV}`,
+          reason: `MiniMax key rejected (HTTP ${probe.status}) — ${rejectedRemedy}`,
         };
       }
       if (probe.classification?.code === "quota_or_region_restriction") {

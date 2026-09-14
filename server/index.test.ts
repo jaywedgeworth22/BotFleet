@@ -4988,6 +4988,19 @@ describe("instance CLI override API", () => {
     });
     expect(keyless.status).toBe(400);
     expect(keyless.body.error).toContain("API key is required");
+    // A custom icon reaches the engine rail only through the live instance's
+    // own `iconUrl`, which a driver has to read out of its config and expose.
+    // MiniMax's config schema has exactly one field, so an icon accepted here
+    // would be configuration that silently does nothing.
+    const iconed = await api("POST", "/api/instances", {
+      name: "Iconed MiniMax",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+      key: "sk-refused",
+      iconUrl: "https://example.test/icon.svg",
+    });
+    expect(iconed.status).toBe(400);
+    expect(iconed.body.error).toContain("does not support a custom icon");
     // …unless the desktop shell is about to commit one to its encrypted
     // store, which is the one keyless create that is not a broken engine.
     const declared = await api("POST", "/api/instances?secretStorage=external", {

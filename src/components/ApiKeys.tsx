@@ -7,6 +7,7 @@ import { api, useSecretSources, useStore, type ConfigStatus } from "@/state/stor
 import { cn } from "@/lib/cn";
 import { SecretSourceBadge } from "./SecretSourceBadge";
 import {
+  applyEngineKeySave,
   apiKeyEngineSpec,
   engineKeyStatus,
   splitEngineKeySave,
@@ -413,26 +414,24 @@ export function EngineKeyRow({ engine: engineId }: { engine: ApiKeyEngineId }) {
     }
     setSaving(true);
     setError(null);
-    // The endpoint lands FIRST, for the same reason the Secret Store card
-    // sends its non-secret half first: saving the key is what rebuilds the
-    // fleet, and it should rebuild against the endpoint the operator just
-    // chose rather than the previous one.
-    const { configPatch, bridgeSecret } = split.save;
-    const applyUrl = configPatch
-      ? api("/api/config", { method: "PUT", body: JSON.stringify(configPatch) })
-      : Promise.resolve(null);
-    applyUrl
-      .then((afterUrl: ConfigStatus | null) =>
-        bridgeSecret
-          ? window.ogb!.setCredential!(bridgeSecret.name, bridgeSecret.value)
-          : Promise.resolve(afterUrl),
-      )
-      .then((next: ConfigStatus | null) => {
-        if (next) dispatch({ type: "configStatus", config: next });
+    // Ordering, and what a half-applied save reports, live in
+    // applyEngineKeySave — see its own note on why the key half goes first.
+    void applyEngineKeySave(split.save, {
+      patchConfig: (patch) => api("/api/config", { method: "PUT", body: JSON.stringify(patch) }),
+      setCredential: (name, value) => window.ogb!.setCredential!(name, value),
+    })
+      .then((outcome) => {
+        if (!outcome.ok) {
+          setError(outcome.error);
+          // The key really did land, so the field must not keep offering it
+          // for a retry that would send it a second time.
+          if (outcome.keySaved) setKey("");
+          return;
+        }
+        if (outcome.status) dispatch({ type: "configStatus", config: outcome.status as ConfigStatus });
         setKey("");
         untouched.current = true;
       })
-      .catch((e: Error) => setError(e.message))
       .finally(() => setSaving(false));
   };
 

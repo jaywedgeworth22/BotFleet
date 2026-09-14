@@ -240,6 +240,11 @@ describe("the Add Engine form's driver choice", () => {
     expect(validateAddEngine({ ...base, driver: "openai-compat", models: ["m"], key: "" })).toBeNull();
     expect(addEngineDriverOption("openai-compat").requiresKey).toBe(false);
     expect(addEngineDriverOption("minimax").requiresKey).toBe(true);
+    // A custom icon reaches the rail only through a driver that reads one out
+    // of its config.  MiniMax's config schema has exactly one field, so the
+    // form does not offer an icon it could only drop on the floor.
+    expect(addEngineDriverOption("openai-compat").supportsIcon).toBe(true);
+    expect(addEngineDriverOption("minimax").supportsIcon).toBe(false);
     expect(
       validateAddEngine({ ...base, driver: "openai-compat", models: Array.from({ length: 16 }, (_, i) => `m${i}`) }),
     ).toContain("At most 15");

@@ -167,3 +167,51 @@ function isAbsoluteHttpUrl(value: string): boolean {
     return false;
   }
 }
+
+
+/** Apply one row's split save, in the order that fails safest.
+ *
+ * The two halves cannot travel together — `credential:set` carries exactly
+ * one secret field — so one of them lands first, and which one matters.
+ *
+ * The KEY goes first.  Endpoint-first means that if the credential call then
+ * fails, the instance is left pointing at the new endpoint while still
+ * holding the OLD key, and the next turn sends that key somewhere the
+ * operator has not yet authorised it for.  Key-first leaves the reverse
+ * partial state — the new key against the endpoint that key already had —
+ * which is where it was going to be sent anyway.
+ *
+ * There is no rollback for the key half, and deliberately so: undoing it
+ * would mean re-sending the PREVIOUS key, which this row has never been
+ * given (a key is never echoed back).  So a failure after the key landed is
+ * REPORTED as exactly that, rather than silently leaving the operator to
+ * guess which half took. */
+export async function applyEngineKeySave(
+  save: EngineKeySave,
+  deps: {
+    patchConfig: (patch: EngineKeyPatch) => Promise<unknown>;
+    setCredential: (name: EngineCredentialName, value: string) => Promise<unknown>;
+  },
+): Promise<{ ok: true; status: unknown } | { ok: false; error: string; keySaved: boolean }> {
+  let status: unknown = null;
+  if (save.bridgeSecret) {
+    try {
+      status = await deps.setCredential(save.bridgeSecret.name, save.bridgeSecret.value);
+    } catch (e) {
+      return { ok: false, error: e instanceof Error ? e.message : String(e), keySaved: false };
+    }
+  }
+  if (save.configPatch) {
+    try {
+      status = await deps.patchConfig(save.configPatch);
+    } catch (e) {
+      const reason = e instanceof Error ? e.message : String(e);
+      // NBSP, not two ASCII spaces — this renders into a plain <div>, where
+      // white-space:normal collapses a run of ordinary spaces to one.
+      return save.bridgeSecret
+        ? { ok: false, error: `The key was saved, but the endpoint was not.\u00A0 ${reason}`, keySaved: true }
+        : { ok: false, error: reason, keySaved: false };
+    }
+  }
+  return { ok: true, status };
+}

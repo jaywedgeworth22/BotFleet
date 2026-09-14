@@ -28,3 +28,9 @@ export function markExternalWorkspaceCredentials(
 ): { config: Record<string, unknown>; changed: boolean };
 export function workspaceCredentialPending(config: unknown, name: string): boolean;
 export function setWorkspaceCredentialMarker(config: unknown, name: string, present: boolean): unknown;
+
+/** Driver kind → the per-instance environment variable that driver reads its
+ * API key from.  Declared in the .mjs so the desktop shell and the server
+ * share one table. */
+export const INSTANCE_API_KEY_ENV: ReadonlyMap<string, string>;
+export function instanceKeyedDriver(entry: unknown): boolean;

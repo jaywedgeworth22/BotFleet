@@ -159,6 +159,10 @@ export interface AddEngineDriverOption {
    * catalog it can trust for an endpoint it has never seen. MiniMax ships
    * its own published catalog, so asking would only invite typos. */
   requiresModels: boolean;
+  /** True when the driver reads a custom icon out of its config and exposes
+   * it on the live instance.  Only openai-compat does; the route refuses an
+   * icon for anything else rather than persisting one nothing renders. */
+  supportsIcon: boolean;
   /** True when a keyless instance could only ever fail.  False only for
    * openai-compat, where an endpoint needing no auth at all — Ollama, LM
    * Studio, vLLM — is a first-class use; that is safe because the driver
@@ -174,6 +178,7 @@ export const ADD_ENGINE_DRIVERS: readonly AddEngineDriverOption[] = [
     endpointPlaceholder: "https://api.together.xyz/v1 or http://localhost:11434/v1",
     requiresModels: true,
     requiresKey: false,
+    supportsIcon: true,
   },
   {
     driver: "minimax",
@@ -183,6 +188,7 @@ export const ADD_ENGINE_DRIVERS: readonly AddEngineDriverOption[] = [
     suggestedEndpoint: "https://api.minimaxi.com/v1",
     requiresModels: false,
     requiresKey: true,
+    supportsIcon: false,
   },
 ];
 

@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   API_KEY_ENGINES,
   apiKeyEngineSpec,
+  applyEngineKeySave,
   engineKeyStatus,
   splitEngineKeySave,
 } from "./engine-key-config";
@@ -221,5 +222,70 @@ describe("an endpoint-only save", () => {
     if (!result.ok) return;
     expect(result.save.configPatch).toEqual({ openaiCompat: { url: "https://openrouter.ai/api/v1" } });
     expect(result.save.bridgeSecret).toBeNull();
+  });
+});
+
+describe("applyEngineKeySave", () => {
+  const save = {
+    configPatch: { minimax: { url: "https://api.minimaxi.com/v1" } },
+    bridgeSecret: { name: "minimaxApiKey" as const, value: SENTINEL_KEY },
+  };
+
+  it("saves the key BEFORE the endpoint", async () => {
+    // Endpoint-first leaves the instance pointing at the new endpoint while
+    // still holding the OLD key, so the next turn sends that key somewhere
+    // the operator has not authorised it for.
+    const order: string[] = [];
+    const result = await applyEngineKeySave(save, {
+      setCredential: async () => { order.push("key"); return { ok: true }; },
+      patchConfig: async () => { order.push("endpoint"); return { ok: true }; },
+    });
+    expect(order).toEqual(["key", "endpoint"]);
+    expect(result.ok).toBe(true);
+  });
+
+  it("never sends the endpoint when the key call failed", async () => {
+    const patchConfig = vi.fn();
+    const result = await applyEngineKeySave(save, {
+      setCredential: async () => { throw new Error("The operating-system credential store is unavailable"); },
+      patchConfig,
+    });
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.keySaved).toBe(false);
+    expect(result.error).toContain("credential store is unavailable");
+  });
+
+  it("says plainly which half took when the endpoint call fails after the key landed", async () => {
+    // There is no rollback: undoing the key would mean re-sending the
+    // PREVIOUS one, which this row has never been given.  So the partial
+    // state is reported rather than left for the operator to guess at.
+    const result = await applyEngineKeySave(save, {
+      setCredential: async () => ({ ok: true }),
+      patchConfig: async () => { throw new Error("HTTP 503"); },
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.keySaved).toBe(true);
+    expect(result.error).toContain("The key was saved, but the endpoint was not.");
+  });
+
+  it("runs only the half a save actually has", async () => {
+    const setCredential = vi.fn();
+    const endpointOnly = await applyEngineKeySave(
+      { configPatch: { minimax: { url: "https://api.minimax.io/v1" } }, bridgeSecret: null },
+      { setCredential, patchConfig: async () => ({ ok: true }) },
+    );
+    expect(endpointOnly.ok).toBe(true);
+    expect(setCredential).not.toHaveBeenCalled();
+
+    const patchConfig = vi.fn();
+    const keyOnly = await applyEngineKeySave(
+      { configPatch: null, bridgeSecret: { name: "minimaxApiKey", value: SENTINEL_KEY } },
+      { setCredential: async () => ({ ok: true }), patchConfig },
+    );
+    expect(keyOnly.ok).toBe(true);
+    expect(patchConfig).not.toHaveBeenCalled();
   });
 });

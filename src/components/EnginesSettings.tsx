@@ -520,7 +520,7 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
       driver,
       key: apiKey.trim(),
       models,
-      iconUrl: iconUrl.trim() || undefined,
+      iconUrl: option.supportsIcon ? iconUrl.trim() || undefined : undefined,
     })
       .then(() => Promise.resolve(onAdded()).catch(() => {}))
       .then(onClose)
@@ -641,6 +641,7 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
             </div>
           )}
 
+          {option.supportsIcon && (
           <div>
             <label className="mb-1.5 block text-[11.5px] font-medium text-ink-secondary uppercase tracking-wide">
               Engine Icon <span className="font-normal normal-case text-[11px]">· optional SVG or image URL / upload</span>
@@ -675,6 +676,7 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
               )}
             </div>
           </div>
+          )}
 
           {error && (
             <div role="alert" className="rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-[12px] text-danger">
