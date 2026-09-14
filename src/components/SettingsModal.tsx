@@ -24,6 +24,15 @@ import { analyticsEnabled, setAnalyticsEnabled } from "@/lib/analytics";
 import { showToolCallsEnabled, skillRecorderEnabled, summarizeToolCallsEnabled } from "@/lib/feature-flags";
 import { ApiKeyRow, VpsConnection } from "./ApiKeys";
 import { useUpdaterState } from "@/lib/updater";
+import {
+  availableLabel,
+  idleLabel,
+  installedLabel,
+  lastRunLabel,
+  runningLabel,
+  updateSource,
+  useUpdateControl,
+} from "@/lib/update-control";
 import { EnginesSettings } from "./EnginesSettings";
 import { FleetModelsSection } from "./FleetModelsSection";
 import { BotComputerDefaults } from "./BotComputerDefaults";
@@ -362,11 +371,19 @@ function CustomIngressFields() {
 function UpdatesRow() {
   const { state, dispatch } = useStore();
   const s = useUpdaterState();
+  // The local harness answers "is this Mac's checkout behind origin/main?".
+  // A locally built app has no signed release feed at all, so this is the
+  // only path that works there — and on a Mac that has both, it is the one
+  // that can actually install without waiting for a published build.
+  const local = useUpdateControl();
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  if (!window.ogb?.updater) return null;
-  const updater = window.ogb.updater;
-  const label =
+  const hasBridge = Boolean(window.ogb?.updater);
+  const source = updateSource(local.status, hasBridge);
+  if (source === "none") return null;
+  const status = local.status;
+  const running = status?.running ?? null;
+  const feedLabel =
     s?.status === "checking"
       ? "Checking…"
       : s?.status === "available"
@@ -378,54 +395,93 @@ function UpdatesRow() {
             : s?.status === "error"
               ? `Check failed: ${s.message ?? "unknown error"}`
               : "You're on the latest version we know of.";
+  const harnessLine =
+    source === "harness" && status
+      ? running
+        ? runningLabel(running)
+        : (availableLabel(status) ?? idleLabel(status))
+      : null;
+  const subtitle =
+    source === "harness" && status
+      ? `Installed ${installedLabel(status)}.${"\u00A0 "}${harnessLine}`
+      : `${feedLabel}${"\u00A0 "}Auto-checks at most once per 6 hours;${"\u00A0 "}you can manually check any time if an update is available.`;
+  const lastRun = source === "harness" ? lastRunLabel(status?.lastRun ?? null) : null;
+  const canInstall = Boolean(status?.capabilities.canRun && status.available) && !running;
+
   return (
-    <Card
-      title="Updates"
-      subtitle={`${label}${"\u00A0 "}Auto-checks at most once per 6 hours;${"\u00A0 "}you can manually check any time if an update is available.`}
-    >
+    <Card title="Updates" subtitle={subtitle}>
       <div className="flex flex-col items-end gap-3">
-        <label className="flex items-center gap-2 text-[13px] text-ink">
-          <input
-            type="checkbox"
-            checked={state.config?.autoUpdate?.enabled ?? false}
-            disabled={saving}
-            onChange={async (e) => {
-              const enabled = e.target.checked;
-              setSaving(true);
-              setSaveError(null);
-              try {
-                const config = await putAutomaticUpdateSetting(enabled);
-                dispatch({ type: "configStatus", config });
-                void window.ogb?.updater?.setEnabled?.(enabled);
-              } catch (error) {
-                setSaveError(error instanceof Error ? error.message : "Could not save automatic updates.");
-              } finally {
-                setSaving(false);
-              }
-            }}
-          />
-          Enable automatic update checks
-        </label>
+        {hasBridge && (
+          <label className="flex items-center gap-2 text-[13px] text-ink">
+            <input
+              type="checkbox"
+              checked={state.config?.autoUpdate?.enabled ?? false}
+              disabled={saving}
+              onChange={async (e) => {
+                const enabled = e.target.checked;
+                setSaving(true);
+                setSaveError(null);
+                try {
+                  const config = await putAutomaticUpdateSetting(enabled);
+                  dispatch({ type: "configStatus", config });
+                  void window.ogb?.updater?.setEnabled?.(enabled);
+                } catch (error) {
+                  setSaveError(error instanceof Error ? error.message : "Could not save automatic updates.");
+                } finally {
+                  setSaving(false);
+                }
+              }}
+            />
+            Enable automatic update checks
+          </label>
+        )}
         {saveError && (
           <div role="alert" className="max-w-sm text-right text-[12px] text-danger">
             Automatic update preference was not saved.{"\u00A0 "}{saveError}
           </div>
         )}
-        <button
-          onClick={() => {
-            if (s?.status === "available") return void updater.download();
-            if (s?.status === "downloaded") return void updater.install();
-            void updater.check();
-          }}
-          disabled={s?.status === "checking" || s?.status === "downloading"}
-          className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
-        >
-          {s?.status === "available"
-            ? "Download"
-            : s?.status === "downloaded"
-              ? "Restart and Install"
-              : "Check for Updates"}
-        </button>
+        {lastRun && <div className="max-w-sm text-right text-[12px] text-ink-secondary">{lastRun}</div>}
+        {local.error && (
+          <div role="alert" className="max-w-sm text-right text-[12px] text-danger">
+            {local.error}
+          </div>
+        )}
+        {source === "harness" ? (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => void local.check()}
+              disabled={local.busy !== null || Boolean(running) || !status?.capabilities.canCheck}
+              className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
+            >
+              {local.busy === "check" ? "Checking…" : "Check for Updates"}
+            </button>
+            {canInstall && (
+              <button
+                onClick={() => void local.install()}
+                disabled={local.busy !== null}
+                className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white disabled:bg-control disabled:text-ink-secondary"
+              >
+                {local.busy === "install" ? "Starting…" : "Install Update"}
+              </button>
+            )}
+          </div>
+        ) : (
+          <button
+            onClick={() => {
+              if (s?.status === "available") return void window.ogb?.updater?.download();
+              if (s?.status === "downloaded") return void window.ogb?.updater?.install();
+              void window.ogb?.updater?.check();
+            }}
+            disabled={s?.status === "checking" || s?.status === "downloading"}
+            className="rounded-lg border border-hairline/40 px-3 py-1.5 text-[13px] text-ink hover:bg-control disabled:opacity-40"
+          >
+            {s?.status === "available"
+              ? "Download"
+              : s?.status === "downloaded"
+                ? "Restart and Install"
+                : "Check for Updates"}
+          </button>
+        )}
       </div>
     </Card>
   );
