@@ -217,17 +217,18 @@ test("the bundle scan finds an embedded driver, not only the main executable", m
 });
 
 test("the txt parser attributes each path to the process that holds it", () => {
+  const appPath = (name, ...parts) => join(tmpdir(), "Applications", name, ...parts);
   const output = [
-    "p101", "ftxt", "n/Applications/Other.app/Contents/MacOS/Other",
-    "p202", "ftxt", "n/Applications/BotFleet.app/Contents/MacOS/BotFleet",
-    "ftxt", "n/usr/lib/libSystem.B.dylib",
-    "p303", "ftxt", "n/Applications/BotFleet.app/Contents/Resources/cua-driver",
-    "p404", "ftxt", "n/Applications/BotFleet.app.backup/Contents/MacOS/BotFleet",
+    "p101", "ftxt", `n${appPath("Other.app", "Contents", "MacOS", "Other")}`,
+    "p202", "ftxt", `n${appPath("BotFleet.app", "Contents", "MacOS", "BotFleet")}`,
+    "ftxt", `n${join(tmpdir(), "usr", "lib", "libSystem.B.dylib")}`,
+    "p303", "ftxt", `n${appPath("BotFleet.app", "Contents", "Resources", "cua-driver")}`,
+    "p404", "ftxt", `n${appPath("BotFleet.app.backup", "Contents", "MacOS", "BotFleet")}`,
   ].join("\n");
-  assert.deepEqual(txtHolderPids(output, "/Applications/BotFleet.app"), [202, 303]);
+  assert.deepEqual(txtHolderPids(output, appPath("BotFleet.app")), [202, 303]);
   // A sibling whose name merely starts the same way is a different bundle.
-  assert.deepEqual(txtHolderPids(output, "/Applications/Other.app"), [101]);
-  assert.deepEqual(txtHolderPids("", "/Applications/BotFleet.app"), []);
+  assert.deepEqual(txtHolderPids(output, appPath("Other.app")), [101]);
+  assert.deepEqual(txtHolderPids("", appPath("BotFleet.app")), []);
 });
 
 // P1/P3 — orphan visibility in the cache placement.

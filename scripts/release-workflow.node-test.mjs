@@ -68,7 +68,7 @@ Path(str(p)+".blockmap").write_bytes(gzip.compress(json.dumps(blockmap).encode()
   cpSync(join(directory, files[6]), join(directory, "BotFleet-amd64.deb"));
   writeFileSync(join(directory, "latest-mac.yml"), buildMacFeed(directory, VERSION, "2026-09-12T00:00:00.000Z"));
   writeFileSync(join(directory, "latest.yml"), feed(directory, VERSION, [files[4]]));
-  writeFileSync(join(directory, "latest-linux.yml"), feed(directory, VERSION, [files[5]]));
+  writeFileSync(join(directory, "latest-linux.yml"), feed(directory, VERSION, [files[5], files[6]]));
   writeFileSync(
     join(directory, "SHA256SUMS-ubuntu-x64.txt"),
     [files[6], files[5]]
@@ -99,6 +99,24 @@ test("the verifier rejects stale feed bytes and stale stable downloads", () => {
   } finally {
     rmSync(staleFeed.directory, { recursive: true, force: true });
     rmSync(staleAlias.directory, { recursive: true, force: true });
+  }
+});
+
+test("the Linux feed must include and verify both generated package formats", () => {
+  const missingDeb = fixture();
+  const staleDeb = fixture();
+  try {
+    writeFileSync(join(missingDeb.directory, "latest-linux.yml"),
+      feed(missingDeb.directory, VERSION, [missingDeb.files[5]]));
+    assert.throws(() => verifyReleaseAssets(missingDeb.directory, VERSION),
+      /latest-linux.yml: expected .*amd64\.deb/);
+
+    writeFileSync(join(staleDeb.directory, staleDeb.files[6]), "changed deb after feed generation");
+    assert.throws(() => verifyReleaseAssets(staleDeb.directory, VERSION),
+      /latest-linux.yml: hash or size mismatch .*amd64\.deb/);
+  } finally {
+    rmSync(missingDeb.directory, { recursive: true, force: true });
+    rmSync(staleDeb.directory, { recursive: true, force: true });
   }
 });
 
@@ -146,7 +164,7 @@ test("validates multiple chunks produced by the installed Electron packager", as
 });
 
 test("release workflow defaults to artifacts and requires explicit release mutation", () => {
-  const workflow = readFileSync(join(ROOT, ".github/workflows/release.yml"), "utf8");
+  const workflow = readFileSync(join(ROOT, ".github/workflows/release.yml"), "utf8").replace(/\r\n/g, "\n");
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 
   assert.equal(pkg.version, VERSION);
