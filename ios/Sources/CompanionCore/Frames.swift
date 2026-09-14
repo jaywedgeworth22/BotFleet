@@ -65,13 +65,18 @@ public enum Frame: Sendable {
     case computer(botId: String, state: String)
     case config
     case runtime(RuntimeEvent)
+    /// The paired Mac's update status changed — a check completed, an
+    /// install started, its progress moved, or it finished.  Carries the same
+    /// shape as `GET /api/update/status` so a client never has to follow this
+    /// with a fetch just to see what changed.
+    case updateStatus(MacUpdateStatus)
     case unknown(kind: String)
 }
 
 extension Frame: Decodable {
     private enum CodingKeys: String, CodingKey {
         case kind, cursor, resumed, threadId, message, activeLeafId
-        case bot, botId, group, groupId, notification, png, mime, state, event
+        case bot, botId, group, groupId, notification, png, mime, state, event, status
     }
 
     public init(from decoder: Decoder) throws {
@@ -124,6 +129,29 @@ extension Frame: Decodable {
             self = .config
         case "runtime":
             self = .runtime(try container.decode(RuntimeEvent.self, forKey: .event))
+        case "update.status":
+            // Confirmed shape: `{ kind: "update.status", status: <MacUpdateStatus> }`
+            // — `server/index.ts`'s `emit: (status) => broadcast({ kind: "update.status", status })`.
+            // The flat fallback costs nothing and keeps this decoding if a
+            // future harness ever spreads the fields instead, the way
+            // `screen` and `computer` are shaped.  Both attempts are
+            // `try?` — a `Frame` this build cannot make sense of must fold
+            // to `.unknown`, the same as any other kind it does not
+            // recognise, rather than throwing out of this initializer.
+            // `StreamFrame` decodes every frame with its own `try?` in
+            // `eventStream(request:session:)`, so an uncaught throw here
+            // would not merely drop this one frame — while the server-side
+            // contract for this event was still being finalized, a
+            // genuinely malformed payload threw all the way out, and the
+            // stream reader read that as the connection itself failing,
+            // showing "Lost the connection" for a socket that was fine.
+            if let status = try? container.decode(MacUpdateStatus.self, forKey: .status) {
+                self = .updateStatus(status)
+            } else if let status = try? MacUpdateStatus(from: decoder) {
+                self = .updateStatus(status)
+            } else {
+                self = .unknown(kind: kind)
+            }
         default:
             // routines, and whatever the harness adds next
             self = .unknown(kind: kind)
