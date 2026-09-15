@@ -359,12 +359,44 @@ describe("ClaudeDriver turns (fake CLI)", () => {
       await recorder.until((event) => event.type === "turn.completed");
 
       const seen = JSON.parse(readFileSync(dump, "utf8"));
-      expect(Object.keys(seen.mcpConfig.mcpServers)).toEqual(["ogb"]);
+      expect(Object.keys(seen.mcpConfig.mcpServers)).toEqual(["botfleet"]);
       expect(seen.mcpConfig.mcpServers.fleetOnly).toBeUndefined();
       expect(seen.argv).toContain("--strict-mcp-config");
+      // the permission-prompt-tool flag must name a tool inside that same
+      // strict config, or the CLI refuses to start (BOTFLEET-8)
+      expect(seen.argv[seen.argv.indexOf("--permission-prompt-tool") + 1]).toBe("mcp__botfleet__approve");
     } finally {
       rmSync(globalConfig, { force: true });
     }
+  });
+
+  it("only ever passes --permission-prompt-tool alongside the botfleet server it names — never one without the other", async () => {
+    // acceptEdits/auto: the broker is live, so the flag and the server must
+    // both be present, and the flag must name exactly that server's tool.
+    await create(undefined, {}, { permissionMode: "acceptEdits" });
+    const brokeredDump = join(scratch, "flag-with-registration.json");
+    process.env.FAKE_CLAUDE_DUMP = brokeredDump;
+    await instance.adapter.sendTurn({ threadId: "t-flag-paired-on", text: "hi" });
+    await recorder.until((event) => event.type === "turn.completed" && event.threadId === "t-flag-paired-on");
+    const brokered = JSON.parse(readFileSync(brokeredDump, "utf8"));
+    const hasFlag = brokered.argv.includes("--permission-prompt-tool");
+    const hasRegistration = Boolean(brokered.mcpConfig?.mcpServers?.botfleet);
+    expect(hasFlag).toBe(true);
+    expect(hasRegistration).toBe(true);
+    expect(brokered.argv[brokered.argv.indexOf("--permission-prompt-tool") + 1]).toBe("mcp__botfleet__approve");
+
+    // bypassPermissions (no host control requested): the broker never runs,
+    // so neither the flag nor the server registration should appear —
+    // asserted together so the two can never silently drift apart.
+    await instance.dispose();
+    await create(undefined, {}, { permissionMode: "bypassPermissions" });
+    const bypassDump = join(scratch, "flag-without-registration.json");
+    process.env.FAKE_CLAUDE_DUMP = bypassDump;
+    await instance.adapter.sendTurn({ threadId: "t-flag-paired-off", text: "hi" });
+    await recorder.until((event) => event.type === "turn.completed" && event.threadId === "t-flag-paired-off");
+    const bypassed = JSON.parse(readFileSync(bypassDump, "utf8"));
+    expect(bypassed.argv).not.toContain("--permission-prompt-tool");
+    expect(bypassed.mcpConfig?.mcpServers?.botfleet).toBeUndefined();
   });
 
   it("passes normalized available and denied built-in tool sets to Claude", async () => {
@@ -534,6 +566,8 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     // broker attached, and the computer namespace is still not pre-allowed
     expect(seen.argv[seen.argv.indexOf("--permission-mode") + 1]).toBe("acceptEdits");
     expect(seen.argv).toContain("--permission-prompt-tool");
+    expect(seen.argv[seen.argv.indexOf("--permission-prompt-tool") + 1]).toBe("mcp__botfleet__approve");
+    expect(seen.mcpConfig.mcpServers.botfleet).toBeDefined();
     expect(seen.argv[seen.argv.indexOf("--allowedTools") + 1]).not.toContain("mcp__computer");
 
     // a turn without the desktop keeps the instance's bypass
@@ -544,6 +578,7 @@ describe("ClaudeDriver turns (fake CLI)", () => {
     const shell = JSON.parse(readFileSync(shellDump, "utf8"));
     expect(shell.argv[shell.argv.indexOf("--permission-mode") + 1]).toBe("bypassPermissions");
     expect(shell.argv).not.toContain("--permission-prompt-tool");
+    expect(shell.mcpConfig.mcpServers.botfleet).toBeUndefined();
   });
 
   it("resumes with --resume when a cursor exists and reports that session id", async () => {

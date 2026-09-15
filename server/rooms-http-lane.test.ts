@@ -19,14 +19,14 @@
 //
 // The engine is `server/testing/fake-openai-server.ts` — a real HTTP server
 // the spawned harness talks to over the loopback, scripted round by round.
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
+import { removeTempDir, spawnDetached, waitForExit } from "./testing/cleanup.ts";
 import { startFakeOpenAiServer, type FakeOpenAiServer } from "./testing/fake-openai-server.ts";
 import { freePortBlock } from "./testing/ports.ts";
 
@@ -247,13 +247,22 @@ posixOnly("room turns run on the HTTP lane", () => {
             driver: "minimax",
             config: { url: engine.url },
           },
+          // openai-compat: an HTTP driver like minimax (agentsMcp: true) but
+          // WITHOUT capabilities.toolLoop — the gate the hotfix added. No
+          // `apiKeyEnv` override, so it resolves through the instance's own
+          // `environment` below.
+          "openai-compat-no-loop": {
+            driver: "openai-compat",
+            config: { url: engine.url },
+            environment: { OPENAI_COMPAT_API_KEY: "fake-key-for-tests" },
+          },
         },
       }),
       { mode: 0o600 },
     );
     const port = await freePortBlock([0]);
     base = `http://127.0.0.1:${port}`;
-    child = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
+    child = spawnDetached(process.execPath, [join(SERVER_DIR, "index.ts")], {
       cwd: join(SERVER_DIR, ".."),
       env: {
         ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
@@ -320,6 +329,38 @@ posixOnly("room turns run on the HTTP lane", () => {
 
       // one reply, folded once
       expect(await replies(room.threadId)).toEqual(["Scout is free right now."]);
+    },
+    120_000,
+  );
+
+  it(
+    "does not hand a room member on a driver without a tool loop any tools, and still settles once with the reply",
+    async () => {
+      // `openai-compat-no-loop` has `agentsMcp: true` — same as `minimax`
+      // above, so `integrations.agents` is set and `buildTurnTools` would
+      // still name list_bots/ask_bot — but it has no `capabilities.toolLoop`,
+      // which is what the hotfix gates `roomTurnTools` on. Before the fix
+      // this member got that catalog with no host able to run either tool:
+      // a call to one would settle the turn on a partial reply instead of
+      // the room ever finding out nothing could execute it.
+      const member = await makeBot("echo", {}, "openai-compat-no-loop");
+      const room = await makeRoom("Signals", [member.id], { kind: "member", botId: member.id });
+      const before = completionCount();
+
+      engine.queueCompletion(says("All quiet on this channel."));
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "status?" })).status).toBe(202);
+
+      expect(await waitForBotIdle(member.id), `the member never went idle. stderr:\n${stderr}`).toBeTruthy();
+      expect(await waitForRoomIdle(room.id), "the room kept its speaker").toBeTruthy();
+
+      // One round, not two: with no catalog offered there is nothing for
+      // the model to call, so there is no partial tool-call round for the
+      // room waiter to ever mistake for a settled turn.
+      expect(completionCount() - before).toBe(1);
+      const rounds = engine.requests.filter((r) => r.url.includes("/chat/completions")).slice(before);
+      expect(rounds[0].body).not.toHaveProperty("tools");
+
+      expect(await replies(room.threadId)).toEqual(["All quiet on this channel."]);
     },
     120_000,
   );

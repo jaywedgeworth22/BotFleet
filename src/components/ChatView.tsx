@@ -1006,6 +1006,22 @@ export function ChatView({ bot }: { bot: Bot }) {
   const mascotMotion = state.mascotMotion?.botId === bot.id ? state.mascotMotion : null;
   const [findOpen, setFindOpen] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [composerHeight, setComposerHeight] = useState(140);
+  const composerContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = composerContainerRef.current;
+    if (!el) return;
+    const update = () => {
+      const height = Math.round(el.offsetHeight);
+      if (height > 0) setComposerHeight((prev) => (prev !== height ? height : prev));
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => update());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [bot.id]);
   useEffect(() => setFindOpen(false), [bot.threadId]);
   useEffect(() => setReplyTo(null), [bot.threadId]);
   useEffect(() => {
@@ -1120,8 +1136,8 @@ export function ChatView({ bot }: { bot: Bot }) {
     [messages],
   );
 
-  // Mascot while the turn works. Streaming stays invisible — when the reply
-  // is finished, the whole bubble pops in above the mascot.
+  // Show the live reply above the mascot while tokens arrive.  The settled
+  // message takes over when the turn finishes.
   const lastMessage = messages.at(-1);
   const toolInFlight = lastMessage?.kind === "activity" && lastMessage.tool?.ok === undefined;
   const activityLabel = liveActivityLabel(lastMessage);
@@ -1146,7 +1162,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     const timer = setTimeout(() => setPopping(null), 520);
     return () => clearTimeout(timer);
   }, [lastMessage?.id, lastMessage?.role, lastMessage?.kind, lastMessage?.text]);
-  const presenceVisible = waiting || popping !== null;
+  const presenceVisible = waiting || popping !== null || Boolean(streaming);
   const presenceModel = modelChip(bot, state.instances);
 
   // regenerate = fork the last user message with the same text — reuses the
@@ -1239,7 +1255,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     if (!el || !followRef.current) return;
     el.scrollTo({ top: el.scrollHeight });
     previousScrollTop.current = el.scrollTop;
-  }, [bot.id, bot.threadId, messages.length, streaming, reasoning, bot.busy, follow]);
+  }, [bot.id, bot.threadId, messages.length, streaming, reasoning, bot.busy, follow, composerHeight]);
 
   // Expanding prepends rows: capture the height first, then after the commit
   // shift scrollTop by the growth so the message under the cursor stays put
@@ -1443,7 +1459,8 @@ export function ChatView({ bot }: { bot: Bot }) {
         }}
       >
         <div
-          className="flex w-full flex-col gap-3 pb-56"
+          className="flex w-full flex-col gap-3"
+          style={{ paddingBottom: `${Math.max(composerHeight + 24, 224)}px` }}
           role="log"
           aria-live="polite"
           aria-label={`Conversation with ${bot.name}`}
@@ -1509,7 +1526,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             }
             visible={presenceVisible}
             label={activityLabel}
-            answering={popping !== null}
+            answering={popping !== null || Boolean(streaming)}
             modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} size={14} /> : undefined}
             modelName={presenceModel?.name}
           >
@@ -1523,7 +1540,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             {!popping && streaming ? (
               <div className={cn(BUBBLE_WIDTH, "rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink")}>
                 <MessageBoundary fallbackText={streaming}>
-                  <ChatMarkdown text={streaming} />
+                  <ChatMarkdown text={streaming} streaming />
                 </MessageBoundary>
                 <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-ink-secondary/60 align-middle" aria-hidden />
               </div>
@@ -1544,7 +1561,10 @@ export function ChatView({ bot }: { bot: Bot }) {
           the previous bot's half-written message over. ArrowUp-to-edit is
           gated on busy like the pencil button — editing rewinds the thread,
           which a live turn forbids (the server 409s it). */}
-      <div className="absolute inset-x-0 bottom-0 z-[2] flex flex-col items-center">
+      <div
+        ref={composerContainerRef}
+        className="absolute inset-x-0 bottom-0 z-[2] flex flex-col items-center"
+      >
       {!follow && (
         <button
           onClick={jumpToLatest}

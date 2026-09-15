@@ -694,9 +694,18 @@ export const ClaudeDriver: ProviderDriver<ClaudeConfig> = {
       let socketPath: string | null = null;
       if (permissionMode !== "bypassPermissions") {
         socketPath = permissionSocketPath(threadId);
-        args.push("--permission-prompt-tool", "mcp__ogb__approve");
-        mcpServers.ogb = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
-        allowed.push("mcp__ogb");
+        mcpServers.botfleet = { command: process.execPath, args: [PERM_PROXY_PATH, socketPath], env: { ...NODE_ENV_FLAG } };
+        allowed.push("mcp__botfleet");
+      }
+      // --permission-prompt-tool must never be passed unless the botfleet
+      // server it names is actually registered in mcpServers below — a CLI
+      // started with the flag pointing at a tool that never got registered
+      // exits 1 before result ("MCP tool ... not found"; BOTFLEET-8, the
+      // ogb-era name of this server). Deriving the flag from the
+      // registration itself, instead of re-testing permissionMode a second
+      // time, makes the two impossible to drift apart in a future edit.
+      if (mcpServers.botfleet) {
+        args.push("--permission-prompt-tool", "mcp__botfleet__approve");
       }
       // The MCP config carries credentials — a Composio consumer key in a
       // header, the box token in the computer proxy's env, the comms token in

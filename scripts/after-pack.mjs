@@ -1,4 +1,5 @@
-import { chmod, lstat, readFile, readdir } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, lstat, readFile, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { LICENSE_FILES } from "./cua-linux-release.mjs";
 import {
@@ -69,12 +70,33 @@ async function validateCloudflared(resources, platform, required) {
 // repair and revalidate the exact tree after resources are copied and before
 // either artifact target is assembled.
 export default async function afterPack(context) {
-  const resources = context.packager?.getResourcesDir?.(context.appOutDir) ?? (
+  const candidateResources = [
+    context.packager?.getResourcesDir?.(context.appOutDir),
     context.electronPlatformName === "darwin"
       ? path.join(context.appOutDir, "BotFleet.app", "Contents", "Resources")
-      : path.join(context.appOutDir, "resources")
-  );
+      : null,
+    path.join(context.appOutDir, "resources"),
+  ].filter(Boolean);
+  const resources = candidateResources.find((dir) => existsSync(dir)) ?? candidateResources[0];
   await validateCloudflared(resources, context.electronPlatformName, Boolean(context.packager));
+
+  if (resources && existsSync(resources)) {
+    const updateYml = path.join(resources, "app-update.yml");
+    try {
+      await lstat(updateYml);
+    } catch (err) {
+      if (err?.code === "ENOENT") {
+        const content = [
+          "owner: jaywedgeworth22",
+          "repo: BotFleet",
+          "provider: github",
+          "updaterCacheDirName: botfleet-updater",
+          "",
+        ].join("\n");
+        await writeFile(updateYml, content, { mode: 0o644, encoding: "utf8" });
+      }
+    }
+  }
 
   if (context.electronPlatformName !== "linux") return;
 

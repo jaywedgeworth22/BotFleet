@@ -152,6 +152,266 @@ describe("readThreadEvents", () => {
     expect((page.entries[0]!.data as { text: string }).text.startsWith("🐭🐭")).toBe(true);
   });
 
+  // A log rotates at its byte cap (server/transcript-retention.ts): the live
+  // file starts fresh and the generation it displaced sits beside it as
+  // `<threadId>.ndjson.1`.  The panel must not notice the seam.
+  it("completes a short page from the rotated generation, oldest first", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson.1"),
+      line(runtime({ eventId: "e1", createdAt: "1", type: "turn.started" })) + line(runtime({ eventId: "e2", createdAt: "2", type: "turn.started" })),
+    );
+    writeFileSync(join(eventsDir, "t1.ndjson"), line(runtime({ eventId: "e3", createdAt: "3", type: "turn.started" })));
+    writeFileSync(join(nativeDir, "t1.ndjson.1"), line({ at: "1", dir: "out", source: "acp", msg: { rotated: true } }));
+    writeFileSync(join(nativeDir, "t1.ndjson"), line({ at: "4", dir: "in", source: "acp", msg: { live: true } }));
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.entries.map((entry) => entry.at)).toEqual(["1", "1", "2", "3", "4"]);
+    expect(page.total).toEqual({ runtime: 3, native: 2 });
+  });
+
+  it("takes only the newest lines when the live file alone fills the page, and still counts what is rotated", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson.1"),
+      line(runtime({ eventId: "old1", createdAt: "1", type: "turn.started" })) + line(runtime({ eventId: "old2", createdAt: "2", type: "turn.started" })),
+    );
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "new1", createdAt: "3", type: "turn.started" })) + line(runtime({ eventId: "new2", createdAt: "4", type: "turn.started" })),
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 2 });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["new1", "new2"]);
+    // "showing 2 of 4": the rotated generation is still on disk and still counted
+    expect(page.total.runtime).toBe(4);
+  });
+
+  it("reads a live file that is empty because it was just rotated", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(join(eventsDir, "t1.ndjson.1"), line(runtime({ eventId: "e1", createdAt: "1", type: "turn.started" })));
+    writeFileSync(join(eventsDir, "t1.ndjson"), "");
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["e1"]);
+    expect(page.total.runtime).toBe(1);
+  });
+
+  // The window is the reason a page can be short: `readTail` stops after
+  // `maxTailBytes` whether or not it has `limit` lines.  Splicing the rotated
+  // generation onto a page that stopped there would jump over every record in
+  // between and read as one continuous history.
+  it("never splices the rotated generation onto a live page cut short by the window", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    const rotated: string[] = [];
+    const live: string[] = [];
+    let rotatedBody = "";
+    let liveBody = "";
+    for (let i = 0; i < 100; i++) {
+      const eventId = `rotated-${String(i).padStart(4, "0")}`;
+      rotated.push(eventId);
+      rotatedBody += line(runtime({ eventId, createdAt: String(i).padStart(6, "0"), type: "turn.started" }));
+    }
+    for (let i = 0; i < 40; i++) {
+      const eventId = `live-${String(i).padStart(4, "0")}`;
+      live.push(eventId);
+      liveBody += line(runtime({ eventId, createdAt: String(1000 + i).padStart(6, "0"), type: "turn.started", text: "x".repeat(4_000) }));
+    }
+    writeFileSync(join(eventsDir, "t1.ndjson.1"), rotatedBody);
+    writeFileSync(join(eventsDir, "t1.ndjson"), liveBody);
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    const ids = page.entries.map((entry) => (entry.data as { eventId: string }).eventId);
+    // short of `limit`, because the window ran out — not because the file did
+    expect(ids.length).toBeGreaterThan(1);
+    expect(ids.length).toBeLessThan(live.length);
+    // and every row is the contiguous newest run of the LIVE file
+    expect(ids).toEqual(live.slice(-ids.length));
+    // the rotated generation is still counted, just not spliced on
+    expect(page.total.runtime).toBe(140);
+  });
+
+  it("still completes a short page from the rotated generation when the live file was read to its first byte", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson.1"),
+      line(runtime({ eventId: "e1", createdAt: "000001", type: "turn.started" })) + line(runtime({ eventId: "e2", createdAt: "000002", type: "turn.started" })),
+    );
+    writeFileSync(join(eventsDir, "t1.ndjson"), line(runtime({ eventId: "e3", createdAt: "000003", type: "turn.started" })));
+
+    // a window far larger than either file: the live read reaches byte zero
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["e1", "e2", "e3"]);
+    expect(page.total.runtime).toBe(3);
+  });
+
+  // A single record wider than the window leaves the backward scan with no
+  // newline to cut on.  Returning nothing there blanks the panel for exactly
+  // the thread whose newest message is the reason it was opened — but reading
+  // and parsing the record instead would put a multi-megabyte JSON.parse on
+  // the event loop, on a route the panel refetches after every turn.  So the
+  // page says what is there without touching it.
+  it("stands in for a record wider than the window instead of parsing it", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "small", createdAt: "000001", type: "turn.started" })) +
+        line(runtime({ eventId: "huge", createdAt: "000002", type: "turn.started", text: "x".repeat(200_000) })),
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    expect(page.entries).toHaveLength(1);
+    const standIn = page.entries[0]!.data as { type: string; message: string; text?: string };
+    expect(standIn.type).toBe("runtime.error");
+    expect(standIn.message).toMatch(/0\.2 MB record was skipped/);
+    // the record itself was never read, so none of its payload is here
+    expect(standIn.text).toBeUndefined();
+    expect(JSON.stringify(page).length).toBeLessThan(2_000);
+    // the count never lied about what is on disk
+    expect(page.total.runtime).toBe(2);
+  });
+
+  it("stands in for an oversized native record too, naming its size", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(nativeDir, "t1.ndjson"),
+      line({ at: "000001", dir: "in", source: "acp", msg: { blob: "y".repeat(200_000) } }),
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    expect(page.entries).toHaveLength(1);
+    const standIn = page.entries[0]!.data as { msg: { skipped: string; bytes: number } };
+    expect(standIn.msg.skipped).toMatch(/record was skipped/);
+    expect(standIn.msg.bytes).toBeGreaterThan(200_000);
+  });
+
+  // The fallback reads to byte zero when the oversized record is the file's
+  // first: that live file IS fully read, so the rotated generation behind it
+  // still completes the page.
+  it("completes the page from the rotated generation when the oversized record starts the live file", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    let rotatedBody = "";
+    const rotated: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      const eventId = `rotated-${String(i).padStart(4, "0")}`;
+      rotated.push(eventId);
+      rotatedBody += line(runtime({ eventId, createdAt: String(i).padStart(6, "0"), type: "turn.started" }));
+    }
+    writeFileSync(join(eventsDir, "t1.ndjson.1"), rotatedBody);
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "huge", createdAt: "999999", type: "turn.started", text: "x".repeat(200_000) })),
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    expect(page.entries).toHaveLength(101);
+    expect(page.entries.slice(0, 100).map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(rotated);
+    expect((page.entries[100]!.data as { message: string }).message).toMatch(/record was skipped/);
+    expect(page.total.runtime).toBe(101);
+  });
+
+  // Both writers append a record and its newline in one call, so bytes after
+  // the last newline are a document cut in half by a kill, not a record.
+  it("ignores a torn last line and does not count it", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "e1", createdAt: "000001", type: "turn.started" })) +
+        line(runtime({ eventId: "e2", createdAt: "000002", type: "turn.started" })) +
+        '{"eventId":"torn","provider":"test","threa',
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1" });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(["e1", "e2"]);
+    expect(page.total.runtime).toBe(2);
+  });
+
+  it("ignores a torn last line behind an oversized record", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    writeFileSync(
+      join(eventsDir, "t1.ndjson"),
+      line(runtime({ eventId: "huge", createdAt: "000002", type: "turn.started", text: "x".repeat(200_000) })) +
+        '{"eventId":"torn","provider":"test","threa',
+    );
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    expect(page.entries).toHaveLength(1);
+    expect((page.entries[0]!.data as { message: string }).message).toMatch(/record was skipped/);
+    expect(page.total.runtime).toBe(1);
+  });
+
+  // A kill mid-write can leave a live file holding one partial record and no
+  // newline at all.  Nothing complete is in there, so the file IS fully read
+  // and the rotated generation behind it completes the page — the panel must
+  // not say "showing 0 of 100" while a hundred records sit beside it.
+  it("completes the page from the rotated generation when the live file is one torn partial", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    let rotatedBody = "";
+    const rotated: string[] = [];
+    for (let i = 0; i < 100; i++) {
+      const eventId = `rotated-${String(i).padStart(4, "0")}`;
+      rotated.push(eventId);
+      rotatedBody += line(runtime({ eventId, createdAt: String(i).padStart(6, "0"), type: "turn.started" }));
+    }
+    writeFileSync(join(eventsDir, "t1.ndjson.1"), rotatedBody);
+    // the same shape as a 9 MB partial against the 8 MB production window,
+    // sized to the window this test injects
+    writeFileSync(join(eventsDir, "t1.ndjson"), `{"eventId":"torn","text":"${"x".repeat(200_000)}`);
+
+    const page = readThreadEvents({ eventsDir, nativeDir, threadId: "t1", limit: 300, maxTailBytes: 64 * 1024 });
+    expect(page.entries.map((entry) => (entry.data as { eventId: string }).eventId)).toEqual(rotated);
+    expect(page.total.runtime).toBe(100);
+  });
+
+  // The backward scan used to decode the whole accumulated tail on every
+  // 64 KB step, which is quadratic in the window: 12 MB of 100 KB records
+  // decoded 524 MB and blocked the event loop for about 150 ms per request.
+  it("decodes the tail once, not once per chunk", () => {
+    const eventsDir = tmp();
+    const nativeDir = tmp();
+    let body = "";
+    for (let i = 0; i < 12; i++) {
+      body += line(runtime({ eventId: `e${i}`, createdAt: String(i).padStart(6, "0"), type: "turn.started", text: "x".repeat(100_000) }));
+    }
+    writeFileSync(join(eventsDir, "t1.ndjson"), body);
+
+    const window = 512 * 1024;
+    let calls = 0;
+    let decoded = 0;
+    const page = readThreadEvents({
+      eventsDir,
+      nativeDir,
+      threadId: "t1",
+      limit: 300,
+      maxTailBytes: window,
+      decode: (bytes) => {
+        calls += 1;
+        decoded += bytes.length;
+        return bytes.toString("utf8");
+      },
+    });
+
+    // the page is still the newest records the window holds
+    expect(page.entries.length).toBeGreaterThan(1);
+    expect((page.entries.at(-1)!.data as { eventId: string }).eventId).toBe("e11");
+    expect(page.total.runtime).toBe(12);
+    // one pass over the window, not one per chunk: the old scan decoded
+    // 64 + 128 + … + 512 KB for this same fixture
+    expect(calls).toBeLessThanOrEqual(2);
+    expect(decoded).toBeLessThanOrEqual(window + 64 * 1024);
+  });
+
   it("refuses a thread id that could escape the log directory", () => {
     const eventsDir = tmp();
     const nativeDir = tmp();

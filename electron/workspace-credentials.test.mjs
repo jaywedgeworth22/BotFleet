@@ -3,6 +3,8 @@ import { describe, expect, it } from "vitest";
 import {
   assertExternalWorkspaceCredentialMarkers,
   EXTERNAL_WORKSPACE_CREDENTIALS,
+  instanceKeyedDriver,
+  INSTANCE_API_KEY_ENV,
   markExternalWorkspaceCredentials,
   migrateWorkspaceCredentials,
   setWorkspaceCredentialMarker,
@@ -194,5 +196,29 @@ describe("workspace credential replay markers", () => {
     expect(setWorkspaceCredentialMarker({ xai: {} }, "xaiApiKey", true)).toEqual({
       xai: { credentialStorage: "external" },
     });
+  });
+});
+
+describe("drivers that keep a per-instance key", () => {
+  it("names them once, for both the server and the desktop shell", () => {
+    // One table, two readers: server/config.ts re-exports it for the instance
+    // routes, and the shell's boot-time marker repair walks it.  Two copies of
+    // it is exactly the drift that left MiniMax instances unrepaired.
+    expect([...INSTANCE_API_KEY_ENV]).toEqual([
+      ["openai-compat", "OPENAI_COMPAT_API_KEY"],
+      ["minimax", "MINIMAX_API_KEY"],
+    ]);
+  });
+
+  it("recognises an instance entry by its driver, and nothing else", () => {
+    expect(instanceKeyedDriver({ driver: "minimax" })).toBe(true);
+    expect(instanceKeyedDriver({ driver: "openai-compat" })).toBe(true);
+    // A CLI engine reads a login from the user's home directory; there is no
+    // per-instance key for the encrypted store to hold.
+    expect(instanceKeyedDriver({ driver: "claudeAgent" })).toBe(false);
+    expect(instanceKeyedDriver({ driver: "grok" })).toBe(false);
+    for (const shape of [undefined, null, "minimax", 7, ["minimax"], {}]) {
+      expect(instanceKeyedDriver(shape)).toBe(false);
+    }
   });
 });

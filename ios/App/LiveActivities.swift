@@ -195,27 +195,44 @@ final class LiveActivityCoordinator {
         }
     }
 
-    private func requestActivity(
+    // IMPORTANT: Activity.request() performs a synchronous XPC call to
+    // SpringBoard under the hood.  Calling it while on @MainActor blocks the
+    // main thread for 2+ seconds and trips the app-hang watchdog (BOTFLEET-E).
+    // Hand off to a nonisolated context, await the result, then hop back to
+    // check the lifecycle guard and fire the alerting update.
+    private nonisolated func requestActivity(
         bot: Bot,
         content: BotActivityAttributes.ContentState,
         alert: AlertConfiguration?,
         shouldAlert: Bool,
         generation: Int
     ) async {
-        guard lifecycle.permitsUpdates(from: generation) else { return }
+        // Check the lifecycle gate before touching ActivityKit (main-actor).
+        guard await lifecycle.permitsUpdates(from: generation) else { return }
+
         let attributes = BotActivityAttributes(botId: bot.id, threadId: bot.threadId, name: bot.name, color: bot.color)
-        // Closed-app push is not in this version; keep the activity local.
-        guard let activity = try? Activity.request(
-            attributes: attributes,
-            content: .init(state: content, staleDate: nil),
-            pushType: nil
-        ) else { return }
-        guard lifecycle.permitsUpdates(from: generation) else {
+
+        // Activity.request() does a synchronous XPC round-trip; run it on a
+        // background executor so it never touches the main thread directly.
+        let activity: Activity<BotActivityAttributes>? = await Task.detached(priority: .userInitiated) {
+            // Closed-app push is not in this version; keep the activity local.
+            try? Activity.request(
+                attributes: attributes,
+                content: .init(state: content, staleDate: nil),
+                pushType: nil
+            )
+        }.value
+
+        guard let activity else { return }
+
+        // Back on a background thread — do the lifecycle check and any
+        // alerting update (both are async, not main-actor bound).
+        guard await lifecycle.permitsUpdates(from: generation) else {
             await activity.end(nil, dismissalPolicy: .immediate)
             return
         }
-        // a fresh activity cannot alert on request; one immediate alerting update does it.
-        // We only do this if it is a genuinely new ask, not a pre-existing state from app launch.
+        // A fresh activity cannot alert on request; one immediate alerting
+        // update does it.  Only trigger for a genuinely new ask.
         if shouldAlert, let alert {
             await activity.update(.init(state: content, staleDate: nil), alertConfiguration: alert)
         }

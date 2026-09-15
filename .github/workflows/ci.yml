@@ -78,23 +78,11 @@ jobs:
         run: pnpm install --frozen-lockfile
       - if: needs.changes.outputs.docs_only != 'true'
         run: pnpm typecheck
-      # `pnpm test` is one chain; running its parts as named steps makes the
-      # failing part visible from the check run without opening the job log.
-      - name: vitest suite (test floor)
+      # Keep the complete test chain in package.json so new suites cannot drift
+      # out of hosted validation.  pnpm prints each suite command in the log.
+      - name: Complete application test chain
         if: needs.changes.outputs.docs_only != 'true'
-        run: node scripts/test-floor.mjs
-      - name: Composio broker tests
-        if: needs.changes.outputs.docs_only != 'true'
-        run: pnpm broker:test
-      - name: Electron node tests
-        if: needs.changes.outputs.docs_only != 'true'
-        run: pnpm test:updater && pnpm test:desktop-viewer && pnpm test:package-link && pnpm test:save-file && pnpm test:server-boot-probe
-      - name: iOS ship workflow contract
-        if: needs.changes.outputs.docs_only != 'true'
-        run: pnpm test:ios-ship && pnpm test:ci-scope
-      - name: packaged server smoke
-        if: needs.changes.outputs.docs_only != 'true'
-        run: pnpm test:packaged-server
+        run: pnpm test
       - if: needs.changes.outputs.docs_only != 'true'
         run: pnpm check:electron
       - name: production UI build

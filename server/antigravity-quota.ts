@@ -202,7 +202,6 @@ export function applyAntigravityUsageToRegistry(
 
   const cleared: string[] = [];
   registry.clearWhere((cd) => {
-    if (cd.source !== ANTIGRAVITY_USAGE_SOURCE) return false;
     if (cd.instanceId !== ANTIGRAVITY_INSTANCE_ID) return false;
     if (cappedIds.has(cd.model)) return false;
     if (knownIds.has(cd.model) || cd.model === "*") {
@@ -230,8 +229,10 @@ export function applyAntigravityUsageToRegistry(
 export interface AntigravityModelQuota {
   capped: boolean;
   remainingPercent?: number | null;
+  secondaryRemainingPercent?: number | null;
   resetsAt?: number | null;
   error?: string;
+  windowsLabel?: string;
 }
 
 export function quotaModelsFromSnapshot(
@@ -240,11 +241,21 @@ export function quotaModelsFromSnapshot(
 ): Record<string, AntigravityModelQuota> {
   const models: Record<string, AntigravityModelQuota> = {};
   if (!snapshot) return models;
+  const promptCredits = snapshot.promptCredits;
+  let secondaryPercent: number | null = null;
+  if (typeof promptCredits?.remainingPercentage === "number" && Number.isFinite(promptCredits.remainingPercentage)) {
+    const raw = promptCredits.remainingPercentage;
+    const pct = raw <= 1 && raw > 0 ? raw * 100 : raw;
+    secondaryPercent = Math.round(pct * 100) / 100;
+  }
   for (const model of routingRows(snapshot, now)) {
     const reset = resetAtMs(model, now);
+    const isGemini = /gemini/i.test(`${model.label} ${model.modelId}`);
     models[model.modelId] = {
       capped: activeQuotaCap(model, now),
       remainingPercent: reset !== null && reset <= now ? null : remainingPercentDisplay(model),
+      ...(isGemini && secondaryPercent != null ? { secondaryRemainingPercent: secondaryPercent } : {}),
+      windowsLabel: isGemini && secondaryPercent != null ? "5hr/Week" : "5hr",
       resetsAt: resetAtMs(model, now),
       ...(activeQuotaCap(model, now)
         ? { error: `${model.label} quota exhausted (antigravity-usage)` }

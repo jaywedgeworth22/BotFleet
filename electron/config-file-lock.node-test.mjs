@@ -91,15 +91,23 @@ for (let i = 0; i < Number(process.env.CFL_N); i += 1) {
 console.log("done");
 `;
 
-/** A worker that takes over a lock it judges stale under CFL_STALE_MS,
- * writes a marker, announces it, holds for CFL_HOLD_MS, then releases. */
+/** A real peer takes over an aged lock, then waits until the suspended
+ * holder has been checked before releasing its own healthy lease. */
 const TAKEOVER_SOURCE = `
+import { existsSync } from "node:fs";
 const path = process.env.CFL_PATH;
-const lock = mod.acquireConfigFileLock(path, { staleMs: Number(process.env.CFL_STALE_MS), timeoutMs: 3000 });
-mod.writeFileAtomic(path, JSON.stringify({ holder: "peer" }));
-console.log("took");
-await new Promise((r) => setTimeout(r, Number(process.env.CFL_HOLD_MS)));
-lock.release();
+const lock = mod.acquireConfigFileLock(path, { timeoutMs: 3000 });
+try {
+  mod.writeFileAtomic(path, JSON.stringify({ holder: "peer" }));
+  console.log("took");
+  const deadline = Date.now() + 10000;
+  while (!existsSync(process.env.CFL_RELEASE_PATH)) {
+    if (Date.now() >= deadline) throw new Error("parent did not acknowledge takeover");
+    await new Promise((r) => setTimeout(r, 10));
+  }
+} finally {
+  lock.release();
+}
 console.log("released");
 `;
 
@@ -263,7 +271,10 @@ test("a lock left behind by a dead process is taken over", () => {
   }
 });
 
-test("a lock older than staleMs is taken over even when its pid is alive", () => {
+test("a lock older than staleMs is taken over even when its pid is alive", (t) => {
+  // Filesystem scheduling must not spend the newly acquired lease.  The
+  // cross-process race tests below retain the real clock.
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { dir, path } = tempConfig();
   try {
     assert.ok(CONFIG_LOCK_STALE_MS > 0);
@@ -338,7 +349,8 @@ test("a writer gives up with a clear error after timeoutMs while a peer holds th
 // The lease is what makes taking over safe.  A holder that was suspended
 // past the stale window (system sleep, a debugger, a filesystem stall) must
 // not land the snapshot it read before it was suspended.
-test("a holder whose lease ran out refuses to write and leaves its lock for the takeover", () => {
+test("a holder whose lease ran out refuses to write and leaves its lock for the takeover", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { dir, path } = tempConfig();
   try {
     writeFileSync(path, '{"fresh":true}');
@@ -347,7 +359,7 @@ test("a holder whose lease ran out refuses to write and leaves its lock for the 
         updateConfigFile(
           path,
           (disk) => {
-            sleepSync(120); // "suspended" inside the critical section
+            t.mock.timers.tick(120); // "suspended" inside the critical section
             disk.stale = true;
           },
           { staleMs: 50, timeoutMs: 500 },
@@ -368,17 +380,18 @@ test("a holder whose lease ran out refuses to write and leaves its lock for the 
   }
 });
 
-test("a release inside the lease unlinks; one past the usable lease leaves the lock to the takeover", () => {
+test("a release inside the lease unlinks; one past the usable lease leaves the lock to the takeover", (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: Date.now() });
   const { dir, path } = tempConfig();
   try {
     acquireConfigFileLock(path, { staleMs: 400 }).release();
     assert.equal(existsSync(lockPathFor(path)), false, "released inside the lease");
     const late = acquireConfigFileLock(path, { staleMs: 400 });
-    sleepSync(330); // inside staleMs but past the 100 ms margin
+    t.mock.timers.tick(330); // inside staleMs but past the 100 ms margin
     late.release();
     assert.equal(existsSync(lockPathFor(path)), true, "left in place rather than unlinked by name");
-    // The next writer waits out what is left of the lease, takes over, and
-    // proceeds.
+    // Once the remaining lease passes, the next writer takes over.
+    t.mock.timers.tick(71);
     updateConfigFile(path, (disk) => {
       disk.next = true;
     }, { staleMs: 400, timeoutMs: 2_000 });
@@ -389,28 +402,32 @@ test("a release inside the lease unlinks; one past the usable lease leaves the l
   }
 });
 
-test("a suspended holder whose lock a peer took over cannot write over the peer or drop its lock", async () => {
+test("a suspended holder whose lock a peer took over cannot write over the peer or drop its lock", async (t) => {
   const { dir, path } = tempConfig();
+  const releasePath = join(dir, "release-peer");
+  let peer;
   try {
-    const suspended = acquireConfigFileLock(path, { staleMs: 200 });
-    sleepSync(500); // past its lease; nobody has touched the lock yet
-    // A peer process finds the lock past its own stale window and takes it
-    // over in place, then holds it briefly (inside its usable lease, so its
-    // release unlinks) before letting go.
+    // Age only the parent fixture.  The separate peer uses real time and
+    // the production lease, so scheduling delays cannot expire a 400 ms
+    // lease before the peer has a chance to release it.
+    const now = Date.now();
+    t.mock.timers.enable({ apis: ["Date"], now: now - CONFIG_LOCK_STALE_MS - 1000 });
+    const suspended = acquireConfigFileLock(path);
+    t.mock.timers.setTime(now);
     const took = waitForLine("took");
-    const peer = runWorker(
-      TAKEOVER_SOURCE,
-      { CFL_PATH: path, CFL_STALE_MS: "400", CFL_HOLD_MS: "150" },
-      took.onLine,
-    );
-    await took.seen;
+    peer = runWorker(TAKEOVER_SOURCE, { CFL_PATH: path, CFL_RELEASE_PATH: releasePath }, took.onLine);
+    // A startup failure must reject instead of waiting forever for stdout.
+    await Promise.race([took.seen, peer.then(() => { throw new Error("peer exited before takeover"); })]);
     assert.throws(() => suspended.assertHeld(), /lease expired|taken over by another writer/);
     suspended.release();
     assert.equal(existsSync(lockPathFor(path)), true, "the peer's lock survives the stale holder's release");
+    writeFileSync(releasePath, "checked");
     await peer;
     assert.equal(existsSync(lockPathFor(path)), false, "the peer's own release removed it");
     assert.deepEqual(readConfigFile(path), { holder: "peer" });
   } finally {
+    writeFileSync(releasePath, "cleanup");
+    await peer?.catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   }
 });

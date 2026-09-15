@@ -100,6 +100,14 @@ export type RuntimeEvent = RuntimeEventBase &
         delayMs: number;
         /** Why this failure was judged retry-worthy (classifyError's reason). */
         reason: string;
+        /** Total attempts THIS failure is worth, the first one included.
+         *  Optional: a driver that has one fixed ceiling omits it and the
+         *  renderer falls back to RETRY_MAX_ATTEMPTS.  The chat-completions
+         *  loop sends it because its ceiling is per-status — a 429 with no
+         *  `Retry-After` is worth two attempts, and a chip reading
+         *  "attempt 2/3" right before the turn fails after attempt 2
+         *  promises a try that is never coming. */
+        maxAttempts?: number;
       }
     | {
         type: "turn.completed";
@@ -462,14 +470,33 @@ export interface ProviderSnapshot {
     capped: boolean;
     resetsAt?: number | null;
     error?: string;
-    /** Per-model remaining from antigravity-usage.  Instance `capped` is a
+    windowsLabel?: string;
+    /** Per-model remaining from antigravity-usage or quota windows.  Instance `capped` is a
      *  wildcard cap, not "any one model is exhausted". */
     models?: Record<string, {
       capped: boolean;
       remainingPercent?: number | null;
+      secondaryRemainingPercent?: number | null;
       resetsAt?: number | null;
       error?: string;
+      windowsLabel?: string;
     }>;
+    /** MiniMax's own balance/quota summary (server/minimax-balance.ts),
+     *  computed per INSTANCE in server/harness/registry.ts — each MiniMax
+     *  row reads its own account here rather than one shared value, so a
+     *  second connection with its own key never shows the reserved
+     *  instance's numbers. Present only on a `minimax`-driverKind instance. */
+    minimax?: {
+      source: "account-balance" | "token-plan" | "unavailable";
+      capExists: boolean;
+      status: "ok" | "near_cap" | "capped" | "unknown";
+      balanceUsd: number | null;
+      remainingPercent: number | null;
+      secondaryRemainingPercent: number | null;
+      resetsAt: number | null;
+      weeklyResetsAt: number | null;
+      error: string | null;
+    };
   };
 }
 

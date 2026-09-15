@@ -124,4 +124,45 @@ describe("ErrorRow recovery", () => {
     expect(second.text).toBe(first.text);
     expect(second.nonce).toBe(first.nonce + 1);
   });
+
+  it("offers Report Problem on turn error rows", () => {
+    const html = renderToStaticMarkup(
+      createElement(ErrorRow, {
+        message: "Antigravity: authentication failed or timed out",
+        onRetry: () => {},
+      }),
+    );
+    expect(html).toContain("Retry");
+    expect(html).toContain("Report Problem");
+
+    const checkpointHtml = renderToStaticMarkup(
+      createElement(ErrorRow, {
+        message: "git checkpoint missing for task",
+        onRetry: () => {},
+      }),
+    );
+    expect(checkpointHtml).toContain("git fetch origin &amp;&amp; git checkout main");
+    expect(checkpointHtml).toContain("Report Problem");
+  });
+
+  it("offers Report Problem on engine setup error rows", () => {
+    const unavailableInstance = {
+      instanceId: "kimi",
+      driverKind: "kimiAgent",
+      displayName: "Kimi",
+      snapshot: { state: "unavailable" as const, reason: "`kimi` CLI not found" },
+      models: { default: "kimi-code/k3", options: [] },
+      install: {
+        command: { darwin: "curl -fsSL https://kimi.ai/install.sh | bash" },
+      },
+    };
+    const html = renderToStaticMarkup(
+      createElement(ErrorRow, {
+        message: "`kimi` CLI not found",
+        setupInstance: unavailableInstance,
+      }),
+    );
+    expect(html).toContain("Report Problem");
+    expect(html).toContain("Install Kimi");
+  });
 });

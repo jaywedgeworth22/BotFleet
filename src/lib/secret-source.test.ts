@@ -7,6 +7,7 @@ import {
   buildInfisicalConfigPatch,
   infisicalStatusLabel,
   infisicalSwitchDefault,
+  secretSourceDisplay,
   secretSourceLabel,
   secretSourceTone,
   splitInfisicalPatch,
@@ -338,5 +339,35 @@ describe("the Infisical surface carries no real workspace id", () => {
     const placeholder = /id="infisical-project-id"[\s\S]{0,600}?placeholder="([^"]*)"/.exec(card);
     expect(placeholder, "the Project ID input lost its placeholder").not.toBeNull();
     expect([SYNTHETIC, "Project id from Infisical", "your-project-id"]).toContain(placeholder?.[1]);
+  });
+});
+
+describe("secretSourceDisplay", () => {
+  it("names the file an engine reads on its own, rather than saying Not set", () => {
+    // The MiniMax driver reads ~/.mmx/config.json itself, which the secret
+    // map — a pure function over config, env and the vault — cannot see. A
+    // card saying "Not set" beside an engine whose turns work is the one
+    // answer that is actively misleading.
+    expect(secretSourceDisplay("none", "~/.mmx/config.json")).toEqual({
+      label: "~/.mmx/config.json",
+      tone: "local",
+      external: true,
+    });
+    expect(secretSourceDisplay(undefined, "~/.mmx/config.json").external).toBe(true);
+  });
+
+  it("never lets an outside file take credit for a value a managed source is supplying", () => {
+    for (const source of ["infisical", "env", "file"] as const) {
+      const shown = secretSourceDisplay(source, "~/.mmx/config.json");
+      expect(shown.external).toBe(false);
+      expect(shown.label).toBe(secretSourceLabel(source));
+      expect(shown.tone).toBe(secretSourceTone(source));
+    }
+  });
+
+  it("falls back to the plain label when there is no outside file", () => {
+    expect(secretSourceDisplay("none")).toEqual({ label: "Not set", tone: "unset", external: false });
+    expect(secretSourceDisplay("none", null).label).toBe("Not set");
+    expect(secretSourceDisplay("none", "").label).toBe("Not set");
   });
 });

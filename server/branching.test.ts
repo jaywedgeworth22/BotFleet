@@ -8,13 +8,13 @@
 // two visible tails) running at once.
 //
 // Same POSIX gating as comms.test.ts (the fake CLI is a shebang script).
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
+import { removeTempDir, spawnDetached, waitForExit } from "./testing/cleanup.ts";
 
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
@@ -97,7 +97,7 @@ posixOnly("conversation branching e2e (fake ACP fleet)", () => {
       OMB_PORT: String(PORT),
     };
     if (process.env.PATH) env.PATH = process.env.PATH;
-    child = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
+    child = spawnDetached(process.execPath, [join(SERVER_DIR, "index.ts")], {
       cwd: join(SERVER_DIR, ".."),
       env,
       stdio: ["ignore", "pipe", "pipe"],

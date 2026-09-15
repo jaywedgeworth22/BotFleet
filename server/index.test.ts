@@ -3,7 +3,7 @@
 // app depends on. The config pins one deliberately-unknown driver so the
 // suite is deterministic with or without agent CLIs installed — and pins
 // the shadow-instance behavior end to end while it's at it.
-import { spawn, type ChildProcess } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { createServer, request, type Server } from "node:http";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { connect, type Socket } from "node:net";
@@ -13,7 +13,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { z } from "zod";
 
-import { removeTempDir, waitForExit } from "./testing/cleanup.ts";
+import { removeTempDir, spawnDetached, waitForExit } from "./testing/cleanup.ts";
 import { openSse } from "./testing/sse.ts";
 import { IMAGE_MAX_BYTES } from "./attachments.ts";
 import { VPS_DEFAULT_CPUS, VPS_DEFAULT_MEMORY_GIB } from "./config.ts";
@@ -40,6 +40,8 @@ let fakeClaudeDump: string;
 let fakeCrashCli: string;
 /** wrapper CLI that returns a successful-looking quota message */
 let fakeQuotaCli: string;
+/** wrapper CLI that returns ordinary prose containing former quota keywords */
+let fakeQuotaProseCli: string;
 /** successful subscription CLI that reports an API-equivalent cost */
 let fakePricedClaudeCli: string;
 /** quota CLI held behind a file gate so work can queue before completion */
@@ -110,8 +112,8 @@ const statusWithHeaders = (headers: Record<string, string>): Promise<number> =>
 
 const writeFakeClaudeWrapper = (
   file: string,
-  mode: "exit-early" | "hang" | "quota",
-  options: { keepDump?: boolean; quotaGate?: string; launchLog?: string } = {},
+  mode: "exit-early" | "hang" | "happy" | "quota",
+  options: { keepDump?: boolean; quotaGate?: string; launchLog?: string; replyText?: string } = {},
 ): string => {
   const lines = [
     "#!/usr/bin/env node",
@@ -126,6 +128,9 @@ const writeFakeClaudeWrapper = (
   if (!options.keepDump) lines.push("delete process.env.FAKE_CLAUDE_DUMP;");
   if (options.quotaGate) {
     lines.push(`process.env.FAKE_CLAUDE_QUOTA_GATE = ${JSON.stringify(options.quotaGate)};`);
+  }
+  if (options.replyText) {
+    lines.push(`process.env.FAKE_CLAUDE_REPLY = ${JSON.stringify(options.replyText)};`);
   }
   lines.push(`await import(${JSON.stringify(pathToFileURL(FAKE_CLAUDE_CLI).href)});`, "");
   writeFileSync(file, lines.join("\n"), { mode: 0o755 });
@@ -143,6 +148,9 @@ beforeAll(async () => {
   // so this engine never clobbers the argv dump other tests assert on.
   fakeCrashCli = writeFakeClaudeWrapper(join(home, "fake-claude-crash"), "exit-early");
   fakeQuotaCli = writeFakeClaudeWrapper(join(home, "fake-claude-quota"), "quota");
+  fakeQuotaProseCli = writeFakeClaudeWrapper(join(home, "fake-claude-quota-prose"), "happy", {
+    replyText: "The subscription accounting review is complete.",
+  });
   fakePricedClaudeCli = join(home, "fake-claude-priced");
   writeFileSync(
     fakePricedClaudeCli,
@@ -228,6 +236,7 @@ beforeAll(async () => {
         claude2: { driver: "claudeAgent", displayName: "Fixture Claude Two", config: { cli: FAKE_CLAUDE_CLI } },
         crasher: { driver: "claudeAgent", displayName: "Fixture Crasher", config: { cli: fakeCrashCli } },
         quota: { driver: "claudeAgent", displayName: "Fixture Quota", enabled: false, config: { cli: fakeQuotaCli } },
+        quotaProse: { driver: "claudeAgent", displayName: "Fixture Quota Prose", enabled: false, config: { cli: fakeQuotaProseCli } },
         pricedClaude: { driver: "claudeAgent", displayName: "Fixture Priced Claude", enabled: false, config: { cli: fakePricedClaudeCli } },
         gatedQuota: { driver: "claudeAgent", displayName: "Fixture Gated Quota", enabled: false, config: { cli: fakeGatedQuotaCli } },
         slowProbe: { driver: "claudeAgent", displayName: "Fixture Slow Probe", enabled: false, config: { cli: fakeSlowProbeCli } },
@@ -368,7 +377,7 @@ beforeAll(async () => {
   await new Promise<void>((r) => boxStub.listen(0, "127.0.0.1", r));
   boxStubPort = (boxStub.address() as { port: number }).port;
 
-  child = spawn(process.execPath, [join(SERVER_DIR, "index.ts")], {
+  child = spawnDetached(process.execPath, [join(SERVER_DIR, "index.ts")], {
     cwd: ROOT,
     env: {
       ...(process.env.PATH ? { PATH: process.env.PATH } : {}),
@@ -2260,9 +2269,9 @@ describe("harness HTTP API", () => {
 
       await expect.poll(() => existsSync(fakeClaudeDump), { timeout: 5_000 }).toBe(true);
       const dump = JSON.parse(readFileSync(fakeClaudeDump, "utf8")) as {
-        mcpConfig: { mcpServers: { ogb: { args: string[] } } };
+        mcpConfig: { mcpServers: { botfleet: { args: string[] } } };
       };
-      socket = await connectSocket(dump.mcpConfig.mcpServers.ogb.args[1]);
+      socket = await connectSocket(dump.mcpConfig.mcpServers.botfleet.args[1]);
       const brokerAnswer = new Promise<{ behavior: string }>((resolve) => {
         let buffer = "";
         socket!.on("data", (chunk) => {
@@ -2343,6 +2352,97 @@ describe("harness HTTP API", () => {
     } finally {
       await api("DELETE", `/api/bots/${bot.id}`);
       expect((await api("PATCH", "/api/instances/quota", { enabled: false })).status).toBe(200);
+    }
+  }, 30_000);
+
+  it("does not cool down or replay a successful reply that discusses subscription accounting", async () => {
+    expect((await api("PATCH", "/api/instances/quotaProse", { enabled: true })).status).toBe(200);
+    expect((await api("PATCH", "/api/instances/quota", { enabled: true })).status).toBe(200);
+    const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+    const quotaProse = instances.find((instance: { instanceId: string }) => instance.instanceId === "quotaProse");
+    const quota = instances.find((instance: { instanceId: string }) => instance.instanceId === "quota");
+    expect(quotaProse?.snapshot.state).toBe("available");
+    expect(quota?.snapshot.state).toBe("available");
+
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "quotaProse",
+          model: quotaProse.models.default,
+          fallbacks: [{ instanceId: "quota", model: quota.models.default }],
+        },
+      })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "summarize the accounting work" })).status).toBe(202);
+      await expect.poll(async () => {
+        const current = (await api("GET", "/api/bots?messages=0")).body.bots.find(
+          (candidate: { id: string }) => candidate.id === bot.id,
+        );
+        return current?.busy;
+      }, { timeout: 10_000 }).toBe(false);
+
+      const transcript = (await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`)).body.messages as Array<{
+        text?: string;
+        tool?: { name?: string };
+      }>;
+      expect(transcript.filter((message) => message.text === "The subscription accounting review is complete.")).toHaveLength(1);
+      expect(transcript.some((message) => message.text?.includes("You've hit your session limit"))).toBe(false);
+      expect(transcript.some((message) => message.tool?.name?.startsWith("Fell over to "))).toBe(false);
+      const cooldowns = (await api("GET", "/api/quotas")).body.cooldowns as Array<{ botId: string }>;
+      expect(cooldowns.some((cooldown) => cooldown.botId === bot.id)).toBe(false);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PATCH", "/api/instances/quotaProse", { enabled: false })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/quota", { enabled: false })).status).toBe(200);
+    }
+  }, 30_000);
+
+  it("still falls over from a successful-looking standalone quota chip", async () => {
+    expect((await api("PATCH", "/api/instances/quota", { enabled: true })).status).toBe(200);
+    expect((await api("PATCH", "/api/instances/pricedClaude", { enabled: true })).status).toBe(200);
+    const instances = (await api("GET", "/api/instances?fresh=1")).body.instances;
+    const quota = instances.find((instance: { instanceId: string }) => instance.instanceId === "quota");
+    const pricedClaude = instances.find((instance: { instanceId: string }) => instance.instanceId === "pricedClaude");
+    expect(quota?.snapshot.state).toBe("available");
+    expect(pricedClaude?.snapshot.state).toBe("available");
+
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      expect((await api("PATCH", `/api/bots/${bot.id}`, {
+        modelSelection: {
+          instanceId: "quota",
+          model: quota.models.default,
+          fallbacks: [{ instanceId: "pricedClaude", model: pricedClaude.models.default }],
+        },
+      })).status).toBe(200);
+      expect((await api("POST", `/api/bots/${bot.id}/messages`, { text: "exercise the terminal quota chip" })).status).toBe(202);
+      await expect.poll(async () => {
+        const transcript = (await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`)).body.messages as Array<{
+          text?: string;
+        }>;
+        return transcript.some((message) => message.text === "hello from fake claude");
+      }, { timeout: 15_000 }).toBe(true);
+
+      const transcript = (await api("GET", `/api/threads/${bot.threadId}/messages?limit=200`)).body.messages as Array<{
+        text?: string;
+        tool?: { name?: string };
+      }>;
+      expect(transcript.some((message) => message.text?.includes("You've hit your session limit"))).toBe(true);
+      expect(transcript.some((message) => message.tool?.name?.startsWith("Fell over to "))).toBe(true);
+      const cooldowns = (await api("GET", "/api/quotas")).body.cooldowns as Array<{
+        botId: string;
+        instanceId: string;
+        error: string;
+      }>;
+      expect(cooldowns).toContainEqual(expect.objectContaining({
+        botId: bot.id,
+        instanceId: "quota",
+        error: "You've hit your session limit · resets in 30 minutes",
+      }));
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+      expect((await api("PATCH", "/api/instances/quota", { enabled: false })).status).toBe(200);
+      expect((await api("PATCH", "/api/instances/pricedClaude", { enabled: false })).status).toBe(200);
     }
   }, 30_000);
 
@@ -3141,7 +3241,13 @@ describe("harness HTTP API", () => {
     try {
       const before = await api("GET", "/api/observability");
       expect(before.status).toBe(200);
-      expect(before.body).toMatchObject({ configured: false, enabled: false, source: "none", dsn: null });
+      expect(before.body).toMatchObject({
+        configured: false,
+        enabled: false,
+        requestedEnabled: true,
+        source: "none",
+        dsn: null,
+      });
 
       const unconfigured = await api("POST", "/api/observability/test");
       expect(unconfigured.status).toBe(200);
@@ -3181,6 +3287,7 @@ describe("harness HTTP API", () => {
       expect(off.body.observability).toMatchObject({ configured: true, hasDsn: true, enabled: false });
       const afterOff = await api("GET", "/api/observability");
       expect(afterOff.body.enabled).toBe(false);
+      expect(afterOff.body.requestedEnabled).toBe(false);
       const refused = await api("POST", "/api/observability/test");
       expect(refused.body.ok).toBe(false);
       expect(String(refused.body.error)).toMatch(/turned off/i);
@@ -4051,6 +4158,94 @@ describe("harness HTTP API", () => {
   });
 });
 
+describe("transcript logs on delete", () => {
+  /** Both generations plus a killed trim's leftovers, for one thread. */
+  const logFiles = (threadId: string) =>
+    ["events", "native"].flatMap((dir) => [
+      join(home, ".botfleet", dir, `${threadId}.ndjson`),
+      join(home, ".botfleet", dir, `${threadId}.ndjson.1`),
+      join(home, ".botfleet", dir, `${threadId}.ndjson.4242.123e4567-e89b-42d3-a456-426614174000.tmp`),
+    ]);
+
+  it("removes every task's logs, both generations and temp files, when a bot is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const first = bot.threadId;
+    const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Second task" });
+    expect(task.status).toBe(201);
+    const second = task.body.task.threadId;
+    expect(second).not.toBe(first);
+
+    // A bot's `threadId` names only its ACTIVE task, so a delete that used it
+    // alone orphaned every other task's transcript forever.
+    const files = [...logFiles(first), ...logFiles(second)];
+    for (const file of files) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/bots/${bot.id}`)).status).toBe(200);
+    expect(files.filter((file) => existsSync(file))).toEqual([]);
+  });
+
+  it("removes a bot task's logs when just that task is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const kept = bot.threadId;
+    const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Throwaway" });
+    expect(task.status).toBe(201);
+    const gone = task.body.task.threadId;
+    for (const file of [...logFiles(kept), ...logFiles(gone)]) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/bots/${bot.id}/tasks/${gone}`)).status).toBe(200);
+    expect(logFiles(gone).filter((file) => existsSync(file))).toEqual([]);
+    // the task that stayed keeps its history
+    expect(logFiles(kept).every((file) => existsSync(file))).toBe(true);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
+  it("removes the merged-away thread's logs when two tasks are merged", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const kept = bot.threadId;
+    const task = await api("POST", `/api/bots/${bot.id}/tasks`, { title: "Folded in" });
+    expect(task.status).toBe(201);
+    const gone = task.body.task.threadId;
+    for (const file of [...logFiles(kept), ...logFiles(gone)]) writeFileSync(file, "{}\n");
+
+    // a merge copies the source's messages into the target and deletes the
+    // source task, so nothing names the source thread afterwards
+    const merged = await api("PATCH", `/api/bots/${bot.id}/tasks/${gone}`, { mergeInto: kept });
+    expect(merged.status).toBe(200);
+    expect(logFiles(gone).filter((file) => existsSync(file))).toEqual([]);
+    expect(logFiles(kept).every((file) => existsSync(file))).toBe(true);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
+  it("removes a room task's logs when just that task is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Task cleanup", memberIds: [bot.id] })).body.group;
+    const kept = room.threadId;
+    const task = await api("POST", `/api/groups/${room.id}/tasks`, { title: "Throwaway" });
+    expect(task.status).toBe(201);
+    const gone = task.body.task.threadId;
+    for (const file of [...logFiles(kept), ...logFiles(gone)]) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/groups/${room.id}/tasks/${gone}`)).status).toBe(200);
+    expect(logFiles(gone).filter((file) => existsSync(file))).toEqual([]);
+    expect(logFiles(kept).every((file) => existsSync(file))).toBe(true);
+    await api("DELETE", `/api/groups/${room.id}`);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+
+  it("removes every task's logs when a room is deleted", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    const room = (await api("POST", "/api/groups", { name: "Log cleanup", memberIds: [bot.id] })).body.group;
+    const task = await api("POST", `/api/groups/${room.id}/tasks`, { title: "Second task" });
+    expect(task.status).toBe(201);
+    const files = [...logFiles(room.threadId), ...logFiles(task.body.task.threadId)];
+    for (const file of files) writeFileSync(file, "{}\n");
+
+    expect((await api("DELETE", `/api/groups/${room.id}`)).status).toBe(200);
+    expect(files.filter((file) => existsSync(file))).toEqual([]);
+    await api("DELETE", `/api/bots/${bot.id}`);
+  });
+});
+
 describe("section context API", () => {
   it("keeps user-managed briefs isolated by live section and clears them explicitly", async () => {
     const work = (await api("POST", "/api/bots")).body.bot;
@@ -4785,7 +4980,7 @@ describe("instance CLI override API", () => {
     // a dynamic per-instance key. The live instance still gets it (via
     // instanceKeyOverrides → its environment map), just never through
     // config.json.
-    const created = await api("POST", "/api/instances", {
+    const created = await api("POST", "/api/instances?secretStorage=external", {
       name: "Encrypted Key Engine",
       endpoint: "http://localhost:11498/v1",
       models: ["encrypted-model"],
@@ -4852,6 +5047,270 @@ describe("instance CLI override API", () => {
       expect(persistedEntry?.config?.key).toBe("sk-plain-dev-fallback");
     } finally {
       await api("DELETE", `/api/instances/${instanceId}`);
+    }
+  }, 30_000);
+
+  it("adds a second MiniMax connection with its own key and endpoint", async () => {
+    // The second engine that can carry more than one instance. Everything
+    // the openai-compat path already proves has to hold here too — the key
+    // never lands in the persisted `environment`, the encrypted-store PATCH
+    // keeps it off disk entirely — and the driver choice itself has to be
+    // validated, or POST /api/instances becomes a way to mint a second
+    // instance of an engine that cannot arbitrate one.
+    expect((await api("POST", "/api/instances", {
+      name: "Not A Driver",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "definitely-not-a-driver",
+      key: "sk-refused",
+    })).status).toBe(400);
+    // boxAgent declares supportsMultipleInstances: false.
+    expect((await api("POST", "/api/instances", {
+      name: "Second Computer",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "boxAgent",
+      key: "sk-refused",
+    })).status).toBe(400);
+    // These three DO declare supportsMultipleInstances, and every one of them
+    // would be handed a workspace credential it reads from process.env or a
+    // CLI login in the user's home directory. A second instance pointed at an
+    // endpoint typed into this route would receive it, so the gate is
+    // `supportsMultipleInstances` AND `install.apiKeyOnly`.
+    for (const driver of ["grok", "piAgent", "antigravityAgent", "claudeAgent", "codex"]) {
+      const refused = await api("POST", "/api/instances", {
+        name: `Second ${driver}`,
+        endpoint: "http://127.0.0.1:11497/v1",
+        driver,
+        key: "sk-refused",
+      });
+      expect(refused.status, driver).toBe(400);
+      expect(refused.body.error, driver).toContain("can only be configured once");
+    }
+    // A paid hosted API still needs a key of its own: no workspace credential
+    // will ever reach a non-reserved instance, so a keyless one could do
+    // nothing but fail every turn.
+    const keyless = await api("POST", "/api/instances", {
+      name: "Keyless MiniMax",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+    });
+    expect(keyless.status).toBe(400);
+    expect(keyless.body.error).toContain("API key is required");
+    // A custom icon reaches the engine rail only through the live instance's
+    // own `iconUrl`, which a driver has to read out of its config and expose.
+    // MiniMax's config schema has exactly one field, so an icon accepted here
+    // would be configuration that silently does nothing.
+    const iconed = await api("POST", "/api/instances", {
+      name: "Iconed MiniMax",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+      key: "sk-refused",
+      iconUrl: "https://example.test/icon.svg",
+    });
+    expect(iconed.status).toBe(400);
+    expect(iconed.body.error).toContain("does not support a custom icon");
+    // …unless the desktop shell is about to commit one to its encrypted
+    // store, which is the one keyless create that is not a broken engine.
+    const declared = await api("POST", "/api/instances?secretStorage=external", {
+      name: "Declared MiniMax",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+    });
+    expect(declared.status).toBe(201);
+    expect((await api("DELETE", `/api/instances/${declared.body.instanceId}`)).status).toBe(200);
+    // openai-compat is the exception: an endpoint needing no auth at all —
+    // Ollama, LM Studio, vLLM — is a first-class use, and safe because the
+    // driver refuses the workspace key for a non-reserved instance.
+    const anonymous = await api("POST", "/api/instances", {
+      name: "Anonymous Local",
+      endpoint: "http://127.0.0.1:11494/v1",
+      models: ["local-model"],
+    });
+    expect(anonymous.status).toBe(201);
+    expect(
+      JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"))
+        .instances[anonymous.body.instanceId].config.credentialStorage,
+    ).toBeUndefined();
+    expect((await api("DELETE", `/api/instances/${anonymous.body.instanceId}`)).status).toBe(200);
+
+    const created = await api("POST", "/api/instances", {
+      name: "MiniMax China",
+      endpoint: "http://127.0.0.1:11497/v1",
+      driver: "minimax",
+      key: "sk-minimax-second-instance",
+    });
+    expect(created.status).toBe(201);
+    const instanceId = created.body.instanceId;
+    expect(instanceId).toContain("custom-minimax-china");
+    try {
+      const found = (await api("GET", "/api/instances")).body.instances
+        .find((i: any) => i.instanceId === instanceId);
+      expect(found).toBeDefined();
+      expect(found.driverKind).toBe("minimax");
+      expect(found.displayName).toBe("MiniMax China");
+      // The reserved `minimax` instance is not custom; this one is, which is
+      // what puts a Delete button on its row.
+      expect(found.isCustom).toBe(true);
+      expect((await api("GET", "/api/instances")).body.instances
+        .find((i: any) => i.instanceId === "minimax").isCustom).toBe(false);
+      // MiniMax ships its own catalog — a second connection offers the same
+      // models without anybody retyping them.
+      expect(found.models.options.length).toBeGreaterThan(0);
+
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      const entry = (onDisk.instances ?? {})[instanceId];
+      expect(entry.driver).toBe("minimax");
+      expect(entry.config.url).toBe("http://127.0.0.1:11497/v1");
+      // Dev/browser fallback shape, exactly as openai-compat stores it.
+      expect(entry.config.key).toBe("sk-minimax-second-instance");
+      // …and never a second copy in the persisted environment: that copy is
+      // injected for the live driver and stripped again on the way to disk,
+      // so a rotated key can never leave a stale one behind.
+      expect(entry.environment?.MINIMAX_API_KEY).toBeUndefined();
+      for (const persisted of Object.values<any>(onDisk.instances ?? {})) {
+        expect(JSON.stringify(persisted?.environment ?? {})).not.toContain("sk-minimax-second-instance");
+      }
+
+      // Rotating it leaves exactly one copy behind, in config.
+      expect((await api("PATCH", `/api/instances/${instanceId}`, { key: "sk-minimax-rotated" })).status).toBe(200);
+      const rotated = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(JSON.stringify(rotated.instances ?? {})).not.toContain("sk-minimax-second-instance");
+      expect((rotated.instances ?? {})[instanceId].config.key).toBe("sk-minimax-rotated");
+      expect((rotated.instances ?? {})[instanceId].environment?.MINIMAX_API_KEY).toBeUndefined();
+
+      // A bot can be pointed at it by instance id like any other engine.
+      const bot = (await api("POST", "/api/bots", {
+        name: "China Bot",
+        modelSelection: { instanceId, model: "MiniMax-M3" },
+      })).body.bot;
+      try {
+        expect(bot.modelSelection.instanceId).toBe(instanceId);
+      } finally {
+        await api("DELETE", `/api/bots/${bot.id}`);
+      }
+    } finally {
+      expect((await api("DELETE", `/api/instances/${instanceId}`)).status).toBe(200);
+    }
+    expect((await api("GET", "/api/instances")).body.instances
+      .find((i: any) => i.instanceId === instanceId)).toBeUndefined();
+    // The default connection is still protected from deletion.
+    expect((await api("DELETE", "/api/instances/minimax")).status).toBe(400);
+  }, 30_000);
+
+  it("reports the two API-key engines' state and endpoint on /api/config, and saves them", async () => {
+    // Before this, `configStatus()` hand-listed every section and had no
+    // entry for either engine that is configured with an endpoint and a key
+    // instead of a CLI login — so the API Keys panel had no way to show
+    // whether a key was saved, and no way to save one.
+    const boot = (await api("GET", "/api/config")).body;
+    expect(boot.minimax).toEqual({ configured: false, url: "", pending: false });
+    expect(boot.openaiCompat).toEqual({ configured: false, url: "", pending: false });
+
+    try {
+      const saved = await api("PUT", "/api/config", {
+        minimax: { key: "sentinel-workspace-minimax-key", url: "https://api.minimaxi.com/v1" },
+      });
+      expect(saved.status).toBe(200);
+      const after = (await api("GET", "/api/config")).body;
+      // The key is reported as a boolean and never echoed; the endpoint is
+      // configuration, so it comes back in full.
+      expect(after.minimax).toEqual({ configured: true, url: "https://api.minimaxi.com/v1", pending: false });
+      expect(JSON.stringify(after)).not.toContain("sentinel-workspace-minimax-key");
+
+      // …and it reaches the reserved instance, which is the whole point.
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(onDisk.minimax.url).toBe("https://api.minimaxi.com/v1");
+      expect(onDisk.minimax.key).toBe("sentinel-workspace-minimax-key");
+      // Never copied into any instance's persisted environment.
+      for (const entry of Object.values<any>(onDisk.instances ?? {})) {
+        expect(JSON.stringify(entry?.environment ?? {})).not.toContain("sentinel-workspace-minimax-key");
+      }
+
+      // The desktop path: the key goes to the encrypted store, and this
+      // route persists only the tombstone plus the durable marker.
+      const external = await api("PUT", "/api/config?secretStorage=external", {
+        minimax: { key: "sentinel-encrypted-minimax-key" },
+      });
+      expect(external.status).toBe(200);
+      const externalDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(JSON.stringify(externalDisk.minimax)).not.toContain("sentinel-encrypted-minimax-key");
+      expect(externalDisk.minimax.credentialStorage).toBe("external");
+      expect(externalDisk.minimax.key).toBe("");
+      // The endpoint saved a moment ago survives the credential-only save.
+      expect(externalDisk.minimax.url).toBe("https://api.minimaxi.com/v1");
+      // The key stays LIVE in this process — the desktop shell committed it
+      // to the encrypted store and `syncCredentialEnv` keeps the running
+      // harness in step, exactly as it does for every other credential on
+      // this path. The tombstone and the marker just asserted are what make
+      // `pending` true on the NEXT launch, before the shell replays the
+      // store; `engineKeyStatus` in src/lib/engine-key-config.test.ts covers
+      // how the panel renders that state.
+      expect((await api("GET", "/api/config")).body.minimax).toEqual({
+        configured: true,
+        url: "https://api.minimaxi.com/v1",
+        pending: false,
+      });
+
+      // Clearing drops the marker, so an anonymous endpoint stays valid.
+      expect((await api("PUT", "/api/config?secretStorage=external", { minimax: { key: "" } })).status).toBe(200);
+      const cleared = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(cleared.minimax.credentialStorage).toBeUndefined();
+      expect((await api("GET", "/api/config")).body.minimax.pending).toBe(false);
+
+      // `credentialStorage` is the store's to write, never the caller's.
+      expect((await api("PUT", "/api/config", {
+        minimax: { credentialStorage: "external" },
+      })).status).toBe(400);
+    } finally {
+      await api("PUT", "/api/config", { minimax: { key: "", url: "" } });
+    }
+    expect((await api("GET", "/api/config")).body.minimax).toEqual({
+      configured: false,
+      url: "",
+      pending: false,
+    });
+  }, 30_000);
+
+  it("routes a MiniMax connection's key through the same encrypted store openai-compat uses", async () => {
+    // The desktop shell creates the instance without a key (the bridge holds
+    // it) and then PATCHes ?secretStorage=external. Nothing about that path
+    // was openai-compat-specific except the driver check it used to make.
+    const created = await api("POST", "/api/instances?secretStorage=external", {
+      name: "MiniMax Gateway",
+      endpoint: "http://127.0.0.1:11496/v1",
+      driver: "minimax",
+    });
+    expect(created.status).toBe(201);
+    // Marked at CREATE time, not by the follow-up PATCH: otherwise there is a
+    // window in which the instance exists keyless AND unmarked, which is the
+    // one state that reads as an intentionally anonymous engine.
+    expect(
+      JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"))
+        .instances[created.body.instanceId].config.credentialStorage,
+    ).toBe("external");
+    const instanceId = created.body.instanceId;
+    try {
+      expect((await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, {
+        key: "sk-minimax-never-touches-disk",
+      })).status).toBe(200);
+
+      const onDisk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      const entry = (onDisk.instances ?? {})[instanceId];
+      expect(JSON.stringify(entry)).not.toContain("sk-minimax-never-touches-disk");
+      expect(entry.config.credentialStorage).toBe("external");
+      expect(entry.config.key).toBeUndefined();
+      expect(entry.environment?.MINIMAX_API_KEY).toBeUndefined();
+
+      // An unrelated PATCH must not drop the live-only override.
+      expect((await api("PATCH", `/api/instances/${instanceId}`, { fullAuto: false })).status).toBe(200);
+      const after = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect(JSON.stringify((after.instances ?? {})[instanceId])).not.toContain("sk-minimax-never-touches-disk");
+      expect((after.instances ?? {})[instanceId].config.credentialStorage).toBe("external");
+
+      expect((await api("PATCH", `/api/instances/${instanceId}?secretStorage=external`, { key: "" })).status).toBe(200);
+      const cleared = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
+      expect((cleared.instances ?? {})[instanceId].config.credentialStorage).toBeUndefined();
+    } finally {
+      expect((await api("DELETE", `/api/instances/${instanceId}`)).status).toBe(200);
     }
   }, 30_000);
 
