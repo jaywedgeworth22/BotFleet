@@ -11,17 +11,19 @@ import type { ModelCatalog } from "../contracts.ts";
 import { killCliTree, spawnCli } from "../procs.ts";
 import { mergeLocalInject } from "./local-inject.ts";
 
+/**
+ * Compatibility rows used only when the installed Codex app-server cannot
+ * provide its live catalog.  This list is a source fallback, not proof that
+ * every row is available for the current account or transport.
+ */
 export const STATIC_CODEX_MODELS: ModelCatalog = {
   default: "gpt-5.6-sol",
   options: [
+    { id: "gpt-6-astra", label: "GPT-6 Astra" },
     { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
     { id: "gpt-5.6-terra", label: "GPT-5.6 Terra" },
     { id: "gpt-5.6-luna", label: "GPT-5.6 Luna" },
-    { id: "o3", label: "o3" },
-    { id: "o3-mini", label: "o3-mini" },
     { id: "gpt-5.5", label: "GPT-5.5" },
-    { id: "gpt-5.4", label: "GPT-5.4" },
-    { id: "gpt-5.4-mini", label: "GPT-5.4 Mini" },
     { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark" },
   ],
 };
@@ -355,7 +357,7 @@ async function probeProviderModels(
   }
 }
 
-/** Local slugs Codex already knows, plus the three official cloud rows. */
+/** Local slugs Codex already knows, plus the available official cloud rows. */
 export async function readCodexModelCatalog(
   env: Record<string, string | undefined> = process.env,
   fetchImpl: typeof fetch = fetch,
@@ -384,7 +386,8 @@ export async function readCodexModelCatalog(
     extras.push({ provider, model });
   };
 
-  remember(main.modelProvider, main.model);
+  const mainProvider = main.modelProvider ?? OFFICIAL_CODEX_PROVIDER;
+  remember(mainProvider, main.model);
 
   for (const file of listDir(home)) {
     if (!file.endsWith(".config.toml")) continue;
@@ -392,7 +395,7 @@ export async function readCodexModelCatalog(
     for (const provider of profile.providers) {
       if (!known.has(provider.id)) known.set(provider.id, provider);
     }
-    remember(profile.modelProvider ?? main.modelProvider, profile.model);
+    remember(profile.modelProvider ?? mainProvider, profile.model);
   }
 
   for (const [encoded, _label] of named) {
@@ -421,14 +424,12 @@ export async function readCodexModelCatalog(
     });
   }
 
-  const configured = main.model && main.modelProvider
-    ? main.modelProvider === OFFICIAL_CODEX_PROVIDER &&
+  const configured = main.model
+    ? mainProvider === OFFICIAL_CODEX_PROVIDER &&
       official.options.some((option) => option.id === main.model)
       ? main.model
-      : encodeCodexSelection(main.modelProvider, main.model)
-    : main.model && seen.has(main.model)
-      ? main.model
-      : null;
+      : encodeCodexSelection(mainProvider, main.model)
+    : null;
 
   return mergeLocalInject(
     {

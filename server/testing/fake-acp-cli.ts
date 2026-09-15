@@ -52,11 +52,16 @@ if (mode === "cancel-exits-with-child") {
 // model is chosen with session/set_config_option, because `opencode acp` takes
 // no -m. Off unless FAKE_ACP_MODELS is set, so every existing mode is byte-
 // identical to before.
-const models = (process.env.FAKE_ACP_MODELS ?? "").split(",").filter(Boolean);
+const models: string[] = process.env.FAKE_ACP_MODELS_JSON
+  ? JSON.parse(process.env.FAKE_ACP_MODELS_JSON)
+  : (process.env.FAKE_ACP_MODELS ?? "").split(",").filter(Boolean);
 let currentModel: string | null = models[0] ?? null;
-const configOptions = () =>
-  models.length
-    ? [
+const reasoningEfforts = (process.env.FAKE_ACP_REASONING_EFFORTS ?? "").split(",").filter(Boolean);
+let currentReasoningEffort: string | null = reasoningEfforts[0] ?? null;
+const configOptions = () => {
+  const options = [
+    ...(models.length
+      ? [
         {
           id: "model",
           name: "Model",
@@ -66,7 +71,22 @@ const configOptions = () =>
           options: models.map((value) => ({ value, name: value })),
         },
       ]
-    : null;
+      : []),
+    ...(reasoningEfforts.length
+      ? [
+        {
+          id: "reasoning_effort",
+          name: "Reasoning effort",
+          category: "thought_level",
+          type: "select",
+          currentValue: currentReasoningEffort,
+          options: reasoningEfforts.map((value) => ({ value, name: value })),
+        },
+      ]
+      : []),
+  ];
+  return options.length ? options : null;
+};
 // cursor-shaped surface: the session advertises `models.availableModels` with
 // parameterised ids (`default[]`) that differ from the argv `--model` slugs
 // (`auto`). Off unless FAKE_ACP_SESSION_MODELS is set, so every existing mode
@@ -92,6 +112,7 @@ const dumpEnv = Object.fromEntries(
     "FAKE_ACP_RPC_DUMP",
     "TEST_POLICY",
     "OPENCODE_API_KEY",
+    "DEEPSEEK_API_KEY",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "ANTHROPIC_API_KEY",
@@ -115,7 +136,11 @@ if (process.env.FAKE_ACP_DUMP) {
   writeFileSync(process.env.FAKE_ACP_DUMP, JSON.stringify({ argv, env: dumpEnv }, null, 2));
 }
 if (argv.includes("--version")) {
-  console.log("fake-acp 1.0.0");
+  const gate = process.env.FAKE_ACP_VERSION_GATE_FILE;
+  while (gate && !existsSync(gate)) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  console.log(process.env.FAKE_ACP_VERSION ?? "fake-acp 1.0.0");
   process.exit(0);
 }
 // Cursor's driver probes `agent status` / `agent models` on the same binary
@@ -322,7 +347,8 @@ function handle(msg: any) {
       });
       break;
     }
-    case "session/load": {
+    case "session/load":
+    case "session/resume": {
       if (mode === "resume-fails") {
         out({ jsonrpc: "2.0", id: msg.id, error: { code: -32001, message: "saved session is gone" } });
         break;
@@ -369,18 +395,30 @@ function handle(msg: any) {
     }
     case "session/set_config_option": {
       const { configId, value } = msg.params ?? {};
-      if (configId !== "model" || !models.includes(value)) {
+      const accepted = configId === "model"
+        ? models.includes(value)
+        : configId === "reasoning_effort"
+          ? reasoningEfforts.includes(value)
+          : false;
+      if (!accepted) {
         out({
           jsonrpc: "2.0",
           id: msg.id,
-          error: { code: -32602, message: `Invalid params: model not found: ${value}`, data: { modelId: value } },
+          error: { code: -32602, message: `Invalid params: ${configId} not found: ${value}` },
         });
         break;
       }
       // FAKE_ACP_MODEL_STICKS: answer OK and keep the old model anyway. Nothing
       // in the protocol forbids it, and it is the shape core.ts's confirmation
       // guard exists for — an error is loud, this is silent.
-      if (!process.env.FAKE_ACP_MODEL_STICKS) currentModel = value;
+      if (configId === "model" && !process.env.FAKE_ACP_MODEL_STICKS) currentModel = value;
+      if (configId === "reasoning_effort" && !process.env.FAKE_ACP_REASONING_STICKS) {
+        currentReasoningEffort = value;
+      }
+      configCalls.push({ method: msg.method, params: msg.params });
+      if (process.env.FAKE_ACP_DUMP) {
+        writeFileSync(`${process.env.FAKE_ACP_DUMP}.config.json`, JSON.stringify(configCalls, null, 2));
+      }
       result(msg.id, { configOptions: configOptions() });
       break;
     }
