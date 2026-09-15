@@ -26,6 +26,16 @@ describe("normalizeScheduleInput", () => {
     ).toEqual({ schedule: { type: "weekly", time: "09:00", weekdays: ["monday", "friday"] } });
   });
 
+  it("preserves and trims an explicit IANA timezone", () => {
+    expect(
+      normalizeScheduleInput({
+        schedule: { type: "weekly", time: "09:00", weekdays: ["monday"], timeZone: " America/Chicago " },
+      }),
+    ).toEqual({
+      schedule: { type: "weekly", time: "09:00", weekdays: ["monday"], timeZone: "America/Chicago" },
+    });
+  });
+
   it("coerces short weekday names to their full spelling", () => {
     expect(
       normalizeScheduleInput({ schedule: { type: "weekly", time: "09:00", weekdays: ["mon", "tues", "thur"] } }),
