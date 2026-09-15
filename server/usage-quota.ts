@@ -162,7 +162,7 @@ export class UsageQuotaPoller {
     this.inFlight = true;
     try {
       const response = await fetch(url, {
-        headers: { authorization: `Bearer ${token}`, accept: "application/json" },
+        headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": "BotFleet/1.0" },
       });
       const body = (await response.json().catch(() => null)) as QuotaWindowsPayload | { error?: string } | null;
       if (!response.ok || !body || typeof body !== "object" || !("ok" in body) || body.ok !== true) {

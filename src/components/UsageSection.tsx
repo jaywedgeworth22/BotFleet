@@ -10,6 +10,7 @@ import { MausAvatar } from "./Avatar";
 import { Card } from "./SettingsPrimitives";
 import { ProviderMark } from "./ProviderIcons";
 import { SecretSourceBadge } from "./SecretSourceBadge";
+import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { minimaxPriceRows } from "@/lib/minimax-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
@@ -324,6 +325,7 @@ export function UsageSection() {
             if (instance.enabled === false) return false;
             const isDeepSeek =
               instance.driverKind === "deepseekAgent" ||
+              instance.driverKind === "dshAgent" ||
               instance.driverKind === "deepseek";
             const spend =
               engineSpend[instance.driverKind] ??
@@ -387,6 +389,7 @@ export function UsageSection() {
             // (or "Balance unavailable") without expanding the row.
             const isDeepSeek =
               instance.driverKind === "deepseekAgent" ||
+              instance.driverKind === "dshAgent" ||
               instance.driverKind === "deepseek";
             const deepseekRow = isDeepSeek
               ? deepseekBalance
@@ -654,6 +657,7 @@ export function UsageSection() {
             <span className="text-right">Output / 1M</span>
           </div>
           {[
+            ...deepSeekPriceRows(),
             ...minimaxPriceRows(),
           ].map((row) => (
             <div key={row.model} className="grid grid-cols-[1.5fr_1fr_1fr_1fr] items-center gap-x-3 border-b border-hairline/20 py-2.5 text-[13px]">
@@ -667,7 +671,7 @@ export function UsageSection() {
             </div>
           ))}
           <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-            API rates are reference estimates; actual charges depend on the provider, billing window, cache usage, and context tier.{'\u00A0'} Subscription limits are separate.{'\u00A0'} MiniMax M3 prompts over 512K input tokens use twice its listed input, cache-read, and output rates.
+            API rates are reference estimates; actual charges depend on the provider, billing window, cache usage, and context tier.{'\u00A0'} Subscription limits are separate.{'\u00A0'} DeepSeek ranges show off-peak to peak prices: peak hours are Monday–Friday, 01:00–04:00 and 06:00–10:00 UTC; all other times are off-peak.{'\u00A0'} <a className="underline underline-offset-2" href="https://api-docs.deepseek.com/quick_start/pricing/" target="_blank" rel="noreferrer">DeepSeek rates verified September 13, 2026</a>.{'\u00A0'} MiniMax M3 prompts over 512K input tokens use twice its listed input, cache-read, and output rates.
           </div>
         </div>
       </Card>
