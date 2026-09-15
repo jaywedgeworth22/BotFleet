@@ -54,7 +54,7 @@ export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   if (hay.includes("codex") || hay.includes("chatgpt")) return ["codex", "codexAgent"];
   if (hay.includes("anthropic") || hay.includes("claude")) return ["claudeAgent"];
   if (hay.includes("grok") || hay.includes("xai")) return ["grokAgent", "grok"];
-  if (hay.includes("minimax")) return ["minimax"];
+  if (hay.includes("minimax")) return ["minimaxAgent", "minimax"];
   // inferProviderAndService (server/telemetry.ts) reports Kimi/Moonshot
   // windows under provider "moonshot"; the shipped fleet's Kimi instance
   // rides driver kind "kimiAgent" (instanceConfigs()'s DEFAULT_FLEET). The
