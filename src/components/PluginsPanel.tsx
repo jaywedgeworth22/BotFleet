@@ -33,6 +33,8 @@ export interface ConnectorStatus {
 // as disconnected while a fresh secure status check runs in the background.
 let cachedConnectorStatus: Record<string, ConnectorStatus> | null = null;
 let cachedConnectorStatusAt = 0;
+/** Last time we stored a verified inventory.  Separate from cache-expiry. */
+let cachedConnectorVerifiedAt = 0;
 let cachedConnectorStatusAuthoritative = true;
 let cachedConnectorReadiness: ConnectorReadiness | null = null;
 let connectorStatusRequest: Promise<ConnectorInventory> | null = null;
@@ -97,7 +99,7 @@ export function preloadConnectedApps(force = false): Promise<ConnectorInventory>
         configured: true,
         state: cachedConnectorStatusAuthoritative ? "ready" : "degraded",
         checkedAt: cachedConnectorStatusAt,
-        lastSuccessAt: cachedConnectorStatusAuthoritative ? cachedConnectorStatusAt : null,
+        lastSuccessAt: cachedConnectorVerifiedAt || (cachedConnectorStatusAuthoritative ? cachedConnectorStatusAt : null),
         ...(cachedConnectorStatusAuthoritative ? {} : {
           failure: { kind: "unknown" as const, message: "BotFleet could not verify connected apps." },
         }),
@@ -115,13 +117,19 @@ export function preloadConnectedApps(force = false): Promise<ConnectorInventory>
       // connected.  Keep the last inventory we were sure about instead.
       if (!authoritative) {
         const cached = readCachedInventory();
-        cachedConnectorReadiness = readiness;
+        const lastSuccessAt = cached?.at ?? cachedConnectorVerifiedAt || null;
+        cachedConnectorReadiness = { ...readiness, lastSuccessAt };
         cachedConnectorStatusAuthoritative = false;
         cachedConnectorStatusAt = checkedAt;
-        return { services: cached?.services ?? cachedConnectorStatus ?? {}, authoritative: false, readiness };
+        return {
+          services: cached?.services ?? cachedConnectorStatus ?? {},
+          authoritative: false,
+          readiness: cachedConnectorReadiness,
+        };
       }
       cachedConnectorStatus = services;
       cachedConnectorStatusAt = checkedAt;
+      cachedConnectorVerifiedAt = checkedAt;
       cachedConnectorStatusAuthoritative = true;
       cachedConnectorReadiness = readiness;
       writeCachedInventory(services, checkedAt);

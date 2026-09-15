@@ -147,5 +147,6 @@ describe("safe connected-app failures", () => {
     expect(safeConnectorFailure(Object.assign(new Error("private"), { upstreamStatus: 429 })).kind).toBe("rate_limited");
     expect(safeConnectorFailure(Object.assign(new Error("private"), { name: "TimeoutError" })).kind).toBe("timeout");
     expect(safeConnectorFailure(Object.assign(new Error("private"), { name: "ZodError" })).kind).toBe("invalid_response");
+    expect(safeConnectorFailure(new SyntaxError("Unexpected end of JSON input")).kind).toBe("invalid_response");
   });
 });

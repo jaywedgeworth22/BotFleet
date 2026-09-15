@@ -84,7 +84,12 @@ export function safeConnectorFailure(error: unknown): { kind: ConnectorFailureKi
   if (name === "TypeError" || /fetch failed|network|econn|enotfound|socket/i.test(message)) {
     return { kind: "network", message: "BotFleet could not reach the connected-apps service." };
   }
-  if (name === "ZodError" || /invalid response|invalid json|unexpected token/i.test(message)) {
+  if (
+    error instanceof SyntaxError
+    || name === "SyntaxError"
+    || name === "ZodError"
+    || /invalid response|invalid json|unexpected token|unexpected end of json|expected property name/i.test(message)
+  ) {
     return { kind: "invalid_response", message: "The connected-apps service returned an invalid response." };
   }
   return { kind: "unknown", message: "BotFleet could not verify connected apps." };

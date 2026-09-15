@@ -107,7 +107,11 @@ const connectorServiceSchema = z.object({
   status: z.string().optional(),
   accounts: z.array(z.object({ id: z.string(), alias: z.string().optional(), status: z.string() })).optional(),
 });
-const connectorServicesResponseSchema = z.object({ services: z.record(z.string(), connectorServiceSchema).optional() });
+const connectorServicesResponseSchema = z.object({
+  services: z.record(z.string(), connectorServiceSchema).optional(),
+  authoritative: z.boolean().optional(),
+  error: z.string().optional(),
+});
 const removalResponseSchema = z.object({ removed: z.number() });
 const authUrlResponseSchema = z.object({ url: z.string().optional() });
 const linkResponseSchema = z.object({ redirect_url: z.string().optional() });
@@ -765,6 +769,9 @@ export async function connectedServices(cfg: AppConfig): Promise<Record<string, 
     const response = await brokerRequest("/v1/connectors/connected");
     if (!response.ok) await throwBrokerError(response, `Connected apps: HTTP ${response.status}`);
     const body = connectorServicesResponseSchema.parse(await response.json());
+    if (body.authoritative === false || body.error) {
+      throw new Error(body.error || "Connected apps inventory is incomplete");
+    }
     return Object.fromEntries(
       Object.entries(body.services ?? {}).map(([slug, state]) => [slug, {
         connected: state.connected,
