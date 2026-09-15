@@ -41,6 +41,20 @@ final class Session: ObservableObject {
     @Published private(set) var status: Status = .unpaired
     /// Transient, user-facing failures from an action they just took.
     @Published var actionError: String?
+
+    func isCancellation(_ error: Error) -> Bool {
+        if Task.isCancelled || error is CancellationError { return true }
+        if let api = error as? APIError, api.isCancellation { return true }
+        if (error as? URLError)?.code == .cancelled { return true }
+        let lower = error.localizedDescription.lowercased()
+        return lower == "cancelled" || lower == "canceled"
+    }
+
+    func recordActionError(_ error: Error) {
+        guard !isCancellation(error) else { return }
+        actionError = error.localizedDescription
+    }
+
     /// One exact message the next opened chat should reveal.
     @Published private(set) var focusedMessageId: String?
     @Published private(set) var notificationAuthorization: UNAuthorizationStatus = .notDetermined
@@ -57,6 +71,10 @@ final class Session: ObservableObject {
     /// parse `instanceId` for this — it is operator-named (e.g.
     /// "claude-bypass", "agy-test") and not reliably prefixed by driver kind.
     @Published private(set) var instanceDriverKinds: [String: String] = [:]
+    /// Available instances cached from the last successful fetch. Preserved across
+    /// transient sheet dismissals and cancelled tasks so the profile model picker
+    /// never empties spuriously.
+    @Published private(set) var cachedInstances: [Instance] = []
 
     /// A notification response that should be pushed by the roster's
     /// NavigationStack after the exact detached task has been activated.
@@ -191,6 +209,7 @@ final class Session: ObservableObject {
         let first = rotation.currentEndpoint.map(saved.dialing) ?? saved
         client = CompanionClient(connection: first, token: stored)
         pairingGeneration += 1
+        cachedInstances = []
         status = .connecting
     }
 
@@ -269,6 +288,7 @@ final class Session: ObservableObject {
         pairingGeneration += 1
         self.state = CompanionState()
         instanceDriverKinds = [:]
+        cachedInstances = []
         // A fresh pairing settles any restore that was still waiting on the
         // keychain — the token is in hand, so there is nothing left to retry.
         restorePending = false
@@ -332,6 +352,7 @@ final class Session: ObservableObject {
         rotation = CandidateRotation(hosts: [])
         state = CompanionState()
         instanceDriverKinds = [:]
+        cachedInstances = []
         pairingGeneration += 1
         resetAvatarCache()
         NotificationCoordinator.shared.setBadge(0)
@@ -778,7 +799,7 @@ final class Session: ObservableObject {
             status = .unauthorized
             return false
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return false
         }
     }
@@ -814,7 +835,7 @@ final class Session: ObservableObject {
                 dropLocalChip()
             }
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
         }
     }
 
@@ -992,7 +1013,7 @@ final class Session: ObservableObject {
             state.apply(.bot(bot))
             return bot
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return nil
         }
     }
@@ -1007,7 +1028,7 @@ final class Session: ObservableObject {
             state.apply(.room(room))
             return room
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return nil
         }
     }
@@ -1020,9 +1041,9 @@ final class Session: ObservableObject {
             status = .unauthorized
         } catch let error as APIError where error.isConflict {
             await refreshAfterTaskConflict()
-            actionError = error.localizedDescription
+            recordActionError(error)
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
         }
     }
 
@@ -1034,9 +1055,9 @@ final class Session: ObservableObject {
             status = .unauthorized
         } catch let error as APIError where error.isConflict {
             await refreshAfterTaskConflict()
-            actionError = error.localizedDescription
+            recordActionError(error)
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
         }
     }
 
@@ -1130,7 +1151,7 @@ final class Session: ObservableObject {
             let page = try await client.messages(threadId: threadId, before: oldest.id, limit: 50)
             state.prepend(page, toThread: threadId)
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
         }
     }
 
@@ -1143,7 +1164,7 @@ final class Session: ObservableObject {
         guard trimmed.count >= 2, let client else { return [] }
         do { return try await client.search(trimmed) }
         catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return []
         }
     }
@@ -1174,7 +1195,7 @@ final class Session: ObservableObject {
                 focusedMessageId = hit.messageId
                 return .room(room)
             }
-        } catch { actionError = error.localizedDescription }
+        } catch { recordActionError(error) }
         return nil
     }
 
@@ -1185,13 +1206,13 @@ final class Session: ObservableObject {
     func createTask(for bot: Bot, title: String?) async {
         guard let client else { return }
         do { state.apply(.bot(try await client.createTask(botId: bot.id, title: title))) }
-        catch { actionError = error.localizedDescription }
+        catch { recordActionError(error) }
     }
 
     func switchTask(_ task: BotTask, for bot: Bot) async {
         guard let client, task.threadId != bot.threadId else { return }
         do { state.apply(.bot(try await client.switchTask(botId: bot.id, threadId: task.threadId))) }
-        catch { actionError = error.localizedDescription }
+        catch { recordActionError(error) }
     }
 
     func renameTask(_ task: BotTask, for bot: Bot, title: String) async {
@@ -1199,13 +1220,13 @@ final class Session: ObservableObject {
         do {
             try await client.renameTask(botId: bot.id, threadId: task.threadId, title: title)
             await refresh()
-        } catch { actionError = error.localizedDescription }
+        } catch { recordActionError(error) }
     }
 
     func deleteTask(_ task: BotTask, for bot: Bot) async {
         guard let client else { return }
         do { state.apply(.bot(try await client.deleteTask(botId: bot.id, threadId: task.threadId))) }
-        catch { actionError = error.localizedDescription }
+        catch { recordActionError(error) }
     }
 
     // MARK: - Agent profile
@@ -1238,7 +1259,7 @@ final class Session: ObservableObject {
             }
             return true
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return false
         }
     }
@@ -1260,7 +1281,7 @@ final class Session: ObservableObject {
                 state.apply(.room(updated))
             }
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
         }
     }
 
@@ -1271,7 +1292,7 @@ final class Session: ObservableObject {
             let url = try await client.uploadAvatar(data: data, mime: mime)
             await updateRoomAvatar(id: id, avatarUrl: url)
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
         }
     }
 
@@ -1284,7 +1305,7 @@ final class Session: ObservableObject {
             state.apply(.bot(updated))
             return updated
         } catch {
-            if !Task.isCancelled { actionError = error.localizedDescription }
+            recordActionError(error)
             return nil
         }
     }
@@ -1300,7 +1321,7 @@ final class Session: ObservableObject {
                 for: current
             )
         } catch {
-            if !Task.isCancelled { actionError = error.localizedDescription }
+            recordActionError(error)
             return nil
         }
     }
@@ -1313,7 +1334,7 @@ final class Session: ObservableObject {
             state.apply(.bot(updated))
             return updated
         } catch {
-            if !Task.isCancelled { actionError = error.localizedDescription }
+            recordActionError(error)
             return nil
         }
     }
@@ -1351,13 +1372,13 @@ final class Session: ObservableObject {
     func voiceOptions() async -> [Voice] {
         guard let client else { return [] }
         do { return try await client.voices() }
-        catch { actionError = error.localizedDescription; return [] }
+        catch { recordActionError(error); return [] }
     }
 
     func previewVoice(_ voiceId: String, for bot: Bot) async -> Data? {
         guard let client else { return nil }
         do { return try await client.previewVoice(text: "Hello, I'm \(bot.name).", voiceId: voiceId) }
-        catch { actionError = error.localizedDescription; return nil }
+        catch { recordActionError(error); return nil }
     }
 
     @MainActor
@@ -1376,7 +1397,7 @@ final class Session: ObservableObject {
             self.config = updated
             return updated
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return nil
         }
     }
@@ -1389,7 +1410,7 @@ final class Session: ObservableObject {
             self.config = updated
             return updated
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return nil
         }
     }
@@ -1400,13 +1421,17 @@ final class Session: ObservableObject {
         do {
             let fetched = try await client.instances()
             guard pairingGeneration == generation else { return fetched }
+            cachedInstances = fetched
             instanceDriverKinds = Dictionary(
                 fetched.map { ($0.instanceId, $0.driverKind) },
                 uniquingKeysWith: { _, latest in latest }
             )
             return fetched
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
+            if pairingGeneration == generation && !cachedInstances.isEmpty {
+                return cachedInstances
+            }
             return []
         }
     }
@@ -1422,6 +1447,7 @@ final class Session: ObservableObject {
         do {
             let fetched = try await client.instances()
             guard pairingGeneration == generation else { return }
+            cachedInstances = fetched
             instanceDriverKinds = Dictionary(
                 fetched.map { ($0.instanceId, $0.driverKind) },
                 uniquingKeysWith: { _, latest in latest }
@@ -1436,7 +1462,7 @@ final class Session: ObservableObject {
     func loadRoutines() async -> (routines: [Routine], runs: [RoutineRun]) {
         guard let client else { return ([], []) }
         do { return try await client.routines() }
-        catch { actionError = error.localizedDescription; return ([], []) }
+        catch { recordActionError(error); return ([], []) }
     }
 
     func loadRoutineRunAvailability() async -> RoutineRunAvailability? {
@@ -1446,7 +1472,7 @@ final class Session: ObservableObject {
             async let instances = client.instances()
             return try await RoutineRunAvailability(config: config, instances: instances)
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return nil
         }
     }
@@ -1456,25 +1482,25 @@ final class Session: ObservableObject {
         do {
             if let id { return try await client.updateRoutine(id: id, input: input) }
             return try await client.createRoutine(input)
-        } catch { actionError = error.localizedDescription; return nil }
+        } catch { recordActionError(error); return nil }
     }
 
     func setRoutineEnabled(_ routine: Routine, enabled: Bool) async -> Routine? {
         guard let client else { return nil }
         do { return try await client.setRoutineEnabled(id: routine.id, enabled: enabled) }
-        catch { actionError = error.localizedDescription; return nil }
+        catch { recordActionError(error); return nil }
     }
 
     func runRoutine(_ routine: Routine) async -> RoutineRun? {
         guard let client else { return nil }
         do { return try await client.runRoutine(id: routine.id) }
-        catch { actionError = error.localizedDescription; return nil }
+        catch { recordActionError(error); return nil }
     }
 
     func deleteRoutine(_ routine: Routine) async -> Bool {
         guard let client else { return false }
         do { try await client.deleteRoutine(id: routine.id); return true }
-        catch { actionError = error.localizedDescription; return false }
+        catch { recordActionError(error); return false }
     }
 
     // MARK: - Notification navigation
@@ -1518,7 +1544,7 @@ final class Session: ObservableObject {
                 }
             }
             notificationChat = .bot(selected)
-        } catch { actionError = error.localizedDescription }
+        } catch { recordActionError(error) }
     }
 
     func consumeNotificationChat() { notificationChat = nil }
@@ -1535,7 +1561,7 @@ final class Session: ObservableObject {
         do {
             let patched = try await client.toggleReaction(threadId: threadId, messageId: message.id, emoji: emoji)
             state.apply(.messagePatch(threadId: threadId, message: patched))
-        } catch { actionError = error.localizedDescription }
+        } catch { recordActionError(error) }
     }
 
     func edit(_ message: Message, for bot: Bot, text: String) async {
@@ -1547,7 +1573,7 @@ final class Session: ObservableObject {
         do {
             let leaf = try await client.setActiveBranch(botId: bot.id, messageId: message.id)
             state.apply(.thread(threadId: bot.threadId, activeLeafId: leaf))
-        } catch { actionError = error.localizedDescription }
+        } catch { recordActionError(error) }
     }
 
     func export(threadId: String, format: String) async -> URL? {
@@ -1559,7 +1585,7 @@ final class Session: ObservableObject {
             try exported.data.write(to: url, options: .atomic)
             return url
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return nil
         }
     }
@@ -1569,19 +1595,19 @@ final class Session: ObservableObject {
     func loadConnectorCatalog() async -> ConnectorCatalog? {
         guard let client else { return nil }
         do { return try await client.connectorCatalog() }
-        catch { actionError = error.localizedDescription; return nil }
+        catch { recordActionError(error); return nil }
     }
 
     func loadAllConnectorStatuses() async -> ConnectorStatuses? {
         guard let client else { return nil }
         do { return try await client.allConnectorStatuses() }
-        catch { actionError = error.localizedDescription; return nil }
+        catch { recordActionError(error); return nil }
     }
 
     func authorizeConnector(_ slug: String, alias: String?) async -> URL? {
         guard let client else { return nil }
         do { return try await client.authorizeConnector(slug: slug, alias: alias) }
-        catch { actionError = error.localizedDescription; return nil }
+        catch { recordActionError(error); return nil }
     }
 
     /// Detach one connected account.  Returns whether it went through, so the
@@ -1592,7 +1618,7 @@ final class Session: ObservableObject {
             try await client.removeConnectorAccount(slug: slug, accountId: accountId)
             return true
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return false
         }
     }
@@ -1752,7 +1778,7 @@ final class Session: ObservableObject {
             status = .unauthorized
             return false
         } catch {
-            if !quietly { actionError = error.localizedDescription }
+            if !quietly { recordActionError(error) }
             return false
         }
     }

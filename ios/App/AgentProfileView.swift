@@ -336,6 +336,14 @@ struct AgentProfileView: View {
             }
             .overlay { if busy { ProgressView().controlSize(.large) } }
             .task {
+                if !session.cachedInstances.isEmpty {
+                    let cached = session.cachedInstances
+                    let usable = cached.filter { inst in
+                        inst.snapshot.isAvailable || inst.id == current.modelSelection.instanceId
+                    }
+                    instances = usable.isEmpty ? cached : usable
+                    instancesLoaded = true
+                }
                 async let status = session.configStatus()
                 async let options = session.voiceOptions()
                 async let fetchedInstances = session.instances()
@@ -343,13 +351,15 @@ struct AgentProfileView: View {
                 config = loadedConfig
                 voices = await options
                 let rawInstances = await fetchedInstances
-                let usable = rawInstances.filter { inst in
-                    inst.snapshot.isAvailable || inst.id == current.modelSelection.instanceId
+                if !rawInstances.isEmpty || instances.isEmpty {
+                    let usable = rawInstances.filter { inst in
+                        inst.snapshot.isAvailable || inst.id == current.modelSelection.instanceId
+                    }
+                    // Offering only healthy engines is right, but never at the cost
+                    // of an empty picker: if the computer reports none as available
+                    // the person should still see the list and be able to choose.
+                    instances = usable.isEmpty ? rawInstances : usable
                 }
-                // Offering only healthy engines is right, but never at the cost
-                // of an empty picker: if the computer reports none as available
-                // the person should still see the list and be able to choose.
-                instances = usable.isEmpty ? rawInstances : usable
                 instancesLoaded = true
                 if let loadedConfig, !loadedConfig.canSpeak(agentVoice: voice) {
                     speakReplies = false

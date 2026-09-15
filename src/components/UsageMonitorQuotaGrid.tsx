@@ -1,4 +1,4 @@
-import { antigravityQuotaWindows, type UsageMonitorQuotaWindow } from "@/lib/usage-monitor-quota";
+import type { UsageMonitorQuotaWindow } from "@/lib/usage-monitor-quota";
 import { formatResetCountdown } from "@/lib/quota-display";
 
 function percentLabel(window: UsageMonitorQuotaWindow): string {

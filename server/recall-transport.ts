@@ -9,6 +9,8 @@ import { redactSecretsInText } from "./redact.ts";
 
 export const RECALL_STATUS_TIMEOUT_MS = 12_000;
 export const RECALL_TOOL_TIMEOUT_MS = RECALL_CLI_TIMEOUT_MS;
+/** Skip Tailscale.app startup and the 120s private Qdrant path in the local recall CLI. */
+export const RECALL_SKIP_PRIVATE_ENV = "RECALL_SKIP_PRIVATE";
 
 export function findRecallCli(): string | null {
   const candidates = [process.env.RECALL_CLI_PATH, join(homedir(), ".local", "bin", "recall"),
@@ -35,6 +37,7 @@ export function executeRecallCli(cli: string, args: string[], collection: string
       detached: process.platform !== "win32", stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env,
         PATH: `${join(homedir(), ".local", "bin")}:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH || ""}`,
+        [RECALL_SKIP_PRIVATE_ENV]: "1",
         ...(collection ? { QDRANT_FLEET_COLLECTION: collection } : {}),
       },
     });
@@ -164,7 +167,7 @@ const pending = new Map<string, Promise<RecallStatus>>();
 const MAX_SUCCESS_HISTORY = 64;
 
 /** Coalesce simultaneous settings probes without caching failure as a permanent result. */
-export function recallStatus(settings: RecallSettings): Promise<RecallStatus> {
+export function recallStatus(settings: RecallSettings, timeoutMs = RECALL_STATUS_TIMEOUT_MS): Promise<RecallStatus> {
   const cli = settings.url ? null : findRecallCli();
   const source = selectRecallTransport(settings.url, cli);
   const key = createHash("sha256").update(JSON.stringify([settings, cli])).digest("hex");
@@ -179,15 +182,15 @@ export function recallStatus(settings: RecallSettings): Promise<RecallStatus> {
       let stats: RecallStats;
       if (source === "recall-cli" && cli) {
         let raw;
-        try { raw = await executeRecallCli(cli, ["stats", "--json"], settings.collection, RECALL_STATUS_TIMEOUT_MS); }
-        catch (error) { throw new Error(`Ran the local recall CLI (recall stats --json) and ${describeCliFailure(error, RECALL_STATUS_TIMEOUT_MS)}.`); }
+        try { raw = await executeRecallCli(cli, ["stats", "--json"], settings.collection, timeoutMs); }
+        catch (error) { throw new Error(`Ran the local recall CLI (recall stats --json) and ${describeCliFailure(error, timeoutMs)}.`); }
         const checked = validateRecallStats(JSON.parse(raw), settings.collection);
         if (!checked.stats) throw new Error(checked.error);
         stats = checked.stats;
       } else {
         const headers: Record<string, string> = { ...accessHeaders(settings.accessClientId, settings.accessClientSecret) };
         if (settings.apiKey) headers.Authorization = `Bearer ${settings.apiKey}`;
-        stats = await probeRecallService(settings.url, headers, settings.collection, AbortSignal.timeout(RECALL_STATUS_TIMEOUT_MS));
+        stats = await probeRecallService(settings.url, headers, settings.collection, AbortSignal.timeout(timeoutMs));
       }
       const at = Date.now();
       lastSuccesses.delete(key);

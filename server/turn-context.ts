@@ -44,6 +44,8 @@ const REWOUND_PREAMBLE =
 const FRESH_PREAMBLE =
   "[You are joining this conversation mid-thread (the user switched this bot over to you). The conversation so far:]";
 
+const MAX_REPLAY_BYTES = 128 * 1024;
+
 export function buildTurnContext(input: TurnContextInput): {
   turnText: string;
   /** false when the native session must not be resumed */
@@ -53,11 +55,27 @@ export function buildTurnContext(input: TurnContextInput): {
   const resume = !rewound && !fresh;
   const replay = !resume && !replaysNatively && transcript.length > 0;
   if (!replay) return { turnText: text, resume };
+
+  const lines: string[] = [];
+  let bytes = 0;
+  let truncated = false;
+  for (let i = transcript.length - 1; i >= 0; i--) {
+    const entry = `${transcript[i].role === "user" ? "User" : "Assistant"}: ${transcript[i].text}`;
+    const entryBytes = Buffer.byteLength(entry, "utf8");
+    if (bytes + entryBytes > MAX_REPLAY_BYTES && lines.length > 0) {
+      truncated = true;
+      break;
+    }
+    lines.unshift(entry);
+    bytes += entryBytes;
+  }
+
+  const preamble = rewound ? REWOUND_PREAMBLE : FRESH_PREAMBLE;
   return {
     turnText: [
-      rewound ? REWOUND_PREAMBLE : FRESH_PREAMBLE,
-      "",
-      ...transcript.map((m) => `${m.role === "user" ? "User" : "Assistant"}: ${m.text}`),
+      preamble,
+      ...(truncated ? ["[Earlier conversation omitted for length]", ""] : [""]),
+      ...lines,
       "",
       "[Now reply to the user's latest message:]",
       "",
