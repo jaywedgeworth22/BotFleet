@@ -292,7 +292,7 @@ struct ChatListView: View {
 
                         if query.isEmpty, !botChatSummaries.isEmpty {
                             sectionToggle(
-                                title: "Bot ↔ Bot",
+                                title: "Bot Chats",
                                 count: botChatSummaries.count,
                                 expanded: $botChatsExpanded
                             )
@@ -523,7 +523,7 @@ struct ChatListView: View {
         }
     }
 
-    /// User rooms only.  Bot-to-bot DMs sit in Bot ↔ Bot, like the Mac sidebar.
+    /// User rooms only.  Bot-to-bot DMs sit in Bot Chats, like the Mac sidebar.
     private var roomSummaries: [ChatSummary] {
         session.state.chatSummaries.filter {
             if case .room = $0.chat { return !$0.chat.isBotToBot && isUnsectioned($0.chat) }
