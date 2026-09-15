@@ -273,7 +273,7 @@ posixOnly("approvals reach an HTTP-lane bot", () => {
     "auto mode answers it for the bot, and says so in the decision log",
     async () => {
       await makeBot({ name: "peer2" });
-      const bot = await makeBot({ name: "auto-asker", autoApprove: true });
+      const bot = await makeBot({ name: "auto-asker", autoApprove: true, computers: [] });
 
       // A peer id nothing resolves to: the point of this row is that the
       // VERDICT reached the tool, and a real delegation would spend a
@@ -412,7 +412,7 @@ posixOnly("approvals reach an HTTP-lane bot", () => {
     "the unattended gate still stops a webhook turn, auto mode or not",
     async () => {
       await makeBot({ name: "peer3" });
-      const bot = await makeBot({ name: "webhook-asker", autoApprove: true });
+      const bot = await makeBot({ name: "webhook-asker", autoApprove: true, computers: [] });
 
       engine.queueCompletion(asksToDelegate("rotate the nightly build"));
       engine.queueCompletion(says("Waiting on a person."));

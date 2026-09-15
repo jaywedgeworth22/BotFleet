@@ -23,6 +23,8 @@ import { groupComposerHint, roomRespondersForComposer } from "@/lib/group-routin
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { ReplyQuote } from "./ReplyQuote";
+import { instanceSupportsLocalComputer } from "@/lib/local-computer";
+import { requiresLocalAutoConsent } from "../../shared/local-auto-consent";
 
 /** The active @mention query at the caret: the text between an `@` that
  * starts a word and the caret. null = no mention being typed. */
@@ -308,7 +310,15 @@ export function Composer({
     // has to be acknowledged first. The flag the dialog sends is stripped by
     // the reducer rather than stored, so — exactly like the settings panel —
     // the warning is shown on every switch-on, not just the first.
-    if (auto && !autoBot.autoApprove && autoBot.computers?.includes("local")) {
+    if (auto && !autoBot.autoApprove && requiresLocalAutoConsent(
+      autoBot.computers,
+      state.config?.botDefaults?.computers,
+      state.config?.botDefaults?.allowedComputers,
+      {
+        hostPlatform: capabilities.host.platform,
+        providerSupportsLocal: instanceSupportsLocalComputer(state.instances, autoBot),
+      },
+    )) {
       setAutoWarn(true);
       return;
     }
