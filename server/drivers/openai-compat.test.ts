@@ -573,9 +573,12 @@ describe("OpenAICompatDriver driver-owned tool loop", () => {
     await instance.dispose();
   });
 
-  it.each([400, 422])("retries an explicit unsupported stream_options rejection (%s) once", async (status) => {
+  it.each([
+    [400, "stream_options: extra inputs are not permitted"],
+    [422, "This endpoint does not support stream_options"],
+  ])("retries an explicit unsupported stream_options rejection (%s: %s) once", async (status, error) => {
     server = await startFakeOpenAiServer();
-    server.queueCompletion({ kind: "json", status, body: { error: "stream_options: extra inputs are not permitted" } });
+    server.queueCompletion({ kind: "json", status, body: { error } });
     server.queueCompletion({ kind: "sse", frames: ['{"choices":[{"delta":{"content":"compatible"}}]}', "[DONE]"] });
     const instance = await OpenAICompatDriver.create({
       instanceId: "optional-usage", displayName: "Optional usage", enabled: true,

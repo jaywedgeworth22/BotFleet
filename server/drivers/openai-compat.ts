@@ -209,8 +209,13 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
         // only an explicit validation rejection, before any stream or tools
         // can run, and keep the original cancellation/deadline budget.
         const rejection = await res.text().catch(() => "");
+        // Providers phrase the same 400 differently, so the wording check has to
+        // cover active voice ("does not support") as well as the adjective and
+        // passive forms ("unsupported", "not supported").  Matching only the
+        // latter left a plain "This endpoint does not support stream_options"
+        // rejection with no retry at all.
         if (/stream_options/i.test(rejection) &&
-            /unsupported|not supported|unrecognized|unknown|unexpected|not permitted|extra_forbidden/i.test(rejection)) {
+            /unsupported|not supported|does not support|doesn't support|do not support|cannot support|can't support|not permitted|unrecognized|unknown|unexpected|extra_forbidden/i.test(rejection)) {
           delete bodyPayload.stream_options;
           res = await request();
         }
