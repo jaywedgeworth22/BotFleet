@@ -1128,8 +1128,8 @@ export function ChatView({ bot }: { bot: Bot }) {
     [messages],
   );
 
-  // Mascot while the turn works. Streaming stays invisible — when the reply
-  // is finished, the whole bubble pops in above the mascot.
+  // Show the live reply above the mascot while tokens arrive.  The settled
+  // message takes over when the turn finishes.
   const lastMessage = messages.at(-1);
   const toolInFlight = lastMessage?.kind === "activity" && lastMessage.tool?.ok === undefined;
   const activityLabel = liveActivityLabel(lastMessage);
@@ -1154,7 +1154,7 @@ export function ChatView({ bot }: { bot: Bot }) {
     const timer = setTimeout(() => setPopping(null), 520);
     return () => clearTimeout(timer);
   }, [lastMessage?.id, lastMessage?.role, lastMessage?.kind, lastMessage?.text]);
-  const presenceVisible = waiting || popping !== null;
+  const presenceVisible = waiting || popping !== null || Boolean(streaming);
   const presenceModel = modelChip(bot, state.instances);
 
   // regenerate = fork the last user message with the same text — reuses the
@@ -1518,7 +1518,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             }
             visible={presenceVisible}
             label={activityLabel}
-            answering={popping !== null}
+            answering={popping !== null || Boolean(streaming)}
             modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} size={14} /> : undefined}
             modelName={presenceModel?.name}
           >
@@ -1532,7 +1532,7 @@ export function ChatView({ bot }: { bot: Bot }) {
             {!popping && streaming ? (
               <div className={cn(BUBBLE_WIDTH, "rounded-2xl bg-card px-4 py-2.5 text-[15px] leading-relaxed text-ink")}>
                 <MessageBoundary fallbackText={streaming}>
-                  <ChatMarkdown text={streaming} />
+                  <ChatMarkdown text={streaming} streaming />
                 </MessageBoundary>
                 <span className="ml-0.5 inline-block h-4 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-ink-secondary/60 align-middle" aria-hidden />
               </div>

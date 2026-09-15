@@ -121,11 +121,35 @@ export function registerUpdaterIpc() {
       return;
     }
     setState({ status: "installing", message: "Updating from this Mac…" });
+    // Ensure the child inherits a useful PATH even when Electron was launched
+    // by LaunchServices (packaged .app), where process.env.PATH is the bare
+    // /usr/bin:/bin:/usr/sbin:/sbin set that macOS injects.  The script also
+    // does this internally, but belt-and-suspenders makes the 127 impossible.
+    const brewPaths = `/opt/homebrew/bin:/usr/local/bin:${process.env.HOME || homedir()}/.local/bin`;
+    const childPath = process.env.PATH?.includes("/opt/homebrew")
+      ? process.env.PATH
+      : `${brewPaths}:${process.env.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin"}`;
+
+    // Log stderr to a file so failures are diagnosable without a terminal.
+    const logDir = join(app.getPath("logs"));
+    const logFile = join(logDir, "updater-local.log");
+    try { mkdirSync(logDir, { recursive: true, mode: 0o700 }); } catch { /* already exists */ }
+
     const child = spawn("/bin/bash", [script], {
       detached: true,
-      stdio: "ignore",
-      env: { ...process.env, BOTFLEET_CHECKOUT: join(homedir(), "apps", "botfleet-server") },
+      stdio: ["ignore", "ignore", "pipe"],
+      env: {
+        ...process.env,
+        PATH: childPath,
+        BOTFLEET_CHECKOUT: join(homedir(), "apps", "botfleet-server"),
+      },
     });
+
+    // Capture stderr to the log so a 127 / missing-node error is visible.
+    child.stderr?.on("data", (chunk) => {
+      try { appendFileSync(logFile, chunk, { mode: 0o600 }); } catch { /* never block */ }
+    });
+
     // A clean install plus signed package can take well beyond two minutes on
     // this Mac.  Keep showing truthful progress while the detached updater is
     // still alive; its own lock prevents a concurrent retry.
@@ -159,9 +183,13 @@ export function registerUpdaterIpc() {
     child.on("exit", (code) => {
       clearUpdateTimers();
       if (code && code !== 0) {
+        const hint =
+          code === 127
+            ? "Node.js was not found.  Install it with: brew install node"
+            : `Check ${logFile} for details.`;
         setState({
           status: "error",
-          message: `The local update exited ${code}. Try again from this Mac.`,
+          message: `The local update exited ${code}.  ${hint}`,
         });
       }
     });

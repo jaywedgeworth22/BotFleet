@@ -162,6 +162,67 @@ describe("resolving a mapped field", () => {
     });
   });
 
+  it("sources the MiniMax key and base URL the same way every other provider's are", () => {
+    // Before this row existed the driver read MINIMAX_API_KEY out of the
+    // process environment or ~/.mmx/config.json and nothing else, so neither
+    // the vault nor ~/.botfleet/config.json could supply it and the Secrets
+    // card could not say where the value in use had come from.
+    expect(spec("minimax.key").env).toEqual(["MINIMAX_API_KEY"]);
+    expect(spec("minimax.key").secret).toBe(true);
+    expect(spec("minimax.url").env).toEqual(["MINIMAX_BASE_URL"]);
+    // The endpoint is configuration, not a credential: the card shows it.
+    expect(spec("minimax.url").secret).toBe(false);
+    // Both rebuild the fleet — a MiniMax instance decodes its endpoint and
+    // resolves its key when the driver is created, not per turn.
+    expect(spec("minimax.key").reloadProviders).toBe(true);
+    expect(spec("minimax.url").reloadProviders).toBe(true);
+
+    const fromFile = resolveSecretFields({ minimax: { key: SENTINEL_FILE } }, {}, null);
+    expect(fromFile.find((row) => row.id === "minimax.key")).toEqual({
+      id: "minimax.key",
+      source: "file",
+      hasValue: true,
+      hasLocalCopy: false,
+    });
+
+    const fromEnv = resolveSecretFields({}, { MINIMAX_API_KEY: SENTINEL_ENV }, null);
+    expect(fromEnv.find((row) => row.id === "minimax.key")).toMatchObject({
+      source: "env",
+      hasValue: true,
+    });
+
+    // Nothing anywhere: the card says so rather than implying ~/.mmx holds
+    // it, which is the one source this table deliberately cannot see.
+    const nowhere = resolveSecretFields({}, {}, null);
+    expect(nowhere.find((row) => row.id === "minimax.key")).toEqual({
+      id: "minimax.key",
+      source: "none",
+      hasValue: false,
+      hasLocalCopy: false,
+    });
+  });
+
+  it("lets the vault override a MiniMax key and endpoint held on this computer", () => {
+    const cfg: AppConfig = { minimax: { key: SENTINEL_FILE, url: "https://api.minimax.io/v1" } };
+    setInfisicalSnapshot(
+      new Map([
+        ["MINIMAX_API_KEY", SENTINEL_VAULT],
+        ["MINIMAX_BASE_URL", "https://api.minimaxi.com/v1"],
+      ]),
+      ["MINIMAX_API_KEY", "MINIMAX_BASE_URL"],
+    );
+    const rows = resolveSecretFields(cfg, { MINIMAX_API_KEY: SENTINEL_ENV }, infisicalSnapshot());
+    expect(cfg.minimax?.key).toBe(SENTINEL_VAULT);
+    expect(cfg.minimax?.url).toBe("https://api.minimaxi.com/v1");
+    expect(rows.find((row) => row.id === "minimax.key")).toEqual({
+      id: "minimax.key",
+      source: "infisical",
+      hasValue: true,
+      hasLocalCopy: true,
+    });
+    expect(secretSource("minimax.url")).toBe("infisical");
+  });
+
   it("falls through an empty value in the store instead of blanking the local one", () => {
     const cfg: AppConfig = { composio: { apiKey: SENTINEL_FILE } };
     setInfisicalSnapshot(new Map([["COMPOSIO_API_KEY", ""]]), ["COMPOSIO_API_KEY"]);
