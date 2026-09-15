@@ -112,12 +112,12 @@ export function preloadConnectedApps(force = false): Promise<ConnectorInventory>
       const checkedAt = Date.now();
       const readiness: ConnectorReadiness = response.readiness ?? legacyReadiness(response, checkedAt);
       const services: Record<string, ConnectorStatus> = response.services ?? {};
-      const authoritative = response.authoritative ?? response.credentialStore !== "unavailable";
+      const authoritative = response.authoritative ?? (response.credentialStore !== "unavailable");
       // A failed upstream or credential read tells us nothing about what is
       // connected.  Keep the last inventory we were sure about instead.
       if (!authoritative) {
         const cached = readCachedInventory();
-        const lastSuccessAt = cached?.at ?? cachedConnectorVerifiedAt || null;
+        const lastSuccessAt = (cached?.at ?? cachedConnectorVerifiedAt) || null;
         cachedConnectorReadiness = { ...readiness, lastSuccessAt };
         cachedConnectorStatusAuthoritative = false;
         cachedConnectorStatusAt = checkedAt;
