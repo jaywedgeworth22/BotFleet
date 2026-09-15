@@ -1651,6 +1651,13 @@ export class Store {
     return this.bot(botId)?.tasks?.find((t) => t.threadId === threadId);
   }
 
+  /** True if the thread is one of the bot's own tasks, or belongs to a group the bot is a member of. */
+  threadBelongsToBot(botId: string, threadId: string): boolean {
+    if (this.taskByThread(botId, threadId)) return true;
+    const group = this.groupByThread(threadId);
+    return group ? group.memberIds.includes(botId) : false;
+  }
+
   taskByAutomationKey(botId: string, automationKey: string): TaskRecord | undefined {
     if (!automationKey) return undefined;
     return this.bot(botId)?.tasks?.find(
