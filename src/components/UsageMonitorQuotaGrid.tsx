@@ -1,0 +1,66 @@
+import { antigravityQuotaWindows, type UsageMonitorQuotaWindow } from "@/lib/usage-monitor-quota";
+import { formatResetCountdown } from "@/lib/quota-display";
+
+function percentLabel(window: UsageMonitorQuotaWindow): string {
+  const percent = window.remainingPercent;
+  if (percent == null || !Number.isFinite(percent) || percent < 0 || percent > 100) {
+    return "not reported";
+  }
+  return `${Math.round(percent)}% remaining`;
+}
+
+function resetLabel(resetAt: string | null | undefined): string {
+  if (!resetAt) return "reset unknown";
+  const parsed = Date.parse(resetAt);
+  if (!Number.isFinite(parsed)) return "reset unknown";
+  if (parsed <= Date.now()) return "awaiting refresh";
+  return `Resets in ${formatResetCountdown(parsed)}`;
+}
+
+function resetHover(resetAt: string | undefined): string | undefined {
+  if (!resetAt) return undefined;
+  const parsed = Date.parse(resetAt);
+  if (!Number.isFinite(parsed)) return undefined;
+  // Viewer timezone, labeled — never pin America/Chicago.
+  return new Date(parsed).toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+}
+
+export function UsageMonitorQuotaGrid({ windows }: { windows: UsageMonitorQuotaWindow[] }) {
+  const rows = antigravityQuotaWindows(windows);
+  if (rows.length === 0) return null;
+
+  return (
+    <div className="ml-9 mt-1.5 grid grid-cols-2 gap-2" aria-label="Antigravity quota windows">
+      {rows.map((window) => {
+        const exhausted = window.skip || window.remainingPercent === 0;
+        const resetAt = window.resetAt ?? undefined;
+        return (
+          <div
+            key={`${window.providerKey ?? window.provider}:${window.window}:${window.label}`}
+            className="rounded-lg border border-hairline/25 bg-inset/30 px-2.5 py-2"
+          >
+            <div className="truncate text-[11px] font-medium text-ink" title={window.label}>
+              {window.label}
+            </div>
+            <div className={`mt-0.5 text-[12px] tabular-nums ${exhausted ? "text-amber-700 dark:text-amber-300" : "text-ink-secondary"}`}>
+              {percentLabel(window)}
+            </div>
+            <div
+              className="truncate text-[10.5px] text-ink-secondary"
+              title={resetHover(resetAt)}
+            >
+              {resetLabel(resetAt)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
