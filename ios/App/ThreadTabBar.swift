@@ -11,11 +11,8 @@ struct ThreadTabBar: View {
     private var tasks: [BotTask] { current.tasks ?? [] }
 
     var body: some View {
-        if tasks.isEmpty {
-            EmptyView()
-        } else {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 6) {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
                     ForEach(tasks, id: \.threadId) { task in
                         Button {
                             Task { await session.switchTask(task, for: current) }
@@ -61,5 +58,4 @@ struct ThreadTabBar: View {
                 .padding(.horizontal, 16)
             }
         }
-    }
 }

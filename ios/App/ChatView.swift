@@ -420,8 +420,7 @@ struct ChatView: View {
             .padding(.horizontal, 16)
 
             if case let .bot(bot) = current,
-               session.config?.allowsMultipleBotThreads == true,
-               (bot.tasks ?? []).count >= 2 {
+               session.config?.allowsMultipleBotThreads == true {
                 ThreadTabBar(bot: bot)
             }
         }

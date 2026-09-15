@@ -145,7 +145,9 @@ export function saveCollapsedSections(
 /** Bot-to-bot DMs are not user rooms.  They stay in this named dropdown
  * even if an older write left a leftover Apps/Work section on the record.
  * Default-collapsed until opened; user contexts keep a stored order. */
-export const BOT_CHATS_SECTION = "Bot ↔ Bot";
+export const BOT_CHATS_SECTION = "Bot Chats";
+/** Pre-rename collapsed-section key.  Migrated on load so a stored collapse is kept. */
+export const LEGACY_BOT_CHATS_SECTION = "Bot ↔ Bot";
 export const SIDEBAR_BOT_CHATS_INIT_KEY = "botfleet.sidebarBotChatsInit";
 export const SIDEBAR_SECTION_ORDER_KEY = "botfleet.sidebarSectionOrder";
 export const SECTION_DRAG_TYPE = "application/x-botfleet-section";
@@ -168,12 +170,19 @@ export function loadCollapsedSectionsWithBotChatsDefault(
 ): Set<string> {
   const target = storage === undefined ? (globalThis.localStorage ?? null) : storage;
   const collapsed = loadCollapsedSections(target);
+  let dirty = false;
+  if (collapsed.has(LEGACY_BOT_CHATS_SECTION)) {
+    collapsed.delete(LEGACY_BOT_CHATS_SECTION);
+    collapsed.add(BOT_CHATS_SECTION);
+    dirty = true;
+  }
   try {
     if (target && target.getItem(SIDEBAR_BOT_CHATS_INIT_KEY) !== "1") {
       collapsed.add(BOT_CHATS_SECTION);
       target.setItem(SIDEBAR_BOT_CHATS_INIT_KEY, "1");
-      saveCollapsedSections(collapsed, target);
+      dirty = true;
     }
+    if (dirty) saveCollapsedSections(collapsed, target);
   } catch {
     collapsed.add(BOT_CHATS_SECTION);
   }
@@ -187,7 +196,9 @@ export function loadSectionOrder(storage?: Pick<Storage, "getItem"> | null): str
     if (!raw) return [];
     const parsed: unknown = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((name): name is string => typeof name === "string" && name.length > 0);
+    return parsed
+      .filter((name): name is string => typeof name === "string" && name.length > 0)
+      .map((name) => (name === LEGACY_BOT_CHATS_SECTION ? BOT_CHATS_SECTION : name));
   } catch {
     return [];
   }

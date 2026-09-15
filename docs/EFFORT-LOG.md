@@ -77,6 +77,7 @@
 Protocol: /Users/jay/apps/EFFORT-LOG-PROTOCOL.md (canonical). Live board: this file
 (mirror: docs/EFFORT-LOG.md in the repo). As of 2026-08-29.
 
+- **2026-09-15 — GROK — IN PROGRESS — Unstick and land open BotFleet PRs (board `ef820a6e`, issue #426, worktree `~/apps/botfleet-grok-land-sweep`).**  Vercel is not a required check.  Skip #406 (would regress main's skip-pointless pathspec) and #394 (would undo skip-pointless).  Fix iOS ChatListView AppStorage binding and Bot Chats localStorage migration.
 ## In Progress
 - **2026-09-13 — CODEX — IN PROGRESS — Historical credential alert remediation (#390; board d24c7fd2).**  Isolated `~/apps/botfleet-codex-ios-build-exclusion-20260913` @ `codex/ios-build-exclusion-20260913` excludes Xcode build output.  GitHub alerts remain open with validity unknown; credential replacement/revocation is separately outstanding.  <!-- codex-ios-build-exclusion-20260913 -->
 
