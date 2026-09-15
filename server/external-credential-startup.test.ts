@@ -162,8 +162,12 @@ describe("external custom credential startup", () => {
     expect(fallbackCreated.status, JSON.stringify(fallbackCreated.body)).toBe(201);
     const fallbackBot = fallbackCreated.body.bot;
     expect((await api("POST", `/api/bots/${fallbackBot.id}/messages`, { text: "fall over after replay" })).status).toBe(202);
-    await expect.poll(() => quotaRequests, { timeout: 10_000 }).toBe(1);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    // openai-compat tool loop spends one polite retry on an unhinted 429.
+    await expect.poll(() => quotaRequests, { timeout: 10_000 }).toBe(2);
+    await expect.poll(async () => {
+      const bots = (await api("GET", "/api/bots?messages=0")).body.bots as Array<{ busy?: boolean }>;
+      return bots.some((candidate) => candidate.busy);
+    }, { timeout: 10_000 }).toBe(false);
     expect(providerRequests).toBe(1);
     const roomCreated = await api("POST", "/api/groups", {
       name: "Encrypted room",
@@ -189,7 +193,7 @@ describe("external custom credential startup", () => {
     await expect.poll(() => providerRequests, { timeout: 10_000 }).toBe(beforeRoom + 2);
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(providerRequests).toBe(beforeRoom + 2);
-    expect(quotaRequests).toBe(1);
+    expect(quotaRequests).toBe(2);
 
     const routine = (await api("POST", "/api/routines", {
       name: "Wait for key",
