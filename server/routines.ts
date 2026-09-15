@@ -14,7 +14,7 @@ import {
 } from "../shared/conversation-mode.ts";
 import { foldPrompts, gapEndsAt, withinGap } from "./trigger-gap.ts";
 import { routineFailureCode, routineFailurePhase, type RoutineOutcomeCode, type RoutineFailurePhase } from "../shared/routine-outcomes.ts";
-import { nextZonedOccurrence, validTimeZone } from "../shared/time-zone.ts";
+import { canonicalTimeZone, nextZonedOccurrence } from "../shared/time-zone.ts";
 
 export type RoutineSchedule =
   | { type: "once"; at: number }
@@ -276,8 +276,9 @@ function cleanSchedule(schedule: RoutineSchedule): RoutineSchedule {
   if (schedule?.type === "daily") {
     const time = String(schedule.time ?? "");
     if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw new Error("Time must use HH:MM");
-    const timeZone = typeof schedule.timeZone === "string" ? schedule.timeZone.trim() : "";
-    if (timeZone && !validTimeZone(timeZone)) throw new Error("Choose a valid timezone");
+    const rawTimeZone = typeof schedule.timeZone === "string" ? schedule.timeZone.trim() : "";
+    const timeZone = rawTimeZone ? canonicalTimeZone(rawTimeZone) : null;
+    if (rawTimeZone && !timeZone) throw new Error("Choose a valid timezone");
     return { type: "daily", time, weekdays: cleanDays(schedule.weekdays), ...(timeZone ? { timeZone } : {}) };
   }
   throw new Error("Choose a supported schedule");

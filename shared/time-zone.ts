@@ -33,13 +33,20 @@ function partsFormatter(timeZone: string): Intl.DateTimeFormat {
   return formatter;
 }
 
-export function validTimeZone(timeZone: string): boolean {
+export function canonicalTimeZone(timeZone: string): string | null {
+  const trimmed = timeZone.trim();
+  if (!trimmed) return null;
   try {
-    partsFormatter(timeZone);
-    return true;
+    const formatter = new Intl.DateTimeFormat("en-US", { timeZone: trimmed });
+    formatter.format(0);
+    return formatter.resolvedOptions().timeZone;
   } catch {
-    return false;
+    return null;
   }
+}
+
+export function validTimeZone(timeZone: string): boolean {
+  return canonicalTimeZone(timeZone) != null;
 }
 
 export function zonedDateTime(at: number, timeZone: string): ZonedDateTime {

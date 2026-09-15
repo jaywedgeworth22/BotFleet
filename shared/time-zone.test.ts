@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   CENTRAL_TIME_ZONE,
+  canonicalTimeZone,
   addDaysInTimeZone,
   calendarDate,
   epochForZonedDateTime,
@@ -13,6 +14,14 @@ import {
   startOfWeekInTimeZone,
   zonedDateTime,
 } from "./time-zone";
+
+describe("canonicalTimeZone", () => {
+  it("persists the IANA spelling iOS TimeZone(identifier:) accepts", () => {
+    expect(canonicalTimeZone("america/chicago")).toBe("America/Chicago");
+    expect(canonicalTimeZone("America/Chicago")).toBe("America/Chicago");
+    expect(canonicalTimeZone("Mars/Olympus")).toBeNull();
+  });
+});
 
 describe("IANA wall-clock conversion", () => {
   it("keeps Central calendar dates stable across a UTC and local-midnight boundary", () => {

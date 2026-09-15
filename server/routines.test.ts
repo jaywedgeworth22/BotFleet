@@ -214,6 +214,13 @@ describe("RoutineManager", () => {
     expect(created.nextRunAt).toBe(Date.parse("2026-09-14T14:00:00.000Z"));
     const reloaded = new RoutineManager(h.options).listRoutines()[0];
     expect(reloaded.schedule).toMatchObject({ timeZone: "America/Chicago" });
+    const recased = h.manager.create({
+      name: "Recased",
+      prompt: "Check",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1], timeZone: "america/chicago" },
+    });
+    expect(recased.schedule).toMatchObject({ timeZone: "America/Chicago" });
     expect(reloaded.scheduleTimeZoneSource).toBe("stored");
     const updated = h.manager.update(created.id, {
       schedule: { type: "daily", time: "10:30", weekdays: [2] },
