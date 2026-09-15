@@ -77,6 +77,7 @@ struct ChatListView: View {
             }
         }
         .dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        .onAppear { migrateLegacyCollapsedSections() }
         .onChange(of: session.notificationChat) { _, chat in
             guard let chat else { return }
             open(chat)
@@ -292,7 +293,7 @@ struct ChatListView: View {
 
                         if query.isEmpty, !botChatSummaries.isEmpty {
                             sectionToggle(
-                                title: "Bot ↔ Bot",
+                                title: "Bot Chats",
                                 count: botChatSummaries.count,
                                 expanded: $botChatsExpanded
                             )
@@ -523,7 +524,7 @@ struct ChatListView: View {
         }
     }
 
-    /// User rooms only.  Bot-to-bot DMs sit in Bot ↔ Bot, like the Mac sidebar.
+    /// User rooms only.  Bot-to-bot DMs sit in Bot Chats, like the Mac sidebar.
     private var roomSummaries: [ChatSummary] {
         session.state.chatSummaries.filter {
             if case .room = $0.chat { return !$0.chat.isBotToBot && isUnsectioned($0.chat) }
@@ -561,21 +562,34 @@ struct ChatListView: View {
     }
 
     private var collapsedSections: Set<String> {
-        get { Set(collapsedSectionsStr.split(separator: ",").map(String.init)) }
+        get { Set(collapsedSectionsStr.split(separator: ",").map(String.init).filter { !$0.isEmpty }) }
         set { collapsedSectionsStr = Array(newValue).joined(separator: ",") }
+    }
+
+    /// Pre-rename stored key.  Move it onto "Bot Chats" so a collapsed preference survives.
+    private func migrateLegacyCollapsedSections() {
+        let legacy = "Bot ↔ Bot"
+        let current = "Bot Chats"
+        var set = collapsedSections
+        guard set.contains(legacy) else { return }
+        set.remove(legacy)
+        set.insert(current)
+        collapsedSectionsStr = Array(set).joined(separator: ",")
     }
 
     private func sectionBinding(for section: String) -> Binding<Bool> {
         Binding(
             get: { !collapsedSections.contains(section) },
             set: { expanded in
-                var set = collapsedSections
+                var set = Set(
+                    collapsedSectionsStr.split(separator: ",").map(String.init).filter { !$0.isEmpty }
+                )
                 if expanded {
                     set.remove(section)
                 } else {
                     set.insert(section)
                 }
-                collapsedSections = set
+                collapsedSectionsStr = Array(set).joined(separator: ",")
             }
         )
     }

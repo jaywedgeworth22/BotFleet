@@ -325,6 +325,7 @@ export function UsageSection() {
             if (instance.enabled === false) return false;
             const isDeepSeek =
               instance.driverKind === "deepseekAgent" ||
+              instance.driverKind === "dshAgent" ||
               instance.driverKind === "deepseek";
             const spend =
               engineSpend[instance.driverKind] ??
@@ -389,6 +390,7 @@ export function UsageSection() {
             // (or "Balance unavailable") without expanding the row.
             const isDeepSeek =
               instance.driverKind === "deepseekAgent" ||
+              instance.driverKind === "dshAgent" ||
               instance.driverKind === "deepseek";
             const deepseekRow = isDeepSeek
               ? deepseekBalance
@@ -487,9 +489,6 @@ export function UsageSection() {
                     ? "not reported"
                     : `${group.remainingPercent}% available`;
                   let line = `${group.label}: ${value} (5h window)`;
-                  if (group.group === "gemini") {
-                    line += "; monthly pool (resets on ~17th)";
-                  }
                   return line;
                 })
               : [

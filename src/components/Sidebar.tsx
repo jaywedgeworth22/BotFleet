@@ -2238,7 +2238,7 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
   const botChats = [...botChatsRaw].sort(byRecentGroup);
   const sectionedGroups = [...sectionedGroupsRaw].sort(byRecentGroup);
   const unsectionedGroups = [...unsectionedGroupsRaw].sort(byRecentGroup);
-  // User contexts keep a stored order.  Bot Chats is not a user context and
+  // User contexts keep a stored order.  Bot ↔ Bot is not a user context and
   // always sits at the bottom, collapsed until opened.  DMs stay out of Apps
   // even when a leftover section tag remains on the record (#237).
   const sectionNames: string[] = [];
