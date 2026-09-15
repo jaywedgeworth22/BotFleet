@@ -11,6 +11,7 @@ import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import {
   classifyDshError,
   dshCredentialCandidates,
+  dshSupport,
   dshModelIdFromOptionValue,
   dshModelOptionValue,
   dshSpawnArgs,
@@ -244,5 +245,39 @@ describe("dshCredentialCandidates", () => {
       join("/opt/dsh", ".credentials.yaml"),
     ]);
     expect(dshCredentialCandidates({})[0]).toContain(".credentials.yaml");
+  });
+});
+
+describe("dsh authentication and credentials", () => {
+  it("includes MINIMAX_API_KEY in credentialEnv", () => {
+    expect(dshSupport.credentialEnv).toContain("MINIMAX_API_KEY");
+    expect(dshSupport.credentialEnv).toContain("DEEPSEEK_API_KEY");
+  });
+
+  it("authenticates when MINIMAX_API_KEY is present", () => {
+    expect(
+      dshSupport.isAuthenticated(
+        { HOME: "/nonexistent-dsh-home-test", MINIMAX_API_KEY: "minimax-secret" },
+        { cli: "dsh", fullAuto: false },
+      ),
+    ).toBe(true);
+  });
+
+  it("authenticates when DEEPSEEK_API_KEY is present", () => {
+    expect(
+      dshSupport.isAuthenticated(
+        { HOME: "/nonexistent-dsh-home-test", DEEPSEEK_API_KEY: "deepseek-secret" },
+        { cli: "dsh", fullAuto: false },
+      ),
+    ).toBe(true);
+  });
+
+  it("fails authentication when no keys or credential files exist", () => {
+    expect(
+      dshSupport.isAuthenticated(
+        { HOME: "/nonexistent-dsh-home-test" },
+        { cli: "dsh", fullAuto: false },
+      ),
+    ).toBe(false);
   });
 });
