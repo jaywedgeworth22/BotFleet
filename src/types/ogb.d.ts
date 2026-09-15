@@ -227,6 +227,8 @@ type SkillRecordingPayload = {
         name:
           | "composioApiKey"
           | "xaiApiKey"
+          | "openaiCompatApiKey"
+          | "minimaxApiKey"
           | "deepseekApiKey"
           | "boxToken"
           | "opencodeGoApiKey"

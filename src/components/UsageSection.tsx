@@ -15,7 +15,7 @@ import { deepSeekPriceRows } from "@/lib/deepseek-prices";
 import { minimaxPriceRows } from "@/lib/minimax-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
-import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, quotaLinesSummary, usageWindowLines, windowHeadlines } from "@/lib/quota-display";
+import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, minimaxQuotaLine, quotaLinesSummary, usageWindowLines, windowHeadlines, windowsLabelFromHeadlines } from "@/lib/quota-display";
 import {
   antigravityQuotaCapped,
   antigravityDisplayWindows,
@@ -23,7 +23,7 @@ import {
   isBotFleetQuotaWindow,
   isMiniMaxVideoQuotaWindow,
 } from "@/lib/usage-monitor-quota";
-import { isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
+import { engineMeterNote, isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
 interface QuotaCooldownInfo {
@@ -168,6 +168,11 @@ export function UsageSection() {
           if (data?.deepseek && typeof data.deepseek === "object") {
             setDeepSeekBalance(data.deepseek);
           }
+          // MiniMax's balance/quota is no longer on this payload — it is
+          // per-instance (a second connection has its own account) and
+          // reaches the client on that instance's own GET /api/instances
+          // snapshot.quota.minimax instead. See server/index.ts's comment
+          // on this route.
           if (data?.engineSpend && typeof data.engineSpend === "object") {
             setEngineSpend(data.engineSpend);
           }
@@ -334,6 +339,7 @@ export function UsageSection() {
             if (instance.enabled === false || isHiddenQuotaEngine(instance.driverKind)) return false;
             const isDeepSeek =
               instance.driverKind === "deepseekAgent" ||
+              instance.driverKind === "dshAgent" ||
               instance.driverKind === "deepseek";
             const spend =
               engineSpend[instance.driverKind] ??
@@ -342,6 +348,7 @@ export function UsageSection() {
             const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
             const instanceWindows = windowsForDriver(botFleetQuotaWindows, instance.driverKind)
               .filter((window) => !(instance.instanceId === "minimax" && isMiniMaxVideoQuotaWindow(window)));
+            const isMiniMax = instance.driverKind === "minimax";
             const hasQuotaData =
               Boolean(instance.snapshot.quota?.capped) ||
               Boolean(instance.snapshot.quota?.models && Object.keys(instance.snapshot.quota.models).length > 0) ||
@@ -349,6 +356,15 @@ export function UsageSection() {
               instanceWindows.length > 0 ||
               (instance.instanceId === "antigravity" && (antigravityQuota?.models?.length ?? 0) > 0) ||
               (isDeepSeek && deepseekBalance?.balanceUsd != null) ||
+              // MiniMax's row must render whenever the engine is configured,
+              // not only once it's capped or has spent something — a fresh
+              // Token Plan/pay-as-you-go account with a real capExists
+              // reading counts as "has quota data" on its own. Read off this
+              // INSTANCE's own snapshot (server/harness/registry.ts computes
+              // it per instance) — never a value shared across every
+              // MiniMax row, which is what let a second connection show the
+              // reserved instance's numbers.
+              (isMiniMax && Boolean(instance.snapshot.quota?.minimax?.capExists)) ||
               Boolean(spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0));
             // A configured engine that has gone unavailable — a Box token set
             // but the API unreachable, a login that expired, a CLI that stops
@@ -361,6 +377,7 @@ export function UsageSection() {
             }
             return true;
           }).map((instance) => {
+            const isMiniMax = instance.driverKind === "minimax";
             const wildcardCap = Boolean(instance.snapshot.quota?.capped);
             const instanceCooldowns = quotas.filter((q) => q.instanceId === instance.instanceId);
             const quotaCooldown = instanceCooldowns.find((q) => q.model === "*") ?? instanceCooldowns[0];
@@ -382,9 +399,12 @@ export function UsageSection() {
             const windowLines = usageWindowLines(instanceWindows);
             const planSkip = !hasUsageMonitorAG && instanceWindows.some((window) => isPlanLevelSkip(window));
             const agExhausted = agGroups.filter((line) => line.exhausted);
-            // The cap verdict accounts for each shared Antigravity pool:
-            // both pools must have an exhausted period before the engine is capped.
-            const isCapped = wildcardCap || planSkip || (hasUsageMonitorAG
+            const minimaxRow = isMiniMax ? instance.snapshot.quota?.minimax ?? null : null;
+            const minimaxLine = minimaxRow ? minimaxQuotaLine(minimaxRow) : null;
+            // Cap accounts for Usage Monitor Antigravity pools, MiniMax token-plan
+            // exhaustion, and local group exhaustion so an all-spent pool is not
+            // hidden behind an average remaining percent.
+            const isCapped = wildcardCap || planSkip || minimaxRow?.status === "capped" || (hasUsageMonitorAG
               ? antigravityQuotaCapped(usageMonitorAGWindows)
               : agGroups.length > 0
                 ? agExhausted.length === agGroups.length
@@ -394,6 +414,7 @@ export function UsageSection() {
             // (or "Balance unavailable") without expanding the row.
             const isDeepSeek =
               instance.driverKind === "deepseekAgent" ||
+              instance.driverKind === "dshAgent" ||
               instance.driverKind === "deepseek";
             const deepseekRow = isDeepSeek
               ? deepseekBalance
@@ -417,17 +438,35 @@ export function UsageSection() {
             } else if (spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0)) {
               deepseekStatus = `Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
             }
+            // Same "quota headline + spend" composition as DeepSeek above,
+            // for MiniMax's own quota/balance line — the only other engine
+            // with both a real quota reading and a real per-turn cost today.
+            let minimaxStatus = minimaxLine;
+            if (isMiniMax && minimaxLine && spend) {
+              minimaxStatus = `${minimaxLine}  ·  Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
+            } else if (isMiniMax && spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0)) {
+              minimaxStatus = `Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
+            }
             const isPartial = !isCapped && (hasUsageMonitorAG
               ? usageMonitorAGWindows.some((window) => window.skip || window.remainingPercent === 0)
               : agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
+            const isNearCap = !isCapped && !isPartial && minimaxRow?.status === "near_cap";
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
-            const isAvailable = instance.snapshot.state === "available" && !isCapped && !isDisabled;
+            const isAvailable = instance.snapshot.state === "available" && !isCapped && !isPartial && !isNearCap && !isDisabled;
             const baseDetailLines = hasUsageMonitorAG
               ? []
               : agLines.length > 0
                 ? agLines
                 : windowLines;
             const detailLines = [...baseDetailLines];
+            if (minimaxRow && minimaxLine) {
+              detailLines.unshift({
+                label: minimaxRow.source === "account-balance" ? "Remaining Balance" : "Token Plan Quota",
+                value: minimaxLine,
+                exhausted: minimaxRow.status === "capped",
+                group: "external" as const,
+              });
+            }
             if (isDeepSeek && deepseekRow && !deepseekRow.error && deepseekRow.balanceUsd != null) {
               detailLines.unshift({
                 label: "Remaining Balance",
@@ -473,9 +512,6 @@ export function UsageSection() {
                     ? "not reported"
                     : `${group.remainingPercent}% available`;
                   let line = `${group.label}: ${value} (5h window)`;
-                  if (group.group === "gemini") {
-                    line += "; monthly pool (resets on ~17th)";
-                  }
                   return line;
                 })
               : [
@@ -503,9 +539,24 @@ export function UsageSection() {
                   const reset = formatResetCountdown(headline.resetAtMs);
                   return reset ? `${headline.display} ${value} · resets in ${reset}` : `${headline.display} ${value}`;
                 });
-            const allHeadlineLines = deepseekStatus
-              ? [...headlineLines, deepseekStatus]
-              : headlineLines;
+            const allHeadlineLines = [
+              ...headlineLines,
+              ...(deepseekStatus ? [deepseekStatus] : []),
+              ...(minimaxStatus ? [minimaxStatus] : []),
+            ];
+            // Antigravity's own "Gemini"/"Third-Party" summary already names
+            // its windows explicitly, so the combined badge below is only
+            // for the other engines whose windows come through Usage
+            // Monitor (Claude, Codex, Cursor, Kimi, Grok, DSH, DeepSeek) —
+            // generalizing the "5hr" / "5hr/Week" vocabulary antigravity-quota.ts
+            // and minimax-balance.ts already use, instead of leaving it
+            // Antigravity-only.
+            const combinedWindowsLabel = agGroups.length === 0 ? windowsLabelFromHeadlines(headlines) : undefined;
+            // pi, qwen, hermes, opencodeGo and boxAgent have no Usage Monitor
+            // window family at all (quota-window-map.ts's engineMeterNote) —
+            // say so explicitly instead of falling through to generic
+            // "Active and ready for turns" filler.
+            const meterNote = engineMeterNote(instance.driverKind);
             // The engine's real state — capped, partially capped, disabled,
             // or otherwise unavailable — must win over a headline percentage
             // line, not the other way around: a stale "70% available" (or a
@@ -515,9 +566,17 @@ export function UsageSection() {
             // The headline/fullSummary lines are shown only for the healthy,
             // uncapped path they were designed for.
             const statusLine = isCapped
-              ? `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
+              // MiniMax's own line already names the binding window's real
+              // reset time (minimaxQuotaLine); the generic cooldown-based
+              // wording below has nothing for MiniMax specifically and
+              // fell back to "Rolling refresh window" for it.
+              ? (isMiniMax && minimaxRow?.status === "capped" && minimaxLine
+                  ? minimaxLine
+                  : `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`)
               : isPartial
               ? `${quotaCooldown?.error ?? "Some models are at a usage cap"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
+              : isNearCap
+              ? (minimaxLine ?? "Approaching its usage cap")
               : isDisabled
               ? "Disabled in settings · subscription inactive"
               : !isAvailable
@@ -526,6 +585,8 @@ export function UsageSection() {
               ? allHeadlineLines.join("  ·  ")
               : fullSummary
               ? fullSummary
+              : meterNote
+              ? meterNote.copy
               : instance.snapshot.version ? `v${instance.snapshot.version} · Ready` : "Active and ready for turns";
             const open = expandedQuota === instance.instanceId;
 
@@ -543,7 +604,12 @@ export function UsageSection() {
                       <ProviderMark driverKind={instance.driverKind} size={16} iconUrl={instance.iconUrl} />
                     </div>
                     <div className="flex flex-col min-w-0">
-                      <span className="truncate font-medium text-ink">{instance.displayName}</span>
+                      <span className="truncate font-medium text-ink">
+                        {instance.displayName}
+                        {combinedWindowsLabel && (
+                          <span className="ml-1 font-normal text-[11px] text-ink-secondary">({combinedWindowsLabel})</span>
+                        )}
+                      </span>
                       <span className="truncate text-[11.5px] text-ink-secondary">
                         {statusLine}
                       </span>
@@ -556,6 +622,8 @@ export function UsageSection() {
                           ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
                           : isPartial
                           ? "bg-amber-500/10 text-amber-800 dark:text-amber-200"
+                          : isNearCap
+                          ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
                           : isDisabled
                           ? "bg-inset text-ink-secondary"
                           : isAvailable
@@ -563,7 +631,7 @@ export function UsageSection() {
                           : "bg-inset text-ink-secondary"
                       }`}
                     >
-                      {isCapped ? "At Usage Cap" : isPartial ? "Partial Cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
+                      {isCapped ? "At Usage Cap" : isPartial ? "Partial Cap" : isNearCap ? "Near Cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
                     </span>
                     <ChevronDown
                       size={14}

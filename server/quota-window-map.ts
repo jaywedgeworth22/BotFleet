@@ -57,7 +57,7 @@ export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   if (hay.includes("codex") || hay.includes("chatgpt")) return ["codex", "codexAgent"];
   if (hay.includes("anthropic") || hay.includes("claude")) return ["claudeAgent"];
   if (hay.includes("grok") || hay.includes("xai")) return ["grokAgent", "grok"];
-  if (hay.includes("minimax")) return ["minimax"];
+  if (hay.includes("minimax")) return ["minimaxAgent", "minimax"];
   // inferProviderAndService (server/telemetry.ts) reports Kimi/Moonshot
   // windows under provider "moonshot"; the shipped fleet's Kimi instance
   // rides driver kind "kimiAgent" (instanceConfigs()'s DEFAULT_FLEET). The
@@ -66,7 +66,66 @@ export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   if (hay.includes("kimi") || hay.includes("moonshot")) return ["kimiAgent"];
   if (hay.includes("dsh")) return ["dshAgent"];
   if (hay.includes("deepseek")) return ["deepseekAgent", "deepseek"];
+  // Factory is droid's real commercial product/subscription (droid.ts:
+  // "the `droid` CLI over ACP stdio... on the Factory login... or a
+  // FACTORY_API_KEY") — a genuine Usage Monitor provider a window can name,
+  // unlike pi/qwen/hermes/opencodeGo/boxAgent below, which have no vendor of
+  // their own for Usage Monitor to report on.
+  if (hay.includes("droid") || hay.includes("factory")) return ["droidAgent"];
   return [];
+}
+
+/** How pi, qwen, hermes, opencodeGo and boxAgent bill, for engines that
+ *  `driverKindsForWindow` above can never map to a Usage Monitor window:
+ *  each is either BYOK against a provider Usage Monitor has no name for
+ *  (pi: `~/.pi/agent/auth.json` against ollama-cloud, a local host, or
+ *  whatever else the user registered; qwen: "Custom-only in BotFleet: the
+ *  official pane has no Qwen Cloud catalog"; hermes: "a BYOK/local harness";
+ *  opencodeGo: "Zen, Go, OpenRouter, and user-configured/local providers"),
+ *  or billed on an account of its own that isn't a token quota at all
+ *  (boxAgent: box.ascii.dev's own compute billing). Declared here, by
+ *  driverKind, so their Fleet Quotas row says so explicitly instead of
+ *  looking like an engine no one bothered to wire up. Keyed by driverKind,
+ *  not by label matching — these are BotFleet's own driver kinds, never a
+ *  Usage Monitor provider token. */
+export type EngineMeterKind = "metered" | "unmetered";
+
+export interface EngineMeterNote {
+  kind: EngineMeterKind;
+  /** Sentence-case, no trailing period — matches the rest of the Fleet
+   *  Quotas row's status-line vocabulary. */
+  copy: string;
+}
+
+export const ENGINE_METER_NOTES: Readonly<Record<string, EngineMeterNote>> = {
+  piAgent: {
+    kind: "metered",
+    copy: "metered by whichever provider you've registered (cloud or local) — no fleet-wide quota window",
+  },
+  qwenAgent: {
+    kind: "metered",
+    // Never name Qwen/DashScope specifically: qwen.ts's injected-model path
+    // (a `host::model` pick) can point at any local or remote endpoint the
+    // owner registered, not only Alibaba's own API — the copy must not
+    // claim who bills when BotFleet genuinely does not know.
+    copy: "metered by whichever provider you've configured (Qwen Cloud, a local host, or another endpoint) — custom-only in BotFleet with no fleet-wide quota window",
+  },
+  hermesAgent: {
+    kind: "metered",
+    copy: "metered — a BYOK/local harness billed to your own key, with no fleet-wide quota window",
+  },
+  opencodeGo: {
+    kind: "metered",
+    copy: "metered by the model you pick — the default is free, a paid model bills to your own key",
+  },
+  boxAgent: {
+    kind: "metered",
+    copy: "billed on your Box account's own compute usage, not a token quota BotFleet tracks",
+  },
+};
+
+export function engineMeterNote(driverKind: string): EngineMeterNote | null {
+  return ENGINE_METER_NOTES[driverKind] ?? null;
 }
 
 export function familiesForWindow(window: QuotaWindowMatch): string[] {

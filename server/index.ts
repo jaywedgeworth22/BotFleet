@@ -44,6 +44,7 @@ import { authorizedRuntime } from "../electron/runtime-identity.mjs";
 import { planCredentialRestore } from "../electron/credential-restore.mjs";
 import { workspaceCredentialPending } from "../electron/workspace-credentials.mjs";
 import { runtimeBuildIdentity, runtimeReadiness } from "./runtime-identity.ts";
+import { createUpdateControl, packagedInstalledAt } from "./update-control.ts";
 import {
   avatarGenerationRequestSchema,
   avatarGenerationStateMatches,
@@ -125,6 +126,7 @@ import {
   patchInstanceConfig,
   deleteInstanceConfig,
   persistableInstanceConfigs,
+  INSTANCE_API_KEY_ENV,
   isAbsoluteHttpUrl,
   usageIngestUrl,
   usageProjectRules,
@@ -181,6 +183,10 @@ import {
 } from "./turn-safety.ts";
 
 import { BUILT_IN_DRIVERS } from "./drivers/builtIn.ts";
+// Read-only probe for the Secrets card: whether ~/.mmx/config.json holds a
+// MiniMax key at all.  The driver's own resolver is the authority on
+// precedence; this only reports what the secret map structurally cannot see.
+import { loadLocalMiniMaxConfig } from "./drivers/minimax.ts";
 import { getOrCreateChannel, mirrorActivity, mirrorExchange, mirrorReply, type CommsBus } from "./comms-visibility.ts";
 import { searchMessages } from "./message-db.ts";
 import { promptWithReply, transcriptText } from "./replies.ts";
@@ -289,6 +295,23 @@ const MIME: Record<string, string> = {
 // SQLite, routines, or webhook receivers start.  Health timeouts never release it.
 // The parent startup lock also serializes the one-time legacy directory move.
 const harnessOwner = initializeHarnessOwnership(DATA_DIR, PORT, ensureDirs);
+// "Is there a newer BotFleet, and install it" — asked from this Mac or from
+// a paired phone.  The updater it starts stops this harness partway through,
+// so it can never be our child: it is launched detached and reports through
+// a progress file, which is also how a run that outlived the last harness is
+// still describable here.  Construction reconciles that file on boot.
+const updateControl = createUpdateControl({
+  installed: {
+    version: runtimeBuildIdentity.version,
+    sourceCommit: runtimeBuildIdentity.sourceCommit,
+    installedAt: packagedInstalledAt(),
+  },
+  // What the status route reports, and what makes Install Update unavailable
+  // while a turn is running.  `POST /api/update/run` passes its own reading
+  // instead, excluding the admission that request itself holds.
+  readiness: () => currentRuntimeReadiness(),
+  emit: (status) => broadcast({ kind: "update.status", status }),
+});
 // Bound the per-thread transcript logs before anything starts appending to
 // them.  Rotation keeps every log THIS run writes inside its cap
 // (server/transcript-retention.ts); this pass is what trims whatever an
@@ -803,11 +826,11 @@ export { store };
  * so a new broadcast cannot forget. */
 const wireTask = ({ resumeCursors, lastInstanceId, ...task }: TaskRecord) => {
   const last = store.messagesFor(task.threadId).at(-1);
-  return { ...task, lastActivity: last?.at ?? task.createdAt };
+  return { ...task, lastActivity: last?.at ?? task.createdAt, lastMessage: last };
 };
 const wireGroupTask = (task: GroupTaskRecord) => {
   const last = store.messagesFor(task.threadId).at(-1);
-  return { ...task, lastActivity: last?.at ?? task.createdAt };
+  return { ...task, lastActivity: last?.at ?? task.createdAt, lastMessage: last };
 };
 
 const wireBot = (bot: NonNullable<ReturnType<typeof store.bot>>) => {
@@ -1947,7 +1970,16 @@ bus.subscribe((event: RuntimeEvent) => {
         if (!card || card.answered) return;
         // the bot is not working now — it is waiting on a person
         if (asker.busy) store.setActivity(asker.id, "waiting-on-you");
-        notify(buildNotification(permission ? "approval" : "question", asker, event.threadId, event.summary));
+        // The request id travels with the frame so a phone can answer THIS
+        // card from a lock screen rather than looking for whatever is
+        // pending on the thread — which is the wrong card as soon as two
+        // are open at once.
+        notify(
+          buildNotification(permission ? "approval" : "question", asker, event.threadId, event.summary, {
+            requestId: event.requestId,
+            tool: event.tool,
+          }),
+        );
       };
       if (reviewTask && reviewMode === "enforce") {
         // Avoid buzzing the owner for a card the reviewer is about to answer.
@@ -1989,7 +2021,10 @@ bus.subscribe((event: RuntimeEvent) => {
       pushMessage({
         role: "bot",
         kind: "activity",
-        tool: { name: `retrying — attempt ${event.attempt + 1}/${RETRY_MAX_ATTEMPTS} in ${Math.round(event.delayMs / 1000)}s — ${event.reason}`, ok: true },
+        // the event's own ceiling when it named one — a per-status policy
+        // (chat-completions) knows its real maximum better than the shared
+        // default a CLI driver retries against
+        tool: { name: `retrying — attempt ${event.attempt + 1}/${event.maxAttempts ?? RETRY_MAX_ATTEMPTS} in ${Math.round(event.delayMs / 1000)}s — ${event.reason}`, ok: true },
       });
       break;
     case "runtime.error": {
@@ -3980,7 +4015,7 @@ export async function executeAskBotRequest(input: {
     return { status: 403, body: { error: "that bot belongs to a different section" } };
   }
   const fromThreadId = String(input.fromThreadId ?? from.threadId);
-  if (!store.taskByThread(from.id, fromThreadId)) {
+  if (!store.threadBelongsToBot(from.id, fromThreadId)) {
     return { status: 403, body: { error: "source thread does not belong to sender" } };
   }
   let currentFrom = from;
@@ -4043,7 +4078,7 @@ export function executeDelegateBotRequest(input: {
     return { status: 403, body: { error: "that bot belongs to a different section" } };
   }
   const fromThreadId = String(input.fromThreadId ?? from.threadId);
-  if (!store.taskByThread(from.id, fromThreadId)) {
+  if (!store.threadBelongsToBot(from.id, fromThreadId)) {
     return { status: 403, body: { error: "source thread does not belong to sender" } };
   }
   const result = queueDelegation(
@@ -4092,7 +4127,7 @@ export function executeCreateBotRequest(input: {
   const chief = store.bot(input.fromBotId);
   if (!chief) return { status: 403, body: { error: "unknown sender" } };
   const fromThreadId = String(input.fromThreadId ?? chief.threadId);
-  if (!store.taskByThread(chief.id, fromThreadId)) {
+  if (!store.threadBelongsToBot(chief.id, fromThreadId)) {
     return { status: 403, body: { error: "source thread does not belong to sender" } };
   }
   if (!chief.chiefOfStaff) {
@@ -5243,12 +5278,25 @@ function blankSecretField(target: object, spec: SecretFieldSpec): void {
  * that are identifiers rather than secrets — the value itself, exactly as
  * `/api/config` already returns the Access client id.  A field marked secret
  * always reports `null`, on every route, in every state. */
+/** Files BotFleet does not own but a driver reads on its own, mapped to the
+ * field they can supply.  The secret map deliberately cannot see these — it
+ * is a pure function over config, environment and the vault — so a key that
+ * lives only here would make the card say "Not set" while every turn works,
+ * which is the exact confusion the card exists to prevent.  Probed, never
+ * read out: only whether a value is there, and the path that holds it. */
+const EXTERNAL_SECRET_SOURCES = new Map<string, () => string | null>([
+  ["minimax.key", () => (loadLocalMiniMaxConfig().apiKey ? "~/.mmx/config.json" : null)],
+]);
+
 function secretFieldRows() {
   const provenance = secretProvenance();
   const inVault = new Set(vaultNames());
   return SECRET_FIELDS.map((spec) => {
     const row = provenance.find((entry) => entry.id === spec.id);
     const source = row?.source ?? "none";
+    // Only when nothing this table CAN see holds the value — a real config,
+    // environment or vault value always wins and is always what gets used.
+    const elsewhere = source === "none" ? (EXTERNAL_SECRET_SOURCES.get(spec.id)?.() ?? null) : null;
     return {
       id: spec.id,
       label: spec.label,
@@ -5260,6 +5308,7 @@ function secretFieldRows() {
       hasValue: row?.hasValue ?? false,
       hasLocalCopy: row?.hasLocalCopy ?? false,
       managed: source === "infisical",
+      elsewhere,
       value: spec.secret ? null : (readSecretField(cfg, spec) ?? ""),
     };
   });
@@ -5276,6 +5325,23 @@ function configStatus() {
       managedSetup: composio.managedSetup(),
     },
     box: { configured: Boolean(cfg.box?.token) },
+    // The two `install.apiKeyOnly` engines: no CLI to install, no sign-in,
+    // just an endpoint and a key.  The key is reported the same
+    // configured-or-not way as every other credential here; the endpoint is
+    // configuration, not a credential, so it is returned in full.
+    // `pending` is the packaged-app state where the encrypted store holds
+    // the key but its replay has not reached this harness yet — the panel
+    // shows "waiting" rather than an untrue "not set".
+    openaiCompat: {
+      configured: Boolean(cfg.openaiCompat?.key),
+      url: cfg.openaiCompat?.url ?? "",
+      pending: workspaceCredentialPending(cfg, "openaiCompatApiKey"),
+    },
+    minimax: {
+      configured: Boolean(cfg.minimax?.key),
+      url: cfg.minimax?.url ?? "",
+      pending: workspaceCredentialPending(cfg, "minimaxApiKey"),
+    },
     vps: {
       configured: Boolean(vpsSshAlias(cfg)),
       sshAlias: vpsSshAlias(cfg) ?? "",
@@ -5662,24 +5728,38 @@ let providerConfigBusy = false;
 function externalCredentialPending(instanceId: string): boolean {
   if (instanceKeyOverrides.has(instanceId)) return false;
   const entry = instanceConfigs(cfg)[instanceId];
-  if (!entry || entry.driver !== "openai-compat") return false;
+  // Every driver that can carry more than one instance keeps its per-instance
+  // key in its own environment variable (INSTANCE_API_KEY_ENV) — openai-compat
+  // in OPENAI_COMPAT_API_KEY, MiniMax in MINIMAX_API_KEY.  A driver absent
+  // from that table has no per-instance key to be waiting for.
+  const keyEnv = entry ? INSTANCE_API_KEY_ENV.get(entry.driver) : undefined;
+  if (!entry || !keyEnv) return false;
   const config = entry.config && typeof entry.config === "object" && !Array.isArray(entry.config)
     ? entry.config as Record<string, unknown>
     : {};
   if (config.credentialStorage !== "external") return false;
-  return !config.key && !entry.environment?.OPENAI_COMPAT_API_KEY;
+  return !config.key && !entry.environment?.[keyEnv];
 }
 
 function fixedProviderCredentialPending(instanceId: string, runOn?: RoutineRunOn): boolean {
   if (runOn === "cloud") return workspaceCredentialPending(cfg, "boxToken");
   const driver = instanceConfigs(cfg)[instanceId]?.driver;
+  // The two multi-instance drivers are gated on the RESERVED instance id as
+  // well as the driver, exactly as injectedEnvironment() is: only that one
+  // instance is backed by the workspace credential, so a connection the
+  // operator added — which carries its own key — must never be held back
+  // waiting for a replay that was never going to reach it.
   const credential = driver === "grok"
     ? "xaiApiKey"
     : driver === "boxAgent"
       ? "boxToken"
       : driver === "opencodeGo"
         ? "opencodeGoApiKey"
-        : null;
+        : driver === "openai-compat" && instanceId === "openaiCompat"
+          ? "openaiCompatApiKey"
+          : driver === "minimax" && instanceId === "minimax"
+            ? "minimaxApiKey"
+            : null;
   return credential ? workspaceCredentialPending(cfg, credential) : false;
 }
 
@@ -5751,8 +5831,9 @@ function drainCredentialFallbacks(): void {
 function withInstanceKeyOverrides(map: InstanceConfigMap): InstanceConfigMap {
   for (const [instanceId, key] of instanceKeyOverrides) {
     const entry = map[instanceId];
-    if (entry && entry.driver === "openai-compat") {
-      entry.environment = { ...entry.environment, OPENAI_COMPAT_API_KEY: key };
+    const keyEnv = entry ? INSTANCE_API_KEY_ENV.get(entry.driver) : undefined;
+    if (entry && keyEnv) {
+      entry.environment = { ...entry.environment, [keyEnv]: key };
     }
   }
   return map;
@@ -5773,6 +5854,38 @@ function phoneCwdConfinement(): CwdConfinement {
     for (const extra of group.extraCwds ?? []) roots.add(extra);
   }
   return { roots: [...roots], protectedDirs: protectedCwdDirs(homedir(), DATA_DIR) };
+}
+
+/** Who may re-check for an update or start one.
+ *
+ * Three callers, and this says so plainly rather than implying a fourth
+ * factor it does not have:
+ *
+ *   1. the desktop renderer, over loopback from the window on this Mac;
+ *   2. a paired phone, whose pairing token `companion/src/proxy.ts` checked
+ *      against `denyReason` before replaying the request to 127.0.0.1;
+ *   3. any other process running as this user on this Mac.
+ *
+ * That is the harness's standing trust boundary, not a new one: `isLoopbackHost`
+ * and `isAllowedOrigin` gate every request at the top of `createServer` (the
+ * DNS-rebinding and CSRF defences), the listener binds 127.0.0.1 only, and
+ * `PUT /api/config` writes provider API keys behind exactly this much.  The
+ * peer-address check below is the extra half the owner-only runtime routes
+ * also take, so a request that somehow arrived from off-box cannot start an
+ * install even with a forged Host.
+ *
+ * A caller holding the harness owner nonce — the updater's own control plane,
+ * `GET /api/runtime` and `POST /api/runtime/credentials` — is accepted here
+ * too, by construction: it is on loopback.  It is deliberately not *required*,
+ * because neither the renderer nor the sidecar has that nonce, and requiring
+ * it would mean no person could ever press the button.
+ *
+ * An earlier version of this also accepted a JSON content-type as if it were
+ * a second factor.  It is not one: the origin gate above already turns away
+ * browsers, and the sidecar forwards whatever content-type the phone sent.
+ */
+function mayControlUpdates(req: IncomingMessage): boolean {
+  return isLoopbackAddress(req.socket.remoteAddress);
 }
 
 function json(res: ServerResponse, status: number, body: unknown) {
@@ -5944,7 +6057,8 @@ const server = createServer(async (req, res) => {
     if (origin && !isAllowedOrigin(origin)) {
       return json(res, 403, { error: "forbidden: cross-origin request" });
     }
-    if (runtimeQuiescing && path.startsWith("/api/") && path !== "/api/runtime" && path !== "/api/runtime/quiesce" && path !== "/api/health") {
+    if (runtimeQuiescing && path.startsWith("/api/") && path !== "/api/runtime" && path !== "/api/runtime/quiesce" &&
+        path !== "/api/health" && path !== "/api/update/status") {
       return json(res, 503, { error: "BotFleet is quiescing for an update" });
     }
     const mutatingApiRequest = path.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(method) &&
@@ -8134,7 +8248,7 @@ const server = createServer(async (req, res) => {
       // peer-approval intercept: harness-native cards carry a requestId
       // that lives in peer-approval's pending map. Resolve them here so
       // the provider adapter never sees a request it didn't raise.
-      if (resolvePeerComms(approvalBus, String(body.requestId), behavior)) {
+      if (resolvePeerComms(approvalBus, String(body.requestId), behavior, bot.threadId)) {
         return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
       }
       const outcome = await answerRequest(bot.threadId, bot.modelSelection.instanceId, String(body.requestId), behavior, body.message, { id: bot.id, name: bot.name });
@@ -8171,7 +8285,7 @@ const server = createServer(async (req, res) => {
       // peer-approval intercept (see /api/bots/:id/respond above). A peer card
       // belongs to the bus rather than to a speaker, so resolve it before we go
       // looking for one — a room between turns has no speaker to find.
-      if (resolvePeerComms(approvalBus, requestId, behavior)) {
+      if (resolvePeerComms(approvalBus, requestId, behavior, threadId)) {
         return json(res, 200, { ok: true, outcome: behavior === "allow" ? "allowed-once" : "rejected" });
       }
       const group = store.groupByThread(threadId);
@@ -8406,7 +8520,8 @@ const server = createServer(async (req, res) => {
       if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(SHARED_LOCAL_VM_TARGET.key)) {
         return json(res, 409, { error: "another Local VM setup action is still running" });
       }
-      if (false && action === "run") {
+      const perBot = cfg.localVm?.mode === "per-bot";
+      if (perBot && (action === "run" || action === "start")) {
         return json(res, 409, { error: "Per-bot mode creates each desktop from that bot's Computer panel" });
       }
       const vmOwner = localVmLeaseFor(SHARED_LOCAL_VM_TARGET).current(localVmOwnerBusy);
@@ -8627,6 +8742,47 @@ const server = createServer(async (req, res) => {
         dataOwner: { pid: harnessOwner.pid, port: harnessOwner.port },
       });
     }
+    // ── check for a newer BotFleet, and install it ─────────────────────
+    // The three routes the desktop app and the paired phone share.  Reading
+    // is open to anything that reaches this loopback port; the two actions
+    // take `mayControlUpdates` above.  The run itself is detached and
+    // survives both this harness and the desktop app — server/update-control.ts
+    // explains why it has to be.
+    if (method === "GET" && path === "/api/update/status") {
+      return json(res, 200, updateControl.status());
+    }
+    if (method === "POST" && path === "/api/update/check") {
+      if (!mayControlUpdates(req)) return json(res, 401, { error: "unauthorized" });
+      const checked = await updateControl.check();
+      // A check that could not reach the source is a failure, not "up to
+      // date": `origin/main` is still on disk from the last good fetch, and
+      // answering 200 would have a person believe a week-old comparison they
+      // just asked for.  The status comes back either way.
+      if (checked.checkError) {
+        return json(res, 502, { error: checked.checkError, status: checked });
+      }
+      return json(res, 200, checked);
+    }
+    if (method === "POST" && path === "/api/update/run") {
+      if (!mayControlUpdates(req)) return json(res, 401, { error: "unauthorized" });
+      let force = false;
+      try {
+        const body = await readBody(req);
+        force = body?.force === true;
+      } catch {
+        // An absent or unparseable body is the ordinary "just install it".
+      }
+      // The same readiness `POST /api/runtime/quiesce` consults, minus this
+      // request's own mutating admission — otherwise the route would always
+      // see itself as the work it must not interrupt.  An update stops the
+      // harness; refusing while a turn is in flight is the whole point.
+      const started = await updateControl.start({
+        force,
+        readiness: currentRuntimeReadiness(ownAdmissionActive),
+      });
+      if (!started.ok) return json(res, 409, { error: started.error, status: started.status });
+      return json(res, 202, { runId: started.runId, status: started.status });
+    }
     // identity handshake for the packaged app's port fallback: the forked
     // child proves it is OURS by echoing its pid (a stray dev server has
     // the same API shape but a different pid)
@@ -8720,6 +8876,14 @@ const server = createServer(async (req, res) => {
       // returns an error string instead of a balance — the chip reads
       // "balance unavailable", which is the honest answer.
       const deepseek = await getDeepSeekBalance(cfg.deepseek?.key, cfg.deepseek?.url);
+      // MiniMax's balance/quota is NOT fetched here: unlike DeepSeek's
+      // deliberately separate, non-per-instance key, MiniMax reads the same
+      // key each instance's own driver already uses, so it is resolved and
+      // cached PER INSTANCE in server/harness/registry.ts's describeEntry
+      // and reaches the client on that instance's own
+      // GET /api/instances snapshot.quota.minimax — never one shared value
+      // here, which is what let a second MiniMax connection read the
+      // reserved instance's numbers.
       return json(res, 200, {
         ok: true,
         cooldowns: quotaCooldowns.list(),
@@ -8885,11 +9049,15 @@ const server = createServer(async (req, res) => {
         const id = instancePatch[1];
         const current = withInstanceKeyOverrides(instanceConfigs(cfg))[id];
         if (!current) return json(res, 404, { error: "Instance no longer exists" });
-        if (current.driver !== "openai-compat" || !body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "key") || !patchOptions.key?.trim() || patchOptions.key.length > 16_384) {
+        // Restores only into a driver that reads a per-instance key — the
+        // same table the live override rides on, so a replay can never push a
+        // key into an engine that has nowhere to read it from.
+        const restoreKeyEnv = INSTANCE_API_KEY_ENV.get(current.driver);
+        if (!restoreKeyEnv || !body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).some((key) => key !== "key") || !patchOptions.key?.trim() || patchOptions.key.length > 16_384) {
           return json(res, 400, { error: "Invalid instance credential restore payload" });
         }
         const configuredKey = current.config && typeof current.config === "object" && "key" in current.config ? current.config.key : undefined;
-        if (configuredKey || current.environment?.OPENAI_COMPAT_API_KEY) return json(res, 200, { retained: true });
+        if (configuredKey || current.environment?.[restoreKeyEnv]) return json(res, 200, { retained: true });
         if (!currentRuntimeReadiness(ownAdmissionActive, true).safeToRestart) return json(res, 409, { error: "Credential restoration waits for current work to finish" });
         providerConfigBusy = true;
         try {
@@ -8957,8 +9125,22 @@ const server = createServer(async (req, res) => {
       }
     }
 
-    // ── add custom OpenAI-compatible engine ──
-    // POST /api/instances {name: string, endpoint: string, key?: string, models: string[] | string, iconUrl?: string}
+    // ── add a second instance of a multi-instance engine ──
+    // POST /api/instances {name: string, endpoint: string, driver?: string,
+    //                      key?: string, models?: string[] | string, iconUrl?: string}
+    //
+    // `driver` defaults to "openai-compat" — the only engine this route could
+    // add before — so an older client's body behaves exactly as it always has.
+    //
+    // `supportsMultipleInstances` alone is NOT the gate.  Fifteen drivers
+    // declare it, and most of them — grok, antigravity, pi, every ACP engine —
+    // have no per-instance credential at all: they read a workspace key from
+    // process.env or a CLI login from the user's home directory.  A second
+    // instance of one of those, pointed at an endpoint somebody typed into
+    // this route, would be handed the workspace's real credential.  So the
+    // gate is `supportsMultipleInstances` AND `install.apiKeyOnly`: the driver
+    // must be one whose whole configuration is an endpoint and a key it reads
+    // per instance.  openai-compat and minimax today.
     if (method === "POST" && path === "/api/instances") {
       if (!String(req.headers["content-type"] ?? "").toLowerCase().startsWith("application/json")) {
         return json(res, 415, { error: "content-type must be application/json" });
@@ -8968,12 +9150,57 @@ const server = createServer(async (req, res) => {
       if (!name || name.length > 64) {
         return json(res, 400, { error: "name is required and must be 1–64 characters" });
       }
+      // Matched against the registry rather than narrowed by hand: a body
+      // with no `driver`, or one carrying something that is not a string at
+      // all, simply fails to match and is refused with the same message.
+      const requestedDriver = body?.driver ?? "openai-compat";
+      const driverRecord = BUILT_IN_DRIVERS.find((d) => d.driverKind === requestedDriver);
+      if (!driverRecord) {
+        return json(res, 400, { error: `unknown engine driver "${String(requestedDriver).slice(0, 64)}"` });
+      }
+      const driverKind = driverRecord.driverKind;
+      if (driverRecord.metadata.supportsMultipleInstances !== true || driverRecord.install?.apiKeyOnly !== true) {
+        return json(res, 400, {
+          error: `engine "${driverRecord.metadata.displayName}" can only be configured once`,
+        });
+      }
       const endpoint = typeof body?.endpoint === "string" ? body.endpoint.trim() : "";
       if (!endpoint || !isAbsoluteHttpUrl(endpoint)) {
         return json(res, 400, { error: "endpoint must be a valid http:// or https:// URL" });
       }
       const rawKey = typeof body?.key === "string" ? body.key.trim() : undefined;
       const rawIcon = typeof body?.iconUrl === "string" ? body.iconUrl.trim() : undefined;
+      // A custom icon reaches the engine rail only through the live
+      // instance's own `iconUrl`, which a driver has to read out of its
+      // config and expose.  openai-compat does; MiniMax does not, and its
+      // config schema has exactly one field.  Persisting an icon it can never
+      // render would be configuration that silently does nothing, so the
+      // route refuses it rather than swallowing it.
+      if (rawIcon && driverKind !== "openai-compat") {
+        return json(res, 400, {
+          error: `engine "${driverRecord.metadata.displayName}" does not support a custom icon`,
+        });
+      }
+      // Every instance this route creates is non-reserved, so no workspace
+      // credential will ever reach it — by design, and enforced in both
+      // drivers.  A key therefore has to arrive with the request, or with the
+      // declaration that one is about to be committed to the desktop's
+      // encrypted store (the same `?secretStorage=external` the credential
+      // PATCH uses).
+      //
+      // openai-compat is the one exception, and deliberately: an endpoint
+      // needing no auth at all is a first-class use of it — Ollama, LM
+      // Studio, vLLM, a local llama.cpp server — so a keyless instance there
+      // is an ANONYMOUS engine, not a broken one.  That is safe precisely
+      // because the driver refuses to fall back to the workspace key for a
+      // non-reserved instance.  Every other engine on this route is a paid
+      // hosted API with no anonymous endpoint, where keyless can only mean an
+      // instance that fails every turn it is ever given.
+      const externalCredential = url.searchParams.get("secretStorage") === "external";
+      const keyRequired = driverKind !== "openai-compat";
+      if (keyRequired && !rawKey && !externalCredential) {
+        return json(res, 400, { error: "an API key is required for this engine" });
+      }
 
       let rawModels: string[] = [];
       if (Array.isArray(body?.models)) {
@@ -8981,7 +9208,12 @@ const server = createServer(async (req, res) => {
       } else if (typeof body?.models === "string") {
         rawModels = body.models.split(/[\n,]+/).map((s: string) => s.trim()).filter(Boolean);
       }
-      if (rawModels.length === 0) {
+      // openai-compat points at an arbitrary vendor and has no catalog it can
+      // trust for that endpoint, so the caller has to name the models. A
+      // driver that ships its own published catalog — MiniMax — does not:
+      // asking for a model list there would make the operator retype names
+      // the driver already knows, and get them wrong.
+      if (rawModels.length === 0 && driverKind === "openai-compat") {
         return json(res, 400, { error: "at least one model ID is required" });
       }
       if (rawModels.length > 15) {
@@ -8999,15 +9231,29 @@ const server = createServer(async (req, res) => {
           instanceId = `custom-${slug}-${counter++}`;
         }
 
-        const customConfig: Record<string, unknown> = {
-          url: endpoint,
-          models: rawModels,
-        };
+        const customConfig: Record<string, unknown> = { url: endpoint };
+        // Only where the driver reads them. MiniMax's own config schema has
+        // exactly one field (`url`), so an ignored `models` array on disk
+        // would read as configuration that does nothing.
+        if (rawModels.length > 0) customConfig.models = rawModels;
+        // `key` is the dev/browser fallback shape for every multi-instance
+        // driver: openai-compat reads it out of its own config, MiniMax gets
+        // it as MINIMAX_API_KEY through injectedEnvironment(). With the
+        // desktop bridge present the client omits it entirely and the key
+        // rides the encrypted store instead — marked here rather than by the
+        // follow-up PATCH, so there is no window in which the instance exists
+        // keyless AND unmarked, which is the one state that reads as an
+        // intentionally anonymous engine and dispatches turns.
         if (rawKey) customConfig.key = rawKey;
+        // Only when the caller actually declared it.  A keyless create with
+        // no declaration is an anonymous engine, and marking THAT external
+        // would make `externalCredentialPending` refuse its every turn while
+        // it waited for a replay that is never coming.
+        else if (externalCredential) customConfig.credentialStorage = "external";
         if (rawIcon) customConfig.iconUrl = rawIcon;
 
         const newInstanceEntry = {
-          driver: "openai-compat",
+          driver: driverKind,
           displayName: name,
           config: customConfig,
         };
@@ -9031,9 +9277,19 @@ const server = createServer(async (req, res) => {
         // global reloadProviders(): that disposes EVERY provider and marks
         // every currently-busy bot's turn as interrupted, so adding one
         // independent engine would kill every other bot's active work.
-        const newEntry = instanceConfigs(cfg)[instanceId];
-        const newLive = newEntry ? await registry.reloadInstance(instanceId, newEntry) : null;
-        if (newLive) bus.attach([newLive]);
+        //
+        // …and not even that one, when its key is still on its way to the
+        // encrypted store.  Creating it here would have the registry probe
+        // the endpoint with no credential, so the engine's first reported
+        // state is a 401 it was never going to avoid.  The credential PATCH
+        // that follows does the same detach-reload-attach with the key in
+        // hand (runInstanceProviderReload), and the config row written above
+        // is all that PATCH needs to find it.
+        if (!externalCredential) {
+          const newEntry = instanceConfigs(cfg)[instanceId];
+          const newLive = newEntry ? await registry.reloadInstance(instanceId, newEntry) : null;
+          if (newLive) bus.attach([newLive]);
+        }
         resetPathCache();
         return json(res, 201, {
           ok: true,
@@ -9610,11 +9866,17 @@ const server = createServer(async (req, res) => {
         // never survive the merge in config.json.
         const persisted = structuredClone(patch);
         const externalCredentialSections: Partial<Record<
-          "xai" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical",
+          "xai" | "openaiCompat" | "minimax" | "composio" | "box" | "opencodeGo" | "deepseek" | "tts" | "imageGen" | "infisical",
           boolean
         >> = {};
         const externalFields = [
           ["xai", "key"],
+          // The two engines that are configured with an endpoint and a key
+          // rather than a CLI login.  Only the KEY goes to the store — each
+          // one's `url` is configuration and stays readable in config.json,
+          // the way the Access client id does.
+          ["openaiCompat", "key"],
+          ["minimax", "key"],
           ["composio", "apiKey"],
           ["box", "token"],
           ["opencodeGo", "apiKey"],

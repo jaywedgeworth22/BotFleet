@@ -1,4 +1,4 @@
-import { WORKSPACE_CREDENTIALS } from "./workspace-credentials.mjs";
+import { instanceKeyedDriver, WORKSPACE_CREDENTIALS } from "./workspace-credentials.mjs";
 
 const FIELDS = [
   ...WORKSPACE_CREDENTIALS,
@@ -46,7 +46,11 @@ export function markExternalInstanceCredentials(config, instanceIds) {
   let changed = false;
   for (const id of instanceIds ?? []) {
     const entry = instances[id];
-    if (!entry || typeof entry !== "object" || Array.isArray(entry) || entry.driver !== "openai-compat") continue;
+    // Every driver that keeps a per-instance key, not just the first one that
+    // ever did: a MiniMax connection whose key lives in credentials.bin needs
+    // the same durable marker, or a relaunch finds it keyless and unmarked —
+    // which reads as an intentionally anonymous engine and dispatches turns.
+    if (!instanceKeyedDriver(entry)) continue;
     const current = entry.config && typeof entry.config === "object" && !Array.isArray(entry.config)
       ? entry.config
       : {};
