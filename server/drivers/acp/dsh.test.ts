@@ -46,6 +46,8 @@ describe("DshAgentDriver config", () => {
     expect(STATIC_DSH_MODELS.options.map((option) => option.id)).toEqual([
       "deepseek-v4-flash",
       "deepseek-v4-pro",
+      "MiniMax-M3",
+      "MiniMax-M2.7",
     ]);
   });
 
