@@ -417,24 +417,11 @@ function EngineRow({
       )}
       {["minimax"].includes(instance.driverKind) && (
         <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
-          <strong className="text-ink">Native HTTP API.</strong>
-          {"  "}Optimized for fast, low-cost text turns with up to a 1M-token context window.
-          {"  "}Streams token-level responses and supports the OpenAI function-calling shape.
-          {"  "}The harness gives it up to seven tools in a turn it starts itself —{" "}
-          <code>list_bots</code>, <code>ask_bot</code>, <code>list_routines</code>,{" "}
-          <code>delegate_bot</code>, <code>request_credential</code>, <code>propose_routine</code>,{" "}
-          and <code>propose_routine_action</code> — and none of them in a turn another
-          bot invoked through <code>ask_bot</code> or <code>delegate_bot</code>, the harness's
-          hard stop against bot-to-bot recursion.
-          {"  "}A section's Chief of Staff also gets <code>create_bot</code>, but only in a
-          direct chat — rooms don't grant it yet.
-          {"  "}<code>ask_bot</code> and <code>delegate_bot</code> go through the same{" "}
-          approval flow as any other engine; <code>request_credential</code> and the routine tools
-          show their own confirmation card; <code>create_bot</code> runs immediately, with no card
-          at all.
-          {"  "}It has no file, shell, web, Composio, computer-use, or image tools, because
-          those come from a vendor CLI this engine never spawns.
-          {"  "}For that work, pick a CLI engine (Claude, Codex, Antigravity, Cursor) instead.
+          <strong className="text-ink">Talks to the Team.</strong>
+          {"  "}In a chat this bot starts, it can see the other bots, ask one, list routines, request a key, and propose a schedule.
+          {"  "}None of that runs when another bot asked it.
+          {"  "}A section lead can add a specialist, but only in a direct chat — not in a room.
+          {"  "}Files, Terminal, the web, connected apps, and this computer need Claude, Codex, Antigravity, or Cursor.
         </div>
       )}
       {isCustom && (

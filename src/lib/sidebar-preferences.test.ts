@@ -13,6 +13,7 @@ import {
   saveCollapsedSections,
   orderSectionNames,
   BOT_CHATS_SECTION,
+  SIDEBAR_BOT_CHATS_INIT_KEY,
   SIDEBAR_COLLAPSED_SECTIONS_KEY,
   loadSidebarThreadCount,
   parseCollapsedRooms,
@@ -142,5 +143,23 @@ describe("sidebar section order and Bot Chats", () => {
     saveCollapsedSections(first, memory);
     const second = loadCollapsedSectionsWithBotChatsDefault(memory);
     expect(second.has(BOT_CHATS_SECTION)).toBe(false);
+  });
+
+  it("renames a stored Bot ↔ Bot collapse to Bot Chats", () => {
+    const store: Record<string, string> = {
+      [SIDEBAR_COLLAPSED_SECTIONS_KEY]: JSON.stringify(["Bot ↔ Bot"]),
+      [SIDEBAR_BOT_CHATS_INIT_KEY]: "1",
+    };
+    const memory = {
+      getItem: (key: string) => store[key] ?? null,
+      setItem: (key: string, value: string) => {
+        store[key] = value;
+      },
+    };
+    const collapsed = loadCollapsedSectionsWithBotChatsDefault(memory);
+    expect(collapsed.has(BOT_CHATS_SECTION)).toBe(true);
+    expect(collapsed.has("Bot ↔ Bot")).toBe(false);
+    expect(store[SIDEBAR_COLLAPSED_SECTIONS_KEY]).toContain("Bot Chats");
+    expect(store[SIDEBAR_COLLAPSED_SECTIONS_KEY]).not.toContain("Bot ↔ Bot");
   });
 });
