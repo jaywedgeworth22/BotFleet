@@ -2,6 +2,7 @@
 // it dispatches typed commands over HTTP and folds the one SSE event
 // stream from the harness server into local state. The reducer stays
 // pure; everything async lives in the wrapped dispatch + SSE fold.
+import { UPDATE_STATUS_EVENT } from "@/lib/update-control";
 import {
   createContext,
   useCallback,
@@ -351,6 +352,13 @@ export function messageVersions(bot: Bot, message: Message): Message[] {
 /** GET /api/config — configured flags only; secrets are never echoed. */
 export interface ConfigStatus {
   xai?: { configured: boolean };
+  /** The two `install.apiKeyOnly` engines: an endpoint and a key, no CLI to
+   * install and no interactive sign-in.  `url` is configuration, not a
+   * credential, so it comes back in full; `pending` is the packaged-app
+   * state where the encrypted store holds the key but its replay has not
+   * reached the harness yet. */
+  openaiCompat?: { configured: boolean; url: string; pending: boolean };
+  minimax?: { configured: boolean; url: string; pending: boolean };
   deepseek?: { configured: boolean };
   composio: {
     configured: boolean;
@@ -544,6 +552,19 @@ export interface InstanceInfo {
         error?: string;
         windowsLabel?: string;
       }>;
+      /** MiniMax's own balance/quota summary, computed per instance — see
+       *  server/contracts.ts's ProviderSnapshot.quota.minimax. */
+      minimax?: {
+        source: "account-balance" | "token-plan" | "unavailable";
+        capExists: boolean;
+        status: "ok" | "near_cap" | "capped" | "unknown";
+        balanceUsd: number | null;
+        remainingPercent: number | null;
+        secondaryRemainingPercent: number | null;
+        resetsAt: number | null;
+        weeklyResetsAt: number | null;
+        error: string | null;
+      };
     };
   };
   models: { default: string; options: Array<{ id: string; label: string; custom?: boolean; loaded?: boolean }> };
@@ -1771,6 +1792,10 @@ export interface SecretFieldRow {
   infisicalName: string;
   inVault: boolean;
   source: "infisical" | "env" | "file" | "none";
+  /** A file outside BotFleet that holds this value when nothing BotFleet
+   * manages does — `~/.mmx/config.json` for the MiniMax key.  Server-probed;
+   * null whenever a managed source already has the value. */
+  elsewhere?: string | null;
   hasValue: boolean;
   hasLocalCopy: boolean;
   managed: boolean;
@@ -1817,7 +1842,19 @@ export function fetchSecrets(): Promise<InfisicalStatusPayload> {
  * connection reads this instead of each polling `/api/infisical/status` on
  * its own. Empty until the first fetch resolves, which reads as "unknown"
  * everywhere a caller checks the map rather than throwing. */
-export function useSecretSources(): Map<string, { source: SecretFieldRow["source"]; managed: boolean; infisicalName: string }> {
+/** One provenance row per mapped credential, keyed by `SecretFieldSpec.id`.
+ * `elsewhere` travels with it: a field whose only value lives in a file the
+ * driver reads on its own (`~/.mmx/config.json`) has to be nameable wherever
+ * a badge is rendered, or a row says "Not set" beside an engine whose turns
+ * visibly work. */
+export interface SecretSourceRow {
+  source: SecretFieldRow["source"];
+  managed: boolean;
+  infisicalName: string;
+  elsewhere: string | null;
+}
+
+export function useSecretSources(): Map<string, SecretSourceRow> {
   const [rows, setRows] = useState<SecretFieldRow[]>([]);
 
   useEffect(() => {
@@ -1837,7 +1874,18 @@ export function useSecretSources(): Map<string, { source: SecretFieldRow["source
   }, []);
 
   return useMemo(
-    () => new Map(rows.map((row) => [row.id, { source: row.source, managed: row.managed, infisicalName: row.infisicalName }])),
+    () =>
+      new Map(
+        rows.map((row) => [
+          row.id,
+          {
+            source: row.source,
+            managed: row.managed,
+            infisicalName: row.infisicalName,
+            elsewhere: row.elsewhere ?? null,
+          },
+        ]),
+      ),
     [rows],
   );
 }
@@ -2514,6 +2562,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         case "message.patch":
           rawDispatch({ type: "messagePatched", threadId: frame.threadId, message: frame.message });
           break;
+        // An update runs detached and takes minutes; the harness pushes a
+        // new status on every step so the Updates card and the floating
+        // banner follow it live.  It is not reducer state — only the two
+        // update components want it — so it goes out as a window event
+        // rather than growing the store.
+        case "update.status":
+          window.dispatchEvent(new CustomEvent(UPDATE_STATUS_EVENT, { detail: frame.status }));
+          break;
         case "thread":
           rawDispatch({ type: "threadActive", threadId: frame.threadId, activeLeafId: frame.activeLeafId });
           // a rewind also invalidates any half-streamed text from the old branch
@@ -2653,6 +2709,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       // could not fill the gap, so queue subsequent frames behind a hydrate.
       if (frame.kind === "hello") {
         clearTimeout(hydrationFallback);
+        if (frame.resumed !== true) {
+          // The snapshot replaces the pre-gap transcript.  Discard both
+          // rendered fragments and queued deltas from that older boundary.
+          deltaBuffer.current.clear();
+          if (deltaFlush.current !== null) {
+            cancelAnimationFrame(deltaFlush.current);
+            deltaFlush.current = null;
+          }
+          setStream(EMPTY_STREAM);
+          pendingFrames.length = 0;
+        }
         if (shouldHydrateAfterHello(frame.resumed === true, hydrationFailed)) hydrate();
         return;
       }
