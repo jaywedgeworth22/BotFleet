@@ -247,14 +247,16 @@ posixOnly("room turns run on the HTTP lane", () => {
             driver: "minimax",
             config: { url: engine.url },
           },
-          // openai-compat: an HTTP driver like minimax (agentsMcp: true) but
-          // WITHOUT capabilities.toolLoop — the gate the hotfix added. No
-          // `apiKeyEnv` override, so it resolves through the instance's own
-          // `environment` below.
-          "openai-compat-no-loop": {
+          "openai-compat": {
             driver: "openai-compat",
             config: { url: engine.url },
             environment: { OPENAI_COMPAT_API_KEY: "fake-key-for-tests" },
+          },
+          // Direct Grok still has no driver-owned tool loop.
+          "grok-no-loop": {
+            driver: "grok",
+            config: { url: engine.url },
+            environment: { XAI_API_KEY: "fake-key-for-tests" },
           },
         },
       }),
@@ -293,11 +295,11 @@ posixOnly("room turns run on the HTTP lane", () => {
     await removeTempDir(home);
   });
 
-  it(
-    "hands a room member the same catalog a 1:1 turn gets, and settles once with the reply folded in",
-    async () => {
+  it.each(["minimax", "openai-compat"])(
+    "%s hands a room member the same catalog a 1:1 turn gets, and settles once with the reply folded in",
+    async (instanceId) => {
       await makeBot("scout");
-      const member = await makeBot("pixel");
+      const member = await makeBot(`pixel-${instanceId}`, {}, instanceId);
       const room = await makeRoom("Ops", [member.id], { kind: "member", botId: member.id });
       const before = completionCount();
 
@@ -336,14 +338,9 @@ posixOnly("room turns run on the HTTP lane", () => {
   it(
     "does not hand a room member on a driver without a tool loop any tools, and still settles once with the reply",
     async () => {
-      // `openai-compat-no-loop` has `agentsMcp: true` — same as `minimax`
-      // above, so `integrations.agents` is set and `buildTurnTools` would
-      // still name list_bots/ask_bot — but it has no `capabilities.toolLoop`,
-      // which is what the hotfix gates `roomTurnTools` on. Before the fix
-      // this member got that catalog with no host able to run either tool:
-      // a call to one would settle the turn on a partial reply instead of
-      // the room ever finding out nothing could execute it.
-      const member = await makeBot("echo", {}, "openai-compat-no-loop");
+      // OpenAI-compatible now owns a loop, so direct Grok is the remaining
+      // HTTP engine that must not receive tools it cannot execute.
+      const member = await makeBot("echo", {}, "grok-no-loop");
       const room = await makeRoom("Signals", [member.id], { kind: "member", botId: member.id });
       const before = completionCount();
 
