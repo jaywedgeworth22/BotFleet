@@ -113,7 +113,7 @@ describe("partitionSidebarGroups", () => {
       { name: "Compiler ⇄ Designer", dm: true, section: "Apps" },
       { name: "New DM", dm: true },
     ]);
-    expect(BOT_CHATS_SECTION).toBe("Bot ↔ Bot");
+    expect(BOT_CHATS_SECTION).toBe("Bot Chats");
     expect(botChats.map((g) => g.name)).toEqual(["Compiler ⇄ Designer", "New DM"]);
     expect(unsectionedRooms.map((g) => g.name)).toEqual(["Apps room"]);
     expect(sectionedRooms.map((g) => g.name)).toEqual(["Work room"]);
