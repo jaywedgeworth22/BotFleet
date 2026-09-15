@@ -230,7 +230,7 @@ posixOnly("authorization decisions are logged", () => {
       // Auto mode on AND the exact key granted: an attended turn would sail
       // straight through, so the only thing carding this one is the
       // unattended block — which is precisely what the row must say.
-      const bot = await makePermissionBot({ name: "Nightshift", autoApprove: true, alwaysAllow: ["shell:echo"] });
+      const bot = await makePermissionBot({ name: "Nightshift", autoApprove: true, computers: [], alwaysAllow: ["shell:echo"] });
 
       const hook = await api("POST", "/api/webhooks", {
         name: "Nightly build",

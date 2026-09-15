@@ -1,6 +1,11 @@
 // BotFleet server — the harness host. Clients hold no transports
 // (upstream rule): the React app dispatches typed commands over HTTP and
 // folds one SSE event stream; every provider process runs here.
+import {
+  matchesLocalAutoConsent,
+  requiresLocalAutoConsent,
+  type LocalAutoConsentCapability,
+} from "../shared/local-auto-consent.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {  readFileSync, unlinkSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -720,12 +725,37 @@ type ComputerGrantSubject = {
   /** The pre-array spelling some stored bots still carry. */
   computer?: unknown;
   autoApprove?: boolean;
+  modelSelection?: ModelSelection;
 };
+
+/** Automatic-host consent follows `shouldMountLocalComputer`: Darwin Auto
+ * plus an engine that can broker host approvals.  Unknown engines omit the
+ * provider flag so a missing registry entry stays fail-closed on Darwin. */
+function botLocalAutoCapability(bot?: ComputerGrantSubject | null): LocalAutoConsentCapability {
+  const instance = bot?.modelSelection?.instanceId
+    ? registry.get(bot.modelSelection.instanceId)
+    : undefined;
+  return {
+    hostPlatform: process.platform,
+    ...(instance
+      ? { providerSupportsLocal: instance.adapter.capabilities.localComputerMcp === true }
+      : {}),
+  };
+}
 
 /** The destinations a bot holds right now, in either spelling. */
 function currentComputerGrants(bot: ComputerGrantSubject | null | undefined): Array<"cloud" | "vm" | "local"> {
-  if (bot?.computers) return bot.computers;
+  return storedComputerGrants(bot) ?? [];
+}
+
+/** Keep undefined distinct from explicit Off so inherited defaults and the
+ * automatic host fallback remain visible to the consent boundary. */
+function storedComputerGrants(
+  bot: ComputerGrantSubject | null | undefined,
+): Array<"cloud" | "vm" | "local"> | undefined {
+  if (bot?.computers !== undefined) return bot.computers;
   const legacy = bot?.computer;
+  if (legacy === undefined) return undefined;
   if (typeof legacy !== "string" || legacy === "off") return [];
   // SAFETY: `computer` is the retired single-destination field, written only
   // by versions that could store "cloud" | "vm" | "local" | "off", and "off"
@@ -751,15 +781,32 @@ const LOCAL_AUTO_ACK_ERROR =
  * Returns the refusal, or null when the change may proceed. */
 function localAutoAcknowledgementError(
   existing: ComputerGrantSubject | null | undefined,
-  nextComputers: Array<"cloud" | "vm" | "local">,
+  nextComputers: Array<"cloud" | "vm" | "local"> | undefined,
   nextAutoApprove: boolean,
   acknowledged: boolean,
+  context: {
+    currentDefault?: Array<"cloud" | "vm" | "local">;
+    nextDefault?: Array<"cloud" | "vm" | "local">;
+    currentAllowed?: Array<"cloud" | "vm" | "local"> | null;
+    nextAllowed?: Array<"cloud" | "vm" | "local"> | null;
+  } = {},
 ): string | null {
   // A bot that ALREADY holds the pair keeps it: the warning was answered
   // once, and re-saving an unrelated field must not demand it again.
-  const alreadyGranted =
-    currentComputerGrants(existing).includes("local") && existing?.autoApprove === true;
-  if (nextComputers.includes("local") && nextAutoApprove && !alreadyGranted && !acknowledged) {
+  const capability = botLocalAutoCapability(existing);
+  const alreadyGranted = existing?.autoApprove === true && requiresLocalAutoConsent(
+    storedComputerGrants(existing),
+    context.currentDefault,
+    context.currentAllowed,
+    capability,
+  );
+  const nextGranted = requiresLocalAutoConsent(
+    nextComputers,
+    context.nextDefault ?? context.currentDefault,
+    context.nextAllowed === undefined ? context.currentAllowed : context.nextAllowed,
+    capability,
+  );
+  if (nextGranted && nextAutoApprove && !alreadyGranted && !acknowledged) {
     return LOCAL_AUTO_ACK_ERROR;
   }
   return null;
@@ -5709,6 +5756,14 @@ async function applyResolvedSecrets(reason: RefreshReason): Promise<void> {
 // another's changes or dispose a fleet while another reload is creating it.
 let providerConfigBusy = false;
 
+// An acknowledged workspace-default save binds host Auto consent to the
+// exact bot identities displayed by the renderer.  Provider and vault checks
+// below can await, so consent-relevant bot edits must not change that set
+// after validation and before the config is persisted.
+let localAutoConsentConfigBusy = false;
+const localAutoConsentConfigBusyError =
+  "bot computer and identity settings are locked while workspace settings finish saving";
+
 // Runtime-only per-instance credential overrides for openai-compat custom
 // engines saved through the desktop shell's encrypted credential store
 // (?secretStorage=external on PATCH /api/instances/:id): the key never
@@ -7586,6 +7641,9 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       const parsed = parseBotProfilePatch(body, true);
       if (!parsed.ok) return json(res, 400, { error: parsed.error });
+      if (localAutoConsentConfigBusy && parsed.patch.name !== undefined) {
+        return json(res, 409, { error: localAutoConsentConfigBusyError });
+      }
       if (parsed.patch.avatarUrl && !storedAvatarExists(parsed.patch.avatarUrl)) {
         return json(res, 400, { error: "avatarUrl must reference an existing stored image" });
       }
@@ -7645,6 +7703,15 @@ const server = createServer(async (req, res) => {
       const body = await readBody(req);
       if (!body || typeof body !== "object" || Array.isArray(body)) {
         return json(res, 400, { error: "body must be a JSON object" });
+      }
+      if (
+        localAutoConsentConfigBusy &&
+        (body.name !== undefined ||
+          body.computers !== undefined ||
+          body.computer !== undefined ||
+          body.autoApprove !== undefined)
+      ) {
+        return json(res, 409, { error: localAutoConsentConfigBusyError });
       }
       const existingBot = store.bot(m[1]);
       if (body.requireAvailableModel !== undefined && typeof body.requireAvailableModel !== "boolean") {
@@ -7767,13 +7834,19 @@ const server = createServer(async (req, res) => {
         ? body.computers
         : body.computer !== undefined
           ? (body.computer === "off" ? [] : [body.computer])
-          : currentComputerGrants(existingBot);
+          : storedComputerGrants(existingBot);
       const wantsAuto = body.autoApprove !== undefined ? body.autoApprove : existingBot?.autoApprove === true;
       const ackError = localAutoAcknowledgementError(
         existingBot,
         wantsComputers,
         wantsAuto === true,
         body.acknowledgeLocalAuto === true,
+        {
+          currentDefault: cfg.botDefaults?.computers,
+          nextDefault: cfg.botDefaults?.computers,
+          currentAllowed: allowedBotComputers(cfg),
+          nextAllowed: allowedBotComputers(cfg),
+        },
       );
       if (ackError) return json(res, 400, { error: ackError });
       if (body.approvePeerComms !== undefined) {
@@ -7832,6 +7905,9 @@ const server = createServer(async (req, res) => {
     }
     m = path.match(/^\/api\/bots\/([\w-]+)$/);
     if (m && method === "DELETE") {
+      if (localAutoConsentConfigBusy) {
+        return json(res, 409, { error: localAutoConsentConfigBusyError });
+      }
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
       // Fenced against the SAME lock `/local-computer/run|stop|remove`
@@ -7847,8 +7923,8 @@ const server = createServer(async (req, res) => {
       // Read off the record while it still exists, not after the delete.
       const botThreadIds = new Set([bot.threadId, ...(bot.tasks ?? []).map((task) => task.threadId)]);
       const localVmTarget = perBotLocalVmTarget(bot.id);
-      if (localVmLifecycleBusy.has(localVmTarget.key)) {
-        return json(res, 409, { error: "this bot's Local VM setup action is still running — retry the delete after it finishes" });
+      if (localVmModeChangeBusy || localVmLifecycleBusy.has(localVmTarget.key)) {
+        return json(res, 409, { error: "a Local VM setup action is still running — retry the delete after it finishes" });
       }
       localVmLifecycleBusy.add(localVmTarget.key);
       try {
@@ -9536,14 +9612,24 @@ const server = createServer(async (req, res) => {
       // `resolveGrants` handed an already-unattended, already-autoApprove
       // bot host control the moment the operator later loosened the
       // allowlist again, with no acknowledgement ever having been asked.
-      const needsAcknowledgement = store.bots
+      const pendingLocalAutoConsent = () => store.bots
         .filter(
           (bot) =>
-            localAutoAcknowledgementError(bot, persisted, bot.autoApprove === true, acknowledged) !== null,
+            localAutoAcknowledgementError(bot, persisted, bot.autoApprove === true, false, {
+              currentDefault: cfg.botDefaults?.computers,
+              nextDefault: cfg.botDefaults?.computers,
+              currentAllowed: allowedBotComputers(cfg),
+              nextAllowed: allowedBotComputers(cfg),
+            }) !== null,
         )
         .map((bot) => ({ id: bot.id, name: bot.name }));
-      if (persisted.length > 0 && needsAcknowledgement.length > 0) {
-        return json(res, 400, {
+      const consentRequired = () => {
+        const bots = pendingLocalAutoConsent();
+        return bots.length > 0 && !(acknowledged && matchesLocalAutoConsent(body.acknowledgedBots, bots)) ? bots : null;
+      };
+      const needsAcknowledgement = consentRequired();
+      if (needsAcknowledgement) {
+        return json(res, acknowledged ? 409 : 400, {
           error: LOCAL_AUTO_ACK_ERROR,
           needsAcknowledgement,
         });
@@ -9553,6 +9639,12 @@ const server = createServer(async (req, res) => {
         // driver that takes a second to answer a cancel would otherwise add
         // that second once per bot to a single click.
         await Promise.allSettled(store.bots.map((bot) => interruptIfHostRevoked(bot, next)));
+        // Bots may have been created, renamed, or changed while cancellation
+        // awaited a driver.  Recheck before any grant or default is persisted.
+        const changedConsent = consentRequired();
+        if (changedConsent) {
+          return json(res, 409, { error: LOCAL_AUTO_ACK_ERROR, needsAcknowledgement: changedConsent });
+        }
         for (const bot of store.bots) {
           const patched = store.patchBot(bot.id, { computers: next });
           if (patched) updated.push({ id: patched.id, bot: wireBot(patched) });
@@ -9704,7 +9796,48 @@ const server = createServer(async (req, res) => {
         const aliasError = vpsAliasChangeError(currentAlias, nextAlias, activeVpsThreads.size > 0);
         if (aliasError) return json(res, 409, { error: aliasError });
       }
+      const currentDefaultComputers = cfg.botDefaults?.computers;
+      const currentAllowedComputers = allowedBotComputers(cfg);
+      const nextDefaultComputers = patch.botDefaults?.computers ?? currentDefaultComputers;
+      const nextAllowedComputers = patch.botDefaults && Object.hasOwn(patch.botDefaults, "allowedComputers")
+        ? patch.botDefaults.allowedComputers ?? null
+        : currentAllowedComputers;
+      const consentRelevantConfigSave =
+        JSON.stringify(nextDefaultComputers) !== JSON.stringify(currentDefaultComputers) ||
+        JSON.stringify(nextAllowedComputers) !== JSON.stringify(currentAllowedComputers);
+      const acknowledgedLocalAuto = body.acknowledgeLocalAuto === true;
+      const pendingConfigLocalAutoConsent = () => store.bots
+        .filter((bot) => localAutoAcknowledgementError(
+          bot,
+          storedComputerGrants(bot),
+          bot.autoApprove === true,
+          false,
+          {
+            currentDefault: currentDefaultComputers,
+            nextDefault: nextDefaultComputers,
+            currentAllowed: currentAllowedComputers,
+            nextAllowed: nextAllowedComputers,
+          },
+        ) !== null)
+        .map((bot) => ({ id: bot.id, name: bot.name }));
+      const configConsentRequired = () => {
+        const bots = pendingConfigLocalAutoConsent();
+        return bots.length > 0 && !(
+          acknowledgedLocalAuto && matchesLocalAutoConsent(body.acknowledgedBots, bots)
+        ) ? bots : null;
+      };
+      // Refuse before provider checks or secret-store writes.  The request is
+      // all or nothing on its first presentation: showing a consent dialog
+      // must not have already changed an unrelated credential.
+      const needsAcknowledgement = configConsentRequired();
+      if (needsAcknowledgement) {
+        return json(res, acknowledgedLocalAuto ? 409 : 400, {
+          error: LOCAL_AUTO_ACK_ERROR,
+          needsAcknowledgement,
+        });
+      }
       providerConfigBusy = true;
+      localAutoConsentConfigBusy = consentRelevantConfigSave;
             try {
       // A project key is useful only if it can create/reuse the Session that
       // powers both the connections UI and the agent MCP. Validate it before
@@ -9856,6 +9989,13 @@ const server = createServer(async (req, res) => {
         }
       }
       for (const { spec } of managedInPatch) blankSecretField(patch, spec);
+      // Bot identities and permission fields can change while the provider
+      // and secret-store checks above await.  Bind the save to the exact
+      // fleet that was displayed before persisting a host-capable default.
+      const changedConsent = configConsentRequired();
+      if (changedConsent) {
+        return json(res, 409, { error: LOCAL_AUTO_ACK_ERROR, needsAcknowledgement: changedConsent });
+      }
       const externalSecretStorage = url.searchParams.get("secretStorage") === "external";
       if (externalSecretStorage) {
         // The packaged Electron caller commits supplied credentials to the
@@ -9966,7 +10106,7 @@ const server = createServer(async (req, res) => {
       broadcast({ kind: "config", ...status });
       return json(res, 200, status);
       } finally {
-        
+        localAutoConsentConfigBusy = false;
         providerConfigBusy = false;
       }
     }
