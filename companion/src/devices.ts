@@ -388,10 +388,18 @@ export class DeviceRegistry {
     return true;
   }
 
-  /** Drop a token Apple has marked unregistered (HTTP 410). */
-  clearPushToken(id: string): boolean {
+  /** Drop a token Apple has marked unregistered (HTTP 410, or a 400 that
+   * means the same thing).
+   *
+   * `rejected` names the token that was actually refused.  A send can be in
+   * flight for seconds while the phone reinstalls and registers a new one,
+   * and clearing blind would throw away the good token on the strength of
+   * the old one's rejection — leaving a phone that is registered, reachable,
+   * and silent until something makes it register again. */
+  clearPushToken(id: string, rejected?: string): boolean {
     const device = this.devices.find((candidate) => candidate.id === id);
     if (!device || typeof device.pushToken !== "string") return false;
+    if (rejected !== undefined && device.pushToken !== rejected.replace(/\s+/g, "").toLowerCase()) return false;
     delete device.pushToken;
     this.persist();
     return true;

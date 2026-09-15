@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RuntimeEvent, TurnToolHost } from "../contracts.ts";
 import { recordEvents } from "../testing/events.ts";
+import { startFakeOpenAiServer } from "../testing/fake-openai-server.ts";
 import { observeRuntimeEvent, resetSentryAiForTests, type SentryAiSink } from "../sentry-ai.ts";
 import { costUsd } from "./chat-completions/pricing.ts";
 import {
@@ -146,7 +147,9 @@ describe("MinimaxDriver", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     const instance = await MinimaxDriver.create({
-      instanceId: "minimax-test",
+      // The RESERVED id: ~/.mmx/config.json is a machine-wide file, so only
+      // the built-in connection may fall back to it.
+      instanceId: "minimax",
       displayName: "MiniMax",
       enabled: true,
       config: MinimaxDriver.defaultConfig(),
@@ -160,6 +163,149 @@ describe("MinimaxDriver", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ headers: { Authorization: "Bearer local-key" } });
     await instance.dispose();
+  });
+
+  it("never hands the workspace key to a connection the operator added", async () => {
+    // process.env is process-wide and ~/.mmx/config.json is one file for the
+    // whole machine, but a second MiniMax connection points at whatever
+    // endpoint somebody typed in — the China host, a gateway, a reseller.
+    // Falling through to either would send the workspace's real key to that
+    // endpoint as a bearer token.  Same gate openai-compat.ts applies to its
+    // own process.env lookup.
+    const dir = mkdtempSync(join(tmpdir(), "mmx-scope-"));
+    mkdirSync(join(dir, ".mmx"), { recursive: true });
+    writeFileSync(join(dir, ".mmx", "config.json"), JSON.stringify({ api_key: "sentinel-workspace-local" }));
+    process.env.MINIMAX_API_KEY = "sentinel-workspace-env";
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const added = await MinimaxDriver.create({
+      instanceId: "custom-minimax-china",
+      displayName: "MiniMax China",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: {},
+    });
+    // No key from anywhere, so it reads unavailable and never probes — rather
+    // than probing an arbitrary endpoint with the workspace credential.
+    await expect(added.snapshot()).resolves.toMatchObject({ state: "unavailable" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(added.adapter.sendTurn({ threadId: "t", text: "hi" })).rejects.toThrow(/no MiniMax key/);
+    await added.dispose();
+
+    // Its own key still reaches it, through its isolated instance environment
+    // — the ONLY channel a non-reserved instance has.
+    const withOwnKey = await MinimaxDriver.create({
+      instanceId: "custom-minimax-china",
+      displayName: "MiniMax China",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "sentinel-its-own" },
+    });
+    fetchMock.mockImplementation(async () => new Response(
+      JSON.stringify({ data: [] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    await expect(withOwnKey.snapshot()).resolves.toMatchObject({ state: "available" });
+    const sent = (fetchMock.mock.calls[0][1] as { headers: Record<string, string> }).headers;
+    expect(sent["Authorization"]).toContain("sentinel-its-own");
+    expect(JSON.stringify(sent)).not.toContain("sentinel-workspace");
+    await withOwnKey.dispose();
+  });
+
+  it("never redirects a connection the operator added to the machine-wide mmx endpoint", async () => {
+    // ~/.mmx/config.json is ONE file for the whole machine, so the endpoint
+    // beside that key is a workspace-wide default.  A connection whose
+    // operator deliberately typed the global URL matched DEFAULT_URL exactly,
+    // so the fallback fired and re-pointed it at whatever region or custom
+    // base_url that file names — with its own key along for the ride.
+    mkdirSync(join(home, ".mmx"), { recursive: true });
+    writeFileSync(
+      join(home, ".mmx", "config.json"),
+      JSON.stringify({ api_key: "sentinel-workspace-local", base_url: "https://profile.gateway.example/v1" }),
+    );
+    const fetchMock = vi.fn(async (_input: string | URL | Request) => new Response(
+      JSON.stringify({ data: [] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const added = await MinimaxDriver.create({
+      instanceId: "custom-minimax-global",
+      displayName: "MiniMax Global",
+      enabled: true,
+      config: decodeMinimaxConfig({ url: "https://api.minimax.io/v1" }),
+      environment: { MINIMAX_API_KEY: "sentinel-its-own" },
+    });
+    await expect(added.snapshot()).resolves.toMatchObject({ state: "available" });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("api.minimax.io");
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("profile.gateway.example");
+    await added.dispose();
+
+    // The reserved connection still follows that profile — reading it is the
+    // whole reason the file is consulted at all.
+    fetchMock.mockClear();
+    const reserved = await MinimaxDriver.create({
+      instanceId: "minimax",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: {},
+    });
+    await expect(reserved.snapshot()).resolves.toMatchObject({ state: "available" });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("profile.gateway.example");
+    await reserved.dispose();
+  });
+
+  it("tells each connection the remedy that can actually reach it", async () => {
+    // MINIMAX_API_KEY and `mmx auth login` are workspace-wide, and a
+    // non-reserved connection reads neither.  Offering them there sends the
+    // operator somewhere that cannot fix anything.
+    const fetchMock = vi.fn(async () => new Response("unauthorized", { status: 401 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const added = await MinimaxDriver.create({
+      instanceId: "custom-minimax-remedy",
+      displayName: "MiniMax Gateway",
+      enabled: true,
+      config: decodeMinimaxConfig({ url: "https://gateway.example.test/v1" }),
+      environment: {},
+    });
+    const addedSnapshot = await added.snapshot();
+    expect(addedSnapshot).toMatchObject({ state: "unavailable" });
+    const addedReason = (addedSnapshot as { reason: string }).reason;
+    expect(addedReason).toContain("Settings");
+    expect(addedReason).not.toContain("MINIMAX_API_KEY");
+    expect(addedReason).not.toContain("mmx auth login");
+    await expect(added.adapter.sendTurn({ threadId: "t", text: "hi" })).rejects.toThrow(/Settings/);
+    await added.dispose();
+
+    // A rejected key on an added connection points at the same place.
+    const rejected = await MinimaxDriver.create({
+      instanceId: "custom-minimax-rejected",
+      displayName: "MiniMax Gateway",
+      enabled: true,
+      config: decodeMinimaxConfig({ url: "https://gateway.example.test/v1" }),
+      environment: { MINIMAX_API_KEY: "sentinel-its-own" },
+    });
+    const rejectedSnapshot = await rejected.snapshot();
+    expect(rejectedSnapshot).toMatchObject({ state: "unavailable" });
+    expect((rejectedSnapshot as { reason: string }).reason).toContain("Settings");
+    expect((rejectedSnapshot as { reason: string }).reason).not.toContain("mmx auth login");
+    await rejected.dispose();
+
+    // The built-in connection keeps the workspace remedies, which do reach it.
+    const reserved = await MinimaxDriver.create({
+      instanceId: "minimax",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: {},
+    });
+    const reservedSnapshot = await reserved.snapshot();
+    expect(reservedSnapshot).toMatchObject({ state: "unavailable" });
+    expect((reservedSnapshot as { reason: string }).reason).toContain("MINIMAX_API_KEY");
+    await reserved.dispose();
   });
 
   it("a truly keyless instance (no env, no local config) reads unavailable without ever probing", async () => {
@@ -485,8 +631,12 @@ describe("MinimaxDriver", () => {
     await instance.dispose();
   });
 
-  it("a 502 from chat/completions settles error:upstream_outage, so the fallback chain is consulted", async () => {
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("bad gateway", { status: 502 })));
+  it("a 502 from chat/completions settles error:upstream_outage after three attempts, so the fallback chain is consulted", async () => {
+    // A 502 is retried now — but a PERSISTENT one must still reach the
+    // same terminal classification it always did, or model-fallback.ts
+    // never learns the upstream is out.
+    const fetchMock = vi.fn(async () => new Response("bad gateway", { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
     const instance = await MinimaxDriver.create({
       instanceId: "minimax-502",
       displayName: "MiniMax",
@@ -500,9 +650,138 @@ describe("MinimaxDriver", () => {
     const completed = await recorder.until((event) => event.type === "turn.completed");
 
     expect(completed).toMatchObject({ ok: false, stopReason: "error:upstream_outage" });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(recorder.events.filter((e) => e.type === "turn.retrying").map((e) => e.attempt)).toEqual([1, 2]);
+    // still ONE terminal event and ONE error chip across all three tries
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    expect(recorder.events.filter((e) => e.type === "runtime.error")).toHaveLength(1);
     recorder.stop();
     await instance.dispose();
-  });
+  }, 30_000);
+
+  it("rides out a 502 on the wire and settles the turn the retry answered", async () => {
+    // The end-to-end shape of the same policy: a real socket, a real
+    // non-2xx response, and a retry that re-sends a byte-identical body.
+    const server = await startFakeOpenAiServer();
+    try {
+      server.queueCompletion({ kind: "json", status: 502, body: { error: "bad gateway" } });
+      server.queueCompletion({
+        kind: "sse",
+        frames: [
+          JSON.stringify({ choices: [{ delta: { content: "recovered" } }] }),
+          JSON.stringify({ choices: [], usage: { prompt_tokens: 11, completion_tokens: 4 } }),
+          "[DONE]",
+        ],
+      });
+      const instance = await MinimaxDriver.create({
+        instanceId: "minimax-wire-retry",
+        displayName: "MiniMax",
+        enabled: true,
+        config: decodeMinimaxConfig({ url: server.url }),
+        environment: { MINIMAX_API_KEY: "secret" },
+      });
+      const recorder = recordEvents(instance.adapter);
+
+      await instance.adapter.sendTurn({ threadId: "thread-wire-retry", text: "hi" });
+      const completed = await recorder.until((event) => event.type === "turn.completed");
+
+      // the usage that counts is the attempt that worked
+      expect(completed).toMatchObject({ ok: true, stopReason: "end_turn", usage: { input: 11, output: 4 } });
+      const posts = server.requests.filter((r) => r.method === "POST");
+      expect(posts).toHaveLength(2);
+      // the retry re-sends the same prefix — the model sees one turn, not
+      // a transcript that grew a round while nobody was looking
+      expect(posts[1].body).toEqual(posts[0].body);
+      expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(1);
+      expect(recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "assistant_text")).toHaveLength(1);
+      recorder.stop();
+      await instance.dispose();
+    } finally {
+      await server.close();
+    }
+  }, 30_000);
+
+  it("rides out a real socket that closes before the first frame", async () => {
+    // The finding this test exists for: a provider that accepts the
+    // request, sends a 200 SSE head and then vanishes.  No mock — a real
+    // socket destroyed mid-body, so Node's own fetch produces the actual
+    // `TypeError: terminated` / `UND_ERR_SOCKET` shape rather than a
+    // hand-built stand-in.  Nothing was published, so the replay is safe.
+    const server = await startFakeOpenAiServer();
+    try {
+      server.queueCompletion({ kind: "close" });
+      server.queueCompletion({
+        kind: "sse",
+        frames: [
+          JSON.stringify({ choices: [{ delta: { content: "recovered" } }] }),
+          JSON.stringify({ choices: [], usage: { prompt_tokens: 9, completion_tokens: 2 } }),
+          "[DONE]",
+        ],
+      });
+      const instance = await MinimaxDriver.create({
+        instanceId: "minimax-wire-close",
+        displayName: "MiniMax",
+        enabled: true,
+        config: decodeMinimaxConfig({ url: server.url }),
+        environment: { MINIMAX_API_KEY: "secret" },
+      });
+      const recorder = recordEvents(instance.adapter);
+
+      await instance.adapter.sendTurn({ threadId: "thread-wire-close", text: "hi" });
+      const completed = await recorder.until((event) => event.type === "turn.completed");
+
+      expect(completed).toMatchObject({ ok: true, stopReason: "end_turn", usage: { input: 9, output: 2 } });
+      expect(server.requests.filter((r) => r.method === "POST")).toHaveLength(2);
+      expect(recorder.events.filter((e) => e.type === "turn.retrying").map((e) => e.reason)).toEqual(["connection_reset"]);
+      expect(recorder.events.filter((e) => e.type === "runtime.error")).toHaveLength(0);
+      expect(recorder.events.filter((e) => e.type === "item.completed" && e.itemType === "assistant_text")).toHaveLength(1);
+      recorder.stop();
+      await instance.dispose();
+    } finally {
+      await server.close();
+    }
+  }, 30_000);
+
+  it("never retries a stream that already showed the person text", async () => {
+    // The duplicate-output hazard, on the wire: one delta reaches the bus
+    // and THEN the socket dies.  Retrying would replay "half an " on top
+    // of itself.
+    let calls = 0;
+    vi.stubGlobal("fetch", vi.fn(async () => {
+      calls += 1;
+      return new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "half an " } }] })}\n\n`),
+            );
+            setTimeout(() => controller.error(new Error("connection reset by peer")), 5);
+          },
+        }),
+        { status: 200, headers: { "content-type": "text/event-stream" } },
+      );
+    }));
+    const instance = await MinimaxDriver.create({
+      instanceId: "minimax-partial",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: { MINIMAX_API_KEY: "secret" },
+    });
+    const recorder = recordEvents(instance.adapter);
+
+    await instance.adapter.sendTurn({ threadId: "thread-partial", text: "hi" });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+
+    // the partial text stays on the bus, and nothing replayed it
+    expect(recorder.events.filter((e) => e.type === "content.delta").map((e) => e.delta)).toEqual(["half an "]);
+    expect(recorder.events.filter((e) => e.type === "turn.retrying")).toHaveLength(0);
+    expect(calls).toBe(1);
+    expect(completed).toMatchObject({ ok: false, stopReason: "error" });
+    expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
+    recorder.stop();
+    await instance.dispose();
+  }, 20_000);
 
   it("forwards turn.tools to the API in OpenAI function-calling shape", async () => {
     let body: any;
