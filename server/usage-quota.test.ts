@@ -32,6 +32,12 @@ describe("usage quota mapping", () => {
     );
   });
 
+  it("never applies Grok Bot allowances to Grok CLI or Cursor engines", () => {
+    expect(driverKindsForWindow({ ...opus, provider: "xai", providerKey: "grok-bot", sourceApp: "cursor", label: "Weekly" })).toEqual([]);
+    expect(driverKindsForWindow({ ...opus, provider: "Grok Bot", sourceApp: "cursor", label: "Weekly" })).toEqual([]);
+    expect(driverKindsForWindow({ ...opus, provider: "xai", sourceApp: "grok-build", label: "Grok CLI" })).toEqual(["grokAgent", "grok"]);
+  });
+
   it("maps Antigravity windows onto the Antigravity driver", () => {
     expect(driverKindsForWindow(opus)).toEqual(["antigravityAgent"]);
   });

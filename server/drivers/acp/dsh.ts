@@ -2,28 +2,97 @@ import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { ModelCatalog, ProviderErrorCode, SendTurnInput } from "../../contracts.ts";
+import type { EffortLevel, ModelCatalog, ProviderErrorCode, SendTurnInput } from "../../contracts.ts";
 import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
 
-/** Quote one argv token inside a `--mcp name=command args` spec.  JSON
- * string quoting survives spaces, quotes, and backslashes without a shell,
- * and stays one spawn() argument because the spec is not split. */
-export function quoteDshMcpToken(value: string): string {
-  return JSON.stringify(value);
+/** Current DSH exposes its standard ACP v1 server as a profile.  Integrations
+ * belong in session/new.mcpServers; duplicating them as private CLI flags
+ * changes quoting and bypasses ACP's typed transport validation. */
+export function dshSpawnArgs(_config: AcpConfig, _turn: Pick<SendTurnInput, "integrations">): string[] {
+  return ["--profile", "acp"];
 }
 
-/** CLI argv after `dsh` for ACP.  MCP command and args stay distinct even
- * when a path contains spaces — join(" ") without quoting is the failure. */
-export function dshSpawnArgs(_config: AcpConfig, turn: Pick<SendTurnInput, "integrations">): string[] {
-  const args: string[] = [];
-  if (!turn.integrations) return args;
-  for (const [name, def] of Object.entries(turn.integrations)) {
-    if (!def || typeof def !== "object" || !("command" in def)) continue;
-    const command = String(def.command);
-    const extra = "args" in def && Array.isArray(def.args) ? def.args.map(String) : [];
-    args.push("--mcp", `${name}=${[command, ...extra].map(quoteDshMcpToken).join(" ")}`);
+export const DSH_MINIMUM_ACP_VERSION = "0.1.5-rc.1";
+
+type ParsedVersion = { core: [number, number, number]; prerelease: Array<number | string> };
+
+function parseVersion(value: string): ParsedVersion | null {
+  const match = value.match(/(?:^|[^0-9])(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/u);
+  if (!match) return null;
+  return {
+    core: [Number(match[1]), Number(match[2]), Number(match[3])],
+    prerelease: match[4]?.split(".").map((part) => /^\d+$/u.test(part) ? Number(part) : part) ?? [],
+  };
+}
+
+function compareVersions(left: ParsedVersion, right: ParsedVersion): number {
+  for (let index = 0; index < left.core.length; index += 1) {
+    if (left.core[index] !== right.core[index]) return left.core[index] - right.core[index];
   }
-  return args;
+  if (!left.prerelease.length || !right.prerelease.length) {
+    return left.prerelease.length === right.prerelease.length ? 0 : left.prerelease.length ? -1 : 1;
+  }
+  const length = Math.max(left.prerelease.length, right.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const a = left.prerelease[index];
+    const b = right.prerelease[index];
+    if (a === undefined || b === undefined) return a === b ? 0 : a === undefined ? -1 : 1;
+    if (a === b) continue;
+    if (typeof a === "number" && typeof b === "number") return a - b;
+    if (typeof a === "number") return -1;
+    if (typeof b === "number") return 1;
+    return a.localeCompare(b);
+  }
+  return 0;
+}
+
+/** The native ACP profile first shipped in 0.1.5-rc.1.  Custom wrappers are
+ * deliberately outside this stock-binary gate. */
+export function dshVersionCompatibilityReason(version: string, cli = "dsh"): string | null {
+  if (cli !== "dsh") return null;
+  const current = parseVersion(version);
+  const minimum = parseVersion(DSH_MINIMUM_ACP_VERSION)!;
+  if (current && compareVersions(current, minimum) >= 0) return null;
+  return `DeepSeek Harness ${DSH_MINIMUM_ACP_VERSION} or newer is required for native ACP; update with npm install -g @deepseek-ai/dsh@latest`;
+}
+
+const DSH_EFFORT_LEVELS = ["none", "high", "max"] as const satisfies readonly EffortLevel[];
+
+export const DSH_PROVIDER_ID = "deepseek-official";
+
+/** DSH deliberately makes model values opaque because one catalog may expose
+ * the same model id through several providers. */
+export function dshModelOptionValue(model: string): string {
+  return JSON.stringify([DSH_PROVIDER_ID, model]);
+}
+
+export function dshModelIdFromOptionValue(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const decoded: unknown = JSON.parse(value);
+    if (
+      Array.isArray(decoded) &&
+      decoded.length === 2 &&
+      decoded[0] === DSH_PROVIDER_ID &&
+      typeof decoded[1] === "string" &&
+      decoded[1].length > 0
+    ) {
+      return decoded[1];
+    }
+  } catch {
+    // ACP config values are opaque; an unrecognized value is not a model id.
+  }
+  return null;
+}
+
+function currentConfigValue(result: unknown, configId: string): unknown {
+  if (!result || typeof result !== "object") return undefined;
+  const options = (result as { configOptions?: unknown }).configOptions;
+  if (!Array.isArray(options)) return undefined;
+  const option = options.find(
+    (candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === configId,
+  );
+  return option && typeof option === "object" ? (option as { currentValue?: unknown }).currentValue : undefined;
 }
 
 /** The harness's own current models.  The vision variant is deliberately
@@ -37,17 +106,13 @@ export const STATIC_DSH_MODELS: ModelCatalog = {
   ],
 };
 
-/** Candidate credential files, honoring the same DSH_HOME / HOME precedence the
- * `dsh` harness itself uses.  The `.deepseek` paths cover the platform API and
- * Code CLI logins so one authenticated DeepSeek seat still lights up this rail. */
+/** Candidate credential file, honoring the same DSH_HOME / HOME precedence the
+ * published `dsh` harness uses.  Other DeepSeek clients have separate stores
+ * that do not authenticate this CLI. */
 export function dshCredentialCandidates(env: Record<string, string | undefined>): string[] {
   const home = env.HOME || env.USERPROFILE || homedir();
   const dshHome = env.DSH_HOME || join(home, ".dsh");
-  return [
-    join(dshHome, ".credentials.yaml"),
-    join(home, ".deepseek", "credentials.json"),
-    join(home, ".deepseek-code", "credentials", "deepseek-code.json"),
-  ];
+  return [join(dshHome, ".credentials.yaml")];
 }
 
 /** Map DSH/DeepSeek failure text onto the canonical provider-error codes so the
@@ -84,40 +149,43 @@ const support: AcpSupport = {
   images: false,
   models: STATIC_DSH_MODELS,
   resolveModels: () => STATIC_DSH_MODELS,
-  // No effortLevels.  Four were advertised and nothing read `turn.effort`:
-  // dshSpawnArgs emits only `--mcp` pairs and configureSession sets the
-  // model, so the picker offered a control that changed nothing.
-  //
-  // No MCP either.  The core builds agents/composio/computer/local-computer
-  // servers and hands them to session/new; the ACP server DSH actually
-  // reaches ignores mcpServers, so every one of those flags promised a tool
-  // that could never fire.  Flip this back the moment the backend mounts
-  // them — the plumbing above it already works.
-  mcpServers: false,
+  effortLevels: DSH_EFFORT_LEVELS,
+  mcpServers: true,
   defaultCli: "dsh",
   nativeSource: "dsh.acp",
   loginNote: "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",
 
   install: {
-    docsUrl: "https://github.com/deepseek-ai/dsh",
+    command: {
+      darwin: "npm install -g @deepseek-ai/dsh@latest",
+      linux: "npm install -g @deepseek-ai/dsh@latest",
+      win32: "npm install -g @deepseek-ai/dsh@latest",
+    },
+    docsUrl: "https://github.com/deepseek-ai/deepseek-harness/tree/master/packages/bundle/acp-app",
+    needsNode: true,
   },
 
-  resolveTurnModel: (model) => model,
-
   spawnArgs: dshSpawnArgs,
+  resumeMethod: "session/resume",
+  selectModel: {
+    configId: "model",
+    valueForModel: dshModelOptionValue,
+    modelForValue: dshModelIdFromOptionValue,
+  },
+  versionCompatibilityReason: (version, config) => dshVersionCompatibilityReason(version, config.cli),
 
   async configureSession({ request, sessionId, turn }) {
-    if (!turn.model) return;
-    try {
-      await request("session/set_model", { sessionId, modelId: turn.model });
-    } catch (error) {
-      // A set_model that silently no-ops runs the profile's default model, not
-      // the picker's selection — the exact "silently wrong model" failure
-      // acp/core.ts guards against.  Fail the turn instead of pretending.
+    if (!turn.effort) return;
+    const requested = turn.effort === "none" ? "off" : turn.effort;
+    const result = await request("session/set_config_option", {
+      sessionId,
+      configId: "reasoning_effort",
+      value: requested,
+    });
+    const confirmed = currentConfigValue(result, "reasoning_effort");
+    if (confirmed !== requested) {
       throw new Error(
-        `DeepSeek Harness did not switch to ${turn.model}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
+        `DeepSeek Harness did not switch reasoning effort to ${requested} (still ${String(confirmed ?? "unknown")})`,
       );
     }
   },
