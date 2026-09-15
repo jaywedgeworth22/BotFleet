@@ -569,13 +569,15 @@ struct ChatListView: View {
         Binding(
             get: { !collapsedSections.contains(section) },
             set: { expanded in
-                var set = collapsedSections
+                var set = Set(
+                    collapsedSectionsStr.split(separator: ",").map(String.init).filter { !$0.isEmpty }
+                )
                 if expanded {
                     set.remove(section)
                 } else {
                     set.insert(section)
                 }
-                collapsedSections = set
+                collapsedSectionsStr = Array(set).joined(separator: ",")
             }
         )
     }
