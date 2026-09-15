@@ -435,7 +435,7 @@ describe("OpenAICompatDriver tool steps", () => {
     await inst.dispose();
   });
 
-  it("does not advertise a local-computer tool it never mounts", async () => {
+  it("advertises local-computer capability for host computer execution via toolHost", async () => {
     const inst = await OpenAICompatDriver.create({
       instanceId: "test-caps",
       displayName: "Caps",
@@ -443,7 +443,7 @@ describe("OpenAICompatDriver tool steps", () => {
       config: { url: "https://example.test/v1", apiKeyEnv: "TEST_KEY" },
       environment: { TEST_KEY: "secret" },
     });
-    expect(inst.adapter.capabilities.localComputerMcp).toBeFalsy();
+    expect(inst.adapter.capabilities.localComputerMcp).toBe(true);
     expect(await inst.adapter.respondToRequest("t", "r", { behavior: "allow" })).toBe("unavailable");
     await inst.dispose();
   });

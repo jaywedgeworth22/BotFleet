@@ -71,4 +71,13 @@ describe("buildTurnTools", () => {
     expect(names).toContain("write_file");
     expect(names).toContain("edit_file");
   });
+
+  it("exposes workspace file tools (read_file, write_file, edit_file) but not bash when workspace is set", () => {
+    const tools = buildTurnTools({ agents: {}, workspace: true });
+    const names = tools.map((t) => t.name);
+    expect(names).toContain("read_file");
+    expect(names).toContain("write_file");
+    expect(names).toContain("edit_file");
+    expect(names).not.toContain("bash");
+  });
 });

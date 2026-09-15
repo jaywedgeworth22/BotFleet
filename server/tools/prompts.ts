@@ -84,19 +84,14 @@ export function routinePromptFor(availableAgentTools: readonly string[]): string
 
 /** True when this bot's turn has file-editing tools at all.  A CLI or ACP
  *  driver gets file/shell tools from its vendor CLI; a driver whose
- *  `capabilities.toolLoop` is set has the harness catalog as its ONLY tool
- *  surface, which today is peer comms and routines — no file access to
- *  claim.  `worksInWorkspace` still gates whether a workspace directory
- *  exists for this bot at all (unchanged, and still what decides `cwd` and
- *  checkpointing); this narrows it further so a toolLoop driver, which gets
- *  a workspace for `cwd` bookkeeping alone, is not also told it can read
- *  and write files there. */
+ *  `capabilities.toolLoop` is set gets workspace file tools (`read_file`,
+ *  `write_file`, `edit_file`) when `worksInWorkspace` is true, or full host
+ *  tools when `hasLocalComputer` is granted. */
 export function hasFileTools(
   worksInWorkspace: boolean,
-  toolLoopDriver: boolean,
+  _toolLoopDriver?: boolean,
   hasLocalComputer?: boolean,
 ): boolean {
-  if (!worksInWorkspace) return false;
-  if (!toolLoopDriver) return true;
+  if (worksInWorkspace) return true;
   return Boolean(hasLocalComputer);
 }

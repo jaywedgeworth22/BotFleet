@@ -115,15 +115,16 @@ describe("hasFileTools", () => {
     expect(hasFileTools(true, false)).toBe(true);
   });
 
-  it("is suppressed for a toolLoop (no-file-tools) driver even though it has a workspace for cwd bookkeeping", () => {
-    expect(hasFileTools(true, true)).toBe(false);
+  it("is enabled for a toolLoop driver with a workspace for workspace file tools", () => {
+    expect(hasFileTools(true, true)).toBe(true);
   });
 
   it("is enabled for a toolLoop driver when localComputer is mounted", () => {
     expect(hasFileTools(true, true, true)).toBe(true);
   });
 
-  it("is suppressed when the driver has no workspace at all", () => {
+  it("is suppressed when the driver has no workspace and no host computer", () => {
     expect(hasFileTools(false, false)).toBe(false);
+    expect(hasFileTools(false, true)).toBe(false);
   });
 });

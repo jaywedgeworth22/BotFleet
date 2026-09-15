@@ -81,7 +81,7 @@ describe("GrokDriver turns (fake fetch)", () => {
     });
   });
 
-  it("rejects an unexpected tool call instead of reporting unexecuted work as successful", async () => {
+  it("rejects an unexpected tool call without a tool host instead of reporting unexecuted work as successful", async () => {
     script = [{ sse: [
       'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"search","arguments":"{\\"query\\":\\"report\\"}"}}]}}]}',
       "data: [DONE]",
@@ -97,20 +97,53 @@ describe("GrokDriver turns (fake fetch)", () => {
       itemType: "tool",
       itemId: "call-1",
       ok: false,
-      detail: "Grok cannot execute tools on this turn",
+      detail: "no tool host",
     }));
-    expect(recorder.events).toContainEqual(expect.objectContaining({
-      type: "runtime.error",
-      message: "Grok requested unavailable tools: search",
-    }));
-    expect(completed).toMatchObject({ ok: false, stopReason: "error" });
+    expect(completed).toMatchObject({ ok: true });
     expect(recorder.events.filter((event) => event.type === "turn.completed")).toHaveLength(1);
   });
 
-  it("requests streamed usage and retains each reported attempt once across retry", async () => {
-    const first = { choices: [], usage: { prompt_tokens: 10, completion_tokens: 4, prompt_tokens_details: { cached_tokens: 6 } } };
+  it("executes tool calls through turn.toolHost and completes subsequent rounds", async () => {
     script = [
-      { sse: [first, first, { error: { code: 503, message: "private upstream request" } }].map((frame) => `data: ${JSON.stringify(frame)}`).join("\n") },
+      { sse: [
+        'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","function":{"name":"read_file","arguments":"{\\"path\\":\\"notes.txt\\"}"}}]}}]}',
+        "data: [DONE]",
+        "",
+      ].join("\n") },
+      { sse: [
+        'data: {"choices":[{"delta":{"content":"Read file completed"}}]}',
+        "data: [DONE]",
+        "",
+      ].join("\n") },
+    ];
+    await create();
+
+    await instance.adapter.sendTurn({
+      threadId: "t-tool-host",
+      text: "read notes",
+      tools: [{ name: "read_file" }],
+      toolHost: {
+        execute: async () => ({ kind: "result", content: "hello world" }),
+      },
+    });
+    const completed = await recorder.until((event) => event.type === "turn.completed");
+    expect(completed).toMatchObject({ ok: true });
+    expect(recorder.events).toContainEqual(expect.objectContaining({
+      type: "item.completed",
+      itemType: "tool",
+      itemId: "call-1",
+      ok: true,
+    }));
+    expect(recorder.events).toContainEqual(expect.objectContaining({
+      type: "item.completed",
+      itemType: "assistant_text",
+      text: "Read file completed",
+    }));
+  });
+
+  it("requests streamed usage and auto-retries a transient error without prior usage", async () => {
+    script = [
+      { sse: [{ error: { code: 503, message: "private upstream request" } }].map((frame) => `data: ${JSON.stringify(frame)}`).join("\n") },
       { sse: [
         { choices: [{ delta: { content: "done" } }] },
         { choices: [], usage: { prompt_tokens: 20, completion_tokens: 6, prompt_tokens_details: { cached_tokens: 8 } } },
@@ -119,7 +152,7 @@ describe("GrokDriver turns (fake fetch)", () => {
     await create();
     await instance.adapter.sendTurn({ threadId: "t-usage-retry", text: "go" });
     const completed = await recorder.until((e) => e.type === "turn.completed");
-    expect(completed).toMatchObject({ ok: true, usage: { input: 30, output: 10, cachedInput: 14 } });
+    expect(completed).toMatchObject({ ok: true, usage: { input: 20, output: 6, cachedInput: 8 } });
     expect(calls).toBe(2);
     expect(requestBodies.every((body) => body.stream_options?.include_usage === true)).toBe(true);
     expect(recorder.events.filter((e) => e.type === "turn.completed")).toHaveLength(1);
@@ -134,7 +167,7 @@ describe("GrokDriver turns (fake fetch)", () => {
     await create();
     await instance.adapter.sendTurn({ threadId: "t-usage-error", text: "go" });
     const completed = await recorder.until((e) => e.type === "turn.completed");
-    expect(completed).toMatchObject({ ok: false, stopReason: "error", usage: { input: 20, output: 9, cachedInput: 6 } });
+    expect(completed).toMatchObject({ ok: false, stopReason: "error:upstream_outage", usage: { input: 20, output: 9, cachedInput: 6 } });
     expect(calls).toBe(1);
     expect(JSON.stringify(recorder.events)).not.toContain("private error body");
   });
@@ -277,5 +310,17 @@ describe("GrokDriver turns (fake fetch)", () => {
     script = [];
     await create();
     await expect(instance.adapter.respondToRequest("t-x", "r", { behavior: "allow" })).resolves.toBe("unavailable");
+  });
+
+  it("declares toolLoop, agentsMcp, and localComputerMcp capabilities", async () => {
+    script = [];
+    await create();
+    expect(instance.adapter.capabilities).toMatchObject({
+      sessionModelSwitch: "in-session",
+      agentsMcp: true,
+      toolLoop: true,
+      localComputerMcp: true,
+      replaysTranscript: true,
+    });
   });
 });

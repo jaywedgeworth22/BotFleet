@@ -257,6 +257,12 @@ describe("gating", () => {
     // Computer tools are on the HTTP surface only (CLI engines bring their own)
     const mcpWithComputer = mcpToolDefinitions(gate({ localComputer: true })).map((t) => t.name);
     expect(mcpWithComputer).not.toContain("bash");
+
+    const withWorkspace = httpToolDefinitions(gate({ localComputer: false, workspace: true })).map((t) => t.name);
+    expect(withWorkspace).not.toContain("bash");
+    expect(withWorkspace).toContain("read_file");
+    expect(withWorkspace).toContain("write_file");
+    expect(withWorkspace).toContain("edit_file");
   });
 });
 
