@@ -231,6 +231,7 @@ public struct BotTask: Codable, Hashable, Sendable {
     public var createdAt: Double
     /// Last message in this task's thread. Absent on older harnesses.
     public var lastActivity: Double?
+    public var lastMessage: Message?
     public var usage: TaskUsage?
     public var modelSelection: ModelSelection?
 }
@@ -256,6 +257,7 @@ public struct Bot: Codable, Hashable, Identifiable, Sendable {
     public var hidden: Bool?
     public var chiefOfStaff: Bool?
     public var approvePeerComms: Bool?
+    public var section: String?
     public var autoApprove: Bool?
     public var autoReview: String?
     public var alwaysAllow: [String]?
@@ -322,6 +324,7 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var createdAt: Double
     public var dm: Bool?
     public var avatarUrl: String?
+    public var section: String?
     public var avatarCrop: AvatarCrop?
     public var cwd: String?
     public var extraCwds: [String]?
@@ -610,6 +613,7 @@ public struct ConfigStatus: Codable, Sendable {
     /// `simple` or `projects`.  Absent means simple.  A leftover `fleet`
     /// value is treated as projects.
     public var conversationMode: String?
+    public var sidebarSectionOrder: [String]?
 
     public var isProjectsMode: Bool {
         let raw = conversationMode?.lowercased()
@@ -691,6 +695,12 @@ public struct BotProfilePatch: Encodable, Sendable {
     public var voice: String?
     public var speakReplies: Bool?
     public var modelSelection: ModelSelection?
+    public var section: SectionString?
+
+    public enum SectionString: Equatable, Sendable {
+        case set(String)
+        case clear
+    }
 
     /// `avatarUrl` needs three wire states: omitted, a stored path, or JSON
     /// null to clear. A nested optional would technically represent that, but
@@ -709,7 +719,8 @@ public struct BotProfilePatch: Encodable, Sendable {
         avatarCrop: AvatarCrop? = nil,
         voice: String? = nil,
         speakReplies: Bool? = nil,
-        modelSelection: ModelSelection? = nil
+        modelSelection: ModelSelection? = nil,
+        section: SectionString? = nil
     ) {
         self.name = name
         self.title = title
@@ -720,10 +731,11 @@ public struct BotProfilePatch: Encodable, Sendable {
         self.voice = voice
         self.speakReplies = speakReplies
         self.modelSelection = modelSelection
+        self.section = section
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection
+        case name, title, description, notifications, avatarUrl, avatarCrop, voice, speakReplies, modelSelection, section
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -742,6 +754,12 @@ public struct BotProfilePatch: Encodable, Sendable {
         try values.encodeIfPresent(voice, forKey: .voice)
         try values.encodeIfPresent(speakReplies, forKey: .speakReplies)
         try values.encodeIfPresent(modelSelection, forKey: .modelSelection)
+        if let section {
+            switch section {
+            case let .set(val): try values.encode(val, forKey: .section)
+            case .clear: try values.encodeNil(forKey: .section)
+            }
+        }
     }
 }
 
@@ -940,14 +958,24 @@ public extension Routine {
 public struct NotificationTarget: Equatable, Sendable {
     public let botId: String
     public let threadId: String
+    /// The pending request this notification answers, when the harness sent
+    /// one (see `NotificationFrame.requestId`).  Nil for an older harness,
+    /// or for a notification that never carried one to begin with.
+    public let requestId: String?
+    /// approval · question · done · routine-failed — carried through so
+    /// Approve/Deny can tell a permission card from a free-text question
+    /// without a network round trip.
+    public let kind: String?
 
-    public init?(botId: String?, threadId: String?) {
+    public init?(botId: String?, threadId: String?, requestId: String? = nil, kind: String? = nil) {
         guard let botId, let threadId,
               !botId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !threadId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         else { return nil }
         self.botId = botId
         self.threadId = threadId
+        self.requestId = requestId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? requestId : nil
+        self.kind = kind
     }
 
     public init?(payload: [String: String]) {
@@ -955,7 +983,8 @@ public struct NotificationTarget: Equatable, Sendable {
     }
 
     /// Local banners store flat string keys.  APNs also nests `thread-id`
-    /// under `aps`.  Either shape must open the same bot and task.
+    /// under `aps`.  Either shape must open the same bot and task — and,
+    /// when present, answer the same pending request.
     public static func fromRemoteUserInfo(_ userInfo: [AnyHashable: Any]) -> NotificationTarget? {
         func string(from value: Any?) -> String? {
             guard let value = value as? String else { return nil }
@@ -965,7 +994,12 @@ public struct NotificationTarget: Equatable, Sendable {
         let botId = string(from: userInfo["botId"])
         let nested = userInfo["aps"] as? [AnyHashable: Any]
         let threadId = string(from: userInfo["threadId"]) ?? string(from: nested?["thread-id"])
-        return NotificationTarget(botId: botId, threadId: threadId)
+        return NotificationTarget(
+            botId: botId,
+            threadId: threadId,
+            requestId: string(from: userInfo["requestId"]),
+            kind: string(from: userInfo["kind"])
+        )
     }
 
     public func requiresTaskSwitch(activeThreadId: String) -> Bool {
@@ -1117,6 +1151,7 @@ public struct RoomPatch: Encodable, Sendable {
     public var extraCwds: [String]?
     public var defaultResponder: GroupResponder?
     public var memberIds: [String]?
+    public var section: BotProfilePatch.SectionString?
 
     public init(
         name: String? = nil,
@@ -1126,7 +1161,8 @@ public struct RoomPatch: Encodable, Sendable {
         cwd: String? = nil,
         extraCwds: [String]? = nil,
         defaultResponder: GroupResponder? = nil,
-        memberIds: [String]? = nil
+        memberIds: [String]? = nil,
+        section: BotProfilePatch.SectionString? = nil
     ) {
         self.name = name
         self.bulletin = bulletin
@@ -1136,10 +1172,11 @@ public struct RoomPatch: Encodable, Sendable {
         self.extraCwds = extraCwds
         self.defaultResponder = defaultResponder
         self.memberIds = memberIds
+        self.section = section
     }
 
     private enum CodingKeys: String, CodingKey {
-        case name, bulletin, avatarUrl, avatarCrop, cwd, extraCwds, defaultResponder, memberIds
+        case name, bulletin, avatarUrl, avatarCrop, cwd, extraCwds, defaultResponder, memberIds, section
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -1157,5 +1194,244 @@ public struct RoomPatch: Encodable, Sendable {
         try values.encodeIfPresent(extraCwds, forKey: .extraCwds)
         try values.encodeIfPresent(defaultResponder, forKey: .defaultResponder)
         try values.encodeIfPresent(memberIds, forKey: .memberIds)
+        if let section {
+            switch section {
+            case let .set(val): try values.encode(val, forKey: .section)
+            case .clear: try values.encodeNil(forKey: .section)
+            }
+        }
     }
+}
+
+// MARK: - Mac update
+//
+// `GET/POST /api/update/*` on the harness — a companion-only view onto the
+// same on-demand transaction `scripts/update-botfleet-mac.mjs` runs from the
+// desktop.  The phone never drives the transaction directly; it only reads
+// this status and asks the harness to check or run it.
+
+/// The Mac's own running build, as the harness sees it right now.
+public struct MacInstalledBuild: Codable, Hashable, Sendable {
+    /// Absent on a harness that predates version stamping — a short commit
+    /// is still worth showing when there is no marketing version to pair it with.
+    public var version: String?
+    public var sourceCommit: String
+    public var installedAt: String?
+
+    public init(version: String? = nil, sourceCommit: String, installedAt: String? = nil) {
+        self.version = version
+        self.sourceCommit = sourceCommit
+        self.installedAt = installedAt
+    }
+}
+
+/// One commit between the installed build and what is available, newest first.
+public struct MacUpdateCommit: Codable, Hashable, Sendable {
+    public var sha: String
+    public var subject: String
+
+    public init(sha: String, subject: String) {
+        self.sha = sha
+        self.subject = subject
+    }
+}
+
+/// What `origin/main` has that the installed build does not.
+public struct MacAvailableUpdate: Codable, Hashable, Sendable {
+    public var sourceCommit: String
+    public var version: String?
+    public var aheadBy: Int
+    public var commits: [MacUpdateCommit]
+
+    public init(sourceCommit: String, version: String? = nil, aheadBy: Int, commits: [MacUpdateCommit] = []) {
+        self.sourceCommit = sourceCommit
+        self.version = version
+        self.aheadBy = aheadBy
+        self.commits = commits
+    }
+}
+
+/// An update transaction while it is still running, mirroring the updater's
+/// own step names rather than inventing a client-side vocabulary for them.
+public struct MacUpdateRun: Codable, Hashable, Sendable {
+    public var runId: String
+    public var startedAt: String
+    public var step: String
+    public var progress: Double?
+    public var logTail: [String]
+
+    public init(runId: String, startedAt: String, step: String, progress: Double? = nil, logTail: [String] = []) {
+        self.runId = runId
+        self.startedAt = startedAt
+        self.step = step
+        self.progress = progress
+        self.logTail = logTail
+    }
+}
+
+/// How the most recently finished transaction ended.
+public enum MacUpdateOutcome: String, Codable, Hashable, Sendable {
+    case verified
+    case rolledBack = "rolled-back"
+    case failed
+    case refused
+    /// An outcome this build has never heard of.  The card still has a
+    /// finished run to report; guessing "failed" would claim something the
+    /// harness never said.
+    case unknown
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = MacUpdateOutcome(rawValue: raw) ?? .unknown
+    }
+}
+
+/// The most recent update transaction to finish, whether or not one is
+/// running again now.
+public struct MacUpdateLastRun: Codable, Hashable, Sendable {
+    public var runId: String
+    public var startedAt: String
+    public var finishedAt: String
+    public var outcome: MacUpdateOutcome
+    public var message: String
+    public var receiptPath: String?
+
+    public init(
+        runId: String,
+        startedAt: String,
+        finishedAt: String,
+        outcome: MacUpdateOutcome,
+        message: String,
+        receiptPath: String? = nil
+    ) {
+        self.runId = runId
+        self.startedAt = startedAt
+        self.finishedAt = finishedAt
+        self.outcome = outcome
+        self.message = message
+        self.receiptPath = receiptPath
+    }
+}
+
+/// What this paired device is allowed to do right now.  The card disables its
+/// own buttons from this rather than inferring it from `running`/`lastRun` —
+/// the harness may refuse for reasons that are its own to know and explain,
+/// such as another client already updating or a dirty checkout.
+public struct MacUpdateCapabilities: Codable, Hashable, Sendable {
+    public var canCheck: Bool
+    public var canRun: Bool
+    public var reasons: [String]
+
+    public init(canCheck: Bool, canRun: Bool, reasons: [String] = []) {
+        self.canCheck = canCheck
+        self.canRun = canRun
+        self.reasons = reasons
+    }
+}
+
+/// `GET /api/update/status`, `POST /api/update/check`, and the `update.status`
+/// stream event all answer with this same shape.
+public struct MacUpdateStatus: Codable, Hashable, Sendable {
+    public var installed: MacInstalledBuild
+    public var available: MacAvailableUpdate?
+    /// `null` before this Mac has ever checked — distinct from a real,
+    /// long-ago timestamp, and worth its own "Not checked yet" copy rather
+    /// than folding it into `available == nil`.
+    public var checkedAt: String?
+    /// Why the last check produced no answer, `nil` when it produced one.
+    ///
+    /// A failed `git fetch` leaves the Mac's `origin/main` ref exactly where
+    /// the last good fetch left it, so the comparison behind `available`
+    /// would report a computer that has been offline for a week as up to
+    /// date.  The harness deliberately does not move `checkedAt` in that
+    /// case and sets this instead, so the card can say the check failed
+    /// rather than repeat a stale answer as if it were fresh.  Absent on a
+    /// harness that predates the field, which decodes as `nil` — the same
+    /// as a check that worked.
+    public var checkError: String?
+    public var running: MacUpdateRun?
+    public var lastRun: MacUpdateLastRun?
+    public var capabilities: MacUpdateCapabilities
+
+    public init(
+        installed: MacInstalledBuild,
+        available: MacAvailableUpdate? = nil,
+        checkedAt: String? = nil,
+        checkError: String? = nil,
+        running: MacUpdateRun? = nil,
+        lastRun: MacUpdateLastRun? = nil,
+        capabilities: MacUpdateCapabilities
+    ) {
+        self.installed = installed
+        self.available = available
+        self.checkedAt = checkedAt
+        self.checkError = checkError
+        self.running = running
+        self.lastRun = lastRun
+        self.capabilities = capabilities
+    }
+}
+
+/// `POST /api/update/run`'s 202 body: the run it just started, plus the
+/// status right after starting it — the phone renders progress from this
+/// without a follow-up GET.
+public struct MacUpdateRunStarted: Codable, Hashable, Sendable {
+    public var runId: String
+    public var status: MacUpdateStatus
+
+    public init(runId: String, status: MacUpdateStatus) {
+        self.runId = runId
+        self.status = status
+    }
+}
+
+/// `POST /api/update/check`'s 502 body — why the harness could not reach
+/// the update source, plus the same status shape a 200 would have carried.
+struct MacUpdateCheckFailureBody: Decodable, Sendable {
+    var error: String
+    var status: MacUpdateStatus
+}
+
+/// A check the harness could not complete.  Not an `APIError.status` for the
+/// same reason `MacUpdateRunRefusal` is not: the 502 body carries a full
+/// `MacUpdateStatus`, and the card needs that as much as the sentence — the
+/// installed build and the capabilities are still current, only the
+/// comparison is missing.  Modelled as a throw rather than a field on a
+/// returned status so a caller cannot mistake a failed check for a
+/// successful one just by ignoring `checkError`.
+public struct MacUpdateCheckFailure: Error, LocalizedError, Sendable {
+    public var message: String
+    public var status: MacUpdateStatus
+
+    public init(message: String, status: MacUpdateStatus) {
+        self.message = message
+        self.status = status
+    }
+
+    public var errorDescription: String? { message }
+}
+
+/// `POST /api/update/run`'s 409 body — the harness's reason plus the same
+/// status a 202 would have carried, so `CompanionClient.runUpdate()` can
+/// hand both to the caller instead of only an error string.
+struct MacUpdateRunRefusalBody: Decodable, Sendable {
+    var error: String
+    var status: MacUpdateStatus
+}
+
+/// A refused `runUpdate()` — a run already in progress, or one of
+/// `capabilities.reasons` — carrying both the harness's own reason and the
+/// status right now.  Kept apart from `APIError` because that type's
+/// `.status(code:message:)` case has no room for the status object every
+/// other caller of `runUpdate()` also needs.
+public struct MacUpdateRunRefusal: Error, LocalizedError, Sendable {
+    public var message: String
+    public var status: MacUpdateStatus
+
+    public init(message: String, status: MacUpdateStatus) {
+        self.message = message
+        self.status = status
+    }
+
+    public var errorDescription: String? { message }
 }
