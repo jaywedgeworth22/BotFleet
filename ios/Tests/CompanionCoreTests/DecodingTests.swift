@@ -320,6 +320,10 @@ final class DecodingTests: XCTestCase {
             try statuses(#"{"configured":false,"credentialStore":"Unavailable","services":{}}"#).isAuthoritative,
             "only the exact string server/index.ts writes withdraws the claim; anything else is as unknown as an absent field"
         )
+        XCTAssertFalse(
+            try statuses(#"{"configured":true,"authoritative":false,"credentialStore":"ok","services":{}}"#).isAuthoritative,
+            "an explicit non-authoritative 200 must not wipe a previously verified list"
+        )
     }
 
     func testOneMalformedBotDoesNotHideTheRestOfTheFleet() throws {
