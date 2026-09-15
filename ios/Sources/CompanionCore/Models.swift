@@ -1000,21 +1000,19 @@ public struct ConnectorStatuses: Codable, Sendable {
     /// field. Read it through `isAuthoritative`; nothing should compare it
     /// directly.
     public var credentialStore: String?
+    /// Explicit inventory authority from current servers.  Older computers
+    /// omit it; then `credentialStore` is the only signal.
+    public var authoritative: Bool?
 
     /// Whether `services` is an inventory or an admission of ignorance.
     ///
-    /// `server/index.ts` answers an unreadable Composio credential store with
-    /// an empty map *and* `credentialStore: "unavailable"`, because failing to
-    /// read the store means we do not know what is connected — which is not
-    /// the same as knowing nothing is. An empty map arriving that way must
-    /// never be shown as "nothing is connected": every account may still be
-    /// live on the computer.
-    ///
-    /// Only that exact string withdraws the claim. `"ok"` is authoritative,
-    /// and so is a missing field — a computer old enough not to send it would
-    /// otherwise have every answer treated as unknowable.
+    /// Current servers send `authoritative: false` on a 200 when the
+    /// credential is pending or an upstream check failed.  Those must not
+    /// replace a previously verified list.  Older computers omit the field;
+    /// then only `credentialStore == "unavailable"` withdraws the claim.
     public var isAuthoritative: Bool {
-        credentialStore != "unavailable"
+        if let authoritative { return authoritative }
+        return credentialStore != "unavailable"
     }
 }
 
