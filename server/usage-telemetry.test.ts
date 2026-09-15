@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { DATA_DIR, parseStoredConfig, usageIngestUrl, usageProjectRules, type AppConfig } from "./config.ts";
+import { parseStoredConfig, usageIngestUrl, usageProjectRules, type AppConfig } from "./config.ts";
 import { inferProject, inferProviderAndService, telemetry, UsageTelemetryManager, type UsageSettings } from "./telemetry.ts";
 
 const ENV_KEYS = ["USAGE_MONITOR_INGEST_URL", "USAGE_MONITOR_INGEST_TOKEN", "USAGE_INGEST_TOKEN"] as const;
