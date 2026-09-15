@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   appendPastedText,
+  filesFromClipboard,
   attachmentBasename,
   attachmentImageUrl,
   composeMessage,
@@ -129,5 +130,19 @@ describe("isImageFile", () => {
     expect(isImageFile({ type: "", size: 10, name: "spin.gif" })).toBe(true);
     expect(isImageFile({ type: "", size: 10, name: "mark.svg" })).toBe(true);
     expect(isImageFile({ type: "text/plain", size: 10 })).toBe(false);
+  });
+});
+
+/** Clipboard paste often exposes HEIC plus a converted TIFF under image.* names. */
+describe("filesFromClipboard", () => {
+  it("dedupes generated HEIC + TIFF clipboard items to a single file", () => {
+    const heic = new File([new Uint8Array([1, 2, 3])], "image.heic", { type: "image/heic" });
+    const tiff = new File([new Uint8Array([4, 5, 6, 7])], "image.tiff", { type: "image/tiff" });
+    const out = filesFromClipboard({
+      files: [heic, tiff],
+      items: [],
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0]?.name).toMatch(/^image\.(heic|tiff)$/i);
   });
 });
