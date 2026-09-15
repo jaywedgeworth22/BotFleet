@@ -91,6 +91,12 @@ export function routinePromptFor(availableAgentTools: readonly string[]): string
  *  checkpointing); this narrows it further so a toolLoop driver, which gets
  *  a workspace for `cwd` bookkeeping alone, is not also told it can read
  *  and write files there. */
-export function hasFileTools(worksInWorkspace: boolean, toolLoopDriver: boolean): boolean {
-  return worksInWorkspace && !toolLoopDriver;
+export function hasFileTools(
+  worksInWorkspace: boolean,
+  toolLoopDriver: boolean,
+  hasLocalComputer?: boolean,
+): boolean {
+  if (!worksInWorkspace) return false;
+  if (!toolLoopDriver) return true;
+  return Boolean(hasLocalComputer);
 }
