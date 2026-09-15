@@ -1,14 +1,20 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { homedir } from "node:os";
+import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync } from "node:fs";
+import { dirname } from "node:path";
 import { z } from "zod";
+
+import { writeFileAtomic } from "./atomic.ts";
+
+export interface DurableTelemetryEvent {
+  eventId: string;
+  [key: string]: unknown;
+}
 
 export interface DurableTelemetryBatch {
   schemaVersion: 2;
   producerId: string;
   producerInstanceId: string;
-  events: Array<{ eventId: string }>;
+  events: DurableTelemetryEvent[];
 }
 
 export interface TelemetryDeliveryResult {
@@ -66,7 +72,7 @@ interface DeliveryContext {
 }
 
 interface OutboxOptions {
-  path?: string;
+  path: string;
   maxBatches?: number;
   now?: () => number;
   retryBaseMs?: number;
@@ -75,7 +81,47 @@ interface OutboxOptions {
   onDiagnostic?: (name: "delivery_failed" | "events_rejected" | "overflow_dropped" | "destination_changed" | "persistence_failed" | "corrupt_quarantined", count: number) => void;
 }
 
-const DEFAULT_OUTBOX_PATH = join(homedir(), ".botfleet", "usage-telemetry-outbox.json");
+const SAFE_EVENT_KEYS = [
+  "eventId",
+  "environment",
+  "provider",
+  "service",
+  "project",
+  "producerKeyRef",
+  "providerConnectionRef",
+  "billingAccountRef",
+  "coverage",
+  "billingMode",
+  "metricType",
+  "quantity",
+  "unit",
+  "costUsd",
+  "requests",
+  "credits",
+  "limit",
+  "limitWindow",
+  "tier",
+  "confidence",
+  "windowStart",
+  "windowEnd",
+  "occurredAt",
+  "providerRequestId",
+] as const;
+
+const SAFE_METADATA_KEYS = new Set([
+  "botId",
+  "inputTokens",
+  "outputTokens",
+  "cachedInputTokens",
+  "latencyMs",
+  "success",
+  "tokenType",
+  "model",
+  "instanceId",
+  "usageReported",
+  "roomId",
+  "estimatedCostUsd",
+]);
 
 export function usageTelemetryDestinationHash(endpoint: string): string {
   return createHash("sha256").update(endpoint).digest("hex");
@@ -97,9 +143,42 @@ function emptyState(): StoredOutbox {
 
 function defaultWriteState(path: string, state: StoredOutbox): void {
   mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-  const temp = `${path}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(state)}\n`, { mode: 0o600 });
-  renameSync(temp, path);
+  writeFileAtomic(path, `${JSON.stringify(state)}\n`, { mode: 0o600 });
+  // POSIX rename durability also requires the containing directory entry to
+  // reach disk.  Windows cannot open a directory as a file descriptor.
+  if (process.platform !== "win32") {
+    const directoryFd = openSync(dirname(path), "r");
+    try {
+      fsyncSync(directoryFd);
+    } finally {
+      closeSync(directoryFd);
+    }
+  }
+}
+
+function sanitizeBatchForPersistence(batch: DurableTelemetryBatch): DurableTelemetryBatch {
+  return {
+    schemaVersion: 2,
+    producerId: batch.producerId,
+    producerInstanceId: batch.producerInstanceId,
+    events: batch.events.map((event) => {
+      const sanitized: DurableTelemetryEvent = { eventId: event.eventId };
+      for (const key of SAFE_EVENT_KEYS) {
+        if (key !== "eventId" && event[key] !== undefined) sanitized[key] = event[key];
+      }
+      // Task titles are derived from the first user message.  Keep the field
+      // required by the receiver while ensuring prompt text never reaches the
+      // durable retry file.
+      sanitized.label = "BotFleet turn";
+      const metadata = event.metadata;
+      if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+        sanitized.metadata = Object.fromEntries(
+          Object.entries(metadata).filter(([key]) => SAFE_METADATA_KEYS.has(key)),
+        );
+      }
+      return sanitized;
+    }),
+  };
 }
 
 /**
@@ -123,8 +202,8 @@ export class UsageTelemetryOutbox {
   private inFlightQueueId: string | null = null;
   private readonly pendingDurability = new Set<string>();
 
-  constructor(options: OutboxOptions = {}) {
-    this.path = options.path ?? DEFAULT_OUTBOX_PATH;
+  constructor(options: OutboxOptions) {
+    this.path = options.path;
     this.maxBatches = Math.max(1, Math.floor(options.maxBatches ?? 500));
     this.now = options.now ?? Date.now;
     this.retryBaseMs = Math.max(1, options.retryBaseMs ?? 1_000);
@@ -161,13 +240,14 @@ export class UsageTelemetryOutbox {
     const queueId = createHash("sha256")
       .update(`${destinationHash}\0${batch.producerInstanceId}\0${batch.events.map((event) => event.eventId).join("\0")}`)
       .digest("hex");
+    const persistedBatch = sanitizeBatchForPersistence(batch);
     this.state.queue.push({
       queueId,
       destinationHash,
       enqueuedAt,
       attempts: 0,
       nextAttemptAt: 0,
-      batch: batch as StoredOutbox["queue"][number]["batch"],
+      batch: persistedBatch as StoredOutbox["queue"][number]["batch"],
     });
     this.pendingDurability.add(queueId);
     // Stable event ids are on disk before the first network attempt begins.
@@ -218,7 +298,10 @@ export class UsageTelemetryOutbox {
       // Configuration is live.  Re-read it before every batch so a change
       // during an awaited request cannot route later batches to the old URL.
       const context = this.dispatcher?.() ?? null;
-      if (!context) return;
+      if (!context) {
+        this.schedule(this.retryBaseMs);
+        return;
+      }
       const mismatched = this.state.queue.filter((entry) => entry.destinationHash !== context.destinationHash);
       if (mismatched.length > 0) {
         const mismatchedIds = new Set(mismatched.map((entry) => entry.queueId));

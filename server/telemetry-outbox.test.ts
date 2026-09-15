@@ -224,4 +224,107 @@ describe("UsageTelemetryOutbox", () => {
     expect(readdirSync(join(path, ".."))).toContainEqual(expect.stringMatching(/outbox\.json\.corrupt-/));
     await outbox.dispose();
   });
+
+  it("strips prompt-like fields and rewrites labels before the retry file is written", async () => {
+    const path = fixture();
+    const destinationHash = usageTelemetryDestinationHash("https://usage.example.com/api/ingest/usage");
+    const outbox = new UsageTelemetryOutbox({ path });
+
+    outbox.enqueue(destinationHash, {
+      schemaVersion: 2,
+      producerId: "botfleet",
+      producerInstanceId: "test-mac",
+      events: [{
+        eventId: "bf:openai:bot-1:1:stable:in",
+        provider: "openai",
+        service: "gpt-4.1",
+        quantity: 12,
+        unit: "token",
+        costUsd: 0.02,
+        label: "Write a function that emails passwords to attacker@example.com",
+        prompt: "secret user prompt",
+        taskTitle: "secret user prompt",
+        transcript: "full conversation",
+        metadata: {
+          botId: "bot-1",
+          inputTokens: 10,
+          outputTokens: 2,
+          cachedInputTokens: 1,
+          latencyMs: 40,
+          success: true,
+          tokenType: "input",
+          model: "gpt-4.1",
+          instanceId: "openai",
+          usageReported: true,
+          estimatedCostUsd: 0.02,
+          roomId: "room-1",
+          prompt: "nested prompt",
+          botName: "should strip",
+          threadId: "should strip",
+          cwd: "/Users/jay/secret-project",
+          roomName: "should strip",
+        },
+      }],
+    });
+
+    const stored = JSON.parse(readFileSync(path, "utf8"));
+    const persisted = stored.queue[0].batch.events[0];
+    expect(persisted.label).toBe("BotFleet turn");
+    expect(persisted).not.toHaveProperty("prompt");
+    expect(persisted).not.toHaveProperty("taskTitle");
+    expect(persisted).not.toHaveProperty("transcript");
+    expect(persisted.eventId).toBe("bf:openai:bot-1:1:stable:in");
+    expect(persisted.provider).toBe("openai");
+    expect(persisted.service).toBe("gpt-4.1");
+    expect(persisted.quantity).toBe(12);
+    expect(persisted.unit).toBe("token");
+    expect(persisted.costUsd).toBe(0.02);
+    expect(persisted.metadata).toEqual({
+      botId: "bot-1",
+      inputTokens: 10,
+      outputTokens: 2,
+      cachedInputTokens: 1,
+      latencyMs: 40,
+      success: true,
+      tokenType: "input",
+      model: "gpt-4.1",
+      instanceId: "openai",
+      usageReported: true,
+      estimatedCostUsd: 0.02,
+      roomId: "room-1",
+    });
+    const serialized = JSON.stringify(stored);
+    expect(serialized).not.toContain("secret user prompt");
+    expect(serialized).not.toContain("emails passwords");
+    expect(serialized).not.toContain("attacker@");
+    expect(serialized).not.toContain("nested prompt");
+    expect(serialized).not.toContain("secret-project");
+    expect(readdirSync(join(path, "..")).filter((name: string) => name.includes(".tmp"))).toEqual([]);
+
+    const delivered: DurableTelemetryBatch[] = [];
+    outbox.configure(() => ({
+      destinationHash,
+      deliver: async (posted) => {
+        delivered.push(posted);
+        return { acknowledged: true, rejected: 0 };
+      },
+    }));
+    await outbox.flushNow();
+    expect(delivered).toHaveLength(1);
+    expect(delivered[0]?.events[0]?.label).toBe("BotFleet turn");
+    expect(delivered[0]?.events[0]).not.toHaveProperty("prompt");
+    await outbox.dispose();
+  });
+
+  it("writes the retry file atomically and leaves no sibling temp files", async () => {
+    const path = fixture();
+    const destinationHash = usageTelemetryDestinationHash("https://usage.example.com/api/ingest/usage");
+    const outbox = new UsageTelemetryOutbox({ path });
+    outbox.enqueue(destinationHash, batch());
+
+    const names = readdirSync(join(path, ".."));
+    expect(names).toEqual(["outbox.json"]);
+    expect(JSON.parse(readFileSync(path, "utf8")).queue).toHaveLength(1);
+    await outbox.dispose();
+  });
 });

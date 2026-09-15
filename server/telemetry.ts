@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { homedir, hostname } from "node:os";
-import { basename } from "node:path";
+import { basename, join } from "node:path";
 
 import type { TurnBillingMode } from "./contracts.ts";
 import { getSentry, isSentryActive } from "./sentry.ts";
@@ -99,6 +99,8 @@ export interface TelemetryV2Event {
   confidence: "actual" | "estimated";
   occurredAt: string;
   metadata: TelemetryMetadata;
+  // Durable outbox events are an open bag; this keeps v2 events assignable.
+  [key: string]: unknown;
 }
 
 /** One v2 batch exactly as it goes on the wire.  `producerId` is the fleet
@@ -437,7 +439,12 @@ export class UsageTelemetryManager {
     const enableOutbox = options.enableOutbox ?? process.env.NODE_ENV !== "test";
     this.outbox = enableOutbox
       ? new UsageTelemetryOutbox({
-        path: options.outboxPath ?? process.env.BOTFLEET_USAGE_OUTBOX_PATH,
+        // The outbox itself requires an explicit path and will not pick a
+        // homedir default.  Production still needs a durable location when
+        // neither options nor env named one.
+        path: options.outboxPath
+          ?? process.env.BOTFLEET_USAGE_OUTBOX_PATH
+          ?? join(homedir(), ".botfleet", "usage-telemetry-outbox.json"),
         retryBaseMs: options.retryBaseMs,
         onDiagnostic: (outcome, count) => {
           if (!isSentryActive()) return;
