@@ -42,6 +42,20 @@ describe("buildTurnContext", () => {
     expect(out).toEqual({ turnText: "hi", resume: false });
   });
 
+  it("caps oversized transcripts to 128KB, keeping recent messages and marking omission", () => {
+    const hugeTranscript = [
+      { role: "user" as const, text: "A".repeat(80 * 1024) },
+      { role: "assistant" as const, text: "B".repeat(80 * 1024) },
+      { role: "user" as const, text: "most recent user turn" },
+    ];
+    const out = buildTurnContext({ text: "hi", transcript: hugeTranscript, rewound: false, fresh: true, replaysNatively: false });
+    expect(out.resume).toBe(false);
+    expect(out.turnText).toContain("[Earlier conversation omitted for length]");
+    expect(out.turnText).toContain("most recent user turn");
+    expect(out.turnText).not.toContain("A".repeat(80 * 1024));
+    expect(Buffer.byteLength(out.turnText, "utf8")).toBeLessThan(130 * 1024);
+  });
+
   describe("the chat-completions capabilities.replaysTranscript contract", () => {
     // index.ts derives `replaysNatively` from
     // `instance.adapter.capabilities.replaysTranscript === true` rather than

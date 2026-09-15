@@ -119,6 +119,10 @@ describe("hasFileTools", () => {
     expect(hasFileTools(true, true)).toBe(false);
   });
 
+  it("is enabled for a toolLoop driver when localComputer is mounted", () => {
+    expect(hasFileTools(true, true, true)).toBe(true);
+  });
+
   it("is suppressed when the driver has no workspace at all", () => {
     expect(hasFileTools(false, false)).toBe(false);
   });

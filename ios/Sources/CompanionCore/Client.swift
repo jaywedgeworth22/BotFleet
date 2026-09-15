@@ -360,6 +360,14 @@ public enum APIError: Error, LocalizedError, Sendable {
         if case let .status(code, _) = self { return code == 409 }
         return false
     }
+
+    public var isCancellation: Bool {
+        if case let .transport(detail) = self {
+            let lower = detail.lowercased()
+            return lower == "cancelled" || lower == "canceled"
+        }
+        return false
+    }
 }
 
 public struct CompanionClient: Sendable {
@@ -457,6 +465,9 @@ public struct CompanionClient: Sendable {
         do {
             return try await session.data(for: request)
         } catch {
+            if Task.isCancelled || (error as? URLError)?.code == .cancelled || error is CancellationError {
+                throw CancellationError()
+            }
             throw APIError.transport(error.localizedDescription)
         }
     }
@@ -939,6 +950,7 @@ public struct CompanionClient: Sendable {
         if let at = input.schedule.at { schedule["at"] = at }
         if let time = input.schedule.time { schedule["time"] = time }
         if let weekdays = input.schedule.weekdays { schedule["weekdays"] = weekdays }
+        if let timeZone = input.schedule.timeZone { schedule["timeZone"] = timeZone }
         var body: [String: Any] = [
             "name": input.name, "prompt": input.prompt, "botId": input.botId,
             "runOn": input.runOn, "schedule": schedule, "durationMinutes": input.durationMinutes,

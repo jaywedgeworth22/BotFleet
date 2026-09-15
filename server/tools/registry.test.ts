@@ -86,6 +86,22 @@ describe("every record is complete", () => {
 });
 
 describe("both lanes derive from the same records", () => {
+  it("describes explicit routine timezones consistently on both lanes", () => {
+    const expected = "On update, omit it to preserve the routine's existing timezone";
+    const schemas = [
+      mcpToolDefinitions(gate()).find((tool) => tool.name === "propose_routine")!.inputSchema,
+      httpToolDefinitions(gate()).find((tool) => tool.name === "propose_routine")!.parameters,
+    ];
+    for (const schema of schemas) {
+      const timeZone = (schema.properties as any).schedule.properties.timeZone;
+      expect(timeZone.description).toContain("IANA timezone");
+      expect(timeZone.description).toContain(expected);
+      expect(timeZone.description).toContain("interpret both time and weekdays");
+      expect((schema.properties as any).schedule.properties.time.description).toContain("schedule.timeZone");
+      expect((schema.properties as any).schedule.properties.weekdays.description).toContain("schedule.timeZone");
+    }
+  });
+
   it("cover the same name set for the same gate", () => {
     // THE drift test.  A tool added to one renderer and not the other fails
     // here rather than in a user's transcript six weeks later.
@@ -223,6 +239,24 @@ describe("gating", () => {
       "propose_routine",
       "propose_routine_action",
     ]);
+  });
+
+  it("offers computer tools on HTTP lane when localComputer is enabled", () => {
+    const withoutComputer = httpToolDefinitions(gate({ localComputer: false })).map((t) => t.name);
+    expect(withoutComputer).not.toContain("bash");
+    expect(withoutComputer).not.toContain("read_file");
+    expect(withoutComputer).not.toContain("write_file");
+    expect(withoutComputer).not.toContain("edit_file");
+
+    const withComputer = httpToolDefinitions(gate({ localComputer: true })).map((t) => t.name);
+    expect(withComputer).toContain("bash");
+    expect(withComputer).toContain("read_file");
+    expect(withComputer).toContain("write_file");
+    expect(withComputer).toContain("edit_file");
+
+    // Computer tools are on the HTTP surface only (CLI engines bring their own)
+    const mcpWithComputer = mcpToolDefinitions(gate({ localComputer: true })).map((t) => t.name);
+    expect(mcpWithComputer).not.toContain("bash");
   });
 });
 

@@ -142,7 +142,7 @@ export function classifyDshError(error: unknown): ProviderErrorCode | undefined 
   return undefined;
 }
 
-const support: AcpSupport = {
+export const dshSupport: AcpSupport = {
   driverKind: "dshAgent",
   displayName: "DeepSeek Harness",
   // the vision model below is the one option that CAN take an image, and the
@@ -196,14 +196,22 @@ const support: AcpSupport = {
 
   classifyError: classifyDshError,
 
-  credentialEnv: ["DEEPSEEK_API_KEY", "DSH_HOME", "DSH_RUNTIME_ROOT", "DSH_PERMISSION_MODE"],
+  credentialEnv: [
+    "DEEPSEEK_API_KEY",
+    "MINIMAX_API_KEY",
+    "DSH_HOME",
+    "DSH_RUNTIME_ROOT",
+    "DSH_PERMISSION_MODE",
+  ],
 
   pickAuthMethod: () => null,
   authFailure: "continue",
   isAuthenticated: (env) =>
-    dshCredentialCandidates(env).some(existsSync) || Boolean(env.DEEPSEEK_API_KEY),
+    dshCredentialCandidates(env).some(existsSync) ||
+    Boolean(env.DEEPSEEK_API_KEY) ||
+    Boolean(env.MINIMAX_API_KEY),
 
   buildPromptText: (turn) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),
 };
 
-export const DshAgentDriver = createAcpDriver(support);
+export const DshAgentDriver = createAcpDriver(dshSupport);
