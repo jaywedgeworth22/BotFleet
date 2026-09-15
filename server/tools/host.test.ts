@@ -52,13 +52,15 @@ function deps(over: Partial<TurnToolHostDeps> = {}): TurnToolHostDeps {
 
 const hostFor = (
   over: Partial<TurnToolHostDeps> = {},
-  ctx: { commsDepth?: number; chiefOfStaff?: boolean } = {},
+  ctx: { commsDepth?: number; chiefOfStaff?: boolean; localComputer?: boolean; cwd?: string } = {},
 ) =>
   createTurnToolHost({
     botId: "bot-self",
     threadId: "thread-1",
     commsDepth: ctx.commsDepth ?? 0,
     chiefOfStaff: ctx.chiefOfStaff,
+    localComputer: ctx.localComputer,
+    cwd: ctx.cwd,
     deps: deps(over),
   });
 
@@ -375,5 +377,49 @@ describe("the host asks before a write tool runs", () => {
     );
     expect(asking.asks).toHaveLength(1);
     expect(executeAskBotRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe("host computer tools on HTTP lane", () => {
+  it("rejects computer tools when localComputer is not granted", async () => {
+    const outcome = await hostFor({}, { localComputer: false }).execute(
+      { id: "1", name: "bash", arguments: { command: "echo hi" } },
+      runtime,
+    );
+    expect(outcome).toMatchObject({ kind: "error", detail: "unknown tool" });
+  });
+
+  it("executes read_file without asking for approval", async () => {
+    const asking = askingRuntime("rejected");
+    const outcome = await hostFor({}, { localComputer: true }).execute(
+      { id: "1", name: "read_file", arguments: { path: "package.json", limit: 5 } },
+      asking.runtime,
+    );
+    expect(outcome.kind).toBe("result");
+    expect(outcome.content).toContain("1: {");
+    expect(asking.asks).toEqual([]);
+  });
+
+  it("asks for approval before running bash, executes on allow", async () => {
+    const asking = askingRuntime("allowed-once");
+    const outcome = await hostFor({}, { localComputer: true }).execute(
+      { id: "1", name: "bash", arguments: { command: "echo 'hello host'" } },
+      asking.runtime,
+    );
+    expect(asking.asks).toHaveLength(1);
+    expect(asking.asks[0]).toMatchObject({ tool: "bash", summary: "bash: echo 'hello host'" });
+    expect(outcome.kind).toBe("result");
+    expect(outcome.content).toContain("hello host");
+  });
+
+  it("asks for approval before running bash, fails on deny", async () => {
+    const asking = askingRuntime("rejected");
+    const outcome = await hostFor({}, { localComputer: true }).execute(
+      { id: "1", name: "bash", arguments: { command: "echo 'should not run'" } },
+      asking.runtime,
+    );
+    expect(asking.asks).toHaveLength(1);
+    expect(outcome).toMatchObject({ kind: "error", detail: "denied" });
+    expect(outcome.content).toContain("was not approved");
   });
 });

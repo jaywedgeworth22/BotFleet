@@ -63,6 +63,8 @@ export interface ToolGateContext {
   maxCommsDepth: number;
   /** This bot is its section's Chief of Staff. */
   chiefOfStaff: boolean;
+  /** The bot has access to host computer tools (bash, files) for this turn. */
+  localComputer?: boolean;
 }
 
 /** How a tool asks a person before it runs.  Consumed by the permission
@@ -453,6 +455,138 @@ const LIST_ROUTINES: HarnessTool = {
  *  gets a new call to `createAgentTools`, gets a new counter. */
 export const MAX_CREATED_BOTS_PER_TURN = 4;
 
+const hostComputer = (ctx: ToolGateContext) => Boolean(ctx.localComputer);
+
+const BASH: HarnessTool = {
+  name: "bash",
+  description:
+    "Execute a shell command on the host computer. Use this for running tests, git operations, builds, or inspecting workspace files and system state. Do not run interactive commands or background daemons.",
+  schema: {
+    type: "object",
+    properties: {
+      command: {
+        type: "string",
+        description: "The shell command to execute.",
+      },
+    },
+    required: ["command"],
+  },
+  surfaces: { mcp: false, http: true },
+  gate: hostComputer,
+  sideEffect: "write",
+  settles: "immediate",
+  promptFragment:
+    "Use bash to run shell commands, git operations, tests, and builds on this computer.",
+  approval: {
+    policy: "ask",
+    summary: (args) => {
+      const raw = typeof args.command === "string" ? args.command : "";
+      const text = raw.replace(/\s+/g, " ").trim();
+      return text ? `bash: ${text.slice(0, 160)}` : "bash";
+    },
+  },
+};
+
+const READ_FILE: HarnessTool = {
+  name: "read_file",
+  description:
+    "Read the text content of a file on the host computer. Optionally specify offset (1-based line number) and limit (number of lines to read) for large files.",
+  schema: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Path to the file to read (absolute or relative to current working directory).",
+      },
+      offset: {
+        type: "integer",
+        minimum: 1,
+        description: "Optional 1-based line number to start reading from.",
+      },
+      limit: {
+        type: "integer",
+        minimum: 1,
+        description: "Optional maximum number of lines to read.",
+      },
+    },
+    required: ["path"],
+  },
+  surfaces: { mcp: false, http: true },
+  gate: hostComputer,
+  sideEffect: "read",
+  settles: "immediate",
+  promptFragment: "Use read_file to inspect files in the workspace.",
+};
+
+const WRITE_FILE: HarnessTool = {
+  name: "write_file",
+  description:
+    "Write full text content to a file on the host computer, creating any missing parent directories.",
+  schema: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Path to the file to write (absolute or relative to current working directory).",
+      },
+      content: {
+        type: "string",
+        description: "The complete text content to write to the file.",
+      },
+    },
+    required: ["path", "content"],
+  },
+  surfaces: { mcp: false, http: true },
+  gate: hostComputer,
+  sideEffect: "write",
+  settles: "immediate",
+  promptFragment: "Use write_file to create or overwrite a file in the workspace.",
+  approval: {
+    policy: "ask",
+    summary: (args) => {
+      const p = typeof args.path === "string" ? args.path : "file";
+      return `write file ${p}`;
+    },
+  },
+};
+
+const EDIT_FILE: HarnessTool = {
+  name: "edit_file",
+  description:
+    "Replace a target block of text in an existing file on the host computer. The old_string must appear exactly once in the file.",
+  schema: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description: "Path to the file to edit (absolute or relative to current working directory).",
+      },
+      old_string: {
+        type: "string",
+        description: "The exact text block in the file to replace.",
+      },
+      new_string: {
+        type: "string",
+        description: "The new text to replace old_string with.",
+      },
+    },
+    required: ["path", "old_string", "new_string"],
+  },
+  surfaces: { mcp: false, http: true },
+  gate: hostComputer,
+  sideEffect: "write",
+  settles: "immediate",
+  promptFragment:
+    "Use edit_file to modify an existing file by replacing a unique snippet of text.",
+  approval: {
+    policy: "ask",
+    summary: (args) => {
+      const p = typeof args.path === "string" ? args.path : "file";
+      return `edit file ${p}`;
+    },
+  },
+};
+
 /** Every tool the registry owns, in the order the MCP lane publishes them —
  *  spelled out here, not derived, so reordering this array is a deliberate
  *  edit rather than something that silently reorders the MCP wire list. */
@@ -465,6 +599,10 @@ export const HARNESS_TOOLS: readonly HarnessTool[] = [
   LIST_ROUTINES,
   PROPOSE_ROUTINE,
   PROPOSE_ROUTINE_ACTION,
+  BASH,
+  READ_FILE,
+  WRITE_FILE,
+  EDIT_FILE,
 ];
 
 const BY_NAME = new Map(HARNESS_TOOLS.map((tool) => [tool.name, tool]));
