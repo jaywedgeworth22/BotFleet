@@ -65,6 +65,8 @@ export interface ToolGateContext {
   chiefOfStaff: boolean;
   /** The bot has access to host computer tools (bash, files) for this turn. */
   localComputer?: boolean;
+  /** The bot is working in an assigned workspace directory. */
+  workspace?: boolean;
 }
 
 /** How a tool asks a person before it runs.  Consumed by the permission
@@ -456,6 +458,7 @@ const LIST_ROUTINES: HarnessTool = {
 export const MAX_CREATED_BOTS_PER_TURN = 4;
 
 const hostComputer = (ctx: ToolGateContext) => Boolean(ctx.localComputer);
+const workspaceOrHostComputer = (ctx: ToolGateContext) => Boolean(ctx.localComputer || ctx.workspace);
 
 const BASH: HarnessTool = {
   name: "bash",
@@ -512,7 +515,7 @@ const READ_FILE: HarnessTool = {
     required: ["path"],
   },
   surfaces: { mcp: false, http: true },
-  gate: hostComputer,
+  gate: workspaceOrHostComputer,
   sideEffect: "read",
   settles: "immediate",
   promptFragment: "Use read_file to inspect files in the workspace.",
@@ -537,7 +540,7 @@ const WRITE_FILE: HarnessTool = {
     required: ["path", "content"],
   },
   surfaces: { mcp: false, http: true },
-  gate: hostComputer,
+  gate: workspaceOrHostComputer,
   sideEffect: "write",
   settles: "immediate",
   promptFragment: "Use write_file to create or overwrite a file in the workspace.",
@@ -573,7 +576,7 @@ const EDIT_FILE: HarnessTool = {
     required: ["path", "old_string", "new_string"],
   },
   surfaces: { mcp: false, http: true },
-  gate: hostComputer,
+  gate: workspaceOrHostComputer,
   sideEffect: "write",
   settles: "immediate",
   promptFragment:

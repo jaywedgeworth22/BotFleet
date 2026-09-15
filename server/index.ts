@@ -3357,7 +3357,7 @@ async function startTurn(
       // prompt (chiefOfStaffSystemPrompt) tells it it has.
       const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
       const turnTools = buildTurnTools(
-        { ...integrations, localComputer: hasHostComputer },
+        { ...integrations, localComputer: hasHostComputer, workspace: worksInWorkspace },
         { chiefOfStaff: Boolean(bot.chiefOfStaff) },
       );
       const turnInput = {
@@ -3385,6 +3385,7 @@ async function startTurn(
               threadId,
               commsDepth,
               localComputer: hasHostComputer,
+              workspace: worksInWorkspace,
               cwd: cwd ?? bot.cwd ?? undefined,
               // Read here, not derived from the catalog above: this is what
               // gates create_bot inside the host's own executor (the cap and
@@ -4656,7 +4657,7 @@ async function runGroupMemberTurn(
   const roomTurnTools =
     instance.adapter.capabilities.toolLoop === true
       ? buildTurnTools(
-          { ...integrations, localComputer: hasHostComputer },
+          { ...integrations, localComputer: hasHostComputer, workspace: Boolean(workspace) },
           { chiefOfStaff: Boolean(bot.chiefOfStaff) },
         )
       : [];
@@ -4672,6 +4673,7 @@ async function runGroupMemberTurn(
           threadId,
           commsDepth: hop,
           localComputer: hasHostComputer,
+          workspace: Boolean(workspace),
           cwd: cwd ?? bot.cwd ?? undefined,
           chiefOfStaff: Boolean(bot.chiefOfStaff),
           // Bound to THIS room turn's bot and thread in the same closure

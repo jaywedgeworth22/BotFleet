@@ -52,7 +52,7 @@ function deps(over: Partial<TurnToolHostDeps> = {}): TurnToolHostDeps {
 
 const hostFor = (
   over: Partial<TurnToolHostDeps> = {},
-  ctx: { commsDepth?: number; chiefOfStaff?: boolean; localComputer?: boolean; cwd?: string } = {},
+  ctx: { commsDepth?: number; chiefOfStaff?: boolean; localComputer?: boolean; workspace?: boolean; cwd?: string } = {},
 ) =>
   createTurnToolHost({
     botId: "bot-self",
@@ -60,6 +60,7 @@ const hostFor = (
     commsDepth: ctx.commsDepth ?? 0,
     chiefOfStaff: ctx.chiefOfStaff,
     localComputer: ctx.localComputer,
+    workspace: ctx.workspace,
     cwd: ctx.cwd,
     deps: deps(over),
   });
@@ -421,5 +422,20 @@ describe("host computer tools on HTTP lane", () => {
     expect(asking.asks).toHaveLength(1);
     expect(outcome).toMatchObject({ kind: "error", detail: "denied" });
     expect(outcome.content).toContain("was not approved");
+  });
+
+  it("allows read_file when workspace is set, but rejects bash without localComputer", async () => {
+    const outcome = await hostFor({}, { workspace: true, localComputer: false }).execute(
+      { id: "1", name: "read_file", arguments: { path: "package.json", limit: 3 } },
+      runtime,
+    );
+    expect(outcome.kind).toBe("result");
+    expect(outcome.content).toContain("1: {");
+
+    const bashOutcome = await hostFor({}, { workspace: true, localComputer: false }).execute(
+      { id: "2", name: "bash", arguments: { command: "echo hi" } },
+      runtime,
+    );
+    expect(bashOutcome).toMatchObject({ kind: "error", detail: "unknown tool" });
   });
 });

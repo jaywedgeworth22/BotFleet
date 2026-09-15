@@ -528,9 +528,9 @@ export const OpenAICompatDriver: ProviderDriver<OpenAICompatConfig> = {
       adapter: {
         provider: DRIVER_KIND,
         // no MCP server is mounted in this file and respondToRequest answers
-        // "unavailable": localComputerMcp would be a knob nothing can turn
         // The driver owns both transcript replay and model-to-tool rounds.
-        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true, toolLoop: true, replaysTranscript: true },
+        // localComputerMcp runs host computer tools through the toolLoop host.
+        capabilities: { sessionModelSwitch: "in-session", agentsMcp: true, toolLoop: true, localComputerMcp: true, replaysTranscript: true },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         sweepStuckTurns: async (olderThanMs: number) => {

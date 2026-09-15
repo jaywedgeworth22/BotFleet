@@ -63,6 +63,8 @@ export interface TurnToolHostContext {
   chiefOfStaff?: boolean;
   /** Whether the bot has host computer tools mounted for this turn. */
   localComputer?: boolean;
+  /** Whether the bot is working in an assigned workspace directory. */
+  workspace?: boolean;
   /** Working directory for file and shell operations. */
   cwd?: string;
   deps: TurnToolHostDeps;
@@ -100,6 +102,7 @@ export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
     maxCommsDepth: Number.POSITIVE_INFINITY,
     chiefOfStaff: ctx.chiefOfStaff ?? false,
     localComputer: Boolean(ctx.localComputer),
+    workspace: Boolean(ctx.workspace),
   };
   // The same gate the catalog handed the model.  A hallucinated name, or a
   // real name the model was not offered this turn, finds no executor.

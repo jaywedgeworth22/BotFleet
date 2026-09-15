@@ -13,12 +13,11 @@ import type {
   SendTurnInput,
 } from "../contracts.ts";
 import { newEventId, newId } from "../contracts.ts";
-import { classifyError, computeBackoff, interruptibleDelay, RETRY_MAX_ATTEMPTS } from "./retry.ts";
 import { appendNative } from "./native.ts";
-import { parseToolArguments, toolFields } from "../tool-fields.ts";
+import { toolFields } from "../tool-fields.ts";
 
-import type { TurnUsage } from "./chat-completions/loop.ts";
-import { addTurnUsage, toTurnUsage } from "./chat-completions/usage.ts";
+import { runTurnLoop, type TurnLoopDeps, type TurnUsage } from "./chat-completions/loop.ts";
+import { toTurnUsage } from "./chat-completions/usage.ts";
 import { httpErrorFor } from "./chat-completions/errors.ts";
 
 const DRIVER_KIND = "grok";
@@ -90,7 +89,7 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       });
       if (!res.ok) {
         const body = await res.text().catch(() => "");
-        throw new Error(`xAI HTTP ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+        throw httpErrorFor(res.status, body ? body.slice(0, 200) : "");
       }
       if (!opts.stream) {
         const json: any = await res.json();
@@ -191,7 +190,6 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
       const abort = new AbortController();
-      let streamedText = false;
       // the backoff is scaled down in tests so a fake's transient failures
       // don't stall real seconds
       const retryScale = Number(process.env.FAKE_GROK_RETRY_SCALE ?? "1");
@@ -226,8 +224,9 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       ];
       appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: { model: turn.model, messageCount: messages.length } });
 
+      const model = turn.model ?? MODELS.default;
       emit({ ...base(threadId, turnId), type: "turn.started" });
-      emit({ ...base(threadId, turnId), type: "session.started", sessionId: null, model: turn.model ?? MODELS.default });
+      emit({ ...base(threadId, turnId), type: "session.started", sessionId: null, model });
 
       // Tool ids this turn has already opened a step for.  The stream
       // announces a call once and then keeps sending argument fragments for
@@ -235,143 +234,50 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       // tool would open a dozen rows.
       const started = new Set<string>();
 
-      (async () => {
-        let attempt = 0;
-        let totalUsage: TurnUsage | undefined;
-        for (;;) {
-          let attemptUsage: TurnUsage | null = null;
-          try {
-            const { text, usage, tool_calls } = await complete(messages, turn.model || MODELS.default, {
-              stream: true,
-              tools: openAiTools,
-              signal: abort.signal,
-              onUsage: (usage) => { attemptUsage = usage; },
-              onDelta: (delta) => {
-                streamedText = true;
-                emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
-              },
-              // Contract-shaped tool steps.  These three API drivers used to
-              // emit `tool_call.delta` and `itemType: "tool_call"` — neither
-              // is in the RuntimeEvent union, both were cast past the type
-              // checker with `as any`, and the harness's switch has no arm
-              // for either, so a turn that called five tools rendered no
-              // steps at all.  A streamed delta is only the argument text
-              // arriving, so the step starts here and settles on the
-              // completed call below, where the arguments are whole.
-              onToolCallDelta: (_index, id, name) => {
-                if (!id || started.has(id)) return;
-                started.add(id);
-                emit({
-                  ...base(threadId, turnId),
-                  type: "item.started",
-                  itemType: "tool",
-                  itemId: id,
-                  title: name || "tool",
-                  ...toolFields(name, undefined),
-                });
-              },
-            });
-            totalUsage = addTurnUsage(totalUsage, usage);
-            appendNative(threadId, { dir: "in", source: "xai.chat.completions", msg: { textLength: text.length, usage } });
-            if (text.trim()) {
-              emit({ ...base(threadId, turnId), type: "item.completed", itemType: "assistant_text", text });
-            }
-            if (tool_calls && tool_calls.length > 0) {
-              for (const tc of tool_calls) {
-                // a step whose arguments never streamed still needs a start,
-                // or the completion below settles a row nothing opened
-                if (tc.id && !started.has(tc.id)) {
-                  started.add(tc.id);
-                  emit({
-                    ...base(threadId, turnId),
-                    type: "item.started",
-                    itemType: "tool",
-                    itemId: tc.id,
-                    title: tc.function.name,
-                    ...toolFields(tc.function.name, parseToolArguments(tc.function.arguments)),
-                  });
-                }
-                emit({
-                  ...base(threadId, turnId),
-                  type: "item.completed",
-                  itemType: "tool",
-                  itemId: tc.id,
-                  ok: false,
-                  detail: "Grok cannot execute tools on this turn",
-                });
-              }
-            }
-            if (totalUsage) {
-              emit({ ...base(threadId, turnId), type: "thread.token-usage.updated", ...totalUsage });
-            }
-            active.delete(threadId);
-            const toolNames = ((tool_calls as any[] | undefined) ?? [])
-              .map((tc: any) => tc?.function?.name)
-              .filter(Boolean)
-              .join(", ");
-            if ((tool_calls?.length ?? 0) > 0) {
-              emit({
-                ...base(threadId, turnId),
-                type: "runtime.error",
-                message: `Grok requested unavailable tools${toolNames ? `: ${toolNames}` : ""}`,
-              });
-            }
+      const runRound: TurnLoopDeps["runRound"] = async (roundMessages, opts) => {
+        appendNative(threadId, { dir: "out", source: "xai.chat.completions", msg: { model, messageCount: roundMessages.length, round: opts.round } });
+        const { text, usage, tool_calls } = await complete(roundMessages, model, {
+          stream: true,
+          tools: openAiTools,
+          signal: opts.signal,
+          onUsage: (u) => opts.onUsage?.(u),
+          onDelta: (delta) => {
+            opts.onPublished?.();
+            emit({ ...base(threadId, turnId), type: "content.delta", streamKind: "assistant_text", delta });
+          },
+          onToolCallDelta: (_index, id, name) => {
+            if (!id || started.has(id)) return;
+            started.add(id);
+            opts.onPublished?.();
             emit({
               ...base(threadId, turnId),
-              type: "turn.completed",
-              ok: (tool_calls?.length ?? 0) === 0,
-              stopReason: (tool_calls?.length ?? 0) > 0 ? "error" : null,
-              cost: null,
-              ...(totalUsage ? { usage: totalUsage } : {}),
+              type: "item.started",
+              itemType: "tool",
+              itemId: id,
+              title: name || "tool",
+              ...toolFields(name, undefined),
             });
-            return;
-          } catch (e) {
-            totalUsage = addTurnUsage(totalUsage, attemptUsage);
-            const aborted = (e as Error).name === "AbortError";
-            const failure = e instanceof Error ? e : { text: String(e) };
-            const verdict = classifyError(failure);
-            if (!aborted && !streamedText && verdict.transient && attempt < RETRY_MAX_ATTEMPTS - 1) {
-              const delayMs = computeBackoff(attempt);
-              attempt++;
-              emit({
-                ...base(threadId, turnId),
-                type: "turn.retrying",
-                attempt,
-                delayMs,
-                reason: verdict.reason,
-              });
-              const wait = interruptibleDelay(delayMs * retryScale, abort.signal);
-              const outcome = await wait.promise;
-              if (outcome === "cancelled" || abort.signal.aborted) {
-                active.delete(threadId);
-                emit({
-                  ...base(threadId, turnId),
-                  type: "turn.completed",
-                  ok: false,
-                  stopReason: "interrupted",
-                  cost: null,
-                  ...(totalUsage ? { usage: totalUsage } : {}),
-                });
-                return;
-              }
-              continue;
-            }
-            active.delete(threadId);
-            if (!aborted) {
-              emit({ ...base(threadId, turnId), type: "runtime.error", message: (e as Error).message });
-            }
-            emit({
-              ...base(threadId, turnId),
-              type: "turn.completed",
-              ok: false,
-              stopReason: aborted ? "interrupted" : "error",
-              cost: null,
-              ...(totalUsage ? { usage: totalUsage } : {}),
-            });
-            return;
-          }
-        }
-      })();
+          },
+        });
+        appendNative(threadId, { dir: "in", source: "xai.chat.completions", msg: { textLength: text.length, toolCallsLength: tool_calls?.length ?? 0, usage, round: opts.round } });
+        return { text, usage, toolCalls: tool_calls };
+      };
+
+      void runTurnLoop({
+        base: () => base(threadId, turnId),
+        emit,
+        runRound,
+        messages,
+        toolHost: turn.toolHost,
+        requestApproval: turn.toolHost?.requestApproval
+          ? (ask) => turn.toolHost!.requestApproval!(ask)
+          : undefined,
+        signal: abort.signal,
+        startedToolIds: started,
+        onSettled: () => active.delete(threadId),
+        now: () => Date.now(),
+        retryDelayScale: retryScale,
+      });
 
       return { turnId };
     };
@@ -395,13 +301,13 @@ export const GrokDriver: ProviderDriver<GrokConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
-        // no MCP server is mounted anywhere in this file and respondToRequest
-        // answers "unavailable", so localComputerMcp would be a knob the
-        // driver cannot turn — contracts.ts is explicit that we never show one
-        // replaysTranscript: this driver builds its message array from
-        // `turn.transcript` every round (see the flatMap below), so the
-        // harness must not also inline the same history into the turn text.
-        capabilities: { sessionModelSwitch: "in-session", replaysTranscript: true },
+        capabilities: {
+          sessionModelSwitch: "in-session",
+          agentsMcp: true,
+          toolLoop: true,
+          localComputerMcp: true,
+          replaysTranscript: true,
+        },
         sendTurn,
         interruptTurn: async (threadId) => active.get(threadId)?.abort.abort(),
         respondToRequest: async () => "unavailable" as const, // this engine has no asks to answer

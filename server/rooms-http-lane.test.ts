@@ -252,12 +252,7 @@ posixOnly("room turns run on the HTTP lane", () => {
             config: { url: engine.url },
             environment: { OPENAI_COMPAT_API_KEY: "fake-key-for-tests" },
           },
-          // Direct Grok still has no driver-owned tool loop.
-          "grok-no-loop": {
-            driver: "grok",
-            config: { url: engine.url },
-            environment: { XAI_API_KEY: "fake-key-for-tests" },
-          },
+
         },
       }),
       { mode: 0o600 },
@@ -331,33 +326,6 @@ posixOnly("room turns run on the HTTP lane", () => {
 
       // one reply, folded once
       expect(await replies(room.threadId)).toEqual(["Scout is free right now."]);
-    },
-    120_000,
-  );
-
-  it(
-    "does not hand a room member on a driver without a tool loop any tools, and still settles once with the reply",
-    async () => {
-      // OpenAI-compatible now owns a loop, so direct Grok is the remaining
-      // HTTP engine that must not receive tools it cannot execute.
-      const member = await makeBot("echo", {}, "grok-no-loop");
-      const room = await makeRoom("Signals", [member.id], { kind: "member", botId: member.id });
-      const before = completionCount();
-
-      engine.queueCompletion(says("All quiet on this channel."));
-      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "status?" })).status).toBe(202);
-
-      expect(await waitForBotIdle(member.id), `the member never went idle. stderr:\n${stderr}`).toBeTruthy();
-      expect(await waitForRoomIdle(room.id), "the room kept its speaker").toBeTruthy();
-
-      // One round, not two: with no catalog offered there is nothing for
-      // the model to call, so there is no partial tool-call round for the
-      // room waiter to ever mistake for a settled turn.
-      expect(completionCount() - before).toBe(1);
-      const rounds = engine.requests.filter((r) => r.url.includes("/chat/completions")).slice(before);
-      expect(rounds[0].body).not.toHaveProperty("tools");
-
-      expect(await replies(room.threadId)).toEqual(["All quiet on this channel."]);
     },
     120_000,
   );
