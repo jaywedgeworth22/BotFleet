@@ -1,6 +1,6 @@
 // Static tool catalog for HTTP drivers (MiniMax, OpenAI-compatible).
 //
-// CLI drivers (Claude, Codex, DSH, Droid, Pi, ACP engines) mount MCP
+// CLI drivers (Claude, Codex, Droid, Pi, ACP engines) mount MCP
 // servers at turn time and discover tools at runtime, so they do not need a
 // static catalog.  HTTP drivers cannot, so the harness has to hand the model
 // a tool list on the wire.

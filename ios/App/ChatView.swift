@@ -719,7 +719,8 @@ struct ChatView: View {
                 .transition(.opacity)
             } else if draft.isEmpty && !hasPendingApproval {
                 PredictiveActionChipsView(accentColor: MausPalette.color(current.color)) { chip in
-                    submit(chip.prompt)
+                    draft = chip.prompt
+                    composerFocused = true
                 }
                 .transition(.opacity)
             }
