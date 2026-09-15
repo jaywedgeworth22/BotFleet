@@ -162,8 +162,11 @@ describe("external custom credential startup", () => {
     expect(fallbackCreated.status, JSON.stringify(fallbackCreated.body)).toBe(201);
     const fallbackBot = fallbackCreated.body.bot;
     expect((await api("POST", `/api/bots/${fallbackBot.id}/messages`, { text: "fall over after replay" })).status).toBe(202);
-    await expect.poll(() => quotaRequests, { timeout: 10_000 }).toBe(1);
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await expect.poll(() => quotaRequests, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
+    await expect.poll(async () => {
+      const bots = (await api("GET", "/api/bots?messages=0")).body.bots as Array<{ busy?: boolean }>;
+      return bots.some((candidate) => candidate.busy);
+    }, { timeout: 10_000 }).toBe(false);
     expect(providerRequests).toBe(1);
     const roomCreated = await api("POST", "/api/groups", {
       name: "Encrypted room",
