@@ -980,6 +980,22 @@ export function GroupView({ group }: { group: Group }) {
   const [membersOpen, setMembersOpen] = useState(false);
   const [findOpen, setFindOpen] = useState(false);
   const [replyTo, setReplyTo] = useState<Message | null>(null);
+  const [composerHeight, setComposerHeight] = useState(140);
+  const composerContainerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = composerContainerRef.current;
+    if (!el) return;
+    const update = () => {
+      const height = Math.round(el.offsetHeight);
+      if (height > 0) setComposerHeight((prev) => (prev !== height ? height : prev));
+    };
+    update();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => update());
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [group.id]);
   const membersTriggerRef = useRef<HTMLButtonElement>(null);
   const closeMembers = useCallback(() => setMembersOpen(false), []);
   useEffect(() => setFindOpen(false), [group.threadId]);
@@ -1155,7 +1171,7 @@ export function GroupView({ group }: { group: Group }) {
     if (!el || !followRef.current) return;
     el.scrollTo({ top: el.scrollHeight });
     previousScrollTop.current = el.scrollTop;
-  }, [group.id, group.threadId, group.messages.length, streaming, group.busyBotId, follow]);
+  }, [group.id, group.threadId, group.messages.length, streaming, group.busyBotId, follow, composerHeight]);
 
   // Expanding prepends rows: capture the height first, then after the commit
   // shift scrollTop by the growth so the message under the cursor stays put
@@ -1450,7 +1466,8 @@ export function GroupView({ group }: { group: Group }) {
           </div>
         ) : (
         <div
-          className="flex w-full flex-col gap-3 pb-24"
+          className="flex w-full flex-col gap-3"
+          style={{ paddingBottom: `${Math.max(composerHeight + 24, 160)}px` }}
           role="log"
           aria-live="polite"
           aria-label={`Room ${group.name}`}
@@ -1538,7 +1555,10 @@ export function GroupView({ group }: { group: Group }) {
         )}
       </div>
 
-      <div className="absolute inset-x-0 bottom-0 z-[2] flex flex-col items-center">
+      <div
+        ref={composerContainerRef}
+        className="absolute inset-x-0 bottom-0 z-[2] flex flex-col items-center"
+      >
       {!follow && (
         <button
           onClick={() => {

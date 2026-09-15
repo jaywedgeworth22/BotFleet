@@ -4,10 +4,14 @@ import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  attachFeedbackEventDetails,
+  buildFallbackIssueUrl,
   initSentry,
   initSentryFromRuntime,
+  isSentryFeedbackAvailable,
   refreshSentryFromRuntime,
   resetSentryForTests,
+  setActiveFeedbackDetailsForTests,
   setObservabilityReaderForTests,
   setSentryPortForTests,
   type ObservabilityReader,
@@ -92,7 +96,7 @@ describe("browser Sentry", () => {
     expect(src).toMatch(/maskAllText:\s*true/);
     expect(src).toMatch(/blockAllMedia:\s*true/);
     expect(src).toMatch(/feedbackIntegration\(/);
-    expect(src).toMatch(/autoInject:\s*true/);
+    expect(src).toMatch(/autoInject:\s*false/);
     expect(src).toMatch(/enableLogs:\s*true/);
   });
 
@@ -204,19 +208,115 @@ describe("renderer diagnostics refresh", () => {
     expect(sentry.record.closes).toBe(0);
   });
 
-  it("leaves a build-time client pinned to the DSN the release was built with", async () => {
+  it("applies the runtime kill switch to a packaged build and can re-enable with a changed key", async () => {
     vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    vi.stubEnv("VITE_SENTRY_ENV", "production");
+    vi.stubEnv("VITE_SENTRY_TRACES_SAMPLE_RATE", "0.2");
+    vi.stubEnv("VITE_SENTRY_REPLAY_ENABLED", "false");
     initSentry();
     expect(sentry.record.inits).toHaveLength(1);
-    expect(sentry.record.inits[0]).toMatchObject({ dsn: BUILD_DSN });
+    expect(sentry.record.inits[0]).toMatchObject({
+      dsn: BUILD_DSN,
+      replayEnabled: false,
+      replaysSessionSampleRate: 0,
+      replaysOnErrorSampleRate: 0,
+    });
 
-    harness.answer({ enabled: false, dsn: null });
-    await refreshSentryFromRuntime();
-    expect(sentry.record.closes).toBe(0);
+    harness.answer({ enabled: false, requestedEnabled: false, dsn: null });
+    await initSentryFromRuntime();
+    expect(sentry.record.closes).toBe(1);
     expect(sentry.record.inits).toHaveLength(1);
-    // The harness is never even asked: Settings governs the harness, not a
-    // shipped build's own reporting.
-    expect(harness.calls()).toBe(0);
+
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null, environment: "production", tracesSampleRate: 0.2 });
+    await refreshSentryFromRuntime();
+    expect(sentry.record.inits).toHaveLength(2);
+    expect(sentry.record.inits[1]).toMatchObject({ dsn: BUILD_DSN });
+
+    harness.answer({ enabled: true, requestedEnabled: true, dsn: ROTATED_DSN, environment: "staging", tracesSampleRate: 0.5 });
+    await refreshSentryFromRuntime();
+    expect(sentry.record.closes).toBe(2);
+    expect(sentry.record.inits).toHaveLength(3);
+    expect(sentry.record.inits[2]).toMatchObject({
+      dsn: ROTATED_DSN,
+      environment: "staging",
+      tracesSampleRate: 0.5,
+      replayEnabled: false,
+      replaysSessionSampleRate: 0,
+      replaysOnErrorSampleRate: 0,
+    });
+
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null });
+    await refreshSentryFromRuntime();
+    expect(sentry.record.closes).toBe(3);
+    expect(sentry.record.inits).toHaveLength(4);
+    expect(sentry.record.inits[3]).toMatchObject({ dsn: BUILD_DSN });
+    expect(harness.calls()).toBe(4);
+  });
+
+  it("does not start the packaged client before the saved opt-out is known", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    let finishBoot: ((value: RuntimeObservability) => void) | undefined;
+    setObservabilityReaderForTests(() => new Promise((resolve) => { finishBoot = resolve; }));
+
+    const boot = initSentryFromRuntime();
+    expect(sentry.record.inits).toHaveLength(0);
+
+    finishBoot?.({ enabled: false, requestedEnabled: false, dsn: null });
+    await boot;
+    expect(sentry.record.inits).toHaveLength(0);
+    expect(sentry.record.closes).toBe(0);
+  });
+
+  it("starts the packaged default only after a successful enabled runtime read", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null });
+
+    await initSentryFromRuntime();
+
+    expect(sentry.record.inits).toHaveLength(1);
+    expect(sentry.record.inits[0]).toMatchObject({ dsn: BUILD_DSN });
+  });
+
+  it("keeps a packaged client running when the runtime status is unavailable", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    initSentry();
+    harness.answer(null);
+
+    await initSentryFromRuntime();
+
+    expect(harness.calls()).toBe(1);
+    expect(sentry.record.inits).toHaveLength(1);
+    expect(sentry.record.closes).toBe(0);
+    expect(sentry.record.running).toBe(true);
+  });
+
+  it("keeps normal packaged diagnostics when the harness is merely unconfigured", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    initSentry();
+    harness.answer({ enabled: false, requestedEnabled: true, dsn: null });
+
+    await initSentryFromRuntime();
+
+    expect(sentry.record.inits).toHaveLength(1);
+    expect(sentry.record.closes).toBe(0);
+    expect(sentry.record.running).toBe(true);
+  });
+
+  it("ignores a stale boot answer when a newer Settings refresh finishes first", async () => {
+    vi.stubEnv("VITE_SENTRY_DSN", BUILD_DSN);
+    initSentry();
+    let finishBoot: ((value: RuntimeObservability) => void) | undefined;
+    setObservabilityReaderForTests(() => new Promise((resolve) => { finishBoot = resolve; }));
+    const boot = initSentryFromRuntime();
+
+    setObservabilityReaderForTests(async () => ({ enabled: false, requestedEnabled: false, dsn: null }));
+    await refreshSentryFromRuntime();
+    finishBoot?.({ enabled: true, requestedEnabled: true, dsn: RUNTIME_DSN });
+    await boot;
+
+    expect(sentry.record.closes).toBe(1);
+    expect(sentry.record.inits).toHaveLength(1);
+    expect(sentry.record.running).toBe(false);
   });
 
   it("stays inert when the harness will not answer", async () => {
@@ -227,5 +327,62 @@ describe("renderer diagnostics refresh", () => {
     await refreshSentryFromRuntime();
     expect(sentry.record.inits).toHaveLength(0);
     expect(sentry.record.closes).toBe(0);
+  });
+
+  it("buildFallbackIssueUrl bounds total encoded length and safely handles surrogate pairs and lone surrogates", () => {
+    const hugeMessageWithEmoji = "Error: 🔥 something crashed 🚨 " + "x".repeat(10000) + " 💥";
+    const url = buildFallbackIssueUrl("Error in Bot", hugeMessageWithEmoji, 2000);
+    expect(url.length).toBeLessThanOrEqual(2000);
+    expect(url).toContain("https://github.com/jaywedgeworth22/BotFleet/issues/new?title=");
+    expect(url).toContain("Error%20in%20Bot");
+    // Verify decodeURIComponent does not throw (meaning surrogate pairs were not split)
+    expect(() => decodeURIComponent(url)).not.toThrow();
+
+    // Lone surrogate string
+    const loneSurrogate = "Broken surrogate: \uD800 invalid character";
+    expect(() => buildFallbackIssueUrl("Issue \uD800", loneSurrogate)).not.toThrow();
+    const loneUrl = buildFallbackIssueUrl("Issue \uD800", loneSurrogate);
+    expect(() => decodeURIComponent(loneUrl)).not.toThrow();
+
+    // Verify without native toWellFormed (Safari < 16.4 fallback path)
+    const orig = (String.prototype as unknown as Record<string, unknown>).toWellFormed;
+    try {
+      delete (String.prototype as unknown as Record<string, unknown>).toWellFormed;
+      const fallbackUrl = buildFallbackIssueUrl("Fallback \uD800", "Lone \uDC00 and pair \uD83D\uDE00");
+      expect(() => decodeURIComponent(fallbackUrl)).not.toThrow();
+      expect(fallbackUrl).toContain(encodeURIComponent("\uFFFD"));
+      expect(fallbackUrl).toContain(encodeURIComponent("😀"));
+    } finally {
+      (String.prototype as unknown as Record<string, unknown>).toWellFormed = orig;
+    }
+  });
+
+  it("isSentryFeedbackAvailable reflects client initialization state", () => {
+    // When reset/uninitialized
+    expect(isSentryFeedbackAvailable()).toBe(false);
+  });
+
+  it("attachFeedbackEventDetails binds diagnostic details strictly to feedback events", () => {
+    setActiveFeedbackDetailsForTests("Diagnostic crash stack trace");
+
+    // Standard exception or message event (not feedback)
+    const errorEvent = { message: "Network timeout" } as import("@sentry/react").Event;
+    const processedError = attachFeedbackEventDetails(errorEvent);
+    expect(processedError.contexts).toBeUndefined();
+
+    // Feedback event
+    const feedbackEvent = { type: "feedback", contexts: { user_tag: { value: "user" } } } as import("@sentry/react").Event;
+    const processedFeedback = attachFeedbackEventDetails(feedbackEvent);
+    expect(processedFeedback.contexts).toEqual({
+      user_tag: { value: "user" },
+      reported_problem: {
+        error_details: "Diagnostic crash stack trace",
+      },
+    });
+
+    // When details cleared
+    setActiveFeedbackDetailsForTests(null);
+    const clearedFeedback = attachFeedbackEventDetails({ type: "feedback" } as import("@sentry/react").Event);
+    expect(clearedFeedback.contexts).toBeUndefined();
   });
 });

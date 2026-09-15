@@ -111,6 +111,7 @@ describe("observability status resolution", () => {
     const status = observability.getStatus();
     expect(status).toMatchObject({
       enabled: false,
+      requestedEnabled: true,
       configured: false,
       source: "none",
       host: null,
@@ -139,6 +140,7 @@ describe("observability status resolution", () => {
       source: "config",
       configured: true,
       enabled: true,
+      requestedEnabled: true,
       host: "o0.ingest.sentry.io",
       projectId: "1",
     });
@@ -166,6 +168,7 @@ describe("observability kill switch", () => {
     const status = observability.apply();
     expect(status.configured).toBe(true);
     expect(status.enabled).toBe(false);
+    expect(status.requestedEnabled).toBe(false);
     expect(isSentryActive()).toBe(false);
     expect(record.inits).toHaveLength(0);
     expect(observabilityBootLine(status)).toBe(

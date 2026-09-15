@@ -145,7 +145,7 @@ export function saveCollapsedSections(
 /** Bot-to-bot DMs are not user rooms.  They stay in this named dropdown
  * even if an older write left a leftover Apps/Work section on the record.
  * Default-collapsed until opened; user contexts keep a stored order. */
-export const BOT_CHATS_SECTION = "Bot Chats";
+export const BOT_CHATS_SECTION = "Bot ↔ Bot";
 export const SIDEBAR_BOT_CHATS_INIT_KEY = "botfleet.sidebarBotChatsInit";
 export const SIDEBAR_SECTION_ORDER_KEY = "botfleet.sidebarSectionOrder";
 export const SECTION_DRAG_TYPE = "application/x-botfleet-section";
