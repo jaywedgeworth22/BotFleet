@@ -561,9 +561,11 @@ struct ChatListView: View {
         }
     }
 
+    /// Stored as a JSON array rather than a comma-joined string, because a section
+    /// name may itself contain a comma.  See `CollapsedSections`.
     private var collapsedSections: Set<String> {
-        get { Set(collapsedSectionsStr.split(separator: ",").map(String.init).filter { !$0.isEmpty }) }
-        set { collapsedSectionsStr = Array(newValue).joined(separator: ",") }
+        get { CollapsedSections.decode(collapsedSectionsStr) }
+        set { collapsedSectionsStr = CollapsedSections.encode(newValue) }
     }
 
     /// Pre-rename stored key.  Move it onto "Bot Chats" so a collapsed preference survives.
@@ -574,22 +576,20 @@ struct ChatListView: View {
         guard set.contains(legacy) else { return }
         set.remove(legacy)
         set.insert(current)
-        collapsedSectionsStr = Array(set).joined(separator: ",")
+        collapsedSections = set
     }
 
     private func sectionBinding(for section: String) -> Binding<Bool> {
         Binding(
             get: { !collapsedSections.contains(section) },
             set: { expanded in
-                var set = Set(
-                    collapsedSectionsStr.split(separator: ",").map(String.init).filter { !$0.isEmpty }
-                )
+                var set = collapsedSections
                 if expanded {
                     set.remove(section)
                 } else {
                     set.insert(section)
                 }
-                collapsedSectionsStr = Array(set).joined(separator: ",")
+                collapsedSections = set
             }
         )
     }
