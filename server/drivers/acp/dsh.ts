@@ -103,6 +103,8 @@ export const STATIC_DSH_MODELS: ModelCatalog = {
   options: [
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
+    { id: "MiniMax-M3", label: "MiniMax M3", contextWindow: 1_000_000 },
+    { id: "MiniMax-M2.7", label: "MiniMax M2.7", contextWindow: 204_800 },
   ],
 };
 

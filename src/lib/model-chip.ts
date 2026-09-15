@@ -7,5 +7,11 @@ export function modelChip(bot: Bot | undefined, instances: InstanceInfo[]): { dr
   const engine = instances.find((instance) => instance.instanceId === selection.instanceId);
   const name =
     engine?.models.options.find((option) => option.id === selection.model)?.label ?? selection.model;
-  return { driverKind: engine?.driverKind ?? selection.instanceId, name };
+  let driverKind = engine?.driverKind ?? selection.instanceId;
+  const lower = selection.model.toLowerCase();
+  if (lower.includes("minimax")) driverKind = "minimax";
+  else if (lower.includes("qwen")) driverKind = "qwenAgent";
+  else if (lower.includes("hermes")) driverKind = "hermesAgent";
+  
+  return { driverKind, name };
 }
