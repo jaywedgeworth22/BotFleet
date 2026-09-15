@@ -1,6 +1,6 @@
 import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Check, Clock, Hand, Mic, Paperclip, ShieldCheck, Square, Users, X } from "lucide-react";
+import { ArrowUp, Check, Clock, Hand, Mic, Paperclip, ShieldCheck, Square, Users, X, Zap } from "lucide-react";
 import { useStore, visibleMessages, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useComposerDraft } from "@/lib/drafts";
@@ -283,7 +283,7 @@ export function Composer({
   const [queued, setQueued] = useState<{ text: string; replyToId?: string } | null>(null);
   const pendingChip = group
     ? queued?.text
-    : undefined;
+    : (bot ? state.pendingQueued?.[bot.threadId]?.at(-1)?.text : undefined);
   // a chip on its own is a message: the send control has to appear for it
   const fileInput = useRef<HTMLInputElement>(null);
   const [autoWarn, setAutoWarn] = useState(false);
@@ -316,7 +316,7 @@ export function Composer({
   };
 
   const hasContent = Boolean(text.trim()) || attachments.length > 0;
-  const send = () => {
+  const send = (opts?: { steerNow?: boolean }) => {
     if (locked) return;
     if (attachments.some((attachment) => attachment.kind === "image") && !imageTargetsSupport(text)) {
       dispatch({ type: "error", message: "The selected responder does not support image attachments." });
@@ -325,7 +325,12 @@ export function Composer({
     const t = composeMessage(text, attachments);
     if (!t) return;
     if (busy && group) {
-      setQueued({ text: t, replyToId: replyTo?.id });
+      if (opts?.steerNow) {
+        dispatch({ type: "interruptGroup", groupId: group.id });
+        dispatch({ type: "sendGroup", groupId: group.id, text: t, replyToId: replyTo?.id });
+      } else {
+        setQueued({ text: t, replyToId: replyTo?.id });
+      }
       setText("");
       setAttachments([]);
       onClearReply?.();
@@ -336,7 +341,10 @@ export function Composer({
       track("message_sent", { room: true });
     } else if (bot) {
       dispatch({ type: "send", botId: bot.id, text: t, replyToId: replyTo?.id });
-      track("message_sent", { driver: bot.modelSelection?.instanceId, queued: busy && !canSteer });
+      if (busy && opts?.steerNow) {
+        dispatch({ type: "interrupt", botId: bot.id });
+      }
+      track("message_sent", { driver: bot.modelSelection?.instanceId, queued: busy && !canSteer, steerNow: opts?.steerNow });
     }
     setText("");
     setAttachments([]);
@@ -479,6 +487,20 @@ export function Composer({
               type="button"
               onClick={() => {
                 if (group) {
+                  dispatch({ type: "interruptGroup", groupId: group.id });
+                } else if (bot) {
+                  dispatch({ type: "interrupt", botId: bot.id });
+                }
+              }}
+              className="rounded px-2 py-0.5 text-[11.5px] font-medium text-accent hover:bg-raised hover:underline"
+              title="Interrupt current turn and send queued messages immediately"
+            >
+              Steer Now
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (group) {
                   setQueued(null);
                   return;
                 }
@@ -489,7 +511,7 @@ export function Composer({
               }}
               aria-label="Cancel Queued Message"
               title="Cancel Queued Message"
-              className="ml-auto flex size-5 shrink-0 items-center justify-center rounded text-ink-secondary hover:bg-raised hover:text-ink"
+              className="flex size-5 shrink-0 items-center justify-center rounded text-ink-secondary hover:bg-raised hover:text-ink"
             >
               <X size={13} strokeWidth={2.5} />
             </button>
@@ -650,10 +672,14 @@ export function Composer({
               onEditLast();
               return;
             }
-            // Shift+Enter inserts a newline; plain Enter sends
+            // Shift+Enter inserts a newline; plain Enter sends; Alt/Cmd+Enter steers immediately when busy
             if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
               e.preventDefault();
-              send();
+              if (busy && !canSteer && (e.altKey || e.metaKey)) {
+                send({ steerNow: true });
+              } else {
+                send();
+              }
             }
             if (e.key === "Escape" && recording) setRecording(false);
           }}
@@ -707,11 +733,30 @@ export function Composer({
             <Mic size={18} />
           </button>
         )}
+        {hasContent && !locked && busy && !canSteer && (
+          <button
+            type="button"
+            onClick={() => send({ steerNow: true })}
+            aria-label="Steer Now (send and interrupt current turn)"
+            title="Steer Now — send message and interrupt current turn immediately (Alt+Enter)"
+            className="flex h-8 items-center gap-1 rounded-full bg-accent px-2.5 text-[12px] font-medium text-white shadow-sm hover:brightness-110"
+          >
+            <Zap size={13} className="fill-current" />
+            <span>Steer Now</span>
+          </button>
+        )}
         {hasContent && !locked && (
           <button
-            onClick={send}
-            aria-label={busy && canSteer ? "Send into the running turn" : busy ? "Queue Message" : "Send Message"}
-            title={busy && canSteer ? "Send into the running turn" : busy ? "Sends when the current turn finishes" : "Send"}
+            type="button"
+            onClick={(e) => {
+              if (busy && !canSteer && e.altKey) {
+                send({ steerNow: true });
+              } else {
+                send();
+              }
+            }}
+            aria-label={busy && canSteer ? "Send into the running turn" : busy ? "Queue Message (Alt+Click to Steer Now)" : "Send Message"}
+            title={busy && canSteer ? "Send into the running turn" : busy ? "Sends when the current turn finishes (Alt+Click to Steer Now)" : "Send"}
             className={cn(
               "flex size-8 shrink-0 items-center justify-center rounded-full text-white",
               busy && !canSteer ? "bg-raised text-ink-secondary hover:bg-raised-hover" : "bg-accent hover:brightness-110",
@@ -719,7 +764,7 @@ export function Composer({
           >
             {busy && !canSteer ? <Clock size={15} /> : <ArrowUp size={17} />}
           </button>
-          )}
+        )}
           </div>
         </div>
       </div>

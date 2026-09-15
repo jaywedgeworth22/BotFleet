@@ -1079,6 +1079,11 @@ struct MessageRow: View {
                 HStack(spacing: 4) {
                     Image(systemName: "clock")
                     Text("Queued — sends when this turn finishes")
+                    Button("Steer Now") {
+                        Task { await session.interrupt(bot: bot) }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(Color.accentColor)
                     Button {
                         Task { await session.cancelQueued(botId: bot.id, queueId: message.queueId ?? message.id) }
                     } label: {
