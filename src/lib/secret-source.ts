@@ -34,6 +34,32 @@ export function secretSourceTone(source: SecretSource | undefined): SecretSource
   return "unset";
 }
 
+/** What the provenance chip actually says.
+ *
+ * `elsewhere` is a path the SERVER found holding this value outside
+ * everything the secret map can see — today only `~/.mmx/config.json`, which
+ * the MiniMax driver reads on its own. It is reported only when no source
+ * the map does see has a value, so it can never claim credit for a key that
+ * is really coming from the environment or the vault. Naming the file beats
+ * "Not set" next to an engine whose turns visibly work. */
+export interface SecretSourceDisplay {
+  label: string;
+  tone: SecretSourceTone;
+  /** True when `label` is a path outside BotFleet rather than a managed
+   * source — the chip renders it verbatim instead of upper-casing it. */
+  external: boolean;
+}
+
+export function secretSourceDisplay(
+  source: SecretSource | undefined,
+  elsewhere?: string | null,
+): SecretSourceDisplay {
+  if (elsewhere && (source === undefined || source === "none")) {
+    return { label: elsewhere, tone: "local", external: true };
+  }
+  return { label: secretSourceLabel(source), tone: secretSourceTone(source), external: false };
+}
+
 export type InfisicalPillTone = "active" | "off" | "error" | "waiting";
 
 export interface InfisicalPillLabel {

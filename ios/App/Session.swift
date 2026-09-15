@@ -75,6 +75,14 @@ final class Session: ObservableObject {
     /// Best-effort authenticated route refresh started by the latest live SSE
     /// hello. Kept separate so endpoint discovery never stalls event delivery.
     private var endpointRefreshTask: Task<Void, Never>?
+    /// Polls `state.macUpdateStatus` on a short interval while a run is in
+    /// progress.  The updater stops the harness partway through and restarts
+    /// it — see `docs/rollouts/2026-09-12-safe-mac-updater.md` — which drops
+    /// this event stream along with whatever frame would have said the run
+    /// finished.  The reconnect below asks once more on its own; this is the
+    /// backstop for the stretch in between, and for a phone that stays
+    /// backgrounded through the whole restart and never sees a reconnect at all.
+    private var macUpdatePollTask: Task<Void, Never>?
     /// Identifies the task currently stored in `streamTask`. A cancelled task
     /// can finish after its replacement starts; its cleanup must not clear
     /// the replacement's handle.
@@ -117,6 +125,9 @@ final class Session: ObservableObject {
         _ = NotificationCoordinator.shared
         NotificationCoordinator.shared.responseHandler = { [weak self] target in
             Task { @MainActor in await self?.openNotification(target) }
+        }
+        NotificationCoordinator.shared.approvalActionHandler = { [weak self] target, approve in
+            _ = await self?.answerPendingRequest(target: target, approve: approve)
         }
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-store-preview"),
@@ -302,6 +313,8 @@ final class Session: ObservableObject {
         streamTask = nil
         endpointRefreshTask?.cancel()
         endpointRefreshTask = nil
+        macUpdatePollTask?.cancel()
+        macUpdatePollTask = nil
         restorePending = false
         pendingNotification = nil
         pairingInvite = CompanionPairingInvitePolicy.nextInvite(
@@ -414,6 +427,8 @@ final class Session: ObservableObject {
         streamTask = nil
         endpointRefreshTask?.cancel()
         endpointRefreshTask = nil
+        macUpdatePollTask?.cancel()
+        macUpdatePollTask = nil
         endLinger()
     }
 
@@ -422,9 +437,12 @@ final class Session: ObservableObject {
 
     /// Leaving the screen: keep the stream alive for the grace period iOS
     /// allows (~30 s) rather than cutting it at once, so an approval that
-    /// lands right after you swipe home still reaches the Live Activity and
-    /// the island. After that, iOS suspends us anyway; disconnect cleanly so
-    /// the cursor is written down at a known point.
+    /// lands right after you swipe home still reaches the notification
+    /// banner and updates the badge.  The Live Activity lifecycle ends every
+    /// activity the moment the app backgrounds, so this linger buys it
+    /// nothing there — only the banner and badge benefit.  After that, iOS
+    /// suspends us anyway; disconnect cleanly so the cursor is written down
+    /// at a known point.
     func linger() {
         guard streamTask != nil, lingerTask == .invalid else { disconnect(); return }
         // A previous request can leave a sleeper behind when iOS refuses the
@@ -501,6 +519,15 @@ final class Session: ObservableObject {
                         // Refresh provider marks after reconnect — instances
                         // may have changed while the phone was backgrounded.
                         Task { await self.warmInstanceDriverKinds() }
+                        // The last frame this phone saw before the gap may
+                        // have said a run was in progress — and the restart
+                        // that gap likely IS took the connection down with
+                        // whatever frame would have said it finished.  Ask
+                        // once, here, rather than waiting on the poll loop's
+                        // own interval to notice the reconnect happened.
+                        if state.macUpdateStatus?.running != nil {
+                            Task { await self.loadMacUpdateStatus() }
+                        }
                         continue
                     }
                     state.apply(frame)
@@ -509,6 +536,9 @@ final class Session: ObservableObject {
                     }
                     NotificationCoordinator.shared.setBadge(state.unreadCount)
                     state.advance(to: frame.seq)
+                    if case .updateStatus = frame.frame {
+                        pollMacUpdateWhileRunning()
+                    }
                 }
                 // the stream ended without an error — the harness went away
                 log.notice("stream ended without an error")
@@ -799,9 +829,11 @@ final class Session: ObservableObject {
     }
 
     /// The same answer, from something that only has the ids — the Live
-    /// Activity's buttons.
-    func answer(threadId: String, requestId: String, choice: String, isPermission: Bool) async {
-        await perform {
+    /// Activity's buttons.  Returns whether it reached the harness; the
+    /// intent ignores that, a notification action does not.
+    @discardableResult
+    func answer(threadId: String, requestId: String, choice: String, isPermission: Bool) async -> Bool {
+        return await perform {
             // Permission cards answer allow/deny; a question answers with
             // the chosen text. The harness tells them apart by `behavior`.
             let behavior = OptionCard.responseBehavior(for: choice, isPermission: isPermission)
@@ -815,6 +847,134 @@ final class Session: ObservableObject {
                 try await $0.respond(threadId: threadId, requestId: requestId, behavior: "answer", message: choice)
             }
         }
+    }
+
+    /// A bare notification-action background launch gets a much smaller
+    /// execution budget than the 15 s full background-fetch grant in
+    /// `CompanionAppDelegate` — long enough for one hydrate-and-respond
+    /// round trip, plus rebuilding the client first on a cold launch, short
+    /// enough to stay well inside what iOS is likely to allow before
+    /// reclaiming the process.
+    private static let approvalActionTimeoutNanoseconds: UInt64 = 8_000_000_000
+
+    /// Signals "this attempt could not even be made" (no client within the
+    /// timeout, or the answer itself failed) to `BackgroundRefreshCoordinator`,
+    /// which maps any thrown error to `.failed` — distinct from a clean
+    /// `false` return, which means "answered nothing on purpose because the
+    /// request was ambiguous."
+    private struct ApprovalActionFailed: Error {}
+
+    /// What answering a notification action actually accomplished.  The
+    /// banner is gone the instant the user taps an action, so this is the
+    /// only way a follow-up notification knows what to say.
+    enum ApprovalActionOutcome: Equatable {
+        case delivered
+        case needsAppOpened
+        case failed
+    }
+
+    /// Every pending approval the session knows about, flattened to the
+    /// three fields the resolver needs.  A method on `Session`, which is
+    /// `@MainActor`, so it reads `state` on the actor that owns it.
+    private func pendingApprovalRecords() -> [PendingApproval] {
+        state.pendingApprovals.compactMap { entry in
+            guard let card = entry.message.card, let requestId = card.requestId else { return nil }
+            return PendingApproval(
+                threadId: entry.threadId,
+                requestId: requestId,
+                isPermission: card.isPermission
+            )
+        }
+    }
+
+    /// Approve or deny from a notification action — Approve/Deny on a lock
+    /// screen banner, or the equivalent remote push.  Resolves which request
+    /// to answer with `ApprovalResolver` — never by picking "whatever is
+    /// pending on this thread", the bug PR #383's review caught, which can
+    /// send a permission deny for a question or a text answer for a
+    /// permission card.  Rebuilds the client first if the action
+    /// cold-launched the process, the same bootstrap `openNotification`
+    /// below already relies on, and bounds the whole attempt so the
+    /// notification's completion handler is never left hanging.  Either way
+    /// this defers to the same `answer(threadId:requestId:choice:isPermission:)`
+    /// above, the one `AnswerApprovalIntent` calls.
+    @discardableResult
+    func answerPendingRequest(target: NotificationTarget, approve: Bool) async -> ApprovalActionOutcome {
+        if client == nil { connect() }
+
+        let threadId = target.threadId
+        let choice = approve ? "Approve" : "Deny"
+        // Declared with the same shape as `CompanionAppDelegate.onRemoteRefresh`,
+        // and reached the same way: `run` takes a plain `@Sendable` closure,
+        // which is NOT isolated to anything, and `state` and `client` belong
+        // to this main-actor type.  Naming the isolation here is what lets
+        // the body read them at all.
+        let attempt: @MainActor @Sendable () async throws -> Bool = {
+            // Poll rather than fail on the first check: a cold launch may
+            // still be rebuilding the client — `restore()` reading the
+            // keychain — right now, and one moment later it may well exist.
+            // No inner cap of its own: `run`'s 8 s deadline above is the
+            // only timeout, and cancelling this sleep when that deadline
+            // hits is what reaches `.failed` correctly.
+            while self.client == nil {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                self.connect()
+            }
+            guard let client = self.client else { throw ApprovalActionFailed() }
+
+            var candidates = self.pendingApprovalRecords()
+            if candidates.first(where: { $0.threadId == threadId }) == nil {
+                // Nothing usable yet — an older harness never named the
+                // request, or this is the first thing the session has
+                // heard about it after a cold launch.
+                _ = try? await self.hydrateSnapshot(using: client)
+                candidates = self.pendingApprovalRecords()
+            }
+
+            switch ApprovalResolver.resolve(
+                threadId: threadId, requestId: target.requestId, kind: target.kind, pending: candidates
+            ) {
+            case let .answer(requestId, isPermission):
+                let sent = await self.answer(
+                    threadId: threadId, requestId: requestId, choice: choice, isPermission: isPermission
+                )
+                if !sent { throw ApprovalActionFailed() }
+                return true
+            case .openApp:
+                return false
+            }
+        }
+        let bounded = await BackgroundRefreshCoordinator.run(
+            timeoutNanoseconds: Self.approvalActionTimeoutNanoseconds
+        ) { try await attempt() }
+
+        let outcome: ApprovalActionOutcome
+        switch bounded {
+        case .newData: outcome = .delivered
+        case .noData: outcome = .needsAppOpened
+        case .failed: outcome = .failed
+        }
+
+        switch outcome {
+        case .delivered:
+            break
+        case .needsAppOpened:
+            // The same destination the explicit Open action already lands
+            // on — prepared now so it is there the moment the app opens.
+            await openNotification(target)
+            NotificationCoordinator.shared.deliverFollowUp(
+                title: "Open BotFleet to Answer",
+                body: "Open the app to answer this request.",
+                target: target
+            )
+        case .failed:
+            NotificationCoordinator.shared.deliverFollowUp(
+                title: "Couldn't Deliver That Answer",
+                body: "Open BotFleet to try again.",
+                target: target
+            )
+        }
+        return outcome
     }
 
     /// Make a new bot. The harness chooses its name, colour and greeting, so
@@ -1438,9 +1598,109 @@ final class Session: ObservableObject {
     }
 
     func refreshNotificationAuthorization() async {
+        // Before reading the status: an install authorized before the app
+        // asked for `.timeSensitive` needs the added option requested once,
+        // and the request cannot lower a grant it already holds.
+        await NotificationCoordinator.shared.requestTimeSensitiveIfNeeded()
         notificationAuthorization = await NotificationCoordinator.shared.authorizationStatus()
         notificationAuthorizationResolved = true
         registerForRemoteNotificationsIfAllowed()
+    }
+
+    // MARK: - Mac update
+
+    /// Fetch the paired Mac's update status once, without asking it to look
+    /// again.  The card calls this on appear; after that, live `update.status`
+    /// events keep `state.macUpdateStatus` current on their own.
+    @discardableResult
+    func loadMacUpdateStatus() async -> MacUpdateStatus? {
+        guard let client else { return nil }
+        do {
+            let status = try await client.updateStatus()
+            state.apply(.updateStatus(status))
+            pollMacUpdateWhileRunning()
+            return status
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// The Check button: ask the harness to look again right now.
+    ///
+    /// A check the harness could not complete still answers with a status —
+    /// the installed build and the capabilities are current, only the
+    /// comparison is missing — so that status is folded in exactly like a
+    /// successful one, carrying `checkError` for the card to render in place
+    /// of the answer it does not have.  It deliberately does not go to
+    /// `actionError`: an unreachable update source is an ordinary thing for
+    /// a laptop to report, and the card says so inline rather than throwing
+    /// an alert over the screen, the same as a refused run.
+    @discardableResult
+    func checkForMacUpdate() async -> MacUpdateStatus? {
+        guard let client else { return nil }
+        do {
+            let status = try await client.checkForUpdates()
+            state.apply(.updateStatus(status))
+            pollMacUpdateWhileRunning()
+            return status
+        } catch let failure as MacUpdateCheckFailure {
+            state.apply(.updateStatus(failure.status))
+            pollMacUpdateWhileRunning()
+            return failure.status
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Start the install.  Returns the harness's own reason when it refused
+    /// (a run already in progress, or one of `capabilities.reasons`) so the
+    /// card can show that sentence inline — `nil` on success, and also on
+    /// any other failure, which already went to `actionError` above.
+    /// Everything after a successful start arrives as `update.status` events
+    /// into `state`, which is what the card actually renders progress from;
+    /// both outcomes fold their own copy of `status` in immediately so the
+    /// card never has to wait on that stream (or a follow-up GET) just to
+    /// know why a refusal happened.
+    @discardableResult
+    func runMacUpdate() async -> String? {
+        guard let client else { return nil }
+        do {
+            let started = try await client.runUpdate()
+            state.apply(.updateStatus(started.status))
+            pollMacUpdateWhileRunning()
+            return nil
+        } catch let refusal as MacUpdateRunRefusal {
+            state.apply(.updateStatus(refusal.status))
+            pollMacUpdateWhileRunning()
+            return refusal.message
+        } catch {
+            actionError = error.localizedDescription
+            return nil
+        }
+    }
+
+    /// Keeps `state.macUpdateStatus` moving while a run is in progress, on a
+    /// plain interval — no-op if a poll is already running or nothing is.
+    /// The updater's restart drops the event stream along with whatever
+    /// frame would have said the run finished (the reconnect handler above
+    /// asks once on its own for exactly that reason), and a phone that never
+    /// backgrounds during the restart may see no reconnect at all to hang
+    /// that ask off of.  Five seconds is short enough that a Settings screen
+    /// left open does not read as stuck, and cheap enough that polling a
+    /// GET for the couple of minutes an install takes costs nothing worth
+    /// avoiding.
+    private func pollMacUpdateWhileRunning() {
+        guard macUpdatePollTask == nil, state.macUpdateStatus?.running != nil else { return }
+        macUpdatePollTask = Task { [weak self] in
+            while let self, !Task.isCancelled, self.state.macUpdateStatus?.running != nil {
+                try? await Task.sleep(for: .seconds(5))
+                guard !Task.isCancelled else { break }
+                _ = await self.loadMacUpdateStatus()
+            }
+            self?.macUpdatePollTask = nil
+        }
     }
 
     func enableNotifications() async {
@@ -1477,14 +1737,23 @@ final class Session: ObservableObject {
         }
     }
 
-    private func perform(quietly: Bool = false, _ body: (CompanionClient) async throws -> Void) async {
-        guard let client else { return }
+    /// Returns whether the body got all the way through.  Almost every
+    /// caller ignores that — the error banner is the answer they want — but
+    /// a notification action has no banner to show and has to know, and
+    /// reading `actionError` to find out would mean clearing a message the
+    /// user may be looking at.
+    @discardableResult
+    private func perform(quietly: Bool = false, _ body: (CompanionClient) async throws -> Void) async -> Bool {
+        guard let client else { return false }
         do {
             try await body(client)
+            return true
         } catch let error as APIError where error.isUnauthorized {
             status = .unauthorized
+            return false
         } catch {
             if !quietly { actionError = error.localizedDescription }
+            return false
         }
     }
 }
@@ -1532,6 +1801,13 @@ enum Chat: Identifiable, Hashable {
         switch self {
         case let .bot(bot): return bot.name
         case let .room(room): return room.name
+        }
+    }
+
+    var section: String? {
+        switch self {
+        case let .bot(bot): return bot.section
+        case let .room(room): return room.section
         }
     }
 
@@ -1625,9 +1901,19 @@ extension CompanionState {
     /// Newest loaded message across this chat's threads. Other tasks may
     /// not be hydrated yet; `latestActivity` still reads their stamps.
     func newestLoadedMessage(for chat: Chat) -> Message? {
-        threadIds(for: chat)
-            .compactMap { visibleTranscript(forThread: $0).last }
-            .max { $0.at < $1.at }
+        var candidates = [Message]()
+        switch chat {
+        case let .bot(bot):
+            if let last = visibleTranscript(forThread: bot.threadId).last { candidates.append(last) }
+            for task in bot.tasks ?? [] {
+                if let last = visibleTranscript(forThread: task.threadId).last ?? task.lastMessage {
+                    candidates.append(last)
+                }
+            }
+        case let .room(room):
+            if let last = visibleTranscript(forThread: room.threadId).last { candidates.append(last) }
+        }
+        return candidates.max { $0.at < $1.at }
     }
 
     /// Roster timestamp: max of loaded transcripts and each task's
