@@ -9,6 +9,11 @@
 // prefers over the file (server/config.ts loadConfig).
 export const WORKSPACE_CREDENTIALS = [
   { section: "xai", field: "key", name: "xaiApiKey", env: "XAI_API_KEY" },
+  // The two engines configured with an endpoint and a key rather than a CLI
+  // login.  Only the key migrates; each one's `url` is configuration and
+  // stays readable in config.json.
+  { section: "openaiCompat", field: "key", name: "openaiCompatApiKey", env: "OPENAI_COMPAT_API_KEY" },
+  { section: "minimax", field: "key", name: "minimaxApiKey", env: "MINIMAX_API_KEY" },
   { section: "deepseek", field: "key", name: "deepseekApiKey", env: "DEEPSEEK_API_KEY" },
   { section: "box", field: "token", name: "boxToken", env: "BOX_TOKEN" },
   { section: "tts", field: "key", name: "ttsKey", env: "OMB_TTS_KEY" },
@@ -16,6 +21,23 @@ export const WORKSPACE_CREDENTIALS = [
   { section: "opencodeGo", field: "apiKey", name: "opencodeGoApiKey", env: "OPENCODE_API_KEY" },
   { section: "infisical", field: "clientSecret", name: "infisicalClientSecret", env: "INFISICAL_CLIENT_SECRET" },
 ];
+
+/** The per-instance environment variable each driver that can carry more than
+ * one instance reads its API key from.  Lives here, in JS, because both sides
+ * need it: server/config.ts re-exports it for the instance routes, and the
+ * desktop shell's boot-time marker repair cannot import TypeScript.  A driver
+ * absent from this table has no per-instance key. */
+export const INSTANCE_API_KEY_ENV = new Map([
+  ["openai-compat", "OPENAI_COMPAT_API_KEY"],
+  ["minimax", "MINIMAX_API_KEY"],
+]);
+
+/** True when this instance entry belongs to a driver that keeps a key of its
+ * own — the entries the encrypted store can hold a credential for. */
+export function instanceKeyedDriver(entry) {
+  return Boolean(entry && typeof entry === "object" && !Array.isArray(entry) &&
+    INSTANCE_API_KEY_ENV.has(entry.driver));
+}
 
 /** Every fixed credential held in credentials.bin.  Composio has its own
  * legacy migration, but it needs the same durable external-storage marker. */
