@@ -1804,6 +1804,13 @@ enum Chat: Identifiable, Hashable {
         }
     }
 
+    var section: String? {
+        switch self {
+        case let .bot(bot): return bot.section
+        case let .room(room): return room.section
+        }
+    }
+
     var isBot: Bool {
         if case .bot = self { return true }
         return false
@@ -1894,9 +1901,19 @@ extension CompanionState {
     /// Newest loaded message across this chat's threads. Other tasks may
     /// not be hydrated yet; `latestActivity` still reads their stamps.
     func newestLoadedMessage(for chat: Chat) -> Message? {
-        threadIds(for: chat)
-            .compactMap { visibleTranscript(forThread: $0).last }
-            .max { $0.at < $1.at }
+        var candidates = [Message]()
+        switch chat {
+        case let .bot(bot):
+            if let last = visibleTranscript(forThread: bot.threadId).last { candidates.append(last) }
+            for task in bot.tasks ?? [] {
+                if let last = visibleTranscript(forThread: task.threadId).last ?? task.lastMessage {
+                    candidates.append(last)
+                }
+            }
+        case let .room(room):
+            if let last = visibleTranscript(forThread: room.threadId).last { candidates.append(last) }
+        }
+        return candidates.max { $0.at < $1.at }
     }
 
     /// Roster timestamp: max of loaded transcripts and each task's
