@@ -31,7 +31,10 @@ if [[ -n "${VERCEL_IGNORE_WATCH:-}" ]]; then
   watch_args=(${VERCEL_IGNORE_WATCH})
 elif [[ -n "$git_root" && "$script_dir" != "$git_root" ]]; then
   rel="${script_dir#"$git_root"/}"
-  watch_args=(":(top)${rel}" "${rel}")
+  # ":top" anchors to the repo root on purpose.  A bare "$rel" would resolve
+  # against the working directory, which IS this folder under Vercel, so it
+  # would match nothing and mislead the next reader.
+  watch_args=(":(top)${rel}")
 else
   watch_args=(
     .
