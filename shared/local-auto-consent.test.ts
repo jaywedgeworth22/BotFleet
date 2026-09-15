@@ -21,4 +21,32 @@ describe("fleet local Auto consent", () => {
     expect(requiresLocalAutoConsent(undefined, undefined, ["cloud"])).toBe(false);
     expect(requiresLocalAutoConsent([], ["local"], null)).toBe(false);
   });
+
+  it("keeps explicit and inherited Local consent even when Auto cannot mount the host", () => {
+    const linux = { hostPlatform: "linux", providerSupportsLocal: true };
+    const unsupported = { hostPlatform: "darwin", providerSupportsLocal: false };
+    expect(requiresLocalAutoConsent(["local"], ["cloud"], ["cloud"], linux)).toBe(true);
+    expect(requiresLocalAutoConsent(["local"], ["cloud"], ["cloud"], unsupported)).toBe(true);
+    expect(requiresLocalAutoConsent(undefined, ["local"], ["cloud"], linux)).toBe(true);
+    expect(requiresLocalAutoConsent(undefined, ["local"], null, unsupported)).toBe(true);
+  });
+
+  it("limits automatic-host consent to Darwin engines that can broker host approvals", () => {
+    expect(requiresLocalAutoConsent(undefined, [], null, { hostPlatform: "darwin" })).toBe(true);
+    expect(requiresLocalAutoConsent(undefined, [], null, {
+      hostPlatform: "darwin",
+      providerSupportsLocal: true,
+    })).toBe(true);
+    expect(requiresLocalAutoConsent(undefined, [], null, {
+      hostPlatform: "darwin",
+      providerSupportsLocal: false,
+    })).toBe(false);
+    expect(requiresLocalAutoConsent(undefined, [], null, { hostPlatform: "linux" })).toBe(false);
+    expect(requiresLocalAutoConsent(undefined, [], null, { hostPlatform: "win32" })).toBe(false);
+    expect(requiresLocalAutoConsent(undefined, [], null, { hostPlatform: "other" })).toBe(false);
+    expect(requiresLocalAutoConsent(undefined, undefined, ["cloud"], {
+      hostPlatform: "darwin",
+      providerSupportsLocal: true,
+    })).toBe(false);
+  });
 });

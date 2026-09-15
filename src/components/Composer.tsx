@@ -23,6 +23,7 @@ import { groupComposerHint, roomRespondersForComposer } from "@/lib/group-routin
 import { PendingApprovalActions, PendingApprovalPanel, pendingApprovals } from "./PendingApproval";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { ReplyQuote } from "./ReplyQuote";
+import { instanceSupportsLocalComputer } from "@/lib/local-computer";
 import { requiresLocalAutoConsent } from "../../shared/local-auto-consent";
 
 /** The active @mention query at the caret: the text between an `@` that
@@ -313,6 +314,10 @@ export function Composer({
       autoBot.computers,
       state.config?.botDefaults?.computers,
       state.config?.botDefaults?.allowedComputers,
+      {
+        hostPlatform: capabilities.host.platform,
+        providerSupportsLocal: instanceSupportsLocalComputer(state.instances, autoBot),
+      },
     )) {
       setAutoWarn(true);
       return;

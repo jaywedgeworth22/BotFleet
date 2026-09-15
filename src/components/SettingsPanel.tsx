@@ -326,6 +326,10 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
     bot.computers,
     state.config?.botDefaults?.computers,
     state.config?.botDefaults?.allowedComputers,
+    {
+      hostPlatform: capabilities.host.platform,
+      providerSupportsLocal,
+    },
   );
   // The server refuses an unsupported destination at turn time; the picker
   // should not have offered it.  See computerDestinationDisabledReason.

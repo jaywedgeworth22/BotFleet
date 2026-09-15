@@ -6153,39 +6153,47 @@ describe("local Auto consent for inherited and discovered computers", () => {
       // harmless and gives the config route a clean before-state.
       expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
 
-      // An empty default restores automatic discovery, including the host
-      // fallback.  The config write must bind consent to the exact fleet and
-      // leave the prior default untouched on refusal.
+      // An empty default restores automatic discovery.  Only Darwin Auto
+      // actually mounts the host from that path, so Linux/Windows must not
+      // demand host-access consent for a grant the bot can never receive.
       const discovered = await api("PUT", "/api/config", {
         botDefaults: { computers: [], allowedComputers: null },
         profile: { name: "Must Not Persist Before Consent" },
       });
-      expect(discovered.status).toBe(400);
-      expect(discovered.body.needsAcknowledgement).toEqual(expect.arrayContaining([
-        { id: bot.id, name: "Inherited Auto" },
-      ]));
-      const refusedConfig = (await api("GET", "/api/config")).body;
-      expect(refusedConfig.botDefaults.computers).toEqual(["cloud"]);
-      expect(refusedConfig.profile?.name).not.toBe("Must Not Persist Before Consent");
-      expect((await api("PUT", "/api/config", {
-        botDefaults: { computers: [], allowedComputers: null },
-        acknowledgeLocalAuto: true,
-        acknowledgedBots: [],
-      })).status).toBe(409);
-      expect((await api("PUT", "/api/config", {
-        botDefaults: { computers: [], allowedComputers: null },
-        acknowledgeLocalAuto: true,
-        acknowledgedBots: discovered.body.needsAcknowledgement,
-      })).status).toBe(200);
+      if (process.platform === "darwin") {
+        expect(discovered.status).toBe(400);
+        expect(discovered.body.needsAcknowledgement).toEqual(expect.arrayContaining([
+          { id: bot.id, name: "Inherited Auto" },
+        ]));
+        const refusedConfig = (await api("GET", "/api/config")).body;
+        expect(refusedConfig.botDefaults.computers).toEqual(["cloud"]);
+        expect(refusedConfig.profile?.name).not.toBe("Must Not Persist Before Consent");
+        expect((await api("PUT", "/api/config", {
+          botDefaults: { computers: [], allowedComputers: null },
+          acknowledgeLocalAuto: true,
+          acknowledgedBots: [],
+        })).status).toBe(409);
+        expect((await api("PUT", "/api/config", {
+          botDefaults: { computers: [], allowedComputers: null },
+          acknowledgeLocalAuto: true,
+          acknowledgedBots: discovered.body.needsAcknowledgement,
+        })).status).toBe(200);
 
-      // The per-bot route must see the same automatic host fallback when
-      // Auto is enabled after the default has already become empty.
-      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: false })).status).toBe(200);
-      expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(400);
-      expect((await api("PATCH", `/api/bots/${bot.id}`, {
-        autoApprove: true,
-        acknowledgeLocalAuto: true,
-      })).status).toBe(200);
+        // The per-bot route must see the same automatic host fallback when
+        // Auto is enabled after the default has already become empty.
+        expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: false })).status).toBe(200);
+        expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(400);
+        expect((await api("PATCH", `/api/bots/${bot.id}`, {
+          autoApprove: true,
+          acknowledgeLocalAuto: true,
+        })).status).toBe(200);
+      } else {
+        expect(discovered.status).toBe(200);
+        expect(discovered.body.needsAcknowledgement).toBeUndefined();
+        expect((await api("GET", "/api/config")).body.botDefaults.computers).toEqual([]);
+        expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: false })).status).toBe(200);
+        expect((await api("PATCH", `/api/bots/${bot.id}`, { autoApprove: true })).status).toBe(200);
+      }
 
       // With Auto off, inheriting an explicit Local default is allowed; the
       // later Auto toggle is the transition that creates the pair.

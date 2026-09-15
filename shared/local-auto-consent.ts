@@ -5,18 +5,30 @@ export interface LocalAutoConsentBot {
 
 export type LocalComputerDestination = "cloud" | "vm" | "local";
 
+/** Host and engine facts that only the automatic-discovery fallback needs.
+ * Explicit and inherited Local grants stay consent-relevant without them. */
+export type LocalAutoConsentCapability = {
+  hostPlatform?: string;
+  providerSupportsLocal?: boolean;
+};
+
 /** Whether Auto mode can gain host control from this stored selection.
  * Explicit and inherited Local grants remain consent-relevant while the
  * allowlist blocks them because they become active when it is widened.  A
  * truly unconfigured bot uses automatic discovery, whose host fallback is
- * relevant only while the allowlist permits Local. */
+ * the Darwin Auto path in `server/local-routing.ts` and is relevant only
+ * while the allowlist permits Local, the host is Darwin, and the engine
+ * can broker host approvals. */
 export function requiresLocalAutoConsent(
   computers: readonly (LocalComputerDestination | "off")[] | undefined,
   workspaceDefault: readonly LocalComputerDestination[] | undefined,
   allowedComputers: readonly LocalComputerDestination[] | null | undefined,
+  capability: LocalAutoConsentCapability = {},
 ): boolean {
   if (computers !== undefined) return computers.includes("local");
   if (workspaceDefault?.length) return workspaceDefault.includes("local");
+  if (capability.providerSupportsLocal === false) return false;
+  if (capability.hostPlatform !== undefined && capability.hostPlatform !== "darwin") return false;
   return allowedComputers == null || allowedComputers.includes("local");
 }
 

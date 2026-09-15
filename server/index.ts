@@ -1,7 +1,11 @@
 // BotFleet server — the harness host. Clients hold no transports
 // (upstream rule): the React app dispatches typed commands over HTTP and
 // folds one SSE event stream; every provider process runs here.
-import { matchesLocalAutoConsent, requiresLocalAutoConsent } from "../shared/local-auto-consent.ts";
+import {
+  matchesLocalAutoConsent,
+  requiresLocalAutoConsent,
+  type LocalAutoConsentCapability,
+} from "../shared/local-auto-consent.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import {  readFileSync, unlinkSync, appendFileSync } from "node:fs";
 import { homedir } from "node:os";
@@ -721,7 +725,23 @@ type ComputerGrantSubject = {
   /** The pre-array spelling some stored bots still carry. */
   computer?: unknown;
   autoApprove?: boolean;
+  modelSelection?: ModelSelection;
 };
+
+/** Automatic-host consent follows `shouldMountLocalComputer`: Darwin Auto
+ * plus an engine that can broker host approvals.  Unknown engines omit the
+ * provider flag so a missing registry entry stays fail-closed on Darwin. */
+function botLocalAutoCapability(bot?: ComputerGrantSubject | null): LocalAutoConsentCapability {
+  const instance = bot?.modelSelection?.instanceId
+    ? registry.get(bot.modelSelection.instanceId)
+    : undefined;
+  return {
+    hostPlatform: process.platform,
+    ...(instance
+      ? { providerSupportsLocal: instance.adapter.capabilities.localComputerMcp === true }
+      : {}),
+  };
+}
 
 /** The destinations a bot holds right now, in either spelling. */
 function currentComputerGrants(bot: ComputerGrantSubject | null | undefined): Array<"cloud" | "vm" | "local"> {
@@ -773,15 +793,18 @@ function localAutoAcknowledgementError(
 ): string | null {
   // A bot that ALREADY holds the pair keeps it: the warning was answered
   // once, and re-saving an unrelated field must not demand it again.
+  const capability = botLocalAutoCapability(existing);
   const alreadyGranted = existing?.autoApprove === true && requiresLocalAutoConsent(
     storedComputerGrants(existing),
     context.currentDefault,
     context.currentAllowed,
+    capability,
   );
   const nextGranted = requiresLocalAutoConsent(
     nextComputers,
     context.nextDefault ?? context.currentDefault,
     context.nextAllowed === undefined ? context.currentAllowed : context.nextAllowed,
+    capability,
   );
   if (nextGranted && nextAutoApprove && !alreadyGranted && !acknowledged) {
     return LOCAL_AUTO_ACK_ERROR;
