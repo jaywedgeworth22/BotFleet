@@ -399,6 +399,12 @@ describe("ingest acknowledgement accounting", () => {
     expect(after.lastError).toBeNull();
   });
 
+  it("defaults the durable outbox under DATA_DIR so OMB_DATA_DIR isolates harnesses", () => {
+    const source = readFileSync(new URL("./telemetry.ts", import.meta.url), "utf8");
+    expect(source).toMatch(/join\(DATA_DIR,\s*"usage-telemetry-outbox\.json"\)/);
+    expect(source).not.toMatch(/homedir\(\),\s*"\.botfleet",\s*"usage-telemetry-outbox\.json"/);
+  });
+
   it("retains an ambiguous 2xx response as a failure instead of assuming delivery", async () => {
     withSettings({ ingestUrl: "https://usage.example.com", ingestToken: "tok_abc" });
     const before = telemetry.getStatus();

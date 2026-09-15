@@ -1,6 +1,12 @@
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { executeRecallCli, fetchRecall, probeRecallService, recallStatus, validateRecallStats } from "./recall-transport.ts";
+import {
+  executeRecallCli, fetchRecall, probeRecallService, recallStatus, selectRecallTransport,
+  validateRecallStats, RECALL_SKIP_PRIVATE_ENV,
+} from "./recall-transport.ts";
 
 const servers: Server[] = [];
 const valid = { collection: "selected-corpus", points: 0, status: "green", embedder_healthy: true };
@@ -87,9 +93,66 @@ describe("Recall transport credential and process boundaries", () => {
   it("passes the selected collection to a local CLI", async () => {
     expect(await executeRecallCli(process.execPath, ["-e", "process.stdout.write(process.env.QDRANT_FLEET_COLLECTION)"], "selected-corpus", 2000)).toBe("selected-corpus");
   });
+  it("asks the local CLI to skip Tailscale and the private Qdrant path", async () => {
+    expect(await executeRecallCli(
+      process.execPath,
+      ["-e", `process.stdout.write(process.env.${RECALL_SKIP_PRIVATE_ENV} || "")`],
+      "",
+      2000,
+    )).toBe("1");
+  });
+  it("honors an explicit service URL instead of a local CLI", () => {
+    expect(selectRecallTransport("https://recall.jays.services", "/usr/bin/recall")).toBe("recall-service");
+    expect(selectRecallTransport("", "/usr/bin/recall")).toBe("recall-cli");
+    expect(selectRecallTransport("", null)).toBe("unconfigured");
+  });
   it("bounds a hung local CLI and its output pipes", async () => {
     const started = Date.now();
     await expect(executeRecallCli(process.execPath, ["-e", "setInterval(() => {}, 1000)"], "", 100)).rejects.toMatchObject({ killed: true });
     expect(Date.now() - started).toBeLessThan(1500);
+  });
+  it.skipIf(process.platform === "win32")("kills a hung descendant in the same process group", async () => {
+    const dir = join(tmpdir(), `recall-group-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const marker = join(dir, "child.pid");
+    const script = join(dir, "hang.js");
+    writeFileSync(script, `
+      const { spawn } = require("node:child_process");
+      const fs = require("node:fs");
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+      fs.writeFileSync(${JSON.stringify(marker)}, String(child.pid));
+      setInterval(() => {}, 1000);
+    `);
+    const started = Date.now();
+    await expect(executeRecallCli(process.execPath, [script], "", 800)).rejects.toMatchObject({ killed: true });
+    expect(Date.now() - started).toBeLessThan(2500);
+    expect(existsSync(marker)).toBe(true);
+    const pid = Number(readFileSync(marker, "utf8"));
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(() => process.kill(pid, 0)).toThrow();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  it.skipIf(process.platform === "win32")("reports a hung local CLI as degraded inside the deadline", async () => {
+    const dir = join(tmpdir(), `recall-hang-${process.pid}-${Date.now()}`);
+    mkdirSync(dir, { recursive: true });
+    const cli = join(dir, "recall");
+    writeFileSync(cli, "#!/bin/sh\nexec sleep 120\n", { mode: 0o755 });
+    expect(existsSync(cli)).toBe(true);
+    const previous = process.env.RECALL_CLI_PATH;
+    process.env.RECALL_CLI_PATH = cli;
+    try {
+      const started = Date.now();
+      const status = await recallStatus({
+        url: "", apiKey: "", collection: `deadline-${Date.now()}`,
+        accessClientId: "", accessClientSecret: "",
+      }, 200);
+      expect(status).toMatchObject({ ready: false, state: "degraded", source: "recall-cli" });
+      expect(String(status.error)).toMatch(/timed out/i);
+      expect(Date.now() - started).toBeLessThan(2000);
+    } finally {
+      if (previous === undefined) delete process.env.RECALL_CLI_PATH;
+      else process.env.RECALL_CLI_PATH = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
