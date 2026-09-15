@@ -54,10 +54,19 @@ const CONV = "conv-fake-123";
 if (process.env.FAKE_AGY_STDERR) writeSync(2, process.env.FAKE_AGY_STDERR);
 if (process.env.FAKE_AGY_DIE) process.exit(Number(process.env.FAKE_AGY_DIE));
 
-// The prompt is the value that follows --print on argv (mirrors the driver,
-// which no longer pipes stdin). A bare --print with no value yields no turn.
-const printIdx = argv.indexOf("--print");
-const prompt = printIdx !== -1 ? argv[printIdx + 1] : undefined;
+// The prompt is the value that follows --print or -p on argv, or read from stdin.
+const printIdx = argv.indexOf("--print") !== -1 ? argv.indexOf("--print") : argv.indexOf("-p");
+let prompt = printIdx !== -1 && argv[printIdx + 1] && !argv[printIdx + 1].startsWith("-") ? argv[printIdx + 1] : undefined;
+if (!prompt && !process.stdin.isTTY) {
+  try {
+    const chunks: Buffer[] = [];
+    for await (const chunk of process.stdin) {
+      chunks.push(chunk);
+    }
+    const raw = Buffer.concat(chunks).toString("utf8").trim();
+    if (raw) prompt = raw;
+  } catch {}
+}
 if (!prompt) process.exit(0);
 
 if (process.env.FAKE_AGY_LEAK_STDOUT) {
