@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { parseStoredConfig, usageIngestUrl, usageProjectRules, type AppConfig } from "./config.ts";
+import { DATA_DIR, parseStoredConfig, usageIngestUrl, usageProjectRules, type AppConfig } from "./config.ts";
 import { inferProject, inferProviderAndService, telemetry, UsageTelemetryManager, type UsageSettings } from "./telemetry.ts";
 
 const ENV_KEYS = ["USAGE_MONITOR_INGEST_URL", "USAGE_MONITOR_INGEST_TOKEN", "USAGE_INGEST_TOKEN"] as const;
@@ -397,6 +397,12 @@ describe("ingest acknowledgement accounting", () => {
     expect(after.totalSent).toBe(before.totalSent + 1);
     expect(after.totalFailed).toBe(before.totalFailed);
     expect(after.lastError).toBeNull();
+  });
+
+  it("defaults the durable outbox under DATA_DIR so OMB_DATA_DIR isolates harnesses", () => {
+    const source = readFileSync(new URL("./telemetry.ts", import.meta.url), "utf8");
+    expect(source).toMatch(/join\(DATA_DIR,\s*"usage-telemetry-outbox\.json"\)/);
+    expect(source).not.toMatch(/homedir\(\),\s*"\.botfleet",\s*"usage-telemetry-outbox\.json"/);
   });
 
   it("retains an ambiguous 2xx response as a failure instead of assuming delivery", async () => {
