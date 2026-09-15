@@ -56,6 +56,22 @@ describe("buildTurnContext", () => {
     expect(Buffer.byteLength(out.turnText, "utf8")).toBeLessThan(130 * 1024);
   });
 
+  it("clips a single entry that alone exceeds the cap instead of replaying it whole", () => {
+    const oneHugeEntry = [{ role: "user" as const, text: "A".repeat(200 * 1024) }];
+    const out = buildTurnContext({ text: "hi", transcript: oneHugeEntry, rewound: false, fresh: true, replaysNatively: false });
+    expect(out.resume).toBe(false);
+    expect(out.turnText).toContain("[Earlier conversation omitted for length]");
+    expect(out.turnText).not.toContain("A".repeat(200 * 1024));
+    expect(Buffer.byteLength(out.turnText, "utf8")).toBeLessThan(132 * 1024);
+  });
+
+  it("never splits a multi-byte character when clipping an oversized entry", () => {
+    const oneHugeEntry = [{ role: "user" as const, text: "é".repeat(100 * 1024) }];
+    const out = buildTurnContext({ text: "hi", transcript: oneHugeEntry, rewound: false, fresh: true, replaysNatively: false });
+    expect(out.turnText).not.toContain("\uFFFD");
+    expect(Buffer.byteLength(out.turnText, "utf8")).toBeLessThan(132 * 1024);
+  });
+
   describe("the chat-completions capabilities.replaysTranscript contract", () => {
     // index.ts derives `replaysNatively` from
     // `instance.adapter.capabilities.replaysTranscript === true` rather than

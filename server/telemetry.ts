@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { homedir, hostname } from "node:os";
 import { basename, join } from "node:path";
 
+import { DATA_DIR } from "./config.ts";
 import type { TurnBillingMode } from "./contracts.ts";
 import { getSentry, isSentryActive } from "./sentry.ts";
 import {
@@ -444,7 +445,7 @@ export class UsageTelemetryManager {
         // neither options nor env named one.
         path: options.outboxPath
           ?? process.env.BOTFLEET_USAGE_OUTBOX_PATH
-          ?? join(homedir(), ".botfleet", "usage-telemetry-outbox.json"),
+          ?? join(DATA_DIR, "usage-telemetry-outbox.json"),
         retryBaseMs: options.retryBaseMs,
         onDiagnostic: (outcome, count) => {
           if (!isSentryActive()) return;

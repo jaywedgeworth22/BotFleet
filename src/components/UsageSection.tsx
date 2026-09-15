@@ -452,11 +452,14 @@ export function UsageSection() {
             const isNearCap = !isCapped && !isPartial && minimaxRow?.status === "near_cap";
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isAvailable = instance.snapshot.state === "available" && !isCapped && !isPartial && !isNearCap && !isDisabled;
+            const showGenericGrid = !hasUsageMonitorAG && instanceWindows.length > 0;
             const baseDetailLines = hasUsageMonitorAG
               ? []
               : agLines.length > 0
                 ? agLines
-                : windowLines;
+                : showGenericGrid
+                  ? []
+                  : windowLines;
             const detailLines = [...baseDetailLines];
             if (minimaxRow && minimaxLine) {
               detailLines.unshift({
@@ -648,6 +651,7 @@ export function UsageSection() {
                   </div>
                 </button>
                 {hasUsageMonitorAG && <UsageMonitorQuotaGrid windows={usageMonitorAGWindows} />}
+                {showGenericGrid && <UsageMonitorQuotaGrid windows={instanceWindows as any} />}
                 {open && detailLines.length > 0 && (
                   <div className="mb-1.5 ml-9 flex flex-col gap-1 rounded-lg border border-hairline/20 bg-inset/30 p-2.5">
                     {detailLines.map((line) => (
