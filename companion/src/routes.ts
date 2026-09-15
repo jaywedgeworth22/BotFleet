@@ -96,6 +96,10 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   // locally; it never becomes a newly exposed harness route.
   { method: "GET", path: /^\/api\/companion\/endpoints$/ },
   { method: "POST", path: /^\/api\/companion\/push-token$/ },
+  // Whether closed-app wake is actually working, so the phone can say so in
+  // Settings instead of leaving a silent push path looking healthy.  Counts
+  // and Apple's own status strings only — never anything about the key.
+  { method: "GET", path: /^\/api\/companion\/push-health$/ },
 
   // the fleet, and making a bot
   { method: "GET", path: /^\/api\/bots$/ },
@@ -156,6 +160,18 @@ const ALLOWED: ReadonlyArray<{ method: string; path: RegExp }> = [
   { method: "PATCH", path: /^\/api\/routines\/[\w-]+$/ },
   { method: "DELETE", path: /^\/api\/routines\/[\w-]+$/ },
   { method: "POST", path: /^\/api\/routines\/[\w-]+\/run$/ },
+
+  // Checking for a newer BotFleet and installing it.  The phone is the one
+  // place an update is convenient to start — the Mac is usually mid-work when
+  // someone notices a build is stale.  `POST /api/update/run` takes the same
+  // runtime-readiness reading `POST /api/runtime/quiesce` takes and answers
+  // 409 while any turn, queued send or routine run is in flight, so a tap
+  // from a pocket does not interrupt work; `{ "force": true }` talks past
+  // that check, and the updater's own preflight then refuses instead.
+  // `status` is a read; `check` and `run` are the two actions.
+  { method: "GET", path: /^\/api\/update\/status$/ },
+  { method: "POST", path: /^\/api\/update\/check$/ },
+  { method: "POST", path: /^\/api\/update\/run$/ },
 
   // Connected apps have full parity with the computer: list, authorize, and
   // detach an account.

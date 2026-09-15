@@ -30,7 +30,16 @@ try {
     cpSync(override, staged, { recursive: true });
   } else {
     const url = `https://dl.google.com/android/repository/platform-tools-latest-${archive}.zip`;
-    const response = await fetch(url);
+    let response;
+    try {
+      response = await fetch(url, { signal: AbortSignal.timeout(30000) });
+    } catch (err) {
+      const name = err && typeof err === "object" && "name" in err ? String(err.name) : "";
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new Error("could not download Android Platform Tools: timed out after 30s");
+      }
+      throw err;
+    }
     if (!response.ok) throw new Error(`could not download Android Platform Tools: HTTP ${response.status}`);
     const zip = join(temporary, basename(new URL(url).pathname));
     writeFileSync(zip, Buffer.from(await response.arrayBuffer()));
