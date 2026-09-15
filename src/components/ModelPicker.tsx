@@ -250,6 +250,14 @@ export function ModelPicker({
     />
   );
 
+  let activeDriverKind = active?.driverKind;
+  if (activeDriverKind) {
+    const id = selection.model.toLowerCase();
+    if (id.includes("minimax")) activeDriverKind = "minimax";
+    else if (id.includes("qwen")) activeDriverKind = "qwenAgent";
+    else if (id.includes("hermes")) activeDriverKind = "hermesAgent";
+  }
+
   const trigger = (
     <button
       type="button"
@@ -275,7 +283,7 @@ export function ModelPicker({
       )}
       title={active ? `${active.displayName} · ${modelLabel(active, selection.model)}` : selection.model}
     >
-      {active && <ProviderMark driverKind={active.driverKind} size={14} />}
+      {active && <ProviderMark driverKind={activeDriverKind!} size={14} />}
       <span className={cn("min-w-0 truncate", !contained && "max-w-[160px]", !contained && active && "@max-4xl/chathead:hidden")}>
         {modelLabel(active, selection.model)}
       </span>
