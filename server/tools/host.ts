@@ -37,6 +37,7 @@ import {
   type AgentToolDeps,
   type AgentToolExecutor,
 } from "./agents.ts";
+import { createComputerTools } from "./computer.ts";
 import { harnessTool, toolsFor, type ToolGateContext } from "./registry.ts";
 
 export type { AgentBot as TurnToolBot } from "./agents.ts";
@@ -60,6 +61,10 @@ export interface TurnToolHostContext {
    *  registry's own gate function — feeding it here is what makes the two
    *  agree. */
   chiefOfStaff?: boolean;
+  /** Whether the bot has host computer tools mounted for this turn. */
+  localComputer?: boolean;
+  /** Working directory for file and shell operations. */
+  cwd?: string;
   deps: TurnToolHostDeps;
   /** Ceiling on model-to-tool rounds; absent = the driver's default. */
   maxRounds?: number;
@@ -77,7 +82,11 @@ const failed = (content: string, detail?: string): TurnToolOutcome =>
  *  caller's identity, so nothing downstream can forge it. */
 export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
   // A Map, not the record itself: `call.name` is whatever the model said.
-  const executors = new Map<string, AgentToolExecutor>(Object.entries(createAgentTools(ctx.deps)));
+  const computerTools = createComputerTools({ cwd: ctx.cwd });
+  const executors = new Map<string, AgentToolExecutor>([
+    ...Object.entries(createAgentTools(ctx.deps)),
+    ...Object.entries(computerTools),
+  ]);
   const gate: ToolGateContext = {
     // The dispatch only builds a host when the agents integration is
     // mounted, so reaching this file at all means the surface is on — and
@@ -90,6 +99,7 @@ export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
     commsDepth: 0,
     maxCommsDepth: Number.POSITIVE_INFINITY,
     chiefOfStaff: ctx.chiefOfStaff ?? false,
+    localComputer: Boolean(ctx.localComputer),
   };
   // The same gate the catalog handed the model.  A hallucinated name, or a
   // real name the model was not offered this turn, finds no executor.
