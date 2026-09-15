@@ -117,7 +117,7 @@ export function UpdateBanner() {
             : friendlyError(s.message);
 
   return (
-    <div className="animate-panel-in fixed bottom-4 left-4 z-50 w-[300px] rounded-xl border border-hairline/40 bg-panel p-3.5 shadow-2xl shadow-black/50">
+    <div className="animate-panel-in fixed bottom-4 left-4 max-md:bottom-24 z-50 w-[300px] rounded-xl border border-hairline/40 bg-panel p-3.5 shadow-2xl shadow-black/50">
       <div className="flex items-start gap-2.5">
         <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent">
           <Sparkles size={14} />
@@ -143,7 +143,7 @@ export function UpdateBanner() {
       </div>
 
       {s.status === "downloading" && (
-        <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-control">
+        <div className="mb-1.5 mt-2.5 h-1 overflow-hidden rounded-full bg-control">
           <div
             className={cn(
               "h-full rounded-full bg-accent transition-[width]",
@@ -278,7 +278,7 @@ function LocalUpdateCard({
     : null;
 
   return (
-    <div className="animate-panel-in fixed bottom-4 left-4 z-50 w-[300px] rounded-xl border border-hairline/40 bg-panel p-3.5 shadow-2xl shadow-black/50">
+    <div className="animate-panel-in fixed bottom-4 left-4 max-md:bottom-24 z-50 w-[300px] rounded-xl border border-hairline/40 bg-panel p-3.5 shadow-2xl shadow-black/50">
       <div className="flex items-start gap-2.5">
         <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center rounded-full bg-accent/15 text-accent">
           <Sparkles size={14} />
@@ -301,7 +301,7 @@ function LocalUpdateCard({
       </div>
 
       {running && (
-        <div className="mt-2.5 h-1 overflow-hidden rounded-full bg-control">
+        <div className="mb-1.5 mt-2.5 h-1 overflow-hidden rounded-full bg-control">
           <div
             className={cn(
               "h-full rounded-full bg-accent transition-[width]",
