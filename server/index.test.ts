@@ -3852,6 +3852,7 @@ describe("harness HTTP API", () => {
       }).toEqual(["card-shown:routine", "user-approved:user"]);
 
       const after = await api("GET", "/api/routines");
+      expect(after.body.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
       expect(after.body.routines.filter((routine: { botId: string }) => routine.botId === bot.id)).toHaveLength(1);
       const duplicate = await api("POST", `/api/threads/${bot.threadId}/respond`, {
         requestId: proposal.requestId,
@@ -3875,6 +3876,7 @@ describe("harness HTTP API", () => {
         schedule: { type: "daily", time: "10:00", weekdays: [1] },
       });
       legacyRoutineId = legacy.body.routine.id;
+      expect(legacy.body.routine.schedule.timeZone).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
       const listed = await fetch(
         `${BASE}/api/internal/routines?fromBotId=${encodeURIComponent(bot.id)}&fromThreadId=${encodeURIComponent(bot.threadId)}`,
         { headers: internalHeaders },
@@ -3885,13 +3887,51 @@ describe("harness HTTP API", () => {
           id: z.string(),
           instructions: z.string(),
           instructionsTruncated: z.boolean(),
+          schedule: z.object({ timeZone: z.string().optional() }).passthrough(),
         }).passthrough()),
       }).parse(await listed.json());
       const legacyResult = listedBody.routines.find((routine) => routine.id === legacyRoutineId)!;
+      expect(legacyResult.schedule.timeZone).toBeUndefined();
       expect(legacyResult.instructions).not.toContain(fakeSecret);
       expect(legacyResult.name).not.toContain(fakeNameSecret);
       expect(legacyResult.instructions).toContain("redacted");
       expect(legacyResult.instructionsTruncated).toBe(true);
+
+      // Echoing the bot-facing listing into a normal time edit must not turn
+      // its display-only harness zone into a stored recurrence zone.
+      const legacyEdit = await fetch(`${BASE}/api/internal/routine-requests`, {
+        method: "POST",
+        headers: internalHeaders,
+        body: JSON.stringify({
+          fromBotId: bot.id,
+          fromThreadId: bot.threadId,
+          action: "update",
+          routineId: legacyRoutineId,
+          changes: { schedule: { ...legacyResult.schedule, time: "10:30" } },
+        }),
+      });
+      expect(legacyEdit.status).toBe(201);
+      const legacyProposal = z.object({ requestId: z.string() }).parse(await legacyEdit.json());
+      expect((await api("POST", `/api/threads/${bot.threadId}/respond`, {
+        requestId: legacyProposal.requestId,
+        behavior: "allow",
+      })).status).toBe(200);
+      const editedLegacy = (await api("GET", "/api/routines")).body.routines.find(
+        (routine: { id: string }) => routine.id === legacyRoutineId,
+      );
+      expect(editedLegacy.schedule).toMatchObject({ time: "10:30" });
+      expect(editedLegacy.scheduleTimeZoneSource).toBe("host");
+
+      // The public representation is itself safe to round-trip.  A generic
+      // client can PATCH its copied routine without persisting the effective
+      // display zone as a new explicit recurrence zone.
+      const echoedLegacy = await api("PATCH", `/api/routines/${legacyRoutineId}`, {
+        ...editedLegacy,
+        schedule: { ...editedLegacy.schedule, time: "10:45" },
+      });
+      expect(echoedLegacy.status).toBe(200);
+      expect(echoedLegacy.body.routine.schedule).toMatchObject({ time: "10:45" });
+      expect(echoedLegacy.body.routine.scheduleTimeZoneSource).toBe("host");
 
       const wrongThread = await fetch(`${BASE}/api/internal/routine-requests`, {
         method: "POST",
