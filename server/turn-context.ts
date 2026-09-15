@@ -46,6 +46,16 @@ const FRESH_PREAMBLE =
 
 const MAX_REPLAY_BYTES = 128 * 1024;
 
+/** Clip a string to at most `maxBytes` of UTF-8 without splitting a character. */
+function clipUtf8(value: string, maxBytes: number): string {
+  const buf = Buffer.from(value, "utf8");
+  if (buf.length <= maxBytes) return value;
+  let end = maxBytes;
+  // Back off to the start of the last complete code point.
+  while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
+  return buf.subarray(0, end).toString("utf8");
+}
+
 export function buildTurnContext(input: TurnContextInput): {
   turnText: string;
   /** false when the native session must not be resumed */
@@ -62,8 +72,15 @@ export function buildTurnContext(input: TurnContextInput): {
   for (let i = transcript.length - 1; i >= 0; i--) {
     const entry = `${transcript[i].role === "user" ? "User" : "Assistant"}: ${transcript[i].text}`;
     const entryBytes = Buffer.byteLength(entry, "utf8");
-    if (bytes + entryBytes > MAX_REPLAY_BYTES && lines.length > 0) {
+    if (bytes + entryBytes > MAX_REPLAY_BYTES) {
       truncated = true;
+      if (lines.length === 0) {
+        // The newest entry alone is over budget — a single pasted message or a
+        // long generated output.  Clip it instead of replaying it whole, so one
+        // oversized entry cannot defeat the cap the omission marker promises.
+        lines.unshift(clipUtf8(entry, MAX_REPLAY_BYTES));
+        bytes += Buffer.byteLength(lines[0], "utf8");
+      }
       break;
     }
     lines.unshift(entry);
