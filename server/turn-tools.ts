@@ -27,11 +27,12 @@ type ToolDefinition = NonNullable<SendTurnInput["tools"]>[number];
  * model is offered nothing.  A caller with the real numbers to hand can pass
  * `gate` instead and let the registry apply the ceiling itself. */
 export function buildTurnTools(
-  integrations: { agents?: unknown },
+  integrations: { agents?: unknown; localComputer?: unknown },
   gate?: Partial<ToolGateContext>,
 ): ToolDefinition[] {
   return httpToolDefinitions({
     agents: !!integrations.agents,
+    localComputer: Boolean(integrations.localComputer),
     commsDepth: 0,
     // The caller's own depth gate already ran; without explicit numbers the
     // registry ceiling must not subtract a second time.
