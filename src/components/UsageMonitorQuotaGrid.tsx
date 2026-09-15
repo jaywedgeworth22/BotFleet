@@ -33,11 +33,11 @@ function resetHover(resetAt: string | undefined): string | undefined {
 }
 
 export function UsageMonitorQuotaGrid({ windows }: { windows: UsageMonitorQuotaWindow[] }) {
-  const rows = antigravityQuotaWindows(windows);
-  if (rows.length === 0) return null;
+  if (windows.length === 0) return null;
+  const rows = windows;
 
   return (
-    <div className="ml-9 mt-1.5 grid grid-cols-2 gap-2" aria-label="Antigravity quota windows">
+    <div className="ml-9 mt-1.5 grid grid-cols-2 gap-2" aria-label="Usage Monitor quota windows">
       {rows.map((window) => {
         const exhausted = window.skip || window.remainingPercent === 0;
         const resetAt = window.resetAt ?? undefined;
