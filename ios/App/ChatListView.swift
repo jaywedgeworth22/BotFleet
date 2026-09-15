@@ -576,7 +576,7 @@ struct ChatListView: View {
         guard set.contains(legacy) else { return }
         set.remove(legacy)
         set.insert(current)
-        collapsedSections = set
+        collapsedSectionsStr = CollapsedSections.encode(set)
     }
 
     private func sectionBinding(for section: String) -> Binding<Bool> {
@@ -589,7 +589,7 @@ struct ChatListView: View {
                 } else {
                     set.insert(section)
                 }
-                collapsedSections = set
+                collapsedSectionsStr = CollapsedSections.encode(set)
             }
         )
     }
