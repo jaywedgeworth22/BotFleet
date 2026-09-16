@@ -15,10 +15,12 @@ import {
   healthTopologyResult,
   isExpectedBotFleetProcess,
   loadPrepared,
+  main,
   parseArguments,
   pendingRecoveryReceiptPath,
   rollbackReadinessError,
   run,
+  settledRunOutcome,
   stableApplicationProcessError,
   swapPreparedFiles,
   validateBuiltBundle,
@@ -350,4 +352,83 @@ test("a dependency install rename failure restores the old app and dependencies"
   assert.equal(await readFile(join(paths.liveDependencies, "marker"), "utf8"), "old-deps");
   assert.equal(await readFile(join(paths.candidateApp, "marker"), "utf8"), "new-app");
   assert.equal(await readFile(join(paths.candidateDependencies, "marker"), "utf8"), "new-deps");
+});
+
+test("a settled run id is recognised, and a different run's outcome is not", () => {
+  const finished = {
+    schemaVersion: 1,
+    runId: "run_one",
+    startedAt: "2026-09-16T11:00:00.000Z",
+    finishedAt: "2026-09-16T11:04:00.000Z",
+    outcome: "failed",
+    message: "The update could not be packaged.",
+  };
+  assert.deepEqual(settledRunOutcome(finished, "run_one"), {
+    outcome: "failed",
+    message: "The update could not be packaged.",
+  });
+  // A run still going is not settled, and neither is one that never wrote an
+  // outcome — those are the two cases a relaunch is allowed to resume rather
+  // than skip.
+  assert.equal(settledRunOutcome({ ...finished, finishedAt: null, outcome: null }, "run_one"), null);
+  assert.equal(settledRunOutcome({ ...finished, outcome: null }, "run_one"), null);
+  // Another run's record says nothing about this one.
+  assert.equal(settledRunOutcome(finished, "run_two"), null);
+  assert.equal(settledRunOutcome(finished, undefined), null);
+  // Anything torn, missing or the wrong shape is not evidence of a finish.
+  assert.equal(settledRunOutcome(null, "run_one"), null);
+  assert.equal(settledRunOutcome("{}", "run_one"), null);
+  assert.equal(settledRunOutcome([finished], "run_one"), null);
+});
+
+test("a relaunch of a finished run does nothing and exits successfully", async (t) => {
+  // launchd keeps a `submit`ted job alive on failure, so a run that fails is
+  // relaunched under the SAME run id and progress file.  The harness removes
+  // the label when it sees the run settle; this is the guard for a relaunch
+  // that beats the removal.
+  const root = await mkdtemp(join(tmpdir(), "bf-update-relaunch-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const progressPath = join(root, "run.progress.json");
+  const record = {
+    schemaVersion: 1,
+    runId: "run_one",
+    command: "update",
+    pid: 4321,
+    startedAt: "2026-09-16T11:00:00.000Z",
+    updatedAt: "2026-09-16T11:04:00.000Z",
+    step: "buildBundle",
+    progress: 0.4,
+    targetCommit: "b".repeat(40),
+    receiptPath: null,
+    finishedAt: "2026-09-16T11:04:00.000Z",
+    outcome: "failed",
+    message: "The update could not be packaged.",
+  };
+  const written = `${JSON.stringify(record, null, 2)}\n`;
+  await writeFile(progressPath, written);
+
+  // Everything the config would resolve points at scratch, so a guard that
+  // regressed cannot reach this machine's real checkout, lock or app.
+  const scratch = {
+    BOTFLEET_UPDATE_ALLOW_NON_DARWIN: "1",
+    BOTFLEET_CHECKOUT: join(root, "checkout"),
+    BOTFLEET_APP_PATH: join(root, "BotFleet.app"),
+    BOTFLEET_DATA_DIR: join(root, "data"),
+    BOTFLEET_UPDATE_LOCK: join(root, "update.lock"),
+    BOTFLEET_UPDATE_ROOT: join(root, "updates"),
+  };
+  const restore = Object.fromEntries(Object.keys(scratch).map((key) => [key, process.env[key]]));
+  Object.assign(process.env, scratch);
+  t.after(() => {
+    for (const [key, value] of Object.entries(restore)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  await main(["update", "--progress", progressPath, "--run-id", "run_one"]);
+  // Untouched: the recorder rewrites this file the moment it is created, so
+  // an unchanged record is proof nothing started.
+  assert.equal(await readFile(progressPath, "utf8"), written);
+  assert.equal(process.exitCode, undefined);
 });

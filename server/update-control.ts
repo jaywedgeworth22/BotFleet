@@ -22,6 +22,7 @@ import {
   fstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   renameSync,
@@ -50,6 +51,31 @@ const LOG_LINE_MAX = 400;
 const MAX_LISTED_COMMITS = 20;
 /** A run with no progress file this long after launch never started. */
 const LAUNCH_GRACE_MS = 120_000;
+/** Failed stages kept for forensics.  Each holds a full copy of the source and
+ * its dependencies — a few hundred megabytes — so a run that fails on every
+ * attempt fills the disk long before anyone reads the third one. */
+const KEPT_FAILED_STAGES = 3;
+/** A stage younger than this may belong to a run started outside this
+ * harness that has not written anything recognisable yet. */
+const STAGE_PRUNE_GRACE_MS = 15 * 60_000;
+/** Progress files and logs kept in the state directory's `runs` folder. */
+const KEPT_RUN_ARTIFACTS = 8;
+/** What the updater itself puts in a stage directory — the same list
+ * `scripts/update-botfleet-mac.mjs` sweeps by.  Anything else in there was
+ * put there by a person, and a person decides when it goes. */
+const KNOWN_STAGE_ENTRIES = new Set([
+  "BotFleet.app",
+  "node_modules",
+  "prepared.json",
+  "rollback",
+  "source",
+  "pending-recovery.json",
+  "credential-migration.json",
+]);
+/** A stage holding either of these is load-bearing: `prepared.json` is a
+ * build a later `apply` can still install, and `rollback` holds the verified
+ * bundle the installed app would be rolled back to. */
+const PROTECTED_STAGE_ENTRIES = new Set(["prepared.json", "rollback"]);
 
 export interface UpdateCommit {
   sha: string;
@@ -149,6 +175,9 @@ export interface UpdateControlDeps {
   installed: UpdateInstalled;
   checkout: string;
   stateDirectory: string;
+  /** Where the updater stages the source it builds from.  Read here only to
+   * sweep the stages that failed runs left behind. */
+  updatesDirectory: string;
   scriptPath: string;
   label: string;
   platform: string;
@@ -156,6 +185,9 @@ export interface UpdateControlDeps {
   now: () => Date;
   git: (args: string[]) => Promise<CommandResult>;
   launch: (plan: LaunchPlan) => Promise<LaunchResult>;
+  /** A short command of this module's own — only ever `launchctl` today.  A
+   * seam so a test can watch the label being removed without a real launchd. */
+  exec: (command: string, args: string[]) => Promise<CommandResult>;
   processAlive: (pid: number) => boolean;
   /** Whether this harness has work in flight.  The route passes its own,
    * admission-adjusted reading when it starts a run; this one answers the
@@ -421,13 +453,157 @@ export function runRefusal(input: {
   return null;
 }
 
+/** When this stage was created, from the `-<epoch ms>` suffix the updater
+ * gives every stage it makes.  The suffix has to be exactly thirteen digits:
+ * a hand-made directory ending in a date like `-20260912` parses as a number
+ * too, and reading it as epoch milliseconds would date that stage to 1970. */
+export function stageStamp(name: string): number | null {
+  const last = name.split("-").at(-1) ?? "";
+  return /^\d{13}$/.test(last) ? Number(last) : null;
+}
+
+export interface StageDirectoryEntry {
+  path: string;
+  name: string;
+  /** Creation time from the name, or the directory's mtime when the name
+   * carries no stamp. */
+  stamp: number;
+  /** What the stage directory contains, one level deep. */
+  names: string[];
+}
+
+/** One entry per stage directory under the updates root. */
+export function readStageDirectories(root: string): StageDirectoryEntry[] {
+  let directories: string[];
+  try {
+    directories = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    // No updates root yet, or one this harness may not read.  Either way
+    // there is nothing here to sweep.
+    return [];
+  }
+  const entries: StageDirectoryEntry[] = [];
+  for (const name of directories) {
+    const path = join(root, name);
+    try {
+      entries.push({ path, name, stamp: stageStamp(name) ?? statSync(path).mtimeMs, names: readdirSync(path) });
+    } catch {
+      /* vanished or unreadable between the two calls — not ours to remove */
+    }
+  }
+  return entries;
+}
+
+/** Which abandoned stages to remove, newest kept.
+ *
+ * A stage that carries a prepared build or a rollback bundle is never
+ * touched, and neither is one holding anything the updater did not put there.
+ * What is left over is the wreckage of runs that failed: those are kept only
+ * as far back as `keep`, and only once they are old enough that no run still
+ * in flight could own them. */
+export function stagesToPrune(entries: StageDirectoryEntry[], options: {
+  keep?: number;
+  now?: number;
+  graceMs?: number;
+  protect?: string[];
+} = {}): string[] {
+  const keep = options.keep ?? KEPT_FAILED_STAGES;
+  const now = options.now ?? Date.now();
+  const graceMs = options.graceMs ?? STAGE_PRUNE_GRACE_MS;
+  const protect = options.protect ?? [];
+  const prunable = entries.filter((entry) => {
+    if (protect.includes(entry.path)) return false;
+    if (entry.names.some((name) => PROTECTED_STAGE_ENTRIES.has(name))) return false;
+    return entry.names.every((name) => KNOWN_STAGE_ENTRIES.has(name));
+  });
+  return [...prunable]
+    .sort((left, right) => right.stamp - left.stamp)
+    .slice(keep)
+    .filter((entry) => now - entry.stamp > graceMs)
+    .map((entry) => entry.path);
+}
+
+/** Sweep the stage directories a failed run left behind, and say which went.
+ * Every removal is best-effort: a stage this harness cannot delete is one it
+ * simply does not report. */
+export function pruneUpdateStages(root: string, options: Parameters<typeof stagesToPrune>[1] = {}): string[] {
+  const pruned: string[] = [];
+  for (const path of stagesToPrune(readStageDirectories(root), options)) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      pruned.push(path);
+    } catch {
+      /* in use, or not ours to remove */
+    }
+  }
+  return pruned;
+}
+
+/** Progress files and logs for runs nobody will ask about again.  Grouped by
+ * run id so a run's log and its progress file go together or not at all. */
+export function pruneRunArtifacts(runsDirectory: string, options: {
+  keep?: number;
+  protect?: string[];
+} = {}): string[] {
+  const keep = options.keep ?? KEPT_RUN_ARTIFACTS;
+  const protect = options.protect ?? [];
+  let names: string[];
+  try {
+    names = readdirSync(runsDirectory);
+  } catch {
+    return [];
+  }
+  const runs = new Map<string, { id: string; newest: number; files: string[] }>();
+  for (const name of names) {
+    const runId = name.split(".")[0] ?? "";
+    if (!runId || protect.includes(runId)) continue;
+    const path = join(runsDirectory, name);
+    let mtimeMs = 0;
+    try {
+      mtimeMs = statSync(path).mtimeMs;
+    } catch {
+      continue;
+    }
+    const group = runs.get(runId) ?? { id: runId, newest: 0, files: [] };
+    group.newest = Math.max(group.newest, mtimeMs);
+    group.files.push(path);
+    runs.set(runId, group);
+  }
+  const removed: string[] = [];
+  // Two runs can share an mtime on a fast disk.  Break the tie by id so the
+  // same files survive on every OS instead of whichever readdir listed first.
+  const ordered = [...runs.values()]
+    .sort((left, right) => right.newest - left.newest || right.id.localeCompare(left.id))
+    .slice(keep);
+  for (const group of ordered) {
+    for (const path of group.files) {
+      try {
+        rmSync(path, { force: true });
+        removed.push(path);
+      } catch {
+        /* not ours to remove */
+      }
+    }
+  }
+  return removed;
+}
+
 /** The exact command that starts the detached updater.
  *
  * `launchctl submit` puts the job in the same GUI domain this harness runs
  * in, which is the point: launchd owns it, so it survives both the harness
  * stopping and the desktop app quitting — and those are two of the steps.  A
  * plain detached spawn would survive the app but is still reparented out of
- * a process tree launchd is about to restart, so it is only the fallback. */
+ * a process tree launchd is about to restart, so it is only the fallback.
+ *
+ * The sting in that tail is that launchd keeps a `submit`ted job ALIVE ON
+ * FAILURE: every non-zero exit is relaunched, forever.  A deterministic
+ * failure therefore ran 204 times on this Mac in a day, each attempt staging
+ * a fresh copy of the source.  `removeLaunchJobCommand` is how the controller
+ * takes the label away the moment a run settles, and the updater refuses to
+ * do anything a second time under a run id that already has an outcome. */
 export function launchPlanCommand(plan: LaunchPlan): { command: string; args: string[] } {
   const quote = (value: string) => `'${value.split("'").join(`'\\''`)}'`;
   const script = [
@@ -450,6 +626,11 @@ export function launchPlanCommand(plan: LaunchPlan): { command: string; args: st
       script,
     ],
   };
+}
+
+/** Unregister the one-shot job, which is what stops launchd relaunching it. */
+export function removeLaunchJobCommand(label: string): { command: string; args: string[] } {
+  return { command: "/bin/launchctl", args: ["remove", label] };
 }
 
 function execCommand(command: string, args: string[]): Promise<CommandResult> {
@@ -488,7 +669,10 @@ async function defaultLaunch(plan: LaunchPlan): Promise<LaunchResult> {
     throw new Error(`A ${plan.label} job is already running on this Mac.`);
   }
   mkdirSync(dirname(plan.logPath), { recursive: true, mode: 0o700 });
-  writeFileSync(plan.logPath, "", { mode: 0o600, flag: "a" });
+  // A FRESH log per launch, not an append.  A run id is normally used once,
+  // but launchd relaunching a failed job reuses both the id and the log — and
+  // that is how one run's log reached 67,000 lines and 138 build attempts.
+  writeFileSync(plan.logPath, "", { mode: 0o600, flag: "w" });
   // A finished label stays registered and makes the next `submit` fail
   // outright, so it is cleared — but only now that it is known to be dead.
   await execCommand("/bin/launchctl", ["remove", plan.label]);
@@ -534,10 +718,17 @@ function defaultDeps(overrides: Partial<UpdateControlDeps>): UpdateControlDeps {
   const scriptPath = overrides.scriptPath
     ?? process.env.BOTFLEET_UPDATER_SCRIPT
     ?? join(homedir(), "apps", "update-botfleet.sh");
+  // The same root `createConfig` in scripts/update-botfleet-mac.mjs resolves,
+  // read from the same environment variable, so the sweep and the updater
+  // always agree about which directory holds the stages.
+  const updatesDirectory = overrides.updatesDirectory
+    ?? process.env.BOTFLEET_UPDATE_ROOT
+    ?? join(homedir(), "Library", "Caches", "BotFleet", "updates");
   return {
     installed: overrides.installed ?? { version: "0.0.0", sourceCommit: "0".repeat(40) },
     checkout,
     stateDirectory,
+    updatesDirectory,
     scriptPath,
     label: overrides.label ?? UPDATE_LAUNCH_LABEL,
     platform: overrides.platform ?? process.platform,
@@ -545,6 +736,7 @@ function defaultDeps(overrides: Partial<UpdateControlDeps>): UpdateControlDeps {
     now: overrides.now ?? (() => new Date()),
     git: overrides.git ?? ((args) => execCommand("git", ["-C", checkout, ...args])),
     launch: overrides.launch ?? defaultLaunch,
+    exec: overrides.exec ?? execCommand,
     readiness: overrides.readiness ?? (() => ({ safeToRestart: true, activeWorkCount: 0 })),
     writeState: overrides.writeState ?? writeJsonFile,
     processAlive: overrides.processAlive ?? ((pid) => {
@@ -748,7 +940,25 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     };
   };
 
+  /** Take the one-shot job's label away, because launchd keeps a `submit`ted
+   * job ALIVE ON FAILURE: every non-zero exit is relaunched, forever.  The
+   * run that settles here is finished whatever its outcome, so there is
+   * nothing left for launchd to restart — and if it is not removed, a run
+   * that fails deterministically is restarted until someone notices.  Fired
+   * and forgotten: the run is already settled in memory, and a `launchctl`
+   * that does not answer must not hold up the status. */
+  const releaseLaunchJob = (launcher: string) => {
+    if (deps.platform !== "darwin" || launcher !== "launchd") return;
+    const { command, args } = removeLaunchJobCommand(deps.label);
+    try {
+      void Promise.resolve(deps.exec(command, args)).catch(() => {});
+    } catch {
+      /* a launcher seam that throws synchronously is not worth a status */
+    }
+  };
+
   const settle = (record: ProgressRecord | null, fallbackMessage: string) => {
+    const launcher = current?.launcher ?? "launchd";
     const finished = record ? lastRunFrom(record) : null;
     lastRun = finished ?? {
       runId: current?.runId ?? record?.runId ?? "unknown",
@@ -764,6 +974,24 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     } catch {
       /* already gone, or a cache directory we cannot write — neither matters
        * here: `current` is null in memory and that is what answers callers. */
+    }
+    releaseLaunchJob(launcher);
+  };
+
+  /** Sweep what failed runs left on disk.  Called on boot and again before
+   * each run — the two moments nothing is being staged.  A run that fails on
+   * every launchd relaunch wrote one full stage per attempt, and this Mac
+   * accumulated 344 of them, 2.8 GB, in a single day. */
+  const sweep = () => {
+    if (current) return;
+    try {
+      const pruned = pruneUpdateStages(deps.updatesDirectory, { now: deps.now().getTime() });
+      if (pruned.length) {
+        console.log(`BotFleet removed ${pruned.length} abandoned update stage(s) under ${deps.updatesDirectory}.`);
+      }
+      pruneRunArtifacts(join(deps.stateDirectory, "runs"), { protect: lastRun ? [lastRun.runId] : [] });
+    } catch (error) {
+      console.warn(`BotFleet could not sweep old update stages: ${(error as Error)?.message ?? error}`);
     }
   };
 
@@ -970,6 +1198,11 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       }
     }
 
+    // Before the run rather than after it: the stage this run is about to
+    // make is the one thing the sweep must never see, and afterwards there
+    // would be no moment when nothing was in flight.
+    sweep();
+
     const runId = deps.newRunId();
     const files = runPaths(runId);
     try {
@@ -1044,6 +1277,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
   loadAvailable();
   loadCurrent();
   reconcile();
+  sweep();
   ensureTimer();
 
   return {
