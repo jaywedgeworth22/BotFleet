@@ -259,7 +259,8 @@ import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
-import { hasAccessServiceToken } from "./recall-access.ts";
+import { accessTokenState, hasAccessServiceToken } from "./recall-access.ts";
+import { recallPromptFor } from "./recall-prompt.ts";
 import { recallStatus } from "./recall-transport.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -3432,6 +3433,9 @@ async function startTurn(
           (integrations.composio
             ? " The user's connected apps (Gmail, Calendar, Slack, Notion, and the rest) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Reach for them before telling the user you have no access to a service."
             : "") +
+          // Same gate as composio above: the mounted integration, not the
+          // config — an engine without `qdrantMcp` never mounted the proxy.
+          recallPromptFor(integrations) +
           (coordinationPrompt ? ` ${coordinationPrompt}` : "") +
           credentialPrompt +
           routinePrompt +
@@ -4644,6 +4648,10 @@ async function runGroupMemberTurn(
   const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
   const roomSystem =
     system +
+    // The room lane mounts the same recall proxy the 1:1 lane does (see the
+    // `integrations.qdrant` assignment above), so it owes the bot the same
+    // sentences about it.
+    recallPromptFor(integrations) +
     sectionContextSystemPrompt(bot.section) +
     (hasFileTools(worksInWorkspace, httpOnlyToolSurface, hasHostComputer)
       ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}`
@@ -5451,6 +5459,10 @@ function configStatus() {
       accessClientId: cfg.qdrant?.accessClientId || "",
       hasAccessClientSecret: Boolean(cfg.qdrant?.accessClientSecret),
       hasAccessServiceToken: hasAccessServiceToken(cfg.qdrant?.accessClientId, cfg.qdrant?.accessClientSecret),
+      // Which HALF is missing, not just whether the pair is whole: one half
+      // sends no Access headers at all, so the panel can warn before the
+      // operator meets a login page and reads it as an outage.
+      accessTokenState: accessTokenState(cfg.qdrant?.accessClientId, cfg.qdrant?.accessClientSecret),
     },
     usage: {
       ingestUrl: usageIngestUrl(cfg) ?? "",

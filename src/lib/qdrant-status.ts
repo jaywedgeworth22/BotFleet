@@ -1,3 +1,5 @@
+import type { AccessTokenState } from "../../server/recall-access.ts";
+
 export type QdrantStatus = {
   configured?: boolean;
   state?: "unconfigured" | "degraded" | "ready";
@@ -9,7 +11,28 @@ export type QdrantStatus = {
   pointsCount?: number;
   collection?: string;
   collections?: string[];
+  accessTokenState?: AccessTokenState;
 };
+
+/**
+ * The warning for a half-configured Cloudflare Access service token, or null
+ * when the pair is whole (or absent, which is the ordinary case — most
+ * services are not behind Access).
+ *
+ * Half a pair is the quiet failure: `accessHeaders` sends BOTH halves or
+ * neither, so a stored secret with an empty id sends nothing at all, and the
+ * service answers a login page that reads like an outage.  Sentence case,
+ * because this is status text.
+ */
+export function qdrantAccessWarning(state: AccessTokenState | undefined): string | null {
+  if (state === "missing-id") {
+    return "The Cloudflare Access client id is missing, so the cloud recall service will refuse this Mac.";
+  }
+  if (state === "missing-secret") {
+    return "The Cloudflare Access client secret is missing, so the cloud recall service will refuse this Mac.";
+  }
+  return null;
+}
 
 export function qdrantRouteLabel(status: QdrantStatus | null, configuredUrl: string): string {
   const source = status?.source ?? (configuredUrl.trim() ? "recall-service" : "recall-cli");

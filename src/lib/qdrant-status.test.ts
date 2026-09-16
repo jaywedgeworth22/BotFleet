@@ -1,6 +1,9 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  qdrantAccessWarning,
   qdrantLastSuccessLabel,
   qdrantRouteLabel,
   qdrantStateLabel,
@@ -89,5 +92,43 @@ describe("Qdrant RAG status copy", () => {
 
     expect(qdrantTestResultIfCurrent(1, () => testRevision, result)).toBeNull();
     expect(qdrantTestResultIfCurrent(2, () => testRevision, result)).toBe(result);
+  });
+});
+
+describe("Cloudflare Access service-token warning", () => {
+  // The live shape of this bug on this Mac: the client secret was stored and
+  // the client id was empty, which sends NO Access headers at all — so a
+  // service behind Access answers a login page and the panel reads like an
+  // outage rather than like a missing field.
+  it("names the missing half when only one is set", () => {
+    expect(qdrantAccessWarning("missing-id")).toBe(
+      "The Cloudflare Access client id is missing, so the cloud recall service will refuse this Mac.",
+    );
+    expect(qdrantAccessWarning("missing-secret")).toBe(
+      "The Cloudflare Access client secret is missing, so the cloud recall service will refuse this Mac.",
+    );
+  });
+
+  it("stays quiet for a whole pair, for no pair, and for a status payload that predates the field", () => {
+    // Most services are not behind Access at all, so "none" must not nag.
+    expect(qdrantAccessWarning("complete")).toBeNull();
+    expect(qdrantAccessWarning("none")).toBeNull();
+    expect(qdrantAccessWarning(undefined)).toBeNull();
+  });
+
+  it("is sentence case, as status text rather than a heading", () => {
+    const warning = qdrantAccessWarning("missing-id")!;
+    expect(warning).toMatch(/^[A-Z][a-z]/);
+    expect(warning).not.toMatch(/Client Id|Client Secret/);
+    expect(warning.endsWith(".")).toBe(true);
+  });
+});
+
+describe("the panel shows the warning it is given", () => {
+  const PANEL_SRC = readFileSync(join(__dirname, "..", "components", "QdrantRagConnection.tsx"), "utf8");
+
+  it("reads the state from the status payload, falling back to the saved config", () => {
+    expect(PANEL_SRC).toContain("qdrantAccessWarning(testResult?.accessTokenState ?? qdrant?.accessTokenState)");
+    expect(PANEL_SRC).toContain("{accessWarning}");
   });
 });

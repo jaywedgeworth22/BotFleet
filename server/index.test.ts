@@ -6102,6 +6102,7 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
       accessClientId: "fixture-client.access",
       hasAccessClientSecret: true,
       hasAccessServiceToken: true,
+      accessTokenState: "complete",
     });
     expect(JSON.stringify(saved.body)).not.toContain(secret);
 
@@ -6114,9 +6115,23 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
     const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
     expect(disk.qdrant.accessClientSecret).toBe(secret);
 
+    // Half a pair sends no Access headers at all, so the panel has to be
+    // able to tell that apart from "no token" — and say which half is gone.
+    await api("PATCH", "/api/config", { qdrant: { accessClientId: "" } });
+    const halved = await api("GET", "/api/config");
+    expect(halved.body.qdrant).toMatchObject({
+      hasAccessClientSecret: true,
+      hasAccessServiceToken: false,
+      accessTokenState: "missing-id",
+    });
+
     await api("PATCH", "/api/config", { qdrant: { accessClientId: "", accessClientSecret: "" } });
     const cleared = await api("GET", "/api/config");
-    expect(cleared.body.qdrant).toMatchObject({ hasAccessClientSecret: false, hasAccessServiceToken: false });
+    expect(cleared.body.qdrant).toMatchObject({
+      hasAccessClientSecret: false,
+      hasAccessServiceToken: false,
+      accessTokenState: "none",
+    });
   });
 });
 

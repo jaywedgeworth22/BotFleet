@@ -6,10 +6,13 @@
 // built-in default quietly sending a user's prompts to somebody else's
 // server.
 import { spawn, type ChildProcess } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
+import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { SPAWNED_PROXIES } from "../proxy-paths.ts";
+import { RECALL_STATUS_TIMEOUT_MS, RECALL_TOOL_TIMEOUT_MS } from "../recall-transport.ts";
 
 /** Every env var the proxy reads for its endpoint, key, collection, and CLI
  * path — cleared so a developer's own shell cannot configure the child. */
@@ -43,6 +46,7 @@ interface ToolArgs {
   topic?: string;
   text?: string;
   category?: string;
+  limit?: number;
 }
 type RpcParams = { name: string; arguments: ToolArgs } | Record<string, never>;
 
@@ -246,7 +250,10 @@ describe("Agent RAG proxy behind Cloudflare Access", () => {
       category: "lesson",
     });
 
-    expect(service.seen.map((hit) => hit.path)).toEqual(["/health", "/recall/stats", "/recall/search", "/health", "/recall/stats", "/recall/contribute"]);
+    // One probe, not one per call: the search verified the collection and
+    // the contribute a moment later rides that verdict (see the caching
+    // block below).
+    expect(service.seen.map((hit) => hit.path)).toEqual(["/health", "/recall/stats", "/recall/search", "/recall/contribute"]);
     for (const hit of service.seen) {
       expect(hit.accessId).toBe("fixture-client.access");
       expect(hit.accessSecret).toBe("fixture-access-secret");
@@ -308,6 +315,129 @@ describe("Agent RAG proxy behind Cloudflare Access", () => {
     // The old failure mode: the redirect got followed and the HTML came back
     // as an unreadable search error.
     expect(text).not.toMatch(/JSON|unexpected token/i);
+  });
+});
+
+describe("Agent RAG proxy caches a verified collection and its search results", () => {
+  // The proxy is a long-lived child process: one MCP session serves a whole
+  // turn.  Before this, every search and every contribute re-ran the full
+  // probe (GET /health then GET /recall/stats), so one search was three
+  // round trips and the same two calls repeated for the life of the
+  // session — even though the collection cannot change under it.
+
+  /** A stub that records every path and can be told to fail one route once. */
+  async function startService(options: { failSearchOnce?: boolean } = {}) {
+    const paths: string[] = [];
+    let searches = 0;
+    const server = createServer((req, res) => {
+      const url = req.url ?? "";
+      paths.push(url);
+      let body = "";
+      req.on("data", (chunk) => (body += chunk));
+      req.on("end", () => {
+        if (url === "/recall/search" && options.failSearchOnce && ++searches === 1) {
+          res.writeHead(500, { "content-type": "application/json" });
+          res.end(JSON.stringify({ error: "the corpus is rebuilding" }));
+          return;
+        }
+        res.setHeader("content-type", "application/json");
+        res.end(JSON.stringify({
+          hits: [{ text: `a stored lesson for ${url}`, score: 0.9 }],
+          mode: "hybrid",
+          doc_id: "doc-7",
+          collection: "agent-memory",
+          points: 3,
+          backend_ok: true,
+        }));
+      });
+    });
+    stub = server;
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    // SAFETY: listen() has resolved on a TCP socket, so address() is an
+    // AddressInfo with a bound port, never null or a pipe name.
+    const port = (server.address() as { port: number }).port;
+    const { callTool } = launch({ OMB_QDRANT_URL: `http://127.0.0.1:${port}`, OMB_QDRANT_COLLECTION: "agent-memory" });
+    return { paths, callTool };
+  }
+
+  it("probes the collection once for a run of different searches", async () => {
+    const service = await startService();
+
+    await service.callTool("recall_search", { query: "how do we deploy" });
+    await service.callTool("recall_search", { query: "who owns the board" });
+
+    expect(service.paths).toEqual(["/health", "/recall/stats", "/recall/search", "/recall/search"]);
+  });
+
+  it("answers an identical search from memory, and a changed one from the service", async () => {
+    const service = await startService();
+
+    const first = await service.callTool("recall_search", { query: "how do we deploy" });
+    const second = await service.callTool("recall_search", { query: "how do we deploy" });
+    // A different limit is a different question, never a cache hit.
+    await service.callTool("recall_search", { query: "how do we deploy", limit: 3 });
+
+    expect(second).toBe(first);
+    expect(first).toContain("a stored lesson");
+    expect(service.paths).toEqual(["/health", "/recall/stats", "/recall/search", "/recall/search"]);
+  });
+
+  it("re-probes after a failed search, so a bad verdict never outlives the failure", async () => {
+    const service = await startService({ failSearchOnce: true });
+
+    const failed = await service.callTool("recall_search", { query: "how do we deploy" });
+    const recovered = await service.callTool("recall_search", { query: "how do we deploy" });
+
+    expect(failed).toContain("500");
+    // Not cached as an answer, and the collection verdict went with it.
+    expect(recovered).toContain("a stored lesson");
+    expect(service.paths).toEqual([
+      "/health", "/recall/stats", "/recall/search",
+      "/health", "/recall/stats", "/recall/search",
+    ]);
+  });
+
+  it("retires remembered searches once a contribution changes the corpus", async () => {
+    const service = await startService();
+
+    await service.callTool("recall_search", { query: "how do we deploy" });
+    await service.callTool("recall_contribute", {
+      text: "A lesson long enough to be a real contribution to the shared corpus.",
+      category: "lesson",
+    });
+    await service.callTool("recall_search", { query: "how do we deploy" });
+
+    expect(service.paths).toEqual([
+      "/health", "/recall/stats", "/recall/search", "/recall/contribute", "/recall/search",
+    ]);
+  });
+});
+
+describe("recall_stats runs on the tool budget", () => {
+  // recall_search and recall_contribute already got the 30 s tool budget;
+  // recall_stats silently got the 12 s settings-probe budget because the
+  // proxy called recallStatus without the second argument PR #437 added.  A
+  // cold embedder would then fail the bot's stats call while the same corpus
+  // answered its searches fine.
+  //
+  // This is asserted at the call site rather than by observation: the only
+  // way to tell 12 s from 30 s from outside is to stall a stub past the
+  // shorter deadline, and a 12-second wait in a serial suite costs more than
+  // the bug does.
+  const PROXY_SRC = readFileSync(join(__dirname, "qdrant-proxy.ts"), "utf8");
+
+  it("passes the tool budget explicitly to recallStatus", () => {
+    const body = PROXY_SRC.slice(PROXY_SRC.indexOf("async function recallStats("));
+    const call = body.slice(body.indexOf("recallStatus("), body.indexOf(");", body.indexOf("recallStatus(")));
+
+    expect(call).toContain("RECALL_TOOL_TIMEOUT_MS");
+  });
+
+  it("guards the guard: the two budgets are still different numbers", () => {
+    // If these ever converge the assertion above proves nothing, and the
+    // bug it pins would be invisible again.
+    expect(RECALL_TOOL_TIMEOUT_MS).toBe(30_000);
+    expect(RECALL_STATUS_TIMEOUT_MS).toBe(12_000);
   });
 });
 

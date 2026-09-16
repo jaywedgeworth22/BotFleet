@@ -130,10 +130,80 @@ async function runCli(subcommand: string, args: string[]): Promise<string> {
   return executeRecallCli(cli, [subcommand, ...args], DEFAULT_COLLECTION, RECALL_TOOL_TIMEOUT_MS);
 }
 
-/** The service owns one corpus; verify it before sending a query or contribution. */
+// ── caches ─────────────────────────────────────────────────────────────
+// This proxy is a long-lived child process: one MCP session serves a whole
+// turn, often a whole conversation.  Two costs were paid on every single
+// call inside it.
+//
+//   1. `verifyCollection` ran a full probe — GET /health then GET
+//      /recall/stats — before each search and each contribute, so one search
+//      was three round trips and the same two calls repeated forever even
+//      though the collection cannot change under the session.
+//   2. Nothing remembered an answer, so a bot that searched the same phrase
+//      twice in a turn paid the full latency twice (measured 3.76 s on the
+//      CLI transport).
+//
+// Both caches hold positive results only, both are short, and any failure
+// retires them: a stale "the corpus is fine" verdict is exactly the thing
+// worth being careful about, so it never survives an error.
+
+/** How long a successful collection probe stands for.  Short enough that a
+ * service restarted under a running bot is re-probed within the minute. */
+const COLLECTION_VERIFY_TTL_MS = 60_000;
+/** How long an identical search stays answerable from memory, and how many
+ * distinct searches are remembered (least-recently-used evicted first). */
+const SEARCH_CACHE_TTL_MS = 30_000;
+const SEARCH_CACHE_MAX = 16;
+
+let collectionVerifiedUntil = 0;
+const searchCache = new Map<string, { at: number; text: string }>();
+
+/** Any non-2xx, gate, or transport error retires both caches: the next call
+ * re-probes rather than trusting a verdict formed before the failure. */
+function invalidateRecallCaches(): void {
+  collectionVerifiedUntil = 0;
+  searchCache.clear();
+}
+
+/** The search cache key — the whole request shape, so a different limit or
+ * filter is a different question, never a cache hit. */
+function searchCacheKey(payload: Record<string, unknown>): string {
+  return JSON.stringify(Object.keys(payload).sort().map((key) => [key, payload[key]]));
+}
+
+function readSearchCache(key: string): string | null {
+  const hit = searchCache.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > SEARCH_CACHE_TTL_MS) {
+    searchCache.delete(key);
+    return null;
+  }
+  // Re-insert so the map's insertion order stays least-recently-used first.
+  searchCache.delete(key);
+  searchCache.set(key, hit);
+  return hit.text;
+}
+
+function writeSearchCache(key: string, text: string): void {
+  searchCache.delete(key);
+  searchCache.set(key, { at: Date.now(), text });
+  while (searchCache.size > SEARCH_CACHE_MAX) {
+    searchCache.delete(searchCache.keys().next().value!);
+  }
+}
+
+/** The service owns one corpus; verify it before sending a query or
+ * contribution — but at most once per TTL, not once per call. */
 async function verifyCollection(signal: AbortSignal): Promise<void> {
   if (!DEFAULT_COLLECTION) return;
-  await probeRecallService(RECALL_URL, recallHttpHeaders(), DEFAULT_COLLECTION, signal);
+  if (Date.now() < collectionVerifiedUntil) return;
+  try {
+    await probeRecallService(RECALL_URL, recallHttpHeaders(), DEFAULT_COLLECTION, signal);
+  } catch (error) {
+    invalidateRecallCaches();
+    throw error;
+  }
+  collectionVerifiedUntil = Date.now() + COLLECTION_VERIFY_TTL_MS;
 }
 
 function safeError(error: unknown): string {
@@ -263,6 +333,12 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
   const sinceDays = args.since_days ? Number(args.since_days) : undefined;
   const perDoc = args.per_doc ? Number(args.per_doc) : undefined;
 
+  // The key is the request, not the raw arguments: two calls that normalise
+  // to the same query, limit and filters are the same question.
+  const cacheKey = searchCacheKey({ query, limit, category, app, source, seat, sinceDays, perDoc });
+  const cached = readSearchCache(cacheKey);
+  if (cached !== null) return cached;
+
   // An explicit service URL always wins over the host CLI.
   if (!RECALL_URL) {
     try {
@@ -276,8 +352,11 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
 
       const raw = await runCli("search", cliArgs.slice(1));
       const data = JSON.parse(raw);
-      return formatHits(data.hits || [], data.mode);
+      const text = formatHits(data.hits || [], data.mode);
+      writeSearchCache(cacheKey, text);
+      return text;
     } catch (error) {
+      invalidateRecallCaches();
       return `Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
     }
   }
@@ -305,15 +384,22 @@ async function recallSearch(args: Record<string, unknown>): Promise<string> {
     });
 
     const gate = accessLoginHint(res);
-    if (gate) return `Bot RAG search failed: ${gate}.`;
+    if (gate) {
+      invalidateRecallCaches();
+      return `Bot RAG search failed: ${gate}.`;
+    }
     if (res.ok) {
       const data = (await res.json()) as { hits?: HitRecord[]; mode?: string; ok?: boolean; error?: unknown };
       if (data.ok === false || data.error || !Array.isArray(data.hits)) throw new Error("the service returned an invalid search result");
-      return formatHits(data.hits, data.mode);
+      const text = formatHits(data.hits, data.mode);
+      writeSearchCache(cacheKey, text);
+      return text;
     }
     const errText = await res.text().catch(() => "");
+    invalidateRecallCaches();
     return `Bot RAG search error (${res.status}): ${safeError(errText || res.statusText)}`;
   } catch (err) {
+    invalidateRecallCaches();
     return `Failed to query agent RAG at ${RECALL_URL}: ${safeError(err)}`;
   }
 }
@@ -344,8 +430,11 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
       if (data.status === "duplicate") {
         return `Contribution duplicate: ${data.message || "A similar lesson already exists"}`;
       }
+      // The corpus just changed, so remembered answers are out of date.
+      searchCache.clear();
       return `Stored in ${COLLECTION_LABEL} [doc_id: ${data.doc_id || data.id}]: ${title ? `"${title}"` : text.slice(0, 80)}`;
     } catch (error) {
+      invalidateRecallCaches();
       return `Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
     }
   }
@@ -365,24 +454,35 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
     });
 
     const gate = accessLoginHint(res);
-    if (gate) return `Bot RAG contribute failed: ${gate}.`;
+    if (gate) {
+      invalidateRecallCaches();
+      return `Bot RAG contribute failed: ${gate}.`;
+    }
     if (res.ok) {
       const data = (await res.json()) as { doc_id?: string; id?: string; ok?: boolean; error?: unknown; status?: string };
       if (data.ok === false || data.error) throw new Error("the service rejected the contribution");
       if (data.status === "duplicate") return "Contribution duplicate: a similar lesson already exists.";
       if (!data.doc_id && !data.id) throw new Error("the service did not confirm a contribution ID; check before retrying");
+      // The corpus just changed, so remembered answers are out of date.
+      searchCache.clear();
       return `Successfully contributed to ${COLLECTION_LABEL} [id: ${data.doc_id || data.id}]`;
     }
     const errText = await res.text().catch(() => "");
+    invalidateRecallCaches();
     return `Bot RAG contribute error (${res.status}): ${safeError(errText || res.statusText)}`;
   } catch (err) {
+    invalidateRecallCaches();
     return `Failed to contribute to agent RAG at ${RECALL_URL}: ${safeError(err)}`;
   }
 }
 
 async function recallStats(): Promise<string> {
+  // The bot's stats tool is a tool call, so it gets the tool budget.  Left
+  // implicit, `recallStatus` falls back to the much shorter settings-probe
+  // budget, and a cold embedder would fail the bot's stats call while the
+  // same corpus answered its searches fine.
   const status = await recallStatus({ url: RECALL_URL, apiKey: RECALL_API_KEY, collection: DEFAULT_COLLECTION,
-    accessClientId: ACCESS_CLIENT_ID, accessClientSecret: ACCESS_CLIENT_SECRET });
+    accessClientId: ACCESS_CLIENT_ID, accessClientSecret: ACCESS_CLIENT_SECRET }, RECALL_TOOL_TIMEOUT_MS);
   if (!status.configured) return NOT_CONFIGURED_MESSAGE;
   if (!status.ready) return `Bot RAG status check failed: ${status.error}.`;
   return `Bot RAG status [${status.collection}]:\n- Source: ${status.source}\n- Backend: healthy\n- Points: ${status.pointsCount?.toLocaleString()}\n- Checked: ${new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", dateStyle: "medium", timeStyle: "short" }).format(status.checkedAt)} CT`;
