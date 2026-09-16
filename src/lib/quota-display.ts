@@ -346,7 +346,8 @@ export type MiniMaxQuotaView = {
  *  "resets at H:MM" convention server/index.ts's own quota line already
  *  uses.  When the WEEKLY window is the binding one instead, the clause
  *  becomes a countdown ("resets in 3d 4h") — that reset can be days away
- *  and a clock time alone would read as later today. `row.resetsAt` here is specifically the 5-hour window's own reset
+ *  and a clock time alone would read as later today. `row.resetsAt` here is
+ *  specifically the 5-hour window's own reset
  *  (server/minimax-balance.ts keeps it separate from the "soonest of either
  *  window" figure the registry.ts per-model merge uses instead). A weekly
  *  figure above 100% (MiniMax's own boosted-allowance scaling,
