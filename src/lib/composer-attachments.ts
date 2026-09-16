@@ -208,6 +208,18 @@ export function filesFromClipboard(data: ClipboardFileSource | null | undefined)
   for (const item of Array.from(data.items ?? [])) {
     if (item.kind === "file" || item.type.startsWith("image/")) add(item.getAsFile());
   }
+
+  // OS clipboards often hold one screenshot in multiple formats (e.g. PNG + TIFF, or HEIC + TIFF).
+  // The browser exposes them all as separate items named "image.<ext>".
+  // If we took them all, one paste would upload duplicates (and the TIFF might fail the 10MB limit).
+  const isGenerated = (f: File) => /^image\.(png|jpeg|jpg|tiff|bmp|gif|webp|heic|heif)$/i.test(f.name);
+  const generated = out.filter(isGenerated);
+  if (generated.length > 1) {
+    const best = generated.find(f => f.type === "image/png") ||
+                 generated.find(f => f.type === "image/jpeg") ||
+                 generated[0];
+    return out.filter(f => !isGenerated(f) || f === best);
+  }
   return out;
 }
 
