@@ -226,6 +226,24 @@ describe("Sentry AI observability", () => {
     expect(breadcrumbs.some((b) => b.message.includes("not signed in"))).toBe(true);
   });
 
+  it("does not Issue expected non-crash runtime errors (ACP resume failure, permission timeout, provider timeout)", () => {
+    const { sink, exceptions, breadcrumbs } = recordingSink();
+    observeRuntimeEvent(
+      base({ type: "runtime.error", message: "The saved ACP session could not be resumed.  Start a fresh task or rewind this conversation to replay its visible history." }),
+      sink,
+    );
+    observeRuntimeEvent(
+      base({ type: "runtime.error", message: "BotFleet: nobody answered this permission request in time. Skip this action and finish what you can without it." }),
+      sink,
+    );
+    observeRuntimeEvent(
+      base({ type: "runtime.error", message: "Antigravity: timeout waiting for response" }),
+      sink,
+    );
+    expect(exceptions).toHaveLength(0);
+    expect(breadcrumbs).toHaveLength(3);
+  });
+
   it("records API-backed tool names and chat tokens without messages", async () => {
     const { sink, spans } = recordingSink();
     recordExecutedTools("thread-9", ["read_file", "write_file"], sink);
