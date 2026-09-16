@@ -5,7 +5,7 @@
 // compatible — do not remove it); dispose tears an instance down without
 // touching its siblings.
 import { lastAntigravityQuotaSnapshot, quotaModelsFromSnapshot } from "../antigravity-quota.ts";
-import { decodeMinimaxConfig, resolveMinimaxCredentials } from "../drivers/minimax.ts";
+import { decodeMinimaxConfig, resolveMinimaxCredentials, type MinimaxConfig } from "../drivers/minimax.ts";
 import { findCliCandidates } from "../env-path.ts";
 import { getCachedLocalMiniMaxConfig, getMiniMaxBalance } from "../minimax-balance.ts";
 import { quotaCooldowns } from "../model-fallback.ts";
@@ -58,18 +58,20 @@ export const MINIMAX_DEFAULT_URL = "https://api.minimax.io/v1";
 
 /** The host MiniMax turns for `instanceId` actually go to, reproducing
  *  `MinimaxDriver.create()`'s own precedence exactly: ~/.mmx/config.json's
- *  host (written by `mmx auth login`, machine-wide) outranks the instance's
- *  configured url only for the reserved instance, and only while that
- *  instance is still pointed at the global default.  The previous
- *  "did anything choose a host?" heuristic disagreed with the driver for a
- *  reserved instance that explicitly configured the global url while
- *  ~/.mmx named the China region: the driver billed api.minimaxi.com while
- *  the balance lookup asked api.minimax.io, which answers for neither. */
-export function resolveMinimaxApiUrl(instanceId: InstanceId, configUrl: string, localUrl: string): string {
+ *  host (written by `mmx auth login`, machine-wide) is a workspace-wide
+ *  DEFAULT, so it reaches only the reserved instance and only when nothing
+ *  chose a host.
+ *
+ *  Whether a host was chosen is answered by the decoded config's PROVENANCE,
+ *  never by comparing its url to MINIMAX_DEFAULT_URL — the driver's own gate
+ *  was corrected the same way, and for the same reason: "nothing configured"
+ *  and "pinned to the global host in Settings" resolve to the identical
+ *  string, so a value comparison sent a reserved instance that deliberately
+ *  configured the global url off to whatever region ~/.mmx names.  The two
+ *  must agree, or the balance lookup asks a host the turns never bill. */
+export function resolveMinimaxApiUrl(instanceId: InstanceId, config: MinimaxConfig, localUrl: string): string {
   const isReservedInstance = instanceId === "minimax";
-  return isReservedInstance && configUrl === MINIMAX_DEFAULT_URL && localUrl !== MINIMAX_DEFAULT_URL
-    ? localUrl
-    : configUrl;
+  return isReservedInstance && config.urlSource === "default" ? localUrl : config.url;
 }
 
 export interface ShadowInstance {
@@ -211,7 +213,7 @@ export class ProviderRegistry {
           // connection silently inheriting the reserved instance's key —
           // and therefore its quota — when its own key is unset.
           apiKey: resolveMinimaxCredentials(entry.environment ?? {}, local, instanceId),
-          apiUrl: resolveMinimaxApiUrl(instanceId, decoded.url, local.url),
+          apiUrl: resolveMinimaxApiUrl(instanceId, decoded, local.url),
         });
       } else {
         this.minimaxContextByInstance.delete(instanceId);
