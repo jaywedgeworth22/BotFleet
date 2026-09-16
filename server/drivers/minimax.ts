@@ -125,8 +125,16 @@ function toTurnUsage(raw: any): TurnUsage {
   return usage;
 }
 
+/** Where `MinimaxConfig.url` came from.  "default" is the ONLY value that
+ * means nothing chose a host: `url` is filled in unconditionally, so the
+ * string alone cannot tell "not configured" apart from "configured as the
+ * global host" — they are byte-identical, and guessing from that is what
+ * silently re-pointed an endpoint the operator had typed. */
+export type MinimaxUrlSource = "instance" | "workspace" | "environment" | "default";
+
 export interface MinimaxConfig {
   url: string;
+  urlSource: MinimaxUrlSource;
 }
 
 interface LocalMiniMaxConfig {
@@ -144,7 +152,18 @@ const localConfigSchema = z.object({
 
 const driverConfigSchema = z.object({
   url: z.string().optional(),
+  // instanceConfigs() (server/config.ts) stamps this on exactly the entries
+  // it resolved a url onto from the workspace setting, so the driver can tell
+  // a workspace-wide endpoint apart from one this instance carries WITHOUT
+  // comparing the two values.
+  urlSource: z.string().optional(),
 });
+
+/** server/config.ts's `WORKSPACE_URL_SOURCE`: the marker instanceConfigs()
+ * writes and stripInjectedDefaults() removes again before anything persists.
+ * Reproduced as a literal rather than imported because server/config.ts is
+ * the layer above this one and must not become a dependency of it. */
+const WORKSPACE_URL_SOURCE = "workspace";
 
 function normalizedApiUrl(value: string): string {
   const root = value.trim().replace(/\/+$/, "");
@@ -200,9 +219,20 @@ export function loadLocalMiniMaxConfig(home = homedir()): LocalMiniMaxConfig {
 export function decodeMinimaxConfig(raw: unknown): MinimaxConfig {
   const parsed = driverConfigSchema.safeParse(raw ?? {});
   const config = parsed.success ? parsed.data : {};
+  const ownUrl = config.url?.trim();
   const envUrl = process.env.MINIMAX_BASE_URL?.trim();
+  // Provenance, decided here once, where all three inputs are still
+  // distinguishable.  Downstream only ever sees the resolved string, and a
+  // resolved string that happens to equal DEFAULT_URL is ambiguous forever
+  // after.
+  const urlSource: MinimaxUrlSource = ownUrl
+    ? (config.urlSource === WORKSPACE_URL_SOURCE ? "workspace" : "instance")
+    : envUrl
+      ? "environment"
+      : "default";
   return {
-    url: normalizedApiUrl(config.url?.trim() || envUrl || DEFAULT_URL),
+    url: normalizedApiUrl(ownUrl || envUrl || DEFAULT_URL),
+    urlSource,
   };
 }
 
@@ -242,20 +272,32 @@ export const MinimaxDriver: ProviderDriver<MinimaxConfig> = {
     // Without it, a connection whose operator typed exactly the default URL
     // was silently redirected to whatever region or custom base_url that file
     // names, and its own key was sent there.
+    //
+    // It is a DEFAULT, so it yields to any host that was actually chosen, and
+    // that question is answered by PROVENANCE, never by comparing the url to
+    // DEFAULT_URL: an operator who pins this connection to the global host in
+    // Settings types the very string the unset state resolves to, and a value
+    // comparison silently re-pointed them at whatever region that file names.
     const isReservedInstance = instanceId === RESERVED_INSTANCE_ID;
-    const apiUrl = isReservedInstance && config.url === DEFAULT_URL && local.url !== DEFAULT_URL
-      ? local.url
-      : config.url;
+    const apiUrl = isReservedInstance && config.urlSource === "default" ? local.url : config.url;
     // What the operator can actually DO about a missing or refused key here.
     // The workspace remedies — MINIMAX_API_KEY, `mmx auth login` — reach only
     // the reserved instance, so telling a connection the operator added to
     // try either one sends them somewhere that cannot help.
+    //
+    // Settings → API Keys cannot help either: that panel renders one row per
+    // WORKSPACE engine id ("minimax", "openaiCompat"), and by the very gate
+    // above, the key in that row can never reach an added connection.  There
+    // is no per-instance key field anywhere in the app today, so the only
+    // control that changes an added connection's key is deleting and re-adding
+    // it in Settings → Engines.  Naming a remedy that does not exist is worse
+    // than naming none.
     const keylessRemedy = isReservedInstance
       ? `set ${API_KEY_ENV} or run mmx auth login --api-key …`
-      : "set a key for this connection in Settings \u2192 API Keys";
+      : "delete and re-add this connection in Settings \u2192 Engines with a key";
     const rejectedRemedy = isReservedInstance
       ? `run mmx auth login --api-key … or update ${API_KEY_ENV}`
-      : "update this connection's key in Settings \u2192 API Keys";
+      : "delete and re-add this connection in Settings \u2192 Engines with a working key";
     // Resolved once, from the endpoint this instance actually calls, so a
     // gateway or proxy never gets MiniMax's own tariff reported as its
     // authoritative spend.

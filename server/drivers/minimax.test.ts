@@ -116,7 +116,27 @@ describe("MinimaxDriver", () => {
 
   it("normalizes custom API roots", () => {
     expect(decodeMinimaxConfig({ url: "https://example.test/", apiKeyEnv: "CUSTOM_KEY" }))
-      .toEqual({ url: "https://example.test/v1" });
+      .toEqual({ url: "https://example.test/v1", urlSource: "instance" });
+  });
+
+  it("records WHERE the endpoint came from, not only what it resolved to", () => {
+    // `url` is always filled in, so the resolved string alone cannot tell
+    // "nothing configured" apart from "configured as the global host" — they
+    // are byte-identical.  Provenance is decided here, where the three inputs
+    // are still distinguishable, and nowhere else.
+    expect(decodeMinimaxConfig({})).toEqual({ url: "https://api.minimax.io/v1", urlSource: "default" });
+    expect(decodeMinimaxConfig({ url: "https://api.minimax.io/v1" }))
+      .toEqual({ url: "https://api.minimax.io/v1", urlSource: "instance" });
+    // The stamp instanceConfigs() writes on a url it resolved from the
+    // workspace Settings row (server/config.ts's WORKSPACE_URL_SOURCE).
+    expect(decodeMinimaxConfig({ url: "https://api.minimax.io/v1", urlSource: "workspace" }))
+      .toEqual({ url: "https://api.minimax.io/v1", urlSource: "workspace" });
+    // A blank url is not a choice, whatever rides beside it.
+    expect(decodeMinimaxConfig({ url: "   ", urlSource: "workspace" }))
+      .toEqual({ url: "https://api.minimax.io/v1", urlSource: "default" });
+    process.env.MINIMAX_BASE_URL = "https://gateway.example.test/v1";
+    expect(decodeMinimaxConfig({}))
+      .toEqual({ url: "https://gateway.example.test/v1", urlSource: "environment" });
   });
 
   it("reads the official mmx-cli config and honors its region and model", () => {
@@ -257,6 +277,54 @@ describe("MinimaxDriver", () => {
     await reserved.dispose();
   });
 
+  it("keeps the reserved connection on a host the operator chose, even when that host IS the global default", async () => {
+    // The gate used to ask "is config.url the default string?", which cannot
+    // tell "nothing configured" apart from "pinned to the global host in
+    // Settings" — the two are byte-identical.  So an operator who already
+    // used the mmx CLI against the China region, and then typed the global
+    // URL into Settings to pin the built-in connection, had every turn and
+    // every probe silently re-pointed back at the China host with the
+    // workspace key.
+    mkdirSync(join(home, ".mmx"), { recursive: true });
+    writeFileSync(
+      join(home, ".mmx", "config.json"),
+      JSON.stringify({ api_key: "sentinel-workspace-local", region: "cn" }),
+    );
+    const fetchMock = vi.fn(async (_input: string | URL | Request) => new Response(
+      JSON.stringify({ data: [] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    ));
+    vi.stubGlobal("fetch", fetchMock);
+
+    // `urlSource: "workspace"` is the stamp instanceConfigs() writes on a url
+    // it resolved from that Settings row.
+    const pinned = await MinimaxDriver.create({
+      instanceId: "minimax",
+      displayName: "MiniMax",
+      enabled: true,
+      config: decodeMinimaxConfig({ url: "https://api.minimax.io/v1", urlSource: "workspace" }),
+      environment: {},
+    });
+    await expect(pinned.snapshot()).resolves.toMatchObject({ state: "available" });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("api.minimax.io");
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("api.minimaxi.com");
+    await pinned.dispose();
+
+    // Nothing chose a host: the machine-wide profile still decides, which is
+    // the whole reason that file is read at all.
+    fetchMock.mockClear();
+    const unset = await MinimaxDriver.create({
+      instanceId: "minimax",
+      displayName: "MiniMax",
+      enabled: true,
+      config: MinimaxDriver.defaultConfig(),
+      environment: {},
+    });
+    await expect(unset.snapshot()).resolves.toMatchObject({ state: "available" });
+    expect(String(fetchMock.mock.calls[0][0])).toContain("api.minimaxi.com");
+    await unset.dispose();
+  });
+
   it("tells each connection the remedy that can actually reach it", async () => {
     // MINIMAX_API_KEY and `mmx auth login` are workspace-wide, and a
     // non-reserved connection reads neither.  Offering them there sends the
@@ -277,6 +345,12 @@ describe("MinimaxDriver", () => {
     expect(addedReason).toContain("Settings");
     expect(addedReason).not.toContain("MINIMAX_API_KEY");
     expect(addedReason).not.toContain("mmx auth login");
+    // Settings → API Keys has one row per WORKSPACE engine id, and by the
+    // gate above that key can never reach an added connection.  There is no
+    // per-instance key field anywhere today, so the only control that exists
+    // is deleting and re-adding the connection.
+    expect(addedReason).toContain("Engines");
+    expect(addedReason).not.toContain("API Keys");
     await expect(added.adapter.sendTurn({ threadId: "t", text: "hi" })).rejects.toThrow(/Settings/);
     await added.dispose();
 
@@ -292,6 +366,8 @@ describe("MinimaxDriver", () => {
     expect(rejectedSnapshot).toMatchObject({ state: "unavailable" });
     expect((rejectedSnapshot as { reason: string }).reason).toContain("Settings");
     expect((rejectedSnapshot as { reason: string }).reason).not.toContain("mmx auth login");
+    expect((rejectedSnapshot as { reason: string }).reason).toContain("Engines");
+    expect((rejectedSnapshot as { reason: string }).reason).not.toContain("API Keys");
     await rejected.dispose();
 
     // The built-in connection keeps the workspace remedies, which do reach it.

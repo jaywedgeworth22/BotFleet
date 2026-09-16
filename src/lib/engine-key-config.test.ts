@@ -289,3 +289,15 @@ describe("applyEngineKeySave", () => {
     expect(patchConfig).not.toHaveBeenCalled();
   });
 });
+
+describe("the copy these rows render", () => {
+  it("separates sentences with NBSP, which white-space:normal will not collapse", () => {
+    // Every note here lands in a plain <div> in ApiKeys.tsx, where a run of
+    // two ordinary spaces collapses to a single one and the wider sentence
+    // gap the house style requires is silently lost.
+    for (const engine of API_KEY_ENGINES) {
+      expect(engine.defaultUrlNote).not.toMatch(/ {2}/);
+    }
+    expect(minimax.defaultUrlNote).toContain("global host.\u00A0 Use");
+  });
+});

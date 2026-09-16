@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -6,6 +9,7 @@ import {
   createCustomEngine,
   customEngineCalloutTitle,
   deleteCustomEngine,
+  driverDisplayName,
   isCustomEngineInstance,
   validateAddEngine,
   type EngineCredentialDeps,
@@ -270,6 +274,26 @@ describe("the Add Engine form's driver choice", () => {
   it("names the engine the operator actually added in the row callout", () => {
     expect(customEngineCalloutTitle("minimax")).toBe("Added MiniMax Connection.");
     expect(customEngineCalloutTitle("openai-compat")).toBe("Custom OpenAI-Compatible Engine.");
+    // Only openai-compat instances are OpenAI-compatible engines.  Since
+    // isCustomEngineInstance was widened to answer true for ANY unlisted
+    // driver's non-reserved id, an extra instance of one of those used to
+    // claim a wire shape its endpoint may not speak at all.
+    expect(customEngineCalloutTitle("claudeAgent")).toBe("Added Claude Connection.");
+    expect(customEngineCalloutTitle("boxAgent")).toBe("Added Computer Connection.");
+    // A driver nobody listed is named after itself rather than mislabelled.
+    expect(customEngineCalloutTitle("someFutureDriver")).toBe("Added SomeFutureDriver Connection.");
+    expect(customEngineCalloutTitle("nimbus")).toBe("Added Nimbus Connection.");
+  });
+
+  it("falls back to a humanized driver kind rather than a wrong product name", () => {
+    expect(driverDisplayName("minimax")).toBe("MiniMax");
+    expect(driverDisplayName("dshAgent")).toBe("DeepSeek");
+    expect(driverDisplayName("piAgent")).toBe("pi");
+    expect(driverDisplayName("widgetAgent")).toBe("Widget");
+    expect(driverDisplayName("widget")).toBe("Widget");
+    // Never returns an empty label, whatever it is handed.
+    expect(driverDisplayName("Agent")).toBe("Agent");
+    expect(driverDisplayName("")).toBe("");
   });
 });
 
@@ -312,5 +336,21 @@ describe("an anonymous engine added from the desktop", () => {
       expect(createInstance.mock.calls[0][1]).toBeUndefined();
       expect(setInstanceCredential).not.toHaveBeenCalled();
     });
+  });
+});
+
+describe("the Add Engine modal's MiniMax note", () => {
+  it("separates its sentences with NBSP, which the browser will not collapse", () => {
+    // JSX preserves a run of two ASCII spaces into the DOM and CSS then
+    // collapses it, so raw JSX text needs the same NBSP the string literals
+    // above use.  Read from source because this repo has no component-render
+    // harness — the same shape as server/secret-persistence.test.ts's own
+    // "renders its sentence gaps with NBSP".
+    const source = readFileSync(
+      fileURLToPath(new URL("../components/EnginesSettings.tsx", import.meta.url)),
+      "utf8",
+    );
+    expect(source).toContain("nothing to type here.\u00A0 This connection offers the");
+    expect(source).not.toContain("nothing to type here.  This connection");
   });
 });
