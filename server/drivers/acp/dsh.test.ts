@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -23,6 +23,7 @@ import {
   DSH_MINIMUM_ACP_VERSION,
   STATIC_DSH_MODELS,
 } from "./dsh.ts";
+import type { AcpStdioMcpServer } from "./core.ts";
 import { dshMcpPatchYaml, isStockDshCli, writeDshMcpPatch } from "./dsh-mcp.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
@@ -307,6 +308,17 @@ describe("dsh MCP delivery", () => {
     } finally {
       removeWrittenPatch(patch);
     }
+  });
+
+  it("leaves no directory behind when the overlay cannot be written", () => {
+    const listing = () => readdirSync(tmpdir()).filter((name) => name.startsWith("botfleet-dsh-mcp-"));
+    const before = listing();
+    const malformed: Partial<AcpStdioMcpServer>[] = [{ name: "computer", command: "/opt/cua-driver" }];
+    // SAFETY: deliberately incomplete — a mount with no `args` makes the YAML
+    // build throw inside writeDshMcpPatch, which is the only portable way to
+    // reach its failure path; making the filesystem itself fail is not.
+    expect(() => writeDshMcpPatch(malformed as AcpStdioMcpServer[])).toThrow();
+    expect(listing()).toEqual(before);
   });
 
   it("leaves a non-dsh CLI unwrapped so tests still see session/new mcpServers", () => {

@@ -4,7 +4,7 @@
 //   1. writes those mounts as a `dsh --patch` overlay of dsh-mcp-client rows
 //   2. sits `dsh-acp-bridge` in front so the wire can keep sending mcpServers
 import { randomUUID } from "node:crypto";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -103,11 +103,20 @@ export function writeDshMcpPatch(servers: AcpStdioMcpServer[]): string {
     /* no POSIX mode bits on this platform */
   }
   const path = join(directory, `${DSH_MCP_PATCH_PREFIX}${randomUUID()}.yml`);
-  writeFileSync(path, dshMcpPatchYaml(servers), { encoding: "utf8", mode: 0o600 });
   try {
-    chmodSync(path, 0o600);
-  } catch {
-    /* no POSIX mode bits on this platform */
+    writeFileSync(path, dshMcpPatchYaml(servers), { encoding: "utf8", mode: 0o600 });
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      /* no POSIX mode bits on this platform */
+    }
+  } catch (error) {
+    // A failed write must not leave the directory behind holding a partial
+    // overlay — the same guard `server/drivers/pi.ts` keeps over its own MCP
+    // config, and nothing downstream gets a path to clean up when the caller
+    // never receives one.
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
   }
   return path;
 }
