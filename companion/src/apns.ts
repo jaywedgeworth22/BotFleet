@@ -145,6 +145,10 @@ export interface ApnsAlert {
   requestId?: string;
   /** The tool that asked — display only. */
   tool?: string;
+  /** The harness stream position this alert was built from.  The phone uses
+   * it to recognise the replayed frame as the one it has already been shown,
+   * so a wake-and-replay does not draw the same banner a second time. */
+  seq?: number;
 }
 
 export interface ApnsDelivery {
@@ -197,6 +201,8 @@ export interface ApnsPayload {
   kind?: string;
   requestId?: string;
   tool?: string;
+  /** The harness frame's own sequence number — see `ApnsAlert.seq`. */
+  seq?: number;
 }
 
 /** The JSON body for one alert.  Exported so a test can read the shape
@@ -223,6 +229,11 @@ export function apnsPayload(alert: ApnsAlert): ApnsPayload {
     kind: alert.kind,
     requestId: alert.requestId,
     tool: alert.tool,
+    // The phone drops the local banner for a frame it already got by push.
+    // Without this the same notification arrives twice on a closed app: once
+    // from Apple, and again when the wake reconnects and the harness replays
+    // the very frame the push was built from.
+    seq: alert.seq,
   };
 }
 
@@ -263,6 +274,10 @@ const EXPIRED_TOKEN_REASON = "ExpiredProviderToken";
 
 /** Apple refuses the signing key itself.  A new signature cannot help. */
 export const INVALID_PROVIDER_TOKEN = "InvalidProviderToken";
+
+/** `status: 0` with this reason means the request never reached Apple at
+ * all — the connection failed, rather than the notification being refused. */
+export const TRANSPORT_FAILURE_REASON = "SendFailed";
 
 /** Rejections that mean this device token will never work again.  410 says
  * the same thing with a status; these two say it with a 400, and retrying
@@ -333,17 +348,30 @@ export async function sendApnsAlert(
 
   while (attempts < maxAttempts) {
     attempts += 1;
-    const res = await fetchImpl(`https://${host}/3/device/${token}`, {
-      method: "POST",
-      headers: {
-        authorization: `bearer ${providerToken(config, now())}`,
-        "apns-topic": config.bundleId,
-        "apns-push-type": "alert",
-        "apns-priority": "10",
-        "content-type": "application/json",
-      },
-      body,
-    });
+    let res: Response;
+    try {
+      res = await fetchImpl(`https://${host}/3/device/${token}`, {
+        method: "POST",
+        headers: {
+          authorization: `bearer ${providerToken(config, now())}`,
+          "apns-topic": config.bundleId,
+          "apns-push-type": "alert",
+          "apns-priority": "10",
+          "content-type": "application/json",
+        },
+        body,
+      });
+    } catch {
+      // A reset connection, a DNS blip, a Wi-Fi drop.  This is the most
+      // common transient failure on a home link and the only one the status
+      // ladder below cannot see, so it earns the same bounded backoff a 503
+      // gets rather than losing the alert on the first attempt.
+      lastStatus = 0;
+      lastReason = TRANSPORT_FAILURE_REASON;
+      if (attempts >= maxAttempts) break;
+      await sleep(backoffMs(attempts));
+      continue;
+    }
     if (res.ok) return { ok: true, status: res.status, attempts };
 
     const reason = await readReason(res);
@@ -569,11 +597,22 @@ export function watchHarnessNotifications(options: {
       return discovered;
     }
     const loaded = loadConfig();
-    // Whatever is on disk now is not what the cached token was signed with.
-    if (discovered) invalidateProviderToken(discovered);
+    // Whatever is on disk now may not be what the cached token was signed
+    // with.  Compare key identity rather than the file stamp: a .p8 rewritten
+    // with identical bytes — a secrets sync, a backup restore — is the same
+    // key, and throwing away its cached provider token would spend one of
+    // Apple's once-per-twenty-minutes re-signs for nothing.
+    if (discovered && (!loaded || providerTokenKey(discovered) !== providerTokenKey(loaded))) {
+      invalidateProviderToken(discovered);
+    }
     discovered = loaded;
     discoveredStamp = stamp;
     health.setConfigured(discovered);
+    // A usable key again.  Anything stranded mid-drain when the old key
+    // faulted goes out now, rather than sitting in memory until some
+    // unrelated notification for that same phone happens to restart its
+    // queue — which for a blocking approval is the whole point of the lane.
+    if (discovered) resumeIdleQueues();
     if (!discovered && !warnedMissing) {
       warnedMissing = true;
       console.warn("companion: APNs key missing; closed-app phone wake is off until it appears");
@@ -628,10 +667,23 @@ export function watchHarnessNotifications(options: {
     try {
       result = await send(config, token, alert);
     } catch {
-      health.recordError(now(), 0, "SendFailed");
+      health.recordError(now(), 0, TRANSPORT_FAILURE_REASON);
       console.warn("companion: APNs send failed");
       return;
     }
+    // Everything below is bookkeeping, and some of it writes to disk:
+    // `forgetToken` persists the device registry.  `drain` is fired and
+    // forgotten, so a throw here would be an unhandled rejection, and Node's
+    // default `--unhandled-rejections=throw` turns that into an exit — one
+    // full disk taking down the proxy every paired phone depends on.
+    try {
+      recordOutcome(config, deviceId, token, result);
+    } catch {
+      console.warn("companion: APNs bookkeeping after a send failed");
+    }
+  };
+
+  const recordOutcome = (config: ApnsConfig, deviceId: string, token: string, result: ApnsSendResult) => {
     if (result.ok) {
       health.recordSent(now());
       return;
@@ -646,7 +698,13 @@ export function watchHarnessNotifications(options: {
       // replacement would disable the replacement — then hold it disabled,
       // because the fault only clears for a key file that differs from the
       // recorded stamp and the file on disk is already the replacement.
-      if (config === (fixed ?? discovered)) {
+      //
+      // Key identity, not object identity: `refreshConfig` builds a fresh
+      // config object whenever the file's mtime or size changes, so an
+      // identity check would read a .p8 rewritten with the same bytes as a
+      // rotation and wave through a rejection of the key still in use.
+      const current = fixed ?? discovered;
+      if (current !== null && providerTokenKey(config) === providerTokenKey(current)) {
         onKeyFault(result.reason);
       } else if (!keyFault) {
         console.warn("companion: APNs refused a signing key that has since been replaced; the replacement stands");
@@ -689,27 +747,48 @@ export function watchHarnessNotifications(options: {
         // Blocking first, always: an approval queued behind a rate-limited
         // report would wait out that report's whole retry ladder, which is
         // the one delay this queue exists to prevent.
-        const next = queue.blocking.shift() ?? queue.normal.shift();
-        if (!next) break;
+        // The key first, the alert second.  Shifting before the check
+        // detaches an alert from the queue with nothing holding it, so a key
+        // that faults during the send immediately before would silently
+        // swallow whatever was queued behind it — uncounted, and unsent.
         const config = activeConfig();
         if (!config) break;
+        const next = queue.blocking.shift() ?? queue.normal.shift();
+        if (!next) break;
         await sendOne(config, deviceId, next.token, next.alert);
       }
+    } catch {
+      // Nothing here may reject: this chain is started with `void`.
+      console.warn("companion: APNs queue drain failed");
     } finally {
       queue.running = false;
       if (queueDepth(queue) === 0) queues.delete(deviceId);
     }
   };
 
-  const deliver = (notification: {
-    title?: string;
-    body?: string;
-    kind?: string;
-    threadId?: string;
-    botId?: string;
-    requestId?: string;
-    tool?: string;
-  }) => {
+  /** Restart every queue that still holds something and is not draining.
+   * A key fault breaks the drain loop with entries left behind and nothing
+   * to restart it — only a later notification for that same phone would, so
+   * an approval queued at the moment the key failed would otherwise arrive
+   * hours late, behind an unrelated report. */
+  const resumeIdleQueues = () => {
+    for (const [deviceId, queue] of [...queues]) {
+      if (!queue.running && queueDepth(queue) > 0) void drain(deviceId, queue);
+    }
+  };
+
+  const deliver = (
+    notification: {
+      title?: string;
+      body?: string;
+      kind?: string;
+      threadId?: string;
+      botId?: string;
+      requestId?: string;
+      tool?: string;
+    },
+    seq?: number,
+  ) => {
     const connected = new Set(options.connectedIds());
     const alert: ApnsAlert = {
       title: notification.title ?? "BotFleet",
@@ -719,6 +798,7 @@ export function watchHarnessNotifications(options: {
       botId: notification.botId,
       requestId: notification.requestId,
       tool: notification.tool,
+      seq,
     };
     const blocking = alertIsBlocking(alert.kind);
     for (const row of options.tokensForDisconnected()) {
@@ -779,6 +859,10 @@ export function watchHarnessNotifications(options: {
             let frame: {
               kind?: string;
               cursor?: string;
+              /** Hello only: whether the harness could replay what we missed. */
+              resumed?: boolean;
+              /** The stream position of this frame, stamped by `broadcast`. */
+              seq?: number;
               notification?: {
                 title?: string;
                 body?: string;
@@ -798,16 +882,27 @@ export function watchHarnessNotifications(options: {
               continue;
             }
             // The harness's opening frame carries the stream's current
-            // position but no `id:` line of its own, and a hello is always
-            // that stream's baseline.  Without taking it, a link that drops
+            // position but no `id:` line of its own, and on a COLD stream
+            // that is the baseline: without taking it, a link that drops
             // before the first real event reconnects with no cursor at all,
             // and every notification raised in between is never pushed.
-            if (frame.kind === "hello" && frame.cursor) lastEventId = frame.cursor;
+            //
+            // On a RESUMED stream it is the opposite — the cursor is the
+            // tip, and everything we missed is replayed after it.  Adopting
+            // it there would jump us past the whole gap if the link died
+            // before a replayed frame was read, skipping those pushes
+            // forever.  Let the replayed `id:` lines advance the cursor
+            // instead, which is exactly what the iOS client does with the
+            // same frame.  A harness too old to send `resumed` replayed
+            // nothing either, so absent reads as cold.
+            if (frame.kind === "hello" && frame.cursor && frame.resumed !== true) {
+              lastEventId = frame.cursor;
+            }
             if (frame.kind !== "notify" || !frame.notification) continue;
             // Returns at once: the sends happen on each device's own queue,
             // so a reader that has to keep up with the harness never waits
             // on one phone's retry.
-            deliver(frame.notification);
+            deliver(frame.notification, frame.seq);
           }
         }
       } catch {

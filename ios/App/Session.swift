@@ -873,9 +873,23 @@ final class Session: ObservableObject {
     /// The same answer, from something that only has the ids — the Live
     /// Activity's buttons.  Returns whether it reached the harness; the
     /// intent ignores that, a notification action does not.
+    ///
+    /// `quietly` is for the callers with no screen to show a banner on.  A
+    /// lock-screen Approve or Deny that fails is reported by its own
+    /// follow-up notification, and writing `actionError` as well would raise
+    /// the app-wide "Something went wrong" modal the next time the app is
+    /// opened — over, and in place of, whatever message the user may have
+    /// been reading.  It defaults to the existing behaviour so the in-app
+    /// cards, the Live Activity and `AnswerApprovalIntent` are unchanged.
     @discardableResult
-    func answer(threadId: String, requestId: String, choice: String, isPermission: Bool) async -> Bool {
-        return await perform {
+    func answer(
+        threadId: String,
+        requestId: String,
+        choice: String,
+        isPermission: Bool,
+        quietly: Bool = false
+    ) async -> Bool {
+        return await perform(quietly: quietly) {
             // Permission cards answer allow/deny; a question answers with
             // the chosen text. The harness tells them apart by `behavior`.
             let behavior = OptionCard.responseBehavior(for: choice, isPermission: isPermission)
@@ -939,7 +953,9 @@ final class Session: ObservableObject {
     /// below already relies on, and bounds the whole attempt so the
     /// notification's completion handler is never left hanging.  Either way
     /// this defers to the same `answer(threadId:requestId:choice:isPermission:)`
-    /// above, the one `AnswerApprovalIntent` calls.
+    /// above, the one `AnswerApprovalIntent` calls — quietly, because a
+    /// notification action has no screen to show an error on and must not
+    /// clear a message the user may be looking at.
     @discardableResult
     func answerPendingRequest(target: NotificationTarget, approve: Bool) async -> ApprovalActionOutcome {
         if client == nil { connect() }
@@ -978,7 +994,13 @@ final class Session: ObservableObject {
             ) {
             case let .answer(requestId, isPermission):
                 let sent = await self.answer(
-                    threadId: threadId, requestId: requestId, choice: choice, isPermission: isPermission
+                    threadId: threadId,
+                    requestId: requestId,
+                    choice: choice,
+                    isPermission: isPermission,
+                    // No screen to report on, and `ApprovalActionOutcome`
+                    // already carries the failure to the follow-up banner.
+                    quietly: true
                 )
                 if !sent { throw ApprovalActionFailed() }
                 return true

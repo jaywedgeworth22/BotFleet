@@ -98,6 +98,11 @@ final class CompanionAppDelegate: NSObject, UIApplicationDelegate {
         didReceiveRemoteNotification userInfo: [AnyHashable: Any],
         fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void
     ) {
+        // Before the refresh, not after: this wake is what reconnects the
+        // stream, and the harness replays the very frame this push was built
+        // from.  Noting it first is what keeps that replay from drawing a
+        // second banner for a notification Apple has already delivered.
+        NotificationCoordinator.shared.notePushDelivered(userInfo: userInfo)
         guard let onRemoteRefresh else {
             completionHandler(.noData)
             return
