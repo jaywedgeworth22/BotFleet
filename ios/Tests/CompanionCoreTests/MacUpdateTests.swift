@@ -10,6 +10,7 @@
 // Re-capture and replace once the route lands on `main`, the same way
 // `options-card.json` is called out in `DecodingTests.swift` as the one
 // fixture a run does not regenerate.
+import Foundation
 import XCTest
 @testable import CompanionCore
 
@@ -322,5 +323,32 @@ final class MacUpdateTests: XCTestCase {
         )))
         XCTAssertEqual(state.macUpdateStatus?.installed.sourceCommit, "def5678")
         XCTAssertTrue(state.macUpdateStatus?.capabilities.canRun == true)
+    }
+    // MARK: - Timestamp parsing
+
+    /// The exact shape the harness emits: `deps.now().toISOString()` in
+    /// `server/update-control.ts` always carries milliseconds, and until
+    /// `MacUpdateTimestamp` existed the card rendered that string raw.
+    func testParsesTheMillisecondSpellingTheHarnessActuallyEmits() throws {
+        let date = try XCTUnwrap(MacUpdateTimestamp.date(from: "2026-09-14T08:46:09.123Z"))
+        XCTAssertEqual(date.timeIntervalSince1970, 1_789_375_569.123, accuracy: 0.001)
+    }
+
+    /// The other spelling that has to keep working: a whole-second stamp,
+    /// which is what every hand-written fixture in this file carries.
+    func testParsesTheWholeSecondSpellingToo() throws {
+        let date = try XCTUnwrap(MacUpdateTimestamp.date(from: "2026-09-14T08:46:09Z"))
+        XCTAssertEqual(date.timeIntervalSince1970, 1_789_375_569, accuracy: 0.001)
+    }
+
+    /// Why the helper exists at all — pinned so nobody "simplifies" it back
+    /// to a default-configured formatter.
+    func testADefaultFormatterIsWhyThisHelperExists() {
+        XCTAssertNil(ISO8601DateFormatter().date(from: "2026-09-14T08:46:09.123Z"))
+    }
+
+    func testRejectsSomethingThatIsNotATimestamp() {
+        XCTAssertNil(MacUpdateTimestamp.date(from: "never"))
+        XCTAssertNil(MacUpdateTimestamp.date(from: ""))
     }
 }
