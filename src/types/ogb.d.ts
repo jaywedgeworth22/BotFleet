@@ -209,8 +209,9 @@ type SkillRecordingPayload = {
         close(contextId?: string): Promise<boolean>;
         onState(cb: (state: DesktopWorkspaceState) => void): () => void;
       };
-      /** Native folder picker; resolves null when the user cancels. */
-      pickFolder?(current?: string): Promise<string | null>;
+      /** Native folder picker; resolves null when the user cancels.
+       * `title` labels the dialog for what is being chosen. */
+      pickFolder?(current?: string, title?: string): Promise<string | null>;
       /** Writes the redacted diagnostics report to a user-chosen file;
        * resolves the path, or null when cancelled. */
       exportDiagnostics?(): Promise<string | null>;

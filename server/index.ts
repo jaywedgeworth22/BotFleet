@@ -254,6 +254,7 @@ import {
   skillsSystemPrompt,
 } from "./skills.ts";
 import { fetchSkillFromSource } from "./skill-fetch.ts";
+import { readSkillFolder } from "./skill-folder.ts";
 import { readCuaConnection } from "./local-computer.ts";
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
@@ -8000,7 +8001,29 @@ const server = createServer(async (req, res) => {
     }
     if (m && method === "POST") {
       if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      const parsed = z.object({ source: z.string().min(1).max(2000) }).safeParse(await readBody(req));
+      const body = await readBody(req);
+      // Two doors, one policy.  `source` fetches from GitHub; `folder` reads
+      // a skill already on this computer — the fleet's own ~/.claude/skills,
+      // one folder at a time — and both then go through installSkill, which
+      // scans and lands the skill DISABLED.  Reading a path off this disk is
+      // a physical action on this computer, so only a connection from this
+      // computer may ask for it, whatever Host it sends (the same rule
+      // POST /api/desktop/open takes).  The harness owner nonce is
+      // deliberately NOT required: neither the renderer nor the phone
+      // sidecar holds it, so requiring it would mean no person could ever
+      // press the button — see mayControlUpdates for the same reasoning.
+      const byFolder = z.object({ folder: z.string().min(1).max(4096) }).safeParse(body);
+      if (byFolder.success) {
+        if (!isLoopbackAddress(req.socket.remoteAddress)) {
+          return json(res, 403, { error: "forbidden: a skill folder can only be imported from this computer" });
+        }
+        const read = readSkillFolder(byFolder.data.folder);
+        if ("error" in read) return json(res, 422, { error: read.error });
+        const result = installSkill(m[1]!, read.source, read.files);
+        if ("error" in result) return json(res, 422, { error: result.error });
+        return json(res, 201, { installed: [result], errors: [] });
+      }
+      const parsed = z.object({ source: z.string().min(1).max(2000) }).safeParse(body);
       if (!parsed.success) return json(res, 400, { error: "source must be a GitHub URL or owner/repo" });
       const fetched = await fetchSkillFromSource(parsed.data.source);
       if ("error" in fetched) return json(res, 422, { error: fetched.error });
