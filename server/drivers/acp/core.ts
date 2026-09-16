@@ -264,8 +264,6 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
   const DRIVER_KIND = support.driverKind;
   const SOURCE = support.nativeSource;
   const decodeConfig = decodeAcpConfig(support.defaultCli);
-  const DENY_TIMEOUT_NOTE =
-    "BotFleet: nobody answered this permission request in time. Skip this action and finish what you can without it.";
 
   return {
     driverKind: DRIVER_KIND,
@@ -679,7 +677,6 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             });
           };
           const timer = setTimeout(() => {
-            emit({ ...base(threadId, turnId), type: "runtime.error", message: DENY_TIMEOUT_NOTE });
             finish("deny", "timeout");
           }, 15 * 60_000);
           timer.unref?.();
