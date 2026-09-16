@@ -194,6 +194,39 @@ describe("the grant a turn resolves is the same on both lanes", () => {
     expect(deps.notices.join(" ")).toContain("no approval channel");
   });
 
+  it("releases the VPS turn lease when the destination refuses", async () => {
+    // The dispatcher used to hold the lease handle in its own scope, so its
+    // catch could give it back.  The claim lives in the resolver now, and a
+    // leaked lease freezes that bot's cloud backend — and its sleep and
+    // remove actions — until the harness restarts.
+    const released: Array<{ id: string }> = [];
+    const lease = { id: "vps-lease" };
+    const deps = stubDeps({
+      vpsLeases: { claim: () => lease, release: (held) => released.push(held) },
+      vps: {
+        vpsDriverError: () => null,
+        vpsComputerAction: async () => {
+          throw new Error("the VPS host refused the connection");
+        },
+        inspectVpsForAuto: async () => ({ ready: false }),
+        vpsComputerMcp: () => ({ command: "", args: [], env: {} }),
+        vpsComputerScreenshot: async () => ({ png: "", format: "png" }),
+      },
+    });
+    await expect(
+      resolveTurnComputerMounts({
+        bot: { id: "bot-5", name: "Remote", computers: ["cloud"], cloudBackend: "vps" },
+        cfg: EMPTY_CONFIG,
+        engine: ACP_ENGINE,
+        threadId: "thread-5",
+        dispatchId: 1,
+        allowed: null,
+        deps,
+      }),
+    ).rejects.toThrow("refused the connection");
+    expect(released).toEqual([lease]);
+  });
+
   it("stops when a newer dispatch has taken the thread", async () => {
     const deps = stubDeps({ checkpoint: async () => false, acquireLocalVm: async () => HOST_STDIO });
     const resolved = await resolveTurnComputerMounts({

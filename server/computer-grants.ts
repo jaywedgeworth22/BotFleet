@@ -437,7 +437,7 @@ export interface TurnComputerMounts<Lease = unknown> {
  * Explicit destinations are strict and throw.  `auto` degrades quietly to no
  * computer, because a routine or webhook that only needs a shell must not die
  * because a desktop was unavailable. */
-export async function resolveTurnComputerMounts<Lease>(input: {
+export interface ResolveTurnComputerMountsInput<Lease> {
   bot: TurnComputerBot;
   cfg: AppConfig;
   engine: TurnComputerEngine;
@@ -449,7 +449,43 @@ export async function resolveTurnComputerMounts<Lease>(input: {
   /** The operator-level allowlist, already read off the config. */
   allowed: ComputerDestination[] | null;
   deps: TurnComputerDeps<Lease>;
-}): Promise<TurnComputerMounts<Lease>> {
+}
+
+export async function resolveTurnComputerMounts<Lease>(
+  input: ResolveTurnComputerMountsInput<Lease>,
+): Promise<TurnComputerMounts<Lease>> {
+  // A refusal must not strand the VPS turn lease the resolution may already
+  // have claimed.  The dispatcher used to hold that handle in its own scope
+  // and release it from its own catch; now that the claim happens in here,
+  // so does the release.  Watching every claim through this shim is what
+  // makes it reachable on a path that threw rather than returned, and
+  // `release` checks lease identity, so a newer turn's claim is never taken
+  // away by a losing one.
+  let claimed: Lease | undefined;
+  const watched: TurnComputerDeps<Lease> = {
+    ...input.deps,
+    vpsLeases: {
+      claim: (botId, threadId, dispatchId) => {
+        claimed = input.deps.vpsLeases.claim(botId, threadId, dispatchId);
+        return claimed;
+      },
+      release: (lease) => {
+        input.deps.vpsLeases.release(lease);
+        claimed = undefined;
+      },
+    },
+  };
+  try {
+    return await resolveMounts({ ...input, deps: watched });
+  } catch (error) {
+    if (claimed !== undefined) input.deps.vpsLeases.release(claimed);
+    throw error;
+  }
+}
+
+async function resolveMounts<Lease>(
+  input: ResolveTurnComputerMountsInput<Lease>,
+): Promise<TurnComputerMounts<Lease>> {
   const { bot, cfg, engine, threadId, dispatchId, runOn, allowed, deps } = input;
   const hostPlatform = deps.hostPlatform;
   let previewCapture: (() => Promise<{ png: string; format: string }>) | null = null;

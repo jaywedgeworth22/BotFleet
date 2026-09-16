@@ -4577,6 +4577,12 @@ async function runGroupMemberTurn(
     drainSecretResumes();
     return true;
   }
+  // Record the lease BEFORE the cancelled check: a stale dispatch still
+  // claimed it.  A VPS lease taken in a room is released by the
+  // turn.completed subscriber, which is thread-keyed for exactly this
+  // reason — the 1:1 release path hangs off `store.botByThread`, and a room
+  // thread has no owning bot.
+  if (turnComputers.vpsLease) roomComputerLeases.set(threadId, turnComputers.vpsLease);
   if (turnComputers.cancelled) {
     releaseRoomComputerLease(threadId);
     activeTurnOwners.settle(threadId, instance.instanceId);
@@ -4589,10 +4595,6 @@ async function runGroupMemberTurn(
   // on a `command` key or the legacy box computer, and would never see a
   // mount that arrived only in the array.
   applyComputerMounts(integrations, turnComputers.mounts);
-  // A VPS lease taken in a room is released by the turn.completed subscriber,
-  // which is thread-keyed for exactly this reason: the 1:1 release path hangs
-  // off `store.botByThread`, and a room thread has no owning bot.
-  if (turnComputers.vpsLease) roomComputerLeases.set(threadId, turnComputers.vpsLease);
   // `turnComputers.previewCapture` is deliberately dropped here.  The screen
   // poller is started and stopped from the 1:1 halves of the turn fold, so a
   // poller started on a room turn would never be torn down and would keep
