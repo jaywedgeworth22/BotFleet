@@ -5806,6 +5806,63 @@ describe("GET /api/quotas", () => {
   });
 });
 
+describe("the update routes and the admission they hold", () => {
+  // Every mutating API request takes an update admission for the length of
+  // its handler, and runtime readiness counts admissions as work in flight.
+  // A route that then built its answer from the harness-wide reading reported
+  // the machine busy because of the question: `capabilities.canRun` came back
+  // false with the busy refusal on a completely idle Mac, and both clients
+  // hide **Install Update** on `canRun` — so the response that had just found
+  // the update was also the one that took the button away.
+  //
+  // `GET /api/update/status` holds no admission, so it is the honest reading,
+  // and the invariant is that the two POSTs agree with it.  That holds on any
+  // OS (`canRun` is false off macOS anyway, and on a CI Mac whose HOME has no
+  // always-on checkout) and whatever else this suite has left running — but
+  // it is only SHARP while nothing else is in flight, so the busy sentence is
+  // asserted only when the unadmitted reading says the machine is free.  The
+  // deterministic version of this is in server/update-control.test.ts.
+  const BUSY = "BotFleet is working right now.";
+  type Capabilities = { canCheck: boolean; canRun: boolean; reasons: string[] };
+  const looksBusy = (capabilities: Capabilities) =>
+    capabilities.reasons.some((reason) => reason.startsWith(BUSY));
+  const unadmitted = async (): Promise<Capabilities> => {
+    const res = await api("GET", "/api/update/status");
+    expect(res.status).toBe(200);
+    return res.body.capabilities as Capabilities;
+  };
+
+  it("does not count its own admission when POST /api/update/check answers", async () => {
+    const before = await unadmitted();
+    const checked = await api("POST", "/api/update/check");
+    const after = await unadmitted();
+    expect([200, 502]).toContain(checked.status);
+    const status = checked.status === 200 ? checked.body : checked.body.status;
+    expect(status).toMatchObject({ installed: { version: expect.any(String) } });
+    // Either unadmitted reading will do: the suite may finish a turn between
+    // the three calls, and that is a real change, not this request's doing.
+    expect([before, after]).toContainEqual(status.capabilities);
+    if (!looksBusy(before) && !looksBusy(after)) {
+      expect(looksBusy(status.capabilities)).toBe(false);
+    }
+  });
+
+  it("does not count its own admission when POST /api/update/run refuses", async () => {
+    const before = await unadmitted();
+    const refused = await api("POST", "/api/update/run", {});
+    const after = await unadmitted();
+    // Nothing to install on a throwaway home, so this is always a refusal.
+    expect(refused.status).toBe(409);
+    expect([before, after]).toContainEqual(refused.body.status.capabilities);
+    if (!looksBusy(before) && !looksBusy(after)) {
+      // A refusal for some other reason must not also say the Mac is busy:
+      // the client stores the status that came with it.
+      expect(refused.body.error).not.toContain(BUSY);
+      expect(looksBusy(refused.body.status.capabilities)).toBe(false);
+    }
+  });
+});
+
 describe("GET /api/qdrant/status (Agent RAG connection)", () => {
   const setRecallMode = (mode: "ok" | "slow" | "fail") =>
     writeFileSync(join(home, ".botfleet", "fake-recall-mode"), mode);

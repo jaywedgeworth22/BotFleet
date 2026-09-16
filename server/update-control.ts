@@ -31,7 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const UPDATE_PROGRESS_SCHEMA_VERSION = 1;
@@ -51,6 +51,18 @@ const LOG_LINE_MAX = 400;
 const MAX_LISTED_COMMITS = 20;
 /** A run with no progress file this long after launch never started. */
 const LAUNCH_GRACE_MS = 120_000;
+/** A progress file no older than this is one something is still writing.
+ * Well past the longest gap between the updater's own steps — a full
+ * dependency install and a signed, notarised build both report as one step —
+ * because the cost of calling a live run dead is a second updater started on
+ * top of the first.  Staleness alone never settles a run: it is only what
+ * makes the controller ask launchd whether anything is still there. */
+const PROGRESS_STALE_MS = 10 * 60_000;
+/** How often a stalled run is asked about.  Without a floor here the poll
+ * would run `launchctl list` every couple of seconds for as long as a run
+ * stayed stalled, and a run that launchd still owns can stay stalled for a
+ * long time without being dead. */
+const STALE_PROBE_INTERVAL_MS = 60_000;
 /** Failed stages kept for forensics.  Each holds a full copy of the source and
  * its dependencies — a few hundred megabytes — so a run that fails on every
  * attempt fills the disk long before anyone reads the third one. */
@@ -189,9 +201,11 @@ export interface UpdateControlDeps {
    * seam so a test can watch the label being removed without a real launchd. */
   exec: (command: string, args: string[]) => Promise<CommandResult>;
   processAlive: (pid: number) => boolean;
-  /** Whether this harness has work in flight.  The route passes its own,
-   * admission-adjusted reading when it starts a run; this one answers the
-   * status route, which holds no mutating admission of its own. */
+  /** Whether this harness has work in flight.  Both action routes pass their
+   * own, admission-adjusted reading — a POST holds a mutating admission of
+   * its own, and an answer that counted it would report every busy machine
+   * busy because of the question.  This one answers `GET /api/update/status`,
+   * which holds no admission. */
   readiness: () => RuntimeReadiness;
   /** How a state file reaches disk.  A seam rather than a detail: the
    * behaviour that matters here is what happens when it THROWS, and a test
@@ -633,6 +647,13 @@ export function removeLaunchJobCommand(label: string): { command: string; args: 
   return { command: "/bin/launchctl", args: ["remove", label] };
 }
 
+/** Ask launchd whether the one-shot job still has a process.  The answer is
+ * read by `launchdJobIsAlive`, and it is the only authority this module has
+ * over a run whose own pid became unreadable — after a power cut, say. */
+export function listLaunchJobCommand(label: string): { command: string; args: string[] } {
+  return { command: "/bin/launchctl", args: ["list", label] };
+}
+
 function execCommand(command: string, args: string[]): Promise<CommandResult> {
   return new Promise((resolve) => {
     execFile(
@@ -664,7 +685,8 @@ export function launchdJobIsAlive(listed: CommandResult): boolean {
 }
 
 async function defaultLaunch(plan: LaunchPlan): Promise<LaunchResult> {
-  const listed = await execCommand("/bin/launchctl", ["list", plan.label]);
+  const listing = listLaunchJobCommand(plan.label);
+  const listed = await execCommand(listing.command, listing.args);
   if (launchdJobIsAlive(listed)) {
     throw new Error(`A ${plan.label} job is already running on this Mac.`);
   }
@@ -695,7 +717,26 @@ async function defaultLaunch(plan: LaunchPlan): Promise<LaunchResult> {
       },
     );
     child.unref();
-    return { launcher: "detached", pid: child.pid };
+    // `spawn` reports a failed fork asynchronously — EAGAIN, ENOMEM, a
+    // /bin/bash that is missing or not executable — on the child's own
+    // "error" event, and an EventEmitter with no listener for that event
+    // rethrows it as an uncaught exception.  The harness registers no
+    // process-level handler, so it would exit here: just after recording a
+    // run that never started, leaving a phantom run for the next boot to
+    // time out.  Waiting for whichever of "spawn" and "error" comes first
+    // turns it into the launch failure `beginRun` already unwinds, which
+    // removes the record it wrote.
+    return await new Promise<LaunchResult>((settled, failed) => {
+      const onError = (error: Error) => failed(error);
+      child.once("error", onError);
+      child.once("spawn", () => {
+        child.removeListener("error", onError);
+        // The child outlives this promise and is nobody's responsibility
+        // from here; a later stdio error must still not reach this process.
+        child.once("error", () => {});
+        settled({ launcher: "detached", pid: child.pid });
+      });
+    });
   } finally {
     closeSync(log);
   }
@@ -766,7 +807,10 @@ function defaultDeps(overrides: Partial<UpdateControlDeps>): UpdateControlDeps {
 
 export interface UpdateControl {
   status(): UpdateStatus;
-  check(): Promise<UpdateStatus>;
+  /** `readiness` is the caller's own reading, for a route that holds a
+   * mutating admission it must not count as work it would interrupt — the
+   * same argument `start` takes, and for the same reason. */
+  check(options?: { readiness?: RuntimeReadiness }): Promise<UpdateStatus>;
   start(options?: { force?: boolean; readiness?: RuntimeReadiness }): Promise<
     { ok: true; runId: string; status: UpdateStatus } | { ok: false; error: string; status: UpdateStatus }
   >;
@@ -781,10 +825,26 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     currentRun: join(deps.stateDirectory, "current-run.json"),
     lastRun: join(deps.stateDirectory, "last-run.json"),
   };
+  const runsDirectory = join(deps.stateDirectory, "runs");
   const runPaths = (runId: string) => ({
-    progress: join(deps.stateDirectory, "runs", `${runId}.progress.json`),
-    log: join(deps.stateDirectory, "runs", `${runId}.log`),
+    progress: join(runsDirectory, `${runId}.progress.json`),
+    log: join(runsDirectory, `${runId}.log`),
   });
+
+  /** A path out of `current-run.json`, but only if it names a file inside the
+   * runs directory.  `GET /api/update/status` publishes the tail of `logPath`
+   * to every connected client and to the paired phone, so a record naming
+   * some other file would turn "can write this cache directory" — which is
+   * only same-user local access — into a remote read of anything this user
+   * can open.  Anything outside falls back to the paths this run id would
+   * have had, the same posture `parseProgressRecord` takes towards the
+   * progress file's contents. */
+  const confinedRunPath = (candidate: unknown, fallback: string): string => {
+    if (typeof candidate !== "string" || !candidate) return fallback;
+    const resolved = resolve(candidate);
+    const root = resolve(runsDirectory);
+    return resolved.startsWith(root + sep) ? resolved : fallback;
+  };
 
   let available: UpdateAvailable | null = null;
   let checkedAt: string | null = null;
@@ -847,7 +907,12 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     };
   };
 
-  const capabilities = (running: boolean): UpdateCapabilities => {
+  /** What this Mac may do right now.  `readiness` overrides the harness-wide
+   * reading for a caller that holds an admission of its own — without it a
+   * `POST` route answers with `canRun: false` and "BotFleet is working right
+   * now." on a completely idle Mac, and the client that stores that status
+   * stops offering Install Update until something else refreshes it. */
+  const capabilities = (running: boolean, readiness?: RuntimeReadiness): UpdateCapabilities => {
     const able = structural();
     const reasons: string[] = [];
     if (!able.darwin) reasons.push("Updating from this computer is macOS only.");
@@ -864,7 +929,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     }
     if (running) reasons.push("An update is already running.");
     // Listed last, and the only reason `force` can talk past — see runRefusal.
-    const idle = deps.readiness().safeToRestart;
+    const idle = (readiness ?? deps.readiness()).safeToRestart;
     if (!idle) reasons.push(BUSY_REFUSAL);
     return { canCheck: able.canCheck, canRun: able.canRun && !running && idle, reasons };
   };
@@ -931,10 +996,8 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     current = {
       runId: record.runId,
       startedAt: typeof record.startedAt === "string" ? record.startedAt : "",
-      progressPath: typeof record.progressPath === "string"
-        ? record.progressPath
-        : runPaths(record.runId).progress,
-      logPath: typeof record.logPath === "string" ? record.logPath : runPaths(record.runId).log,
+      progressPath: confinedRunPath(record.progressPath, runPaths(record.runId).progress),
+      logPath: confinedRunPath(record.logPath, runPaths(record.runId).log),
       launcher: typeof record.launcher === "string" ? record.launcher : "launchd",
       targetCommit: typeof record.targetCommit === "string" ? record.targetCommit : null,
     };
@@ -989,10 +1052,58 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       if (pruned.length) {
         console.log(`BotFleet removed ${pruned.length} abandoned update stage(s) under ${deps.updatesDirectory}.`);
       }
-      pruneRunArtifacts(join(deps.stateDirectory, "runs"), { protect: lastRun ? [lastRun.runId] : [] });
+      pruneRunArtifacts(runsDirectory, { protect: lastRun ? [lastRun.runId] : [] });
     } catch (error) {
       console.warn(`BotFleet could not sweep old update stages: ${(error as Error)?.message ?? error}`);
     }
+  };
+
+  /** One `launchctl list` in flight, and no more than one a minute, so a
+   * wedged run is asked about occasionally rather than on every poll. */
+  let probingLaunchJob = false;
+  let probedLaunchJobAt = 0;
+
+  /** Settle a run whose progress file has stopped advancing — but only once
+   * launchd agrees nothing is running under the label.
+   *
+   * `processAlive` cannot answer this one.  It treats an inaccessible or
+   * reused pid as alive on purpose, because calling a live updater dead would
+   * let a second one start on top of it — so a run killed by a power cut,
+   * whose pid number some later process took, stays "running" forever: the
+   * banner shows a frozen progress bar nobody can dismiss and every later
+   * Install is refused with "An update is already running."  Clearing it meant
+   * deleting a file from a shell, which is exactly what "install it from your
+   * phone" is supposed to avoid.
+   *
+   * Asynchronous because the probe is.  The settle lands on a later poll,
+   * which is running already: the timer only stops once `current` clears. */
+  const probeStaleRun = () => {
+    if (probingLaunchJob || !current) return;
+    // Only a launchd run has a label to ask about.  The detached fallback is
+    // judged by its pid alone, above — there is no second opinion to get.
+    if (deps.platform !== "darwin" || current.launcher !== "launchd") return;
+    const asked = deps.now().getTime();
+    if (probedLaunchJobAt && asked - probedLaunchJobAt < STALE_PROBE_INTERVAL_MS) return;
+    const runId = current.runId;
+    probedLaunchJobAt = asked;
+    probingLaunchJob = true;
+    const { command, args } = listLaunchJobCommand(deps.label);
+    void Promise.resolve(deps.exec(command, args))
+      .then((listed) => {
+        // The run may have settled, or been replaced, while we asked.
+        if (current?.runId !== runId || launchdJobIsAlive(listed)) return;
+        settle(
+          null,
+          `The updater stopped without recording an outcome.${GAP}Nothing is running under ${deps.label} and its progress file has not moved in ${Math.round(PROGRESS_STALE_MS / 60_000)} minutes.`,
+        );
+        emitIfChanged();
+      })
+      .catch(() => {
+        /* a launchctl that will not answer is not evidence the run is dead */
+      })
+      .finally(() => {
+        probingLaunchJob = false;
+      });
   };
 
   /** Fold whatever the detached run has written into our view of it.  Called
@@ -1010,7 +1121,16 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       settle(null, `The updater stopped without recording an outcome.${GAP}Its log is beside the receipt.`);
       return;
     }
-    if (!record) {
+    if (record) {
+      // A record that exists and is not moving.  Staleness alone settles
+      // nothing — a long step is not a dead run — so it only asks launchd.
+      const updatedMs = Date.parse(record.updatedAt);
+      if (Number.isFinite(updatedMs) && deps.now().getTime() - updatedMs > PROGRESS_STALE_MS) {
+        probeStaleRun();
+      }
+      return;
+    }
+    {
       // No progress file yet is normal for the first second of a run; no
       // progress file long after the start means the job never began.
       const startedMs = Date.parse(current.startedAt);
@@ -1021,7 +1141,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     }
   };
 
-  const buildStatus = (): UpdateStatus => {
+  const buildStatus = (readiness?: RuntimeReadiness): UpdateStatus => {
     let running: UpdateRunning | null = null;
     if (current) {
       const record = parseProgressRecord(readJsonFile(current.progressPath));
@@ -1043,12 +1163,15 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       checkError,
       running,
       lastRun,
-      capabilities: capabilities(Boolean(running)),
+      capabilities: capabilities(Boolean(running), readiness),
     };
   };
 
-  const emitIfChanged = () => {
-    const status = buildStatus();
+  /** Broadcast the status when it has changed.  The caller's readiness is
+   * passed through as well: what goes out to every client — and to the paired
+   * phone — has to describe the machine, not the request that asked. */
+  const emitIfChanged = (readiness?: RuntimeReadiness) => {
+    const status = buildStatus(readiness);
     const serialized = JSON.stringify(status);
     if (serialized === lastEmitted) return;
     lastEmitted = serialized;
@@ -1073,10 +1196,13 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     return result.code !== 0 || result.stdout.trim().length > 0;
   };
 
-  const check = async (): Promise<UpdateStatus> => {
+  const check: UpdateControl["check"] = async (options = {}) => {
+    // The route holds a mutating admission for the whole handler, so the
+    // harness-wide reading would count this very request as work in flight.
+    const readiness = options.readiness;
     reconcile();
     flushAvailable();
-    if (!capabilities(Boolean(current)).canCheck) return buildStatus();
+    if (!capabilities(Boolean(current), readiness).canCheck) return buildStatus(readiness);
     // A failed fetch is not "nothing new".  `origin/main` is still on disk
     // from whenever the last fetch DID work, so comparing against it would
     // report a machine that has been offline for a week as up to date — and
@@ -1084,15 +1210,15 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     const fetched = await deps.git(["fetch", "origin", "main"]);
     if (fetched.code !== 0) {
       checkError = `Could not reach the update source.${GAP}${firstLine(fetched.stderr) || "git fetch failed."}`;
-      emitIfChanged();
-      return buildStatus();
+      emitIfChanged(readiness);
+      return buildStatus(readiness);
     }
     const head = await deps.git(["rev-parse", "--verify", "origin/main^{commit}"]);
     const target = head.stdout.trim();
     if (head.code !== 0 || !/^[a-f0-9]{40}$/.test(target)) {
       checkError = `Could not read origin/main in ${deps.checkout}.`;
-      emitIfChanged();
-      return buildStatus();
+      emitIfChanged(readiness);
+      return buildStatus(readiness);
     }
     checkError = null;
     checkedAt = deps.now().toISOString();
@@ -1101,45 +1227,58 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     } else {
       const range = `${deps.installed.sourceCommit}..${target}`;
       const counted = await deps.git(["rev-list", "--count", range]);
-      const listed = await deps.git([
-        "log",
-        `--format=%H%x1f%s`,
-        "-n",
-        String(MAX_LISTED_COMMITS),
-        range,
-      ]);
-      const manifest = await deps.git(["show", `${target}:package.json`]);
-      let version: string | undefined;
-      if (manifest.code === 0) {
-        try {
-          const parsed = JSON.parse(manifest.stdout) as { version?: unknown };
-          if (typeof parsed.version === "string") version = parsed.version;
-        } catch {
-          /* an unreadable manifest just means no version label */
-        }
-      }
       const aheadBy = Number.parseInt(counted.stdout.trim(), 10);
-      available = {
-        sourceCommit: target,
-        version,
-        aheadBy: Number.isFinite(aheadBy) ? aheadBy : 0,
-        commits: listed.code === 0
-          ? listed.stdout
-              .split("\n")
-              .map((line) => line.trim())
-              .filter(Boolean)
-              .map((line) => {
-                const parts = line.split(FIELD_SEPARATOR);
-                return { sha: parts[0] ?? "", subject: parts.slice(1).join(FIELD_SEPARATOR) };
-              })
-              .filter((commit) => /^[a-f0-9]{40}$/.test(commit.sha))
-          : [],
-      };
+      // Difference is not distance.  `origin/main` can differ from the
+      // installed commit and still be BEHIND it — a build made from a lane
+      // branch, or a main that was rewound — and equality alone offered that
+      // as "Update Available, 0 commits ahead", which `start()` then refused
+      // with "BotFleet is already on the newest build." on every press.  Only
+      // a count this checkout actually produced withdraws the offer: a
+      // `rev-list` that failed (an installed commit this checkout has never
+      // seen) says nothing about distance, and the offer stands as it did.
+      const nothingAhead = counted.code === 0 && Number.isFinite(aheadBy) && aheadBy < 1;
+      if (nothingAhead) {
+        available = null;
+      } else {
+        const listed = await deps.git([
+          "log",
+          `--format=%H%x1f%s`,
+          "-n",
+          String(MAX_LISTED_COMMITS),
+          range,
+        ]);
+        const manifest = await deps.git(["show", `${target}:package.json`]);
+        let version: string | undefined;
+        if (manifest.code === 0) {
+          try {
+            const parsed = JSON.parse(manifest.stdout) as { version?: unknown };
+            if (typeof parsed.version === "string") version = parsed.version;
+          } catch {
+            /* an unreadable manifest just means no version label */
+          }
+        }
+        available = {
+          sourceCommit: target,
+          version,
+          aheadBy: Number.isFinite(aheadBy) ? aheadBy : 0,
+          commits: listed.code === 0
+            ? listed.stdout
+                .split("\n")
+                .map((line) => line.trim())
+                .filter(Boolean)
+                .map((line) => {
+                  const parts = line.split(FIELD_SEPARATOR);
+                  return { sha: parts[0] ?? "", subject: parts.slice(1).join(FIELD_SEPARATOR) };
+                })
+                .filter((commit) => /^[a-f0-9]{40}$/.test(commit.sha))
+            : [],
+        };
+      }
     }
     availableNeedsWrite = true;
     flushAvailable();
-    emitIfChanged();
-    return buildStatus();
+    emitIfChanged(readiness);
+    return buildStatus(readiness);
   };
 
   const start: UpdateControl["start"] = async (options = {}) => {
@@ -1148,7 +1287,9 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     // both pass the refusal check — they interleave across `dirtyCheckout()`
     // and `launch()`, neither of which has published a run yet — and the
     // second launch would take the label out from under the first.
-    if (starting) return { ok: false, error: "An update is already running.", status: buildStatus() };
+    if (starting) {
+      return { ok: false, error: "An update is already running.", status: buildStatus(options.readiness) };
+    }
     starting = true;
     try {
       return await beginRun(options);
@@ -1158,17 +1299,22 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
   };
 
   const beginRun = async (options: { force?: boolean; readiness?: RuntimeReadiness }) => {
+    // The caller's reading wins throughout, for the refusal AND for every
+    // status this path returns or broadcasts: the route holds a mutating
+    // admission of its own, which it must not count as work it would be
+    // interrupting.  A status built without that correction told an idle Mac
+    // it was busy, and the client that stores a refusal's status then hid
+    // Install Update until something unrelated refreshed it.
+    const readiness = options.readiness;
     reconcile();
     flushAvailable();
-    const before = buildStatus();
+    const before = buildStatus(readiness);
     const force = options.force === true;
     const refusal = runRefusal({
       capabilities: before.capabilities,
       running: before.running,
       available: before.available,
-      // The caller's reading wins: the route holds a mutating admission of
-      // its own, which it must not count as work it would be interrupting.
-      readiness: options.readiness ?? deps.readiness(),
+      readiness: readiness ?? deps.readiness(),
       // Asked whenever this Mac is equipped to run one at all, not only when
       // it is free to: `force` talks past readiness, and a forced run on a
       // dirty checkout has to be refused here rather than launched for the
@@ -1176,7 +1322,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       dirty: structural().canRun ? await dirtyCheckout() : false,
       force,
     });
-    if (refusal) return { ok: false as const, error: refusal, status: buildStatus() };
+    if (refusal) return { ok: false as const, error: refusal, status: buildStatus(readiness) };
 
     // The authoritative staleness check, and the last thing before a launch.
     // `availableIsStale` is a timestamp heuristic; git knows.  An `available`
@@ -1189,11 +1335,11 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
         available = null;
         availableNeedsWrite = true;
         flushAvailable();
-        emitIfChanged();
+        emitIfChanged(readiness);
         return {
           ok: false as const,
           error: "BotFleet is already on the newest build.",
-          status: buildStatus(),
+          status: buildStatus(readiness),
         };
       }
     }
@@ -1206,7 +1352,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     const runId = deps.newRunId();
     const files = runPaths(runId);
     try {
-      mkdirSync(join(deps.stateDirectory, "runs"), { recursive: true, mode: 0o700 });
+      mkdirSync(runsDirectory, { recursive: true, mode: 0o700 });
     } catch (error) {
       // Unlike the bookkeeping files, this one IS load-bearing: without a
       // place for the progress file the run would be one nothing could
@@ -1215,7 +1361,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       return {
         ok: false as const,
         error: `The update could not be recorded, so it was not started.${GAP}${detail}`,
-        status: buildStatus(),
+        status: buildStatus(readiness),
       };
     }
     const startedAt = deps.now().toISOString();
@@ -1236,7 +1382,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       return {
         ok: false as const,
         error: `The update could not be recorded, so it was not started.${GAP}Check ${deps.stateDirectory}.`,
-        status: buildStatus(),
+        status: buildStatus(readiness),
       };
     }
     current = record;
@@ -1260,15 +1406,15 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
          * no progress file ever appears and the launch grace period ends it. */
       }
       const detail = String((error as Error)?.message ?? error).slice(0, 200);
-      return { ok: false as const, error: `The updater could not be started.${GAP}${detail}`, status: buildStatus() };
+      return { ok: false as const, error: `The updater could not be started.${GAP}${detail}`, status: buildStatus(readiness) };
     }
     if (result.launcher !== record.launcher) {
       current = { ...record, launcher: result.launcher };
       persist(paths.currentRun, current);
     }
     ensureTimer();
-    emitIfChanged();
-    return { ok: true as const, runId, status: buildStatus() };
+    emitIfChanged(readiness);
+    return { ok: true as const, runId, status: buildStatus(readiness) };
   };
 
   // Order matters: the remembered "available" answer is judged against the
