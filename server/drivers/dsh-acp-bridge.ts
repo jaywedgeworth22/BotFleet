@@ -55,10 +55,18 @@ function parseCommand(argv: string[]): { command: string; args: string[] } | nul
   return { command, args: argv.slice(sep + 2) };
 }
 
-function cleanup(paths: string[]): void {
-  for (const path of paths) {
-    unlink(path, () => {});
-  }
+export function createPatchCleanup(
+  paths: string[],
+  remove: typeof unlink = unlink,
+): () => void {
+  let cleaned = false;
+  return () => {
+    if (cleaned) return;
+    cleaned = true;
+    for (const path of paths) {
+      remove(path, () => {});
+    }
+  };
 }
 
 function main(): void {
@@ -69,13 +77,14 @@ function main(): void {
     return;
   }
   const patchPaths = dshMcpPatchPaths(parsed.args);
+  const cleanup = createPatchCleanup(patchPaths);
   const child = spawn(parsed.command, parsed.args, {
     stdio: ["pipe", "pipe", "pipe"],
     env: process.env,
   });
 
   const finish = (code: number | null, signal: NodeJS.Signals | null) => {
-    cleanup(patchPaths);
+    cleanup();
     if (signal) {
       process.kill(process.pid, signal);
       return;
@@ -83,7 +92,7 @@ function main(): void {
     process.exit(code ?? 1);
   };
   child.on("error", (error) => {
-    cleanup(patchPaths);
+    cleanup();
     process.stderr.write(`dsh-acp-bridge: failed to spawn ${parsed.command}: ${error.message}\n`);
     process.exit(1);
   });

@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { once } from "node:events";
+import { EventEmitter, once } from "node:events";
 import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,7 +8,7 @@ import readline from "node:readline";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { removeTempDir } from "../testing/cleanup.ts";
-import { dshMcpPatchPaths, rewriteAcpNdjsonLine } from "./dsh-acp-bridge.ts";
+import { createPatchCleanup, dshMcpPatchPaths, rewriteAcpNdjsonLine } from "./dsh-acp-bridge.ts";
 
 const BRIDGE = join(dirname(fileURLToPath(import.meta.url)), "dsh-acp-bridge.ts");
 
@@ -44,6 +44,25 @@ describe("dshMcpPatchPaths", () => {
     expect(
       dshMcpPatchPaths(["--profile", "acp", "--patch", "/tmp/botfleet-dsh-mcp-1.yml", "--patch", "/tmp/user.yml"]),
     ).toEqual(["/tmp/botfleet-dsh-mcp-1.yml"]);
+  });
+});
+
+describe("createPatchCleanup", () => {
+  it("is safe when error and exit both fire", () => {
+    const patch = "/tmp/botfleet-dsh-mcp-overlay.yml";
+    const removed: string[] = [];
+    const cleanup = createPatchCleanup([patch], (path, cb) => {
+      removed.push(path);
+      cb(null);
+    });
+    const child = new EventEmitter();
+    child.on("error", cleanup);
+    child.on("exit", cleanup);
+    expect(() => {
+      child.emit("error", Object.assign(new Error("spawn ENOENT"), { code: "ENOENT" }));
+      child.emit("exit", 1, null);
+    }).not.toThrow();
+    expect(removed).toEqual([patch]);
   });
 });
 
