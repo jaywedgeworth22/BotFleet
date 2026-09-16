@@ -1,7 +1,7 @@
 // The four things that decide whether "install the update" is safe: the
 // status shape both clients render, the refusals, what the launcher actually
 // runs, and the reconcile that lets a run survive the restart it performs.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -1063,9 +1063,16 @@ describe("sweeping what failed runs leave on disk", () => {
     const paths = rig();
     const runs = join(paths.stateDirectory, "runs");
     mkdirSync(runs, { recursive: true });
+    // Four writes can land inside one filesystem timestamp tick, so the
+    // order the prune sees is set here, not left to the disk.
+    const base = Date.parse("2026-09-13T12:00:00.000Z");
     for (let n = 1; n <= 4; n += 1) {
-      writeFileSync(join(runs, `run_${n}.log`), "x\n");
-      writeFileSync(join(runs, `run_${n}.progress.json`), "{}\n");
+      const stamp = new Date(base + n * 1000);
+      for (const file of [`run_${n}.log`, `run_${n}.progress.json`]) {
+        const path = join(runs, file);
+        writeFileSync(path, file.endsWith(".log") ? "x\n" : "{}\n");
+        utimesSync(path, stamp, stamp);
+      }
     }
     const removed = pruneRunArtifacts(runs, { keep: 2, protect: ["run_1"] });
     // A run's log and its progress file go together or not at all.

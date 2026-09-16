@@ -555,7 +555,7 @@ export function pruneRunArtifacts(runsDirectory: string, options: {
   } catch {
     return [];
   }
-  const runs = new Map<string, { newest: number; files: string[] }>();
+  const runs = new Map<string, { id: string; newest: number; files: string[] }>();
   for (const name of names) {
     const runId = name.split(".")[0] ?? "";
     if (!runId || protect.includes(runId)) continue;
@@ -566,13 +566,17 @@ export function pruneRunArtifacts(runsDirectory: string, options: {
     } catch {
       continue;
     }
-    const group = runs.get(runId) ?? { newest: 0, files: [] };
+    const group = runs.get(runId) ?? { id: runId, newest: 0, files: [] };
     group.newest = Math.max(group.newest, mtimeMs);
     group.files.push(path);
     runs.set(runId, group);
   }
   const removed: string[] = [];
-  const ordered = [...runs.values()].sort((left, right) => right.newest - left.newest).slice(keep);
+  // Two runs can share an mtime on a fast disk.  Break the tie by id so the
+  // same files survive on every OS instead of whichever readdir listed first.
+  const ordered = [...runs.values()]
+    .sort((left, right) => right.newest - left.newest || right.id.localeCompare(left.id))
+    .slice(keep);
   for (const group of ordered) {
     for (const path of group.files) {
       try {
