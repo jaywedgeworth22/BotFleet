@@ -1,14 +1,15 @@
-import { chmodSync, mkdtempSync, readFileSync, unlinkSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ensureDirs } from "../../config.ts";
 import type { ProviderInstance } from "../../contracts.ts";
 import { SPAWNED_PROXIES } from "../../proxy-paths.ts";
 import { removeTempDir } from "../../testing/cleanup.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
+import { createPatchCleanup, dshMcpPatchPaths } from "../dsh-acp-bridge.ts";
 import {
   classifyDshError,
   dshCredentialCandidates,
@@ -22,9 +23,23 @@ import {
   DSH_MINIMUM_ACP_VERSION,
   STATIC_DSH_MODELS,
 } from "./dsh.ts";
-import { dshMcpPatchYaml, isStockDshCli } from "./dsh-mcp.ts";
+import { dshMcpPatchYaml, isStockDshCli, writeDshMcpPatch } from "./dsh-mcp.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
+
+/** Remove a written patch overlay and the private directory it lives in.
+ *
+ * Guarded on the directory's own name rather than trusting whatever
+ * `writeDshMcpPatch` returned: a regression that puts the overlay back in the
+ * shared temp root must fail an assertion, never make this teardown delete
+ * that root.  The same guard the bridge's cleanup uses, for the same reason. */
+function removeWrittenPatch(patch: string): void {
+  rmSync(patch, { force: true });
+  const directory = dirname(patch);
+  if (basename(directory).startsWith("botfleet-dsh-mcp-")) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
 
 describe("DshAgentDriver config", () => {
   it("uses the published ACP profile and current package setup", () => {
@@ -246,9 +261,52 @@ describe("dsh MCP delivery", () => {
     expect(wrapped.args[0]).toBe(SPAWNED_PROXIES.dshAcpBridge);
     expect(wrapped.args.slice(1, 5)).toEqual(["--", "dsh", "--profile", "acp"]);
     const patch = wrapped.args[wrapped.args.indexOf("--patch") + 1];
-    expect(patch).toContain("botfleet-dsh-mcp-");
+    expect(basename(patch)).toContain("botfleet-dsh-mcp-");
     expect(readFileSync(patch, "utf8")).toContain('serverName: "computer"');
-    unlinkSync(patch);
+    removeWrittenPatch(patch);
+  });
+
+  // The overlay holds every mount's environment verbatim — OMB_COMMS_TOKEN,
+  // OMB_CONTROL_TOKEN and any Composio key — so it must never be readable by
+  // anyone else on a shared machine.  POSIX mode bits only: Windows has no
+  // group or other bits to assert on, and a per-user temp directory there is
+  // already private.
+  it.skipIf(process.platform === "win32")(
+    "writes the patch overlay into a private directory, readable only by this user",
+    () => {
+      const patch = writeDshMcpPatch([
+        {
+          name: "agents",
+          command: "/opt/agents-mcp",
+          args: [],
+          env: [{ name: "OMB_COMMS_TOKEN", value: "not-a-real-token" }],
+        },
+      ]);
+      try {
+        expect(readFileSync(patch, "utf8")).toContain("not-a-real-token");
+        expect(statSync(patch).mode & 0o077).toBe(0);
+        expect(statSync(dirname(patch)).mode & 0o777).toBe(0o700);
+      } finally {
+        removeWrittenPatch(patch);
+      }
+    },
+  );
+
+  it("still hands the bridge a path it recognises, and the bridge removes the file and its directory", async () => {
+    const patch = writeDshMcpPatch([
+      { name: "computer", command: "/opt/cua-driver", args: ["mcp"], env: [] },
+    ]);
+    const directory = dirname(patch);
+    expect(dshMcpPatchPaths(["--profile", "acp", "--patch", patch])).toEqual([patch]);
+    try {
+      createPatchCleanup([patch])();
+      await vi.waitFor(() => {
+        expect(existsSync(patch)).toBe(false);
+        expect(existsSync(directory)).toBe(false);
+      });
+    } finally {
+      removeWrittenPatch(patch);
+    }
   });
 
   it("leaves a non-dsh CLI unwrapped so tests still see session/new mcpServers", () => {
