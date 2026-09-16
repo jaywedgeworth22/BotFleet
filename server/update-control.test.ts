@@ -1,7 +1,7 @@
 // The four things that decide whether "install the update" is safe: the
 // status shape both clients render, the refusals, what the launcher actually
 // runs, and the reconcile that lets a run survive the restart it performs.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,12 +12,19 @@ import {
   createUpdateControl,
   launchdJobIsAlive,
   launchPlanCommand,
+  listLaunchJobCommand,
   parseProgressRecord,
+  pruneRunArtifacts,
+  pruneUpdateStages,
+  removeLaunchJobCommand,
   runRefusal,
+  stagesToPrune,
+  stageStamp,
   stepLabel,
   type CommandResult,
   type LaunchPlan,
   type RuntimeReadiness,
+  type UpdateCapabilities,
   type UpdateControl,
   type UpdateStatus,
 } from "./update-control.ts";
@@ -43,7 +50,25 @@ function rig() {
   mkdirSync(join(checkout, ".git"), { recursive: true });
   const scriptPath = join(root, "update-botfleet.sh");
   writeFileSync(scriptPath, "#!/bin/bash\n", { mode: 0o700 });
-  return { root, checkout, scriptPath, stateDirectory: join(root, "state") };
+  return {
+    root,
+    checkout,
+    scriptPath,
+    stateDirectory: join(root, "state"),
+    updatesDirectory: join(root, "updates"),
+  };
+}
+
+/** One stage directory under the updates root, named the way the updater
+ * names them: the target commit, then the epoch millisecond it was made. */
+function stage(paths: ReturnType<typeof rig>, commit: string, stamp: number, names: string[] = ["source"]) {
+  const path = join(paths.updatesDirectory, `${commit}-${stamp}`);
+  mkdirSync(path, { recursive: true });
+  for (const name of names) {
+    if (name.endsWith(".json")) writeFileSync(join(path, name), "{}\n");
+    else mkdirSync(join(path, name), { recursive: true });
+  }
+  return path;
 }
 
 const ok = (stdout = ""): CommandResult => ({ code: 0, stdout, stderr: "" });
@@ -54,6 +79,8 @@ interface Harness {
   launched: LaunchPlan[];
   emitted: UpdateStatus[];
   git: string[][];
+  /** Every command the controller ran itself — only ever `launchctl`. */
+  ran: { command: string; args: string[] }[];
 }
 
 function build(
@@ -69,11 +96,14 @@ function build(
     writeState?: (path: string, value: unknown) => void;
     now?: () => Date;
     installedCommit?: string;
+    launcher?: "launchd" | "detached";
+    exec?: (command: string, args: string[]) => CommandResult;
   } = {},
 ): Harness {
   const launched: LaunchPlan[] = [];
   const emitted: UpdateStatus[] = [];
   const git: string[][] = [];
+  const ran: { command: string; args: string[] }[] = [];
   const control = createUpdateControl({
     installed: {
       version: "1.0.30",
@@ -82,6 +112,7 @@ function build(
     },
     checkout: paths.checkout,
     stateDirectory: paths.stateDirectory,
+    updatesDirectory: paths.updatesDirectory,
     scriptPath: paths.scriptPath,
     platform: options.platform ?? "darwin",
     nodeDirectory: "/opt/homebrew/bin",
@@ -93,7 +124,11 @@ function build(
     launch: async (plan) => {
       if (options.launchDelay) await options.launchDelay();
       launched.push(plan);
-      return { launcher: "launchd" };
+      return { launcher: options.launcher ?? "launchd" };
+    },
+    exec: async (command, args) => {
+      ran.push({ command, args });
+      return options.exec ? options.exec(command, args) : ok();
     },
     readiness: () => options.readiness ?? { safeToRestart: true, activeWorkCount: 0 },
     ...(options.writeState ? { writeState: options.writeState } : {}),
@@ -104,7 +139,7 @@ function build(
     pollIntervalMs: 50,
   });
   controls.push(control);
-  return { control, launched, emitted, git };
+  return { control, launched, emitted, git, ran };
 }
 
 /** One run's progress file, as `scripts/update-progress.mjs` writes it. */
@@ -130,14 +165,14 @@ function writeProgress(paths: ReturnType<typeof rig>, runId: string, patch: Reco
   return file;
 }
 
-function writeCurrentRun(paths: ReturnType<typeof rig>, runId: string) {
+function writeCurrentRun(paths: ReturnType<typeof rig>, runId: string, launcher = "launchd") {
   mkdirSync(paths.stateDirectory, { recursive: true });
   writeFileSync(join(paths.stateDirectory, "current-run.json"), JSON.stringify({
     runId,
     startedAt: "2026-09-13T11:55:00.000Z",
     progressPath: join(paths.stateDirectory, "runs", `${runId}.progress.json`),
     logPath: join(paths.stateDirectory, "runs", `${runId}.log`),
-    launcher: "launchd",
+    launcher,
     targetCommit: NEW_COMMIT,
   }));
 }
@@ -153,7 +188,7 @@ describe("status", () => {
       checkError: null,
       running: null,
       lastRun: null,
-      capabilities: { canCheck: true, canRun: true, reasons: [] },
+      capabilities: { canCheck: true, canRun: true, reasons: [], codes: [] },
     });
   });
 
@@ -163,6 +198,7 @@ describe("status", () => {
       canCheck: false,
       canRun: false,
       reasons: ["Updating from this computer is macOS only."],
+      codes: ["not-darwin"],
     });
 
     const noCheckout = rig();
@@ -170,16 +206,19 @@ describe("status", () => {
     const capabilities = build(noCheckout).control.status().capabilities;
     expect(capabilities.canCheck).toBe(false);
     expect(capabilities.reasons[0]).toContain(noCheckout.checkout);
+    expect(capabilities.codes[0]).toBe("checkout-missing");
 
     const stale = build(rig(), { updaterReportsProgress: false }).control.status().capabilities;
     expect(stale).toMatchObject({ canCheck: true, canRun: false });
     expect(stale.reasons[0]).toContain("predates this build");
+    expect(stale.codes[0]).toBe("updater-outdated");
 
     const noScript = rig();
     rmSync(noScript.scriptPath, { force: true });
     const script = build(noScript).control.status().capabilities;
     expect(script).toMatchObject({ canCheck: true, canRun: false });
     expect(script.reasons[0]).toContain(noScript.scriptPath);
+    expect(script.codes[0]).toBe("updater-missing");
   });
 });
 
@@ -236,7 +275,7 @@ describe("check", () => {
 });
 
 describe("refusals", () => {
-  const capabilities = { canCheck: true, canRun: true, reasons: [] };
+  const capabilities: UpdateCapabilities = { canCheck: true, canRun: true, reasons: [], codes: [] };
   const available = { sourceCommit: NEW_COMMIT, aheadBy: 3, commits: [] };
   const running = { runId: "run_one", startedAt: "", step: "Building", logTail: [] };
   const idle: RuntimeReadiness = { safeToRestart: true, activeWorkCount: 0 };
@@ -254,7 +293,7 @@ describe("refusals", () => {
   it("names the one blocking reason", () => {
     expect(ask({ running })).toBe("An update is already running.");
     expect(ask({
-      capabilities: { canCheck: false, canRun: false, reasons: ["Updating from this computer is macOS only."] },
+      capabilities: { canCheck: false, canRun: false, reasons: ["Updating from this computer is macOS only."], codes: ["not-darwin"] },
     })).toBe("Updating from this computer is macOS only.");
     expect(ask({ dirty: true })).toContain("uncommitted changes");
     expect(ask({ available: null })).toBe("BotFleet is already on the newest build.");
@@ -298,13 +337,13 @@ describe("refusals", () => {
     // the reason busy itself put in the list.
     expect(ask({
       readiness: busy,
-      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL] },
+      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL], codes: ["busy"] },
       force: true,
     })).toBeNull();
     // A structural reason still wins, forced or not.
     expect(ask({
       readiness: busy,
-      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL, "The updater is not installed."] },
+      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL, "The updater is not installed."], codes: ["busy", "updater-missing"] },
       force: true,
     })).toBe("The updater is not installed.");
   });
@@ -338,6 +377,9 @@ describe("refusals", () => {
     expect(status.capabilities.canRun).toBe(false);
     expect(status.capabilities.reasons).toContain(BUSY_REFUSAL);
     expect(status.capabilities.canCheck).toBe(true);
+    // `codes` walks `reasons` in lockstep, so a client can match the busy
+    // refusal by code instead of comparing the sentence.
+    expect(status.capabilities.codes).toEqual(["busy"]);
     const refused = await harness.control.start({ force: true });
     // force is allowed past readiness; the refusal here is only that there is
     // nothing newer, which proves readiness was not the blocker.
@@ -873,5 +915,383 @@ describe("reading what another process wrote", () => {
     expect(stepLabel("installDependencies")).toBe("Installing dependencies");
     expect(stepLabel("somethingNew")).toBe("somethingNew");
     expect(stepLabel(null)).toBe("Working");
+  });
+});
+
+describe("a run that settles takes its launchd label with it", () => {
+  // `launchctl submit` keeps a job ALIVE ON FAILURE — every non-zero exit is
+  // relaunched — so a run that fails deterministically is restarted forever
+  // unless the label goes when the run does.  On this Mac it ran 204 times in
+  // a day, staging a fresh copy of the source each time.
+  it("removes the label the moment a finished run is folded in", () => {
+    const paths = rig();
+    writeCurrentRun(paths, "run_prior");
+    writeProgress(paths, "run_prior", {
+      finishedAt: "2026-09-13T11:59:00.000Z",
+      outcome: "failed",
+      message: "The update could not be packaged.",
+    });
+    const harness = build(paths);
+    expect(harness.control.status().lastRun?.outcome).toBe("failed");
+    expect(harness.ran).toContainEqual({ command: "/bin/launchctl", args: ["remove", "com.jay.botfleet-update"] });
+    // Once, not once per status: the run is already settled in memory.
+    harness.control.status();
+    expect(harness.ran).toHaveLength(1);
+  });
+
+  it("removes it for a verified run too, and for one that died without an outcome", () => {
+    const verified = rig();
+    writeCurrentRun(verified, "run_prior");
+    writeProgress(verified, "run_prior", {
+      finishedAt: "2026-09-13T11:59:00.000Z",
+      outcome: "verified",
+      message: "The update installed and verified.",
+    });
+    expect(build(verified).ran).toHaveLength(1);
+
+    const died = rig();
+    writeCurrentRun(died, "run_prior");
+    writeProgress(died, "run_prior", { step: "buildBundle" });
+    const harness = build(died, { processAlive: () => false });
+    expect(harness.control.status().lastRun?.outcome).toBe("failed");
+    expect(harness.ran).toHaveLength(1);
+
+    // A run that never wrote a record at all is still a registered label.
+    const never = rig();
+    writeCurrentRun(never, "run_prior");
+    const late = build(never, { now: () => new Date("2026-09-13T12:05:00.000Z") });
+    expect(late.control.status().lastRun?.message).toContain("never started");
+    expect(late.ran).toHaveLength(1);
+  });
+
+  it("leaves launchctl alone for a detached fallback run, and off macOS", () => {
+    const detached = rig();
+    writeCurrentRun(detached, "run_prior", "detached");
+    writeProgress(detached, "run_prior", { finishedAt: "2026-09-13T11:59:00.000Z", outcome: "failed" });
+    // The fallback spawn registers no label, so there is nothing to remove —
+    // and `launchctl remove` on a label this harness never submitted could
+    // take out something else that happens to own it.
+    expect(build(detached).ran).toEqual([]);
+
+    const elsewhere = rig();
+    writeCurrentRun(elsewhere, "run_prior");
+    writeProgress(elsewhere, "run_prior", { finishedAt: "2026-09-13T11:59:00.000Z", outcome: "failed" });
+    expect(build(elsewhere, { platform: "linux" }).ran).toEqual([]);
+  });
+
+  it("names the label to unregister", () => {
+    expect(removeLaunchJobCommand("com.jay.botfleet-update"))
+      .toEqual({ command: "/bin/launchctl", args: ["remove", "com.jay.botfleet-update"] });
+  });
+});
+
+describe("sweeping what failed runs leave on disk", () => {
+  const entry = (name: string, stamp: number, names: string[]) => ({ path: `/updates/${name}`, name, stamp, names });
+
+  it("dates a stage from the updater's own suffix, and only from that", () => {
+    expect(stageStamp("82d58b454022-1789548405337")).toBe(1789548405337);
+    // A hand-made directory ending in a date parses as a number too, and
+    // reading that as epoch milliseconds would date the stage to 1970.
+    expect(stageStamp("keep-me-20260912")).toBeNull();
+    expect(stageStamp("source")).toBeNull();
+  });
+
+  it("keeps the three newest wrecks and never a stage that is load-bearing", () => {
+    const now = 2_000_000_000_000;
+    const old = now - 60 * 60 * 1000;
+    const entries = [
+      entry("aaaaaaaaaaaa-1", old + 5, ["source", "node_modules"]),
+      entry("bbbbbbbbbbbb-2", old + 4, ["source"]),
+      entry("cccccccccccc-3", old + 3, ["source"]),
+      entry("dddddddddddd-4", old + 2, ["source"]),
+      entry("eeeeeeeeeeee-5", old + 1, ["source", "BotFleet.app"]),
+    ];
+    expect(stagesToPrune(entries, { now })).toEqual(["/updates/dddddddddddd-4", "/updates/eeeeeeeeeeee-5"]);
+
+    // A prepared build a later `apply` can still install, and the rollback
+    // bundle the installed app would be rolled back to, are both untouchable
+    // — however old and however far down the list they are.
+    const protectedEntries = [
+      ...entries,
+      entry("ffffffffffff-6", old, ["source", "prepared.json"]),
+      entry("gggggggggggg-7", old - 1, ["source", "rollback"]),
+      // Anything a person put there is reported by being left alone.
+      entry("hhhhhhhhhhhh-8", old - 2, ["source", "notes.txt"]),
+    ];
+    expect(stagesToPrune(protectedEntries, { now }))
+      .toEqual(["/updates/dddddddddddd-4", "/updates/eeeeeeeeeeee-5"]);
+  });
+
+  it("will not touch a stage young enough to belong to a run in flight", () => {
+    const now = 2_000_000_000_000;
+    const entries = [
+      entry("aaaaaaaaaaaa-1", now - 1_000, ["source"]),
+      entry("bbbbbbbbbbbb-2", now - 2_000, ["source"]),
+      entry("cccccccccccc-3", now - 3_000, ["source"]),
+      entry("dddddddddddd-4", now - 4_000, ["source"]),
+    ];
+    expect(stagesToPrune(entries, { now })).toEqual([]);
+    expect(stagesToPrune(entries, { now, graceMs: 0 })).toEqual(["/updates/dddddddddddd-4"]);
+    expect(stagesToPrune(entries, { now, graceMs: 0, keep: 1 }))
+      .toEqual(["/updates/bbbbbbbbbbbb-2", "/updates/cccccccccccc-3", "/updates/dddddddddddd-4"]);
+    expect(stagesToPrune(entries, { now, graceMs: 0, keep: 0, protect: ["/updates/aaaaaaaaaaaa-1"] }))
+      .toEqual(["/updates/bbbbbbbbbbbb-2", "/updates/cccccccccccc-3", "/updates/dddddddddddd-4"]);
+  });
+
+  it("removes them from disk on boot, and leaves the kept ones alone", () => {
+    const paths = rig();
+    const old = Date.parse("2026-09-13T12:00:00.000Z") - 24 * 60 * 60 * 1000;
+    const stages = [1, 2, 3, 4, 5].map((n) => stage(paths, `commit${n}`, old + n));
+    const prepared = stage(paths, "commit6", old, ["source", "prepared.json"]);
+    build(paths);
+    // The three newest wrecks stay: a person reads the most recent failure,
+    // not the fortieth.
+    expect(stages.slice(2).every((path) => existsSync(path))).toBe(true);
+    expect(existsSync(stages[0])).toBe(false);
+    expect(existsSync(stages[1])).toBe(false);
+    expect(existsSync(prepared)).toBe(true);
+  });
+
+  it("sweeps again before a run, so the disk is clear before it stages another", async () => {
+    const paths = rig();
+    const old = Date.parse("2026-09-13T12:00:00.000Z") - 24 * 60 * 60 * 1000;
+    const harness = build(paths);
+    const later = [1, 2, 3, 4].map((n) => stage(paths, `after${n}`, old + n));
+    await harness.control.start({ force: true });
+    expect(existsSync(later[0])).toBe(false);
+    expect(later.slice(1).every((path) => existsSync(path))).toBe(true);
+    expect(harness.launched).toHaveLength(1);
+  });
+
+  it("does nothing at all when there is no updates root yet", () => {
+    const paths = rig();
+    expect(() => build(paths)).not.toThrow();
+    expect(pruneUpdateStages(join(paths.root, "nowhere"))).toEqual([]);
+  });
+
+  it("keeps the newest run logs and forgets the rest, run by run", () => {
+    const paths = rig();
+    const runs = join(paths.stateDirectory, "runs");
+    mkdirSync(runs, { recursive: true });
+    // Four writes can land inside one filesystem timestamp tick, so the
+    // order the prune sees is set here, not left to the disk.
+    const base = Date.parse("2026-09-13T12:00:00.000Z");
+    for (let n = 1; n <= 4; n += 1) {
+      const stamp = new Date(base + n * 1000);
+      for (const file of [`run_${n}.log`, `run_${n}.progress.json`]) {
+        const path = join(runs, file);
+        writeFileSync(path, file.endsWith(".log") ? "x\n" : "{}\n");
+        utimesSync(path, stamp, stamp);
+      }
+    }
+    const removed = pruneRunArtifacts(runs, { keep: 2, protect: ["run_1"] });
+    // A run's log and its progress file go together or not at all.
+    expect(removed).toHaveLength(2);
+    expect(existsSync(join(runs, "run_1.log"))).toBe(true);
+    expect(existsSync(join(runs, "run_4.log"))).toBe(true);
+    expect(existsSync(join(runs, "run_4.progress.json"))).toBe(true);
+  });
+});
+
+describe("a caller that holds an update admission of its own", () => {
+  const BUSY: RuntimeReadiness = { safeToRestart: false, activeWorkCount: 1 };
+  const IDLE: RuntimeReadiness = { safeToRestart: true, activeWorkCount: 0 };
+  const ahead = (args: string[]): CommandResult => {
+    if (args[0] === "rev-parse") return ok(`${NEW_COMMIT}\n`);
+    if (args[0] === "rev-list") return ok("3\n");
+    if (args[0] === "log") return ok(`${NEW_COMMIT}${UNIT}feat: something newer`);
+    if (args[0] === "show") return ok(JSON.stringify({ version: "1.0.31" }));
+    return ok();
+  };
+
+  // `POST /api/update/check` is a mutating request, so the route holds an
+  // admission for the whole handler and the harness-wide reading counts it.
+  // The answer that had just found the update therefore also said this Mac
+  // was busy, and both clients hide Install Update on `canRun` — so the
+  // button never appeared after the check that found the update.
+  it("lets check() describe the machine rather than the request asking", async () => {
+    const paths = rig();
+    const harness = build(paths, { readiness: BUSY, git: ahead });
+
+    const uncorrected = await harness.control.check();
+    expect(uncorrected.available?.sourceCommit).toBe(NEW_COMMIT);
+    expect(uncorrected.capabilities.canRun).toBe(false);
+    expect(uncorrected.capabilities.reasons).toContain(BUSY_REFUSAL);
+
+    const corrected = await harness.control.check({ readiness: IDLE });
+    expect(corrected.available?.sourceCommit).toBe(NEW_COMMIT);
+    expect(corrected.capabilities.canRun).toBe(true);
+    expect(corrected.capabilities.reasons).not.toContain(BUSY_REFUSAL);
+    // And what every other client is told, not only the answer to this one.
+    expect(harness.emitted.at(-1)?.capabilities.canRun).toBe(true);
+  });
+
+  it("lets a refusal from start() describe the machine too", async () => {
+    const paths = rig();
+    const harness = build(paths, {
+      readiness: BUSY,
+      git: (args) => (args[0] === "status" ? ok(" M server/index.ts\n") : ahead(args)),
+    });
+    await harness.control.check({ readiness: IDLE });
+
+    const refused = await harness.control.start({ readiness: IDLE });
+    expect(refused.ok).toBe(false);
+    expect(refused).toMatchObject({ error: expect.stringContaining("uncommitted changes") });
+    // The refusal is about the checkout.  A status that ALSO said the Mac was
+    // busy is stored by the client, which then stops offering Install Update
+    // until something unrelated refreshes it.
+    expect(refused.status.capabilities.canRun).toBe(true);
+    expect(refused.status.capabilities.reasons).not.toContain(BUSY_REFUSAL);
+  });
+});
+
+describe("a run whose progress file stops advancing", () => {
+  /** Long enough after the last progress write to be stale, and the pid still
+   * reads as alive — which is what happens when the number is reused. */
+  const LATER = () => new Date("2026-09-13T12:20:00.000Z");
+  const STALLED = { step: "buildBundle", updatedAt: "2026-09-13T11:58:00.000Z" };
+  const LISTED_ALIVE = '{\n\t"Label" = "com.jay.botfleet-update";\n\t"PID" = 8123;\n};\n';
+  const settled = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+  it("settles it once launchd says nothing is running under the label", async () => {
+    const paths = rig();
+    writeCurrentRun(paths, "run_prior");
+    writeProgress(paths, "run_prior", STALLED);
+    const harness = build(paths, { now: LATER, processAlive: () => true });
+    // The probe is asynchronous, so the run is still described until it lands.
+    expect(harness.control.status().running).not.toBeNull();
+    await settled();
+    const status = harness.control.status();
+    expect(status.running).toBeNull();
+    expect(status.lastRun).toMatchObject({ runId: "run_prior", outcome: "failed" });
+    expect(status.lastRun?.message).toContain("com.jay.botfleet-update");
+    expect(harness.ran[0]).toEqual({
+      command: "/bin/launchctl",
+      args: ["list", "com.jay.botfleet-update"],
+    });
+    // Settling takes the label away, the same as every other settle.
+    expect(harness.ran).toContainEqual({
+      command: "/bin/launchctl",
+      args: ["remove", "com.jay.botfleet-update"],
+    });
+    // And the wedge it clears is the one that refused every later install.
+    expect(status.capabilities.reasons).not.toContain("An update is already running.");
+  });
+
+  it("leaves it alone while launchd still has a process for it", async () => {
+    const paths = rig();
+    writeCurrentRun(paths, "run_prior");
+    writeProgress(paths, "run_prior", STALLED);
+    const harness = build(paths, { now: LATER, exec: () => ok(LISTED_ALIVE) });
+    await settled();
+    expect(harness.control.status().running).not.toBeNull();
+    // Asked once, not once per poll or per status.
+    harness.control.status();
+    await settled();
+    expect(harness.ran.filter((one) => one.args[0] === "list")).toHaveLength(1);
+  });
+
+  it("asks nothing while the progress file is still moving", async () => {
+    const paths = rig();
+    writeCurrentRun(paths, "run_prior");
+    writeProgress(paths, "run_prior", { step: "buildBundle", updatedAt: "2026-09-13T11:58:00.000Z" });
+    // Two minutes on: a long step is not a dead run.
+    const harness = build(paths, { now: () => new Date("2026-09-13T12:00:00.000Z") });
+    await settled();
+    expect(harness.control.status().running).not.toBeNull();
+    expect(harness.ran).toEqual([]);
+  });
+
+  it("asks nothing for a detached run, which has no label to ask about", async () => {
+    const paths = rig();
+    writeCurrentRun(paths, "run_prior", "detached");
+    writeProgress(paths, "run_prior", STALLED);
+    const harness = build(paths, { now: LATER });
+    await settled();
+    expect(harness.control.status().running).not.toBeNull();
+    expect(harness.ran).toEqual([]);
+  });
+
+  it("names the label to ask about", () => {
+    expect(listLaunchJobCommand("com.jay.botfleet-update"))
+      .toEqual({ command: "/bin/launchctl", args: ["list", "com.jay.botfleet-update"] });
+  });
+});
+
+describe("an origin/main that differs without being ahead", () => {
+  const BEHIND = "e".repeat(40);
+
+  it("offers nothing, rather than an update Install would refuse", async () => {
+    const paths = rig();
+    const harness = build(paths, {
+      git: (args) => {
+        if (args[0] === "rev-parse") return ok(`${BEHIND}\n`);
+        // A locally built app from a lane branch: origin/main is a different
+        // commit, and none of it is ahead of what is installed.
+        if (args[0] === "rev-list") return ok("0\n");
+        return ok();
+      },
+    });
+    const status = await harness.control.check();
+    expect(status.checkError).toBeNull();
+    expect(status.checkedAt).toBe("2026-09-13T12:00:00.000Z");
+    expect(status.available).toBeNull();
+    // Nothing to describe, so it never asked for the subjects or the version.
+    expect(harness.git.some((args) => args[0] === "log")).toBe(false);
+    expect(harness.git.some((args) => args[0] === "show")).toBe(false);
+  });
+
+  it("still offers when the count could not be taken at all", async () => {
+    const paths = rig();
+    // An installed commit this checkout has never seen — a force-pushed
+    // branch.  `rev-list` fails, and a failed count says nothing about
+    // distance, so the offer stands rather than being silently withdrawn.
+    const harness = build(paths, {
+      git: (args) => {
+        if (args[0] === "rev-parse") return ok(`${NEW_COMMIT}\n`);
+        if (args[0] === "rev-list") return fail();
+        return ok();
+      },
+    });
+    const status = await harness.control.check();
+    expect(status.available?.sourceCommit).toBe(NEW_COMMIT);
+    expect(status.available?.aheadBy).toBe(0);
+  });
+});
+
+describe("paths named by current-run.json", () => {
+  it("publishes a log tail only from inside the runs directory", () => {
+    const paths = rig();
+    const outside = join(paths.root, "not-the-updaters.log");
+    writeFileSync(outside, "a line from a file this route must never publish\n");
+    mkdirSync(paths.stateDirectory, { recursive: true });
+    // A planted record: the status route reads `logPath` and publishes its
+    // tail to every client and to the paired phone, so a record naming any
+    // other file would turn a same-user write into a remote read.
+    writeFileSync(join(paths.stateDirectory, "current-run.json"), JSON.stringify({
+      runId: "run_prior",
+      startedAt: "2026-09-13T11:55:00.000Z",
+      progressPath: join(paths.root, "not-the-updaters.json"),
+      logPath: outside,
+      launcher: "launchd",
+      targetCommit: NEW_COMMIT,
+    }));
+    writeFileSync(join(paths.root, "not-the-updaters.json"), JSON.stringify({
+      schemaVersion: 1,
+      runId: "run_prior",
+      startedAt: "2026-09-13T11:55:00.000Z",
+      updatedAt: "2026-09-13T11:58:00.000Z",
+      pid: 4321,
+      step: "somewhere else entirely",
+    }));
+    writeProgress(paths, "run_prior", { step: "buildBundle" });
+
+    const running = build(paths).control.status().running;
+    expect(running?.runId).toBe("run_prior");
+    // Both paths fell back to the ones this run id would have had: the tail
+    // is empty because no log was written there, and the step came from the
+    // real progress file rather than the planted one.
+    expect(running?.logTail).toEqual([]);
+    expect(running?.step).toBe(stepLabel("buildBundle"));
   });
 });

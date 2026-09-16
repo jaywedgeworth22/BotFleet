@@ -57,7 +57,15 @@ export interface UpdateStatus {
   checkError?: string | null;
   running: UpdateRunning | null;
   lastRun: UpdateLastRun | null;
-  capabilities: { canCheck: boolean; canRun: boolean; reasons: string[] };
+  capabilities: {
+    canCheck: boolean;
+    canRun: boolean;
+    reasons: string[];
+    /** One code per `reasons` entry, same order — absent from an older
+     * harness that has never heard of it, so every read of this falls back
+     * to the harness's own sentence at that index. */
+    codes?: string[];
+  };
 }
 
 /** The event the store re-broadcasts when an `update.status` frame lands. */
@@ -202,6 +210,26 @@ export function runningLabel(running: UpdateRunning): string {
   return `${running.step}${percent}…`;
 }
 
+/** A short local date and time for a finished run, or null when there is
+ * nothing usable to format — an empty or malformed `finishedAt`, mostly
+ * seen only in tests. */
+function finishedAtLabel(finishedAt: string): string | null {
+  if (!finishedAt) return null;
+  const date = new Date(finishedAt);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+/**
+ * The Updates card's last-run line: a short, stable product sentence for the
+ * outcome, followed by when it finished.
+ *
+ * The updater's own message used to be appended here — for a failed run,
+ * often a raw line straight from its log, like `bash …
+ * update-botfleet-mac.mjs: pnpm package:mac:local failed with exit 1`.  That
+ * is diagnostic text, not something to paint into the card, so it lives in
+ * `lastRunDetail` instead, for a hover title or a details affordance.
+ */
 export function lastRunLabel(lastRun: UpdateLastRun | null): string | null {
   if (!lastRun) return null;
   const headline = lastRun.outcome === "verified"
@@ -210,8 +238,15 @@ export function lastRunLabel(lastRun: UpdateLastRun | null): string | null {
       ? "The last update failed and rolled back."
       : lastRun.outcome === "refused"
         ? "The last update was refused."
-        : "The last update failed.";
-  return lastRun.message ? `${headline}${GAP}${lastRun.message}` : headline;
+        : "The last update did not finish.";
+  const when = finishedAtLabel(lastRun.finishedAt);
+  return when ? `${headline}${GAP}${when}` : headline;
+}
+
+/** The updater's own message for the last run — the raw detail that belongs
+ * on hover or in a details affordance, never inline.  See `lastRunLabel`. */
+export function lastRunDetail(lastRun: UpdateLastRun | null): string | null {
+  return lastRun?.message || null;
 }
 
 /** What the card says when there is nothing to install. */
@@ -241,6 +276,83 @@ export function idleLabel(status: UpdateStatus): string {
  */
 export function visibleUpdateError(local: string | null, status: UpdateStatus | null): string | null {
   return local ?? status?.checkError ?? null;
+}
+
+/**
+ * Product copy for a structural refusal the harness can name by its stable
+ * `code` — the reason the update path is missing on this Mac, not the
+ * transient "already running" or "busy" ones, which already read as product
+ * copy and are returned unchanged.
+ *
+ * Falls back to the harness's own sentence for a code this build does not
+ * recognise: an older harness with no `codes` array at all, or a refusal
+ * added after this build shipped.  Matching on the code rather than the
+ * English text means a wording change on the harness side does not silently
+ * stop being mapped.
+ */
+function structuralReasonCopy(code: string | undefined, reason: string): string {
+  switch (code) {
+    case "checkout-missing":
+      return "This Mac's BotFleet folder is missing.";
+    case "updater-missing":
+      return "The updater is not installed on this Mac.";
+    case "updater-outdated":
+      return `This Mac's updater is out of date.${GAP}Update from this Mac once to pick up the new one.`;
+    default:
+      return reason;
+  }
+}
+
+/**
+ * Why **Install Update** is unavailable although there is something to
+ * install, or null when it is available.
+ *
+ * `capabilities.reasons` carries the harness's own sentence for every refusal
+ * it can see coming, and no surface rendered one: the floating card asserted
+ * "This Mac can build and install it." while the button was conditioned away,
+ * the Settings card simply lost its button, and the sidebar's install button
+ * quietly ran a check instead.  All three ask this, so all three say the same
+ * thing — now product copy for the refusals that have it, by way of
+ * `structuralReasonCopy`.
+ */
+export function installBlockedReason(status: UpdateStatus | null): string | null {
+  if (!status?.available || status.running) return null;
+  if (status.capabilities.canRun) return null;
+  const reason = status.capabilities.reasons[0];
+  if (!reason) return "This Mac cannot install the update right now.";
+  return structuralReasonCopy(status.capabilities.codes?.[0], reason);
+}
+
+/**
+ * The harness's own sentence behind the copy above — a checkout path, a
+ * script path, "run it once from a terminal" — for a hover title, never for
+ * the label itself.  Null when there is nothing extra to say: no reason, or
+ * the visible copy already IS the harness's sentence (an unmapped code, or
+ * none at all), which is what an older harness with no `codes` array always
+ * looks like.
+ */
+export function installBlockedReasonDetail(status: UpdateStatus | null): string | null {
+  if (!status?.available || status.running || status.capabilities.canRun) return null;
+  const reason = status.capabilities.reasons[0];
+  if (!reason) return null;
+  const mapped = structuralReasonCopy(status.capabilities.codes?.[0], reason);
+  return mapped === reason ? null : reason;
+}
+
+/**
+ * What is left of this session's remembered failure once a status arrives on
+ * its own — a push frame, a refocus, the poll.
+ *
+ * `visibleUpdateError` gives the local sentence precedence because it is the
+ * newer of the two, and it stops being newer the moment the harness answers
+ * again.  Without this, a check that failed while the network was down kept
+ * its red sentence on screen beside a subtitle the successful check had
+ * already replaced.  A status still carrying `checkError` is not a recovery,
+ * so that one leaves the local error alone and the same precedence goes on
+ * showing it.
+ */
+export function keepLocalError(local: string | null, next: UpdateStatus): string | null {
+  return next.checkError ? local : null;
 }
 
 /**
@@ -362,22 +474,29 @@ export function useUpdateControl(pollMs = 5_000): UpdateControlView {
   const running = Boolean(status?.running);
   const alive = useRef(true);
 
+  // A status that arrived on its own supersedes this session's remembered
+  // failure — see `keepLocalError`.
+  const adopt = useCallback((next: UpdateStatus) => {
+    setStatus(next);
+    setError((current) => keepLocalError(current, next));
+  }, []);
+
   useEffect(() => {
     alive.current = true;
     const stopRetries = scheduleStatusRetries({
       fetchStatus: () => fetchUpdateStatus(),
-      onStatus: setStatus,
+      onStatus: adopt,
     });
     const onPush = (event: Event) => {
       const detail = (event as CustomEvent<unknown>).detail;
-      if (isUpdateStatus(detail)) setStatus(detail);
+      if (isUpdateStatus(detail)) adopt(detail);
     };
     // Coming back to the window is the moment the answer is most likely to
     // have changed — an update finished, or a harness came back — and it is
     // free compared with polling for it.
     const onFocus = () => {
       void fetchUpdateStatus().then((next) => {
-        if (alive.current && next) setStatus(next);
+        if (alive.current && next) adopt(next);
       });
     };
     window.addEventListener(UPDATE_STATUS_EVENT, onPush);
@@ -388,17 +507,17 @@ export function useUpdateControl(pollMs = 5_000): UpdateControlView {
       window.removeEventListener(UPDATE_STATUS_EVENT, onPush);
       window.removeEventListener("focus", onFocus);
     };
-  }, []);
+  }, [adopt]);
 
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(() => {
       void fetchUpdateStatus().then((next) => {
-        if (alive.current && next) setStatus(next);
+        if (alive.current && next) adopt(next);
       });
     }, pollMs);
     return () => clearInterval(timer);
-  }, [running, pollMs]);
+  }, [running, pollMs, adopt]);
 
   const check = useCallback(async () => {
     setBusy("check");

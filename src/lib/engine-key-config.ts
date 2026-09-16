@@ -52,8 +52,10 @@ export const API_KEY_ENGINES: readonly ApiKeyEngineSpec[] = [
     urlFieldId: "minimax.url",
     keyPlaceholder: "Your MiniMax API key",
     urlPlaceholder: "https://api.minimax.io/v1",
+    // NBSP, not two ASCII spaces — this renders into a plain <div>, where
+    // white-space:normal collapses a run of ordinary spaces to one.
     defaultUrlNote:
-      "Leave blank for MiniMax's global host.  Use https://api.minimaxi.com/v1 for the China host.",
+      "Leave blank for MiniMax's global host.  Use https://api.minimaxi.com/v1 for the China host.",
     docsUrl: "https://platform.minimax.io",
   },
 ];

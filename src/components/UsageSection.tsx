@@ -434,7 +434,12 @@ export function UsageSection() {
             let deepseekStatus = deepseekLine;
             if (deepseekLine && spend) {
               deepseekStatus = `${deepseekLine}  ·  Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
-            } else if (spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0)) {
+            } else if (!isMiniMax && spend && (spend.spend5hUsd > 0 || spend.spend7dUsd > 0)) {
+              // Not for MiniMax: its own block below composes the same spend
+              // figures onto its quota line, and both strings are appended to
+              // the same headline strip — so without this guard the row read
+              // "Spent: … · 94% left this week … · Spent: …".  Every other
+              // engine keeps the standalone spend line it has always had.
               deepseekStatus = `Spent: ${formatSpendUsd(spend.spend5hUsd)} (5h) · ${formatSpendUsd(spend.spend7dUsd)} (week)`;
             }
             // Same "quota headline + spend" composition as DeepSeek above,
@@ -449,9 +454,16 @@ export function UsageSection() {
             const isPartial = !isCapped && (hasUsageMonitorAG
               ? usageMonitorAGWindows.some((window) => window.skip || window.remainingPercent === 0)
               : agExhausted.length > 0 || instanceCooldowns.some((q) => q.model !== "*"));
-            const isNearCap = !isCapped && !isPartial && minimaxRow?.status === "near_cap";
+            // "Near cap" is a reading about a healthy engine, so it only
+            // applies while the engine IS healthy.  The balance snapshot is
+            // cached for five minutes, so a key revoked mid-window leaves a
+            // stale near_cap reading sitting where the real "MiniMax key
+            // rejected (HTTP 401)" belongs unless the state gates it.
+            const isNearCap = instance.snapshot.state === "available"
+              && !isCapped && !isPartial && minimaxRow?.status === "near_cap";
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
-            const isAvailable = instance.snapshot.state === "available" && !isCapped && !isPartial && !isNearCap && !isDisabled;
+            const isUnavailable = instance.snapshot.state !== "available";
+            const isAvailable = !isUnavailable && !isCapped && !isPartial && !isNearCap && !isDisabled;
             const showGenericGrid = !hasUsageMonitorAG && instanceWindows.length > 0;
             const baseDetailLines = hasUsageMonitorAG
               ? []
@@ -586,12 +598,12 @@ export function UsageSection() {
                   : `${quotaCooldown?.error ?? "Session limit or usage quota reached"} · ${formatCountdown(quotaCooldown?.resetsAt)}`)
               : isPartial
               ? `${quotaCooldown?.error ?? "Some models are at a usage cap"} · ${formatCountdown(quotaCooldown?.resetsAt)}`
-              : isNearCap
-              ? (minimaxLine ?? "Approaching its usage cap")
               : isDisabled
               ? "Disabled in settings · subscription inactive"
-              : !isAvailable
+              : isUnavailable
               ? instance.snapshot.reason ?? "Unavailable"
+              : isNearCap
+              ? (minimaxLine ?? "Approaching its usage cap")
               : allHeadlineLines.length > 0
               ? allHeadlineLines.join("  ·  ")
               : fullSummary
@@ -633,16 +645,18 @@ export function UsageSection() {
                           ? "bg-amber-500/15 text-amber-700 dark:text-amber-300"
                           : isPartial
                           ? "bg-amber-500/10 text-amber-800 dark:text-amber-200"
-                          : isNearCap
-                          ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
                           : isDisabled
                           ? "bg-inset text-ink-secondary"
+                          : isUnavailable
+                          ? "bg-inset text-ink-secondary"
+                          : isNearCap
+                          ? "bg-amber-500/10 text-amber-600 dark:text-amber-400"
                           : isAvailable
                           ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
                           : "bg-inset text-ink-secondary"
                       }`}
                     >
-                      {isCapped ? "At Usage Cap" : isPartial ? "Partial Cap" : isNearCap ? "Near Cap" : isDisabled ? "Disabled" : isAvailable ? "Available" : "Unavailable"}
+                      {isCapped ? "At Usage Cap" : isPartial ? "Partial Cap" : isDisabled ? "Disabled" : isUnavailable ? "Unavailable" : isNearCap ? "Near Cap" : isAvailable ? "Available" : "Unavailable"}
                     </span>
                     <ChevronDown
                       size={14}

@@ -25,6 +25,25 @@ vi.mock("../drivers/minimax.ts", () => ({
   // WITH — the resolved key stays a constant, but the environment argument
   // is the real per-instance value registry.ts passed in.
   resolveMinimaxCredentials: vi.fn(() => "test-minimax-key"),
+  // registry.ts decodes a MiniMax instance's own config through the driver's
+  // exported decoder rather than through whatever driver object is
+  // registered, so the mock module has to supply it.  Faithful stand-in for
+  // the real one's url precedence (own url → MINIMAX_BASE_URL → the global
+  // default); the real decoder's agreement with GLOBAL_URL is pinned
+  // separately in registry-minimax-url.test.ts, which does not mock this
+  // module at all.
+  decodeMinimaxConfig: (raw?: { url?: string; urlSource?: string }) => {
+    const own = raw?.url?.trim();
+    const env = process.env.MINIMAX_BASE_URL?.trim();
+    return {
+      url: own || env || "https://api.minimax.io/v1",
+      // The real decoder's provenance, which resolveMinimaxApiUrl reads to
+      // decide whether anything chose a host at all.
+      urlSource: own
+        ? (raw?.urlSource === "workspace" ? "workspace" : "instance")
+        : env ? "environment" : "default",
+    };
+  },
 }));
 vi.mock("../minimax-balance.ts", () => ({
   getMiniMaxBalance: vi.fn(),
@@ -701,6 +720,120 @@ describe("ProviderRegistry", () => {
         else process.env.MINIMAX_BASE_URL = previous;
         localMiniMaxConfig.url = GLOBAL_URL;
       }
+    });
+
+    it("balance-checks the global host for a reserved instance that explicitly configures it while ~/.mmx is CN", async () => {
+      // ~/.mmx/config.json is a workspace-wide DEFAULT, so it yields to any
+      // host that was actually chosen — and that question is answered by the
+      // decoded config's provenance, never by comparing its url to the global
+      // default.  An instance whose config carries a url chose one, even when
+      // the url it chose is byte-identical to the unset state's; the driver's
+      // own gate reads it the same way, so the balance lookup and the turns
+      // agree on the account being reported.
+      localMiniMaxConfig.url = "https://api.minimaxi.com/v1";
+      try {
+        vi.mocked(getMiniMaxBalance).mockResolvedValue(tokenPlanBalance());
+        const fake = makeFakeDriver({ kind: "minimax" });
+        const registry = new ProviderRegistry([fake.driver]);
+        await registry.load({ minimax: { driver: "minimax", config: { url: GLOBAL_URL } } });
+        await registry.describe();
+        expect(getMiniMaxBalance).toHaveBeenCalledWith("test-minimax-key", GLOBAL_URL);
+        expect(getMiniMaxBalance).not.toHaveBeenCalledWith("test-minimax-key", "https://api.minimaxi.com/v1");
+      } finally {
+        localMiniMaxConfig.url = GLOBAL_URL;
+      }
+    });
+
+    it("still hands the reserved instance ~/.mmx's host when nothing chose one", async () => {
+      // The other half of the same rule: with no url on the entry at all,
+      // the machine-wide profile is what decides, which is the whole reason
+      // that file is read.
+      localMiniMaxConfig.url = "https://api.minimaxi.com/v1";
+      try {
+        vi.mocked(getMiniMaxBalance).mockResolvedValue(tokenPlanBalance());
+        const fake = makeFakeDriver({ kind: "minimax" });
+        const registry = new ProviderRegistry([fake.driver]);
+        await registry.load({ minimax: { driver: "minimax" } });
+        await registry.describe();
+        expect(getMiniMaxBalance).toHaveBeenCalledWith("test-minimax-key", "https://api.minimaxi.com/v1");
+      } finally {
+        localMiniMaxConfig.url = GLOBAL_URL;
+      }
+    });
+
+    it("keeps reading the host it captured at load when ~/.mmx/config.json changes underneath it", async () => {
+      // The driver captures its key and host ONCE, in create()'s closure,
+      // and never re-reads them.  A balance lookup that re-resolved them on
+      // every describe reported one account's quota while every turn billed
+      // another the moment `mmx auth login --api-key …` rewrote the file —
+      // and that reading publishes quota.capped, so the mismatch decided
+      // auto-fallback too.
+      vi.mocked(getMiniMaxBalance).mockResolvedValue(tokenPlanBalance());
+      const fake = makeFakeDriver({ kind: "minimax" });
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ minimax: { driver: "minimax" } });
+      localMiniMaxConfig.url = "https://api.minimaxi.com/v1";
+      try {
+        await registry.describe();
+        expect(getMiniMaxBalance).toHaveBeenCalledWith("test-minimax-key", GLOBAL_URL);
+        expect(getMiniMaxBalance).not.toHaveBeenCalledWith("test-minimax-key", "https://api.minimaxi.com/v1");
+        // …and a reload — the same moment the driver itself re-reads the
+        // file — does pick the new host up.
+        await registry.reloadInstance("minimax", { driver: "minimax" });
+        await registry.describe();
+        expect(getMiniMaxBalance).toHaveBeenCalledWith("test-minimax-key", "https://api.minimaxi.com/v1");
+      } finally {
+        localMiniMaxConfig.url = GLOBAL_URL;
+      }
+    });
+
+    it("keeps the DRIVER's own quota.capped verdict when the balance endpoint reports nothing", async () => {
+      // The MiniMax driver caps itself off its own /models probe (a 402 or
+      // 429 classifies as quota_or_region_restriction).  The balance block
+      // used to assign straight over snapshot.quota, so a blocked account
+      // whose undocumented balance endpoint timed out published
+      // capped: false — the green "Available" chip, and still eligible for
+      // auto-fallback.
+      vi.mocked(getMiniMaxBalance).mockResolvedValue({
+        source: "unavailable",
+        capExists: false,
+        status: "unknown",
+        balanceUsd: null,
+        remainingPercent: null,
+        secondaryRemainingPercent: null,
+        windowsLabel: undefined,
+        models: null,
+        resetsAt: null,
+        weeklyResetsAt: null,
+        fetchedAt: Date.now(),
+        error: "balance lookup timed out",
+      });
+      const driverResetsAt = Date.now() + 1_800_000;
+      const fake = makeFakeDriver({
+        kind: "minimax",
+        quota: { capped: true, resetsAt: driverResetsAt, error: "MiniMax quota or region restriction (HTTP 402)" },
+      });
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ minimax: { driver: "minimax" } });
+      const [described] = await registry.describe();
+      expect(described.snapshot.quota?.capped).toBe(true);
+      // The driver's own reset and reason survive too — there is no
+      // wildcard cooldown here to supply a better one.
+      expect(described.snapshot.quota?.resetsAt).toBe(driverResetsAt);
+      expect(described.snapshot.quota?.error).toBe("MiniMax quota or region restriction (HTTP 402)");
+      // The balance summary is still published alongside it.
+      expect(described.snapshot.quota?.minimax?.source).toBe("unavailable");
+    });
+
+    it("still reports a healthy MiniMax instance as uncapped when the driver reports no quota of its own", async () => {
+      // The guard above must only ever ADD a reason to be capped — a driver
+      // that says nothing must not start reading as capped.
+      vi.mocked(getMiniMaxBalance).mockResolvedValue(tokenPlanBalance({ remainingPercent: 80, secondaryRemainingPercent: 70 }));
+      const fake = makeFakeDriver({ kind: "minimax" });
+      const registry = new ProviderRegistry([fake.driver]);
+      await registry.load({ minimax: { driver: "minimax" } });
+      const [described] = await registry.describe();
+      expect(described.snapshot.quota?.capped).toBe(false);
     });
   });
 });

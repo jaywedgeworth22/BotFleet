@@ -1849,6 +1849,36 @@ export async function loadPrepared(stageDirectory) {
   };
 }
 
+/**
+ * Has this run already finished?
+ *
+ * The second of two guards against a relaunch loop.  `launchctl submit` keeps
+ * a job ALIVE ON FAILURE, so every non-zero exit is relaunched by launchd —
+ * and a deterministic failure is then retried forever, each attempt staging
+ * another full copy of the source.  The harness removes the label as soon as
+ * it sees a run settle (`server/update-control.ts`), but a relaunch can race
+ * that removal, so the relaunched process asks the progress record it was
+ * pointed at whether this run id is already over.  A different run id is a
+ * different run and says nothing about this one.
+ */
+export function settledRunOutcome(record, runId) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return null;
+  if (!runId || record.runId !== runId) return null;
+  if (typeof record.finishedAt !== "string" || !record.finishedAt) return null;
+  if (typeof record.outcome !== "string" || !record.outcome) return null;
+  return { outcome: record.outcome, message: typeof record.message === "string" ? record.message : "" };
+}
+
+/** The progress record on disk, or null for anything unreadable or torn.  A
+ * record nobody can parse is not evidence that the run finished. */
+async function readProgressRecord(path) {
+  try {
+    return JSON.parse(await readFile(path, "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 export async function main(argv = process.argv.slice(2)) {
   if (process.platform !== "darwin" && process.env.BOTFLEET_UPDATE_ALLOW_NON_DARWIN !== "1") {
     throw new Error("The BotFleet Mac updater only runs on macOS");
@@ -1857,6 +1887,19 @@ export async function main(argv = process.argv.slice(2)) {
   if (parsed.help) {
     console.log(usage());
     return;
+  }
+  // Before anything is created, touched or locked: a relaunch of a run that
+  // already has an outcome does nothing at all and exits 0, which is also
+  // what tells launchd to stop relaunching it.
+  if (parsed.progress && parsed.runId) {
+    const settled = settledRunOutcome(await readProgressRecord(parsed.progress), parsed.runId);
+    if (settled) {
+      console.log(
+        `Update run ${parsed.runId} already finished as ${settled.outcome}; this relaunch is doing nothing.${
+          settled.message ? `  ${settled.message}` : ""}`,
+      );
+      return;
+    }
   }
   const config = createConfig(parsed);
   if (parsed.command === "unquiesce") {

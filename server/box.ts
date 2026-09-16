@@ -337,6 +337,7 @@ export async function joinBox(cfg: AppConfig, botId: string) {
   // driver daemon before handing the desktop back to the user.
   await runCommand(cfg, box.id, ensureRemoteCuaCommand(), { timeoutMs: 15_000 }).catch(() => null);
   const joinUrl = await mintDesktopUrl(cfg, box.id);
+  if (!joinUrl) throw new Error("box desktop link could not be created");
   claimOccupant(box.id, box.name, botId);
   return { joinUrl, state: ready.state ?? null };
 }
@@ -351,11 +352,10 @@ export async function sleepBox(cfg: AppConfig, botId: string) {
   if (!box) throw new Error("no computer for this bot");
   const occupant = currentOccupant(box.id);
   if (occupant && occupant.botId !== botId) {
-    const minutesLeft = Math.max(1, Math.ceil((OCCUPANT_TTL_MS - (Date.now() - occupant.since)) / 60_000));
-    throw new Error(
-      `this cloud computer is pooled with another bot that is still active — try again in about ${minutesLeft}m, ` +
-        `or sooner once that bot's session ends`,
-    );
+    // Product copy per Designer review on #445: no pool/TTL/bot-id jargon in
+    // the banner — occupant + TTL stay diagnostic (hover, Sentry), same
+    // sentence shape as the VPS backend's own busy/active-thread refusal.
+    throw new Error("Someone else is using this computer.  Try Sleep again after that session ends.");
   }
   // Ask the browser's oldest (main) process to exit before the provider
   // snapshots the disk. This gives Chrome a chance to flush cookies and

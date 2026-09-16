@@ -1,6 +1,8 @@
 import { track } from "@/lib/analytics";
 import {
   availableLabel,
+  installBlockedReason,
+  installBlockedReasonDetail,
   mayUseLegacyLocalUpdate,
   runningLabel,
   updateSource,
@@ -129,9 +131,16 @@ function UpdateButton() {
   const harnessStatus = source === "harness" ? local.status : null;
   const harnessRunning = harnessStatus?.running ?? null;
   const harnessAvailable = harnessStatus?.available ?? null;
-  // a check that found nothing lands back on idle — acknowledge it for 3s
+  // a check that found nothing lands back on idle — acknowledge it for 3s.
+  // Only a check that actually SUCCEEDED, though: a failed one also leaves
+  // nothing available, and a green tick then answers a comparison that never
+  // happened — which is the exact false "up to date" the harness answers 502
+  // to prevent.  `local.error` already folds in the harness's own
+  // `checkError`; both are named so neither can be lost to a later change.
+  const checkFailed = Boolean(local.error) || Boolean(harnessStatus?.checkError);
   const upToDate = source === "harness"
-    ? Boolean(checkedAt) && !harnessAvailable && !harnessRunning && Date.now() - checkedAt < 3000
+    ? Boolean(checkedAt) && !checkFailed && !harnessAvailable && !harnessRunning
+      && Date.now() - checkedAt < 3000
     : Boolean(checkedAt) && (!s || s.status === "idle") && Date.now() - checkedAt < 3000;
   useEffect(() => {
     if (!upToDate) return;
@@ -142,39 +151,54 @@ function UpdateButton() {
 
   if (harnessStatus) {
     const busy = local.busy !== null || Boolean(harnessRunning);
+    // An install affordance that cannot install.  The button used to fall
+    // through to a plain check whenever `canRun` was false — a different
+    // action under the same label, with no install, no error and no icon
+    // change, so it read as dead.  It says why instead, and stays down.
+    const blockedReason = installBlockedReason(harnessStatus);
+    const blockedReasonDetail = installBlockedReasonDetail(harnessStatus);
     const label = harnessRunning
       ? runningLabel(harnessRunning)
       : harnessAvailable
-        ? `${availableLabel(harnessStatus)} — install`
+        ? `${availableLabel(harnessStatus)} — ${blockedReason ?? "install"}`
         : upToDate
           ? "You're up to date"
           : "Check for Updates";
+    // The harness's own diagnostic sentence behind a mapped reason, for the
+    // hover only — the label above stays short.  Falls back to the label
+    // itself when there is nothing extra to say.
+    const tooltip = harnessAvailable && blockedReasonDetail
+      ? `${availableLabel(harnessStatus)} — ${blockedReasonDetail}`
+      : label;
     return (
-      <button
-        onClick={() => {
-          if (harnessRunning) return;
-          if (harnessAvailable && harnessStatus.capabilities.canRun) return void local.install();
-          setCheckedAt(Date.now());
-          void local.check();
-        }}
-        disabled={busy || !harnessStatus.capabilities.canCheck}
-        title={label}
-        aria-label={label}
-        className="relative flex size-10 items-center justify-center rounded-md text-accent hover:bg-raised disabled:opacity-60"
-      >
-        {busy ? (
-          <Loader2 size={18} className="animate-spin" />
-        ) : upToDate ? (
-          <Check size={18} />
-        ) : harnessAvailable ? (
-          <ArrowDownToLine size={18} />
-        ) : (
-          <RefreshCw size={18} />
-        )}
-        {harnessAvailable && !harnessRunning && (
-          <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-accent" />
-        )}
-      </button>
+      // The title rides on the wrapper: a disabled button is not hovered, so
+      // its own tooltip never appears, and the reason has to be readable.
+      <span className="inline-flex" title={tooltip}>
+        <button
+          onClick={() => {
+            if (harnessRunning) return;
+            if (harnessAvailable) return void local.install();
+            setCheckedAt(Date.now());
+            void local.check();
+          }}
+          disabled={busy || blockedReason !== null || !harnessStatus.capabilities.canCheck}
+          aria-label={label}
+          className="relative flex size-10 items-center justify-center rounded-md text-accent hover:bg-raised disabled:opacity-60"
+        >
+          {busy ? (
+            <Loader2 size={18} className="animate-spin" />
+          ) : upToDate ? (
+            <Check size={18} />
+          ) : harnessAvailable ? (
+            <ArrowDownToLine size={18} />
+          ) : (
+            <RefreshCw size={18} />
+          )}
+          {harnessAvailable && !harnessRunning && (
+            <span className="absolute right-1.5 top-1.5 size-2 rounded-full bg-accent" />
+          )}
+        </button>
+      </span>
     );
   }
 

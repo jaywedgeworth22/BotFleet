@@ -27,7 +27,9 @@ import { useUpdaterState } from "@/lib/updater";
 import {
   availableLabel,
   idleLabel,
+  installBlockedReason,
   installedLabel,
+  lastRunDetail,
   lastRunLabel,
   runningLabel,
   updateSource,
@@ -401,12 +403,22 @@ function UpdatesRow() {
         ? runningLabel(running)
         : (availableLabel(status) ?? idleLabel(status))
       : null;
+  // Why Install Update is down.  The harness ships a reason with every
+  // refusal it can see coming, and no surface rendered one — so a card with an
+  // update on it and no button gave no clue what to do about it.
+  const blockedReason = source === "harness" ? installBlockedReason(status) : null;
   const subtitle =
     source === "harness" && status
-      ? `Installed ${installedLabel(status)}.${"\u00A0 "}${harnessLine}`
+      ? `Installed ${installedLabel(status)}.${"\u00A0 "}${harnessLine}${blockedReason ? `.${"\u00A0 "}${blockedReason}` : ""}`
       : `${feedLabel}${"\u00A0 "}Auto-checks at most once per 6 hours;${"\u00A0 "}you can manually check any time if an update is available.`;
   const lastRun = source === "harness" ? lastRunLabel(status?.lastRun ?? null) : null;
-  const canInstall = Boolean(status?.capabilities.canRun && status.available) && !running;
+  // The updater's own message for that run — a hover only, never inline.
+  const lastRunMessage = source === "harness" ? lastRunDetail(status?.lastRun ?? null) : null;
+  // Shown whenever there is something to install, disabled when this Mac may
+  // not: a button that is merely down beside a sentence saying why beats a
+  // button that is not there at all.
+  const hasUpdate = source === "harness" && Boolean(status?.available) && !running;
+  const newCommits = source === "harness" ? (status?.available?.commits ?? []) : [];
 
   return (
     <Card title="Updates" subtitle={subtitle}>
@@ -440,7 +452,20 @@ function UpdatesRow() {
             Automatic update preference was not saved.{"\u00A0 "}{saveError}
           </div>
         )}
-        {lastRun && <div className="max-w-sm text-right text-[12px] text-ink-secondary">{lastRun}</div>}
+        {newCommits.length > 0 && (
+          <ul className="max-w-sm text-right text-[12px] text-ink-secondary">
+            {newCommits.slice(0, 5).map((commit) => (
+              <li key={commit.sha} className="truncate" title={commit.subject}>
+                {commit.subject}
+              </li>
+            ))}
+          </ul>
+        )}
+        {lastRun && (
+          <div className="max-w-sm text-right text-[12px] text-ink-secondary" title={lastRunMessage ?? undefined}>
+            {lastRun}
+          </div>
+        )}
         {local.error && (
           <div role="alert" className="max-w-sm text-right text-[12px] text-danger">
             {local.error}
@@ -455,10 +480,10 @@ function UpdatesRow() {
             >
               {local.busy === "check" ? "Checking…" : "Check for Updates"}
             </button>
-            {canInstall && (
+            {hasUpdate && (
               <button
                 onClick={() => void local.install()}
-                disabled={local.busy !== null}
+                disabled={local.busy !== null || blockedReason !== null}
                 className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white disabled:bg-control disabled:text-ink-secondary"
               >
                 {local.busy === "install" ? "Starting…" : "Install Update"}

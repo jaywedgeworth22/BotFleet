@@ -75,7 +75,7 @@ describe("box pool occupancy guard", () => {
 
   it("refuses to sleep a box a different bot just joined", async () => {
     await box.joinBox(cfg, botA);
-    await expect(box.sleepBox(cfg, botB)).rejects.toThrow(/pooled with another bot that is still active/);
+    await expect(box.sleepBox(cfg, botB)).rejects.toThrow(/someone else is using this computer/i);
     expect(requests.some((r) => r.path.endsWith("/stop"))).toBe(false);
   });
 
@@ -117,5 +117,54 @@ describe("box pool occupancy guard — stale claim", () => {
     await new Promise((resolve) => setTimeout(resolve, 40)); // past the 20ms TTL
     await expect(box.sleepBox(cfg, botB)).resolves.toEqual({ ok: true });
     expect(requests.some((r) => r.path.endsWith("/stop"))).toBe(true);
+  });
+});
+
+// Sentry review finding on PR #445 (ref 16797767): joinBox called
+// claimOccupant unconditionally after mintDesktopUrl, even when the provider
+// failed to mint a link — a false occupancy claim that would block a peer
+// bot's Sleep and could trigger a bogus Sentry collision report the next
+// time someone actually joined. provisionBox already guarded this; joinBox
+// now does too.
+describe("box pool occupancy guard — failed join", () => {
+  let api: Server;
+  let box: typeof import("./box.ts");
+
+  beforeAll(async () => {
+    api = createServer((req, res) => {
+      const url = new URL(req.url ?? "/", "http://box.test");
+      req.on("data", () => {});
+      req.on("end", () => {
+        res.writeHead(200, { "content-type": "application/json" });
+        if (url.pathname === "/api/box/v1/boxes") {
+          res.end(JSON.stringify({ boxes: [{ id: "shared-box-1", name: sharedPoolName, state: "ready" }] }));
+        } else if (url.pathname === "/api/box/v1/boxes/shared-box-1" && req.method === "GET") {
+          res.end(JSON.stringify({ ok: true, box: { id: "shared-box-1", name: sharedPoolName, state: "ready" } }));
+        } else if (url.pathname.endsWith("/desktop")) {
+          // Simulate the provider never producing a desktop link.
+          res.end(JSON.stringify({ ok: true }));
+        } else if (url.pathname.endsWith("/commands")) {
+          res.end(JSON.stringify({ exitCode: 0, stdout: "", stderr: "" }));
+        } else {
+          res.end(JSON.stringify({ ok: true }));
+        }
+      });
+    });
+    await new Promise<void>((resolve) => api.listen(0, "127.0.0.1", resolve));
+    const port = (api.address() as any).port;
+    vi.stubEnv("OMB_BOX_API", `http://127.0.0.1:${port}/api/box/v1`);
+    vi.resetModules();
+    box = await import("./box.ts");
+  });
+
+  afterAll(async () => {
+    vi.unstubAllEnvs();
+    await new Promise<void>((resolve) => api.close(() => resolve()));
+  });
+
+  it("does not claim occupancy when mintDesktopUrl fails to return a link", async () => {
+    await expect(box.joinBox(cfg, botA)).rejects.toThrow(/desktop link could not be created/);
+    const status = await box.boxStatus(cfg, botB);
+    expect(status.box?.sharedWithBotId).toBeNull();
   });
 });

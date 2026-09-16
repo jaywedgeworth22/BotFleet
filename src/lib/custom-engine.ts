@@ -254,9 +254,45 @@ export function isCustomEngineInstance(instance: {
   return instance.instanceId !== (RESERVED_INSTANCE_ID.get(instance.driverKind) ?? instance.driverKind);
 }
 
+/** What a driver calls itself, for copy that has to name the engine behind an
+ * operator-added instance.  Mirrors each driver's own `metadata.displayName`
+ * for the kinds this file already tracks above; anything else is humanized
+ * from the kind itself (`fooAgent` → `Foo`), which is a plain, honest name
+ * rather than a claim about what that endpoint speaks. */
+const DRIVER_DISPLAY_NAME = new Map<string, string>([
+  ["openai-compat", "OpenAI-Compatible"],
+  ["minimax", "MiniMax"],
+  ["claudeAgent", "Claude"],
+  ["grokAgent", "Grok"],
+  ["dshAgent", "DeepSeek"],
+  ["deepseekAgent", "DeepSeek"],
+  ["droidAgent", "Droid"],
+  ["cursorAgent", "Cursor"],
+  ["antigravityAgent", "Antigravity"],
+  ["boxAgent", "Computer"],
+  ["kimiAgent", "Kimi"],
+  ["qwenAgent", "Qwen"],
+  ["hermesAgent", "Hermes"],
+  ["piAgent", "pi"],
+]);
+
+export function driverDisplayName(driverKind: string): string {
+  const known = DRIVER_DISPLAY_NAME.get(driverKind);
+  if (known) return known;
+  const base = driverKind.replace(/Agent$/, "").trim();
+  if (!base) return driverKind;
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
 /** Heading for the "this one was added by you" callout on an engine row.
  * It used to say "OpenAI-Compatible" unconditionally, which is wrong copy on
- * a second MiniMax connection. */
+ * a second MiniMax connection — and, since `isCustomEngineInstance` was
+ * widened to answer true for ANY unlisted driver's non-reserved instance id,
+ * wrong on every one of those too: a hand-declared second `claudeAgent`
+ * instance is not an OpenAI-compatible engine and never speaks that shape.
+ * Only `openai-compat` gets that heading; every other driver's extra instance
+ * is named after the driver it actually rides. */
 export function customEngineCalloutTitle(driverKind: string): string {
-  return driverKind === "minimax" ? "Added MiniMax Connection." : "Custom OpenAI-Compatible Engine.";
+  if (driverKind === "openai-compat") return "Custom OpenAI-Compatible Engine.";
+  return `Added ${driverDisplayName(driverKind)} Connection.`;
 }

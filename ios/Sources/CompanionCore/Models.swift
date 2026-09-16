@@ -1370,6 +1370,31 @@ public struct MacUpdateStatus: Codable, Hashable, Sendable {
     }
 }
 
+/// Parses the ISO-8601 timestamps a `MacUpdateStatus` carries as strings.
+///
+/// Both spellings have to work.  The harness stamps `checkedAt` with
+/// JavaScript's `Date.prototype.toISOString()` (`server/update-control.ts`),
+/// which always emits milliseconds — `2026-09-14T08:46:09.123Z` — while a
+/// default `ISO8601DateFormatter` rejects fractional seconds outright,
+/// because `formatOptions` defaults to `.withInternetDateTime` alone.  So
+/// the fractional spelling is tried first and the whole-second one second:
+/// an `available.json` restored from disk, a hand-written fixture, and any
+/// future harness may carry either, and a parse that fails leaves the card
+/// showing the user a raw ISO string.
+///
+/// Lives here rather than in the card so `swift test` can cover it — the
+/// app target is not built by `swift test --package-path ios` at all.
+public enum MacUpdateTimestamp {
+    public static func date(from text: String) -> Date? {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractional.date(from: text) { return date }
+        let wholeSecond = ISO8601DateFormatter()
+        wholeSecond.formatOptions = [.withInternetDateTime]
+        return wholeSecond.date(from: text)
+    }
+}
+
 /// `POST /api/update/run`'s 202 body: the run it just started, plus the
 /// status right after starting it — the phone renders progress from this
 /// without a follow-up GET.

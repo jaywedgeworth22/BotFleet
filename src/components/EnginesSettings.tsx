@@ -634,7 +634,7 @@ function AddCustomEngineModal({ onClose, onAdded }: { onClose: () => void; onAdd
             </div>
           ) : (
             <div className="rounded-xl border border-hairline/60 bg-inset px-3.5 py-2.5 text-[12px] text-ink-secondary">
-              MiniMax publishes its own model list, so there is nothing to type here.  This connection offers the
+              MiniMax publishes its own model list, so there is nothing to type here.  This connection offers the
               same models as the built-in one and bills them to the key above.
             </div>
           )}

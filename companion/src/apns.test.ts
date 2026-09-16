@@ -144,6 +144,15 @@ describe("apnsPayload", () => {
     expect(payload.tool).toBeUndefined();
   });
 
+  it("carries the harness frame's sequence, so the phone can drop the replayed twin", () => {
+    // The sidecar pushes only to a phone whose stream is down; that push
+    // wakes the app, the app reconnects and the harness replays the very
+    // frame the push was built from.  The sequence is what lets the phone
+    // recognise the replay as something it has already been shown.
+    expect(apnsPayload({ title: "t", body: "b", kind: "approval", seq: 41 }).seq).toBe(41);
+    expect(apnsPayload({ title: "t", body: "b", kind: "approval" }).seq).toBeUndefined();
+  });
+
   it("stamps an approval as time-sensitive, top-ranked, and actionable", () => {
     const { aps } = apnsPayload({ title: "Scout", body: "needs you", kind: "approval", threadId: "t1" });
     expect(aps.category).toBe("BOTFLEET_APPROVAL");
@@ -332,6 +341,47 @@ describe("sendApnsAlert", () => {
     expect(calls).toBe(3);
     expect(waits).toEqual([1000, 2000]);
     expect(result).toEqual({ ok: false, status: 503, reason: "ServiceUnavailable", attempts: 3 });
+  });
+
+  it("retries a thrown fetch inside the attempt budget, the same as a 503", async () => {
+    // A reset connection, a DNS blip, a Wi-Fi drop — the most common
+    // transient failure on a home link, and the only one the status ladder
+    // cannot see.  Before this it escaped on attempt 1 and the alert was
+    // gone, while a 503 got three tries.
+    const { waits, sleep } = recordingSleep();
+    let calls = 0;
+    const result = await sendApnsAlert(
+      testConfig(),
+      "aa".repeat(32),
+      { title: "Scout", body: "needs approval" },
+      {
+        sleep,
+        fetchImpl: async () => {
+          calls += 1;
+          if (calls < 3) throw new TypeError("fetch failed");
+          return new Response("", { status: 200 });
+        },
+      },
+    );
+    expect(result).toEqual({ ok: true, status: 200, attempts: 3 });
+    expect(waits).toEqual([1000, 2000]);
+  });
+
+  it("reports a transport failure only once the ladder is spent", async () => {
+    const { waits, sleep } = recordingSleep();
+    const result = await sendApnsAlert(
+      testConfig(),
+      "aa".repeat(32),
+      { title: "Scout", body: "needs approval" },
+      {
+        sleep,
+        fetchImpl: async () => {
+          throw new Error("ECONNRESET");
+        },
+      },
+    );
+    expect(result).toEqual({ ok: false, status: 0, reason: "SendFailed", attempts: 3 });
+    expect(waits).toEqual([1000, 2000]);
   });
 
   it("does not retry a 400 — the same request fails the same way", async () => {
@@ -991,6 +1041,222 @@ describe("watchHarnessNotifications", () => {
     expect(health.keyRejected).toBeNull();
     expect(health.configured).toBe(true);
   });
+
+  it("forwards the harness frame's sequence number to the alert", async () => {
+    const seqs: (number | undefined)[] = [];
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "offline", token: "bb".repeat(32) }],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(
+          `data: ${JSON.stringify({
+            kind: "notify",
+            seq: 77,
+            notification: { kind: "approval", title: "Scout", body: "done", threadId: "t1", botId: "b1" },
+          })}\n\n`,
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        ),
+      send: async (_config, _token, alert) => {
+        seqs.push(alert.seq);
+        return { ok: true, status: 200, attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (seqs.length === 0 && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(seqs[0]).toBe(77);
+  });
+
+  it("keeps a key-faulted phone's queue intact and restarts it when the key comes back", async () => {
+    // Two findings in one sequence.  The drain used to shift the next alert
+    // off the lane BEFORE asking whether a key was usable, so the alert
+    // queued behind the send that faulted the key was discarded — unsent,
+    // unqueued and uncounted.  And nothing restarted a queue the fault left
+    // behind: only a later notification for that same phone would, so a
+    // blocking approval arrived hours late or not at all.
+    const gate = deferred();
+    const delivered: string[] = [];
+    let stamp = "key-v1";
+    const frames = ["one", "two", "three"].map((body) => notifyFrameWithBody("approval", body)).join("");
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "phone", token: "aa".repeat(32) }],
+      loadConfig: () => testConfig(),
+      keyStamp: () => stamp,
+      keyRecheckMs: 10,
+      fetchImpl: async () =>
+        new Response(frames, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async (_config, _token, alert) => {
+        delivered.push(alert.body);
+        if (delivered.length > 1) return { ok: true, status: 200, attempts: 1 };
+        gate.started = true;
+        await gate.promise;
+        return { ok: false, status: 403, reason: "InvalidProviderToken", attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (!gate.started && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // Long enough for the reader to hand both remaining frames to the queue
+    // behind the still-unfinished first send.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    gate.resolve();
+    // The fault lands, the key is replaced, and the queue has to notice on
+    // its own — no further notification arrives for this phone.
+    while (watch.health().keyRejected === null && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    stamp = "key-v2";
+    const rotated = Date.now();
+    // Well inside the four-second stream retry, so a reconnect cannot be
+    // what delivers these.
+    while (delivered.length < 3 && Date.now() - rotated < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(delivered.slice(0, 3)).toEqual(["one", "two", "three"]);
+    expect(watch.health().dropped).toBe(0);
+  });
+
+  it("treats a key rewritten with the same bytes as the same key, not a rotation", async () => {
+    // A secrets sync or a backup restore rewrites the .p8 with identical
+    // contents: the file stamp changes and so does the config object, but
+    // the KEY does not.  Comparing objects rather than keys read Apple's
+    // verdict on the key still in use as a verdict on a key already
+    // replaced, waved it through, and went on signing with a key Apple
+    // refuses while the health page still said pushes were on.
+    const p8 = testP8();
+    const gate = deferred();
+    let stamp = "key-a";
+    let sends = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "phone", token: "aa".repeat(32) }],
+      // A fresh object on every load, always the same key material.
+      loadConfig: () => testConfig({ p8 }),
+      keyStamp: () => stamp,
+      keyRecheckMs: 10,
+      fetchImpl: async () =>
+        new Response(notifyFrame("approval"), {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+      send: async () => {
+        sends += 1;
+        gate.started = true;
+        await gate.promise;
+        return { ok: false, status: 403, reason: "InvalidProviderToken", attempts: 1 };
+      },
+    });
+    const started = Date.now();
+    while (!gate.started && Date.now() - started < 2000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    // Rewrite the file under the in-flight request, and give the key timer
+    // time to reload it before that request comes back refused.
+    stamp = "key-a-rewritten";
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    gate.resolve();
+    const resolved = Date.now();
+    // Bounded well inside the four-second stream retry: the verdict has to
+    // come from THIS send, not from a reconnect signing with the reloaded
+    // config, which would read as a fault either way.
+    while (watch.health().keyRejected === null && Date.now() - resolved < 1000) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    watch.stop();
+    expect(sends).toBe(1);
+    expect(watch.health().keyRejected).toBe("InvalidProviderToken");
+    expect(watch.health().configured).toBe(false);
+  });
+
+  it("survives a forgetToken that throws instead of taking the sidecar down", async () => {
+    // `forgetToken` writes the device registry to disk.  It runs outside the
+    // send's own guard, on a chain started with `void`, so on a full or
+    // read-only disk it used to become an unhandled rejection — and Node's
+    // default `--unhandled-rejections=throw` turns that into an exit of the
+    // proxy every paired phone depends on.
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    const delivered: string[] = [];
+    const frames = notifyFrameWithBody("approval", "one") + notifyFrameWithBody("approval", "two");
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [{ deviceId: "phone", token: "aa".repeat(32) }],
+      config: testConfig(),
+      fetchImpl: async () =>
+        new Response(frames, { status: 200, headers: { "content-type": "text/event-stream" } }),
+      send: async (_config, _token, alert) => {
+        delivered.push(alert.body);
+        return delivered.length === 1
+          ? { ok: false, status: 410, reason: "Unregistered", attempts: 1 }
+          : { ok: true, status: 200, attempts: 1 };
+      },
+      forgetToken: () => {
+        throw new Error("device registry write failed");
+      },
+    });
+    try {
+      const started = Date.now();
+      while (delivered.length < 2 && Date.now() - started < 2000) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      watch.stop();
+      // Give any rejection a turn of the loop to surface.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+    expect(delivered).toEqual(["one", "two"]);
+    expect(rejections).toEqual([]);
+  });
+
+  it("leaves the cursor alone on a resumed stream, so the replay is not skipped", async () => {
+    // On a RESUMED stream the harness's hello cursor is the tip and the gap
+    // is replayed after it.  Adopting it there jumps the sidecar past
+    // everything it missed the moment the link dies before a replayed frame
+    // is read — those approvals are then never pushed, though the harness
+    // still holds them.  The iOS client makes exactly this distinction.
+    const cursors: (string | null)[] = [];
+    let connections = 0;
+    const watch = watchHarnessNotifications({
+      harnessPort: 1,
+      connectedIds: () => [],
+      tokensForDisconnected: () => [],
+      config: testConfig(),
+      fetchImpl: async (_input, init) => {
+        connections += 1;
+        cursors.push(new Headers(init?.headers).get("last-event-id"));
+        const hello =
+          connections === 1
+            ? { kind: "hello", cursor: "stream-1:30", resumed: false }
+            : { kind: "hello", cursor: "stream-1:100", resumed: true };
+        return new Response(`data: ${JSON.stringify(hello)}\n\n`, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        });
+      },
+    });
+    const started = Date.now();
+    while (connections < 3 && Date.now() - started < 16_000) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    watch.stop();
+    expect(cursors[0]).toBeNull();
+    // Cold: the hello IS the baseline, so take it.
+    expect(cursors[1]).toBe("stream-1:30");
+    // Resumed: 31..100 are still ours to receive.
+    expect(cursors[2]).toBe("stream-1:30");
+  }, 20_000);
 
   it("stays off, and stays quiet, when the sender is pinned off", () => {
     const watch = watchHarnessNotifications({

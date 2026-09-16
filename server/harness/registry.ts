@@ -5,7 +5,7 @@
 // compatible — do not remove it); dispose tears an instance down without
 // touching its siblings.
 import { lastAntigravityQuotaSnapshot, quotaModelsFromSnapshot } from "../antigravity-quota.ts";
-import { resolveMinimaxCredentials } from "../drivers/minimax.ts";
+import { decodeMinimaxConfig, resolveMinimaxCredentials, type MinimaxConfig } from "../drivers/minimax.ts";
 import { findCliCandidates } from "../env-path.ts";
 import { getCachedLocalMiniMaxConfig, getMiniMaxBalance } from "../minimax-balance.ts";
 import { quotaCooldowns } from "../model-fallback.ts";
@@ -46,6 +46,32 @@ const RESERVED_INSTANCE_ID = new Map<string, InstanceId>([
 
 export function isCustomInstance(driverKind: string, instanceId: InstanceId): boolean {
   return instanceId !== (RESERVED_INSTANCE_ID.get(driverKind) ?? driverKind);
+}
+
+/** MiniMax's global-region API host — the value `decodeMinimaxConfig` falls
+ *  back to, and the one `MinimaxDriver.create()` compares against when it
+ *  decides whether ~/.mmx/config.json's host outranks the instance's own.
+ *  That driver keeps its copy private (the file is a keep-out for this
+ *  change), so this mirror is pinned against the driver's own behavior by
+ *  registry-minimax-url.test.ts rather than left to drift. */
+export const MINIMAX_DEFAULT_URL = "https://api.minimax.io/v1";
+
+/** The host MiniMax turns for `instanceId` actually go to, reproducing
+ *  `MinimaxDriver.create()`'s own precedence exactly: ~/.mmx/config.json's
+ *  host (written by `mmx auth login`, machine-wide) is a workspace-wide
+ *  DEFAULT, so it reaches only the reserved instance and only when nothing
+ *  chose a host.
+ *
+ *  Whether a host was chosen is answered by the decoded config's PROVENANCE,
+ *  never by comparing its url to MINIMAX_DEFAULT_URL — the driver's own gate
+ *  was corrected the same way, and for the same reason: "nothing configured"
+ *  and "pinned to the global host in Settings" resolve to the identical
+ *  string, so a value comparison sent a reserved instance that deliberately
+ *  configured the global url off to whatever region ~/.mmx names.  The two
+ *  must agree, or the balance lookup asks a host the turns never bill. */
+export function resolveMinimaxApiUrl(instanceId: InstanceId, config: MinimaxConfig, localUrl: string): string {
+  const isReservedInstance = instanceId === "minimax";
+  return isReservedInstance && config.urlSource === "default" ? localUrl : config.url;
 }
 
 export interface ShadowInstance {
@@ -120,14 +146,19 @@ export class ProviderRegistry {
   private cliByInstance = new Map<InstanceId, string>();
   private fullAutoByInstance = new Map<InstanceId, boolean>();
   private enabledByInstance = new Map<InstanceId, boolean>();
-  /** This instance's own environment overrides and resolved config.url —
-   *  the same inputs MinimaxDriver.create() itself receives — captured at
-   *  registration so describeEntry's balance lookup can resolve a SECOND
-   *  MiniMax connection's own key/host instead of always falling back to
-   *  the reserved instance's (resolveMinimaxCredentials's global
-   *  process.env/~/.mmx/config.json fallback has no instance concept of
-   *  its own). Only ever set for driver "minimax". */
-  private minimaxContextByInstance = new Map<InstanceId, { environment: Record<string, string>; url: string | undefined; rawUrl: string | undefined }>();
+  /** The key and host this instance's TURNS use, resolved ONCE at
+   *  registration from exactly the inputs MinimaxDriver.create() receives.
+   *  Resolved once rather than per describe() on purpose: the driver
+   *  captures its own key and url in a closure at create() and never
+   *  re-reads them, so a balance lookup that re-resolved them live would
+   *  report one account's quota while every turn billed another the moment
+   *  `mmx auth login --api-key …` rewrote ~/.mmx/config.json mid-session —
+   *  and `minimaxInstanceCapped` feeds `quota.capped`, so that mismatch
+   *  removed a usable engine from auto-fallback, or kept an exhausted one
+   *  in it.  reloadInstance() re-captures, which is the same moment the
+   *  driver itself picks a config change up.  Only ever set for driver
+   *  "minimax". */
+  private minimaxContextByInstance = new Map<InstanceId, { apiKey: string; apiUrl: string }>();
   private driversByKind: Map<string, AnyProviderDriver>;
 
   constructor(drivers: readonly AnyProviderDriver[]) {
@@ -164,23 +195,26 @@ export class ProviderRegistry {
       else this.cliByInstance.delete(instanceId);
       const enabled = entry.enabled !== false;
       this.enabledByInstance.set(instanceId, enabled);
-      // Same inputs MinimaxDriver.create() below receives — retained here
-      // (rather than read back off `live`, which exposes no such getter)
-      // so describeEntry's balance lookup resolves THIS instance's own
-      // key/host instead of only ever the reserved instance's.
+      // Same inputs MinimaxDriver.create() below receives, resolved the
+      // same way and at the same moment — retained here (rather than read
+      // back off `live`, which exposes no such getter) so describeEntry's
+      // balance lookup reports the account this instance's turns actually
+      // bill.  The instance's own config goes through the driver's exported
+      // decoder rather than `config` above, because `config` comes from
+      // whichever driver object is registered for the kind and only the
+      // real decoder is guaranteed to fill `url` in.
       if (entry.driver === "minimax") {
-        const url = typeof (config as { url?: unknown } | undefined)?.url === "string"
-          ? (config as { url: string }).url
-          : undefined;
-        // The RAW url as well as the decoded one: decodeConfig always fills
-        // `url` in, so the decoded value alone cannot say whether THIS
-        // instance actually chose a host or simply inherited the default —
-        // and that is exactly the distinction the driver's own host
-        // precedence turns on (see describeEntry's balance lookup).
-        const rawUrl = typeof (entry.config as { url?: unknown } | undefined)?.url === "string"
-          ? ((entry.config as { url: string }).url.trim() || undefined)
-          : undefined;
-        this.minimaxContextByInstance.set(instanceId, { environment: entry.environment ?? {}, url, rawUrl });
+        const local = getCachedLocalMiniMaxConfig();
+        const decoded = decodeMinimaxConfig(entry.config);
+        this.minimaxContextByInstance.set(instanceId, {
+          // resolveMinimaxCredentials's third argument restricts the
+          // process.env / ~/.mmx/config.json fallback to the reserved
+          // "minimax" instance, which is what stops a second MiniMax
+          // connection silently inheriting the reserved instance's key —
+          // and therefore its quota — when its own key is unset.
+          apiKey: resolveMinimaxCredentials(entry.environment ?? {}, local, instanceId),
+          apiUrl: resolveMinimaxApiUrl(instanceId, decoded, local.url),
+        });
       } else {
         this.minimaxContextByInstance.delete(instanceId);
       }
@@ -381,31 +415,14 @@ export class ProviderRegistry {
         let minimaxSummary: NonNullable<ProviderSnapshot["quota"]>["minimax"] | undefined;
         let minimaxInstanceCapped = false;
         if (inst.driverKind === "minimax") {
+          // The key and host this instance's turns bill, captured at
+          // loadEntry (see minimaxContextByInstance) rather than re-resolved
+          // here: the driver closes over its own copy at create(), so
+          // reading ~/.mmx/config.json live meant an `mmx auth login`
+          // mid-session moved the quota reading to a different account than
+          // the turns — and this reading is what publishes `quota.capped`.
           const ctx = this.minimaxContextByInstance.get(inst.instanceId);
-          const local = getCachedLocalMiniMaxConfig();
-          // Same host the instance's TURNS go to: MinimaxDriver.create()
-          // (server/drivers/minimax.ts:220) swaps its decoded config.url for
-          // `mmx auth login`'s ~/.mmx/config.json host ONLY while nothing
-          // has chosen a host — neither this instance's own config.url nor
-          // MINIMAX_BASE_URL. Reproduced from those two inputs because the
-          // driver's DEFAULT_URL constant is private to that file (a
-          // keep-out), so an instance pointed at the China region, or a
-          // second instance with its own host, is balance-checked where it
-          // actually bills instead of at the global default.
-          const envBaseUrl = process.env.MINIMAX_BASE_URL?.trim();
-          const instanceUrl = ctx?.url ?? envBaseUrl ?? local.url;
-          const hostWasChosen = Boolean(ctx?.rawUrl) || Boolean(envBaseUrl);
-          const balanceUrl = hostWasChosen ? instanceUrl : (local.url || instanceUrl);
-          // resolveMinimaxCredentials's third arg restricts the
-          // process.env / ~/.mmx/config.json fallback to the reserved
-          // "minimax" instance only — passing inst.instanceId closes the
-          // quota-bleed gap a second MiniMax instance would otherwise have
-          // (it no longer silently inherits the reserved instance's key
-          // and therefore its quota when its own key is unset; ctx?.environment
-          // already covers the common case where the second instance has its
-          // own key/url).
-          const key = resolveMinimaxCredentials(ctx?.environment ?? {}, local, inst.instanceId);
-          const balance = await getMiniMaxBalance(key, balanceUrl);
+          const balance = await getMiniMaxBalance(ctx?.apiKey, ctx?.apiUrl);
           const general = balance.models?.general;
           // A pay-as-you-go account with an empty wallet has no "general"
           // pool at all (server/minimax-balance.ts never populates `models`
@@ -485,15 +502,32 @@ export class ProviderRegistry {
         const windowsLabel = modelsWithLabel.length > 0
           ? modelsWithLabel.find((m) => m.windowsLabel?.includes("/"))?.windowsLabel ?? modelsWithLabel[0].windowsLabel
           : undefined;
+        // The driver's OWN verdict, merged in rather than replaced.  A
+        // driver that probed its API and got a 402/429 back reports
+        // `quota: { capped: true }` off that probe (MiniMax does), and this
+        // block used to assign straight over it — so a blocked account whose
+        // balance endpoint answered "plenty left", or did not answer at all,
+        // published `capped: false`, rendered the green "Available" chip and
+        // stayed in eligibleAutoFallbackChain.  Everything below only ever
+        // ADDS a reason to be capped; nothing here can clear one the driver
+        // already found.
+        const driverQuota = snapshot.quota;
+        const mergedModels = { ...driverQuota?.models, ...models };
         const allCatalogCapped =
-          catalogIds.length > 0 && catalogIds.every((id) => models[id]?.capped === true);
-        if (wildcard || Object.keys(models).length > 0 || windowsLabel || minimaxSummary) {
+          catalogIds.length > 0 && catalogIds.every((id) => mergedModels[id]?.capped === true);
+        if (wildcard || Object.keys(mergedModels).length > 0 || windowsLabel || minimaxSummary) {
           snapshot.quota = {
-            capped: Boolean(wildcard) || allCatalogCapped || minimaxInstanceCapped,
-            resetsAt: wildcard?.resetsAt,
-            error: wildcard?.error,
+            ...driverQuota,
+            capped: Boolean(wildcard)
+              || allCatalogCapped
+              || minimaxInstanceCapped
+              || driverQuota?.capped === true,
+            // A live cooldown's own reset/error is the more specific
+            // signal; the driver's is carried over when there is none.
+            resetsAt: wildcard?.resetsAt ?? driverQuota?.resetsAt,
+            error: wildcard?.error ?? driverQuota?.error,
             ...(windowsLabel ? { windowsLabel } : {}),
-            ...(Object.keys(models).length > 0 ? { models } : {}),
+            ...(Object.keys(mergedModels).length > 0 ? { models: mergedModels } : {}),
             ...(minimaxSummary ? { minimax: minimaxSummary } : {}),
           };
         }

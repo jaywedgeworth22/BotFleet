@@ -25,6 +25,14 @@ final class TestFlightUpdateMonitor: ObservableObject {
     private enum Keys {
         static let lastCheckedAt = "companion.testflight.lastCheckedAt"
         static let dismissedBuild = "companion.testflight.dismissedBuild"
+        /// The last offer a check actually found.  Persisted for the same
+        /// reason the dismissal is: the throttle stamp survives a relaunch,
+        /// so without this an undismissed banner vanished for up to an hour
+        /// after one — the fresh monitor started with `available == nil` and
+        /// `checkIfDue` returned at the throttle guard before it could ever
+        /// find out otherwise.
+        static let candidateBuild = "companion.testflight.candidateBuild"
+        static let candidateVersion = "companion.testflight.candidateVersion"
     }
 
     init(
@@ -61,16 +69,26 @@ final class TestFlightUpdateMonitor: ObservableObject {
     /// about, and a failed check today does not block one at the next
     /// opportunity.
     func checkIfDue(now: Date = Date()) async {
+        // Before the guard, not after: a throttled launch has to render the
+        // offer it already knows about rather than silently showing nothing.
+        restorePersistedCandidate()
         let last = defaults.object(forKey: Keys.lastCheckedAt) as? Date
         guard TestFlightCheckThrottle.isDue(lastCheckedAt: last, now: now) else { return }
+        // Stamped before the fetch so launch plus the immediate
+        // `.active` scene phase collapse to one request, and rolled back in
+        // the catch below so a failure costs nothing.
         defaults.set(now, forKey: Keys.lastCheckedAt)
         do {
             let manifest = try await fetcher.fetch()
             guard let candidate = TestFlightUpdateCheck.availableUpdate(in: manifest, running: running) else {
                 available = nil
+                defaults.removeObject(forKey: Keys.candidateBuild)
+                defaults.removeObject(forKey: Keys.candidateVersion)
                 return
             }
             available = candidate
+            defaults.set(candidate.build, forKey: Keys.candidateBuild)
+            defaults.set(candidate.marketingVersion, forKey: Keys.candidateVersion)
             // Restore the persisted dismissal rather than only ever
             // clearing it: a fresh monitor (every relaunch) starts with
             // `dismissed == false` regardless of what was on record, so
@@ -85,8 +103,43 @@ final class TestFlightUpdateMonitor: ObservableObject {
             )
         } catch {
             // offline, DNS hiccup, GitHub Pages blip — none of it is worth
-            // surfacing for a feature nobody asked to see right now
+            // surfacing for a feature nobody asked to see right now.  It is
+            // worth un-spending the hour, though: a check that learned
+            // nothing must not be the reason the next foreground does not
+            // try, which is what the comment above promises and what
+            // stamping before the fetch would otherwise break.
+            if let last {
+                defaults.set(last, forKey: Keys.lastCheckedAt)
+            } else {
+                defaults.removeObject(forKey: Keys.lastCheckedAt)
+            }
         }
+    }
+
+    /// Puts the last offer a check found back in `available`, so a relaunch
+    /// inside the throttle window still shows it.
+    ///
+    /// Re-checked against the running build rather than trusted: this phone
+    /// may have installed that very build since, in which case the record is
+    /// stale and belongs gone.  The dismissal comparison runs here too, for
+    /// the same reason it runs after a live fetch — a fresh monitor has no
+    /// in-memory memory of what was closed.
+    private func restorePersistedCandidate() {
+        guard available == nil,
+              let build = defaults.string(forKey: Keys.candidateBuild),
+              let marketingVersion = defaults.string(forKey: Keys.candidateVersion)
+        else { return }
+        let candidate = AppBuildInfo(marketingVersion: marketingVersion, build: build)
+        guard TestFlightUpdateCheck.isNewer(candidate, than: running) else {
+            defaults.removeObject(forKey: Keys.candidateBuild)
+            defaults.removeObject(forKey: Keys.candidateVersion)
+            return
+        }
+        available = candidate
+        dismissed = TestFlightUpdateCheck.isDismissed(
+            candidateBuild: build,
+            dismissedBuild: defaults.string(forKey: Keys.dismissedBuild)
+        )
     }
 
     func dismiss() {

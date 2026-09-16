@@ -9,8 +9,12 @@ import {
   bannerIsActionable,
   fetchUpdateStatus,
   idleLabel,
+  installBlockedReason,
+  installBlockedReasonDetail,
   installedLabel,
   isUpdateStatus,
+  keepLocalError,
+  lastRunDetail,
   lastRunLabel,
   mayUseLegacyLocalUpdate,
   requestUpdateCheck,
@@ -213,11 +217,31 @@ describe("what it says", () => {
     expect(lastRunLabel({ ...base, outcome: "verified" })).toBe("The last update installed and verified.");
     expect(lastRunLabel({ ...base, outcome: "rolled-back" })).toBe("The last update failed and rolled back.");
     expect(lastRunLabel({ ...base, outcome: "refused" })).toBe("The last update was refused.");
-    expect(lastRunLabel({ ...base, outcome: "failed" })).toBe("The last update failed.");
+    expect(lastRunLabel({ ...base, outcome: "failed" })).toBe("The last update did not finish.");
     expect(lastRunLabel(null)).toBeNull();
-    // The updater's own sentence follows the headline, gapped.
-    expect(lastRunLabel({ ...base, outcome: "failed", message: "Target is not reachable from origin/main." }))
-      .toBe("The last update failed.\u00a0 Target is not reachable from origin/main.");
+  });
+
+  it("adds when a run finished, and keeps the updater's own message off the card", () => {
+    const finishedAt = "2026-09-13T18:04:00.000Z";
+    const when = new Date(finishedAt)
+      .toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+    const run = {
+      runId: "r",
+      startedAt: "",
+      finishedAt,
+      outcome: "failed" as const,
+      message: "bash update-botfleet-mac.mjs: pnpm package:mac:local failed with exit 1",
+    };
+    // The headline gets a "when", never the updater's own sentence.
+    expect(lastRunLabel(run)).toBe(`The last update did not finish.\u00a0 ${when}`);
+    // The raw message lives here instead, for a hover or a details view.
+    expect(lastRunDetail(run)).toBe(run.message);
+    expect(lastRunDetail({ ...run, message: "" })).toBeNull();
+    expect(lastRunDetail(null)).toBeNull();
+    // A malformed or missing timestamp falls back to the headline alone,
+    // rather than printing "Invalid Date".
+    expect(lastRunLabel({ ...run, finishedAt: "not a date" })).toBe("The last update did not finish.");
+    expect(lastRunLabel({ ...run, finishedAt: "" })).toBe("The last update did not finish.");
   });
 
   it("explains an idle card without pretending it checked", () => {
@@ -244,6 +268,104 @@ describe("what it says", () => {
     // An install failure is this session's own, and outranks the older check.
     expect(visibleUpdateError("Could not start the update.", status({ checkError: reason })))
       .toBe("Could not start the update.");
+  });
+
+  it("says why Install Update is down, from the harness's own sentence", () => {
+    const busy = "BotFleet is working right now.\u00a0 The updater will not interrupt a turn in flight.";
+    const offer = { sourceCommit: NEXT, aheadBy: 2, commits: [] };
+    // Nothing to install, so nothing to explain.
+    expect(installBlockedReason(null)).toBeNull();
+    expect(installBlockedReason(status())).toBeNull();
+    expect(installBlockedReason(status({
+      capabilities: { canCheck: true, canRun: false, reasons: [busy] },
+    }))).toBeNull();
+    // An offer this Mac can take needs no sentence either.
+    expect(installBlockedReason(status({ available: offer }))).toBeNull();
+    // An offer it cannot: the card used to say "This Mac can build and
+    // install it." while the button was conditioned away, and the sidebar's
+    // install button quietly ran a check instead.
+    expect(installBlockedReason(status({
+      available: offer,
+      capabilities: { canCheck: true, canRun: false, reasons: [busy] },
+    }))).toBe(busy);
+    // A harness that refused without saying why still gets a sentence.
+    expect(installBlockedReason(status({
+      available: offer,
+      capabilities: { canCheck: true, canRun: false, reasons: [] },
+    }))).toBe("This Mac cannot install the update right now.");
+    // A run already going is described by the run, not by this.
+    expect(installBlockedReason(status({
+      available: offer,
+      running: { runId: "r", startedAt: "", step: "Building", logTail: [] },
+      capabilities: { canCheck: true, canRun: false, reasons: ["An update is already running."] },
+    }))).toBeNull();
+    // No detail for a run already in flight either.
+    expect(installBlockedReasonDetail(status({
+      available: offer,
+      running: { runId: "r", startedAt: "", step: "Building", logTail: [] },
+      capabilities: { canCheck: true, canRun: false, reasons: ["An update is already running."] },
+    }))).toBeNull();
+  });
+
+  it("maps a structural refusal to product copy, and keeps the harness's own sentence for hover", () => {
+    const offer = { sourceCommit: NEXT, aheadBy: 2, commits: [] };
+    const checkoutMissing = "The always-on checkout is not at /Users/jay/Code/BotFleet.";
+    const updaterMissing = "The updater is not installed at "
+      + "/Users/jay/Code/BotFleet/scripts/update-botfleet-mac.mjs.";
+    const updaterOutdated = "The updater in /Users/jay/Code/BotFleet predates this build."
+      + "  Run it once from a terminal to pick up the new one.";
+
+    expect(installBlockedReason(status({
+      available: offer,
+      capabilities: { canCheck: false, canRun: false, reasons: [checkoutMissing], codes: ["checkout-missing"] },
+    }))).toBe("This Mac's BotFleet folder is missing.");
+    expect(installBlockedReasonDetail(status({
+      available: offer,
+      capabilities: { canCheck: false, canRun: false, reasons: [checkoutMissing], codes: ["checkout-missing"] },
+    }))).toBe(checkoutMissing);
+
+    expect(installBlockedReason(status({
+      available: offer,
+      capabilities: { canCheck: true, canRun: false, reasons: [updaterMissing], codes: ["updater-missing"] },
+    }))).toBe("The updater is not installed on this Mac.");
+    expect(installBlockedReasonDetail(status({
+      available: offer,
+      capabilities: { canCheck: true, canRun: false, reasons: [updaterMissing], codes: ["updater-missing"] },
+    }))).toBe(updaterMissing);
+
+    expect(installBlockedReason(status({
+      available: offer,
+      capabilities: { canCheck: true, canRun: false, reasons: [updaterOutdated], codes: ["updater-outdated"] },
+    }))).toBe("This Mac's updater is out of date.  Update from this Mac once to pick up the new one.");
+    expect(installBlockedReasonDetail(status({
+      available: offer,
+      capabilities: { canCheck: true, canRun: false, reasons: [updaterOutdated], codes: ["updater-outdated"] },
+    }))).toBe(updaterOutdated);
+
+    // An older harness with no `codes` array falls back to its own sentence,
+    // unchanged — and there is nothing extra to add on hover.
+    const busy = "BotFleet is working right now.  The updater will not interrupt a turn in flight.";
+    expect(installBlockedReason(status({
+      available: offer,
+      capabilities: { canCheck: true, canRun: false, reasons: [busy] },
+    }))).toBe(busy);
+    expect(installBlockedReasonDetail(status({
+      available: offer,
+      capabilities: { canCheck: true, canRun: false, reasons: [busy] },
+    }))).toBeNull();
+  });
+
+  it("drops a failure the harness has already superseded", () => {
+    const reason = "Could not reach the update source.\u00a0 fatal: unable to access origin.";
+    // The check succeeded somewhere else — another window, or the sidebar —
+    // and the status that arrived says so.  Without this the red sentence sat
+    // next to a subtitle the successful check had already replaced.
+    expect(keepLocalError(reason, status())).toBeNull();
+    // A status that still carries the failure is not a recovery.
+    expect(keepLocalError(reason, status({ checkError: reason }))).toBe(reason);
+    // Nothing to keep is still nothing to keep.
+    expect(keepLocalError(null, status({ checkError: reason }))).toBeNull();
+    expect(keepLocalError(null, status())).toBeNull();
   });
 
   it("only floats the popup when something is worth interrupting for", () => {

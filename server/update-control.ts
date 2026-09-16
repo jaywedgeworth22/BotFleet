@@ -22,6 +22,7 @@ import {
   fstatSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   readSync,
   renameSync,
@@ -30,7 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const UPDATE_PROGRESS_SCHEMA_VERSION = 1;
@@ -50,6 +51,43 @@ const LOG_LINE_MAX = 400;
 const MAX_LISTED_COMMITS = 20;
 /** A run with no progress file this long after launch never started. */
 const LAUNCH_GRACE_MS = 120_000;
+/** A progress file no older than this is one something is still writing.
+ * Well past the longest gap between the updater's own steps — a full
+ * dependency install and a signed, notarised build both report as one step —
+ * because the cost of calling a live run dead is a second updater started on
+ * top of the first.  Staleness alone never settles a run: it is only what
+ * makes the controller ask launchd whether anything is still there. */
+const PROGRESS_STALE_MS = 10 * 60_000;
+/** How often a stalled run is asked about.  Without a floor here the poll
+ * would run `launchctl list` every couple of seconds for as long as a run
+ * stayed stalled, and a run that launchd still owns can stay stalled for a
+ * long time without being dead. */
+const STALE_PROBE_INTERVAL_MS = 60_000;
+/** Failed stages kept for forensics.  Each holds a full copy of the source and
+ * its dependencies — a few hundred megabytes — so a run that fails on every
+ * attempt fills the disk long before anyone reads the third one. */
+const KEPT_FAILED_STAGES = 3;
+/** A stage younger than this may belong to a run started outside this
+ * harness that has not written anything recognisable yet. */
+const STAGE_PRUNE_GRACE_MS = 15 * 60_000;
+/** Progress files and logs kept in the state directory's `runs` folder. */
+const KEPT_RUN_ARTIFACTS = 8;
+/** What the updater itself puts in a stage directory — the same list
+ * `scripts/update-botfleet-mac.mjs` sweeps by.  Anything else in there was
+ * put there by a person, and a person decides when it goes. */
+const KNOWN_STAGE_ENTRIES = new Set([
+  "BotFleet.app",
+  "node_modules",
+  "prepared.json",
+  "rollback",
+  "source",
+  "pending-recovery.json",
+  "credential-migration.json",
+]);
+/** A stage holding either of these is load-bearing: `prepared.json` is a
+ * build a later `apply` can still install, and `rollback` holds the verified
+ * bundle the installed app would be rolled back to. */
+const PROTECTED_STAGE_ENTRIES = new Set(["prepared.json", "rollback"]);
 
 export interface UpdateCommit {
   sha: string;
@@ -82,10 +120,25 @@ export interface UpdateLastRun {
   receiptPath?: string;
 }
 
+/** A stable handle on one entry in `UpdateCapabilities.reasons`, so a client
+ * can map a refusal to its own copy instead of matching the English
+ * sentence.  Adding one here is additive: an older desktop that has never
+ * heard of `codes` keeps reading `reasons`, which this never changes the
+ * wording of. */
+export type UpdateCapabilityCode =
+  | "not-darwin"
+  | "checkout-missing"
+  | "updater-missing"
+  | "updater-outdated"
+  | "already-running"
+  | "busy";
+
 export interface UpdateCapabilities {
   canCheck: boolean;
   canRun: boolean;
   reasons: string[];
+  /** One code per `reasons` entry, same order and length. */
+  codes: UpdateCapabilityCode[];
 }
 
 /** What `currentRuntimeReadiness()` in the harness reports: whether any turn,
@@ -149,6 +202,9 @@ export interface UpdateControlDeps {
   installed: UpdateInstalled;
   checkout: string;
   stateDirectory: string;
+  /** Where the updater stages the source it builds from.  Read here only to
+   * sweep the stages that failed runs left behind. */
+  updatesDirectory: string;
   scriptPath: string;
   label: string;
   platform: string;
@@ -156,10 +212,15 @@ export interface UpdateControlDeps {
   now: () => Date;
   git: (args: string[]) => Promise<CommandResult>;
   launch: (plan: LaunchPlan) => Promise<LaunchResult>;
+  /** A short command of this module's own — only ever `launchctl` today.  A
+   * seam so a test can watch the label being removed without a real launchd. */
+  exec: (command: string, args: string[]) => Promise<CommandResult>;
   processAlive: (pid: number) => boolean;
-  /** Whether this harness has work in flight.  The route passes its own,
-   * admission-adjusted reading when it starts a run; this one answers the
-   * status route, which holds no mutating admission of its own. */
+  /** Whether this harness has work in flight.  Both action routes pass their
+   * own, admission-adjusted reading — a POST holds a mutating admission of
+   * its own, and an answer that counted it would report every busy machine
+   * busy because of the question.  This one answers `GET /api/update/status`,
+   * which holds no admission. */
   readiness: () => RuntimeReadiness;
   /** How a state file reaches disk.  A seam rather than a detail: the
    * behaviour that matters here is what happens when it THROWS, and a test
@@ -421,13 +482,157 @@ export function runRefusal(input: {
   return null;
 }
 
+/** When this stage was created, from the `-<epoch ms>` suffix the updater
+ * gives every stage it makes.  The suffix has to be exactly thirteen digits:
+ * a hand-made directory ending in a date like `-20260912` parses as a number
+ * too, and reading it as epoch milliseconds would date that stage to 1970. */
+export function stageStamp(name: string): number | null {
+  const last = name.split("-").at(-1) ?? "";
+  return /^\d{13}$/.test(last) ? Number(last) : null;
+}
+
+export interface StageDirectoryEntry {
+  path: string;
+  name: string;
+  /** Creation time from the name, or the directory's mtime when the name
+   * carries no stamp. */
+  stamp: number;
+  /** What the stage directory contains, one level deep. */
+  names: string[];
+}
+
+/** One entry per stage directory under the updates root. */
+export function readStageDirectories(root: string): StageDirectoryEntry[] {
+  let directories: string[];
+  try {
+    directories = readdirSync(root, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => entry.name);
+  } catch {
+    // No updates root yet, or one this harness may not read.  Either way
+    // there is nothing here to sweep.
+    return [];
+  }
+  const entries: StageDirectoryEntry[] = [];
+  for (const name of directories) {
+    const path = join(root, name);
+    try {
+      entries.push({ path, name, stamp: stageStamp(name) ?? statSync(path).mtimeMs, names: readdirSync(path) });
+    } catch {
+      /* vanished or unreadable between the two calls — not ours to remove */
+    }
+  }
+  return entries;
+}
+
+/** Which abandoned stages to remove, newest kept.
+ *
+ * A stage that carries a prepared build or a rollback bundle is never
+ * touched, and neither is one holding anything the updater did not put there.
+ * What is left over is the wreckage of runs that failed: those are kept only
+ * as far back as `keep`, and only once they are old enough that no run still
+ * in flight could own them. */
+export function stagesToPrune(entries: StageDirectoryEntry[], options: {
+  keep?: number;
+  now?: number;
+  graceMs?: number;
+  protect?: string[];
+} = {}): string[] {
+  const keep = options.keep ?? KEPT_FAILED_STAGES;
+  const now = options.now ?? Date.now();
+  const graceMs = options.graceMs ?? STAGE_PRUNE_GRACE_MS;
+  const protect = options.protect ?? [];
+  const prunable = entries.filter((entry) => {
+    if (protect.includes(entry.path)) return false;
+    if (entry.names.some((name) => PROTECTED_STAGE_ENTRIES.has(name))) return false;
+    return entry.names.every((name) => KNOWN_STAGE_ENTRIES.has(name));
+  });
+  return [...prunable]
+    .sort((left, right) => right.stamp - left.stamp)
+    .slice(keep)
+    .filter((entry) => now - entry.stamp > graceMs)
+    .map((entry) => entry.path);
+}
+
+/** Sweep the stage directories a failed run left behind, and say which went.
+ * Every removal is best-effort: a stage this harness cannot delete is one it
+ * simply does not report. */
+export function pruneUpdateStages(root: string, options: Parameters<typeof stagesToPrune>[1] = {}): string[] {
+  const pruned: string[] = [];
+  for (const path of stagesToPrune(readStageDirectories(root), options)) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      pruned.push(path);
+    } catch {
+      /* in use, or not ours to remove */
+    }
+  }
+  return pruned;
+}
+
+/** Progress files and logs for runs nobody will ask about again.  Grouped by
+ * run id so a run's log and its progress file go together or not at all. */
+export function pruneRunArtifacts(runsDirectory: string, options: {
+  keep?: number;
+  protect?: string[];
+} = {}): string[] {
+  const keep = options.keep ?? KEPT_RUN_ARTIFACTS;
+  const protect = options.protect ?? [];
+  let names: string[];
+  try {
+    names = readdirSync(runsDirectory);
+  } catch {
+    return [];
+  }
+  const runs = new Map<string, { id: string; newest: number; files: string[] }>();
+  for (const name of names) {
+    const runId = name.split(".")[0] ?? "";
+    if (!runId || protect.includes(runId)) continue;
+    const path = join(runsDirectory, name);
+    let mtimeMs = 0;
+    try {
+      mtimeMs = statSync(path).mtimeMs;
+    } catch {
+      continue;
+    }
+    const group = runs.get(runId) ?? { id: runId, newest: 0, files: [] };
+    group.newest = Math.max(group.newest, mtimeMs);
+    group.files.push(path);
+    runs.set(runId, group);
+  }
+  const removed: string[] = [];
+  // Two runs can share an mtime on a fast disk.  Break the tie by id so the
+  // same files survive on every OS instead of whichever readdir listed first.
+  const ordered = [...runs.values()]
+    .sort((left, right) => right.newest - left.newest || right.id.localeCompare(left.id))
+    .slice(keep);
+  for (const group of ordered) {
+    for (const path of group.files) {
+      try {
+        rmSync(path, { force: true });
+        removed.push(path);
+      } catch {
+        /* not ours to remove */
+      }
+    }
+  }
+  return removed;
+}
+
 /** The exact command that starts the detached updater.
  *
  * `launchctl submit` puts the job in the same GUI domain this harness runs
  * in, which is the point: launchd owns it, so it survives both the harness
  * stopping and the desktop app quitting — and those are two of the steps.  A
  * plain detached spawn would survive the app but is still reparented out of
- * a process tree launchd is about to restart, so it is only the fallback. */
+ * a process tree launchd is about to restart, so it is only the fallback.
+ *
+ * The sting in that tail is that launchd keeps a `submit`ted job ALIVE ON
+ * FAILURE: every non-zero exit is relaunched, forever.  A deterministic
+ * failure therefore ran 204 times on this Mac in a day, each attempt staging
+ * a fresh copy of the source.  `removeLaunchJobCommand` is how the controller
+ * takes the label away the moment a run settles, and the updater refuses to
+ * do anything a second time under a run id that already has an outcome. */
 export function launchPlanCommand(plan: LaunchPlan): { command: string; args: string[] } {
   const quote = (value: string) => `'${value.split("'").join(`'\\''`)}'`;
   const script = [
@@ -450,6 +655,18 @@ export function launchPlanCommand(plan: LaunchPlan): { command: string; args: st
       script,
     ],
   };
+}
+
+/** Unregister the one-shot job, which is what stops launchd relaunching it. */
+export function removeLaunchJobCommand(label: string): { command: string; args: string[] } {
+  return { command: "/bin/launchctl", args: ["remove", label] };
+}
+
+/** Ask launchd whether the one-shot job still has a process.  The answer is
+ * read by `launchdJobIsAlive`, and it is the only authority this module has
+ * over a run whose own pid became unreadable — after a power cut, say. */
+export function listLaunchJobCommand(label: string): { command: string; args: string[] } {
+  return { command: "/bin/launchctl", args: ["list", label] };
 }
 
 function execCommand(command: string, args: string[]): Promise<CommandResult> {
@@ -483,12 +700,16 @@ export function launchdJobIsAlive(listed: CommandResult): boolean {
 }
 
 async function defaultLaunch(plan: LaunchPlan): Promise<LaunchResult> {
-  const listed = await execCommand("/bin/launchctl", ["list", plan.label]);
+  const listing = listLaunchJobCommand(plan.label);
+  const listed = await execCommand(listing.command, listing.args);
   if (launchdJobIsAlive(listed)) {
     throw new Error(`A ${plan.label} job is already running on this Mac.`);
   }
   mkdirSync(dirname(plan.logPath), { recursive: true, mode: 0o700 });
-  writeFileSync(plan.logPath, "", { mode: 0o600, flag: "a" });
+  // A FRESH log per launch, not an append.  A run id is normally used once,
+  // but launchd relaunching a failed job reuses both the id and the log — and
+  // that is how one run's log reached 67,000 lines and 138 build attempts.
+  writeFileSync(plan.logPath, "", { mode: 0o600, flag: "w" });
   // A finished label stays registered and makes the next `submit` fail
   // outright, so it is cleared — but only now that it is known to be dead.
   await execCommand("/bin/launchctl", ["remove", plan.label]);
@@ -511,7 +732,26 @@ async function defaultLaunch(plan: LaunchPlan): Promise<LaunchResult> {
       },
     );
     child.unref();
-    return { launcher: "detached", pid: child.pid };
+    // `spawn` reports a failed fork asynchronously — EAGAIN, ENOMEM, a
+    // /bin/bash that is missing or not executable — on the child's own
+    // "error" event, and an EventEmitter with no listener for that event
+    // rethrows it as an uncaught exception.  The harness registers no
+    // process-level handler, so it would exit here: just after recording a
+    // run that never started, leaving a phantom run for the next boot to
+    // time out.  Waiting for whichever of "spawn" and "error" comes first
+    // turns it into the launch failure `beginRun` already unwinds, which
+    // removes the record it wrote.
+    return await new Promise<LaunchResult>((settled, failed) => {
+      const onError = (error: Error) => failed(error);
+      child.once("error", onError);
+      child.once("spawn", () => {
+        child.removeListener("error", onError);
+        // The child outlives this promise and is nobody's responsibility
+        // from here; a later stdio error must still not reach this process.
+        child.once("error", () => {});
+        settled({ launcher: "detached", pid: child.pid });
+      });
+    });
   } finally {
     closeSync(log);
   }
@@ -534,10 +774,17 @@ function defaultDeps(overrides: Partial<UpdateControlDeps>): UpdateControlDeps {
   const scriptPath = overrides.scriptPath
     ?? process.env.BOTFLEET_UPDATER_SCRIPT
     ?? join(homedir(), "apps", "update-botfleet.sh");
+  // The same root `createConfig` in scripts/update-botfleet-mac.mjs resolves,
+  // read from the same environment variable, so the sweep and the updater
+  // always agree about which directory holds the stages.
+  const updatesDirectory = overrides.updatesDirectory
+    ?? process.env.BOTFLEET_UPDATE_ROOT
+    ?? join(homedir(), "Library", "Caches", "BotFleet", "updates");
   return {
     installed: overrides.installed ?? { version: "0.0.0", sourceCommit: "0".repeat(40) },
     checkout,
     stateDirectory,
+    updatesDirectory,
     scriptPath,
     label: overrides.label ?? UPDATE_LAUNCH_LABEL,
     platform: overrides.platform ?? process.platform,
@@ -545,6 +792,7 @@ function defaultDeps(overrides: Partial<UpdateControlDeps>): UpdateControlDeps {
     now: overrides.now ?? (() => new Date()),
     git: overrides.git ?? ((args) => execCommand("git", ["-C", checkout, ...args])),
     launch: overrides.launch ?? defaultLaunch,
+    exec: overrides.exec ?? execCommand,
     readiness: overrides.readiness ?? (() => ({ safeToRestart: true, activeWorkCount: 0 })),
     writeState: overrides.writeState ?? writeJsonFile,
     processAlive: overrides.processAlive ?? ((pid) => {
@@ -574,7 +822,10 @@ function defaultDeps(overrides: Partial<UpdateControlDeps>): UpdateControlDeps {
 
 export interface UpdateControl {
   status(): UpdateStatus;
-  check(): Promise<UpdateStatus>;
+  /** `readiness` is the caller's own reading, for a route that holds a
+   * mutating admission it must not count as work it would interrupt — the
+   * same argument `start` takes, and for the same reason. */
+  check(options?: { readiness?: RuntimeReadiness }): Promise<UpdateStatus>;
   start(options?: { force?: boolean; readiness?: RuntimeReadiness }): Promise<
     { ok: true; runId: string; status: UpdateStatus } | { ok: false; error: string; status: UpdateStatus }
   >;
@@ -589,10 +840,26 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     currentRun: join(deps.stateDirectory, "current-run.json"),
     lastRun: join(deps.stateDirectory, "last-run.json"),
   };
+  const runsDirectory = join(deps.stateDirectory, "runs");
   const runPaths = (runId: string) => ({
-    progress: join(deps.stateDirectory, "runs", `${runId}.progress.json`),
-    log: join(deps.stateDirectory, "runs", `${runId}.log`),
+    progress: join(runsDirectory, `${runId}.progress.json`),
+    log: join(runsDirectory, `${runId}.log`),
   });
+
+  /** A path out of `current-run.json`, but only if it names a file inside the
+   * runs directory.  `GET /api/update/status` publishes the tail of `logPath`
+   * to every connected client and to the paired phone, so a record naming
+   * some other file would turn "can write this cache directory" — which is
+   * only same-user local access — into a remote read of anything this user
+   * can open.  Anything outside falls back to the paths this run id would
+   * have had, the same posture `parseProgressRecord` takes towards the
+   * progress file's contents. */
+  const confinedRunPath = (candidate: unknown, fallback: string): string => {
+    if (typeof candidate !== "string" || !candidate) return fallback;
+    const resolved = resolve(candidate);
+    const root = resolve(runsDirectory);
+    return resolved.startsWith(root + sep) ? resolved : fallback;
+  };
 
   let available: UpdateAvailable | null = null;
   let checkedAt: string | null = null;
@@ -655,26 +922,44 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     };
   };
 
-  const capabilities = (running: boolean): UpdateCapabilities => {
+  /** What this Mac may do right now.  `readiness` overrides the harness-wide
+   * reading for a caller that holds an admission of its own — without it a
+   * `POST` route answers with `canRun: false` and "BotFleet is working right
+   * now." on a completely idle Mac, and the client that stores that status
+   * stops offering Install Update until something else refreshes it. */
+  const capabilities = (running: boolean, readiness?: RuntimeReadiness): UpdateCapabilities => {
     const able = structural();
     const reasons: string[] = [];
-    if (!able.darwin) reasons.push("Updating from this computer is macOS only.");
+    const codes: UpdateCapabilityCode[] = [];
+    if (!able.darwin) {
+      reasons.push("Updating from this computer is macOS only.");
+      codes.push("not-darwin");
+    }
     if (able.darwin && !able.checkoutPresent) {
       reasons.push(`The always-on checkout is not at ${deps.checkout}.`);
+      codes.push("checkout-missing");
     }
     if (able.darwin && able.checkoutPresent && !able.scriptPresent) {
       reasons.push(`The updater is not installed at ${deps.scriptPath}.`);
+      codes.push("updater-missing");
     }
     if (able.darwin && able.checkoutPresent && able.scriptPresent && !able.reportsProgress) {
       reasons.push(
         `The updater in ${deps.checkout} predates this build.${GAP}Run it once from a terminal to pick up the new one.`,
       );
+      codes.push("updater-outdated");
     }
-    if (running) reasons.push("An update is already running.");
+    if (running) {
+      reasons.push("An update is already running.");
+      codes.push("already-running");
+    }
     // Listed last, and the only reason `force` can talk past — see runRefusal.
-    const idle = deps.readiness().safeToRestart;
-    if (!idle) reasons.push(BUSY_REFUSAL);
-    return { canCheck: able.canCheck, canRun: able.canRun && !running && idle, reasons };
+    const idle = (readiness ?? deps.readiness()).safeToRestart;
+    if (!idle) {
+      reasons.push(BUSY_REFUSAL);
+      codes.push("busy");
+    }
+    return { canCheck: able.canCheck, canRun: able.canRun && !running && idle, reasons, codes };
   };
 
   const loadAvailable = () => {
@@ -739,16 +1024,32 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     current = {
       runId: record.runId,
       startedAt: typeof record.startedAt === "string" ? record.startedAt : "",
-      progressPath: typeof record.progressPath === "string"
-        ? record.progressPath
-        : runPaths(record.runId).progress,
-      logPath: typeof record.logPath === "string" ? record.logPath : runPaths(record.runId).log,
+      progressPath: confinedRunPath(record.progressPath, runPaths(record.runId).progress),
+      logPath: confinedRunPath(record.logPath, runPaths(record.runId).log),
       launcher: typeof record.launcher === "string" ? record.launcher : "launchd",
       targetCommit: typeof record.targetCommit === "string" ? record.targetCommit : null,
     };
   };
 
+  /** Take the one-shot job's label away, because launchd keeps a `submit`ted
+   * job ALIVE ON FAILURE: every non-zero exit is relaunched, forever.  The
+   * run that settles here is finished whatever its outcome, so there is
+   * nothing left for launchd to restart — and if it is not removed, a run
+   * that fails deterministically is restarted until someone notices.  Fired
+   * and forgotten: the run is already settled in memory, and a `launchctl`
+   * that does not answer must not hold up the status. */
+  const releaseLaunchJob = (launcher: string) => {
+    if (deps.platform !== "darwin" || launcher !== "launchd") return;
+    const { command, args } = removeLaunchJobCommand(deps.label);
+    try {
+      void Promise.resolve(deps.exec(command, args)).catch(() => {});
+    } catch {
+      /* a launcher seam that throws synchronously is not worth a status */
+    }
+  };
+
   const settle = (record: ProgressRecord | null, fallbackMessage: string) => {
+    const launcher = current?.launcher ?? "launchd";
     const finished = record ? lastRunFrom(record) : null;
     lastRun = finished ?? {
       runId: current?.runId ?? record?.runId ?? "unknown",
@@ -765,6 +1066,72 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       /* already gone, or a cache directory we cannot write — neither matters
        * here: `current` is null in memory and that is what answers callers. */
     }
+    releaseLaunchJob(launcher);
+  };
+
+  /** Sweep what failed runs left on disk.  Called on boot and again before
+   * each run — the two moments nothing is being staged.  A run that fails on
+   * every launchd relaunch wrote one full stage per attempt, and this Mac
+   * accumulated 344 of them, 2.8 GB, in a single day. */
+  const sweep = () => {
+    if (current) return;
+    try {
+      const pruned = pruneUpdateStages(deps.updatesDirectory, { now: deps.now().getTime() });
+      if (pruned.length) {
+        console.log(`BotFleet removed ${pruned.length} abandoned update stage(s) under ${deps.updatesDirectory}.`);
+      }
+      pruneRunArtifacts(runsDirectory, { protect: lastRun ? [lastRun.runId] : [] });
+    } catch (error) {
+      console.warn(`BotFleet could not sweep old update stages: ${(error as Error)?.message ?? error}`);
+    }
+  };
+
+  /** One `launchctl list` in flight, and no more than one a minute, so a
+   * wedged run is asked about occasionally rather than on every poll. */
+  let probingLaunchJob = false;
+  let probedLaunchJobAt = 0;
+
+  /** Settle a run whose progress file has stopped advancing — but only once
+   * launchd agrees nothing is running under the label.
+   *
+   * `processAlive` cannot answer this one.  It treats an inaccessible or
+   * reused pid as alive on purpose, because calling a live updater dead would
+   * let a second one start on top of it — so a run killed by a power cut,
+   * whose pid number some later process took, stays "running" forever: the
+   * banner shows a frozen progress bar nobody can dismiss and every later
+   * Install is refused with "An update is already running."  Clearing it meant
+   * deleting a file from a shell, which is exactly what "install it from your
+   * phone" is supposed to avoid.
+   *
+   * Asynchronous because the probe is.  The settle lands on a later poll,
+   * which is running already: the timer only stops once `current` clears. */
+  const probeStaleRun = () => {
+    if (probingLaunchJob || !current) return;
+    // Only a launchd run has a label to ask about.  The detached fallback is
+    // judged by its pid alone, above — there is no second opinion to get.
+    if (deps.platform !== "darwin" || current.launcher !== "launchd") return;
+    const asked = deps.now().getTime();
+    if (probedLaunchJobAt && asked - probedLaunchJobAt < STALE_PROBE_INTERVAL_MS) return;
+    const runId = current.runId;
+    probedLaunchJobAt = asked;
+    probingLaunchJob = true;
+    const { command, args } = listLaunchJobCommand(deps.label);
+    void Promise.resolve(deps.exec(command, args))
+      .then((listed) => {
+        // The run may have settled, or been replaced, while we asked.
+        if (current?.runId !== runId || launchdJobIsAlive(listed)) return;
+        settle(
+          null,
+          `The updater stopped without recording an outcome.${GAP}Nothing is running under ${deps.label} and its progress file has not moved in ${Math.round(PROGRESS_STALE_MS / 60_000)} minutes.`,
+        );
+        emitIfChanged();
+      })
+      .catch(() => {
+        /* a launchctl that will not answer is not evidence the run is dead */
+      })
+      .finally(() => {
+        probingLaunchJob = false;
+      });
   };
 
   /** Fold whatever the detached run has written into our view of it.  Called
@@ -782,7 +1149,16 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       settle(null, `The updater stopped without recording an outcome.${GAP}Its log is beside the receipt.`);
       return;
     }
-    if (!record) {
+    if (record) {
+      // A record that exists and is not moving.  Staleness alone settles
+      // nothing — a long step is not a dead run — so it only asks launchd.
+      const updatedMs = Date.parse(record.updatedAt);
+      if (Number.isFinite(updatedMs) && deps.now().getTime() - updatedMs > PROGRESS_STALE_MS) {
+        probeStaleRun();
+      }
+      return;
+    }
+    {
       // No progress file yet is normal for the first second of a run; no
       // progress file long after the start means the job never began.
       const startedMs = Date.parse(current.startedAt);
@@ -793,7 +1169,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     }
   };
 
-  const buildStatus = (): UpdateStatus => {
+  const buildStatus = (readiness?: RuntimeReadiness): UpdateStatus => {
     let running: UpdateRunning | null = null;
     if (current) {
       const record = parseProgressRecord(readJsonFile(current.progressPath));
@@ -815,12 +1191,15 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       checkError,
       running,
       lastRun,
-      capabilities: capabilities(Boolean(running)),
+      capabilities: capabilities(Boolean(running), readiness),
     };
   };
 
-  const emitIfChanged = () => {
-    const status = buildStatus();
+  /** Broadcast the status when it has changed.  The caller's readiness is
+   * passed through as well: what goes out to every client — and to the paired
+   * phone — has to describe the machine, not the request that asked. */
+  const emitIfChanged = (readiness?: RuntimeReadiness) => {
+    const status = buildStatus(readiness);
     const serialized = JSON.stringify(status);
     if (serialized === lastEmitted) return;
     lastEmitted = serialized;
@@ -845,10 +1224,13 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     return result.code !== 0 || result.stdout.trim().length > 0;
   };
 
-  const check = async (): Promise<UpdateStatus> => {
+  const check: UpdateControl["check"] = async (options = {}) => {
+    // The route holds a mutating admission for the whole handler, so the
+    // harness-wide reading would count this very request as work in flight.
+    const readiness = options.readiness;
     reconcile();
     flushAvailable();
-    if (!capabilities(Boolean(current)).canCheck) return buildStatus();
+    if (!capabilities(Boolean(current), readiness).canCheck) return buildStatus(readiness);
     // A failed fetch is not "nothing new".  `origin/main` is still on disk
     // from whenever the last fetch DID work, so comparing against it would
     // report a machine that has been offline for a week as up to date — and
@@ -856,15 +1238,15 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     const fetched = await deps.git(["fetch", "origin", "main"]);
     if (fetched.code !== 0) {
       checkError = `Could not reach the update source.${GAP}${firstLine(fetched.stderr) || "git fetch failed."}`;
-      emitIfChanged();
-      return buildStatus();
+      emitIfChanged(readiness);
+      return buildStatus(readiness);
     }
     const head = await deps.git(["rev-parse", "--verify", "origin/main^{commit}"]);
     const target = head.stdout.trim();
     if (head.code !== 0 || !/^[a-f0-9]{40}$/.test(target)) {
       checkError = `Could not read origin/main in ${deps.checkout}.`;
-      emitIfChanged();
-      return buildStatus();
+      emitIfChanged(readiness);
+      return buildStatus(readiness);
     }
     checkError = null;
     checkedAt = deps.now().toISOString();
@@ -873,45 +1255,58 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     } else {
       const range = `${deps.installed.sourceCommit}..${target}`;
       const counted = await deps.git(["rev-list", "--count", range]);
-      const listed = await deps.git([
-        "log",
-        `--format=%H%x1f%s`,
-        "-n",
-        String(MAX_LISTED_COMMITS),
-        range,
-      ]);
-      const manifest = await deps.git(["show", `${target}:package.json`]);
-      let version: string | undefined;
-      if (manifest.code === 0) {
-        try {
-          const parsed = JSON.parse(manifest.stdout) as { version?: unknown };
-          if (typeof parsed.version === "string") version = parsed.version;
-        } catch {
-          /* an unreadable manifest just means no version label */
-        }
-      }
       const aheadBy = Number.parseInt(counted.stdout.trim(), 10);
-      available = {
-        sourceCommit: target,
-        version,
-        aheadBy: Number.isFinite(aheadBy) ? aheadBy : 0,
-        commits: listed.code === 0
-          ? listed.stdout
-              .split("\n")
-              .map((line) => line.trim())
-              .filter(Boolean)
-              .map((line) => {
-                const parts = line.split(FIELD_SEPARATOR);
-                return { sha: parts[0] ?? "", subject: parts.slice(1).join(FIELD_SEPARATOR) };
-              })
-              .filter((commit) => /^[a-f0-9]{40}$/.test(commit.sha))
-          : [],
-      };
+      // Difference is not distance.  `origin/main` can differ from the
+      // installed commit and still be BEHIND it — a build made from a lane
+      // branch, or a main that was rewound — and equality alone offered that
+      // as "Update Available, 0 commits ahead", which `start()` then refused
+      // with "BotFleet is already on the newest build." on every press.  Only
+      // a count this checkout actually produced withdraws the offer: a
+      // `rev-list` that failed (an installed commit this checkout has never
+      // seen) says nothing about distance, and the offer stands as it did.
+      const nothingAhead = counted.code === 0 && Number.isFinite(aheadBy) && aheadBy < 1;
+      if (nothingAhead) {
+        available = null;
+      } else {
+        const listed = await deps.git([
+          "log",
+          `--format=%H%x1f%s`,
+          "-n",
+          String(MAX_LISTED_COMMITS),
+          range,
+        ]);
+        const manifest = await deps.git(["show", `${target}:package.json`]);
+        let version: string | undefined;
+        if (manifest.code === 0) {
+          try {
+            const parsed = JSON.parse(manifest.stdout) as { version?: unknown };
+            if (typeof parsed.version === "string") version = parsed.version;
+          } catch {
+            /* an unreadable manifest just means no version label */
+          }
+        }
+        available = {
+          sourceCommit: target,
+          version,
+          aheadBy: Number.isFinite(aheadBy) ? aheadBy : 0,
+          commits: listed.code === 0
+            ? listed.stdout
+                .split("\n")
+                .map((line) => line.trim())
+                .filter(Boolean)
+                .map((line) => {
+                  const parts = line.split(FIELD_SEPARATOR);
+                  return { sha: parts[0] ?? "", subject: parts.slice(1).join(FIELD_SEPARATOR) };
+                })
+                .filter((commit) => /^[a-f0-9]{40}$/.test(commit.sha))
+            : [],
+        };
+      }
     }
     availableNeedsWrite = true;
     flushAvailable();
-    emitIfChanged();
-    return buildStatus();
+    emitIfChanged(readiness);
+    return buildStatus(readiness);
   };
 
   const start: UpdateControl["start"] = async (options = {}) => {
@@ -920,7 +1315,9 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
     // both pass the refusal check — they interleave across `dirtyCheckout()`
     // and `launch()`, neither of which has published a run yet — and the
     // second launch would take the label out from under the first.
-    if (starting) return { ok: false, error: "An update is already running.", status: buildStatus() };
+    if (starting) {
+      return { ok: false, error: "An update is already running.", status: buildStatus(options.readiness) };
+    }
     starting = true;
     try {
       return await beginRun(options);
@@ -930,17 +1327,22 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
   };
 
   const beginRun = async (options: { force?: boolean; readiness?: RuntimeReadiness }) => {
+    // The caller's reading wins throughout, for the refusal AND for every
+    // status this path returns or broadcasts: the route holds a mutating
+    // admission of its own, which it must not count as work it would be
+    // interrupting.  A status built without that correction told an idle Mac
+    // it was busy, and the client that stores a refusal's status then hid
+    // Install Update until something unrelated refreshed it.
+    const readiness = options.readiness;
     reconcile();
     flushAvailable();
-    const before = buildStatus();
+    const before = buildStatus(readiness);
     const force = options.force === true;
     const refusal = runRefusal({
       capabilities: before.capabilities,
       running: before.running,
       available: before.available,
-      // The caller's reading wins: the route holds a mutating admission of
-      // its own, which it must not count as work it would be interrupting.
-      readiness: options.readiness ?? deps.readiness(),
+      readiness: readiness ?? deps.readiness(),
       // Asked whenever this Mac is equipped to run one at all, not only when
       // it is free to: `force` talks past readiness, and a forced run on a
       // dirty checkout has to be refused here rather than launched for the
@@ -948,7 +1350,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       dirty: structural().canRun ? await dirtyCheckout() : false,
       force,
     });
-    if (refusal) return { ok: false as const, error: refusal, status: buildStatus() };
+    if (refusal) return { ok: false as const, error: refusal, status: buildStatus(readiness) };
 
     // The authoritative staleness check, and the last thing before a launch.
     // `availableIsStale` is a timestamp heuristic; git knows.  An `available`
@@ -961,19 +1363,24 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
         available = null;
         availableNeedsWrite = true;
         flushAvailable();
-        emitIfChanged();
+        emitIfChanged(readiness);
         return {
           ok: false as const,
           error: "BotFleet is already on the newest build.",
-          status: buildStatus(),
+          status: buildStatus(readiness),
         };
       }
     }
 
+    // Before the run rather than after it: the stage this run is about to
+    // make is the one thing the sweep must never see, and afterwards there
+    // would be no moment when nothing was in flight.
+    sweep();
+
     const runId = deps.newRunId();
     const files = runPaths(runId);
     try {
-      mkdirSync(join(deps.stateDirectory, "runs"), { recursive: true, mode: 0o700 });
+      mkdirSync(runsDirectory, { recursive: true, mode: 0o700 });
     } catch (error) {
       // Unlike the bookkeeping files, this one IS load-bearing: without a
       // place for the progress file the run would be one nothing could
@@ -982,7 +1389,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       return {
         ok: false as const,
         error: `The update could not be recorded, so it was not started.${GAP}${detail}`,
-        status: buildStatus(),
+        status: buildStatus(readiness),
       };
     }
     const startedAt = deps.now().toISOString();
@@ -1003,7 +1410,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
       return {
         ok: false as const,
         error: `The update could not be recorded, so it was not started.${GAP}Check ${deps.stateDirectory}.`,
-        status: buildStatus(),
+        status: buildStatus(readiness),
       };
     }
     current = record;
@@ -1027,15 +1434,15 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
          * no progress file ever appears and the launch grace period ends it. */
       }
       const detail = String((error as Error)?.message ?? error).slice(0, 200);
-      return { ok: false as const, error: `The updater could not be started.${GAP}${detail}`, status: buildStatus() };
+      return { ok: false as const, error: `The updater could not be started.${GAP}${detail}`, status: buildStatus(readiness) };
     }
     if (result.launcher !== record.launcher) {
       current = { ...record, launcher: result.launcher };
       persist(paths.currentRun, current);
     }
     ensureTimer();
-    emitIfChanged();
-    return { ok: true as const, runId, status: buildStatus() };
+    emitIfChanged(readiness);
+    return { ok: true as const, runId, status: buildStatus(readiness) };
   };
 
   // Order matters: the remembered "available" answer is judged against the
@@ -1044,6 +1451,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
   loadAvailable();
   loadCurrent();
   reconcile();
+  sweep();
   ensureTimer();
 
   return {

@@ -19,6 +19,12 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
     /// Set by `Session`; answers Approve/Deny straight from a notification
     /// action, without opening the app.
     var approvalActionHandler: ((_ target: NotificationTarget, _ approve: Bool) async -> Void)?
+    /// Harness frames APNs has already shown.  The sidecar pushes only to a
+    /// phone whose stream is down and wakes the app, which then reconnects
+    /// and is replayed the same frame — without this, every closed-app
+    /// notification lands twice, and after PR #383 both copies carry
+    /// Approve and Deny for a request only one of them can settle.
+    private var pushDelivered = PushDeliveryLedger()
 
     private override init() {
         super.init()
@@ -56,7 +62,18 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         defaults.set(true, forKey: Self.timeSensitiveRequestedKey)
     }
 
+    /// Remember that APNs put this frame on screen.  Called for every push
+    /// this process gets to see: the silent wake, a foreground delivery, and
+    /// a tap.  A push the app was never running to observe cannot be
+    /// correlated, and the replay is believed rather than dropped.
+    func notePushDelivered(userInfo: [AnyHashable: Any]) {
+        pushDelivered.record(pushUserInfo: userInfo)
+    }
+
     func deliver(_ notification: NotificationFrame, sequence: Int?) {
+        // Apple already delivered this exact frame.  A replay of it is the
+        // same event, not a second one.
+        if pushDelivered.isAlreadyDelivered(sequence) { return }
         guard NotificationFrame.shouldPresentBanner(
             threadId: notification.threadId,
             viewingThreadId: viewingThreadId
@@ -118,6 +135,9 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         willPresent notification: UNNotification,
         withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
     ) {
+        if notification.request.trigger is UNPushNotificationTrigger {
+            notePushDelivered(userInfo: notification.request.content.userInfo)
+        }
         let threadId = notification.request.content.threadIdentifier
         if NotificationFrame.shouldPresentBanner(threadId: threadId, viewingThreadId: viewingThreadId) {
             completionHandler([.banner, .list, .sound, .badge])
@@ -132,6 +152,9 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let userInfo = response.notification.request.content.userInfo
+        if response.notification.request.trigger is UNPushNotificationTrigger {
+            notePushDelivered(userInfo: userInfo)
+        }
         switch NotificationTarget.actionRoute(actionIdentifier: response.actionIdentifier, userInfo: userInfo) {
         case let .approve(target):
             sendApprovalAction(target, approve: true, completionHandler: completionHandler)

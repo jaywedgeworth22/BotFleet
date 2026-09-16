@@ -1,4 +1,4 @@
-import { chmodSync, mkdtempSync, readFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ensureDirs } from "../../config.ts";
 import type { ProviderInstance } from "../../contracts.ts";
+import { SPAWNED_PROXIES } from "../../proxy-paths.ts";
 import { removeTempDir } from "../../testing/cleanup.ts";
 import { recordEvents, type EventRecorder } from "../../testing/events.ts";
 import {
@@ -16,10 +17,12 @@ import {
   dshModelOptionValue,
   dshSpawnArgs,
   dshVersionCompatibilityReason,
+  dshWrapSpawn,
   DshAgentDriver,
   DSH_MINIMUM_ACP_VERSION,
   STATIC_DSH_MODELS,
 } from "./dsh.ts";
+import { dshMcpPatchYaml, isStockDshCli } from "./dsh-mcp.ts";
 
 const FAKE_CLI = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "testing", "fake-acp-cli.ts");
 
@@ -198,6 +201,60 @@ describe("native DSH ACP turns", () => {
     );
     const methods = JSON.parse(readFileSync(rpcDump, "utf8")) as string[];
     expect(methods).not.toContain("session/prompt");
+  });
+});
+
+describe("dsh MCP delivery", () => {
+  const localComputer = {
+    command: "/opt/cua-driver",
+    args: ["mcp", "--embedded"],
+    env: { CUA_DRIVER_EMBEDDED: "1" },
+    platform: "darwin" as const,
+    scope: "local-computer" as const,
+  };
+
+  it("treats stock dsh binaries as the published CLI that needs the ACP bridge", () => {
+    expect(isStockDshCli("dsh")).toBe(true);
+    expect(isStockDshCli("/Users/jay/apps/dsh-runtime/dsh")).toBe(true);
+    expect(isStockDshCli("/Users/jay/apps/dsh-runtime/dsh.sh")).toBe(true);
+    expect(isStockDshCli(FAKE_CLI)).toBe(false);
+    expect(isStockDshCli("/opt/dsh-wrapper")).toBe(false);
+  });
+
+  it("renders BotFleet stdio mounts as dsh-mcp-client --patch rows", () => {
+    const yaml = dshMcpPatchYaml([
+      {
+        name: "computer",
+        command: "/opt/cua-driver",
+        args: ["mcp", "--embedded"],
+        env: [{ name: "CUA_DRIVER_EMBEDDED", value: "1" }],
+      },
+    ]);
+    expect(yaml).toContain("name: '@deepseek-ai/dsh-mcp-client'");
+    expect(yaml).toContain('serverName: "computer"');
+    expect(yaml).toContain('command: "/opt/cua-driver"');
+    expect(yaml).toContain('          - "mcp"');
+    expect(yaml).toContain("          CUA_DRIVER_EMBEDDED: \"1\"");
+  });
+
+  it("wraps stock dsh with the ACP bridge and a --patch overlay when mounts exist", () => {
+    const wrapped = dshWrapSpawn("dsh", ["--profile", "acp"], {
+      integrations: { localComputer },
+    });
+    expect(wrapped.cli).toBe(process.execPath);
+    expect(wrapped.env).toEqual({ ELECTRON_RUN_AS_NODE: "1" });
+    expect(wrapped.args[0]).toBe(SPAWNED_PROXIES.dshAcpBridge);
+    expect(wrapped.args.slice(1, 5)).toEqual(["--", "dsh", "--profile", "acp"]);
+    const patch = wrapped.args[wrapped.args.indexOf("--patch") + 1];
+    expect(patch).toContain("botfleet-dsh-mcp-");
+    expect(readFileSync(patch, "utf8")).toContain('serverName: "computer"');
+    unlinkSync(patch);
+  });
+
+  it("leaves a non-dsh CLI unwrapped so tests still see session/new mcpServers", () => {
+    expect(
+      dshWrapSpawn(FAKE_CLI, ["--profile", "acp"], { integrations: { localComputer } }),
+    ).toEqual({ cli: FAKE_CLI, args: ["--profile", "acp"] });
   });
 });
 
