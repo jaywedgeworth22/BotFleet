@@ -101,6 +101,25 @@ final class Session: ObservableObject {
     /// backstop for the stretch in between, and for a phone that stays
     /// backgrounded through the whole restart and never sees a reconnect at all.
     private var macUpdatePollTask: Task<Void, Never>?
+    /// How long to wait before each successive attempt, in seconds, indexed
+    /// by how many have failed in a row; the last entry repeats.  A run that
+    /// is answering keeps the five-second cadence, and a Mac that has gone
+    /// quiet is backed off rather than hammered — the harness's own desktop
+    /// hook does the same thing from the other side.
+    private static let macUpdatePollBackoff = [5, 10, 30, 60]
+    /// How long the poll keeps asking a Mac that has stopped answering
+    /// altogether before giving up.  The restart the updater performs is
+    /// seconds to a minute; ten minutes of unbroken silence is a Mac that is
+    /// not coming back on its own — asleep, wedged, or rolled back without a
+    /// restart — and polling it forever only burns battery behind a spinner
+    /// that will never move.  Measured from the first failure of the current
+    /// run of them, not from the start of the install, so a long but healthy
+    /// transaction is never cut short.
+    private static let macUpdateGiveUpAfterSilence: TimeInterval = 10 * 60
+    /// Set when the poll above gave up with a run still outstanding, so the
+    /// card can offer to ask again instead of spinning on "Installing…"
+    /// forever.  Cleared by the next status to arrive from anywhere.
+    @Published private(set) var macUpdateContactLost = false
     /// Identifies the task currently stored in `streamTask`. A cancelled task
     /// can finish after its replacement starts; its cleanup must not clear
     /// the replacement's handle.
@@ -335,6 +354,7 @@ final class Session: ObservableObject {
         endpointRefreshTask = nil
         macUpdatePollTask?.cancel()
         macUpdatePollTask = nil
+        macUpdateContactLost = false
         restorePending = false
         pendingNotification = nil
         pairingInvite = CompanionPairingInvitePolicy.nextInvite(
@@ -450,6 +470,7 @@ final class Session: ObservableObject {
         endpointRefreshTask = nil
         macUpdatePollTask?.cancel()
         macUpdatePollTask = nil
+        macUpdateContactLost = false
         endLinger()
     }
 
@@ -1638,6 +1659,19 @@ final class Session: ObservableObject {
     /// Fetch the paired Mac's update status once, without asking it to look
     /// again.  The card calls this on appear; after that, live `update.status`
     /// events keep `state.macUpdateStatus` current on their own.
+    ///
+    /// A failure here deliberately never reaches `actionError`, the same way
+    /// `checkForMacUpdate()` below does not.  Nobody asked for this fetch:
+    /// the card is shown for any paired phone, connected or not, so a Mac
+    /// that is merely asleep — or running a BotFleet that predates these
+    /// routes, which answers `no route: GET /api/update/status` verbatim —
+    /// would otherwise throw "Something went wrong" over Settings carrying
+    /// raw developer text.  The card already has the right answer inline:
+    /// `nil` back here with `state.macUpdateStatus` still empty is what
+    /// raises its `loadFailed` -> "Mac Update not available" row, which says
+    /// the same thing in the user's language and offers Retry.  The poll
+    /// below depends on this too — the window it exists to cover is exactly
+    /// the window in which this GET fails, every five seconds.
     @discardableResult
     func loadMacUpdateStatus() async -> MacUpdateStatus? {
         guard let client else { return nil }
@@ -1647,7 +1681,6 @@ final class Session: ObservableObject {
             pollMacUpdateWhileRunning()
             return status
         } catch {
-            actionError = error.localizedDescription
             return nil
         }
     }
@@ -1675,7 +1708,7 @@ final class Session: ObservableObject {
             pollMacUpdateWhileRunning()
             return failure.status
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return nil
         }
     }
@@ -1702,7 +1735,7 @@ final class Session: ObservableObject {
             pollMacUpdateWhileRunning()
             return refusal.message
         } catch {
-            actionError = error.localizedDescription
+            recordActionError(error)
             return nil
         }
     }
@@ -1717,15 +1750,52 @@ final class Session: ObservableObject {
     /// left open does not read as stuck, and cheap enough that polling a
     /// GET for the couple of minutes an install takes costs nothing worth
     /// avoiding.
+    ///
+    /// Failures back that cadence off (`macUpdatePollBackoff`) and, after
+    /// `macUpdateGiveUpAfterSilence` of unbroken silence, end the loop with
+    /// `macUpdateContactLost` set — the only other exit is a status whose
+    /// `running` is nil, and only the unreachable harness can send one of
+    /// those, so a Mac that never comes back would otherwise be polled for
+    /// the rest of the foreground session.  Each attempt is quiet by
+    /// construction: `loadMacUpdateStatus()` raises no alert, which matters
+    /// most here, where failing is the expected case.
     private func pollMacUpdateWhileRunning() {
+        // Reaching here at all means a status was just folded in, from a
+        // fetch or from an `update.status` frame — whatever the poll may
+        // have given up on before, contact is current again.
+        macUpdateContactLost = false
         guard macUpdatePollTask == nil, state.macUpdateStatus?.running != nil else { return }
         macUpdatePollTask = Task { [weak self] in
+            var consecutiveFailures = 0
+            var silentSince: Date?
+            var gaveUp = false
             while let self, !Task.isCancelled, self.state.macUpdateStatus?.running != nil {
-                try? await Task.sleep(for: .seconds(5))
+                let backoff = Session.macUpdatePollBackoff[
+                    min(consecutiveFailures, Session.macUpdatePollBackoff.count - 1)
+                ]
+                try? await Task.sleep(for: .seconds(backoff))
                 guard !Task.isCancelled else { break }
-                _ = await self.loadMacUpdateStatus()
+                if await self.loadMacUpdateStatus() == nil {
+                    let since = silentSince ?? Date()
+                    silentSince = since
+                    consecutiveFailures += 1
+                    if Date().timeIntervalSince(since) >= Session.macUpdateGiveUpAfterSilence {
+                        gaveUp = true
+                        break
+                    }
+                } else {
+                    silentSince = nil
+                    consecutiveFailures = 0
+                }
             }
-            self?.macUpdatePollTask = nil
+            guard let self else { return }
+            // Only a give-up with a run still outstanding is worth saying
+            // anything about: every other exit — cancelled, or the run
+            // finished — has nothing left to report.
+            if gaveUp, self.state.macUpdateStatus?.running != nil {
+                self.macUpdateContactLost = true
+            }
+            self.macUpdatePollTask = nil
         }
     }
 

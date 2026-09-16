@@ -79,8 +79,7 @@ struct MacUpdateSection: View {
                         // "Checked …" line is the stale one.
                         Text(checkError)
                     }
-                    if status.running == nil, status.capabilities.canRun == false,
-                       let reason = status.capabilities.reasons.first {
+                    if let reason = Self.footerReason(status, installError: installError) {
                         Text(reason)
                     }
                 }
@@ -112,7 +111,7 @@ struct MacUpdateSection: View {
 
     private var unavailableRow: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Mac Update Not Available", systemImage: "exclamationmark.triangle")
+            Label("Mac Update not available", systemImage: "exclamationmark.triangle")
                 .foregroundStyle(.secondary)
             Text("Could not reach this computer's update status.  It may be offline or running an older BotFleet.")
                 .font(.caption)
@@ -142,7 +141,15 @@ struct MacUpdateSection: View {
     @ViewBuilder
     private func availabilityRow(_ status: MacUpdateStatus) -> some View {
         if let running = status.running {
-            runningRow(running)
+            if session.macUpdateContactLost {
+                // The install is still the last thing this Mac said it was
+                // doing, but it has stopped answering long enough that the
+                // poll gave up.  A spinner here would claim progress nobody
+                // can see any more.
+                contactLostRow(running)
+            } else {
+                runningRow(running)
+            }
         } else if let available = status.available {
             availableRow(available)
         } else if let checkError = status.checkError {
@@ -216,6 +223,29 @@ struct MacUpdateSection: View {
         }
     }
 
+    private func contactLostRow(_ running: MacUpdateRun) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                MacUpdateIcon(symbol: "exclamationmark.triangle.fill", color: .orange)
+                Text("Lost contact during the update")
+                    .foregroundStyle(.primary)
+                Spacer()
+            }
+            Text("This computer stopped answering while the updater ran.\u{00A0} It may still be restarting, or it may need a look.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 40)
+            Text("Last step: \(running.step)")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.leading, 40)
+            Button("Retry") {
+                Task { await loadStatus() }
+            }
+            .padding(.leading, 40)
+        }
+    }
+
     private func availableRow(_ available: MacAvailableUpdate) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 12) {
@@ -283,9 +313,9 @@ struct MacUpdateSection: View {
 
     /// The initial (or retried) fetch.  Distinguishes "nothing to show yet"
     /// from "asked, and there is still nothing" — `session.loadMacUpdateStatus()`
-    /// already routed the failure to the app-wide alert, so this only needs
-    /// to notice `state.macUpdateStatus` is still nil once it is done, not
-    /// re-decode the error itself.
+    /// deliberately raises no alert of its own, so this row *is* how the
+    /// failure reaches the user, and all it needs is to notice
+    /// `state.macUpdateStatus` is still nil once the fetch is done.
     private func loadStatus() async {
         loadFailed = false
         if await session.loadMacUpdateStatus() == nil, session.state.macUpdateStatus == nil {
@@ -314,8 +344,30 @@ struct MacUpdateSection: View {
         status.checkError != nil && status.running == nil && status.available == nil
     }
 
+    /// The standing reason the Mac will not run an update right now, when it
+    /// is worth repeating in the footer.
+    ///
+    /// It is not worth repeating when it is the very sentence a refusal just
+    /// put on screen in red: a 409 answers with `BUSY_REFUSAL` as both the
+    /// error and `capabilities.reasons.first`, so without this the card
+    /// printed "BotFleet is working right now…" twice at once, once above
+    /// and once below.  Same de-duplication `rowShowsCheckError(_:)` does
+    /// for `checkError`.
+    private static func footerReason(_ status: MacUpdateStatus, installError: String?) -> String? {
+        guard status.running == nil, status.capabilities.canRun == false,
+              let reason = status.capabilities.reasons.first,
+              reason != installError
+        else { return nil }
+        return reason
+    }
+
+    /// `MacUpdateTimestamp` rather than a formatter built here: the harness
+    /// stamps `checkedAt` with milliseconds and a default
+    /// `ISO8601DateFormatter` rejects those outright, which left this
+    /// showing the raw ISO string on every Mac.  The fallback below is now
+    /// only for a timestamp in neither spelling.
     private static func checkedAtText(_ checkedAt: String) -> String {
-        guard let date = ISO8601DateFormatter().date(from: checkedAt) else {
+        guard let date = MacUpdateTimestamp.date(from: checkedAt) else {
             return "Checked \(checkedAt)"
         }
         return "Checked \(date.formatted(date: .abbreviated, time: .shortened))"
