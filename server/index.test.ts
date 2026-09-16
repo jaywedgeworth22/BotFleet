@@ -5815,34 +5815,51 @@ describe("the update routes and the admission they hold", () => {
   // hide **Install Update** on `canRun` — so the response that had just found
   // the update was also the one that took the button away.
   //
-  // OS-neutral on purpose.  `canRun` itself is false off macOS (and on a CI
-  // Mac, whose HOME has no always-on checkout), so what is asserted is the
-  // reason: the request must never be the thing that makes the Mac look busy.
+  // `GET /api/update/status` holds no admission, so it is the honest reading,
+  // and the invariant is that the two POSTs agree with it.  That holds on any
+  // OS (`canRun` is false off macOS anyway, and on a CI Mac whose HOME has no
+  // always-on checkout) and whatever else this suite has left running — but
+  // it is only SHARP while nothing else is in flight, so the busy sentence is
+  // asserted only when the unadmitted reading says the machine is free.  The
+  // deterministic version of this is in server/update-control.test.ts.
   const BUSY = "BotFleet is working right now.";
+  type Capabilities = { canCheck: boolean; canRun: boolean; reasons: string[] };
+  const looksBusy = (capabilities: Capabilities) =>
+    capabilities.reasons.some((reason) => reason.startsWith(BUSY));
+  const unadmitted = async (): Promise<Capabilities> => {
+    const res = await api("GET", "/api/update/status");
+    expect(res.status).toBe(200);
+    return res.body.capabilities as Capabilities;
+  };
 
   it("does not count its own admission when POST /api/update/check answers", async () => {
-    const res = await api("POST", "/api/update/check");
-    expect([200, 502]).toContain(res.status);
-    const status = res.status === 200 ? res.body : res.body.status;
+    const before = await unadmitted();
+    const checked = await api("POST", "/api/update/check");
+    const after = await unadmitted();
+    expect([200, 502]).toContain(checked.status);
+    const status = checked.status === 200 ? checked.body : checked.body.status;
     expect(status).toMatchObject({ installed: { version: expect.any(String) } });
-    expect(status.capabilities.reasons.some((reason: string) => reason.startsWith(BUSY))).toBe(false);
+    // Either unadmitted reading will do: the suite may finish a turn between
+    // the three calls, and that is a real change, not this request's doing.
+    expect([before, after]).toContainEqual(status.capabilities);
+    if (!looksBusy(before) && !looksBusy(after)) {
+      expect(looksBusy(status.capabilities)).toBe(false);
+    }
   });
 
   it("does not count its own admission when POST /api/update/run refuses", async () => {
-    const res = await api("POST", "/api/update/run", {});
-    // Nothing to install on a throwaway home, so this is always a refusal —
-    // but a refusal for THAT reason, never for a busy machine.
-    expect(res.status).toBe(409);
-    expect(res.body.error).not.toContain(BUSY);
-    expect(res.body.status.capabilities.reasons.some((reason: string) => reason.startsWith(BUSY))).toBe(false);
-  });
-
-  it("agrees with GET /api/update/status, which holds no admission at all", async () => {
-    const open = await api("GET", "/api/update/status");
-    expect(open.status).toBe(200);
-    const checked = await api("POST", "/api/update/check");
-    const status = checked.status === 200 ? checked.body : checked.body.status;
-    expect(status.capabilities).toEqual(open.body.capabilities);
+    const before = await unadmitted();
+    const refused = await api("POST", "/api/update/run", {});
+    const after = await unadmitted();
+    // Nothing to install on a throwaway home, so this is always a refusal.
+    expect(refused.status).toBe(409);
+    expect([before, after]).toContainEqual(refused.body.status.capabilities);
+    if (!looksBusy(before) && !looksBusy(after)) {
+      // A refusal for some other reason must not also say the Mac is busy:
+      // the client stores the status that came with it.
+      expect(refused.body.error).not.toContain(BUSY);
+      expect(looksBusy(refused.body.status.capabilities)).toBe(false);
+    }
   });
 });
 
