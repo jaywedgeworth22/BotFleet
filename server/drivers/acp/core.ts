@@ -55,6 +55,82 @@ const COMPUTER_PROXY_PATH = SPAWNED_PROXIES.computer;
 import { appendNative } from "../native.ts";
 import { SPAWNED_PROXIES } from "../../proxy-paths.ts";
 
+/** Stdio MCP server as ACP session/new sends it. */
+export type AcpStdioMcpServer = {
+  name: string;
+  command: string;
+  args: string[];
+  env: Array<{ name: string; value: string }>;
+};
+
+/** Build the same mcpServers array every mcpServers:true ACP engine receives. */
+export function acpMcpServers(turn: Pick<SendTurnInput, "integrations">): AcpStdioMcpServer[] {
+  const servers: AcpStdioMcpServer[] = [];
+  const acpEnv = (env: Record<string, string>) =>
+    Object.entries(env).map(([name, value]) => ({ name, value: String(value) }));
+  const agents = turn.integrations?.agents;
+  if (agents) {
+    servers.push({ name: "agents", command: agents.command, args: agents.args, env: acpEnv(agents.env) });
+  }
+  const composio = turn.integrations?.composio;
+  if (composio) {
+    servers.push({
+      name: "composio",
+      command: composio.command,
+      args: composio.args,
+      env: acpEnv(composio.env),
+    });
+  }
+  // The bot's computers, mounted exactly like the Claude driver does.
+  // Cloud boxes use the REST adapter; host, sandbox, and VPS Cua
+  // connections expose Cua Driver's official MCP server directly. Every
+  // grant gets its own server — this was an if/else if that dropped the
+  // second computer a bot had been given.
+  for (const mount of turnComputerMounts(turn.integrations)) {
+    if (mount.box) {
+      servers.push({
+        name: mount.name,
+        command: process.execPath,
+        args: [COMPUTER_PROXY_PATH],
+        env: acpEnv({ ELECTRON_RUN_AS_NODE: "1", ...computerProxyEnv(mount.box) }),
+      });
+    } else if (mount.stdio) {
+      servers.push({
+        name: mount.name,
+        command: mount.stdio.command,
+        args: mount.stdio.args,
+        env: acpEnv(mount.stdio.env ?? {}),
+      });
+    }
+  }
+  const phone = turn.integrations?.phone;
+  if (phone) {
+    servers.push({
+      name: "phone",
+      command: phone.command,
+      args: phone.args,
+      env: acpEnv(phone.env ?? {}),
+    });
+  }
+  const qdrant = turn.integrations?.qdrant;
+  if (qdrant) {
+    servers.push({
+      name: "qdrant",
+      command: qdrant.command,
+      args: qdrant.args,
+      env: acpEnv(qdrant.env ?? {}),
+    });
+  }
+  return servers;
+}
+
+/** Result of `AcpSupport.wrapSpawn`: a possibly rewritten CLI and argv. */
+export type AcpSpawnRewrite = {
+  cli: string;
+  args: string[];
+  env?: { ELECTRON_RUN_AS_NODE: string };
+};
+
 export interface AcpConfig {
   cli: string;
   fullAuto: boolean;
@@ -108,6 +184,9 @@ export interface AcpSupport {
   install?: EngineInstall;
   /** CLI argv AFTER the binary name to enter ACP stdio mode. */
   spawnArgs(config: AcpConfig, turn: SendTurnInput): string[];
+  /** Optional rewrite of the spawned CLI.  DSH sits a stdio bridge in front
+   * of stock `dsh` so session/new mcpServers are accepted and delivered. */
+  wrapSpawn?(cli: string, args: string[], turn: SendTurnInput): AcpSpawnRewrite;
   /** Resume RPC used by this ACP server.  Most older harnesses implement
    * `session/load`; current ACP v1 servers may expose `session/resume`. */
   resumeMethod?: "session/load" | "session/resume";
@@ -341,70 +420,6 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
         createdAt: new Date().toISOString(),
       });
 
-      // ACP session mcpServers: stdio is the baseline every ACP agent
-      // supports (mcpCapabilities.http/.sse only add EXTRA transports), so
-      // an injected stdio proxy — e.g. the peer-agent comms tool — attaches
-      // fine here. env is the ACP {name,value}[] shape.
-      const acpMcpServers = (turn: SendTurnInput) => {
-        const servers: Array<{ name: string; command: string; args: string[]; env: Array<{ name: string; value: string }> }> = [];
-        const acpEnv = (env: Record<string, string>) =>
-          Object.entries(env).map(([name, value]) => ({ name, value: String(value) }));
-        const agents = turn.integrations?.agents;
-        if (agents) {
-          servers.push({ name: "agents", command: agents.command, args: agents.args, env: acpEnv(agents.env) });
-        }
-        const composio = turn.integrations?.composio;
-        if (composio) {
-          servers.push({
-            name: "composio",
-            command: composio.command,
-            args: composio.args,
-            env: acpEnv(composio.env),
-          });
-        }
-        // The bot's computers, mounted exactly like the Claude driver does.
-        // Cloud boxes use the REST adapter; host, sandbox, and VPS Cua
-        // connections expose Cua Driver's official MCP server directly. Every
-        // grant gets its own server — this was an if/else if that dropped the
-        // second computer a bot had been given.
-        for (const mount of turnComputerMounts(turn.integrations)) {
-          if (mount.box) {
-            servers.push({
-              name: mount.name,
-              command: process.execPath,
-              args: [COMPUTER_PROXY_PATH],
-              env: acpEnv({ ELECTRON_RUN_AS_NODE: "1", ...computerProxyEnv(mount.box) }),
-            });
-          } else if (mount.stdio) {
-            servers.push({
-              name: mount.name,
-              command: mount.stdio.command,
-              args: mount.stdio.args,
-              env: acpEnv(mount.stdio.env ?? {}),
-            });
-          }
-        }
-        const phone = turn.integrations?.phone;
-        if (phone) {
-          servers.push({
-            name: "phone",
-            command: phone.command,
-            args: phone.args,
-            env: acpEnv(phone.env ?? {}),
-          });
-        }
-        const qdrant = turn.integrations?.qdrant;
-        if (qdrant) {
-          servers.push({
-            name: "qdrant",
-            command: qdrant.command,
-            args: qdrant.args,
-            env: acpEnv(qdrant.env ?? {}),
-          });
-        }
-        return servers;
-      };
-
       const sendTurn = async (turn: SendTurnInput) => {
         const { threadId } = turn;
         if (disposed) throw new Error("provider instance is disposed");
@@ -503,9 +518,14 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
 
         let child;
         try {
-          child = spawnCli(config.cli, support.spawnArgs(turnConfig, cliTurn), {
+          const requestedArgs = support.spawnArgs(turnConfig, cliTurn);
+          const spawned = support.wrapSpawn?.(config.cli, requestedArgs, cliTurn) ?? {
+            cli: config.cli,
+            args: requestedArgs,
+          };
+          child = spawnCli(spawned.cli, spawned.args, {
             cwd,
-            env,
+            env: spawned.env ? { ...env, ...spawned.env } : env,
             stdio: ["pipe", "pipe", "pipe"],
           });
         } catch (error) {

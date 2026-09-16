@@ -4,10 +4,14 @@ import { join } from "node:path";
 
 import type { EffortLevel, ModelCatalog, ProviderErrorCode, SendTurnInput } from "../../contracts.ts";
 import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
+import { dshWrapSpawn } from "./dsh-mcp.ts";
 
-/** Current DSH exposes its standard ACP v1 server as a profile.  Integrations
- * belong in session/new.mcpServers; duplicating them as private CLI flags
- * changes quoting and bypasses ACP's typed transport validation. */
+export { dshWrapSpawn, isStockDshCli } from "./dsh-mcp.ts";
+
+/** Current DSH exposes its standard ACP v1 server as a profile.  Core still
+ * puts BotFleet mounts in session/new.mcpServers.  Stock dsh-acp rejects a
+ * non-empty list, so wrapSpawn delivers the same stdio servers through
+ * dsh-mcp-client (`dsh --patch`) and a stdio bridge that zeros the wire list. */
 export function dshSpawnArgs(_config: AcpConfig, _turn: Pick<SendTurnInput, "integrations">): string[] {
   return ["--profile", "acp"];
 }
@@ -168,6 +172,7 @@ export const dshSupport: AcpSupport = {
   },
 
   spawnArgs: dshSpawnArgs,
+  wrapSpawn: dshWrapSpawn,
   resumeMethod: "session/resume",
   selectModel: {
     configId: "model",

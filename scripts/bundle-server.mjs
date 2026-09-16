@@ -59,6 +59,7 @@ const ENTRY_POINTS = [
   "drivers/dweb-proxy.ts",
   "drivers/qdrant-proxy.ts",
   "drivers/phone-proxy.ts",
+  "drivers/dsh-acp-bridge.ts",
 ];
 
 await build({
