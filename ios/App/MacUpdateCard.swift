@@ -231,13 +231,18 @@ struct MacUpdateSection: View {
                     .foregroundStyle(.primary)
                 Spacer()
             }
+            // The last thing the Mac said it was doing, in the same place
+            // and the same voice `runningRow` says it — the harness maps its
+            // own step keys to human labels (`stepLabel` in
+            // `server/update-control.ts`) before sending them, so there is
+            // nothing to prefix or translate here.
+            Text(running.step)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.leading, 40)
             Text("This computer stopped answering while the updater ran.\u{00A0} It may still be restarting, or it may need a look.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .padding(.leading, 40)
-            Text("Last step: \(running.step)")
-                .font(.caption)
-                .foregroundStyle(.tertiary)
                 .padding(.leading, 40)
             Button("Retry") {
                 Task { await loadStatus() }

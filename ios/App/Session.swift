@@ -1789,9 +1789,16 @@ final class Session: ObservableObject {
                 }
             }
             guard let self else { return }
+            // A cancelled poll is not a Mac that stopped answering, and
+            // `signOut()` / `disconnect()` have already cleared both the
+            // handle and the flag by the time this resumes from its last
+            // `await` — so leave their work alone rather than racing it back
+            // to "lost contact" (or clearing a handle that now belongs to a
+            // poll armed after the reconnect).
+            guard !Task.isCancelled else { return }
             // Only a give-up with a run still outstanding is worth saying
-            // anything about: every other exit — cancelled, or the run
-            // finished — has nothing left to report.
+            // anything about: the other exit — the run finished — has
+            // nothing left to report.
             if gaveUp, self.state.macUpdateStatus?.running != nil {
                 self.macUpdateContactLost = true
             }
