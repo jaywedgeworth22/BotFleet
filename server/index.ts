@@ -5320,6 +5320,13 @@ function blankSecretField(target: object, spec: SecretFieldSpec): void {
  * that are identifiers rather than secrets — the value itself, exactly as
  * `/api/config` already returns the Access client id.  A field marked secret
  * always reports `null`, on every route, in every state. */
+/** MiniMax's global host — the endpoint `loadLocalMiniMaxConfig()` returns
+ * when ~/.mmx/config.json is absent, unreadable, or names no region or
+ * base_url of its own.  Reproduced here because the driver's own `DEFAULT_URL`
+ * is private to server/drivers/minimax.ts, the same way
+ * server/harness/registry.ts reproduces it for the balance probe. */
+const MINIMAX_GLOBAL_URL = "https://api.minimax.io/v1";
+
 /** Files BotFleet does not own but a driver reads on its own, mapped to the
  * field they can supply.  The secret map deliberately cannot see these — it
  * is a pure function over config, environment and the vault — so a key that
@@ -5328,6 +5335,14 @@ function blankSecretField(target: object, spec: SecretFieldSpec): void {
  * read out: only whether a value is there, and the path that holds it. */
 const EXTERNAL_SECRET_SOURCES = new Map<string, () => string | null>([
   ["minimax.key", () => (loadLocalMiniMaxConfig().apiKey ? "~/.mmx/config.json" : null)],
+  // The endpoint beside that key, for the same reason: with no workspace url
+  // saved, the reserved MiniMax instance calls the host this file names, so a
+  // blank field with no badge said "MiniMax's global host" while turns went to
+  // the China region or a gateway.  Only the RESOLVED HOST decides whether the
+  // badge appears — the file's contents are never read out, exactly as for the
+  // key above.  `loadLocalMiniMaxConfig` fills `url` in unconditionally, so
+  // the global default is what "this file names no host" looks like.
+  ["minimax.url", () => (loadLocalMiniMaxConfig().url === MINIMAX_GLOBAL_URL ? null : "~/.mmx/config.json")],
 ]);
 
 function secretFieldRows() {

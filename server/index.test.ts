@@ -3514,6 +3514,41 @@ describe("harness HTTP API", () => {
     }
   });
 
+  it("names ~/.mmx/config.json on the MiniMax ENDPOINT row when that file chooses the host", async () => {
+    // The row has to report the endpoint actually in effect.  With no
+    // workspace url saved, the reserved MiniMax instance calls whatever host
+    // ~/.mmx/config.json names — so a blank field with no badge told the
+    // operator "MiniMax's global host" while turns went to the China region.
+    // Only the PATH ever reaches the payload; the file's contents do not,
+    // exactly as for the key row beside it.
+    const urlRow = async () =>
+      (await api("GET", "/api/infisical/status")).body.fields.find((f: any) => f.id === "minimax.url");
+    expect((await urlRow()).elsewhere).toBeNull();
+
+    const mmxDir = join(home, ".mmx");
+    mkdirSync(mmxDir, { recursive: true });
+    try {
+      // No api_key in here on purpose: this asserts the ENDPOINT probe alone.
+      writeFileSync(join(mmxDir, "config.json"), JSON.stringify({ region: "cn" }));
+      const chosen = await urlRow();
+      expect(chosen.elsewhere).toBe("~/.mmx/config.json");
+      expect(chosen.value).toBe("");
+      expect(JSON.stringify(chosen)).not.toContain("region");
+      // The key row is untouched — that file names no key.
+      const keyRow = (await api("GET", "/api/infisical/status")).body.fields
+        .find((f: any) => f.id === "minimax.key");
+      expect(keyRow.elsewhere).toBeNull();
+
+      // A profile that names the global host is what "blank means global"
+      // actually looks like, so it earns no badge at all.
+      writeFileSync(join(mmxDir, "config.json"), JSON.stringify({ region: "global" }));
+      expect((await urlRow()).elsewhere).toBeNull();
+    } finally {
+      rmSync(mmxDir, { recursive: true, force: true });
+    }
+    expect((await urlRow()).elsewhere).toBeNull();
+  });
+
   it("POST /api/infisical/test reports requirement to add machine identity when unconfigured", async () => {
     const res = await api("POST", "/api/infisical/test");
     expect(res.status).toBe(200);

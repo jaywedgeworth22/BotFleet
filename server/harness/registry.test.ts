@@ -32,9 +32,18 @@ vi.mock("../drivers/minimax.ts", () => ({
   // default); the real decoder's agreement with GLOBAL_URL is pinned
   // separately in registry-minimax-url.test.ts, which does not mock this
   // module at all.
-  decodeMinimaxConfig: (raw?: { url?: string }) => ({
-    url: raw?.url?.trim() || process.env.MINIMAX_BASE_URL?.trim() || "https://api.minimax.io/v1",
-  }),
+  decodeMinimaxConfig: (raw?: { url?: string; urlSource?: string }) => {
+    const own = raw?.url?.trim();
+    const env = process.env.MINIMAX_BASE_URL?.trim();
+    return {
+      url: own || env || "https://api.minimax.io/v1",
+      // The real decoder's provenance, which resolveMinimaxApiUrl reads to
+      // decide whether anything chose a host at all.
+      urlSource: own
+        ? (raw?.urlSource === "workspace" ? "workspace" : "instance")
+        : env ? "environment" : "default",
+    };
+  },
 }));
 vi.mock("../minimax-balance.ts", () => ({
   getMiniMaxBalance: vi.fn(),
@@ -713,19 +722,38 @@ describe("ProviderRegistry", () => {
       }
     });
 
-    it("balance-checks the CN host for a reserved instance that explicitly configures the global url while ~/.mmx is CN", async () => {
-      // MinimaxDriver.create() compares the DECODED url against its own
-      // default and hands the reserved instance ~/.mmx's host whenever the
-      // two differ — so an instance whose config says exactly the global
-      // url still bills the China region.  The old "did anything choose a
-      // host?" heuristic read that explicit url as a choice and checked the
-      // global host, which answers for neither account.
+    it("balance-checks the global host for a reserved instance that explicitly configures it while ~/.mmx is CN", async () => {
+      // ~/.mmx/config.json is a workspace-wide DEFAULT, so it yields to any
+      // host that was actually chosen — and that question is answered by the
+      // decoded config's provenance, never by comparing its url to the global
+      // default.  An instance whose config carries a url chose one, even when
+      // the url it chose is byte-identical to the unset state's; the driver's
+      // own gate reads it the same way, so the balance lookup and the turns
+      // agree on the account being reported.
       localMiniMaxConfig.url = "https://api.minimaxi.com/v1";
       try {
         vi.mocked(getMiniMaxBalance).mockResolvedValue(tokenPlanBalance());
         const fake = makeFakeDriver({ kind: "minimax" });
         const registry = new ProviderRegistry([fake.driver]);
         await registry.load({ minimax: { driver: "minimax", config: { url: GLOBAL_URL } } });
+        await registry.describe();
+        expect(getMiniMaxBalance).toHaveBeenCalledWith("test-minimax-key", GLOBAL_URL);
+        expect(getMiniMaxBalance).not.toHaveBeenCalledWith("test-minimax-key", "https://api.minimaxi.com/v1");
+      } finally {
+        localMiniMaxConfig.url = GLOBAL_URL;
+      }
+    });
+
+    it("still hands the reserved instance ~/.mmx's host when nothing chose one", async () => {
+      // The other half of the same rule: with no url on the entry at all,
+      // the machine-wide profile is what decides, which is the whole reason
+      // that file is read.
+      localMiniMaxConfig.url = "https://api.minimaxi.com/v1";
+      try {
+        vi.mocked(getMiniMaxBalance).mockResolvedValue(tokenPlanBalance());
+        const fake = makeFakeDriver({ kind: "minimax" });
+        const registry = new ProviderRegistry([fake.driver]);
+        await registry.load({ minimax: { driver: "minimax" } });
         await registry.describe();
         expect(getMiniMaxBalance).toHaveBeenCalledWith("test-minimax-key", "https://api.minimaxi.com/v1");
       } finally {
