@@ -104,13 +104,14 @@ import {
   type LocalVmTarget,
 } from "./container-computer.ts";
 import {
+  applyComputerMounts,
   autoDestinations,
-  computerLabel,
   computerSystemPrompt,
-  nameMounts,
   resolveCloudBackend,
   resolveGrants,
-  type ComputerMount,
+  resolveTurnComputerMounts,
+  type TurnComputerDeps,
+  type TurnComputerMounts,
 } from "./computer-grants.ts";
 import {
   ensureDirs,
@@ -177,6 +178,7 @@ import { RETRY_MAX_ATTEMPTS } from "./drivers/retry.ts";
 import {
   ActiveTurnOwners,
   ExactTurnLeases,
+  type ExactTurnLease,
   eligibleAutoFallbackChain,
   inspectThreadOwners,
   interruptThreadOwners,
@@ -278,7 +280,6 @@ import { SPAWNED_PROXIES } from "./proxy-paths.ts";
 import { loadBundledSkills, loadUserSkills, mergeSkills, renderSkillInstructions, selectBundledSkills } from "./skill-library.ts";
 import { installedPlaybookInstructions } from "./installed-playbooks.ts";
 import { createBotPackageExport } from "./package-export.ts";
-import { shouldMountLocalComputer } from "./local-routing.ts";
 import { installTestParentWatchdog } from "./test-parent-watchdog.ts";
 
 const PORT = Number(process.env.OMB_PORT || process.env.OGB_PORT || 8799);
@@ -1722,12 +1723,76 @@ function localVmIdleFor(target: LocalVmTarget): LocalVmIdleTimer {
   return idle;
 }
 
+// A VPS turn lease taken by a ROOM member, keyed by thread.  The 1:1 release
+// path hangs off `store.botByThread`, which is empty for a room thread, so a
+// room's lease needs a thread-keyed home and a thread-keyed release — the
+// same shape `localVmThreadTargets` already uses one function below.
+const roomComputerLeases = new Map<string, ExactTurnLease>();
+
+function releaseRoomComputerLease(threadId: string): void {
+  const lease = roomComputerLeases.get(threadId);
+  if (!lease) return;
+  activeVpsThreads.release(lease);
+  roomComputerLeases.delete(threadId);
+}
+
 function releaseLocalVmThread(threadId: string): void {
   const target = localVmThreadTargets.get(threadId);
   if (!target) return;
   localVmLeaseFor(target).release(threadId);
   if (localVmActiveThreads.get(target.key) === threadId) localVmActiveThreads.delete(target.key);
   localVmThreadTargets.delete(threadId);
+}
+
+/** Claim the Local VM for one turn, or throw the reason it cannot be had.
+ *
+ * The lease, the lifecycle busy flags and the idle backstop are this module's
+ * state, so the claim stays here and `resolveTurnComputerMounts` takes it as
+ * a dependency rather than reaching for them. */
+async function acquireLocalVmMount(botId: string, threadId: string) {
+  const target = localVmTargetForBot(botId);
+  if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(target.key)) {
+    throw new Error("this Local VM is being started, stopped, or replaced — wait for setup to finish");
+  }
+  // Claim before the first await. The lifecycle route performs its matching
+  // check synchronously, so neither side can enter while the other is between
+  // inspection and mutation.
+  if (!localVmLeaseFor(target).claim(threadId, botId, localVmOwnerBusy)) {
+    throw new Error("this Local VM is already being used by another turn — wait for that turn to finish");
+  }
+  localVmThreadTargets.set(threadId, target);
+  localVmActiveThreads.set(target.key, threadId);
+  localVmIdleFor(target).touch();
+  const localVm = await containerComputerStatus(undefined, undefined, target);
+  if (!localVm.ready || !localVm.runtime) {
+    throw new Error(`${localVm.problem ?? "the Local VM is not ready"} (App Settings → Local VM)`);
+  }
+  return containerComputerMcp(localVm.runtime, controlIntegration(botId), target);
+}
+
+/** The harness state `resolveTurnComputerMounts` borrows, gathered in one
+ * place.  Both dispatchers pass this plus their own two per-turn seams — the
+ * activity chip, which carries the speaking member in a room and nothing in a
+ * direct chat, and the "is this still the current turn" guard — so a room
+ * member and a direct chat resolve computers through identical code. */
+function turnComputerDeps(
+  botId: string,
+  threadId: string,
+  notice: (name: string, ok: boolean) => void,
+  checkpoint: () => Promise<boolean>,
+): TurnComputerDeps<ExactTurnLease> {
+  return {
+    hostPlatform: process.platform,
+    readHostConnection: () => readCuaConnection(),
+    acquireLocalVm: () => acquireLocalVmMount(botId, threadId),
+    vps,
+    box,
+    vpsLeases: activeVpsThreads,
+    controlIntegration,
+    broadcast: (frame) => broadcast({ ...frame }),
+    notice,
+    checkpoint,
+  };
 }
 
 // A running VM may have survived an app/server restart. Start its idle
@@ -1748,6 +1813,7 @@ bus.subscribe((event: RuntimeEvent) => {
   }
   if (event.type === "turn.completed") {
     releaseLocalVmThread(event.threadId);
+    releaseRoomComputerLease(event.threadId);
   }
   broadcast({ kind: "runtime", event });
   const routineRun = routines?.handleRuntimeEvent(event) ?? null;
@@ -2994,11 +3060,16 @@ async function startTurn(
       if (cfg.qdrant?.enabled !== false && instance.adapter.capabilities.qdrantMcp === true) {
         integrations.qdrant = qdrantIntegration(bot.id, threadId);
       }
-      // CLI engines work inside the bot's own workspace directory rather
-      // than the user's home: a bot with file tools and acceptEdits gets a
-      // desk, not the whole house — and the workspace is where its
-      // MEMORY.md lives. API/box engines have no local filesystem story.
-      const worksInWorkspace = instance.driverKind !== "grok" && instance.driverKind !== "boxAgent";
+      // A bot works inside its own workspace directory rather than the
+      // user's home: a bot with file tools and acceptEdits gets a desk, not
+      // the whole house — and the workspace is where its MEMORY.md lives.
+      // Every engine that can read and write files has one, which since #442
+      // includes the HTTP engines: they reach the workspace through the
+      // `workspaceOrHostComputer` gate on the harness file tools.  Only
+      // boxAgent is left out, and for a reason that is about location rather
+      // than capability — its turn runs on box.ascii.dev, not this machine,
+      // so a folder here is not a folder it can open.
+      const worksInWorkspace = instance.driverKind !== "boxAgent";
       const privateWorkspace = worksInWorkspace ? ensureWorkspace(bot.id) : undefined;
       const skillInstructions = renderSkillInstructions(selectedSkills, {
         includeRoot: worksInWorkspace && opts?.runOn !== "cloud",
@@ -3026,248 +3097,40 @@ async function startTurn(
       // tools that would fail on every call or spawn an unnecessary proxy.
       const dwebUrl = process.env.DWEB_URL?.trim();
       if (dwebUrl) integrations.dweb = { url: dwebUrl };
-      // Every destination the person granted, not just the first. The picker
-      // has always stored an array, but reading computers[0] quietly reduced
-      // "the shared VM and this computer" to "the shared VM" — and then the
-      // drivers collapsed whatever survived into a single MCP server. A grant
-      // is a capability, not a preference: each one is resolved on its own
-      // terms below and mounted with its own tools, so the agent chooses per
-      // task. Granting only the VM therefore means only the VM.
-      const allowedDestinations = allowedBotComputers(cfg);
-      const { granted, auto } = resolveGrants(
-        bot.computers,
-        opts?.runOn,
-        cfg.botDefaults?.computers,
-        allowedDestinations,
-      );
-      const wantsCloud = granted.includes("cloud");
-      const wantsVm = granted.includes("vm");
-      const wantsLocal = granted.includes("local");
-      // `auto` says the bot never chose; these say where auto is still
-      // allowed to look.  They are separate because the auto path mounts two
-      // different things — a cloud computer and, failing that, the host — and
-      // an operator who disabled only one of them meant only one of them.
-      const autoAllows = new Set(autoDestinations(allowedDestinations));
-      const autoCloud = auto && autoAllows.has("cloud");
-      const autoHost = auto && autoAllows.has("local");
-      // Cloud routines always use Box/BoxAgent. The per-bot backend applies
-      // only to ordinary turns that mount a computer into the local agent.
-      // Same rule as the destinations: the workspace default stands in only
-      // for a bot that has never chosen a backend of its own.
-      const botBackend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
-      const cloudBackend = opts?.runOn === "cloud" ? "box" : botBackend;
-      const mountsComputerMcp = instance.adapter.capabilities.computerMcp === true;
-      const mountsCloudComputer = mountsComputerMcp || instance.driverKind === "boxAgent";
-      const mountsLocalComputer = instance.adapter.capabilities.localComputerMcp === true;
-      let previewCapture: (() => Promise<{ png: string; format: string }>) | null = null;
-      const mounts: ComputerMount[] = [];
-      let autoVpsProblem: string | null = null;
-
-      // Explicit destinations are strict. In particular, Local VM must never
-      // fall through to host CUA and accidentally click on the user's Mac.
-      if (wantsVm) {
-        if (!mountsComputerMcp || instance.driverKind === "boxAgent") {
-          throw new Error("this model engine cannot use the Local VM — choose Claude or an ACP engine, or select another computer destination");
-        }
-        const localVmTarget = localVmTargetForBot(bot.id);
-        if (localVmImageBusy || localVmModeChangeBusy || localVmLifecycleBusy.has(localVmTarget.key)) {
-          throw new Error("this Local VM is being started, stopped, or replaced — wait for setup to finish");
-        }
-        // Claim before the first await. The lifecycle route performs its
-        // matching check synchronously, so neither side can enter while the
-        // other is between inspection and mutation.
-        if (!localVmLeaseFor(localVmTarget).claim(threadId, bot.id, localVmOwnerBusy)) {
-          throw new Error("this Local VM is already being used by another turn — wait for that turn to finish");
-        }
-        localVmThreadTargets.set(threadId, localVmTarget);
-        localVmActiveThreads.set(localVmTarget.key, threadId);
-        localVmIdleFor(localVmTarget).touch();
-        const localVm = await containerComputerStatus(undefined, undefined, localVmTarget);
-        if (providerReloadInProgress) await waitForProviderReloads();
-        if (!dispatchStillCurrent()) return;
-        if (!localVm.ready || !localVm.runtime) {
-          throw new Error(`${localVm.problem ?? "the Local VM is not ready"} (App Settings → Local VM)`);
-        }
-        mounts.push({
-          name: "",
-          label: computerLabel("vm", process.platform),
-          kind: "vm",
-          stdio: containerComputerMcp(localVm.runtime, controlIntegration(bot.id), localVmTarget),
-        });
-      }
-      // Deliberately not an "else": "the Local VM and this computer" is a
-      // legitimate grant, and each destination resolves independently.
-      if (wantsLocal) {
-        // This computer is the one destination that degrades instead of
-        // refusing: the safe direction is "no computer", never a different
-        // one, and a routine or webhook that only needs the shell must not
-        // die because the desktop is unavailable. The chip says why the
-        // tools are missing so a person can fix the cause. Engines that
-        // broker host asks (ACP, Claude, pi, codex) mount it in every mode;
-        // an engine with no approval channel never does.
-        const hostSupportsLocal = shouldMountLocalComputer({
-          requested: "local",
-          hostPlatform: process.platform,
-          providerSupportsLocal: true,
-        });
-        const isToolLoopDriver = instance.adapter.capabilities.toolLoop === true;
-        const cua = hostSupportsLocal && mountsLocalComputer ? readCuaConnection() : null;
-        const unavailable = !hostSupportsLocal
-          ? "local computer control is not available on this platform"
-          : !mountsLocalComputer
-            ? "this model engine has no approval channel for actions on this computer, so BotFleet did not mount it"
-            : !cua && !isToolLoopDriver
-              ? "CUA Driver is not ready for this computer — check permissions and restart BotFleet"
-              : null;
-        if (unavailable) {
-          store.appendMessage(threadId, {
-            role: "bot",
-            kind: "activity",
-            tool: { name: `local computer not mounted: ${unavailable}`, ok: false },
-          });
-        } else if (cua) {
-          mounts.push({
-            name: "",
-            label: computerLabel("local", process.platform),
-            kind: "local",
-            stdio: cua,
-          });
-        }
-      }
-
-      // A VPS is a local-agent computer mount, never a remote agent runner.
-      // Explicit Cloud may prepare/start it. Auto remains read-only unless
-      // the person explicitly opted this bot into remote lifecycle actions.
-      if ((wantsCloud || autoCloud) && cloudBackend === "vps") {
-        const unsupported = vps.vpsDriverError(instance.driverKind, mountsComputerMcp);
-        if (unsupported && wantsCloud) throw new Error(unsupported);
-        if (unsupported && autoCloud) autoVpsProblem = unsupported;
-        if (!unsupported) {
-          vpsLease = activeVpsThreads.claim(bot.id, threadId, dispatchOwner.dispatchId);
-          const remote = wantsCloud || bot.autoStartVps
-            ? await vps.vpsComputerAction("provision", cfg, bot.id)
-            : await vps.inspectVpsForAuto(cfg, bot.id);
-          if (providerReloadInProgress) await waitForProviderReloads();
-          if (!dispatchStillCurrent()) return;
-          if (remote?.ready && remote.sshAlias) {
-            const targetCfg = { ...cfg, vps: { sshAlias: remote.sshAlias } };
-            const vpsMcp = vps.vpsComputerMcp(targetCfg, bot.id, remote.container_id ?? undefined);
-            const vpsControl = controlIntegration(bot.id);
-            mounts.push({
-              name: "",
-              label: computerLabel("vps", process.platform),
-              kind: "vps",
-              stdio: {
-                ...vpsMcp,
-                env: { ...vpsMcp.env, OMB_CONTROL_URL: vpsControl.url, OMB_CONTROL_TOKEN: vpsControl.token },
-              },
-            });
-            previewCapture = () => vps.vpsComputerScreenshot(targetCfg, bot.id);
-          } else {
-            activeVpsThreads.release(vpsLease);
-            if (wantsCloud) {
-              throw new Error(remote?.problem ?? "the VPS computer could not be created or reached");
-            }
-            autoVpsProblem = remote?.problem ?? "the VPS computer could not be reached";
-          }
-        }
-      }
-
-      // Cloud is also strict when explicitly selected. Auto (unset) reuses an
-      // existing cloud box, then falls back to host CUA without provisioning.
-      if ((wantsCloud || autoCloud) && cloudBackend === "box" && box.boxConfigured(cfg)) {
-        if (!mountsCloudComputer && wantsCloud) {
-          throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
-        }
-        let b = await box.findBox(cfg, bot.id).catch(() => null);
-        if (providerReloadInProgress) await waitForProviderReloads();
-        if (!dispatchStillCurrent()) return;
-        // Explicit Cloud and the box-native Computer engine provision on first
-        // use. Auto remains non-surprising and only reuses an existing box.
-        if (!b && mountsCloudComputer && (wantsCloud || instance.driverKind === "boxAgent")) {
-          broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
-          await box.provisionBox(cfg, bot.id, bot.name);
-          if (providerReloadInProgress) await waitForProviderReloads();
-          if (!dispatchStillCurrent()) return;
-          b = await box.findBox(cfg, bot.id).catch(() => null);
-          if (providerReloadInProgress) await waitForProviderReloads();
-          if (!dispatchStillCurrent()) return;
-        }
-        // an archived box answers every action with an error until it
-        // resumes — wake it here, once, instead of letting the agent
-        // discover it one failed tool call at a time. Only worth the
-        // resume (~8s, and it un-pauses billing) when the bot can act.
-        if (b && mountsCloudComputer && !["idle", "ready", "running"].includes(b.state)) {
-          broadcast({ kind: "computer", botId: bot.id, state: "waking" });
-          b = (await box.readyBox(cfg, bot.id).catch(() => null)) ?? b;
-          if (providerReloadInProgress) await waitForProviderReloads();
-          if (!dispatchStillCurrent()) return;
-        }
-        if (b) {
-          previewCapture = () => box.screenshotBox(cfg, bot.id, b!.id);
-          if (mountsCloudComputer) {
-            mounts.push({
-              name: "",
-              label: computerLabel("box", process.platform),
-              kind: "box",
-              box: {
-                kind: "box",
-                boxId: b.id,
-                token: cfg.box!.token!,
-                control: controlIntegration(bot.id),
-              },
-            });
-          }
-        }
-      }
-      if (wantsCloud && cloudBackend === "box" && !box.boxConfigured(cfg)) {
-        throw new Error("Cloud box is not configured — add a Box API key or choose Local VM");
-      }
-      if (wantsCloud && cloudBackend === "box" && !mounts.some((m) => m.kind === "box")) {
-        throw new Error("the cloud computer could not be created or reached");
-      }
-
-      // Auto-only host fallback. Electron owns cua-driver/TCC attribution;
-      // the harness only reads its already-running connection descriptor.
-      if (
-        mounts.length === 0 &&
-        autoHost &&
-        shouldMountLocalComputer({
-          requested: undefined,
-          hostPlatform: process.platform,
-          providerSupportsLocal: mountsLocalComputer,
-        })
-      ) {
-        const cua = readCuaConnection();
-        if (cua) {
-          mounts.push({
-            name: "",
-            label: computerLabel("local", process.platform),
-            kind: "local",
-            stdio: cua,
-          });
-        }
-      }
-      if (autoCloud && cloudBackend === "vps" && mounts.length === 0 && autoVpsProblem) {
-        const hint = bot.autoStartVps
-          ? "Check the VPS connection in App Settings → Connections."
-          : "Open Computer and enable Start VPS automatically, or choose Cloud to start it manually.";
-        throw new Error(`${autoVpsProblem}. ${hint}`);
-      }
-
-      // Name the servers and hand every grant to the driver. With one
-      // computer the server keeps its historical name, so a single-computer
-      // bot's tool surface, prompt, and allow-list do not move at all.
-      // `computer` / `localComputer` stay populated with the first mount of
-      // each shape for consumers that still expect exactly one computer.
-      const granted_mounts = nameMounts(mounts);
-      if (granted_mounts.length) {
-        integrations.computers = granted_mounts;
-        const firstBox = granted_mounts.find((m) => m.box);
-        const firstStdio = granted_mounts.find((m) => m.stdio);
-        if (firstBox?.box) integrations.computer = firstBox.box;
-        if (firstStdio?.stdio) integrations.localComputer = firstStdio.stdio;
-      }
+      // Every computer the person granted, resolved exactly as it is for a
+      // room turn: one helper, two dispatchers, so a bot cannot hold a
+      // different set of computers depending on which conversation it is
+      // speaking in.  See server/computer-grants.ts.
+      const turnComputers = await resolveTurnComputerMounts({
+        bot: { id: bot.id, name: bot.name, computers: bot.computers, cloudBackend: bot.cloudBackend, autoStartVps: bot.autoStartVps },
+        cfg,
+        engine: {
+          driverKind: instance.driverKind,
+          computerMcp: instance.adapter.capabilities.computerMcp === true,
+          localComputerMcp: instance.adapter.capabilities.localComputerMcp === true,
+          toolLoop: instance.adapter.capabilities.toolLoop === true,
+        },
+        threadId,
+        dispatchId: dispatchOwner.dispatchId,
+        runOn: opts?.runOn,
+        allowed: allowedBotComputers(cfg),
+        deps: turnComputerDeps(
+          bot.id,
+          threadId,
+          (name, ok) => store.appendMessage(threadId, { role: "bot", kind: "activity", tool: { name, ok } }),
+          async () => {
+            if (providerReloadInProgress) await waitForProviderReloads();
+            return dispatchStillCurrent();
+          },
+        ),
+      });
+      // The lease outlives this statement: the settle fold releases it, and
+      // so does the catch below.
+      vpsLease = turnComputers.vpsLease;
+      if (turnComputers.cancelled) return;
+      const granted_mounts = turnComputers.mounts;
+      const previewCapture = turnComputers.previewCapture;
+      applyComputerMounts(integrations, granted_mounts);
       // Agent control tools include peer comms and the secure credential
       // request card. A comms-invoked turn (depth ≥ cap) gets none — hard recursion
       // stop, so the user's tokens can't be burned by a bot-to-bot loop.
@@ -3355,7 +3218,7 @@ async function startTurn(
       // this the catalog would always see `chiefOfStaff: false` and a real
       // Chief's HTTP-lane turn would never be offered the tool its own
       // prompt (chiefOfStaffSystemPrompt) tells it it has.
-      const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
+      const hasHostComputer = turnComputers.hasHostComputer;
       const turnTools = buildTurnTools(
         { ...integrations, localComputer: hasHostComputer, workspace: worksInWorkspace },
         { chiefOfStaff: Boolean(bot.chiefOfStaff) },
@@ -4589,11 +4452,24 @@ async function runGroupMemberTurn(
   store.patchBot(bot.id, { inflightThreadId: threadId });
   store.patchGroup(group.id, { busyBotId: bot.id }); // the store's change stream carries the frame
   groupSpeakers.set(threadId, { botId: bot.id, name: bot.name, color: bot.color });
-  activeTurnOwners.claim(threadId, {
+  const roomDispatch = activeTurnOwners.claim(threadId, {
     botId: bot.id,
     selection,
     fallbackPolicy: bot.modelSelection,
   });
+  /** Hand the room back when no turn.completed will do it.  Only use it while
+   * this invocation still owns the room; otherwise it would emit a duplicate
+   * group frame or clear a newer speaker's state. */
+  const releaseRoomSpeaker = () => {
+    if (store.group(group.id)?.busyBotId !== bot.id) return;
+    groupSpeakers.delete(threadId);
+    store.patchGroup(group.id, { busyBotId: null, unread: true });
+    const currentBot = store.bot(bot.id);
+    if (currentBot) {
+      if (currentBot.busy) store.setActivity(bot.id, "idle");
+      store.patchBot(bot.id, { inflightThreadId: undefined });
+    }
+  };
 
   const roster = group.memberIds
     .map((id) => store.bot(id))
@@ -4622,8 +4498,10 @@ async function runGroupMemberTurn(
   }`;
 
   // same workspace + memory as a 1:1 turn — the room is a different
-  // conversation, not a different bot
-  const worksInWorkspace = instance.driverKind !== "grok" && instance.driverKind !== "boxAgent";
+  // conversation, not a different bot.  boxAgent is the one exclusion, and
+  // it is about location rather than capability: its turn runs on
+  // box.ascii.dev, so a folder on this machine is not one it can open.
+  const worksInWorkspace = instance.driverKind !== "boxAgent";
   const workspace = worksInWorkspace ? ensureWorkspace(bot.id) : undefined;
   // The room's folder pins here — on the first turn that actually
   // dispatches, not at PATCH time — so a folder set on a never-used room
@@ -4632,18 +4510,97 @@ async function runGroupMemberTurn(
   // but must not decide the pin: the room's desk is a property of the
   // room, not of whichever member happened to speak first.
   const cwd = groupTurnCwd(workspace, () => store.pinGroupCwd(group.id, threadId));
-  const allowedDestinations = allowedBotComputers(cfg);
-  const { granted } = resolveGrants(
-    bot.computers,
-    undefined,
-    cfg.botDefaults?.computers,
-    allowedDestinations,
-  );
-  const wantsLocal = granted.includes("local");
-  const mountsLocalComputer = instance.adapter.capabilities.localComputerMcp === true;
-  const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
+  // The same computers as a 1:1 turn, through the same helper.  A room used
+  // to resolve none of this: `integrations.computer` / `computers` /
+  // `localComputer` were never set here, so a bot holding Cua, a Box, a Local
+  // VM or a VPS in a direct chat lost every one of them the moment it spoke
+  // in a room — while the HTTP lane in that same room kept host tools through
+  // `hasHostComputer` below.  A room is a different conversation, not a
+  // different bot.
+  //
+  // Host control is honest on this lane because a room member's asks reach
+  // the same broker the 1:1 lane uses: the driver's `request.opened` folds an
+  // approval card onto THIS thread carrying the speaking member (the fold
+  // resolves a room by `store.groupByThread` and `groupSpeakers`),
+  // `POST /api/threads/:threadId/respond` answers it by thread, and
+  // `deliverDecision` hands the verdict back through the very instance that
+  // asked.  The room deadline even holds while a card is open.  That is what
+  // `server/contracts.ts` requires before a computer may be mounted at all.
+  let turnComputers: TurnComputerMounts<ExactTurnLease>;
+  try {
+    turnComputers = await resolveTurnComputerMounts({
+      bot: { id: bot.id, name: bot.name, computers: bot.computers, cloudBackend: bot.cloudBackend, autoStartVps: bot.autoStartVps },
+      cfg,
+      engine: {
+        driverKind: instance.driverKind,
+        computerMcp: instance.adapter.capabilities.computerMcp === true,
+        localComputerMcp: instance.adapter.capabilities.localComputerMcp === true,
+        toolLoop: instance.adapter.capabilities.toolLoop === true,
+      },
+      threadId,
+      dispatchId: roomDispatch.dispatchId,
+      allowed: allowedBotComputers(cfg),
+      deps: turnComputerDeps(
+        bot.id,
+        threadId,
+        (name, ok) => store.appendMessage(threadId, {
+          role: "bot",
+          kind: "activity",
+          from: { botId: bot.id, name: bot.name, color: bot.color },
+          tool: { name, ok },
+        }),
+        async () => {
+          if (providerReloadInProgress) await waitForProviderReloads();
+          return !isCancelled?.();
+        },
+      ),
+    });
+  } catch (error) {
+    // An explicit destination that cannot be had refuses the turn here
+    // exactly as it does 1:1 — the safe direction is "no computer", never a
+    // different one.  Unwound the way a rejected dispatch is, because no
+    // turn.completed will follow to do it.
+    const message = error instanceof Error ? error.message : String(error);
+    releaseRoomComputerLease(threadId);
+    activeTurnOwners.settle(threadId, instance.instanceId);
+    store.appendMessage(threadId, {
+      role: "bot",
+      kind: "activity",
+      from: { botId: bot.id, name: bot.name, color: bot.color },
+      tool: { name: `error: ${message.slice(0, 140)}`, ok: false },
+    });
+    onDispatchError?.(message);
+    releaseRoomSpeaker();
+    drainQueuedSends();
+    drainRoomQueue();
+    drainConnectorResumes();
+    drainSecretResumes();
+    return true;
+  }
+  if (turnComputers.cancelled) {
+    releaseRoomComputerLease(threadId);
+    activeTurnOwners.settle(threadId, instance.instanceId);
+    releaseRoomSpeaker();
+    return false;
+  }
+  applyComputerMounts(integrations, turnComputers.mounts);
+  // A VPS lease taken in a room is released by the turn.completed subscriber,
+  // which is thread-keyed for exactly this reason: the 1:1 release path hangs
+  // off `store.botByThread`, and a room thread has no owning bot.
+  if (turnComputers.vpsLease) roomComputerLeases.set(threadId, turnComputers.vpsLease);
+  // `turnComputers.previewCapture` is deliberately dropped here.  The screen
+  // poller is started and stopped from the 1:1 halves of the turn fold, so a
+  // poller started on a room turn would never be torn down and would keep
+  // capturing the box forever.  Giving rooms a live screen is its own change.
+  const hasHostComputer = turnComputers.hasHostComputer;
   const roomSystem =
     system +
+    // Same sentence the 1:1 lane sends, in the same position: a computer the
+    // bot is never told about is one it reaches for by accident.
+    computerSystemPrompt(turnComputers.mounts, {
+      boxAgent: instance.driverKind === "boxAgent",
+      hostPlatform: process.platform,
+    }) +
     sectionContextSystemPrompt(bot.section) +
     (hasFileTools(worksInWorkspace, httpOnlyToolSurface, hasHostComputer)
       ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}`
@@ -4778,18 +4735,8 @@ async function runGroupMemberTurn(
   // produces turn.completed (or the stall watchdog's grace fallback runs).
   // Do not clear busy or start the next member on that same thread early.
   if (outcome === "stalled" || outcome === "timed_out") return false;
-  // turn.completed normally performs this cleanup. Only use the fallback
-  // when this invocation still owns the room; otherwise it would emit a
-  // duplicate group frame or clear a newer speaker's state.
-  if (store.group(group.id)?.busyBotId === bot.id) {
-    groupSpeakers.delete(threadId);
-    store.patchGroup(group.id, { busyBotId: null, unread: true });
-    const currentBot = store.bot(bot.id);
-    if (currentBot) {
-      if (currentBot.busy) store.setActivity(bot.id, "idle");
-      store.patchBot(bot.id, { inflightThreadId: undefined });
-    }
-  }
+  // turn.completed normally performs this cleanup; this is the fallback.
+  releaseRoomSpeaker();
   if (outcome === "dispatch_failed") {
     // No turn.completed follows a rejected room dispatch. Anything that was
     // queued while this bot briefly owned the room must be retried now.
