@@ -48,7 +48,10 @@ describe("no skills imported", () => {
 
   it("never answers a failed or unfinished load with “no skills”", () => {
     expect(skillsPanelPlaceholder([], true, null)).toBe("Loading…");
-    expect(skillsPanelPlaceholder([], false, "the server said no")).toBe("the server said no");
+    // a failed load yields to the error banner rather than claiming nothing
+    // is imported, and a failed toggle never blanks a list that loaded fine
+    expect(skillsPanelPlaceholder([], false, "the server said no")).toBeNull();
+    expect(skillsPanelPlaceholder([skill()], false, "enable failed")).toBeNull();
     expect(skillsPanelPlaceholder([skill()], false, null)).toBeNull();
   });
 });

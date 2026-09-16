@@ -109,17 +109,22 @@ export function skillRowView(skill: SkillListingRow, opened: boolean, busy = fal
   };
 }
 
-/** What the panel body shows instead of a list, or null when it shows the
- * list.  Loading and errors beat the empty copy: "no skills" must never be
- * the answer to a question BotFleet failed to ask. */
+/** What the panel body shows instead of a list, or null when the list (or
+ * the error banner beside it) says enough.
+ *
+ * "No skills imported yet" must never be the answer to a question BotFleet
+ * failed to ask, so a failed load yields to the error banner — and a failed
+ * *toggle* must not blank a list that loaded fine, which is why the list
+ * wins over an error whenever there is one to show. */
 export function skillsPanelPlaceholder(
   skills: SkillListingRow[],
   loading: boolean,
   error: string | null,
 ): string | null {
   if (loading) return "Loading…";
-  if (error) return error;
-  return skills.length ? null : SKILLS_EMPTY_COPY;
+  if (skills.length) return null;
+  if (error) return null;
+  return SKILLS_EMPTY_COPY;
 }
 
 /** One imported skill: what it is, what the scan found, what it left
@@ -291,10 +296,10 @@ export function BotSkillsPanel({ bot, driverKind }: { bot: Bot; driverKind?: str
         <div className="mt-3">
           {engineNote && <div className="mb-2 text-[12px] text-ink-secondary">{engineNote}</div>}
 
-          {placeholder ? (
-            <div className={cn("text-[13px]", error ? "text-danger" : "text-ink-secondary")}>{placeholder}</div>
-          ) : (
-            <div className="overflow-hidden rounded-lg border border-hairline/40">
+          {placeholder && <div className="text-[13px] text-ink-secondary">{placeholder}</div>}
+
+          {skills.length > 0 && (
+            <div className={cn("overflow-hidden rounded-lg border border-hairline/40", placeholder && "mt-2")}>
               {skills.map((skill) => (
                 <SkillRow
                   key={skill.name}
@@ -308,6 +313,10 @@ export function BotSkillsPanel({ bot, driverKind }: { bot: Bot; driverKind?: str
               ))}
             </div>
           )}
+
+          {/* beside the list, never instead of it: a failed toggle must not
+              blank the skills the person came here to read */}
+          {error && <div className="mt-2 text-[12px] text-danger">{error}</div>}
 
           {canPick && (
             <button
