@@ -344,7 +344,10 @@ export type MiniMaxQuotaView = {
  *  the 5-hour figure, then when the 5-hour window (the recurring, actionable
  *  one) comes back, as a clock time rather than a countdown, matching the
  *  "resets at H:MM" convention server/index.ts's own quota line already
- *  uses. `row.resetsAt` here is specifically the 5-hour window's own reset
+ *  uses.  When the WEEKLY window is the binding one instead, the clause
+ *  becomes a countdown ("resets in 3d 4h") — that reset can be days away
+ *  and a clock time alone would read as later today. `row.resetsAt` here is
+ *  specifically the 5-hour window's own reset
  *  (server/minimax-balance.ts keeps it separate from the "soonest of either
  *  window" figure the registry.ts per-model merge uses instead). A weekly
  *  figure above 100% (MiniMax's own boosted-allowance scaling,
@@ -379,9 +382,15 @@ export function minimaxQuotaLine(row: MiniMaxQuotaView, now: number = Date.now()
   const weeklyBinds = row.secondaryRemainingPercent != null && row.secondaryRemainingPercent <= 0;
   const bindingResetsAt = weeklyBinds ? row.weeklyResetsAt : row.resetsAt;
   if (bindingResetsAt != null) {
-    line += bindingResetsAt <= now
-      ? ", resets soon"
-      : `, resets at ${new Date(bindingResetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
+    if (bindingResetsAt <= now) line += ", resets soon";
+    // A weekly reset can be up to seven days out, and a bare clock time
+    // drops the day entirely — "resets at 3:00 PM" on a Thursday-morning
+    // block reads as this afternoon.  The countdown this file already
+    // exports says "3d 4h", which cannot be mistaken for today.  The
+    // 5-hour window keeps the clock time: it is always under five hours
+    // away, so the day is never in question there.
+    else if (weeklyBinds) line += `, resets in ${formatResetCountdown(bindingResetsAt, now)}`;
+    else line += `, resets at ${new Date(bindingResetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`;
   }
   return line;
 }

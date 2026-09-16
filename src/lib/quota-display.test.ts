@@ -444,8 +444,9 @@ describe("minimaxQuotaLine", () => {
       { ...base, source: "token-plan", status: "capped", remainingPercent: 100, secondaryRemainingPercent: 0, resetsAt: now + 1_200_000, weeklyResetsAt },
       now,
     );
-    const expectedTime = new Date(weeklyResetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-    expect(line).toBe(`0% left this week, 100% left in the current 5 h window, resets at ${expectedTime}`);
+    // A countdown, not a clock time: the weekly reset is three days out,
+    // and "resets at 3:00 PM" would read as this afternoon.
+    expect(line).toBe("0% left this week, 100% left in the current 5 h window, resets in 3d");
   });
 
   it("keeps naming the 5-hour reset while the weekly window still has room", () => {

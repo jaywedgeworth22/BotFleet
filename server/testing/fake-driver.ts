@@ -23,6 +23,11 @@ export interface FakeDriverOptions {
    *  test per-model behavior (quota mapping, fallback ordering, …) across
    *  more than one catalog id. */
   models?: { default: string; options: Array<{ id: string; label: string }> };
+  /** A quota verdict the DRIVER itself reports on its snapshot, the way a
+   *  real driver does after its own probe comes back 402/429.  Exists so a
+   *  test can prove the registry merges that verdict rather than replacing
+   *  it with whatever a balance endpoint said. */
+  quota?: ProviderSnapshot["quota"];
 }
 
 export interface FakeDriverHandle {
@@ -69,7 +74,12 @@ export function makeFakeDriver(opts: FakeDriverOptions = {}): FakeDriverHandle {
           models: handle.driver.models,
           snapshot: async (): Promise<ProviderSnapshot> => {
             if (opts.failSnapshot) throw new Error(opts.failSnapshot);
-            return { state: "available", version: "0.0.0-fake" };
+            // A fresh object per call: the registry mutates `snapshot.quota`
+            // in place, and a shared literal would leak one describe()'s
+            // merge into the next.
+            const snapshot: ProviderSnapshot = { state: "available", version: "0.0.0-fake" };
+            if (opts.quota) snapshot.quota = { ...opts.quota };
+            return snapshot;
           },
           adapter: {
             provider: kind,
