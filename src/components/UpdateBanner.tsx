@@ -10,6 +10,8 @@ import {
   bannerDismissKey,
   bannerIsActionable,
   installBlockedReason,
+  installBlockedReasonDetail,
+  lastRunDetail,
   lastRunLabel,
   mayUseLegacyLocalUpdate,
   runningLabel,
@@ -279,6 +281,16 @@ function LocalUpdateCard({
     : status.available
       ? (blockedReason ?? "This Mac can build and install it.")
       : (lastRunLabel(status.lastRun) ?? "");
+  // The harness's own diagnostic sentence — a checkout path, a script path,
+  // an updater's raw failure line — for the hover only.  `subtitle` is
+  // already what a person should read; this is a fallback so a truncated
+  // subtitle is still readable on hover even when there is nothing extra to
+  // add.
+  const subtitleDetail = running
+    ? null
+    : status.available
+      ? installBlockedReasonDetail(status)
+      : lastRunDetail(status.lastRun);
   const percent = running && typeof running.progress === "number"
     ? Math.round(Math.min(1, Math.max(0, running.progress)) * 100)
     : null;
@@ -291,7 +303,7 @@ function LocalUpdateCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="text-[13.5px] font-semibold text-ink">{title}</div>
-          <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary" title={subtitle}>
+          <div className="mt-0.5 truncate text-[12.5px] text-ink-secondary" title={subtitleDetail ?? subtitle}>
             {subtitle}
           </div>
         </div>

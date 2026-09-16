@@ -29,6 +29,7 @@ import {
   idleLabel,
   installBlockedReason,
   installedLabel,
+  lastRunDetail,
   lastRunLabel,
   runningLabel,
   updateSource,
@@ -411,6 +412,8 @@ function UpdatesRow() {
       ? `Installed ${installedLabel(status)}.${"\u00A0 "}${harnessLine}${blockedReason ? `.${"\u00A0 "}${blockedReason}` : ""}`
       : `${feedLabel}${"\u00A0 "}Auto-checks at most once per 6 hours;${"\u00A0 "}you can manually check any time if an update is available.`;
   const lastRun = source === "harness" ? lastRunLabel(status?.lastRun ?? null) : null;
+  // The updater's own message for that run — a hover only, never inline.
+  const lastRunMessage = source === "harness" ? lastRunDetail(status?.lastRun ?? null) : null;
   // Shown whenever there is something to install, disabled when this Mac may
   // not: a button that is merely down beside a sentence saying why beats a
   // button that is not there at all.
@@ -458,7 +461,11 @@ function UpdatesRow() {
             ))}
           </ul>
         )}
-        {lastRun && <div className="max-w-sm text-right text-[12px] text-ink-secondary">{lastRun}</div>}
+        {lastRun && (
+          <div className="max-w-sm text-right text-[12px] text-ink-secondary" title={lastRunMessage ?? undefined}>
+            {lastRun}
+          </div>
+        )}
         {local.error && (
           <div role="alert" className="max-w-sm text-right text-[12px] text-danger">
             {local.error}
