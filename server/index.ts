@@ -4583,6 +4583,11 @@ async function runGroupMemberTurn(
     releaseRoomSpeaker();
     return false;
   }
+  // One function for both lanes, so the room cannot set `computers` without
+  // also setting the legacy `computer` / `localComputer` fields several
+  // drivers still read exclusively — Antigravity's own MCP builder matches
+  // on a `command` key or the legacy box computer, and would never see a
+  // mount that arrived only in the array.
   applyComputerMounts(integrations, turnComputers.mounts);
   // A VPS lease taken in a room is released by the turn.completed subscriber,
   // which is thread-keyed for exactly this reason: the 1:1 release path hangs

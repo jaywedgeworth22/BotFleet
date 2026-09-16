@@ -157,6 +157,28 @@ describe("the grant a turn resolves is the same on both lanes", () => {
     expect(integrations.localComputer).toBeUndefined();
   });
 
+  it("populates the legacy single-computer fields, for drivers that read only those", async () => {
+    // Several drivers never look at `integrations.computers`.  Antigravity's
+    // `antigravityMcpServers` matches on a `command` key or the legacy box
+    // computer, so a mount that arrived only in the array would be invisible
+    // to it.  `startTurn` always set `computer` and `localComputer` beside
+    // the array; the room lane now goes through the same function, so it
+    // cannot set one without the others.
+    const box: ComputerMount = {
+      name: "",
+      label: "ASCII.dev Box",
+      kind: "box",
+      box: { kind: "box", boxId: "box-1", token: "fake-box-value" },
+    };
+    const host: ComputerMount = { name: "", label: "This Mac", kind: "local", stdio: HOST_STDIO };
+
+    const integrations: Parameters<typeof applyComputerMounts>[0] = {};
+    applyComputerMounts(integrations, [box, host]);
+    expect(integrations.computers).toEqual([box, host]);
+    expect(integrations.computer).toEqual(box.box);
+    expect(integrations.localComputer).toEqual(HOST_STDIO);
+  });
+
   it("withholds the host from an engine with no approval channel, and says why", async () => {
     const deps = stubDeps();
     const resolved = await resolveTurnComputerMounts({
