@@ -47,11 +47,10 @@ import {
 } from "./container-computer.ts";
 import { VPS_CONTAINER_LABEL, VPS_IMAGE, VPS_MANAGED_LABEL, VPS_VIEWER_LABEL } from "./vps-computer.ts";
 import { removeTempDir, spawnDetached, waitForExit } from "./testing/cleanup.ts";
+import { freePortBlock } from "./testing/ports.ts";
 
 const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
 const FAKE_CLI = join(SERVER_DIR, "testing", "fake-acp-cli.ts");
-const PORT = 18800 + Math.floor(Math.random() * 10_000);
-const BASE = `http://127.0.0.1:${PORT}`;
 const IMAGE_ID = `sha256:${"c".repeat(64)}`;
 const CONTAINER_ID = "d".repeat(64);
 const posixOnly = describe.skipIf(process.platform === "win32");
@@ -317,12 +316,13 @@ interface WireMessage {
 posixOnly("room turns carry the same computers as a direct chat", () => {
   let child: ChildProcess;
   let home: string;
+  let base: string;
   let stderr = "";
   let mountsDump: string;
   let desklessDump: string;
 
   const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
-    const res = await fetch(`${BASE}${path}`, {
+    const res = await fetch(`${base}${path}`, {
       method,
       headers: body ? { "content-type": "application/json" } : undefined,
       body: body ? JSON.stringify(body) : undefined,
@@ -438,10 +438,15 @@ posixOnly("room turns carry the same computers as a direct chat", () => {
       { mode: 0o600 },
     );
 
+    // A probed free port rather than a random one: three suites in this
+    // checkout boot real harnesses, and a lost bind surfaces as "the server
+    // never came up" rather than as "port taken".
+    const port = await freePortBlock([0]);
+    base = `http://127.0.0.1:${port}`;
     const env: NodeJS.ProcessEnv = {
       HOME: home,
       USERPROFILE: home,
-      OMB_PORT: String(PORT),
+      OMB_PORT: String(port),
       OMB_EXTRA_PATH: fakeBin,
       FAKE_DOCKER_DIR: fakeBin,
       FAKE_DOCKER_LOG: dockerLog,
@@ -458,7 +463,7 @@ posixOnly("room turns carry the same computers as a direct chat", () => {
     const deadline = Date.now() + 20_000;
     for (;;) {
       try {
-        if ((await fetch(`${BASE}/api/health`)).ok) break;
+        if ((await fetch(`${base}/api/health`)).ok) break;
       } catch {
         /* not up yet */
       }
