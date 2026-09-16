@@ -5806,6 +5806,46 @@ describe("GET /api/quotas", () => {
   });
 });
 
+describe("the update routes and the admission they hold", () => {
+  // Every mutating API request takes an update admission for the length of
+  // its handler, and runtime readiness counts admissions as work in flight.
+  // A route that then built its answer from the harness-wide reading reported
+  // the machine busy because of the question: `capabilities.canRun` came back
+  // false with the busy refusal on a completely idle Mac, and both clients
+  // hide **Install Update** on `canRun` — so the response that had just found
+  // the update was also the one that took the button away.
+  //
+  // OS-neutral on purpose.  `canRun` itself is false off macOS (and on a CI
+  // Mac, whose HOME has no always-on checkout), so what is asserted is the
+  // reason: the request must never be the thing that makes the Mac look busy.
+  const BUSY = "BotFleet is working right now.";
+
+  it("does not count its own admission when POST /api/update/check answers", async () => {
+    const res = await api("POST", "/api/update/check");
+    expect([200, 502]).toContain(res.status);
+    const status = res.status === 200 ? res.body : res.body.status;
+    expect(status).toMatchObject({ installed: { version: expect.any(String) } });
+    expect(status.capabilities.reasons.some((reason: string) => reason.startsWith(BUSY))).toBe(false);
+  });
+
+  it("does not count its own admission when POST /api/update/run refuses", async () => {
+    const res = await api("POST", "/api/update/run", {});
+    // Nothing to install on a throwaway home, so this is always a refusal —
+    // but a refusal for THAT reason, never for a busy machine.
+    expect(res.status).toBe(409);
+    expect(res.body.error).not.toContain(BUSY);
+    expect(res.body.status.capabilities.reasons.some((reason: string) => reason.startsWith(BUSY))).toBe(false);
+  });
+
+  it("agrees with GET /api/update/status, which holds no admission at all", async () => {
+    const open = await api("GET", "/api/update/status");
+    expect(open.status).toBe(200);
+    const checked = await api("POST", "/api/update/check");
+    const status = checked.status === 200 ? checked.body : checked.body.status;
+    expect(status.capabilities).toEqual(open.body.capabilities);
+  });
+});
+
 describe("GET /api/qdrant/status (Agent RAG connection)", () => {
   const setRecallMode = (mode: "ok" | "slow" | "fail") =>
     writeFileSync(join(home, ".botfleet", "fake-recall-mode"), mode);

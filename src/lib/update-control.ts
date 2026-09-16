@@ -244,6 +244,39 @@ export function visibleUpdateError(local: string | null, status: UpdateStatus | 
 }
 
 /**
+ * Why **Install Update** is unavailable although there is something to
+ * install, or null when it is available.
+ *
+ * `capabilities.reasons` carries the harness's own sentence for every refusal
+ * it can see coming, and no surface rendered one: the floating card asserted
+ * "This Mac can build and install it." while the button was conditioned away,
+ * the Settings card simply lost its button, and the sidebar's install button
+ * quietly ran a check instead.  All three ask this, so all three say the same
+ * thing.
+ */
+export function installBlockedReason(status: UpdateStatus | null): string | null {
+  if (!status?.available || status.running) return null;
+  if (status.capabilities.canRun) return null;
+  return status.capabilities.reasons[0] ?? "This Mac cannot install the update right now.";
+}
+
+/**
+ * What is left of this session's remembered failure once a status arrives on
+ * its own — a push frame, a refocus, the poll.
+ *
+ * `visibleUpdateError` gives the local sentence precedence because it is the
+ * newer of the two, and it stops being newer the moment the harness answers
+ * again.  Without this, a check that failed while the network was down kept
+ * its red sentence on screen beside a subtitle the successful check had
+ * already replaced.  A status still carrying `checkError` is not a recovery,
+ * so that one leaves the local error alone and the same precedence goes on
+ * showing it.
+ */
+export function keepLocalError(local: string | null, next: UpdateStatus): string | null {
+  return next.checkError ? local : null;
+}
+
+/**
  * What a dismissal of the floating banner should be remembered against.
  *
  * Dismissing "1.0.31 is available" must not also dismiss "that install
@@ -362,22 +395,29 @@ export function useUpdateControl(pollMs = 5_000): UpdateControlView {
   const running = Boolean(status?.running);
   const alive = useRef(true);
 
+  // A status that arrived on its own supersedes this session's remembered
+  // failure — see `keepLocalError`.
+  const adopt = useCallback((next: UpdateStatus) => {
+    setStatus(next);
+    setError((current) => keepLocalError(current, next));
+  }, []);
+
   useEffect(() => {
     alive.current = true;
     const stopRetries = scheduleStatusRetries({
       fetchStatus: () => fetchUpdateStatus(),
-      onStatus: setStatus,
+      onStatus: adopt,
     });
     const onPush = (event: Event) => {
       const detail = (event as CustomEvent<unknown>).detail;
-      if (isUpdateStatus(detail)) setStatus(detail);
+      if (isUpdateStatus(detail)) adopt(detail);
     };
     // Coming back to the window is the moment the answer is most likely to
     // have changed — an update finished, or a harness came back — and it is
     // free compared with polling for it.
     const onFocus = () => {
       void fetchUpdateStatus().then((next) => {
-        if (alive.current && next) setStatus(next);
+        if (alive.current && next) adopt(next);
       });
     };
     window.addEventListener(UPDATE_STATUS_EVENT, onPush);
@@ -388,17 +428,17 @@ export function useUpdateControl(pollMs = 5_000): UpdateControlView {
       window.removeEventListener(UPDATE_STATUS_EVENT, onPush);
       window.removeEventListener("focus", onFocus);
     };
-  }, []);
+  }, [adopt]);
 
   useEffect(() => {
     if (!running) return;
     const timer = setInterval(() => {
       void fetchUpdateStatus().then((next) => {
-        if (alive.current && next) setStatus(next);
+        if (alive.current && next) adopt(next);
       });
     }, pollMs);
     return () => clearInterval(timer);
-  }, [running, pollMs]);
+  }, [running, pollMs, adopt]);
 
   const check = useCallback(async () => {
     setBusy("check");

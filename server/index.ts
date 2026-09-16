@@ -311,8 +311,8 @@ const updateControl = createUpdateControl({
     installedAt: packagedInstalledAt(),
   },
   // What the status route reports, and what makes Install Update unavailable
-  // while a turn is running.  `POST /api/update/run` passes its own reading
-  // instead, excluding the admission that request itself holds.
+  // while a turn is running.  Both `POST` routes pass their own reading
+  // instead, excluding the admission the request itself holds.
   readiness: () => currentRuntimeReadiness(),
   emit: (status) => broadcast({ kind: "update.status", status }),
 });
@@ -8830,7 +8830,14 @@ const server = createServer(async (req, res) => {
     }
     if (method === "POST" && path === "/api/update/check") {
       if (!mayControlUpdates(req)) return json(res, 401, { error: "unauthorized" });
-      const checked = await updateControl.check();
+      // The same admission-corrected reading `POST /api/update/run` passes.
+      // A check is a mutating request too, so it holds an admission for the
+      // whole handler — and a status built without that correction came back
+      // saying this Mac was busy, with the Install button conditioned away,
+      // on the very response that had just found the update.
+      const checked = await updateControl.check({
+        readiness: currentRuntimeReadiness(ownAdmissionActive),
+      });
       // A check that could not reach the source is a failure, not "up to
       // date": `origin/main` is still on disk from the last good fetch, and
       // answering 200 would have a person believe a week-old comparison they

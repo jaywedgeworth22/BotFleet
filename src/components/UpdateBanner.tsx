@@ -9,6 +9,7 @@ import {
   availableLabel,
   bannerDismissKey,
   bannerIsActionable,
+  installBlockedReason,
   lastRunLabel,
   mayUseLegacyLocalUpdate,
   runningLabel,
@@ -268,10 +269,15 @@ function LocalUpdateCard({
   const title = running
     ? "Updating BotFleet…"
     : (availableLabel(status) ?? "The last update did not finish");
+  // The harness ships a reason with every refusal it can see coming, and no
+  // surface rendered one: the card asserted this Mac could install the update
+  // while the Install button was conditioned away, which read as a card that
+  // had simply lost its button.  The reason takes the subtitle instead.
+  const blockedReason = installBlockedReason(status);
   const subtitle = running
     ? runningLabel(running)
     : status.available
-      ? "This Mac can build and install it."
+      ? (blockedReason ?? "This Mac can build and install it.")
       : (lastRunLabel(status.lastRun) ?? "");
   const percent = running && typeof running.progress === "number"
     ? Math.round(Math.min(1, Math.max(0, running.progress)) * 100)
@@ -320,10 +326,10 @@ function LocalUpdateCard({
 
       {!running && (
         <div className="mt-2.5 flex gap-2">
-          {status.capabilities.canRun && status.available && (
+          {status.available && (
             <button
               onClick={() => void local.install()}
-              disabled={local.busy !== null}
+              disabled={local.busy !== null || blockedReason !== null}
               className={primaryAction}
             >
               {local.busy === "install" ? (

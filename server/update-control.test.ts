@@ -12,6 +12,7 @@ import {
   createUpdateControl,
   launchdJobIsAlive,
   launchPlanCommand,
+  listLaunchJobCommand,
   parseProgressRecord,
   pruneRunArtifacts,
   pruneUpdateStages,
@@ -95,6 +96,7 @@ function build(
     now?: () => Date;
     installedCommit?: string;
     launcher?: "launchd" | "detached";
+    exec?: (command: string, args: string[]) => CommandResult;
   } = {},
 ): Harness {
   const launched: LaunchPlan[] = [];
@@ -125,7 +127,7 @@ function build(
     },
     exec: async (command, args) => {
       ran.push({ command, args });
-      return ok();
+      return options.exec ? options.exec(command, args) : ok();
     },
     readiness: () => options.readiness ?? { safeToRestart: true, activeWorkCount: 0 },
     ...(options.writeState ? { writeState: options.writeState } : {}),
@@ -1080,5 +1082,208 @@ describe("sweeping what failed runs leave on disk", () => {
     expect(existsSync(join(runs, "run_1.log"))).toBe(true);
     expect(existsSync(join(runs, "run_4.log"))).toBe(true);
     expect(existsSync(join(runs, "run_4.progress.json"))).toBe(true);
+  });
+});
+
+describe("a caller that holds an update admission of its own", () => {
+  const BUSY: RuntimeReadiness = { safeToRestart: false, activeWorkCount: 1 };
+  const IDLE: RuntimeReadiness = { safeToRestart: true, activeWorkCount: 0 };
+  const ahead = (args: string[]): CommandResult => {
+    if (args[0] === "rev-parse") return ok(`${NEW_COMMIT}\n`);
+    if (args[0] === "rev-list") return ok("3\n");
+    if (args[0] === "log") return ok(`${NEW_COMMIT}${UNIT}feat: something newer`);
+    if (args[0] === "show") return ok(JSON.stringify({ version: "1.0.31" }));
+    return ok();
+  };
+
+  // `POST /api/update/check` is a mutating request, so the route holds an
+  // admission for the whole handler and the harness-wide reading counts it.
+  // The answer that had just found the update therefore also said this Mac
+  // was busy, and both clients hide Install Update on `canRun` — so the
+  // button never appeared after the check that found the update.
+  it("lets check() describe the machine rather than the request asking", async () => {
+    const paths = rig();
+    const harness = build(paths, { readiness: BUSY, git: ahead });
+
+    const uncorrected = await harness.control.check();
+    expect(uncorrected.available?.sourceCommit).toBe(NEW_COMMIT);
+    expect(uncorrected.capabilities.canRun).toBe(false);
+    expect(uncorrected.capabilities.reasons).toContain(BUSY_REFUSAL);
+
+    const corrected = await harness.control.check({ readiness: IDLE });
+    expect(corrected.available?.sourceCommit).toBe(NEW_COMMIT);
+    expect(corrected.capabilities.canRun).toBe(true);
+    expect(corrected.capabilities.reasons).not.toContain(BUSY_REFUSAL);
+    // And what every other client is told, not only the answer to this one.
+    expect(harness.emitted.at(-1)?.capabilities.canRun).toBe(true);
+  });
+
+  it("lets a refusal from start() describe the machine too", async () => {
+    const paths = rig();
+    const harness = build(paths, {
+      readiness: BUSY,
+      git: (args) => (args[0] === "status" ? ok(" M server/index.ts\n") : ahead(args)),
+    });
+    await harness.control.check({ readiness: IDLE });
+
+    const refused = await harness.control.start({ readiness: IDLE });
+    expect(refused.ok).toBe(false);
+    expect(refused).toMatchObject({ error: expect.stringContaining("uncommitted changes") });
+    // The refusal is about the checkout.  A status that ALSO said the Mac was
+    // busy is stored by the client, which then stops offering Install Update
+    // until something unrelated refreshes it.
+    expect(refused.status.capabilities.canRun).toBe(true);
+    expect(refused.status.capabilities.reasons).not.toContain(BUSY_REFUSAL);
+  });
+});
+
+describe("a run whose progress file stops advancing", () => {
+  /** Long enough after the last progress write to be stale, and the pid still
+   * reads as alive — which is what happens when the number is reused. */
+  const LATER = () => new Date("2026-09-13T12:20:00.000Z");
+  const STALLED = { step: "buildBundle", updatedAt: "2026-09-13T11:58:00.000Z" };
+  const LISTED_ALIVE = '{\n\t"Label" = "com.jay.botfleet-update";\n\t"PID" = 8123;\n};\n';
+  const settled = () => new Promise((resolve) => setTimeout(resolve, 10));
+
+  it("settles it once launchd says nothing is running under the label", async () => {
+    const paths = rig();
+    writeCurrentRun(paths, "run_prior");
+    writeProgress(paths, "run_prior", STALLED);
+    const harness = build(paths, { now: LATER, processAlive: () => true });
+    // The probe is asynchronous, so the run is still described until it lands.
+    expect(harness.control.status().running).not.toBeNull();
+    await settled();
+    const status = harness.control.status();
+    expect(status.running).toBeNull();
+    expect(status.lastRun).toMatchObject({ runId: "run_prior", outcome: "failed" });
+    expect(status.lastRun?.message).toContain("com.jay.botfleet-update");
+    expect(harness.ran[0]).toEqual({
+      command: "/bin/launchctl",
+      args: ["list", "com.jay.botfleet-update"],
+    });
+    // Settling takes the label away, the same as every other settle.
+    expect(harness.ran).toContainEqual({
+      command: "/bin/launchctl",
+      args: ["remove", "com.jay.botfleet-update"],
+    });
+    // And the wedge it clears is the one that refused every later install.
+    expect(status.capabilities.reasons).not.toContain("An update is already running.");
+  });
+
+  it("leaves it alone while launchd still has a process for it", async () => {
+    const paths = rig();
+    writeCurrentRun(paths, "run_prior");
+    writeProgress(paths, "run_prior", STALLED);
+    const harness = build(paths, { now: LATER, exec: () => ok(LISTED_ALIVE) });
+    await settled();
+    expect(harness.control.status().running).not.toBeNull();
+    // Asked once, not once per poll or per status.
+    harness.control.status();
+    await settled();
+    expect(harness.ran.filter((one) => one.args[0] === "list")).toHaveLength(1);
+  });
+
+  it("asks nothing while the progress file is still moving", async () => {
+    const paths = rig();
+    writeCurrentRun(paths, "run_prior");
+    writeProgress(paths, "run_prior", { step: "buildBundle", updatedAt: "2026-09-13T11:58:00.000Z" });
+    // Two minutes on: a long step is not a dead run.
+    const harness = build(paths, { now: () => new Date("2026-09-13T12:00:00.000Z") });
+    await settled();
+    expect(harness.control.status().running).not.toBeNull();
+    expect(harness.ran).toEqual([]);
+  });
+
+  it("asks nothing for a detached run, which has no label to ask about", async () => {
+    const paths = rig();
+    writeCurrentRun(paths, "run_prior", "detached");
+    writeProgress(paths, "run_prior", STALLED);
+    const harness = build(paths, { now: LATER });
+    await settled();
+    expect(harness.control.status().running).not.toBeNull();
+    expect(harness.ran).toEqual([]);
+  });
+
+  it("names the label to ask about", () => {
+    expect(listLaunchJobCommand("com.jay.botfleet-update"))
+      .toEqual({ command: "/bin/launchctl", args: ["list", "com.jay.botfleet-update"] });
+  });
+});
+
+describe("an origin/main that differs without being ahead", () => {
+  const BEHIND = "e".repeat(40);
+
+  it("offers nothing, rather than an update Install would refuse", async () => {
+    const paths = rig();
+    const harness = build(paths, {
+      git: (args) => {
+        if (args[0] === "rev-parse") return ok(`${BEHIND}\n`);
+        // A locally built app from a lane branch: origin/main is a different
+        // commit, and none of it is ahead of what is installed.
+        if (args[0] === "rev-list") return ok("0\n");
+        return ok();
+      },
+    });
+    const status = await harness.control.check();
+    expect(status.checkError).toBeNull();
+    expect(status.checkedAt).toBe("2026-09-13T12:00:00.000Z");
+    expect(status.available).toBeNull();
+    // Nothing to describe, so it never asked for the subjects or the version.
+    expect(harness.git.some((args) => args[0] === "log")).toBe(false);
+    expect(harness.git.some((args) => args[0] === "show")).toBe(false);
+  });
+
+  it("still offers when the count could not be taken at all", async () => {
+    const paths = rig();
+    // An installed commit this checkout has never seen — a force-pushed
+    // branch.  `rev-list` fails, and a failed count says nothing about
+    // distance, so the offer stands rather than being silently withdrawn.
+    const harness = build(paths, {
+      git: (args) => {
+        if (args[0] === "rev-parse") return ok(`${NEW_COMMIT}\n`);
+        if (args[0] === "rev-list") return fail();
+        return ok();
+      },
+    });
+    const status = await harness.control.check();
+    expect(status.available?.sourceCommit).toBe(NEW_COMMIT);
+    expect(status.available?.aheadBy).toBe(0);
+  });
+});
+
+describe("paths named by current-run.json", () => {
+  it("publishes a log tail only from inside the runs directory", () => {
+    const paths = rig();
+    const outside = join(paths.root, "not-the-updaters.log");
+    writeFileSync(outside, "a line from a file this route must never publish\n");
+    mkdirSync(paths.stateDirectory, { recursive: true });
+    // A planted record: the status route reads `logPath` and publishes its
+    // tail to every client and to the paired phone, so a record naming any
+    // other file would turn a same-user write into a remote read.
+    writeFileSync(join(paths.stateDirectory, "current-run.json"), JSON.stringify({
+      runId: "run_prior",
+      startedAt: "2026-09-13T11:55:00.000Z",
+      progressPath: join(paths.root, "not-the-updaters.json"),
+      logPath: outside,
+      launcher: "launchd",
+      targetCommit: NEW_COMMIT,
+    }));
+    writeFileSync(join(paths.root, "not-the-updaters.json"), JSON.stringify({
+      schemaVersion: 1,
+      runId: "run_prior",
+      startedAt: "2026-09-13T11:55:00.000Z",
+      updatedAt: "2026-09-13T11:58:00.000Z",
+      pid: 4321,
+      step: "somewhere else entirely",
+    }));
+    writeProgress(paths, "run_prior", { step: "buildBundle" });
+
+    const running = build(paths).control.status().running;
+    expect(running?.runId).toBe("run_prior");
+    // Both paths fell back to the ones this run id would have had: the tail
+    // is empty because no log was written there, and the step came from the
+    // real progress file rather than the planted one.
+    expect(running?.logTail).toEqual([]);
+    expect(running?.step).toBe(stepLabel("buildBundle"));
   });
 });
