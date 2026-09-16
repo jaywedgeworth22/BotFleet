@@ -57,7 +57,7 @@ function parseCommand(argv: string[]): { command: string; args: string[] } | nul
 
 export function createPatchCleanup(
   paths: string[],
-  remove: typeof unlink = unlink,
+  remove: (path: string, cb: (err: NodeJS.ErrnoException | null) => void) => void = unlink,
 ): () => void {
   let cleaned = false;
   return () => {
