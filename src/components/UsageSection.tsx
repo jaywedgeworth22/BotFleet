@@ -64,6 +64,11 @@ interface DeepSeekBalanceView {
   error: string | null;
 }
 
+const cnSwitch = (on: boolean) =>
+  `relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${on ? "bg-accent" : "bg-control"}`;
+const cnKnob = (on: boolean) =>
+  `absolute top-[3px] h-[18px] w-[18px] rounded-full bg-white transition-all ${on ? "left-[21px]" : "left-[3px]"}`;
+
 function formatCountdown(resetsAt?: number | null): string {
   if (!resetsAt) return "Rolling refresh window";
   const diffMs = resetsAt - Date.now();
@@ -144,6 +149,10 @@ export function UsageSection() {
   const [saveError, setSaveError] = React.useState<string | null>(null);
   const [saveOk, setSaveOk] = React.useState(false);
   const [testResult, setTestResult] = React.useState<{ ok: boolean; error: string | null } | null>(null);
+  const [routingSaving, setRoutingSaving] = React.useState(false);
+  // Absent means on: an install that predates the flag keeps the behaviour
+  // the engine rows already describe.
+  const localQuotaRouting = usageConfig?.localQuotaRouting !== false;
 
   React.useEffect(() => {
     if (usageConfig?.ingestUrl !== undefined) setIngestUrl(usageConfig.ingestUrl);
@@ -244,6 +253,22 @@ export function UsageSection() {
       return false;
     } finally {
       setSaving(false);
+    }
+  };
+
+  const toggleLocalQuotaRouting = async () => {
+    setRoutingSaving(true);
+    setSaveError(null);
+    try {
+      const config: ConfigStatus = await api("/api/config", {
+        method: "PATCH",
+        body: JSON.stringify({ usage: { localQuotaRouting: !localQuotaRouting } }),
+      });
+      dispatch({ type: "configStatus", config });
+    } catch (caught) {
+      setSaveError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      setRoutingSaving(false);
     }
   };
 
@@ -925,6 +950,24 @@ export function UsageSection() {
                 className={cn(usageInputClass, readTokenLocked && "cursor-not-allowed opacity-60")}
               />
               {readTokenLocked && <div className="text-[11.5px] text-ink-secondary">Managed by Infisical.</div>}
+            </div>
+            <div className="flex items-center justify-between gap-4 border-t border-hairline/30 pt-3">
+              <div className="min-w-0">
+                <div className="text-[13px] text-ink">Local subscription caps divert auto-fallback</div>
+                <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
+                  AgentBar reads each subscription on this Mac and writes what is left to a local file.{'\u00A0'} When it reports a window spent, BotFleet stops routing turns to that engine until the window resets.{'\u00A0'} Only its own verdict counts, never a percentage BotFleet inferred.
+                </div>
+              </div>
+              <button
+                role="switch"
+                aria-checked={localQuotaRouting}
+                aria-label="Local subscription caps divert auto-fallback"
+                disabled={routingSaving}
+                onClick={() => void toggleLocalQuotaRouting()}
+                className={cnSwitch(localQuotaRouting)}
+              >
+                <span className={cnKnob(localQuotaRouting)} />
+              </button>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <button

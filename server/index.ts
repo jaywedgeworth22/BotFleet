@@ -133,6 +133,7 @@ import {
   persistableInstanceConfigs,
   INSTANCE_API_KEY_ENV,
   isAbsoluteHttpUrl,
+  localQuotaRoutingEnabled,
   usageIngestUrl,
   usageProjectRules,
   vpsCpus,
@@ -390,6 +391,7 @@ usageQuotaPoller.configure({
     ingestUrl: usageIngestUrl(cfg),
     ingestToken: cfg.usage?.ingestToken,
     readToken: cfg.usage?.readToken,
+    localQuotaRouting: localQuotaRoutingEnabled(cfg),
   }),
   instances: () =>
     registry.instances().map((inst) => ({
@@ -5457,6 +5459,7 @@ function configStatus() {
       configured: telemetry.getStatus().enabled,
       hasToken: Boolean(cfg.usage?.ingestToken),
       hasReadToken: Boolean(cfg.usage?.readToken || process.env.USAGE_READ_TOKEN),
+      localQuotaRouting: localQuotaRoutingEnabled(cfg),
       projects: usageProjectRules(cfg),
     },
     // This frame is broadcast to every window and, with Remote Access on,

@@ -1,6 +1,7 @@
 import { mergeLocalQuotaWindows, readLocalQuotaSnapshot, type LocalQuotaFreshness } from "./local-usage-monitor.ts";
 import { quotaCooldowns } from "./model-fallback.ts";
 import {
+  canonicalQuotaProvider,
   driverKindsForWindow,
   isPlanLevelSkip,
   modelsToSkip,
@@ -72,6 +73,8 @@ export type QuotaPollerSettings = {
   ingestUrl?: string | null;
   ingestToken?: string | null;
   readToken?: string | null;
+  /** `usage.localQuotaRouting`.  Absent means on. */
+  localQuotaRouting?: boolean;
 };
 
 export type QuotaPollerInstance = {
@@ -82,6 +85,45 @@ export type QuotaPollerInstance = {
 
 const POLL_MS = 30_000;
 const INGEST_PATH = "/api/ingest/usage";
+/** Local caps carry their own source so neither payload's clear can delete
+ *  the other's rows — in particular so the empty payload an unconfigured
+ *  remote feed applies every 30 s cannot wipe a local cap. */
+export const LOCAL_QUOTA_SOURCE = "usage-monitor-local";
+/** No locally-observed cap may outlast this.  A handoff that goes stale with
+ *  an exhausted row in it must not strand an engine for a billing month. */
+const MAX_LOCAL_COOLDOWN_MS = 8 * 86_400_000;
+/** Both engines run their own poller against the vendor, on a faster cadence
+ *  than this file is written, and those pollers own their cooldowns. */
+const LOCAL_ROUTING_EXCLUDED_KINDS = new Set(["antigravityAgent", "minimax", "minimaxAgent"]);
+const LOCAL_ROUTING_EXCLUDED_PROVIDERS = new Set(["google-antigravity", "minimax"]);
+const NAMED_WINDOW_LENGTHS: Readonly<Record<string, number>> = {
+  hourly: 3_600_000,
+  daily: 86_400_000,
+  session: 5 * 3_600_000,
+  weekly: 7 * 86_400_000,
+  week: 7 * 86_400_000,
+  monthly: 30 * 86_400_000,
+  month: 30 * 86_400_000,
+};
+
+/** How long one window lasts, from its own token, for a capped row that did
+ *  not say when it resets.  An unrecognised token ("billing-cycle", whose
+ *  length depends on an account BotFleet cannot see) answers null, and such a
+ *  row does not cap at all: an end BotFleet cannot compute is one it could
+ *  never release. */
+export function windowLengthMs(token: string | null | undefined): number | null {
+  const raw = (token ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
+  if (!raw) return null;
+  const named = NAMED_WINDOW_LENGTHS[raw];
+  if (named) return named;
+  const match = /^(\d+)(m|min|minutes?|h|hr|hours?|d|days?|w|weeks?)$/.exec(raw);
+  if (!match) return null;
+  const count = Number(match[1]);
+  if (!Number.isFinite(count) || count <= 0) return null;
+  const unit = match[2].charAt(0);
+  const scale = unit === "m" ? 60_000 : unit === "h" ? 3_600_000 : unit === "d" ? 86_400_000 : 7 * 86_400_000;
+  return count * scale;
+}
 
 export function quotaWindowsUrl(ingestUrl?: string | null): string | null {
   const raw = (ingestUrl || process.env.USAGE_MONITOR_INGEST_URL || "").trim();
@@ -104,6 +146,28 @@ function resetsAtMs(resetAt: string | null): number | null {
   if (!resetAt) return null;
   const ms = Date.parse(resetAt);
   return Number.isFinite(ms) ? ms : null;
+}
+
+/** When a locally-observed cap lifts: the row's own reset, else one window
+ *  length from now, never more than eight days out, and never at all when the
+ *  row gives neither — nor when the reset it gives has already passed. */
+function localCooldownEnd(window: RemoteQuotaWindow, now: number): number | null {
+  const reset = resetsAtMs(window.resetAt);
+  const length = windowLengthMs(window.window);
+  const end = reset ?? (length === null ? null : now + length);
+  if (end === null || end <= now) return null;
+  return Math.min(end, now + MAX_LOCAL_COOLDOWN_MS);
+}
+
+/** Which models one locally-observed cap covers.  A row that names neither a
+ *  model nor a model type is a plan-level cap on the whole engine; with a
+ *  model type, `modelsToSkip` already owns the family-to-catalog mapping and
+ *  is handed the file's own skip, because the display `skip` on a local row
+ *  stays false by design. */
+function localCapTargets(window: RemoteQuotaWindow, instance: QuotaPollerInstance): string[] {
+  if (window.modelId) return [window.modelId];
+  if (!window.modelType) return ["*"];
+  return modelsToSkip({ ...window, skip: true, skipReason: window.fileSkipReason ?? null }, instance);
 }
 
 export class UsageQuotaPoller {
@@ -195,6 +259,49 @@ export class UsageQuotaPoller {
     });
   }
 
+  /** The local half of the same job `applyPayload` does for the remote feed.
+   *  Kept separate on purpose: the two sources have different authority and
+   *  different clears, and folding local rows into `this.windows` would let
+   *  an empty remote payload delete a cap the collector is still reporting.
+   *
+   *  Only the collector's own verdict caps an engine — `fileSkip` or
+   *  `isExhausted`, never a derived 0%, because a passed reset, an unknown
+   *  remainder and a real exhaustion all render as 0% and only one of them
+   *  means the provider refused. */
+  applyLocalPayload(
+    windows: RemoteQuotaWindow[],
+    instances: QuotaPollerInstance[],
+    enabled: boolean,
+    now = Date.now(),
+  ): void {
+    const owned = new Set<string>();
+    if (enabled) {
+      for (const window of windows) {
+        if (window.fileSkip !== true && window.isExhausted !== true) continue;
+        if (LOCAL_ROUTING_EXCLUDED_PROVIDERS.has(canonicalQuotaProvider(window))) continue;
+        const until = localCooldownEnd(window, now);
+        if (until === null) continue;
+        const kinds = new Set(driverKindsForWindow(window));
+        for (const instance of instances) {
+          if (LOCAL_ROUTING_EXCLUDED_KINDS.has(instance.driverKind)) continue;
+          if (!kinds.has(instance.driverKind)) continue;
+          for (const model of localCapTargets(window, instance)) {
+            quotaCooldowns.recordInstanceCap(instance.instanceId, model, {
+              resetsAt: until,
+              error: window.fileSkipReason || `${window.label} remaining ${window.remainingPercent ?? 0}%`,
+              source: LOCAL_QUOTA_SOURCE,
+            });
+            owned.add(`${instance.instanceId}:${model}`);
+          }
+        }
+      }
+    }
+    // Only this source's own rows are ever cleared, so the remote feed cannot
+    // delete a local cap and turning the flag off restores exactly today's
+    // behaviour: every local row goes, and nothing else is touched.
+    quotaCooldowns.clearWhere((cd) => cd.source === LOCAL_QUOTA_SOURCE && !owned.has(`${cd.instanceId}:${cd.model}`));
+  }
+
   async poll(): Promise<void> {
     if (this.inFlight) return;
     this.inFlight = true;
@@ -204,6 +311,9 @@ export class UsageQuotaPoller {
     this.localProducer = local.producer;
     this.localIssues = local.issues;
     const settings = this.settingsProvider?.() ?? {};
+    // Before the remote payload below, so a key both sources cap ends up
+    // owned by the authenticated feed rather than flapping between them.
+    this.applyLocalPayload(this.localWindows, this.instancesProvider?.() ?? [], settings.localQuotaRouting !== false);
     const url = quotaWindowsUrl(settings.ingestUrl);
     const token =
       settings.readToken?.trim() ||
