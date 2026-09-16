@@ -2,6 +2,7 @@ import { track } from "@/lib/analytics";
 import {
   availableLabel,
   installBlockedReason,
+  installBlockedReasonDetail,
   mayUseLegacyLocalUpdate,
   runningLabel,
   updateSource,
@@ -155,6 +156,7 @@ function UpdateButton() {
     // action under the same label, with no install, no error and no icon
     // change, so it read as dead.  It says why instead, and stays down.
     const blockedReason = installBlockedReason(harnessStatus);
+    const blockedReasonDetail = installBlockedReasonDetail(harnessStatus);
     const label = harnessRunning
       ? runningLabel(harnessRunning)
       : harnessAvailable
@@ -162,10 +164,16 @@ function UpdateButton() {
         : upToDate
           ? "You're up to date"
           : "Check for Updates";
+    // The harness's own diagnostic sentence behind a mapped reason, for the
+    // hover only — the label above stays short.  Falls back to the label
+    // itself when there is nothing extra to say.
+    const tooltip = harnessAvailable && blockedReasonDetail
+      ? `${availableLabel(harnessStatus)} — ${blockedReasonDetail}`
+      : label;
     return (
       // The title rides on the wrapper: a disabled button is not hovered, so
       // its own tooltip never appears, and the reason has to be readable.
-      <span className="inline-flex" title={label}>
+      <span className="inline-flex" title={tooltip}>
         <button
           onClick={() => {
             if (harnessRunning) return;

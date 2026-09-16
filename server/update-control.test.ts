@@ -24,6 +24,7 @@ import {
   type CommandResult,
   type LaunchPlan,
   type RuntimeReadiness,
+  type UpdateCapabilities,
   type UpdateControl,
   type UpdateStatus,
 } from "./update-control.ts";
@@ -187,7 +188,7 @@ describe("status", () => {
       checkError: null,
       running: null,
       lastRun: null,
-      capabilities: { canCheck: true, canRun: true, reasons: [] },
+      capabilities: { canCheck: true, canRun: true, reasons: [], codes: [] },
     });
   });
 
@@ -197,6 +198,7 @@ describe("status", () => {
       canCheck: false,
       canRun: false,
       reasons: ["Updating from this computer is macOS only."],
+      codes: ["not-darwin"],
     });
 
     const noCheckout = rig();
@@ -204,16 +206,19 @@ describe("status", () => {
     const capabilities = build(noCheckout).control.status().capabilities;
     expect(capabilities.canCheck).toBe(false);
     expect(capabilities.reasons[0]).toContain(noCheckout.checkout);
+    expect(capabilities.codes[0]).toBe("checkout-missing");
 
     const stale = build(rig(), { updaterReportsProgress: false }).control.status().capabilities;
     expect(stale).toMatchObject({ canCheck: true, canRun: false });
     expect(stale.reasons[0]).toContain("predates this build");
+    expect(stale.codes[0]).toBe("updater-outdated");
 
     const noScript = rig();
     rmSync(noScript.scriptPath, { force: true });
     const script = build(noScript).control.status().capabilities;
     expect(script).toMatchObject({ canCheck: true, canRun: false });
     expect(script.reasons[0]).toContain(noScript.scriptPath);
+    expect(script.codes[0]).toBe("updater-missing");
   });
 });
 
@@ -270,7 +275,7 @@ describe("check", () => {
 });
 
 describe("refusals", () => {
-  const capabilities = { canCheck: true, canRun: true, reasons: [] };
+  const capabilities: UpdateCapabilities = { canCheck: true, canRun: true, reasons: [], codes: [] };
   const available = { sourceCommit: NEW_COMMIT, aheadBy: 3, commits: [] };
   const running = { runId: "run_one", startedAt: "", step: "Building", logTail: [] };
   const idle: RuntimeReadiness = { safeToRestart: true, activeWorkCount: 0 };
@@ -288,7 +293,7 @@ describe("refusals", () => {
   it("names the one blocking reason", () => {
     expect(ask({ running })).toBe("An update is already running.");
     expect(ask({
-      capabilities: { canCheck: false, canRun: false, reasons: ["Updating from this computer is macOS only."] },
+      capabilities: { canCheck: false, canRun: false, reasons: ["Updating from this computer is macOS only."], codes: ["not-darwin"] },
     })).toBe("Updating from this computer is macOS only.");
     expect(ask({ dirty: true })).toContain("uncommitted changes");
     expect(ask({ available: null })).toBe("BotFleet is already on the newest build.");
@@ -332,13 +337,13 @@ describe("refusals", () => {
     // the reason busy itself put in the list.
     expect(ask({
       readiness: busy,
-      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL] },
+      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL], codes: ["busy"] },
       force: true,
     })).toBeNull();
     // A structural reason still wins, forced or not.
     expect(ask({
       readiness: busy,
-      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL, "The updater is not installed."] },
+      capabilities: { canCheck: true, canRun: false, reasons: [BUSY_REFUSAL, "The updater is not installed."], codes: ["busy", "updater-missing"] },
       force: true,
     })).toBe("The updater is not installed.");
   });
@@ -372,6 +377,9 @@ describe("refusals", () => {
     expect(status.capabilities.canRun).toBe(false);
     expect(status.capabilities.reasons).toContain(BUSY_REFUSAL);
     expect(status.capabilities.canCheck).toBe(true);
+    // `codes` walks `reasons` in lockstep, so a client can match the busy
+    // refusal by code instead of comparing the sentence.
+    expect(status.capabilities.codes).toEqual(["busy"]);
     const refused = await harness.control.start({ force: true });
     // force is allowed past readiness; the refusal here is only that there is
     // nothing newer, which proves readiness was not the blocker.

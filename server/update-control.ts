@@ -120,10 +120,25 @@ export interface UpdateLastRun {
   receiptPath?: string;
 }
 
+/** A stable handle on one entry in `UpdateCapabilities.reasons`, so a client
+ * can map a refusal to its own copy instead of matching the English
+ * sentence.  Adding one here is additive: an older desktop that has never
+ * heard of `codes` keeps reading `reasons`, which this never changes the
+ * wording of. */
+export type UpdateCapabilityCode =
+  | "not-darwin"
+  | "checkout-missing"
+  | "updater-missing"
+  | "updater-outdated"
+  | "already-running"
+  | "busy";
+
 export interface UpdateCapabilities {
   canCheck: boolean;
   canRun: boolean;
   reasons: string[];
+  /** One code per `reasons` entry, same order and length. */
+  codes: UpdateCapabilityCode[];
 }
 
 /** What `currentRuntimeReadiness()` in the harness reports: whether any turn,
@@ -915,23 +930,36 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
   const capabilities = (running: boolean, readiness?: RuntimeReadiness): UpdateCapabilities => {
     const able = structural();
     const reasons: string[] = [];
-    if (!able.darwin) reasons.push("Updating from this computer is macOS only.");
+    const codes: UpdateCapabilityCode[] = [];
+    if (!able.darwin) {
+      reasons.push("Updating from this computer is macOS only.");
+      codes.push("not-darwin");
+    }
     if (able.darwin && !able.checkoutPresent) {
       reasons.push(`The always-on checkout is not at ${deps.checkout}.`);
+      codes.push("checkout-missing");
     }
     if (able.darwin && able.checkoutPresent && !able.scriptPresent) {
       reasons.push(`The updater is not installed at ${deps.scriptPath}.`);
+      codes.push("updater-missing");
     }
     if (able.darwin && able.checkoutPresent && able.scriptPresent && !able.reportsProgress) {
       reasons.push(
         `The updater in ${deps.checkout} predates this build.${GAP}Run it once from a terminal to pick up the new one.`,
       );
+      codes.push("updater-outdated");
     }
-    if (running) reasons.push("An update is already running.");
+    if (running) {
+      reasons.push("An update is already running.");
+      codes.push("already-running");
+    }
     // Listed last, and the only reason `force` can talk past — see runRefusal.
     const idle = (readiness ?? deps.readiness()).safeToRestart;
-    if (!idle) reasons.push(BUSY_REFUSAL);
-    return { canCheck: able.canCheck, canRun: able.canRun && !running && idle, reasons };
+    if (!idle) {
+      reasons.push(BUSY_REFUSAL);
+      codes.push("busy");
+    }
+    return { canCheck: able.canCheck, canRun: able.canRun && !running && idle, reasons, codes };
   };
 
   const loadAvailable = () => {
