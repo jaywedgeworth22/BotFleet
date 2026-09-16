@@ -1,15 +1,21 @@
 # Usage Monitor quotas on Mac
 
-BotFleet reads the native Usage Monitor app's local subscription windows in Settings → Usage.  Keep Usage Monitor open to refresh the snapshot every five minutes; no server token is required for this local handoff.
+BotFleet reads the native Usage Monitor app's local subscription windows in Settings → Usage.  Keep the app (AgentBar) open to refresh the snapshot every five minutes; no server token is required for this local handoff.
 
-The source is `~/Library/Application Support/Usage Monitor/quota-windows.json`, format `usage-monitor-local-quotas` version 1.  Usage Monitor writes only quota fields, atomically, with mode 0600 in a mode-0700 directory.  BotFleet accepts a regular same-user file, rejects symlinks and files over 1 MiB, and expires observations after ten minutes.  Malformed, missing, future-dated, and unsupported records are ignored.
+The source is `~/Library/Application Support/Usage Monitor/quota-windows.json`, format `usage-monitor-local-quotas` version 1.  Usage Monitor writes only quota fields, atomically, with mode 0600 in a mode-0700 directory.  BotFleet accepts a regular same-user file, rejects symlinks and files over 1 MiB, and expires observations after fifteen minutes — the producer's own five-minute cadence plus two missed cycles.  Malformed, missing, future-dated, and unsupported records are ignored.
 
-Local readings replace the remote display for that entire provider, including unknown windows, so a remote account cannot supply another account's missing weekly cap.  Local observations are display-only: the existing authenticated server quota feed remains responsible for routing cooldowns.  A passed reset shows an unknown value until a new reading arrives.
+Every window keeps the plan and the absolute figures the producer measured: `planName`, `absoluteRemaining`, `absoluteLimit` and `quotaUnit` render as "$0 of $400 on Ultra" or "12 of 300 requests" beside the percentage.  The producer's own verdict travels under its own names — `isExhausted`, `fileSkip`, `fileSkipReason` and `fileStatus` — while `status` and `skip` stay derived from the percentage, so no display path changes meaning.  A malformed absolute figure drops that field and keeps the window.
+
+The payload's two optional top-level keys are read leniently: `producer` names the app that wrote the file, and `issues` maps a provider key to the short reason that provider could not be read.  An engine whose provider has an issue and no windows shows "Claude: <reason> (from AgentBar)" instead of nothing; the reason is capped at 160 characters and rendered as plain text, never markup.  A handoff carrying neither key parses exactly as before.
+
+When the handoff stops, Settings says so rather than emptying in silence: "AgentBar has not written quota since 7:05 PM" for a stale file, "AgentBar is not running" when there is none, and a read failure for a file that cannot be parsed.
+
+Local readings replace the remote display for that entire provider, including unknown windows, so a remote account cannot supply another account's missing weekly cap.  A passed reset shows an unknown value until a new reading arrives.  One provider allow-list and one alias map serve both the server parser and the Settings renderer (`server/quota-window-map.ts`), with `dsh` accepted beside `deepseek` and never folded onto it.
 
 Antigravity displays four shared windows: Gemini Models and Third-Party Models, each with a 5-hour and weekly cap.  When the native app is unavailable, BotFleet can still show its legacy local 5-hour observations; weekly quotas remain unknown, and monthly prompt credits are never shown as a subscription percentage.  MiniMax video/Hailuo allowances stay in collapsed details and do not determine coding availability.  Grok CLI remains supported; Grok Bot is excluded from both display and routing because BotFleet cannot run it.  Gemini CLI, Windsurf, GitHub Copilot, and Kimi are excluded from this quota display.
 
 The native app lives in the Usage Monitor repository under `macos/`.  This BotFleet change targets the Mac/Electron UI and server; it does not add an iOS quota screen.
 
-Validation includes the snapshot parser's freshness, file, provider, and account boundaries; no-server polling and expiry; four-window Antigravity normalization; Grok Bot routing exclusion; and a rendered preview of the actual quota grid.  The screenshot below uses explicitly synthetic values; it is not a live account capture.
+Validation includes the snapshot parser's freshness, file, provider, and account boundaries; the staleness states and the capped, plain-text provider reasons; no-server polling and expiry; four-window Antigravity normalization; Grok Bot routing exclusion; and a rendered preview of the actual quota grid.  The screenshot below uses explicitly synthetic values; it is not a live account capture.
 
 ![Antigravity quota component preview](screenshots/usage-monitor-quotas-preview.png)

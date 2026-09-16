@@ -1,4 +1,5 @@
 import { formatResetCountdown, isGeminiQuotaModel, type QuotaDisplayLine, type QuotaDisplayModel } from "./quota-display";
+import { canonicalQuotaProvider, isSupportedQuotaProvider, normalizeQuotaProviderKey } from "../../server/quota-window-map";
 
 export type UsageMonitorQuotaWindow = {
   id: string;
@@ -16,52 +17,40 @@ export type UsageMonitorQuotaWindow = {
   window?: string | null;
   occurredAt?: string | null;
   modelId?: string | null;
+  /** Everything the native handoff publishes beyond a percentage: the plan
+   *  the allowance belongs to, what is left of it in dollars, requests or
+   *  credits, and the producer's own verdict. */
+  planName?: string | null;
+  absoluteRemaining?: number | null;
+  absoluteLimit?: number | null;
+  quotaUnit?: string | null;
+  isExhausted?: boolean;
+  fileStatus?: string | null;
+  fileSkip?: boolean;
+  fileSkipReason?: string | null;
 };
 
-const BOTFLEET_PROVIDERS = new Set([
-  "anthropic",
-  "openai",
-  "codex",
-  "claude",
-  "google-antigravity",
-  "cursor",
-  "xai",
-  "grok",
-  "minimax",
-  "deepseek",
-  "dsh",
-]);
-
-const EXCLUDED_PROVIDERS = new Set([
-  "gemini-cli",
-  "github-copilot",
-  "copilot",
-  "windsurf",
-  "kimi",
-  "moonshot",
-]);
-
 function normalized(value: string | null | undefined): string {
-  return (value ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+  return normalizeQuotaProviderKey(value);
 }
 
 function providerKey(window: UsageMonitorQuotaWindow): string {
-  if (normalized(window.via) === "antigravity") return "google-antigravity";
-  const key = normalized(window.providerKey || window.provider);
-  return ({ antigravity: "google-antigravity", "antigravity-cli": "google-antigravity", "claude-code": "anthropic", "openai-codex": "openai", "grok-build": "xai", "minimax-code": "minimax" } as Record<string, string>)[key] ?? key;
+  return canonicalQuotaProvider(window);
 }
 
-/** Only providers with a BotFleet engine may appear in its quota section. */
+/** Only providers with a BotFleet engine may appear in its quota section.
+ *  The allow-list, the aliases and the exclusions live in
+ *  server/quota-window-map.ts so this renderer and the server's own parser
+ *  can no longer drift apart over which providers count. */
 export function isBotFleetQuotaWindow(window: UsageMonitorQuotaWindow): boolean {
-  const key = providerKey(window);
   if (/grok[-_ ]?bot/i.test(`${window.providerKey ?? ""} ${window.provider} ${window.sourceApp ?? ""} ${window.label}`)) return false;
-  if (EXCLUDED_PROVIDERS.has(key)) return false;
-  if (BOTFLEET_PROVIDERS.has(key)) {
-    // A bare OpenAI provider is ambiguous for custom OpenAI-compatible engines.
-    // Codex's source identity makes the native subscription window attributable.
-    return key !== "openai" || /codex|chatgpt/i.test(`${window.sourceApp ?? ""} ${window.label}`);
-  }
-  return false;
+  if (!isSupportedQuotaProvider(window)) return false;
+  // A bare OpenAI provider is ambiguous for custom OpenAI-compatible engines.
+  // Codex's source identity makes the native subscription window attributable.
+  // Tested against the key the row actually reported, so a window that names
+  // the product outright ("codex", "chatgpt") stays attributable on its own.
+  if (normalized(window.providerKey || window.provider) !== "openai") return true;
+  return /codex|chatgpt/i.test(`${window.sourceApp ?? ""} ${window.label}`);
 }
 
 /** Unused engines stay hidden even when old spend or local cooldowns exist. */

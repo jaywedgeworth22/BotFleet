@@ -1,4 +1,4 @@
-import { mergeLocalQuotaWindows, readLocalQuotaSnapshot } from "./local-usage-monitor.ts";
+import { mergeLocalQuotaWindows, readLocalQuotaSnapshot, type LocalQuotaFreshness } from "./local-usage-monitor.ts";
 import { quotaCooldowns } from "./model-fallback.ts";
 import {
   driverKindsForWindow,
@@ -33,6 +33,31 @@ export type RemoteQuotaWindow = {
   status: string;
   skip: boolean;
   skipReason: string | null;
+  /** The plan the allowance belongs to, as the producer names it ("ultra"). */
+  planName?: string | null;
+  /** What is left and what the plan holds, in `quotaUnit` — dollars for a
+   *  Cursor plan, requests for a MiniMax pool, credits for Grok.  A window
+   *  can report these with no percentage at all. */
+  absoluteRemaining?: number | null;
+  absoluteLimit?: number | null;
+  quotaUnit?: string | null;
+  /** The producer's own exhaustion verdict.  Distinct from a derived 0%:
+   *  only this and `fileSkip` are treated as a cap by the local routing
+   *  path, because only they mean the collector saw the provider refuse. */
+  isExhausted?: boolean;
+  /** The file's own status / skip / skipReason, kept under their own names
+   *  so the derived `status` and `skip` above keep the meaning every display
+   *  path already reads them with. */
+  fileStatus?: string | null;
+  fileSkip?: boolean;
+  fileSkipReason?: string | null;
+};
+
+/** The local handoff's health as `/api/quotas` reports it: one flat object
+ *  so the renderer reads a state, not a nested shape. */
+export type LocalQuotaView = LocalQuotaFreshness & {
+  producer: string | null;
+  issues: Record<string, string>;
 };
 
 export type QuotaWindowsPayload = {
@@ -87,6 +112,9 @@ export class UsageQuotaPoller {
   private timer: ReturnType<typeof setInterval> | null = null;
   private windows: RemoteQuotaWindow[] = [];
   private localWindows: RemoteQuotaWindow[] = [];
+  private localFreshness: LocalQuotaFreshness = { state: "missing" };
+  private localProducer: string | null = null;
+  private localIssues: Record<string, string> = {};
   private lastError: string | null = null;
   private lastOkAt: string | null = null;
   private inFlight = false;
@@ -121,6 +149,13 @@ export class UsageQuotaPoller {
 
   getWindows(): RemoteQuotaWindow[] {
     return mergeLocalQuotaWindows(this.windows, this.localWindows);
+  }
+
+  /** Whether the native app is still writing the handoff, which app that is,
+   *  and any provider it could not read — so Settings can say why a grid is
+   *  empty instead of rendering nothing. */
+  getLocalQuota(): LocalQuotaView {
+    return { ...this.localFreshness, producer: this.localProducer, issues: this.localIssues };
   }
 
   getStatus(): { lastError: string | null; lastOkAt: string | null; windowCount: number } {
@@ -163,7 +198,11 @@ export class UsageQuotaPoller {
   async poll(): Promise<void> {
     if (this.inFlight) return;
     this.inFlight = true;
-    this.localWindows = await this.readNativeQuota();
+    const local = await this.readNativeQuota();
+    this.localWindows = local.windows;
+    this.localFreshness = local.freshness;
+    this.localProducer = local.producer;
+    this.localIssues = local.issues;
     const settings = this.settingsProvider?.() ?? {};
     const url = quotaWindowsUrl(settings.ingestUrl);
     const token =

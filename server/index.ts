@@ -8988,6 +8988,10 @@ const server = createServer(async (req, res) => {
         cooldowns: quotaCooldowns.list(),
         antigravity: lastAntigravityQuotaSnapshot(),
         windows: usageQuotaPoller.getWindows(),
+        // Why the local windows are missing, so Settings can name the
+        // native app — and any provider it could not read — instead of
+        // rendering an unexplained empty grid.
+        localQuota: usageQuotaPoller.getLocalQuota(),
         deepseek,
         engineSpend: rollingSpendTracker.getSpend(),
       });

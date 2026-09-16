@@ -20,6 +20,113 @@ export type QuotaPollerInstanceLike = {
   models?: { options?: Array<{ id: string }> };
 };
 
+/** Just enough of a window to name the provider it belongs to. */
+export type QuotaProviderIdentity = {
+  provider?: string | null;
+  providerKey?: string | null;
+  via?: string | null;
+};
+
+/** The one provider allow-list for the AgentBar handoff and the Settings
+ *  quota section.  The server parser (server/local-usage-monitor.ts) and the
+ *  renderer (src/lib/usage-monitor-quota.ts) each used to declare their own,
+ *  and the two disagreed: the server accepted `deepseek` but not `dsh`, the
+ *  renderer accepted both, and this file mapped `kimi`/`moonshot` windows the
+ *  renderer then dropped again.  One list, imported by both.
+ *
+ *  `dsh` sits BESIDE `deepseek` and is never aliased onto it: the DeepSeek
+ *  Harness and the DeepSeek API are different engines here — driverKindsForWindow
+ *  below answers `dshAgent` for one and `deepseekAgent`/`deepseek` for the
+ *  other — so folding the two keys together would put a harness window on the
+ *  API engine's row and cap the wrong thing. */
+export const QUOTA_PROVIDERS: ReadonlySet<string> = new Set([
+  "anthropic",
+  "openai",
+  "google-antigravity",
+  "cursor",
+  "xai",
+  "minimax",
+  "deepseek",
+  "dsh",
+]);
+
+/** Product and vendor spellings either app can emit, folded onto the
+ *  canonical key above.  Grok Bot is deliberately absent: it is excluded by
+ *  its own check in each of the three places that read a window, and aliasing
+ *  it onto `xai` would hand Grok CLI another product's allowance. */
+export const QUOTA_PROVIDER_ALIASES: Readonly<Record<string, string>> = {
+  claude: "anthropic",
+  "claude-code": "anthropic",
+  chatgpt: "openai",
+  codex: "openai",
+  "openai-codex": "openai",
+  antigravity: "google-antigravity",
+  "antigravity-cli": "google-antigravity",
+  "cursor-cli": "cursor",
+  grok: "xai",
+  "grok-build": "xai",
+  "minimax-code": "minimax",
+};
+
+/** Providers a collector somewhere in the fleet reads but BotFleet has no
+ *  engine for.  Kimi is here because AgentBar does implement a reader for it
+ *  while BotFleet's Kimi instance is custom-only. */
+export const EXCLUDED_QUOTA_PROVIDERS: ReadonlySet<string> = new Set([
+  "gemini-cli",
+  "github-copilot",
+  "copilot",
+  "windsurf",
+  "kimi",
+  "moonshot",
+]);
+
+export function normalizeQuotaProviderKey(value: string | null | undefined): string {
+  return (value ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
+}
+
+/** The canonical provider key for one window.  `via: "antigravity"` wins —
+ *  a window routed through Antigravity is an Antigravity window whatever
+ *  vendor is underneath it — then the row's own providerKey, then the
+ *  display name it reports as `provider`. */
+export function canonicalQuotaProvider(window: QuotaProviderIdentity): string {
+  if (normalizeQuotaProviderKey(window.via) === "antigravity") return "google-antigravity";
+  const key = normalizeQuotaProviderKey(window.providerKey || window.provider);
+  return QUOTA_PROVIDER_ALIASES[key] ?? key;
+}
+
+/** The provider key whose quota an engine spends, for the cases where the
+ *  answer has to run the other way: a provider the collector could not read
+ *  publishes no window at all, so there is nothing to map onto a driver kind
+ *  and the engine's own row is the only place its reason can be shown.
+ *  Deliberately not derived from `driverKindsForWindow` — that function reads
+ *  a window's text and cannot be asked "which provider is this engine?". */
+const DRIVER_KIND_PROVIDERS: Readonly<Record<string, string>> = {
+  claudeAgent: "anthropic",
+  codex: "openai",
+  codexAgent: "openai",
+  cursorAgent: "cursor",
+  grokAgent: "xai",
+  grok: "xai",
+  antigravityAgent: "google-antigravity",
+  minimax: "minimax",
+  minimaxAgent: "minimax",
+  deepseek: "deepseek",
+  deepseekAgent: "deepseek",
+  dshAgent: "dsh",
+};
+
+export function quotaProviderForDriver(driverKind: string): string | null {
+  return DRIVER_KIND_PROVIDERS[driverKind] ?? null;
+}
+
+/** Whether BotFleet has an engine for this window's provider at all. */
+export function isSupportedQuotaProvider(window: QuotaProviderIdentity): boolean {
+  const raw = normalizeQuotaProviderKey(window.providerKey || window.provider);
+  const key = canonicalQuotaProvider(window);
+  if (EXCLUDED_QUOTA_PROVIDERS.has(key) || EXCLUDED_QUOTA_PROVIDERS.has(raw)) return false;
+  return QUOTA_PROVIDERS.has(key);
+}
+
 export function driverKindsForWindow(window: QuotaWindowMatch): string[] {
   const hay = `${window.provider} ${window.sourceApp ?? ""} ${window.label}`.toLowerCase();
   // Grok Bot has its own Cursor-hosted allowance and cannot run in BotFleet.

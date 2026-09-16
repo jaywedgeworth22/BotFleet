@@ -14,7 +14,7 @@ import { UsageMonitorQuotaGrid } from "./UsageMonitorQuotaGrid";
 import { minimaxPriceRows } from "@/lib/minimax-prices";
 import { telemetryBadge, telemetryHost, type TelemetryStatusView } from "@/lib/telemetry-status";
 import { buildUsageConfigPatch } from "@/lib/usage-config";
-import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, isEngineUnconfigured, minimaxQuotaLine, quotaLinesSummary, usageWindowLines, windowHeadlines, windowsLabelFromHeadlines } from "@/lib/quota-display";
+import { antigravityGroupSummary, antigravityQuotaLines, formatResetCountdown, headlinesExhausted, headlinesNearCap, isEngineUnconfigured, localQuotaStatusLine, minimaxQuotaLine, providerIssueLine, quotaLinesSummary, usageWindowLines, windowHeadlines, windowsLabelFromHeadlines, type LocalQuotaFreshnessView } from "@/lib/quota-display";
 import {
   antigravityQuotaCapped,
   antigravityDisplayWindows,
@@ -22,7 +22,7 @@ import {
   isBotFleetQuotaWindow,
   isMiniMaxVideoQuotaWindow,
 } from "@/lib/usage-monitor-quota";
-import { engineMeterNote, isPlanLevelSkip, windowsForDriver } from "../../server/quota-window-map";
+import { engineMeterNote, isPlanLevelSkip, quotaProviderForDriver, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
 
 interface QuotaCooldownInfo {
@@ -112,7 +112,16 @@ export function UsageSection() {
     occurredAt?: string | null;
     modelId?: string | null;
     skipReason?: string | null;
+    planName?: string | null;
+    absoluteRemaining?: number | null;
+    absoluteLimit?: number | null;
+    quotaUnit?: string | null;
+    isExhausted?: boolean;
+    fileStatus?: string | null;
+    fileSkip?: boolean;
+    fileSkipReason?: string | null;
   }>>([]);
+  const [localQuota, setLocalQuota] = React.useState<LocalQuotaFreshnessView | null>(null);
   const [expandedQuota, setExpandedQuota] = React.useState<string | null>(null);
   const usageConfig = state.config?.usage;
   const secretSources = useSecretSources();
@@ -163,6 +172,9 @@ export function UsageSection() {
           }
           if (Array.isArray(data?.windows)) {
             setQuotaWindows(data.windows);
+          }
+          if (data?.localQuota && typeof data.localQuota === "object") {
+            setLocalQuota(data.localQuota);
           }
           if (data?.deepseek && typeof data.deepseek === "object") {
             setDeepSeekBalance(data.deepseek);
@@ -280,6 +292,13 @@ export function UsageSection() {
   const total = sumUsage(rows.map((r) => r.usage));
   const billings = new Set(rows.map((r) => r.billing));
   const botFleetQuotaWindows = quotaWindows.filter(isBotFleetQuotaWindow);
+  // Why the grid is empty, in the one case where the answer is the native
+  // app rather than the engine: nothing to show at all, or a handoff that
+  // stopped being refreshed while BotFleet kept rendering the last of it.
+  const localQuotaNotice =
+    botFleetQuotaWindows.length === 0 || localQuota?.state === "stale" || localQuota?.state === "unreadable"
+      ? localQuotaStatusLine(localQuota)
+      : null;
 
   return (
     <div className="flex flex-col gap-4">
@@ -333,6 +352,11 @@ export function UsageSection() {
         title="Engine Quotas"
         subtitle="Live remaining usage for each engine.  Hover or click a row for the full remaining breakdown."
       >
+        {localQuotaNotice && (
+          <div className="mb-2 rounded-lg border border-hairline/25 bg-inset/30 px-2.5 py-2 text-[12px] leading-relaxed text-ink-secondary">
+            {localQuotaNotice}
+          </div>
+        )}
         <div className="flex flex-col divide-y divide-hairline/20">
           {state.instances.filter((instance) => {
             if (instance.enabled === false || isHiddenQuotaEngine(instance.driverKind)) return false;
@@ -397,13 +421,20 @@ export function UsageSection() {
             const headlines = windowHeadlines(instanceWindows);
             const windowLines = usageWindowLines(instanceWindows);
             const planSkip = !hasUsageMonitorAG && instanceWindows.some((window) => isPlanLevelSkip(window));
+            // The chip reads the same headline buckets the grid under it
+            // renders.  planSkip alone could never see a local window: it
+            // requires window.skip, which the local parser keeps false by
+            // design, so a spent Codex week showed a red 0% cell under a
+            // green "Available" chip.
+            const windowsExhausted = !hasUsageMonitorAG && headlinesExhausted(headlines);
+            const windowsNearCap = !hasUsageMonitorAG && headlinesNearCap(headlines);
             const agExhausted = agGroups.filter((line) => line.exhausted);
             const minimaxRow = isMiniMax ? instance.snapshot.quota?.minimax ?? null : null;
             const minimaxLine = minimaxRow ? minimaxQuotaLine(minimaxRow) : null;
             // Cap accounts for Usage Monitor Antigravity pools, MiniMax token-plan
             // exhaustion, and local group exhaustion so an all-spent pool is not
             // hidden behind an average remaining percent.
-            const isCapped = wildcardCap || planSkip || minimaxRow?.status === "capped" || (hasUsageMonitorAG
+            const isCapped = wildcardCap || planSkip || windowsExhausted || minimaxRow?.status === "capped" || (hasUsageMonitorAG
               ? antigravityQuotaCapped(usageMonitorAGWindows)
               : agGroups.length > 0
                 ? agExhausted.length === agGroups.length
@@ -459,12 +490,23 @@ export function UsageSection() {
             // cached for five minutes, so a key revoked mid-window leaves a
             // stale near_cap reading sitting where the real "MiniMax key
             // rejected (HTTP 401)" belongs unless the state gates it.
+            // MiniMax keeps its own API's 10% verdict; every other engine's
+            // windows warn at quota-display.ts's NEAR_CAP_PERCENT, the same
+            // share the server already derives its near_cap status at.
             const isNearCap = instance.snapshot.state === "available"
-              && !isCapped && !isPartial && minimaxRow?.status === "near_cap";
+              && !isCapped && !isPartial && (minimaxRow?.status === "near_cap" || windowsNearCap);
             const isDisabled = instance.snapshot.reason === "Disabled in settings";
             const isUnavailable = instance.snapshot.state !== "available";
             const isAvailable = !isUnavailable && !isCapped && !isPartial && !isNearCap && !isDisabled;
             const showGenericGrid = !hasUsageMonitorAG && instanceWindows.length > 0;
+            // A provider the collector could not read publishes no window at
+            // all, so the engine used to vanish from the grid with nothing
+            // said.  Its reason is the producer's own user-safe text and is
+            // rendered as plain text, never markup.
+            const engineProvider = quotaProviderForDriver(instance.driverKind);
+            const engineIssue = !showGenericGrid && !hasUsageMonitorAG && engineProvider
+              ? providerIssueLine(instance.displayName, localQuota?.issues?.[engineProvider], localQuota?.producer)
+              : null;
             const baseDetailLines = hasUsageMonitorAG
               ? []
               : agLines.length > 0
@@ -603,7 +645,7 @@ export function UsageSection() {
               : isUnavailable
               ? instance.snapshot.reason ?? "Unavailable"
               : isNearCap
-              ? (minimaxLine ?? "Approaching its usage cap")
+              ? (minimaxLine ?? (allHeadlineLines.length > 0 ? allHeadlineLines.join("  ·  ") : "Approaching its usage cap"))
               : allHeadlineLines.length > 0
               ? allHeadlineLines.join("  ·  ")
               : fullSummary
@@ -666,6 +708,11 @@ export function UsageSection() {
                 </button>
                 {hasUsageMonitorAG && <UsageMonitorQuotaGrid windows={usageMonitorAGWindows} />}
                 {showGenericGrid && <UsageMonitorQuotaGrid windows={instanceWindows as any} />}
+                {engineIssue && (
+                  <div className="ml-9 mt-1.5 rounded-lg border border-hairline/25 bg-inset/30 px-2.5 py-2 text-[11.5px] leading-relaxed text-ink-secondary" title={engineIssue}>
+                    {engineIssue}
+                  </div>
+                )}
                 {open && detailLines.length > 0 && (
                   <div className="mb-1.5 ml-9 flex flex-col gap-1 rounded-lg border border-hairline/20 bg-inset/30 p-2.5">
                     {detailLines.map((line) => (
@@ -709,7 +756,7 @@ export function UsageSection() {
           })}
         </div>
         <div className="mt-3 text-[12px] leading-relaxed text-ink-secondary">
-          Usage Monitor quota snapshots are read while the app is open and considered fresh for 10 minutes.{'\u00A0'} Antigravity shows four shared windows: Gemini Models and Third-Party Models across 5-hour and weekly periods.{'\u00A0'} Exhausted models fail over to the saved chain before the next turn.
+          Usage Monitor quota snapshots are read while the app is open and considered fresh for 15 minutes — its own five-minute refresh plus two missed cycles.{'\u00A0'} Antigravity shows four shared windows: Gemini Models and Third-Party Models across 5-hour and weekly periods.{'\u00A0'} Exhausted models fail over to the saved chain before the next turn.
         </div>
       </Card>
 
