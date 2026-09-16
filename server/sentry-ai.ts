@@ -448,7 +448,15 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
     case "runtime.error": {
       // setup:true is "run grok login", not an unexpected crash.  BOTFLEET-A
       // was this message paged as an Issue while the CLI was signed in.
-      if (event.setup) {
+      // Expected operational conditions (session expired/could not resume, permission timeout,
+      // provider timeout waiting for response) are recorded as warnings/breadcrumbs, not exceptions.
+      const isExpectedNonCrash =
+        event.setup ||
+        event.message.includes("The saved ACP session could not be resumed") ||
+        event.message.includes("nobody answered this permission request in time") ||
+        event.message.includes("timeout waiting for response");
+
+      if (isExpectedNonCrash) {
         sink.addBreadcrumb?.({
           category: "botfleet.turn",
           message: event.message.slice(0, 500),
