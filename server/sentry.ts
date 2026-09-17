@@ -62,7 +62,11 @@ let killed = false;
 let activeFingerprint: string | null = null;
 let profilingWarned = false;
 let runtimeState: SentryRuntimeState = { ...DORMANT };
-let loaderForTests: (() => SentryNode | null) | null = null;
+let loaderForTests: (() => SentryNode | null | Promise<SentryNode | null>) | null = null;
+/** Serializes `applySentryConfig`.  `await loadSdk()` yields, so two callers
+ * could otherwise both pass the fingerprint check, both `shutdown()`, and
+ * both `init()` with no `close()` in between. */
+let applyQueue: Promise<void> = Promise.resolve();
 
 function isTestEnv(): boolean {
   return process.env.VITEST === "true" || process.env.NODE_ENV === "test";
@@ -159,7 +163,7 @@ interface SentrySdkLoad {
 async function loadSdk(): Promise<SentrySdkLoad> {
   if (loaderForTests) {
     try {
-      return { sdk: loaderForTests(), error: null };
+      return { sdk: await loaderForTests(), error: null };
     } catch (err) {
       return { sdk: null, error: errorText(err) };
     }
@@ -235,6 +239,15 @@ function acceptedDsn(sdk: SentryNode): "ok" | "rejected" | "unknown" {
  * happened.  Called at boot and again after every settings change, so it
  * has to be idempotent: an unchanged option set leaves the client alone. */
 export async function applySentryConfig(input: SentryRuntimeInput): Promise<SentryRuntimeState> {
+  const run = applyQueue.then(() => applySentryConfigLocked(input));
+  applyQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+async function applySentryConfigLocked(input: SentryRuntimeInput): Promise<SentryRuntimeState> {
   const parsed = input.dsn ? describeDsn(input.dsn) : null;
   const base: Omit<SentryRuntimeState, "active"> = {
     source: input.source,
@@ -369,7 +382,9 @@ export function getSentry(): SentryNode | null {
 /** Install a stand-in for @sentry/node so a test can exercise the init,
  * close and re-init path without a network client.  Pass null to restore
  * the real loader. */
-export function setSentryLoaderForTests(loader: (() => SentryNode | null) | null): void {
+export function setSentryLoaderForTests(
+  loader: (() => SentryNode | null | Promise<SentryNode | null>) | null,
+): void {
   loaderForTests = loader;
 }
 
@@ -380,5 +395,6 @@ export function resetSentryForTests(): void {
   activeFingerprint = null;
   profilingWarned = false;
   loaderForTests = null;
+  applyQueue = Promise.resolve();
   runtimeState = { ...DORMANT };
 }
