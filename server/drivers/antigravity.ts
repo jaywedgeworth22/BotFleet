@@ -572,6 +572,8 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       if (!config.fullAuto) args.push("accept-edits");
       if (!useStdin) {
         args.unshift("--print", prompt);
+      } else {
+        args.unshift("--print", "-");
       }
       if (turn.model) args.push("--model", injectedApiModel(turn.model) ?? turn.model);
       if (resumeCursor) args.push("--conversation", resumeCursor);
