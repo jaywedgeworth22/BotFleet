@@ -123,6 +123,12 @@ export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
     workspace: Boolean(ctx.workspace),
     recall: Boolean(ctx.recall),
     phone: Boolean(ctx.phone),
+    // No separate TurnToolHostContext field: github rides the same
+    // localComputer grant bash does (see registry.ts's githubEnabled),
+    // so there is nothing new for a caller to pass in — only the gate
+    // object's own `github` key needs to exist, and it derives from the
+    // same boolean the executor merge above already keys off.
+    github: Boolean(ctx.localComputer),
   };
   // The same gate the catalog handed the model.  A hallucinated name, or a
   // real name the model was not offered this turn, finds no executor.

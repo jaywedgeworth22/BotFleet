@@ -42,6 +42,11 @@ export function buildTurnTools(
     workspace: Boolean(integrations.workspace),
     recall: Boolean(integrations.recall),
     phone: Boolean(integrations.phone),
+    // github has no integrations key of its own — it rides the same
+    // localComputer grant bash does (registry.ts's githubEnabled), so the
+    // wire catalog must derive it the same way host.ts's gate does, or the
+    // two would disagree about whether github_* tools exist this turn.
+    github: Boolean(integrations.localComputer),
     commsDepth: 0,
     // The caller's own depth gate already ran; without explicit numbers the
     // registry ceiling must not subtract a second time.

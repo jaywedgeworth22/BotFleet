@@ -3368,12 +3368,15 @@ async function startTurn(
       // Bot RAG is host logic, not an MCP mount — any toolLoop driver
       // qualifies once it is configured, independent of the `qdrantMcp`
       // capability CLI/ACP engines use to mount the real MCP server (see
-      // registry.ts's `recallEnabled`).
-      const recallSettingsForTurn = recallSettings();
-      const hasRecall =
-        usesDriverToolLoop &&
-        cfg.qdrant?.enabled !== false &&
-        (Boolean(recallSettingsForTurn.url) || Boolean(findRecallCli()));
+      // registry.ts's `recallEnabled`).  Resolved only behind the cheap
+      // toolLoop/qdrant-enabled check: recallSettings() and (further down)
+      // findRecallCli()'s filesystem stats have no reason to run on every
+      // dispatch for a CLI/ACP-lane bot, which is never eligible anyway.
+      const recallSettingsForTurn =
+        usesDriverToolLoop && cfg.qdrant?.enabled !== false ? recallSettings() : undefined;
+      const hasRecall = Boolean(
+        recallSettingsForTurn && (recallSettingsForTurn.url || findRecallCli()),
+      );
       // Same reasoning as `phoneEligible` above: the skill selection already
       // decided whether this message is phone-related, using the SAME
       // toolLoop eligibility.  Re-deriving that here would just risk the
@@ -3410,7 +3413,7 @@ async function startTurn(
               commsDepth,
               localComputer: hasHostComputer,
               workspace: worksInWorkspace,
-              recall: hasRecall ? { settings: recallSettingsForTurn, botName: bot.name } : undefined,
+              recall: hasRecall && recallSettingsForTurn ? { settings: recallSettingsForTurn, botName: bot.name } : undefined,
               phone: hasPhone,
               cwd: cwd ?? bot.cwd ?? undefined,
               // Read here, not derived from the catalog above: this is what
@@ -4673,12 +4676,14 @@ async function runGroupMemberTurn(
   const mountsLocalComputer = instance.adapter.capabilities.localComputerMcp === true;
   const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
   // Same reasoning as the 1:1 dispatch: Bot RAG is host logic, not an MCP
-  // mount, so any toolLoop driver qualifies once it is configured.
-  const recallSettingsForRoomTurn = recallSettings();
-  const hasRoomRecall =
-    httpOnlyToolSurface &&
-    cfg.qdrant?.enabled !== false &&
-    (Boolean(recallSettingsForRoomTurn.url) || Boolean(findRecallCli()));
+  // mount, so any toolLoop driver qualifies once it is configured — and
+  // resolved only behind that cheap check for the same reason (see the
+  // 1:1 dispatch's comment on recallSettingsForTurn).
+  const recallSettingsForRoomTurn =
+    httpOnlyToolSurface && cfg.qdrant?.enabled !== false ? recallSettings() : undefined;
+  const hasRoomRecall = Boolean(
+    recallSettingsForRoomTurn && (recallSettingsForRoomTurn.url || findRecallCli()),
+  );
   const hasRoomPhone = httpOnlyToolSurface && Boolean(integrations.phone);
   const roomSystem =
     system +
@@ -4718,7 +4723,7 @@ async function runGroupMemberTurn(
           commsDepth: hop,
           localComputer: hasHostComputer,
           workspace: Boolean(workspace),
-          recall: hasRoomRecall ? { settings: recallSettingsForRoomTurn, botName: bot.name } : undefined,
+          recall: hasRoomRecall && recallSettingsForRoomTurn ? { settings: recallSettingsForRoomTurn, botName: bot.name } : undefined,
           phone: hasRoomPhone,
           cwd: cwd ?? bot.cwd ?? undefined,
           chiefOfStaff: Boolean(bot.chiefOfStaff),

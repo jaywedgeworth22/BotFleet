@@ -19,6 +19,19 @@ import { redactSecretsInText } from "./redact.ts";
 
 export const NOT_CONFIGURED_MESSAGE = "Bot RAG is not configured — set a Service URL in Settings";
 
+/** Every recall function returns this instead of a bare string, so a
+ *  caller can tell a genuine failure (not configured, bad arguments, a
+ *  network/service error) apart from a real answer that merely reads like
+ *  one at a glance (e.g. "No matching records found").  `ok: false` is
+ *  the ONLY signal a caller should act on — never string-sniff `text`. */
+export interface RecallOutcome {
+  ok: boolean;
+  text: string;
+}
+
+const failure = (text: string): RecallOutcome => ({ ok: false, text });
+const success = (text: string): RecallOutcome => ({ ok: true, text });
+
 interface HitRecord {
   score?: number;
   text?: string;
@@ -78,11 +91,11 @@ function safeError(error: unknown): string {
   return redactSecretsInText(error instanceof Error ? error.message : String(error)).slice(0, 400);
 }
 
-export async function recallSearchWith(settings: RecallSettings, args: Record<string, unknown>): Promise<string> {
-  if (!settings.url && !findRecallCli()) return NOT_CONFIGURED_MESSAGE;
+export async function recallSearchWith(settings: RecallSettings, args: Record<string, unknown>): Promise<RecallOutcome> {
+  if (!settings.url && !findRecallCli()) return failure(NOT_CONFIGURED_MESSAGE);
 
   const query = String(args.query || args.topic || "").trim();
-  if (!query) return "Error: query parameter is required";
+  if (!query) return failure("Error: query parameter is required");
 
   const limit = Math.min(Math.max(Number(args.limit) || 5, 1), 20);
   const category = args.category ? String(args.category).trim() : undefined;
@@ -103,9 +116,9 @@ export async function recallSearchWith(settings: RecallSettings, args: Record<st
       if (perDoc) cliArgs.push("--per-doc", String(perDoc));
       const raw = await runCli(settings, "search", cliArgs.slice(1));
       const data = JSON.parse(raw);
-      return formatHits(data.hits || [], settings, data.mode);
+      return success(formatHits(data.hits || [], settings, data.mode));
     } catch (error) {
-      return `Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
+      return failure(`Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`);
     }
   }
 
@@ -124,16 +137,16 @@ export async function recallSearchWith(settings: RecallSettings, args: Record<st
 
     const res = await fetchRecall(`${settings.url}/recall/search`, { method: "POST", headers, body: JSON.stringify(payload), signal });
     const gate = accessLoginHint(res);
-    if (gate) return `Bot RAG search failed: ${gate}.`;
+    if (gate) return failure(`Bot RAG search failed: ${gate}.`);
     if (res.ok) {
       const data = (await res.json()) as { hits?: HitRecord[]; mode?: string; ok?: boolean; error?: unknown };
       if (data.ok === false || data.error || !Array.isArray(data.hits)) throw new Error("the service returned an invalid search result");
-      return formatHits(data.hits, settings, data.mode);
+      return success(formatHits(data.hits, settings, data.mode));
     }
     const errText = await res.text().catch(() => "");
-    return `Bot RAG search error (${res.status}): ${safeError(errText || res.statusText)}`;
+    return failure(`Bot RAG search error (${res.status}): ${safeError(errText || res.statusText)}`);
   } catch (err) {
-    return `Failed to query agent RAG at ${settings.url}: ${safeError(err)}`;
+    return failure(`Failed to query agent RAG at ${settings.url}: ${safeError(err)}`);
   }
 }
 
@@ -141,15 +154,15 @@ export async function recallContributeWith(
   settings: RecallSettings,
   defaultSeat: string,
   args: Record<string, unknown>,
-): Promise<string> {
-  if (!settings.url && !findRecallCli()) return NOT_CONFIGURED_MESSAGE;
+): Promise<RecallOutcome> {
+  if (!settings.url && !findRecallCli()) return failure(NOT_CONFIGURED_MESSAGE);
 
   const text = String(args.text || "").trim();
-  if (!text) return "Error: text parameter is required";
+  if (!text) return failure("Error: text parameter is required");
 
   const category = String(args.category || "lesson").trim();
   const app = String(args.app || "botfleet").trim();
-  const seat = String(args.seat || defaultSeat).trim();
+  const seat = String(args.seat || defaultSeat || "Bot").trim();
   const title = args.title ? String(args.title).trim() : undefined;
   const url = args.url ? String(args.url).trim() : undefined;
   const force = Boolean(args.force);
@@ -162,10 +175,10 @@ export async function recallContributeWith(
       if (force) cliArgs.push("--force");
       const raw = await runCli(settings, "contribute", cliArgs);
       const data = JSON.parse(raw);
-      if (data.status === "duplicate") return `Contribution duplicate: ${data.message || "A similar lesson already exists"}`;
-      return `Stored in ${collectionLabel(settings)} [doc_id: ${data.doc_id || data.id}]: ${title ? `"${title}"` : text.slice(0, 80)}`;
+      if (data.status === "duplicate") return success(`Contribution duplicate: ${data.message || "A similar lesson already exists"}`);
+      return success(`Stored in ${collectionLabel(settings)} [doc_id: ${data.doc_id || data.id}]: ${title ? `"${title}"` : text.slice(0, 80)}`);
     } catch (error) {
-      return `Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`;
+      return failure(`Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`);
     }
   }
 
@@ -181,24 +194,24 @@ export async function recallContributeWith(
       signal,
     });
     const gate = accessLoginHint(res);
-    if (gate) return `Bot RAG contribute failed: ${gate}.`;
+    if (gate) return failure(`Bot RAG contribute failed: ${gate}.`);
     if (res.ok) {
       const data = (await res.json()) as { doc_id?: string; id?: string; ok?: boolean; error?: unknown; status?: string };
       if (data.ok === false || data.error) throw new Error("the service rejected the contribution");
-      if (data.status === "duplicate") return "Contribution duplicate: a similar lesson already exists.";
+      if (data.status === "duplicate") return success("Contribution duplicate: a similar lesson already exists.");
       if (!data.doc_id && !data.id) throw new Error("the service did not confirm a contribution ID; check before retrying");
-      return `Successfully contributed to ${collectionLabel(settings)} [id: ${data.doc_id || data.id}]`;
+      return success(`Successfully contributed to ${collectionLabel(settings)} [id: ${data.doc_id || data.id}]`);
     }
     const errText = await res.text().catch(() => "");
-    return `Bot RAG contribute error (${res.status}): ${safeError(errText || res.statusText)}`;
+    return failure(`Bot RAG contribute error (${res.status}): ${safeError(errText || res.statusText)}`);
   } catch (err) {
-    return `Failed to contribute to agent RAG at ${settings.url}: ${safeError(err)}`;
+    return failure(`Failed to contribute to agent RAG at ${settings.url}: ${safeError(err)}`);
   }
 }
 
-export async function recallStatsWith(settings: RecallSettings): Promise<string> {
+export async function recallStatsWith(settings: RecallSettings): Promise<RecallOutcome> {
   const status = await recallStatus(settings);
-  if (!status.configured) return NOT_CONFIGURED_MESSAGE;
-  if (!status.ready) return `Bot RAG status check failed: ${status.error}.`;
-  return `Bot RAG status [${status.collection}]:\n- Source: ${status.source}\n- Backend: healthy\n- Points: ${status.pointsCount?.toLocaleString()}\n- Checked: ${new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", dateStyle: "medium", timeStyle: "short" }).format(status.checkedAt)} CT`;
+  if (!status.configured) return failure(NOT_CONFIGURED_MESSAGE);
+  if (!status.ready) return failure(`Bot RAG status check failed: ${status.error}.`);
+  return success(`Bot RAG status [${status.collection}]:\n- Source: ${status.source}\n- Backend: healthy\n- Points: ${status.pointsCount?.toLocaleString()}\n- Checked: ${new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", dateStyle: "medium", timeStyle: "short" }).format(status.checkedAt)} CT`);
 }

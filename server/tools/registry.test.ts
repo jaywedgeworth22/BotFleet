@@ -22,6 +22,7 @@ import {
   toolsFor,
   type ToolGateContext,
 } from "./registry.ts";
+import { createPhoneTools } from "./phone.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -308,20 +309,40 @@ describe("gating", () => {
     for (const name of writes) expect(harnessTool(name)!.approval?.policy, name).toBe("ask");
   });
 
+  it("keeps phone.ts's executors and the registry's phone_* records naming the exact same tool set", () => {
+    // Two independently hand-maintained lists of the same names (tools/phone.ts's
+    // ACTIONS, and the PHONE_* records below) with nothing else tying them
+    // together — a name added to one and not the other is either a silent
+    // capability gap (registry advertises a tool the host can't run) or a
+    // dead advertisement (executor exists, nothing ever offers it).
+    const executorNames = Object.keys(createPhoneTools()).sort();
+    const registryNames = httpToolDefinitions(gate({ phone: true }))
+      .map((t) => t.name)
+      .filter((name) => name.startsWith("phone_"))
+      .sort();
+    expect(executorNames).toEqual(registryNames);
+  });
+
   it("offers github tools on the HTTP surface only, riding the same grant as bash", () => {
-    const without = httpToolDefinitions(gate({ localComputer: false })).map((t) => t.name);
+    // `github` is its own ToolGateContext field (see registry.ts's
+    // githubEnabled), not a bare alias of `localComputer` — every real
+    // caller (turn-tools.ts, tools/host.ts) sets the two equal, which is
+    // what these gate() calls reproduce here.
+    const without = httpToolDefinitions(gate({ localComputer: false, github: false })).map((t) => t.name);
     expect(without).not.toContain("github_clone");
 
-    const withGithub = httpToolDefinitions(gate({ localComputer: true })).map((t) => t.name);
+    const withGithub = httpToolDefinitions(gate({ localComputer: true, github: true })).map((t) => t.name);
     expect(withGithub).toContain("github_clone");
     expect(withGithub).toContain("github_pr_create");
 
-    // workspace alone (no localComputer) must not be enough — github rides
-    // the "This Computer" grant specifically, not the weaker file-tools gate.
-    const withWorkspaceOnly = httpToolDefinitions(gate({ localComputer: false, workspace: true })).map((t) => t.name);
+    // workspace alone (no localComputer/github) must not be enough — github
+    // rides the "This Computer" grant specifically, not the weaker file-tools gate.
+    const withWorkspaceOnly = httpToolDefinitions(gate({ localComputer: false, github: false, workspace: true })).map(
+      (t) => t.name,
+    );
     expect(withWorkspaceOnly).not.toContain("github_clone");
 
-    const mcpWithGithub = mcpToolDefinitions(gate({ localComputer: true })).map((t) => t.name);
+    const mcpWithGithub = mcpToolDefinitions(gate({ localComputer: true, github: true })).map((t) => t.name);
     expect(mcpWithGithub).not.toContain("github_clone");
   });
 

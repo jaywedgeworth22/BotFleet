@@ -68,11 +68,19 @@ export interface ToolGateContext {
   /** The bot is working in an assigned workspace directory. */
   workspace?: boolean;
   /** Fleet recall (Bot RAG) is configured: a Service URL or the local
-   *  `recall` CLI is reachable. Independent of `agents` — recall is host
+   *  `recall` CLI is reachable.  Independent of `agents` — recall is host
    *  logic, not a peer-comms permission. */
   recall?: boolean;
   /** A first-party physical Android phone (USB) is mounted for this turn. */
   phone?: boolean;
+  /** The bot may use the github_* tools this turn.  A distinct field from
+   *  `localComputer` on purpose — every caller sets it equal to
+   *  `localComputer` today (see registry.ts's own `githubEnabled` note),
+   *  but that is a value a caller chooses, not a constraint this type
+   *  enforces, so a future grant that separates "run shell commands" from
+   *  "act on a git repo" only has to change what callers pass in, not this
+   *  interface or the registry records. */
+  github?: boolean;
 }
 
 /** How a tool asks a person before it runs.  Consumed by the permission
@@ -471,8 +479,11 @@ const phoneEnabled = (ctx: ToolGateContext) => Boolean(ctx.phone);
 // tool is a narrower, auditable alternative to running `gh`/`git` through
 // `bash` (argv-only exec, a fixed action per record, real-path confinement
 // to the bot's workspace), not a capability beyond what that grant already
-// implies — a bot with `bash` can already reach `gh`/`git` unscoped.
-const githubEnabled = hostComputer;
+// implies — a bot with `bash` can already reach `gh`/`git` unscoped.  Its
+// own `ToolGateContext.github` field, not a bare alias of `hostComputer`,
+// so a future caller can grant one without the other by changing what it
+// passes in, without touching this predicate or these records.
+const githubEnabled = (ctx: ToolGateContext) => Boolean(ctx.github);
 
 const BASH: HarnessTool = {
   name: "bash",

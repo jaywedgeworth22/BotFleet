@@ -179,15 +179,15 @@ const TOOLS = [
 ];
 
 async function recallSearch(args: Record<string, unknown>): Promise<string> {
-  return recallSearchWith(RECALL_SETTINGS, args);
+  return (await recallSearchWith(RECALL_SETTINGS, args)).text;
 }
 
 async function recallContribute(args: Record<string, unknown>): Promise<string> {
-  return recallContributeWith(RECALL_SETTINGS, DEFAULT_SEAT, args);
+  return (await recallContributeWith(RECALL_SETTINGS, DEFAULT_SEAT, args)).text;
 }
 
 async function recallStats(): Promise<string> {
-  return recallStatsWith(RECALL_SETTINGS);
+  return (await recallStatsWith(RECALL_SETTINGS)).text;
 }
 
 async function handleToolCall(name: string, args: Record<string, unknown>): Promise<string> {
