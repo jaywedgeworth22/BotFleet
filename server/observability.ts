@@ -100,8 +100,8 @@ class ObservabilityManager {
   }
 
   /** Re-read the config and bring the Sentry client in line with it. */
-  apply(): ObservabilityStatusView {
-    applySentryConfig(this.resolve());
+  async apply(): Promise<ObservabilityStatusView> {
+    await applySentryConfig(this.resolve());
     return this.getStatus();
   }
 
@@ -166,7 +166,7 @@ class ObservabilityManager {
         eventId: null,
       };
     }
-    if (!isSentryActive()) this.apply();
+    if (!isSentryActive()) await this.apply();
     const sdk = getSentry();
     if (!isSentryActive() || !sdk) {
       return {

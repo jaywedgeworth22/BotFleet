@@ -156,7 +156,7 @@ interface SentrySdkLoad {
  * sentinel DSNs, and a real client would build a real transport pointed at
  * them.  Tests that need the wiring exercised install a fake through
  * `setSentryLoaderForTests`. */
-function loadSdk(): SentrySdkLoad {
+async function loadSdk(): Promise<SentrySdkLoad> {
   if (loaderForTests) {
     try {
       return { sdk: loaderForTests(), error: null };
@@ -166,9 +166,9 @@ function loadSdk(): SentrySdkLoad {
   }
   if (isTestEnv()) return { sdk: null, error: null };
   try {
-    const require = createRequire(import.meta.url);
+    
     // SAFETY: lazy-load so vitest importing the harness does not boot the Node SDK.
-    return { sdk: require("@sentry/node") as SentryNode, error: null };
+    return { sdk: (await import("@sentry/node")) as unknown as SentryNode, error: null };
   } catch (err) {
     return { sdk: null, error: `Sentry SDK failed to load: ${errorText(err)}` };
   }
@@ -197,9 +197,10 @@ function shutdown(): void {
  * missing rather than pretending profiling is on. */
 function attachProfiling(sdk: SentryNode): boolean {
   try {
-    const require = createRequire(import.meta.url);
+    
     // SAFETY: the only export this needs is the integration factory, and a
     // package that does not have it throws straight into the catch below.
+    const require = createRequire(import.meta.url);
     const { nodeProfilingIntegration } = require("@sentry/profiling-node") as {
       nodeProfilingIntegration: () => SentryIntegration;
     };
@@ -233,7 +234,7 @@ function acceptedDsn(sdk: SentryNode): "ok" | "rejected" | "unknown" {
 /** Bring the running client in line with `input`, and report what actually
  * happened.  Called at boot and again after every settings change, so it
  * has to be idempotent: an unchanged option set leaves the client alone. */
-export function applySentryConfig(input: SentryRuntimeInput): SentryRuntimeState {
+export async function applySentryConfig(input: SentryRuntimeInput): Promise<SentryRuntimeState> {
   const parsed = input.dsn ? describeDsn(input.dsn) : null;
   const base: Omit<SentryRuntimeState, "active"> = {
     source: input.source,
@@ -279,7 +280,7 @@ export function applySentryConfig(input: SentryRuntimeInput): SentryRuntimeState
   }
 
   shutdown();
-  const { sdk, error } = loadSdk();
+  const { sdk, error } = await loadSdk();
   if (!sdk) {
     runtimeState = { ...base, active: false, lastError: error };
     return runtimeState;
@@ -340,12 +341,12 @@ export function sentryRuntimeState(): SentryRuntimeState {
 
 /** Env-only entry point, kept for callers that boot before app config is
  * loaded.  The observability manager is the richer path. */
-export function initSentry(env: NodeJS.ProcessEnv = process.env): boolean {
+export async function initSentry(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   if (initialized) return true;
   if (env.VITEST === "true" || env.NODE_ENV === "test") return false;
   const dsn = sentryDsnFromEnv(env);
   const tracesSampleRate = Number(env.SENTRY_TRACES_SAMPLE_RATE ?? "0.2");
-  return applySentryConfig({
+  return (await applySentryConfig({
     dsn: dsn ?? null,
     enabled: true,
     environment: (env.SENTRY_ENV || env.NODE_ENV || "production").trim() || "production",
@@ -354,7 +355,7 @@ export function initSentry(env: NodeJS.ProcessEnv = process.env): boolean {
       : 0.2,
     logsEnabled: true,
     source: dsn ? "env" : "none",
-  }).active;
+  })).active;
 }
 
 export function isSentryInitialized(): boolean {

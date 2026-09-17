@@ -8,18 +8,18 @@ afterEach(() => {
 });
 
 describe("server Sentry init", () => {
-  it("stays inert without a DSN", () => {
+  it("stays inert without a DSN", async () => {
     expect(sentryDsnFromEnv({})).toBeUndefined();
-    expect(initSentry({})).toBe(false);
+    expect(await initSentry({})).toBe(false);
     expect(isSentryInitialized()).toBe(false);
   });
 
-  it("stays inert under vitest even when a DSN is present", () => {
-    expect(initSentry({ VITEST: "true", SENTRY_DSN: "https://example.invalid/1" })).toBe(false);
+  it("stays inert under vitest even when a DSN is present", async () => {
+    expect(await initSentry({ VITEST: "true", SENTRY_DSN: "https://example.invalid/1" })).toBe(false);
     expect(isSentryInitialized()).toBe(false);
   });
 
-  it("reads SENTRY_DSN then BOTFLEET_SENTRY_DSN", () => {
+  it("reads SENTRY_DSN then BOTFLEET_SENTRY_DSN", async () => {
     expect(sentryDsnFromEnv({ SENTRY_DSN: " https://example.invalid/1 " })).toBe("https://example.invalid/1");
     expect(sentryDsnFromEnv({ BOTFLEET_SENTRY_DSN: "https://example.invalid/2" })).toBe(
       "https://example.invalid/2",
