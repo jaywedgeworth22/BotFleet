@@ -349,11 +349,18 @@ describe("observability probe", () => {
 });
 
 describe("observability malformed DSN", () => {
-  it("treats a stored non-DSN as unconfigured rather than silently inert", () => {
+  it("propagates a stored non-DSN so the runtime can name it, rather than dropping it as unconfigured", () => {
     useConfig({ observability: { sentryDsn: "https://o0.ingest.sentry.io/1" } });
     const status = observability.getStatus();
-    expect(status.configured).toBe(false);
-    expect(status.source).toBe("none");
+    expect(status.configured).toBe(true);
+    expect(status.enabled).toBe(false);
+    expect(status.source).toBe("config");
+    expect(status.host).toBeNull();
+    expect(status.lastError).toBe("The stored DSN is not a Sentry https:// DSN.");
+
+    const line = observabilityBootLine(status);
+    expect(line).toBe("[sentry] misconfigured (config): The stored DSN is not a Sentry https:// DSN.");
+    expect(line).not.toContain("enabled");
   });
 
   // The boot line is what an operator (and this plan's own verification
