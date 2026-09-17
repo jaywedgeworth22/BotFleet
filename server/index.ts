@@ -445,7 +445,7 @@ const permissionBroker = createPermissionBroker({ publish: (event) => bus.publis
 // next restart.  The boot line names the ingest host and the project id; the
 // DSN itself never reaches a log file.
 observability.configure(() => observabilitySettings(cfg));
-console.log(observabilityBootLine(observability.apply()));
+console.log(observabilityBootLine(await observability.apply()));
 // Only now, with the first sync already applied: the timer is the slow path
 // that keeps a rotated credential current, not the one boot depends on.
 infisical.start();
@@ -5740,7 +5740,7 @@ async function applyResolvedSecrets(reason: RefreshReason): Promise<void> {
   // Outside the fingerprint check on purpose: a rotated DSN takes effect
   // without a restart, and it is deliberately not a field that rebuilds the
   // fleet, so the fingerprint never moves for it.
-  observability.apply();
+  await observability.apply();
   // Against the fingerprint the REGISTRY was built with, never against `cfg`
   // at the top of this call.  The timer path writes the rotated value into
   // `cfg` and only records the change, so by the time Sync Now runs, a
@@ -8798,7 +8798,7 @@ const server = createServer(async (req, res) => {
             Object.assign(cfg, loadConfig());
             infisical.start();
           }
-          observability.apply();
+          await observability.apply();
           if (credentialFingerprint(cfg) !== loadedCredentialFingerprint) await runProviderReload();
           infisical.setPendingProviderReload(false);
         });
@@ -10090,7 +10090,7 @@ const server = createServer(async (req, res) => {
       // the Sentry client is closed and re-opened in place.  Nothing waits for
       // a restart, and the line printed here says exactly what changed.
       if (patch.observability !== undefined) {
-        console.log(observabilityBootLine(observability.apply()));
+        console.log(observabilityBootLine(await observability.apply()));
       }
       // Provider keys change the fleet. Profile, voice, VPS, and room timeout
       // changes do not rebuild it: no driver reads them, and they should not
