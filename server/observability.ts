@@ -111,10 +111,10 @@ class ObservabilityManager {
     const parsed = input.dsn ? describeDsn(input.dsn) : null;
     // A stored string that is not a DSN never starts the SDK, so calling it
     // "enabled" would put a green pill and an `[sentry] enabled` boot line
-    // in front of an operator whose harness is reporting nothing.  Only the
-    // config path filters a malformed value before it gets here; an
-    // env-pinned one arrives raw.  `configured` still says a value is on
-    // file — that is what makes the difference legible rather than baffling.
+    // in front of an operator whose harness is reporting nothing.  Stored
+    // and env-pinned values both arrive raw so `configured` can say a value
+    // is on file — that is what makes a malformed DSN legible rather than
+    // looking like nothing was set.
     const malformed = input.dsn !== null && parsed === null;
     return {
       enabled: input.enabled && input.dsn !== null && !malformed,
