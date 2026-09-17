@@ -71,7 +71,7 @@ class ObservabilityManager {
    * without this an environment DSN would beat a rotated stored value forever
    * and the card would call a stored DSN "Settings". */
   private dsnFromVault(): boolean {
-    return secretSource("observability.sentryDsn") === "infisical" && Boolean(this.settings().dsn);
+    return secretSource("observability.sentryDsn") === "infisical";
   }
 
   /** The secret store, then env, then config, then nothing.  Env wins over

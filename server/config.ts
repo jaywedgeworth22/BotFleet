@@ -610,7 +610,7 @@ export interface ObservabilitySettings {
  * SDK, which would accept it and then quietly drop every event. */
 export function sentryDsnConfigured(cfg: AppConfig): string | null {
   const raw = cfg.observability?.sentryDsn?.trim();
-  return raw && isSentryDsn(raw) ? raw : null;
+  return raw || null;
 }
 
 /** The explicit kill switch.  Absent means on, matching `ingress.enabled`:
