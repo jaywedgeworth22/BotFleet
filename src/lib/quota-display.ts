@@ -1,4 +1,5 @@
 /** Settings → Usage quota row: full per-model / per-window lines for hover and click. */
+import { lookupOwn, NEAR_CAP_PERCENT } from "../../server/quota-window-map";
 
 export type QuotaDisplayModel = {
   label: string;
@@ -278,7 +279,11 @@ export function windowHeadlines(windows: QuotaWindowDisplay[]): WindowHeadline[]
     const exhausted = pick.skip || (remainingPercent != null && remainingPercent <= 0);
     out.push({
       bucket,
-      display: BUCKET_DISPLAY[bucket] ?? pick.window ?? bucket,
+      // `bucketFor` passes an unrecognised window token through unchanged, so
+      // this is indexed with handoff text: a bare read would answer the
+      // `Object` function for "constructor" and the `localeCompare` sort below
+      // would throw on it.
+      display: lookupOwn(BUCKET_DISPLAY, bucket) ?? pick.window ?? bucket,
       remainingPercent: exhausted ? 0 : remainingPercent,
       resetAtMs: parseResetAt(pick.resetAt),
       exhausted,
@@ -310,6 +315,126 @@ export function formatResetCountdown(resetAtMs: number | null, now = Date.now())
   if (days > 0) return hours > 0 ? `${days}d ${hours}h` : `${days}d`;
   if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}m` : `${hours}h`;
   return `${Math.max(minutes, 1)}m`;
+}
+
+/** How little of a window may be left before the engine chip warns.  One
+ *  constant, defined in server/quota-window-map.ts and re-exported here, so
+ *  the chip, the grid cell under it and the `near_cap` status the server
+ *  derives in server/local-usage-monitor.ts cannot drift apart — and so all
+ *  three keep matching the producer, which classifies the same window at the
+ *  same 20% before it ever reaches BotFleet.
+ *
+ *  MiniMax deliberately keeps its own 10% (server/minimax-balance.ts) or the
+ *  balance-alert threshold the user set: that is a vendor reading about a
+ *  real balance rather than a share BotFleet inferred from a percentage, and
+ *  folding it into this constant would silently move MiniMax's alert point. */
+export { NEAR_CAP_PERCENT };
+
+/** The chip's own verdict, read off the same headline buckets the grid under
+ *  it renders — so a red 0% cell can no longer sit below a green chip. */
+export function headlinesExhausted(headlines: WindowHeadline[]): boolean {
+  return headlines.some((headline) => headline.exhausted);
+}
+
+export function headlinesNearCap(headlines: WindowHeadline[]): boolean {
+  return headlines.some(
+    (headline) => !headline.exhausted && headline.remainingPercent != null && headline.remainingPercent <= NEAR_CAP_PERCENT,
+  );
+}
+
+/** What the native handoff publishes beside the percentage. */
+export type AbsoluteQuotaView = {
+  absoluteRemaining?: number | null;
+  absoluteLimit?: number | null;
+  quotaUnit?: string | null;
+  planName?: string | null;
+};
+
+function finiteAmount(value: number | null | undefined): number | null {
+  return value != null && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function planTitle(planName: string | null | undefined): string | null {
+  const raw = (planName ?? "").trim();
+  if (!raw) return null;
+  return raw.replace(/\S+/g, (word) => word.charAt(0).toUpperCase() + word.slice(1));
+}
+
+function amountLabel(value: number, unit: string): string {
+  const figure = value.toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return unit.toUpperCase() === "USD" ? `$${figure}` : figure;
+}
+
+/** "$0 of $400 on Ultra", "12 of 300 requests", "Ultra plan" — the numbers
+ *  the producer already measured, instead of the bare percentage they were
+ *  rounded into. */
+export function absoluteQuotaLabel(window: AbsoluteQuotaView): string | null {
+  const plan = planTitle(window.planName);
+  const remaining = finiteAmount(window.absoluteRemaining);
+  const limit = finiteAmount(window.absoluteLimit);
+  const unit = (window.quotaUnit ?? "").trim();
+  if (remaining == null || limit == null) {
+    if (!plan) return null;
+    return /\bplans?\b/i.test(plan) ? plan : `${plan} plan`;
+  }
+  const isMoney = unit.toUpperCase() === "USD";
+  const suffix = isMoney || !unit ? "" : ` ${unit}`;
+  const amounts = `${amountLabel(remaining, unit)} of ${amountLabel(limit, unit)}${suffix}`;
+  return plan ? `${amounts} on ${plan}` : amounts;
+}
+
+/** Whether the native app is still writing its handoff, which app that is,
+ *  and any provider it could not read — as `/api/quotas` reports it.  Mirrors
+ *  server/usage-quota.ts's LocalQuotaView. */
+export type LocalQuotaFreshnessView = {
+  state?: string | null;
+  generatedAt?: string | null;
+  ageMs?: number | null;
+  producer?: string | null;
+  issues?: Record<string, string> | null;
+};
+
+/** The app that writes the local handoff.  It names itself in the payload;
+ *  the fallback is the menu-bar app that has always written this file, since
+ *  the file is the only thing that could say otherwise. */
+export function quotaProducerLabel(producer?: string | null): string {
+  return (producer ?? "").trim().toLowerCase() === "usage-monitor" ? "Usage Monitor" : "AgentBar";
+}
+
+/** Sentence-case status line for an empty quota grid, or null while the
+ *  handoff is live.  An empty grid with no explanation is what let the
+ *  native app quit unnoticed. */
+export function localQuotaStatusLine(freshness: LocalQuotaFreshnessView | null | undefined): string | null {
+  const state = freshness?.state ?? "";
+  if (state === "" || state === "fresh") return null;
+  const producer = quotaProducerLabel(freshness?.producer);
+  if (state === "missing") return `${producer} is not running, so no local subscription quota is available`;
+  if (state === "stale") {
+    const written = freshness?.generatedAt ? Date.parse(freshness.generatedAt) : Number.NaN;
+    // Viewer timezone, the same as the reset hovers in the grid.
+    const at = Number.isFinite(written)
+      ? new Date(written).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      : null;
+    return at
+      ? `${producer} has not written quota since ${at}`
+      : `${producer} has not written quota recently`;
+  }
+  return `${producer}'s quota file could not be read`;
+}
+
+/** "Claude: sign in again to refresh quota (from AgentBar)" — the reason a
+ *  provider reported nothing, attributed to the app that measured it.  The
+ *  reason is the producer's own user-safe text: rendered as plain text,
+ *  never markup, and capped again here in case it reached this module by
+ *  some path other than the server parser. */
+export function providerIssueLine(
+  engineName: string,
+  reason: string | null | undefined,
+  producer?: string | null,
+): string | null {
+  const text = (reason ?? "").replace(/\s+/g, " ").trim().slice(0, 160).trim();
+  if (!text) return null;
+  return `${engineName}: ${text} (from ${quotaProducerLabel(producer)})`;
 }
 
 export type MiniMaxQuotaStatus = "ok" | "near_cap" | "capped" | "unknown";

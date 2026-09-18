@@ -426,6 +426,8 @@ export interface ConfigStatus {
     configured: boolean;
     hasToken: boolean;
     hasReadToken?: boolean;
+    /** Whether a locally-observed subscription cap diverts auto-fallback. */
+    localQuotaRouting?: boolean;
     projects: Array<{ slug: string; match: string[] }>;
   };
   /** Opt-in flags. Absent means off. */

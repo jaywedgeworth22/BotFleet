@@ -134,6 +134,7 @@ import {
   persistableInstanceConfigs,
   INSTANCE_API_KEY_ENV,
   isAbsoluteHttpUrl,
+  localQuotaRoutingEnabled,
   usageIngestUrl,
   usageProjectRules,
   vpsCpus,
@@ -394,6 +395,7 @@ usageQuotaPoller.configure({
     ingestUrl: usageIngestUrl(cfg),
     ingestToken: cfg.usage?.ingestToken,
     readToken: cfg.usage?.readToken,
+    localQuotaRouting: localQuotaRoutingEnabled(cfg),
   }),
   instances: () =>
     registry.instances().map((inst) => ({
@@ -5543,6 +5545,7 @@ function configStatus() {
       configured: telemetry.getStatus().enabled,
       hasToken: Boolean(cfg.usage?.ingestToken),
       hasReadToken: Boolean(cfg.usage?.readToken || process.env.USAGE_READ_TOKEN),
+      localQuotaRouting: localQuotaRoutingEnabled(cfg),
       projects: usageProjectRules(cfg),
     },
     // This frame is broadcast to every window and, with Remote Access on,
@@ -9096,6 +9099,10 @@ const server = createServer(async (req, res) => {
         cooldowns: quotaCooldowns.list(),
         antigravity: lastAntigravityQuotaSnapshot(),
         windows: usageQuotaPoller.getWindows(),
+        // Why the local windows are missing, so Settings can name the
+        // native app — and any provider it could not read — instead of
+        // rendering an unexplained empty grid.
+        localQuota: usageQuotaPoller.getLocalQuota(),
         deepseek,
         engineSpend: rollingSpendTracker.getSpend(),
       });
