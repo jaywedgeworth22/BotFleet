@@ -113,6 +113,7 @@ import {
   type TurnComputerDeps,
   type TurnComputerMounts,
 } from "./computer-grants.ts";
+import { computerReach } from "./computer-capability.ts";
 import {
   ensureDirs,
   instanceConfigs,
@@ -744,7 +745,12 @@ function botLocalAutoCapability(bot?: ComputerGrantSubject | null): LocalAutoCon
   return {
     hostPlatform: process.platform,
     ...(instance
-      ? { providerSupportsLocal: instance.adapter.capabilities.localComputerMcp === true }
+      ? {
+          providerSupportsLocal: computerReach({
+            driverKind: instance.driverKind,
+            capabilities: instance.adapter.capabilities,
+          }).local,
+        }
       : {}),
   };
 }

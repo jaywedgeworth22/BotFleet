@@ -36,12 +36,16 @@ import { MacLocalControl } from "./MacLocalControl";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   autoSelectsLocalComputer,
+  engineReachKnown,
+  instanceSupportsCloudComputer,
   instanceSupportsLocalComputer,
+  instanceSupportsLocalVm,
   linuxAutoDescription,
   localComputerDisabledReason,
   localComputerSelectable,
 } from "@/lib/local-computer";
 import { vpsComputerNeedsReplacement, type VpsComputerStatus } from "@/lib/vps-computer";
+import { resolveCloudBackend } from "../../server/computer-grants.ts";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -153,17 +157,25 @@ export function ComputerPanel({
   useEffect(() => {
     vmReadinessAttempts.current = 0;
   }, [bot.id, bot.computers]);
+  // Capability and readiness are different questions and stay apart: the
+  // reach says what this ENGINE can ever be given, and a snapshot that is
+  // not "available" says this engine is not usable right now.  Only the VM
+  // path has ever gated on both, and it keeps doing so here.
   const vmSupported = Boolean(
     selectedInstance?.snapshot.state === "available" &&
-      selectedInstance.capabilities?.computerMcp &&
-      selectedInstance.driverKind !== "boxAgent",
+      instanceSupportsLocalVm(state.instances, bot),
   );
-  const computerToolSupported = selectedInstance?.capabilities?.computerMcp === true;
-  const vpsSupported = Boolean(computerToolSupported && selectedInstance?.driverKind !== "boxAgent");
   const cloudBackend = bot.cloudBackend ?? "box";
-  const cloudSupported = cloudBackend === "vps"
-    ? vpsSupported
-    : computerToolSupported || selectedInstance?.driverKind === "boxAgent";
+  // Where this bot's Cloud destination actually lands, workspace default
+  // included — the same resolver the turn uses.  `cloudBackend` above is
+  // still the bot's OWN setting, which is what the backend picker edits and
+  // what the labels below name.
+  const resolvedCloudBackend = resolveCloudBackend(bot.cloudBackend, state.config?.botDefaults?.cloudBackend);
+  const vpsSupported = instanceSupportsCloudComputer(state.instances, bot, "vps");
+  const cloudSupported = instanceSupportsCloudComputer(state.instances, bot, resolvedCloudBackend);
+  // Those two answers are only worth acting on once the engine list is in —
+  // see the cloud hold in the lifecycle effect below.
+  const reachKnown = engineReachKnown({ instances: state.instances, hydrationStatus: state.hydration.status });
   const botRoutines = state.routines
     .filter((routine) => routine.botId === bot.id)
     .sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity));
@@ -263,6 +275,20 @@ export function ComputerPanel({
         if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       };
     }
+    // Everything below this line decides a CLOUD destination, and every path
+    // through it can send `POST /api/bots/:id/computer/provision` — which
+    // performs no capability check of its own and starts a container, or a
+    // BILLED ASCII.dev Box.  `instanceSupportsCloudComputer` fails OPEN for an
+    // engine this client has never heard of, on purpose, and an engine list
+    // that has not hydrated yet looks exactly like that.  Acting on it there
+    // would spend on a guess, so hold in `checking` until the list is known.
+    // `reachKnown` is a dependency of this effect, so the moment it lands the
+    // effect re-runs and the real answer decides — that re-run cannot be left
+    // to `cloudSupported`, which does not change at all for the common case
+    // of an engine that turns out to support cloud after all.  The local and
+    // VM paths above are untouched: both already fail CLOSED, so neither can
+    // spend anything on an empty list.
+    if (!reachKnown) return;
     if ((bot.computers ?? []).includes("cloud") && !cloudSupported) {
       setError("This model engine cannot use cloud computer tools. Choose Claude, an ACP engine, or the Computer engine.");
       setPhase("error");
@@ -386,6 +412,7 @@ export function ComputerPanel({
     vmSupported,
     cloudSupported,
     vpsSupported,
+    reachKnown,
     state.config?.vps?.sshAlias,
   ]);
 

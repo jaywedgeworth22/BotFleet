@@ -17,6 +17,7 @@
  * surface, prompt, and allow-list they always have. Distinct names appear only
  * once a second computer is actually mounted.
  */
+import { computerReach, type ComputerReach } from "./computer-capability.ts";
 import { shouldMountLocalComputer } from "./local-routing.ts";
 
 import type { AppConfig } from "./config.ts";
@@ -412,7 +413,7 @@ export interface TurnComputerDeps<Lease = unknown> {
    * dispatcher's state, so the dispatcher owns the claim. */
   acquireLocalVm(): Promise<ComputerMount["stdio"]>;
   vps: {
-    vpsDriverError(driverKind: string, computerMcp: boolean): string | null;
+    vpsDriverError(driverKind: string, reach: ComputerReach): string | null;
     vpsComputerAction(action: "provision", cfg: AppConfig, botId: string): Promise<RemoteComputerStatus>;
     inspectVpsForAuto(cfg: AppConfig, botId: string): Promise<RemoteComputerStatus>;
     vpsComputerMcp(cfg: AppConfig, botId: string, containerRef?: string): { command: string; args: string[]; env: Record<string, string> };
@@ -552,15 +553,21 @@ async function resolveMounts<Lease>(
   // has never chosen a backend of its own.
   const botBackend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
   const cloudBackend = runOn === "cloud" ? "box" : botBackend;
-  const mountsComputerMcp = engine.computerMcp;
-  const mountsCloudComputer = mountsComputerMcp || engine.driverKind === "boxAgent";
-  const mountsLocalComputer = engine.localComputerMcp;
+  // One derivation for every destination — see computer-capability.ts.  The
+  // names below are kept because the mount sites read as "does this turn
+  // mount X", not "can this engine reach X".
+  const reach = computerReach({
+    driverKind: engine.driverKind,
+    capabilities: { computerMcp: engine.computerMcp, localComputerMcp: engine.localComputerMcp, toolLoop: engine.toolLoop },
+  });
+  const mountsCloudComputer = reach.box;
+  const mountsLocalComputer = reach.local;
   const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
 
   // Explicit destinations are strict.  In particular, Local VM must never
   // fall through to host CUA and accidentally click on the user's Mac.
   if (wantsVm) {
-    if (!mountsComputerMcp || engine.driverKind === "boxAgent") {
+    if (!reach.vm) {
       throw new Error("this model engine cannot use the Local VM — choose Claude or an ACP engine, or select another computer destination");
     }
     const stdio = await deps.acquireLocalVm();
@@ -601,7 +608,7 @@ async function resolveMounts<Lease>(
   // Explicit Cloud may prepare/start it.  Auto remains read-only unless the
   // person explicitly opted this bot into remote lifecycle actions.
   if ((wantsCloud || autoCloud) && cloudBackend === "vps") {
-    const unsupported = deps.vps.vpsDriverError(engine.driverKind, mountsComputerMcp);
+    const unsupported = deps.vps.vpsDriverError(engine.driverKind, reach);
     if (unsupported && wantsCloud) throw new Error(unsupported);
     if (unsupported && autoCloud) autoVpsProblem = unsupported;
     if (!unsupported) {

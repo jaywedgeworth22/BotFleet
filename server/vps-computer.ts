@@ -23,6 +23,7 @@ import {
   IMAGE_LAYER_VERSION,
   MANAGED_LABEL,
 } from "./container-computer.ts";
+import type { ComputerReach } from "./computer-capability.ts";
 import {
   VPS_DEFAULT_CPUS,
   VPS_DEFAULT_MEMORY_GIB,
@@ -1009,14 +1010,15 @@ export function vpsComputerMcp(cfg: AppConfig, botId: string, containerRef?: str
   };
 }
 
-export function vpsDriverError(driverKind: string, computerMcp: boolean): string | null {
+/** Why this engine cannot take a self-hosted VPS, in the words a person
+ *  reads.  The RULE lives in `computer-capability.ts` — this function owns
+ *  only the copy, and picks which sentence explains the refusal. */
+export function vpsDriverError(driverKind: string, reach: ComputerReach): string | null {
+  if (reach.vps) return null;
   if (driverKind === "boxAgent") {
     return "The Computer engine runs its agent on Box and cannot use a self-hosted VPS — choose Claude or an ACP engine";
   }
-  if (!computerMcp) {
-    return "This model engine cannot mount a self-hosted VPS computer — choose Claude or an ACP engine";
-  }
-  return null;
+  return "This model engine cannot mount a self-hosted VPS computer — choose Claude or an ACP engine";
 }
 
 export async function vpsComputerScreenshot(

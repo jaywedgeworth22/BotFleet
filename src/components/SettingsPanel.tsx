@@ -10,7 +10,8 @@ import { railAsideClass } from "@/lib/layout-rails";
 import { requestNotificationPermission } from "@/lib/notify";
 import { botUsage, costCaption, formatTokens, formatUsd, hasFiniteCost } from "@/lib/usage";
 import { shortPath } from "@/lib/short-path";
-import { computerDestinationDisabledReason, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
+import { computerDestinationDisabledReason, instanceSupportsCloudComputer, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
+import { resolveCloudBackend } from "../../server/computer-grants.ts";
 import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
 import { BotSkillsPanel } from "./BotSkillsPanel";
 import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./LocalComputerAutoWarning";
@@ -337,7 +338,17 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   // should not have offered it.  See computerDestinationDisabledReason.
   const destinationDisabled = (mode: "cloud" | "vm" | "local" | "off"): string | null => {
     if (mode === "local") return localSelectable ? null : localDisabledReason;
-    if (mode === "cloud" || mode === "vm") return computerDestinationDisabledReason(mode, state.instances, bot);
+    if (mode === "cloud" || mode === "vm") {
+      // The resolved backend, not the bot's own field: a bot that never
+      // chose one still lands wherever the workspace default sends it, and
+      // Cloud's engine rule differs between a hosted box and a VPS.
+      return computerDestinationDisabledReason(
+        mode,
+        state.instances,
+        bot,
+        resolveCloudBackend(bot.cloudBackend, state.config?.botDefaults?.cloudBackend),
+      );
+    }
     return null;
   };
   const patch = (
@@ -372,7 +383,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const canAutoReview = engine?.capabilities?.approvalReview === true;
   const canCoordinate = engine?.capabilities?.agentsMcp === true;
   const canUseConnectedApps = engine?.capabilities?.composioMcp === true;
-  const canUseVps = engine?.capabilities?.computerMcp === true && engine.driverKind !== "boxAgent";
+  const canUseVps = instanceSupportsCloudComputer(state.instances, bot, "vps");
   const connectedAppsConfigured = state.config?.composio?.configured === true;
   const connectedAppsEnabled = bot.composio !== false;
   const sectionName = bot.section?.trim() || "General";

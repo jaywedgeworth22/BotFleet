@@ -16,6 +16,7 @@ import {
 } from "react";
 import type { CloudBackend, EffortLevel } from "../../server/contracts.ts";
 import type { AccessTokenState } from "../../server/recall-access.ts";
+import type { ComputerReach } from "../../server/computer-capability.ts";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import type { RoutineRequestCardData } from "../../shared/routine-request";
@@ -606,6 +607,12 @@ export interface InstanceInfo {
      * bot's active conversation. */
     approvalReview?: boolean;
   };
+  /** Which computer destinations this engine can be given at all, derived
+   *  server-side in `server/computer-capability.ts` and shipped whole.  The
+   *  picker LOOKS THIS UP; it does not restate the rule, because the last
+   *  hand-mirrored copy drifted and offered destinations the turn refused.
+   *  Optional only so a row from an older server stays fail-closed. */
+  computerReach?: ComputerReach;
   /** `custom` engines sit below the rail divider — no subscription catalog. */
   access?: "subscription" | "custom";
   install?: EngineInstall;
