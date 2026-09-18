@@ -165,14 +165,20 @@ export function ComputerPanel({
     selectedInstance?.snapshot.state === "available" &&
       instanceSupportsLocalVm(state.instances, bot),
   );
-  const cloudBackend = bot.cloudBackend ?? "box";
-  // Where this bot's Cloud destination actually lands, workspace default
-  // included — the same resolver the turn uses.  `cloudBackend` above is
-  // still the bot's OWN setting, which is what the backend picker edits and
-  // what the labels below name.
-  const resolvedCloudBackend = resolveCloudBackend(bot.cloudBackend, state.config?.botDefaults?.cloudBackend);
+  // Resolved the way the server resolves it — workspace default included —
+  // because that is the backend the status body, the turn, and every
+  // lifecycle endpoint below actually use.  This used to be `bot.cloudBackend
+  // ?? "box"`, which only agrees with the server for a bot that has chosen
+  // its own backend or happens to sit on a "box" workspace default; for a bot
+  // inheriting a "vps" default it parsed a VPS status body as a box one,
+  // showed a sleeping box instead of a stopped container on sleep, and
+  // skipped the viewer-close call on a failed openDesktop — leaking an SSH
+  // desktop tunnel open on this user's own machine.  One resolved const feeds
+  // every site below (labels, the status-shape branch, the lifecycle effect,
+  // the sleep handler, the picker), so they cannot drift apart again.
+  const cloudBackend = resolveCloudBackend(bot.cloudBackend, state.config?.botDefaults?.cloudBackend);
   const vpsSupported = instanceSupportsCloudComputer(state.instances, bot, "vps");
-  const cloudSupported = instanceSupportsCloudComputer(state.instances, bot, resolvedCloudBackend);
+  const cloudSupported = instanceSupportsCloudComputer(state.instances, bot, cloudBackend);
   // Those two answers are only worth acting on once the engine list is in —
   // see the cloud hold in the lifecycle effect below.
   const reachKnown = engineReachKnown({ instances: state.instances, hydrationStatus: state.hydration.status });
@@ -403,6 +409,10 @@ export function ComputerPanel({
     bot.id,
     bot.computers,
     bot.autoStartVps,
+    // Now a resolved string (workspace default included) rather than the
+    // bot's own raw field — still a plain string dep, not an object whose
+    // identity changes every render, and this effect only calls setState, so
+    // resolving it here cannot introduce a re-render loop.
     cloudBackend,
     retry,
     capabilitiesReady,
