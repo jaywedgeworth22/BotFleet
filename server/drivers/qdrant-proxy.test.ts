@@ -466,6 +466,30 @@ describe("Agent RAG proxy caches a verified collection and its search results", 
     // The write never left the process: the probe ran and stopped it.
     expect(service.paths).toEqual(["/health", "/recall/stats", "/recall/search", "/health", "/recall/stats"]);
   });
+
+  it("retires the cached verdict when recall_stats sees the corpus fail its own check", async () => {
+    // recall_stats runs a probe of its own.  When that probe comes back not
+    // ready — a collection mismatch, an unhealthy backend, a gate — whatever
+    // an earlier search concluded is now known to be out of date, so it is
+    // retired here too rather than left for the next search to ride.
+    const service = await startService({ collectionAfterSearch: "someone-elses-memory" });
+
+    const found = await service.callTool("recall_search", { query: "how do we deploy" });
+    const reported = await service.callTool("recall_stats");
+    const after = await service.callTool("recall_search", { query: "how do we deploy" });
+
+    expect(found).toContain("a stored lesson");
+    expect(reported).toContain("status check failed");
+    // The identical search is no longer answerable from memory: it re-probed,
+    // and the probe caught the collection that had changed underneath it.
+    expect(after).not.toContain("a stored lesson");
+    expect(after).toContain("different collection");
+    expect(service.paths).toEqual([
+      "/health", "/recall/stats", "/recall/search",
+      "/health", "/recall/stats",
+      "/health", "/recall/stats",
+    ]);
+  });
 });
 
 describe("recall_stats runs on the tool budget", () => {
@@ -479,10 +503,15 @@ describe("recall_stats runs on the tool budget", () => {
   // way to tell 12 s from 30 s from outside is to stall a stub past the
   // shorter deadline, and a 12-second wait in a serial suite costs more than
   // the bug does.
-  const PROXY_SRC = readFileSync(join(__dirname, "qdrant-proxy.ts"), "utf8");
+  //
+  // The call site moved: #465 lifted the three recall tool bodies out of this
+  // proxy into the shared server/recall-tools.ts, which the HTTP lane's
+  // in-process tools now run too.  So this guards the budget for both lanes
+  // rather than just the proxy's.
+  const TOOLS_SRC = readFileSync(join(__dirname, "..", "recall-tools.ts"), "utf8");
 
   it("passes the tool budget explicitly to recallStatus", () => {
-    const body = PROXY_SRC.slice(PROXY_SRC.indexOf("async function recallStats("));
+    const body = TOOLS_SRC.slice(TOOLS_SRC.indexOf("async function recallStatsWith("));
     const call = body.slice(body.indexOf("recallStatus("), body.indexOf(");", body.indexOf("recallStatus(")));
 
     expect(call).toContain("RECALL_TOOL_TIMEOUT_MS");

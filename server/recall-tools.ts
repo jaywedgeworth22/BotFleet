@@ -257,15 +257,22 @@ export async function recallSearchWith(settings: RecallSettings, args: Record<st
 
     const res = await fetchRecall(`${settings.url}/recall/search`, { method: "POST", headers, body: JSON.stringify(payload), signal });
     const gate = accessLoginHint(res);
-    if (gate) return failure(`Bot RAG search failed: ${gate}.`);
+    if (gate) {
+      invalidateRecallCaches(service);
+      return failure(`Bot RAG search failed: ${gate}.`);
+    }
     if (res.ok) {
       const data = (await res.json()) as { hits?: HitRecord[]; mode?: string; ok?: boolean; error?: unknown };
       if (data.ok === false || data.error || !Array.isArray(data.hits)) throw new Error("the service returned an invalid search result");
-      return success(formatHits(data.hits, settings, data.mode));
+      const text = formatHits(data.hits, settings, data.mode);
+      writeSearchCache(cacheKey, text);
+      return success(text);
     }
     const errText = await res.text().catch(() => "");
+    invalidateRecallCaches(service);
     return failure(`Bot RAG search error (${res.status}): ${safeError(errText || res.statusText)}`);
   } catch (err) {
+    invalidateRecallCaches(service);
     return failure(`Failed to query agent RAG at ${settings.url}: ${safeError(err)}`);
   }
 }
@@ -287,6 +294,8 @@ export async function recallContributeWith(
   const url = args.url ? String(args.url).trim() : undefined;
   const force = Boolean(args.force);
 
+  const service = serviceKey(settings);
+
   if (!settings.url) {
     try {
       const cliArgs = [text, "--category", category, "--app", app, "--seat", seat, "--json"];
@@ -296,8 +305,11 @@ export async function recallContributeWith(
       const raw = await runCli(settings, "contribute", cliArgs);
       const data = JSON.parse(raw);
       if (data.status === "duplicate") return success(`Contribution duplicate: ${data.message || "A similar lesson already exists"}`);
+      // The corpus just changed, so remembered answers are out of date.
+      clearSearchCache(service);
       return success(`Stored in ${collectionLabel(settings)} [doc_id: ${data.doc_id || data.id}]: ${title ? `"${title}"` : text.slice(0, 80)}`);
     } catch (error) {
+      invalidateRecallCaches(service);
       return failure(`Bot RAG CLI failed: ${describeCliFailure(error, RECALL_TOOL_TIMEOUT_MS)}.`);
     }
   }
@@ -305,7 +317,10 @@ export async function recallContributeWith(
   try {
     const headers = recallHttpHeaders(settings);
     const signal = AbortSignal.timeout(RECALL_TOOL_TIMEOUT_MS);
-    await verifyCollection(settings, signal);
+    // A write never rides a cached verdict: the body names no collection, so
+    // this probe is the only check that the service still owns the one that
+    // was configured.
+    await verifyCollection(settings, signal, { fresh: true });
 
     const res = await fetchRecall(`${settings.url}/recall/contribute`, {
       method: "POST",
@@ -314,24 +329,42 @@ export async function recallContributeWith(
       signal,
     });
     const gate = accessLoginHint(res);
-    if (gate) return failure(`Bot RAG contribute failed: ${gate}.`);
+    if (gate) {
+      invalidateRecallCaches(service);
+      return failure(`Bot RAG contribute failed: ${gate}.`);
+    }
     if (res.ok) {
       const data = (await res.json()) as { doc_id?: string; id?: string; ok?: boolean; error?: unknown; status?: string };
       if (data.ok === false || data.error) throw new Error("the service rejected the contribution");
       if (data.status === "duplicate") return success("Contribution duplicate: a similar lesson already exists.");
       if (!data.doc_id && !data.id) throw new Error("the service did not confirm a contribution ID; check before retrying");
+      // The corpus just changed, so remembered answers are out of date.
+      clearSearchCache(service);
       return success(`Successfully contributed to ${collectionLabel(settings)} [id: ${data.doc_id || data.id}]`);
     }
     const errText = await res.text().catch(() => "");
+    invalidateRecallCaches(service);
     return failure(`Bot RAG contribute error (${res.status}): ${safeError(errText || res.statusText)}`);
   } catch (err) {
+    invalidateRecallCaches(service);
     return failure(`Failed to contribute to agent RAG at ${settings.url}: ${safeError(err)}`);
   }
 }
 
 export async function recallStatsWith(settings: RecallSettings): Promise<RecallOutcome> {
-  const status = await recallStatus(settings);
+  // The bot's stats tool is a tool call, so it gets the tool budget.  Left
+  // implicit, `recallStatus` falls back to the much shorter settings-probe
+  // budget, and a cold embedder would fail the bot's stats call while the
+  // same corpus answered its searches fine.
+  const status = await recallStatus(settings, RECALL_TOOL_TIMEOUT_MS);
   if (!status.configured) return failure(NOT_CONFIGURED_MESSAGE);
-  if (!status.ready) return failure(`Bot RAG status check failed: ${status.error}.`);
+  if (!status.ready) {
+    // This call just saw the corpus fail its own check — a collection
+    // mismatch, an unhealthy backend, a gate.  Whatever an earlier probe
+    // concluded is now known to be out of date, so retire it here too
+    // instead of letting a search or a contribution act on it.
+    invalidateRecallCaches(serviceKey(settings));
+    return failure(`Bot RAG status check failed: ${status.error}.`);
+  }
   return success(`Bot RAG status [${status.collection}]:\n- Source: ${status.source}\n- Backend: healthy\n- Points: ${status.pointsCount?.toLocaleString()}\n- Checked: ${new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", dateStyle: "medium", timeStyle: "short" }).format(status.checkedAt)} CT`);
 }
