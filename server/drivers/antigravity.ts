@@ -5,18 +5,29 @@
 // Verified against agy 1.1.12.
 //
 // Unlike claude, print mode has NO interactive permission hook: there is no
-// per-action broker here. `--mode accept-edits` allows file edits but
-// auto-denies shell (`run_command` comes back as a tool ERROR); the default
-// `request-review` auto-denies; `--dangerously-skip-permissions` (fullAuto)
-// approves everything. Real per-action approval cards are a future path via
+// per-action broker here.  `--dangerously-skip-permissions` (fullAuto)
+// approves everything.  Real per-action approval cards are a future path via
 // native ACP (agy issue #31), which would reuse acp/core.ts like grok/gemini.
 //
+// `--mode` is NOT the permission switch, and an earlier version of this file
+// said it was.  agy 1.1.26 `--help` lists "--mode  Set the agent execution
+// mode for this session (accept-edits, plan)" and, separately, "--sandbox
+// Run in a sandbox with terminal restrictions enabled".  Whether a terminal
+// command needs approval is agy's own Tool Execution Policy — a global
+// setting this driver does not pass and cannot override, reported per session
+// as `permission_mode` on the init event.  Measured on this Mac with agy
+// 1.1.26: `--mode accept-edits` with no bypass reports `always-proceed` and
+// then RUNS `run_command`.  Under agy's shipped default the same spawn is
+// refused — a probe with a config-free HOME reported `request-review` and
+// agy's own stderr said the tool "required the \"command\" permission that
+// headless mode cannot prompt for, so it was auto-denied", ending the turn
+// CANCELED (2026-09-18).
+//
 // So a turn that holds host control — the person's own desktop — is spawned
-// WITHOUT the bypass however the instance is configured, and says so in the
-// thread before it starts: a shell command on that computer is refused, not
-// run unseen.  That is the half of acp/core.ts's controlsHost guard this
-// engine can honour; the other half, the approval card, needs an ask agy
-// print mode never opens.
+// WITHOUT the bypass however the instance is configured, AND is stopped at
+// the init event unless agy reports a policy that asks.  Nothing in print
+// mode can put a card in front of anyone, so a turn that does not start is
+// the only guarantee this engine can actually keep.
 //
 // fullAuto is OFF unless the person turns it on in Settings › Engines.  The
 // bypass skips BotFleet's permission broker entirely — no card, no
@@ -63,13 +74,55 @@ export interface AntigravityConfig {
 }
 
 /** Said once, at the start of any turn that can act on the person's own
- * desktop.  agy has no interactive permission hook in print mode, so the
- * asking mode we drop it into auto-DENIES a shell ask rather than putting a
- * card in front of anyone.  A person who mounted this Mac expects to be asked;
- * telling them up front that they will not be is the honest version of a
- * capability this engine only half has. */
+ * desktop.  agy has no interactive permission hook in print mode, so there is
+ * no card to put in front of anyone; what BotFleet can do instead is read the
+ * policy agy reports and refuse to run the turn under one that would not ask.
+ * A person who mounted this Mac expects to be asked, so the chip says plainly
+ * which of those two things they are getting. */
 export const ANTIGRAVITY_HOST_CONTROL_NOTICE =
-  "Antigravity cannot ask for approval, so shell commands on this computer are refused during this turn.";
+  "Antigravity has no approval cards, so BotFleet checks its tool execution policy instead.  A policy that would run shell commands on this computer unasked stops the turn.";
+
+/** agy's Tool Execution Policy values that pause for a human.  From agy
+ * 1.1.26's embedded manual: "**Tool Execution Policy**: Controls whether
+ * terminal commands require approval before running (`always-proceed`,
+ * `request-review`, `strict`, `proceed-in-sandbox`)."  Its changelog confirms
+ * the first is the one that does not ask — "always-proceed auto-approve tool
+ * confirmation" — while "Fixed commands being auto-approved while the session
+ * was in request-review or strict permission mode" and "Added `request-review`
+ * (default) mode" establish the other two as asking modes and `request-review`
+ * as the shipped default.  `proceed-in-sandbox` "Auto-approves terminal
+ * commands that run inside the secure sandbox, requesting manual approval only
+ * when a command attempts to bypass the sandbox".  That value is deliberately
+ * NOT in the set below: what it does on the host depends on agy's separate
+ * enableTerminalSandbox setting, which this driver never reads and never
+ * forces (it does not pass `--sandbox`), and nobody has measured it with the
+ * sandbox off.  Until someone does, it is refused like any other value whose
+ * behaviour on this computer is not known.
+ *
+ * Do not confuse these with Artifact Review Mode, whose values in the same
+ * manual are (`always-proceed`, `agent-decides`, `asks-for-review`); only the
+ * Tool Execution Policy gates `run_command`. */
+const ANTIGRAVITY_ASKING_POLICIES = new Set(["request-review", "strict"]);
+
+/** Why a host-control turn was stopped before it ran.  The `always-proceed`
+ * wording is the measured case; an unreported or unrecognized value gets the
+ * same remedy but does not claim to know what the policy would do, because
+ * claiming more than we know is the bug this whole check exists to fix. */
+export function antigravityHostPolicyRefusal(reported: string | null): string {
+  const remedy =
+    "  Set the policy to request-review or strict in Antigravity, or remove this computer from the bot.";
+  if (reported === "always-proceed") {
+    return (
+      "Antigravity's tool execution policy is always-proceed, which would run shell commands on this computer with nobody able to approve." +
+      remedy
+    );
+  }
+  const named = reported ? `is ${reported}` : "was not reported";
+  return (
+    `Antigravity's tool execution policy ${named}, so BotFleet cannot tell whether shell commands on this computer would run with nobody able to approve.` +
+    remedy
+  );
+}
 
 export { STATIC_ANTIGRAVITY_MODELS } from "../antigravity-models.ts";
 import { STATIC_ANTIGRAVITY_MODELS } from "../antigravity-models.ts";
@@ -492,9 +545,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // scope, so `hostToolPrefix` is what tells them apart.  acp/core.ts runs
       // exactly this guard (see its sendTurn) and then lets every ask reach
       // the harness broker.  agy print mode has no ask to route, so this
-      // driver can only honour the first half: drop the bypass for the turn so
-      // `run_command` is refused instead of running unseen on the person's own
-      // machine.  A full-auto instance keeps its switch for every other turn.
+      // driver drops the bypass for the turn and then, at the init event,
+      // checks the policy agy actually reports — dropping the bypass alone
+      // proves nothing, because the Tool Execution Policy is a separate axis
+      // that can auto-approve shell regardless (see the file header).  A
+      // full-auto instance keeps its switch for every other turn.
       const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
       const turnConfig: AntigravityConfig =
         controlsHost && config.fullAuto ? { ...config, fullAuto: false } : config;
@@ -594,8 +649,10 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         "--output-format", "stream-json",
         "--print-timeout", "10m",
         "--add-dir", cwd,
-        // fullAuto approves everything; otherwise accept-edits allows file
-        // edits but auto-denies shell (no interactive channel in print mode).
+        // fullAuto approves everything.  accept-edits is the execution mode,
+        // NOT a permission setting: it auto-approves file edits and leaves
+        // terminal commands to agy's Tool Execution Policy, which is why a
+        // host-control turn also has to check `permission_mode` on init.
         // turnConfig, not config: a host-control turn never takes the bypass.
         turnConfig.fullAuto ? "--dangerously-skip-permissions" : "--mode",
       ];
@@ -694,8 +751,13 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // is what the harness persists as the cursor). Also seeds tool item ids.
       let conversationId: string | null = null;
       let streamedAssistantText = "";
+      // Set when a host-control turn is stopped over agy's tool execution
+      // policy.  The child is killed, but lines already in the pipe would
+      // otherwise keep emitting steps into a turn the person was told ended.
+      let hostPolicyRefused = false;
 
       const handleLine = (line: string) => {
+        if (hostPolicyRefused) return;
         let o: any;
         try {
           o = JSON.parse(line);
@@ -713,6 +775,36 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
               sessionId: conversationId,
               model: turn.model ?? null,
             });
+            // The init event is the only place agy states the Tool Execution
+            // Policy this session is running under, and it is the setting that
+            // decides whether `run_command` asks — `--mode accept-edits` does
+            // not (file header).  On the person's own desktop, a policy that
+            // does not ask means arbitrary shell with no card and nobody to
+            // show one to, so the turn ends here rather than running.  An
+            // unreported or unrecognized value is treated the same way: this
+            // check exists because the driver used to assume a refusal it
+            // never verified, and a default of "probably fine" would repeat
+            // exactly that.  `proceed-in-sandbox` is refused too: its effect on the
+            // host turns on a second agy setting this driver does not read.
+            if (controlsHost) {
+              const reported =
+                typeof payload.permission_mode === "string"
+                  ? payload.permission_mode
+                  : typeof o.permission_mode === "string"
+                    ? o.permission_mode
+                    : null;
+              if (reported === null || !ANTIGRAVITY_ASKING_POLICIES.has(reported)) {
+                hostPolicyRefused = true;
+                emit({
+                  ...base(threadId, turnId),
+                  type: "runtime.error",
+                  message: antigravityHostPolicyRefusal(reported),
+                });
+                stop();
+                settle(false, "host_control_policy");
+                return;
+              }
+            }
             break;
           }
           case "step_update": {
