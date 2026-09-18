@@ -13,6 +13,7 @@ afterEach(() => {
   resetSentryForTests();
   delete process.env.SENTRY_DSN;
   delete process.env.BOTFLEET_SENTRY_DSN;
+  delete process.env.SENTRY_AI_DATA_COLLECTION;
 });
 
 describe("server Sentry init", () => {
@@ -71,5 +72,71 @@ describe("server Sentry init", () => {
     expect(first.active).toBe(true);
     expect(second.active).toBe(true);
     expect(isSentryActive()).toBe(true);
+  });
+});
+
+describe("Sentry AI data collection kill-switch", () => {
+  it("defaults ON and accepts 0/false/off/no as OFF", async () => {
+    const { isGenAiDataCollectionEnabled, genAiDataCollectionOptions } = await import("./sentry.ts");
+    expect(isGenAiDataCollectionEnabled({})).toBe(true);
+    expect(isGenAiDataCollectionEnabled({ SENTRY_AI_DATA_COLLECTION: "1" })).toBe(true);
+    expect(isGenAiDataCollectionEnabled({ SENTRY_AI_DATA_COLLECTION: "0" })).toBe(false);
+    expect(isGenAiDataCollectionEnabled({ SENTRY_AI_DATA_COLLECTION: "false" })).toBe(false);
+    expect(isGenAiDataCollectionEnabled({ SENTRY_AI_DATA_COLLECTION: "OFF" })).toBe(false);
+    expect(isGenAiDataCollectionEnabled({ SENTRY_AI_DATA_COLLECTION: "no" })).toBe(false);
+    expect(genAiDataCollectionOptions({ SENTRY_AI_DATA_COLLECTION: "1" })).toEqual({
+      genAI: { inputs: true, outputs: true },
+    });
+    expect(genAiDataCollectionOptions({ SENTRY_AI_DATA_COLLECTION: "0" })).toEqual({
+      genAI: { inputs: false, outputs: false },
+    });
+  });
+
+  it("passes streamGenAiSpans and dataCollection into Sentry.init", async () => {
+    let initOpts: Record<string, unknown> | null = null;
+    const sdk = {
+      init(opts: Record<string, unknown>) {
+        initOpts = opts;
+      },
+      close() {
+        return Promise.resolve(true);
+      },
+      addIntegration() {},
+      consoleLoggingIntegration() {
+        return { name: "ConsoleLogs" };
+      },
+    } as unknown as typeof import("@sentry/node");
+    setSentryLoaderForTests(async () => sdk);
+    process.env.SENTRY_AI_DATA_COLLECTION = "1";
+    await applySentryConfig({
+      dsn: "https://abc123@o0.ingest.sentry.io/1",
+      enabled: true,
+      environment: "test",
+      tracesSampleRate: 0.2,
+      logsEnabled: false,
+      source: "config",
+    });
+    expect(initOpts).toMatchObject({
+      streamGenAiSpans: true,
+      dataCollection: { genAI: { inputs: true, outputs: true } },
+    });
+
+    resetSentryForTests();
+    setSentryLoaderForTests(async () => sdk);
+    process.env.SENTRY_AI_DATA_COLLECTION = "0";
+    initOpts = null;
+    await applySentryConfig({
+      dsn: "https://abc123@o0.ingest.sentry.io/1",
+      enabled: true,
+      environment: "test",
+      tracesSampleRate: 0.2,
+      logsEnabled: false,
+      source: "config",
+    });
+    expect(initOpts).toMatchObject({
+      streamGenAiSpans: true,
+      dataCollection: { genAI: { inputs: false, outputs: false } },
+    });
+    delete process.env.SENTRY_AI_DATA_COLLECTION;
   });
 });
