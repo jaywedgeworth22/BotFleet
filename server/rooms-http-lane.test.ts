@@ -489,4 +489,43 @@ posixOnly("room turns run on the HTTP lane", () => {
     },
     240_000,
   );
+
+  it(
+    "keeps the HTTP lane's host tools exactly as they were when the CLI lane gained its computers",
+    async () => {
+      // Rooms used to mount no computer for any CLI or ACP engine while THIS
+      // lane kept host tools, so the weaker lane was the better-equipped one.
+      // That is fixed by raising the CLI lane, never by lowering this one —
+      // so this pins what an HTTP room member is offered, unchanged.
+      //
+      // A driver-loop engine has no MCP client, so "This Computer" is not a
+      // mount for it: `hasHostComputer` is `wantsLocal && localComputerMcp`
+      // and the harness executor supplies the tools.  It must therefore stay
+      // true whether or not Cua Driver is running, and must not produce the
+      // "local computer not mounted" chip a mounting engine would get.
+      const member = await makeBot("quay", { computers: ["local"] });
+      const room = await makeRoom("Hostage", [member.id], { kind: "member", botId: member.id });
+      const before = completionCount();
+
+      engine.queueCompletion(says("Standing by."));
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "what can you run?" })).status).toBe(202);
+      expect(await waitForBotIdle(member.id), `the member never went idle. stderr:\n${stderr}`).toBeTruthy();
+      expect(await waitForRoomIdle(room.id)).toBeTruthy();
+
+      expect(completionCount() - before).toBe(1);
+      const round = engine.requests.filter((r) => r.url.includes("/chat/completions")).slice(before)[0];
+      // SAFETY: the fake engine records the JSON body the harness POSTed, and
+      // the round count was asserted immediately above.
+      const offered = ((round.body as { tools?: Array<{ function?: { name?: string } }> }).tools ?? []).map(
+        (t) => t.function?.name,
+      );
+      expect(offered).toContain("bash");
+      expect(offered).toContain("read_file");
+      expect(offered).toContain("write_file");
+      expect(offered).toContain("edit_file");
+      expect(offered.some((name) => name?.startsWith("mcp__computer"))).toBe(false);
+      expect((await activity(room.threadId)).filter((name) => name.includes("local computer not mounted"))).toEqual([]);
+    },
+    120_000,
+  );
 });

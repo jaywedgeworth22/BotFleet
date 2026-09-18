@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -9,8 +10,11 @@ import {
   antigravityQuotaWindows,
   isBotFleetQuotaWindow,
   isMiniMaxVideoQuotaWindow,
+  isQuotaCellExhausted,
   type UsageMonitorQuotaWindow,
 } from "./usage-monitor-quota";
+import { headlinesExhausted, windowHeadlines } from "./quota-display";
+import { parseLocalQuotaSnapshot } from "../../server/local-usage-monitor";
 
 function window(overrides: Partial<UsageMonitorQuotaWindow>): UsageMonitorQuotaWindow {
   return {
@@ -140,5 +144,51 @@ describe("Usage Monitor BotFleet quota integration", () => {
     expect(isMiniMaxVideoQuotaWindow({ provider: "minimax", label: "Hailuo Video" })).toBe(true);
     expect(isMiniMaxVideoQuotaWindow({ provider: "minimax", label: "M3" })).toBe(false);
     expect(isMiniMaxVideoQuotaWindow({ provider: "xai", label: "Hailuo Video" })).toBe(false);
+  });
+});
+
+describe("a quota window whose reset has already passed", () => {
+  // Three paths read this row: the engine chip (headlinesExhausted), the grid
+  // cell under it (isQuotaCellExhausted) and the routing behind it
+  // (server/usage-quota.ts's applyLocalPayload, pinned in
+  // server/usage-quota.test.ts).  The parser blanks a percentage whose reset
+  // has passed but used to leave `isExhausted` and `fileSkip` set, and the
+  // grid was the only one of the three reading those — so for up to one
+  // producer write cycle after every reset boundary the cell sat amber under
+  // a chip saying "Available", with nothing diverted.
+  //
+  // Driven through the REAL parser: what it produces is the whole point.
+  const clock = Date.parse("2026-09-13T08:00:00Z");
+  const handoff = (resetAt: string) => ({
+    format: "usage-monitor-local-quotas",
+    version: 1,
+    generatedAt: new Date(clock).toISOString(),
+    windows: [{
+      id: "codex:weekly", provider: "openai", providerKey: "openai", label: "Codex weekly",
+      occurredAt: new Date(clock).toISOString(), window: "1w", resetAt,
+      remainingPercent: 0, status: "exhausted", skip: true, skipReason: "0% remaining", isExhausted: true,
+    }],
+  });
+
+  it("reads as available in both the grid cell and the chip", () => {
+    const [elapsed] = parseLocalQuotaSnapshot(handoff("2026-09-13T07:59:59Z"), clock);
+    expect(elapsed.remainingPercent).toBeNull();
+    expect(isQuotaCellExhausted(elapsed)).toBe(false);
+    expect(headlinesExhausted(windowHeadlines([elapsed]))).toBe(false);
+  });
+
+  it("still reads as exhausted in both while the window is live", () => {
+    const [live] = parseLocalQuotaSnapshot(handoff("2026-09-13T08:00:01Z"), clock);
+    expect(isQuotaCellExhausted(live)).toBe(true);
+    expect(headlinesExhausted(windowHeadlines([live]))).toBe(true);
+  });
+
+  it("is the grid cell's only exhaustion test", () => {
+    // Naming the predicate is worth nothing unless the cell actually reads
+    // it: an exhaustion expression written inline in the component is how the
+    // three paths drifted apart in the first place.
+    const grid = readFileSync(new URL("../components/UsageMonitorQuotaGrid.tsx", import.meta.url), "utf8");
+    expect(grid).toContain("isQuotaCellExhausted(window)");
+    expect(grid).not.toMatch(/const exhausted =[^;]*window\.(isExhausted|fileSkip|remainingPercent)/);
   });
 });

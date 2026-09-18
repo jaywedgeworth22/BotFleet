@@ -1,12 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  absoluteQuotaLabel,
   antigravityGroupSummary,
   antigravityQuotaLines,
   formatDualQuotaBadge,
   formatResetCountdown,
+  headlinesExhausted,
+  headlinesNearCap,
   isEngineUnconfigured,
+  localQuotaStatusLine,
   minimaxQuotaLine,
+  NEAR_CAP_PERCENT,
+  providerIssueLine,
   quotaLinesSummary,
   remainingPercentLabel,
   windowHeadlines,
@@ -475,3 +481,70 @@ describe("minimaxQuotaLine", () => {
 function futureIso(days: number, hours: number, extraMinutes = 0): string {
   return new Date(Date.now() + ((days * 86_400) + (hours * 3600) + (extraMinutes * 60)) * 1000).toISOString();
 }
+
+describe("engine chip terms", () => {
+  it("caps the chip on the same exhausted window the grid reddens, with skip false", () => {
+    // The local parser keeps `skip` false by design, so this is exactly the
+    // Codex row that used to sit under a green "Available" chip.
+    const headlines = windowHeadlines([
+      { label: "Codex weekly", window: "1w", remainingPercent: 0, resetAt: futureIso(2, 0), skip: false },
+    ]);
+    expect(headlinesExhausted(headlines)).toBe(true);
+    expect(headlinesNearCap(headlines)).toBe(false);
+  });
+
+  it("warns near the cap at the shared threshold and stays quiet above it", () => {
+    expect(NEAR_CAP_PERCENT).toBe(20);
+    const near = windowHeadlines([
+      { label: "Claude weekly", window: "1w", remainingPercent: 8, resetAt: futureIso(1, 0), skip: false },
+    ]);
+    expect(headlinesNearCap(near)).toBe(true);
+    expect(headlinesExhausted(near)).toBe(false);
+    const healthy = windowHeadlines([
+      { label: "Claude weekly", window: "1w", remainingPercent: 92, resetAt: futureIso(1, 0), skip: false },
+    ]);
+    expect(headlinesNearCap(healthy)).toBe(false);
+  });
+});
+
+describe("absolute allowances and handoff health", () => {
+  it("renders money, counts and a plan the way the collector measured them", () => {
+    expect(absoluteQuotaLabel({ absoluteRemaining: 0, absoluteLimit: 400, quotaUnit: "USD", planName: "ultra" }))
+      .toBe("$0 of $400 on Ultra");
+    expect(absoluteQuotaLabel({ absoluteRemaining: 12, absoluteLimit: 300, quotaUnit: "requests" }))
+      .toBe("12 of 300 requests");
+    expect(absoluteQuotaLabel({ planName: "ultra" })).toBe("Ultra plan");
+    expect(absoluteQuotaLabel({ absoluteRemaining: 12, absoluteLimit: null, quotaUnit: "credits" })).toBeNull();
+    expect(absoluteQuotaLabel({})).toBeNull();
+  });
+
+  it("says why the grid is empty instead of rendering nothing", () => {
+    expect(localQuotaStatusLine({ state: "fresh", generatedAt: new Date().toISOString() })).toBeNull();
+    expect(localQuotaStatusLine(null)).toBeNull();
+    expect(localQuotaStatusLine({ state: "missing" })).toBe(
+      "AgentBar is not running, so no local subscription quota is available",
+    );
+    const written = Date.now() - 1_800_000;
+    expect(localQuotaStatusLine({ state: "stale", generatedAt: new Date(written).toISOString(), producer: "agent-bar" }))
+      .toBe(`AgentBar has not written quota since ${new Date(written).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+    expect(localQuotaStatusLine({ state: "unreadable" })).toBe("AgentBar's quota file could not be read");
+  });
+
+  it("attributes a provider's read failure to the app that measured it", () => {
+    expect(providerIssueLine("Claude", "Sign in again to refresh quota", "agent-bar"))
+      .toBe("Claude: Sign in again to refresh quota (from AgentBar)");
+    expect(providerIssueLine("Claude", "  ", "agent-bar")).toBeNull();
+    expect(providerIssueLine("Claude", undefined)).toBeNull();
+    const long = providerIssueLine("Cursor", "x".repeat(400));
+    expect(long?.length).toBeLessThanOrEqual("Cursor: ".length + 160 + " (from AgentBar)".length);
+    // The reason is the producer's text and stays text: angle brackets are
+    // carried through verbatim rather than stripped or escaped here, because
+    // the row renders this as a JSX text child and never as markup.  Escaping
+    // it in the string would show the entity to the reader instead.
+    expect(providerIssueLine("Claude", '<b>read failed</b>', "agent-bar"))
+      .toBe("Claude: <b>read failed</b> (from AgentBar)");
+    // Wrapped prose folds onto the one line the row has room for.
+    expect(providerIssueLine("Claude", "Sign in again.\nOpen AgentBar to retry.", "agent-bar"))
+      .toBe("Claude: Sign in again. Open AgentBar to retry. (from AgentBar)");
+  });
+});

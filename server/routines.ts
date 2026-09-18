@@ -852,7 +852,9 @@ export class RoutineManager {
         //
         // No conversationMode hook means the source-keyed behavior (what the
         // tests and an older harness wiring expect).  The live server always
-        // passes the workspace setting, whose default is Simple.
+        // passes the workspace setting, whose default is Simple, and always
+        // supplies defaultThread (the bot's existing conversation).  A wake
+        // must append there instead of minting a sibling after mergeThreads.
         const mode = parseConversationMode(this.options.conversationMode?.() ?? "projects");
         // The routine's own name, not the lane's: the person recognises
         // "Fleet PR Health Sweep", not "Schedules".
@@ -884,13 +886,16 @@ export class RoutineManager {
           threadId = acceptReuse(previous?.threadId);
           stampResolvedThread = Boolean(threadId);
         }
-        if (!threadId && !allowsMultipleBotThreads(mode)) {
+        // Prefer the bot's existing conversation over minting.  Live wiring
+        // always has defaultThread; tests that omit it still take createTask
+        // below so per-source Projects threads keep their coverage.
+        if (!threadId) {
           threadId = this.options.defaultThread?.(run.botId);
-          if (!threadId) {
-            this.failRun(run, "Could not find this bot's conversation");
-            continue;
-          }
-          stampResolvedThread = true;
+          if (threadId) stampResolvedThread = true;
+        }
+        if (!threadId && !allowsMultipleBotThreads(mode)) {
+          this.failRun(run, "Could not find this bot's conversation");
+          continue;
         }
         // Gate before creating, activating, or stamping a task.  A missing
         // runtime credential may take many scheduler ticks to arrive; those
