@@ -10,8 +10,8 @@
 //
 // stdout is the ACP channel — never console.log here.
 import { spawn } from "node:child_process";
-import { unlink } from "node:fs";
-import { basename } from "node:path";
+import { rmdir, unlink } from "node:fs";
+import { basename, dirname } from "node:path";
 import readline from "node:readline";
 
 const MCP_METHODS = new Set(["session/new", "session/resume", "session/load"]);
@@ -55,16 +55,29 @@ function parseCommand(argv: string[]): { command: string; args: string[] } | nul
   return { command, args: argv.slice(sep + 2) };
 }
 
+/** Remove the overlay, and the private directory `writeDshMcpPatch` made for
+ * it.  The directory removal is non-recursive and only ever runs on a name
+ * carrying BotFleet's own prefix, so this can never take a directory BotFleet
+ * did not mint, and one that somehow still holds a file simply stays.  An
+ * overlay written straight into the temp root by an older build has no
+ * directory of its own and is deleted exactly as before. */
 export function createPatchCleanup(
   paths: string[],
   remove: (path: string, cb: (err: NodeJS.ErrnoException | null) => void) => void = unlink,
+  removeDirectory: (path: string, cb: (err: NodeJS.ErrnoException | null) => void) => void = rmdir,
 ): () => void {
   let cleaned = false;
   return () => {
     if (cleaned) return;
     cleaned = true;
     for (const path of paths) {
-      remove(path, () => {});
+      const directory = dirname(path);
+      const owned = basename(directory).startsWith(PATCH_PREFIX);
+      // rmdir only after the unlink reports back, or the directory is not yet
+      // empty and the call is a guaranteed ENOTEMPTY.
+      remove(path, () => {
+        if (owned) removeDirectory(directory, () => {});
+      });
     }
   };
 }

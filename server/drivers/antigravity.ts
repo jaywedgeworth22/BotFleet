@@ -11,6 +11,13 @@
 // approves everything. Real per-action approval cards are a future path via
 // native ACP (agy issue #31), which would reuse acp/core.ts like grok/gemini.
 //
+// So a turn that holds host control — the person's own desktop — is spawned
+// WITHOUT the bypass however the instance is configured, and says so in the
+// thread before it starts: a shell command on that computer is refused, not
+// run unseen.  That is the half of acp/core.ts's controlsHost guard this
+// engine can honour; the other half, the approval card, needs an ask agy
+// print mode never opens.
+//
 // fullAuto is OFF unless the person turns it on in Settings › Engines.  The
 // bypass skips BotFleet's permission broker entirely — no card, no
 // destructive/sensitive guard, no decision-log row — so it is an opt-in the
@@ -27,6 +34,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { z } from "zod";
 
+import { hostToolPrefix, turnComputerMounts } from "../computer-grants.ts";
 import { DATA_DIR, stripWorkspaceCredentialEnv } from "../config.ts";
 import { computerProxyEnv } from "../container-computer.ts";
 import { augmentedPath } from "../env-path.ts";
@@ -53,6 +61,15 @@ export interface AntigravityConfig {
   cli: string;
   fullAuto: boolean;
 }
+
+/** Said once, at the start of any turn that can act on the person's own
+ * desktop.  agy has no interactive permission hook in print mode, so the
+ * asking mode we drop it into auto-DENIES a shell ask rather than putting a
+ * card in front of anyone.  A person who mounted this Mac expects to be asked;
+ * telling them up front that they will not be is the honest version of a
+ * capability this engine only half has. */
+export const ANTIGRAVITY_HOST_CONTROL_NOTICE =
+  "Antigravity cannot ask for approval, so shell commands on this computer are refused during this turn.";
 
 export { STATIC_ANTIGRAVITY_MODELS } from "../antigravity-models.ts";
 import { STATIC_ANTIGRAVITY_MODELS } from "../antigravity-models.ts";
@@ -470,6 +487,18 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       pending.add(threadId);
       const turnId = newId();
 
+      // Host control means the user's real desktop — the Local VM and a VPS
+      // also arrive as `localComputer`, but they are isolated and carry no
+      // scope, so `hostToolPrefix` is what tells them apart.  acp/core.ts runs
+      // exactly this guard (see its sendTurn) and then lets every ask reach
+      // the harness broker.  agy print mode has no ask to route, so this
+      // driver can only honour the first half: drop the bypass for the turn so
+      // `run_command` is refused instead of running unseen on the person's own
+      // machine.  A full-auto instance keeps its switch for every other turn.
+      const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
+      const turnConfig: AntigravityConfig =
+        controlsHost && config.fullAuto ? { ...config, fullAuto: false } : config;
+
       // Default cwd to a per-thread workspace under DATA_DIR — deliberately
       // NOT homedir(): a bot running unattended should not get the whole home
       // as its default sandbox. `--add-dir` grants agy access to that dir.
@@ -566,10 +595,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
         "--print-timeout", "10m",
         "--add-dir", cwd,
         // fullAuto approves everything; otherwise accept-edits allows file
-        // edits but auto-denies shell (no interactive channel in print mode)
-        config.fullAuto ? "--dangerously-skip-permissions" : "--mode",
+        // edits but auto-denies shell (no interactive channel in print mode).
+        // turnConfig, not config: a host-control turn never takes the bypass.
+        turnConfig.fullAuto ? "--dangerously-skip-permissions" : "--mode",
       ];
-      if (!config.fullAuto) args.push("accept-edits");
+      if (!turnConfig.fullAuto) args.push("accept-edits");
       if (!useStdin) {
         args.unshift("--print", prompt);
       } else {
@@ -845,6 +875,29 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
 
       emit({ ...base(threadId, turnId), type: "turn.started" });
 
+      if (controlsHost) {
+        // Not a step the model took — the harness saying what this turn
+        // cannot do, on the same `notice` chip a model fallback uses.  It
+        // opens and settles in one breath because there is nothing to wait
+        // for; an unsettled tool row would spin for the whole turn.
+        const noticeItemId = `${turnId}:host-control-notice`;
+        emit({
+          ...base(threadId, turnId),
+          type: "item.started",
+          itemType: "tool",
+          itemId: noticeItemId,
+          title: ANTIGRAVITY_HOST_CONTROL_NOTICE,
+          toolKind: "notice",
+        });
+        emit({
+          ...base(threadId, turnId),
+          type: "item.completed",
+          itemType: "tool",
+          itemId: noticeItemId,
+          ok: true,
+        });
+      }
+
       return { turnId };
     };
 
@@ -873,6 +926,19 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       snapshot,
       adapter: {
         provider: DRIVER_KIND,
+        // `localComputerMcp` stays true, and sendTurn is what earns it.  A
+        // turn holding host control is spawned WITHOUT the bypass, so agy runs
+        // `--mode accept-edits`: file edits go through, and a shell ask is
+        // auto-DENIED rather than surfaced — `run_command` comes back to the
+        // model as a tool error.  So a shell command on this computer is
+        // refused, never run silently, which is the property contracts.ts is
+        // protecting; what is still missing is the card that would let someone
+        // say yes.  `respondToRequest` is "unavailable" for the same reason:
+        // print mode opens no ask, so there is nothing to answer.  Real
+        // per-action approval arrives when agy exposes native ACP (agy issue
+        // #31) and this driver moves onto acp/core.ts's broker; the
+        // alternative until then is setting this flag false, which would take
+        // the desktop away from every Antigravity bot that has it today.
         capabilities: {
           sessionModelSwitch: "in-session",
           images: true,

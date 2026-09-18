@@ -96,6 +96,46 @@ describe("Sentry AI observability", () => {
     recordExecutedTools("thread-1", ["bash"], null);
   });
 
+  it("stamps actual turn cost and skips estimated or invalid figures", () => {
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: true, usage: { input: 2, output: 1 }, cost: 0.0421 }), sink);
+    expect(spans[0].attributes["gen_ai.usage.cost"]).toBe(0.0421);
+
+    resetSentryAiForTests();
+    const estimated = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), estimated.sink);
+    observeRuntimeEvent(
+      base({ type: "turn.completed", ok: true, usage: { input: 2, output: 1 }, cost: 0.0421, billingMode: "estimated" }),
+      estimated.sink,
+    );
+    expect(estimated.spans[0].attributes["gen_ai.usage.cost"]).toBeUndefined();
+
+    resetSentryAiForTests();
+    const invalid = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), invalid.sink);
+    observeRuntimeEvent(base({ type: "turn.completed", ok: true, cost: Number.NaN }), invalid.sink);
+    expect(invalid.spans[0].attributes["gen_ai.usage.cost"]).toBeUndefined();
+  });
+
+  it("keeps the turn alive when conversation tagging throws", () => {
+    const { sink, spans } = recordingSink();
+    sink.setConversationId = () => {
+      throw new Error("setConversationId exploded");
+    };
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    expect(spans).toHaveLength(1);
+    expect(spans[0].op).toBe("gen_ai.invoke_agent");
+  });
+
+  it("names invoke_agent after the bot, not the driver kind", () => {
+    configureTurnIdentity(() => ({ botName: "Scout" }));
+    const { sink, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    expect(spans[0].name).toBe("invoke_agent Scout");
+    expect(spans[0].attributes["gen_ai.agent.name"]).toBe("Scout");
+  });
+
   it("opens an invoke_agent span, tags the conversation, model, tokens, and tools", () => {
     const { sink, spans, conversations } = recordingSink();
     observeRuntimeEvent(base({ type: "turn.started" }), sink);
