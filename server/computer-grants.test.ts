@@ -297,6 +297,13 @@ describe("workspace defaults", () => {
     const legacyClientRule = bot.cloudBackend === "vps";
     expect(legacyClientRule).toBe(false);
   });
+
+  it("documents that runOn=cloud must not force box over cloudBackend=vps", () => {
+    // resolveMounts previously did: runOn === "cloud" ? "box" : botBackend.
+    // Backend choice is solely resolveCloudBackend; runOn only grants "cloud".
+    expect(resolveCloudBackend("vps", undefined)).toBe("vps");
+    expect(resolveCloudBackend(undefined, "vps")).toBe("vps");
+  });
 });
 
 describe("operator allowlist", () => {
