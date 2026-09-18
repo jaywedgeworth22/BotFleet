@@ -108,6 +108,7 @@ import {
   autoDestinations,
   computerSystemPrompt,
   resolveCloudBackend,
+  cloudRunUsesBoxAgent,
   resolveGrants,
   resolveTurnComputerMounts,
   type TurnComputerDeps,
@@ -2945,13 +2946,14 @@ async function startTurn(
     pendingCredentialFallback.delete(turnKey);
     stoppedTurns.delete(turnKey);
   }
-  const instance = opts?.runOn === "cloud"
+  const boxCloud = cloudRunUsesBoxAgent(opts?.runOn, bot.cloudBackend, cfg.botDefaults?.cloudBackend);
+  const instance = boxCloud
     ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
     : registry.get(selection.instanceId);
   if (!instance) {
     throw Object.assign(
       new Error(
-        opts?.runOn === "cloud"
+        boxCloud
           ? "the Cloud VM runner is unavailable — configure Box in App Settings"
           : `provider instance "${selection.instanceId}" is unavailable — pick another model in settings`,
       ),
@@ -2959,10 +2961,11 @@ async function startTurn(
     );
   }
   const instanceId = instance.instanceId;
-  const model = opts?.runOn === "cloud" ? instance.models.default : selection.model;
-  // a cloud routine borrows the instance default model, so it borrows no
-  // per-bot effort either
-  const effort = opts?.runOn === "cloud" ? undefined : selection.effort;
+  // Box-backed cloud borrows the boxAgent default model (and no per-bot effort).
+  // VPS-backed cloud keeps the bot's modelSelection — that is the engine that
+  // actually runs on the VPS.
+  const model = boxCloud ? instance.models.default : selection.model;
+  const effort = boxCloud ? undefined : selection.effort;
   // A selection can be persisted while its engine is offline. Re-check when
   // the engine returns so an old or unsupported value never reaches a CLI.
   if (effort && !instance.adapter.capabilities.effortLevels?.includes(effort)) {
@@ -3069,7 +3072,7 @@ async function startTurn(
         throw new Error("provider settings changed during turn setup");
       }
       if (providerReloadGeneration !== observedReloadGeneration) {
-        const liveInstance = opts?.runOn === "cloud"
+        const liveInstance = cloudRunUsesBoxAgent(opts?.runOn, bot.cloudBackend, cfg.botDefaults?.cloudBackend)
           ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
           : registry.get(instanceId);
         // Every prompt/tool/integration decision below was derived from this
@@ -3525,7 +3528,7 @@ routines = new RoutineManager({
     startTurn(botId, prompt, { threadId, runOn, automationSource: triggerSource, onDispatchError }),
   interruptTurn: async (botId, threadId, runOn) => {
     const bot = store.bot(botId);
-    const instance = runOn === "cloud"
+    const instance = bot && cloudRunUsesBoxAgent(runOn, bot.cloudBackend, cfg.botDefaults?.cloudBackend)
       ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
       : bot
         ? registry.get(bot.modelSelection.instanceId)
@@ -5907,8 +5910,32 @@ function externalCredentialPending(instanceId: string): boolean {
   return !config.key && !entry.environment?.[keyEnv];
 }
 
-function fixedProviderCredentialPending(instanceId: string, runOn?: RoutineRunOn): boolean {
-  if (runOn === "cloud") return workspaceCredentialPending(cfg, "boxToken");
+/** Pick the engine for a cloud routine.
+ *
+ * Box-backed cloud still uses boxAgent (and its default model).  VPS-backed
+ * cloud keeps the bot's own modelSelection — vpsDriverError correctly rejects
+ * boxAgent, so selecting it here was the bug. */
+function cloudRunInstance(
+  bot: NonNullable<ReturnType<typeof store.bot>>,
+  runOn: RoutineRunOn | undefined,
+  selectionInstanceId: string,
+) {
+  if (cloudRunUsesBoxAgent(runOn, bot.cloudBackend, cfg.botDefaults?.cloudBackend)) {
+    return registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null;
+  }
+  return registry.get(selectionInstanceId);
+}
+
+function fixedProviderCredentialPending(
+  instanceId: string,
+  runOn?: RoutineRunOn,
+  bot?: NonNullable<ReturnType<typeof store.bot>>,
+): boolean {
+  // Box-backed cloud needs the Box token.  VPS-backed cloud uses the bot's own
+  // engine credentials (handled below), not boxToken.
+  if (runOn === "cloud" && cloudRunUsesBoxAgent(runOn, bot?.cloudBackend, cfg.botDefaults?.cloudBackend)) {
+    return workspaceCredentialPending(cfg, "boxToken");
+  }
   const driver = instanceConfigs(cfg)[instanceId]?.driver;
   // The two multi-instance drivers are gated on the RESERVED instance id as
   // well as the driver, exactly as injectedEnvironment() is: only that one
@@ -5936,10 +5963,8 @@ function turnExternalCredentialPending(
   instanceId: string,
   runOn?: RoutineRunOn,
 ): boolean {
-  if (externalCredentialPending(instanceId) || fixedProviderCredentialPending(instanceId, runOn)) return true;
-  const instance = runOn === "cloud"
-    ? registry.instances().find((candidate) => candidate.driverKind === "boxAgent") ?? null
-    : registry.get(instanceId);
+  if (externalCredentialPending(instanceId) || fixedProviderCredentialPending(instanceId, runOn, bot)) return true;
+  const instance = cloudRunInstance(bot, runOn, instanceId);
   if (bot.composio !== false && instance?.adapter.capabilities.composioMcp === true &&
       workspaceCredentialPending(cfg, "composioApiKey")) return true;
 
