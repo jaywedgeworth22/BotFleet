@@ -5,6 +5,8 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Check, CircleHelp, ExternalLink, Loader2, TriangleAlert } from "lucide-react";
 import { api, useSecretSources, useStore, type ConfigStatus } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { productErrorHeadline } from "@/lib/product-error";
 import { SecretSourceBadge } from "./SecretSourceBadge";
 import {
   applyEngineKeySave,
@@ -364,6 +366,7 @@ export function EngineKeyRow({ engine: engineId }: { engine: ApiKeyEngineId }) {
   const [url, setUrl] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   const status = state.config?.[engineId];
   const savedUrl = status?.url ?? "";
@@ -442,8 +445,7 @@ export function EngineKeyRow({ engine: engineId }: { engine: ApiKeyEngineId }) {
 
   const clear = () => {
     if (!canClear) return;
-    if (!window.confirm(`Remove the saved ${engine.label} API key?`)) return;
-    commit(true);
+    setConfirmClear(true);
   };
 
   return (
@@ -546,7 +548,18 @@ export function EngineKeyRow({ engine: engineId }: { engine: ApiKeyEngineId }) {
           <ExternalLink size={11} aria-hidden="true" />
         </a>
       </div>
-      {error && <div className="mt-1 text-[12px] text-danger">{error}</div>}
+      {error && <div className="mt-1 text-[12px] text-danger" title={error}>{productErrorHeadline(error)}</div>}
+      <ConfirmDialog
+        open={confirmClear}
+        title="Remove Saved Key?"
+        body={`Remove the saved ${engine.label} API key?  BotFleet will stop using it on this computer.`}
+        confirmLabel="Remove Key"
+        onCancel={() => setConfirmClear(false)}
+        onConfirm={() => {
+          setConfirmClear(false);
+          commit(true);
+        }}
+      />
     </div>
   );
 }

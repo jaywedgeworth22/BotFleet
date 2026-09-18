@@ -922,8 +922,8 @@ function RoomSetup({ group, members }: { group: Group; members: Bot[] }) {
         </fieldset>
 
         <label className="block">
-          <span className="text-[13px] font-semibold text-ink">Room Instructions</span>
-          <span className="mt-1 block text-[12px] text-ink-secondary">A shared brief every member sees on each turn. You can edit it later.</span>
+          <span className="text-[13px] font-semibold text-ink">Shared Brief</span>
+          <span className="mt-1 block text-[12px] text-ink-secondary">Shown to every member on each turn.{'\u00A0 '}You can edit it later.</span>
           <textarea
             value={instructions}
             onChange={(event) => setInstructions(event.target.value)}

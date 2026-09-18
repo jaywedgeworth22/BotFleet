@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 
 import { BotAvatar } from "@/components/Avatar";
+import { ConfirmDialog } from "@/components/ConfirmDialog";
 import { stateForBot } from "@/lib/mascot";
 import { WebhooksPanel } from "@/components/WebhooksPanel";
 import { ResourceTriggersPanel } from "@/components/ResourceTriggersPanel";
@@ -432,6 +433,7 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
   const run = item.run;
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const title = routine?.name ?? run?.routineName ?? "Routine";
   const webhookParts = run?.triggerSource === "webhook" ? webhookPromptParts(run.prompt) : null;
   const visibleInstructions = webhookParts?.instructions ?? routine?.prompt ?? run?.prompt;
@@ -490,10 +492,16 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
             <div className="grid grid-cols-2 gap-3">
               <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Triggered by</div><div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink"><Webhook size={13} />Webhook</div></div>
               <div className="rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Runs on</div><div className="mt-1 flex items-center gap-1.5 text-[13px] text-ink">{run.runOn === "cloud" ? <Cloud size={13} /> : <Laptop size={13} />}{run.runOn === "cloud" ? "ASCII.dev Box" : "Local setup"}</div></div>
-              {run.deliveryId && <div className="col-span-2 rounded-xl bg-inset p-3"><div className="text-[10px] uppercase tracking-wider text-ink-secondary">Delivery ID</div><div className="mt-1 truncate font-mono text-[11.5px] text-ink" title={run.deliveryId}>{run.deliveryId}</div></div>}
+              {run.deliveryId && (
+                <details className="col-span-2 rounded-xl bg-inset p-3">
+                  <summary className="cursor-pointer text-[10px] font-medium uppercase tracking-wider text-ink-secondary">Technical Details</summary>
+                  <div className="mt-2 text-[10px] uppercase tracking-wider text-ink-secondary">Delivery Reference</div>
+                  <div className="mt-1 truncate font-mono text-[11.5px] text-ink" title={run.deliveryId}>{run.deliveryId}</div>
+                </details>
+              )}
             </div>
           )}
-          {visibleInstructions && <div><div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-ink-secondary">Instructions</div><div className="whitespace-pre-wrap rounded-xl border border-hairline/40 bg-inset px-3.5 py-3 text-[13px] leading-relaxed text-ink">{visibleInstructions}</div></div>}
+          {visibleInstructions && <div><div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-ink-secondary">Brief</div><div className="whitespace-pre-wrap rounded-xl border border-hairline/40 bg-inset px-3.5 py-3 text-[13px] leading-relaxed text-ink">{visibleInstructions}</div></div>}
           {webhookParts?.eventData && <div><div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-ink-secondary">Webhook event data</div><pre className="max-h-56 overflow-auto whitespace-pre-wrap rounded-xl border border-accent/15 bg-accent/5 px-3.5 py-3 font-mono text-[11.5px] leading-relaxed text-ink-secondary">{webhookParts.eventData}</pre></div>}
           {run?.output && <div><div className="mb-1.5 text-[11px] font-medium uppercase tracking-wider text-ink-secondary">Last output</div><div className="max-h-48 overflow-y-auto whitespace-pre-wrap rounded-xl border border-success/20 bg-success/5 px-3.5 py-3 text-[13px] leading-relaxed text-ink">{run.output}</div></div>}
           <section aria-label="Routine outcomes" className="rounded-xl border border-hairline/40 bg-inset p-3.5 text-[12px] text-ink-secondary">
@@ -514,15 +522,29 @@ function RoutineDetails({ item, bot, onClose, onEdit }: { item: CalendarItem; bo
           <div className="flex-1" />
           {routine && canToggleRoutine(routine) && <button disabled={working} onClick={async () => { setWorking(true); setError(""); try { const response = await api(`/api/routines/${routine.id}`, { method: "PATCH", body: JSON.stringify({ enabled: !routine.enabled }) }); dispatch({ type: "routinePatched", routine: response.routine }); } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); } finally { setWorking(false); } }} className="flex items-center gap-1.5 rounded-xl px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink disabled:opacity-40">{routine.enabled ? <Pause size={14} /> : <Play size={14} />}{routine.enabled ? "Pause" : "Resume"}</button>}
           {routine && <button onClick={() => onEdit(routine)} className="rounded-xl px-3 py-2 text-[13px] text-ink-secondary hover:bg-raised hover:text-ink">Edit</button>}
-          {routine && <button onClick={() => { if (!window.confirm(`Delete “${routine.name}”? Its past run receipts will stay in the calendar.`)) return; dispatch({ type: "deleteRoutine", routineId: routine.id }); onClose(); }} className="rounded-xl p-2 text-ink-secondary hover:bg-danger/10 hover:text-danger" title="Delete Routine"><Trash2 size={16} /></button>}
+          {routine && <button onClick={() => setConfirmDelete(true)} className="rounded-xl p-2 text-ink-secondary hover:bg-danger/10 hover:text-danger" title="Delete Routine"><Trash2 size={16} /></button>}
         </div>
       </div>
+      {routine && (
+        <ConfirmDialog
+          open={confirmDelete}
+          title="Delete Routine?"
+          body={`Delete “${routine.name}”?  Its past run receipts will stay in the calendar.`}
+          confirmLabel="Delete Routine"
+          onCancel={() => setConfirmDelete(false)}
+          onConfirm={() => {
+            dispatch({ type: "deleteRoutine", routineId: routine.id });
+            onClose();
+          }}
+        />
+      )}
     </div>
   );
 }
 
 function PausedRoutines({ routines, bots, onClose, onEdit }: { routines: Routine[]; bots: Bot[]; onClose: () => void; onEdit: (routine: Routine) => void }) {
   const { dispatch } = useStore();
+  const [pendingDelete, setPendingDelete] = useState<Routine | null>(null);
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-5 backdrop-blur-sm" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <div className="w-full max-w-[560px] overflow-hidden rounded-2xl border border-hairline/60 bg-panel shadow-2xl">
@@ -539,12 +561,23 @@ function PausedRoutines({ routines, bots, onClose, onEdit }: { routines: Routine
                 <div className="min-w-0 flex-1"><div className="truncate text-[14px] font-semibold text-ink" title={routine.name}>{routine.name}</div><div className="mt-0.5 truncate text-[11.5px] text-ink-secondary" title={`${bot?.name ?? "Deleted bot"} · ${scheduleLabel(routine)}`}>{bot?.name ?? "Deleted bot"} · {scheduleLabel(routine)}</div></div>
                 {bot && <button onClick={() => dispatch({ type: "updateRoutine", routineId: routine.id, patch: { enabled: true } })} className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-[12px] font-medium text-white hover:brightness-110"><Play size={12} />Resume</button>}
                 <button onClick={() => onEdit(routine)} className="rounded-lg px-2 py-1.5 text-[12px] text-ink-secondary hover:bg-raised hover:text-ink">Edit</button>
-                <button onClick={() => { if (!window.confirm(`Delete “${routine.name}”?`)) return; dispatch({ type: "deleteRoutine", routineId: routine.id }); }} className="rounded-lg p-2 text-ink-secondary hover:bg-danger/10 hover:text-danger" title="Delete Routine"><Trash2 size={15} /></button>
+                <button onClick={() => setPendingDelete(routine)} className="rounded-lg p-2 text-ink-secondary hover:bg-danger/10 hover:text-danger" title="Delete Routine"><Trash2 size={15} /></button>
               </div>
             );
           })}
         </div>
       </div>
+      <ConfirmDialog
+        open={Boolean(pendingDelete)}
+        title="Delete Routine?"
+        body={`Delete “${pendingDelete?.name ?? "this routine"}”?  Its past run receipts will stay in the calendar.`}
+        confirmLabel="Delete Routine"
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (pendingDelete) dispatch({ type: "deleteRoutine", routineId: pendingDelete.id });
+          setPendingDelete(null);
+        }}
+      />
     </div>
   );
 }
