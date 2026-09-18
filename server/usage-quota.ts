@@ -189,6 +189,9 @@ export class UsageQuotaPoller {
   private localIssues: Record<string, string> = {};
   private lastError: string | null = null;
   private lastOkAt: string | null = null;
+  /** The last local-path failure already reported, so a handoff that is
+   *  broken — and stays broken — is logged once instead of every 30 s. */
+  private localError: string | null = null;
   private inFlight = false;
 
   private readonly readNativeQuota: typeof readLocalQuotaSnapshot;
@@ -310,46 +313,69 @@ export class UsageQuotaPoller {
     quotaCooldowns.clearWhere((cd) => cd.source === LOCAL_QUOTA_SOURCE && !owned.has(`${cd.instanceId}:${cd.model}`));
   }
 
+  /** The local half of one poll, fenced off from the poller's own control
+   *  flow.  Everything it touches is derived from a file any process running
+   *  as this user can write, and `start()` calls `void this.poll()` with no
+   *  process-level `unhandledRejection` handler anywhere in the repo (pinned
+   *  at server/secret-persistence.test.ts), so a throw escaping here would
+   *  terminate the harness — and terminate it again on the next boot, because
+   *  the same file is read again.  It logs once and lets the remote feed run. */
+  private async pollLocal(settings: QuotaPollerSettings): Promise<void> {
+    try {
+      const local = await this.readNativeQuota();
+      this.localWindows = local.windows;
+      this.localFreshness = local.freshness;
+      this.localProducer = local.producer;
+      this.localIssues = local.issues;
+      // Before the remote payload, so a key both sources cap ends up owned by
+      // the authenticated feed rather than flapping between them.
+      this.applyLocalPayload(this.localWindows, this.instancesProvider?.() ?? [], settings.localQuotaRouting !== false);
+      this.localError = null;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message !== this.localError) {
+        this.localError = message;
+        console.error(`[usage-quota] local quota handoff ignored: ${message}`);
+      }
+    }
+  }
+
   async poll(): Promise<void> {
     if (this.inFlight) return;
     this.inFlight = true;
-    const local = await this.readNativeQuota();
-    this.localWindows = local.windows;
-    this.localFreshness = local.freshness;
-    this.localProducer = local.producer;
-    this.localIssues = local.issues;
-    const settings = this.settingsProvider?.() ?? {};
-    // Before the remote payload below, so a key both sources cap ends up
-    // owned by the authenticated feed rather than flapping between them.
-    this.applyLocalPayload(this.localWindows, this.instancesProvider?.() ?? [], settings.localQuotaRouting !== false);
-    const url = quotaWindowsUrl(settings.ingestUrl);
-    const token =
-      settings.readToken?.trim() ||
-      process.env.USAGE_READ_TOKEN?.trim() ||
-      "";
-    if (!url || !token) {
-      this.applyPayload({ ok: true, generatedAt: new Date().toISOString(), windows: [], skipModelTypes: [], skipModelIds: [] }, this.instancesProvider?.() ?? []);
-      this.lastError = null;
-      this.inFlight = false;
-      return;
-    }
-    this.inFlight = true;
     try {
-      const response = await fetch(url, {
-        headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": "BotFleet/1.0" },
-        signal: AbortSignal.timeout(10_000),
-      });
-      const body = (await response.json().catch(() => null)) as QuotaWindowsPayload | { error?: string } | null;
-      if (!response.ok || !body || typeof body !== "object" || !("ok" in body) || body.ok !== true) {
-        this.lastError = `HTTP ${response.status}`;
+      const settings = this.settingsProvider?.() ?? {};
+      await this.pollLocal(settings);
+      const url = quotaWindowsUrl(settings.ingestUrl);
+      const token =
+        settings.readToken?.trim() ||
+        process.env.USAGE_READ_TOKEN?.trim() ||
+        "";
+      if (!url || !token) {
+        this.applyPayload({ ok: true, generatedAt: new Date().toISOString(), windows: [], skipModelTypes: [], skipModelIds: [] }, this.instancesProvider?.() ?? []);
+        this.lastError = null;
         return;
       }
-      this.applyPayload(body, this.instancesProvider?.() ?? []);
-      this.lastError = null;
-      this.lastOkAt = new Date().toISOString();
-    } catch (error) {
-      this.lastError = error instanceof Error ? error.message : String(error);
+      try {
+        const response = await fetch(url, {
+          headers: { authorization: `Bearer ${token}`, accept: "application/json", "user-agent": "BotFleet/1.0" },
+          signal: AbortSignal.timeout(10_000),
+        });
+        const body = (await response.json().catch(() => null)) as QuotaWindowsPayload | { error?: string } | null;
+        if (!response.ok || !body || typeof body !== "object" || !("ok" in body) || body.ok !== true) {
+          this.lastError = `HTTP ${response.status}`;
+          return;
+        }
+        this.applyPayload(body, this.instancesProvider?.() ?? []);
+        this.lastError = null;
+        this.lastOkAt = new Date().toISOString();
+      } catch (error) {
+        this.lastError = error instanceof Error ? error.message : String(error);
+      }
     } finally {
+      // One release for the whole poll, the early return above included.  Left
+      // true, every later poll returns at the `inFlight` guard, so a local cap
+      // could never lift and the windows behind it never refresh.
       this.inFlight = false;
     }
   }

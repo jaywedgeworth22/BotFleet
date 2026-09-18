@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseLocalQuotaPayload } from "./local-usage-monitor.ts";
 import { quotaCooldowns } from "./model-fallback.ts";
 import {
@@ -306,6 +306,44 @@ describe("local subscription caps", () => {
 
     await poller([localWindow({ resetAt: null, window: "billing-cycle" })]).poll();
     expect(quotaCooldowns.list()).toEqual([]);
+  });
+
+  it("survives a throw out of the local path and keeps polling", async () => {
+    // The whole local half is derived from a file any process running as this
+    // user can write.  It used to run before `poll()`'s `try`, so one throw
+    // left `inFlight` true for the life of the process — every later poll
+    // returned at the guard, local caps never lifted, and because `start()`
+    // does `void this.poll()` with no `unhandledRejection` handler the
+    // rejection terminated the harness on boot, over and over.
+    //
+    // A row whose `label` throws when read, so this does not depend on the
+    // prototype-chain hazard the commit before it fixed.
+    const exploding = Object.defineProperty({ ...localWindow() }, "label", {
+      get() { throw new Error("handoff row exploded"); },
+    }) as RemoteQuotaWindow;
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      let reads = 0;
+      const made = new UsageQuotaPoller(async () => {
+        reads += 1;
+        return { windows: [exploding], freshness: { state: "fresh", generatedAt: new Date().toISOString(), ageMs: 0 }, producer: "agent-bar", issues: {} };
+      });
+      made.configure({ settings: () => ({}), instances: () => [codex] });
+
+      await expect(made.poll()).resolves.toBeUndefined();
+      expect(reads).toBe(1);
+      // The remote half still ran: unconfigured, it applies an empty payload
+      // and clears its own error.
+      expect(made.getStatus().lastError).toBeNull();
+      // And `inFlight` was released, so the next poll is not swallowed.
+      await expect(made.poll()).resolves.toBeUndefined();
+      expect(reads).toBe(2);
+      // Once for the same failure, not once every thirty seconds.
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(String(logged.mock.calls[0]?.[0])).toContain("handoff row exploded");
+    } finally {
+      logged.mockRestore();
+    }
   });
 });
 
