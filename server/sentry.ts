@@ -62,7 +62,11 @@ let killed = false;
 let activeFingerprint: string | null = null;
 let profilingWarned = false;
 let runtimeState: SentryRuntimeState = { ...DORMANT };
-let loaderForTests: (() => SentryNode | null) | null = null;
+let loaderForTests: (() => SentryNode | null | Promise<SentryNode | null>) | null = null;
+/** Serializes `applySentryConfig`.  `await loadSdk()` yields, so two callers
+ * could otherwise both pass the fingerprint check, both `shutdown()`, and
+ * both `init()` with no `close()` in between. */
+let applyQueue: Promise<void> = Promise.resolve();
 
 function isTestEnv(): boolean {
   return process.env.VITEST === "true" || process.env.NODE_ENV === "test";
@@ -112,6 +116,25 @@ export const SDK_REJECTED_DSN_MESSAGE =
 /** Split a DSN into the two halves that are safe to show.  Returns null for
  * anything that is not a DSN, which is how a malformed stored value becomes
  * a visible `lastError` instead of a silently inert SDK. */
+
+/** GenAI prompt/response capture for Sentry Agents.  ON by default so the
+ * Agents Dashboard and Conversations can show model I/O when an official
+ * integration records it.  Kill-switch: `SENTRY_AI_DATA_COLLECTION=0`
+ * (also `false` / `off` / `no`).  Manual `gen_ai.*` spans in sentry-ai.ts
+ * still omit raw prompts/tool args — those often carry credentials. */
+export function isGenAiDataCollectionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.SENTRY_AI_DATA_COLLECTION ?? "1").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
+/** `dataCollection.genAI` block handed to `Sentry.init`. */
+export function genAiDataCollectionOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): { genAI: { inputs: boolean; outputs: boolean } } {
+  const on = isGenAiDataCollectionEnabled(env);
+  return { genAI: { inputs: on, outputs: on } };
+}
+
 export function describeDsn(dsn: string): { host: string; projectId: string } | null {
   let parsed: URL;
   try {
@@ -156,19 +179,19 @@ interface SentrySdkLoad {
  * sentinel DSNs, and a real client would build a real transport pointed at
  * them.  Tests that need the wiring exercised install a fake through
  * `setSentryLoaderForTests`. */
-function loadSdk(): SentrySdkLoad {
+async function loadSdk(): Promise<SentrySdkLoad> {
   if (loaderForTests) {
     try {
-      return { sdk: loaderForTests(), error: null };
+      return { sdk: await loaderForTests(), error: null };
     } catch (err) {
       return { sdk: null, error: errorText(err) };
     }
   }
   if (isTestEnv()) return { sdk: null, error: null };
   try {
-    const require = createRequire(import.meta.url);
+    
     // SAFETY: lazy-load so vitest importing the harness does not boot the Node SDK.
-    return { sdk: require("@sentry/node") as SentryNode, error: null };
+    return { sdk: (await import("@sentry/node")) as unknown as SentryNode, error: null };
   } catch (err) {
     return { sdk: null, error: `Sentry SDK failed to load: ${errorText(err)}` };
   }
@@ -197,9 +220,10 @@ function shutdown(): void {
  * missing rather than pretending profiling is on. */
 function attachProfiling(sdk: SentryNode): boolean {
   try {
-    const require = createRequire(import.meta.url);
+    
     // SAFETY: the only export this needs is the integration factory, and a
     // package that does not have it throws straight into the catch below.
+    const require = createRequire(import.meta.url);
     const { nodeProfilingIntegration } = require("@sentry/profiling-node") as {
       nodeProfilingIntegration: () => SentryIntegration;
     };
@@ -233,7 +257,16 @@ function acceptedDsn(sdk: SentryNode): "ok" | "rejected" | "unknown" {
 /** Bring the running client in line with `input`, and report what actually
  * happened.  Called at boot and again after every settings change, so it
  * has to be idempotent: an unchanged option set leaves the client alone. */
-export function applySentryConfig(input: SentryRuntimeInput): SentryRuntimeState {
+export async function applySentryConfig(input: SentryRuntimeInput): Promise<SentryRuntimeState> {
+  const run = applyQueue.then(() => applySentryConfigLocked(input));
+  applyQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
+async function applySentryConfigLocked(input: SentryRuntimeInput): Promise<SentryRuntimeState> {
   const parsed = input.dsn ? describeDsn(input.dsn) : null;
   const base: Omit<SentryRuntimeState, "active"> = {
     source: input.source,
@@ -265,6 +298,7 @@ export function applySentryConfig(input: SentryRuntimeInput): SentryRuntimeState
   // digest is in here for the same reason — a rotated key keeps the host
   // and the project id, so without it the old credential would stay
   // installed while Settings reported the new one as active.
+  const genAiCollection = isGenAiDataCollectionEnabled();
   const fingerprint = [
     parsed.host,
     parsed.projectId,
@@ -272,6 +306,8 @@ export function applySentryConfig(input: SentryRuntimeInput): SentryRuntimeState
     input.environment,
     String(input.tracesSampleRate),
     input.logsEnabled ? "logs" : "nologs",
+    genAiCollection ? "ai-data-on" : "ai-data-off",
+    "stream-genai",
   ].join("|");
   if (initialized && activeFingerprint === fingerprint) {
     runtimeState = { ...base, active: true, profilingAvailable: runtimeState.profilingAvailable };
@@ -279,7 +315,7 @@ export function applySentryConfig(input: SentryRuntimeInput): SentryRuntimeState
   }
 
   shutdown();
-  const { sdk, error } = loadSdk();
+  const { sdk, error } = await loadSdk();
   if (!sdk) {
     runtimeState = { ...base, active: false, lastError: error };
     return runtimeState;
@@ -298,6 +334,11 @@ export function applySentryConfig(input: SentryRuntimeInput): SentryRuntimeState
         ? [sdk.consoleLoggingIntegration({ levels: ["warn", "error"] })]
         : [],
       sendDefaultPii: false,
+      // Sentry Agents (SaaS): standalone gen_ai envelopes for Conversations.
+      // Opt-out only for self-hosted that cannot ingest them.
+      streamGenAiSpans: true,
+      // GenAI I/O collection ON by default; kill with SENTRY_AI_DATA_COLLECTION=0.
+      dataCollection: genAiDataCollectionOptions(),
       profileSessionSampleRate: Number.isFinite(profileSessionSampleRate)
         ? Math.min(Math.max(profileSessionSampleRate, 0), 1)
         : 1,
@@ -340,12 +381,12 @@ export function sentryRuntimeState(): SentryRuntimeState {
 
 /** Env-only entry point, kept for callers that boot before app config is
  * loaded.  The observability manager is the richer path. */
-export function initSentry(env: NodeJS.ProcessEnv = process.env): boolean {
+export async function initSentry(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
   if (initialized) return true;
   if (env.VITEST === "true" || env.NODE_ENV === "test") return false;
   const dsn = sentryDsnFromEnv(env);
   const tracesSampleRate = Number(env.SENTRY_TRACES_SAMPLE_RATE ?? "0.2");
-  return applySentryConfig({
+  return (await applySentryConfig({
     dsn: dsn ?? null,
     enabled: true,
     environment: (env.SENTRY_ENV || env.NODE_ENV || "production").trim() || "production",
@@ -354,7 +395,7 @@ export function initSentry(env: NodeJS.ProcessEnv = process.env): boolean {
       : 0.2,
     logsEnabled: true,
     source: dsn ? "env" : "none",
-  }).active;
+  })).active;
 }
 
 export function isSentryInitialized(): boolean {
@@ -368,7 +409,9 @@ export function getSentry(): SentryNode | null {
 /** Install a stand-in for @sentry/node so a test can exercise the init,
  * close and re-init path without a network client.  Pass null to restore
  * the real loader. */
-export function setSentryLoaderForTests(loader: (() => SentryNode | null) | null): void {
+export function setSentryLoaderForTests(
+  loader: (() => SentryNode | null | Promise<SentryNode | null>) | null,
+): void {
   loaderForTests = loader;
 }
 
@@ -379,5 +422,6 @@ export function resetSentryForTests(): void {
   activeFingerprint = null;
   profilingWarned = false;
   loaderForTests = null;
+  applyQueue = Promise.resolve();
   runtimeState = { ...DORMANT };
 }
