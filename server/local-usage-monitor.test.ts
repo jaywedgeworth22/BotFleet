@@ -156,6 +156,28 @@ describe("native Usage Monitor handoff", () => {
     expect(result.map((value) => value.remainingPercent)).toEqual([null, null]);
   });
 
+  it("clears the producer's verdict once the reset has passed, the way it clears the percentage", () => {
+    // A verdict recorded before the boundary describes the period that just
+    // ended.  Left set, it was the one thing that kept the Settings grid cell
+    // red under a chip reading the blanked percentage and saying "Available",
+    // with the routing path — which refuses an end already behind it —
+    // diverting nothing.
+    const spent = {
+      remainingPercent: 0, skip: true, skipReason: "0% remaining",
+      status: "exhausted", isExhausted: true,
+    };
+    const [elapsed] = parseLocalQuotaSnapshot(payload([
+      row("openai", { ...spent, resetAt: "2026-09-13T07:59:59Z" }),
+    ]), now);
+    expect(elapsed).toMatchObject({ remainingPercent: null, status: "unknown", isExhausted: false, fileSkip: false });
+
+    // The same row, one second before its boundary, still carries it.
+    const [live] = parseLocalQuotaSnapshot(payload([
+      row("openai", { ...spent, resetAt: "2026-09-13T08:00:01Z" }),
+    ]), now);
+    expect(live).toMatchObject({ remainingPercent: 0, status: "exhausted", isExhausted: true, fileSkip: true });
+  });
+
   it("merges whole provider identities without borrowing another account's weekly cap", () => {
     const local = parseLocalQuotaSnapshot(payload([row()]), now);
     const remote = parseLocalQuotaSnapshot(payload([row("openai", { id: "weekly", window: "1w" }), row("minimax")]), now);

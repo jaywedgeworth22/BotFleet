@@ -247,6 +247,28 @@ describe("local subscription caps", () => {
     expect(quotaCooldowns.list()).toEqual([]);
   });
 
+  it("diverts nothing for a window whose reset has already passed", async () => {
+    // The routing third of the three paths that have to agree about such a
+    // row; the grid cell and the engine chip are pinned together in
+    // src/lib/usage-monitor-quota.test.ts, against this same parser.
+    const clock = Date.now();
+    const parsed = parseLocalQuotaPayload({
+      format: "usage-monitor-local-quotas",
+      version: 1,
+      generatedAt: new Date(clock).toISOString(),
+      windows: [{
+        id: "codex:weekly", provider: "openai", providerKey: "openai", label: "Codex weekly",
+        occurredAt: new Date(clock).toISOString(), window: "1w",
+        resetAt: new Date(clock - 60_000).toISOString(),
+        remainingPercent: 0, status: "exhausted", skip: true, skipReason: "0% remaining", isExhausted: true,
+      }],
+    }, clock).windows;
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ remainingPercent: null, isExhausted: false, fileSkip: false });
+    await poller(parsed).poll();
+    expect(quotaCooldowns.list()).toEqual([]);
+  });
+
   it("leaves MiniMax and Antigravity to their own pollers", async () => {
     const rows = [
       localWindow({ id: "minimax:weekly", provider: "minimax", providerKey: "minimax", label: "MiniMax weekly" }),
@@ -353,6 +375,9 @@ describe("local subscription caps", () => {
     //
     // A row whose `label` throws when read, so this does not depend on the
     // prototype-chain hazard the commit before it fixed.
+    // SAFETY: the object is a complete `localWindow()` whose `label` has been
+    // redefined as a getter of the same `string` type, so every property the
+    // contract names is still present and still typed as declared.
     const exploding = Object.defineProperty({ ...localWindow() }, "label", {
       get() { throw new Error("handoff row exploded"); },
     }) as RemoteQuotaWindow;

@@ -154,9 +154,17 @@ export function parseLocalQuotaPayload(value: unknown, now = Date.now()): LocalQ
       skip: false, skipReason: null,
       planName: text(row.planName, 60), quotaUnit: text(row.quotaUnit, 24),
       absoluteRemaining: amount(row.absoluteRemaining), absoluteLimit: amount(row.absoluteLimit),
-      isExhausted: row.isExhausted === true,
+      // Both cleared once the reset has passed, exactly as `remainingPercent`
+      // above is: a verdict recorded before the boundary describes the period
+      // that just ended, not the one now running.  The routing path already
+      // refuses to cap on an end that is behind it (`localCooldownEnd`), and
+      // the engine chip reads the blanked percentage, so leaving these two
+      // set was the one thing that kept the Settings grid cell red under a
+      // chip saying "Available" — for up to a full producer write cycle after
+      // every reset.
+      isExhausted: row.isExhausted === true && !resetPassed,
       fileStatus: fileStatus && FILE_STATUSES.has(fileStatus) ? fileStatus : null,
-      fileSkip: row.skip === true, fileSkipReason: text(row.skipReason),
+      fileSkip: row.skip === true && !resetPassed, fileSkipReason: text(row.skipReason),
     });
   }
   return { windows, freshness: { state: "fresh", generatedAt, ageMs: age }, producer, issues };

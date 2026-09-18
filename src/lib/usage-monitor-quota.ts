@@ -181,6 +181,22 @@ export function antigravityQuotaWindows(
   return result;
 }
 
+/** One quota grid cell's exhaustion verdict, in a single place so the cell
+ *  can never redden under an engine chip that says the engine is available.
+ *
+ *  It reads the producer's own verdict (`isExhausted` / `fileSkip`) beside
+ *  the percentage the chip reads, and the server's parser
+ *  (server/local-usage-monitor.ts) clears all three together once a window's
+ *  reset has passed — so a stale verdict cannot reach any of the three paths
+ *  that have to agree: this cell, `headlinesExhausted` above it, and
+ *  `applyLocalPayload`'s routing behind it. */
+export function isQuotaCellExhausted(window: UsageMonitorQuotaWindow): boolean {
+  return window.skip || window.isExhausted === true || window.fileSkip === true || finitePercent(window.remainingPercent) === 0;
+}
+
+/** The narrower verdict the Antigravity pools use: those rows come from the
+ *  Antigravity poller rather than the handoff and carry no producer verdict
+ *  of their own. */
 function isExhausted(window: UsageMonitorQuotaWindow): boolean {
   return window.skip || finitePercent(window.remainingPercent) === 0;
 }

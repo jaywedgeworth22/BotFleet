@@ -1,4 +1,4 @@
-import type { UsageMonitorQuotaWindow } from "@/lib/usage-monitor-quota";
+import { isQuotaCellExhausted, type UsageMonitorQuotaWindow } from "@/lib/usage-monitor-quota";
 import { absoluteQuotaLabel, formatResetCountdown } from "@/lib/quota-display";
 
 function percentLabel(window: UsageMonitorQuotaWindow): string {
@@ -39,7 +39,9 @@ export function UsageMonitorQuotaGrid({ windows }: { windows: UsageMonitorQuotaW
   return (
     <div className="ml-9 mt-1.5 grid grid-cols-2 gap-2" aria-label="Usage Monitor quota windows">
       {rows.map((window) => {
-        const exhausted = window.skip || window.isExhausted === true || window.fileSkip === true || window.remainingPercent === 0;
+        // One shared verdict, never an expression of its own: the chip above
+        // this grid and the routing behind it have to agree with the cell.
+        const exhausted = isQuotaCellExhausted(window);
         const resetAt = window.resetAt ?? undefined;
         // "$0 of $400 on Ultra" / "12 of 300 requests": the figures the
         // collector already measured, which used to be rounded away into
