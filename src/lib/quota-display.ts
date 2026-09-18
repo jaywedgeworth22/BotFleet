@@ -1,5 +1,5 @@
 /** Settings → Usage quota row: full per-model / per-window lines for hover and click. */
-import { lookupOwn, NEAR_CAP_PERCENT } from "../../server/quota-window-map";
+import { lookupOwn, NEAR_CAP_PERCENT } from "../../server/quota-window-map.ts";
 
 export type QuotaDisplayModel = {
   label: string;
