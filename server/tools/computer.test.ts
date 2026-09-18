@@ -298,6 +298,53 @@ describe("createComputerTools with confinement (workspace-only bots)", () => {
     rmSync(outsideDir, { recursive: true, force: true });
   });
 
+  it("refuses an INTERMEDIATE symlink inside the workspace that points outside (sub/ → /etc)", async () => {
+    // Same realpath-safe check, but the symlink is a sub-FOLDER inside the
+    // workspace, not the leaf file.  realOrResolved walks the full path so
+    // the comparison must still reject this — same code path as
+    // bot-cwd.test.ts:77-83 exercises for the cwdConfinementError side.
+    const outsideDir = mkdtempSync(join(tmpdir(), "bf-comp-outside-"));
+    writeFileSync(join(outsideDir, "secret.txt"), "ssh-private-key-bytes");
+    const subLink = join(scratchDir, "sub");
+    try {
+      symlinkSync(outsideDir, subLink, "dir");
+    } catch {
+      rmSync(outsideDir, { recursive: true, force: true });
+      return; // no symlink permission on this runner
+    }
+    const result = await confinedTools().read_file(
+      { id: "c-r4b", name: "read_file", arguments: { path: join(subLink, "secret.txt") } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("error");
+    expect(result.detail).toBe("outside_workspace");
+    rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  it("uses the canonical realpath when reading a symlink INSIDE the workspace", async () => {
+    // Companion to the "returns realpath for syscall" hardening: a symlink
+    // INSIDE the workspace that points to another file INSIDE the workspace
+    // is allowed (real resolves to a sibling of the symlink, which still
+    // satisfies isInside).  This pins that the executor reads via the
+    // canonical path, not the unresolved candidate.
+    const realFile = join(scratchDir, "real.txt");
+    writeFileSync(realFile, "hello-canonical\n");
+    const link = join(scratchDir, "alias.txt");
+    try {
+      symlinkSync(realFile, link, "file");
+    } catch {
+      return; // no symlink permission on this runner
+    }
+    const result = await confinedTools().read_file(
+      { id: "c-r4c", name: "read_file", arguments: { path: link } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("result");
+    expect(result.content).toContain("hello-canonical");
+  });
+
   it("refuses to write an absolute path outside the workspace", async () => {
     const result = await confinedTools().write_file(
       { id: "c-w1", name: "write_file", arguments: { path: "/tmp/should-not-exist.txt", content: "nope" } },

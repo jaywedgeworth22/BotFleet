@@ -65,8 +65,14 @@ function confineOrReject(
   // realOrResolved gives a symlink-safe comparison even when the workspace
   // or any of its sub-folders are themselves symlinks, the way
   // bot-cwd.test.ts already exercises for the phone-originated cwd path.
+  // Return the resolved realpath so the executor's read/write opens the
+  // canonical file, not the unresolved candidate — closes the (theoretical,
+  // unexploitable-in-Node-JS) TOCTOU window between this check and the
+  // syscall, and also makes the executor insensitive to caller-supplied
+  // case / NFD-vs-NFC mismatches that would otherwise false-negative reject
+  // legitimate in-workspace reads on macOS / Windows.
   const real = realOrResolved(candidate);
-  if (isInside(real, confinement.workspaceRealpath)) return { ok: true, fullPath: candidate };
+  if (isInside(real, confinement.workspaceRealpath)) return { ok: true, fullPath: real };
   return {
     ok: false,
     outcome: {
