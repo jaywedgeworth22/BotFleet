@@ -800,6 +800,69 @@ describe("RoutineManager", () => {
     expect(activations).not.toContain("hidden-projects-thread");
   });
 
+  it("reuses the bot's existing thread instead of minting one when defaultThread is set", async () => {
+    const h = harness();
+    h.options.conversationMode = () => "projects";
+    h.options.defaultThread = () => "primary-thread";
+    h.manager.enqueueWebhook({
+      webhookId: "hook-sentry",
+      webhookName: "Sentry",
+      prompt: "Handle issue",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d-primary",
+      receivedAt: new Date(2026, 7, 17, 8, 2).getTime(),
+    });
+    await h.manager.tick();
+    expect(h.started).toEqual([{ botId: "maus-webhook", threadId: "primary-thread", prompt: "Handle issue" }]);
+    expect(h.taskTitles).toEqual([]);
+
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "primary-thread",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    h.manager.enqueueWebhook({
+      webhookId: "hook-pd",
+      webhookName: "PagerDuty",
+      prompt: "Handle page",
+      botId: "maus-webhook",
+      runOn: "maus",
+      deliveryId: "d-primary-2",
+      receivedAt: new Date(2026, 7, 17, 8, 3).getTime(),
+    });
+    await h.manager.tick();
+    expect(h.started.map((row) => row.threadId)).toEqual(["primary-thread", "primary-thread"]);
+    expect(h.taskTitles).toEqual([]);
+  });
+
+  it("reuses the same thread for a later scheduled run when defaultThread is the primary", async () => {
+    const h = harness();
+    h.options.conversationMode = () => "simple";
+    h.options.defaultThread = () => "primary-thread";
+    const morning = h.manager.create({
+      name: "Morning brief",
+      prompt: "Morning",
+      botId: "maus-1",
+      schedule: { type: "daily", time: "09:00", weekdays: [1, 2, 3, 4, 5] },
+    });
+    h.setNow(morning.nextRunAt!);
+    await h.manager.tick();
+    h.manager.handleRuntimeEvent({
+      type: "turn.completed",
+      threadId: "primary-thread",
+      ok: true,
+      cost: 0,
+      denials: [],
+    } as any);
+    h.setNow(h.manager.listRoutines().find((r) => r.id === morning.id)!.nextRunAt!);
+    await h.manager.tick();
+    expect(h.started.map((row) => row.threadId)).toEqual(["primary-thread", "primary-thread"]);
+    expect(h.taskTitles).toEqual([]);
+  });
+
   it("gives two different routines two different threads", async () => {
     const h = harness();
     const morning = h.manager.create({

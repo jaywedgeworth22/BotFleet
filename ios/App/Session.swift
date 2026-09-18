@@ -1988,8 +1988,9 @@ struct ChatSummary: Identifiable, Hashable {
 }
 
 extension CompanionState {
-    /// Everything worth showing in the chat list: pinned first, then unread,
-    /// then most recently active. Hidden bots stay hidden.
+    /// Everything worth showing in the chat list: pinned first, then most
+    /// recently active. Unread is a badge, not a sort key — same as
+    /// Messages.app and the Mac sidebar. Hidden bots stay hidden.
     ///
     /// The derived fields are computed once here rather than asked for as the
     /// list is sorted and filtered. Each one walks a thread's messages to
@@ -2012,9 +2013,12 @@ extension CompanionState {
                 )
             }
             .sorted { left, right in
-                if left.pinned != right.pinned { return left.pinned }
-                if left.chat.unread != right.chat.unread { return left.chat.unread }
-                return left.lastActivity > right.lastActivity
+                ChatListOrder.orderedBefore(
+                    pinnedLeft: left.pinned,
+                    activityLeft: left.lastActivity,
+                    pinnedRight: right.pinned,
+                    activityRight: right.lastActivity
+                )
             }
     }
 
@@ -2045,13 +2049,22 @@ extension CompanionState {
     /// `lastActivity`, so an unread update on a background task does not
     /// keep showing yesterday from the currently selected thread.
     func latestActivity(for chat: Chat) -> Double {
-        let fromMessages = newestLoadedMessage(for: chat)?.at ?? 0
+        let fromMessages = newestLoadedMessage(for: chat)?.at
         switch chat {
         case let .bot(bot):
-            let fromTasks = (bot.tasks ?? []).compactMap { $0.lastActivity ?? $0.createdAt }.max() ?? 0
-            return max(fromMessages, fromTasks, bot.createdAt)
+            let taskActivities = (bot.tasks ?? []).map { $0.lastActivity ?? $0.createdAt }
+            return ChatListOrder.activity(
+                createdAt: bot.createdAt,
+                taskActivities: taskActivities,
+                loadedMessageAt: fromMessages
+            )
         case let .room(room):
-            return max(fromMessages, room.createdAt)
+            let taskActivities = (room.tasks ?? []).map { $0.lastActivity ?? $0.createdAt }
+            return ChatListOrder.activity(
+                createdAt: room.createdAt,
+                taskActivities: taskActivities,
+                loadedMessageAt: fromMessages
+            )
         }
     }
 

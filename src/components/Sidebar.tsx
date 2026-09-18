@@ -43,7 +43,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { api, useStore, formatTime, visibleMessages, getRoomTerminology, getConversationMode, latestChatActivity, type Bot, type Group, type Message } from "@/state/store";
+import { api, useStore, formatTime, visibleMessages, getRoomTerminology, getConversationMode, latestChatActivity, compareBotsByRecentActivity, compareGroupsByRecentActivity, type Bot, type Group, type Message } from "@/state/store";
 import { allowsMultipleBotThreads, rosterPrimaryLabel } from "../../shared/conversation-mode";
 import {
   THREAD_DRAG_TYPE,
@@ -1624,7 +1624,7 @@ function BotListItem({
   // the visible branch, so a version switch changes the row with the chat
   const visible = visibleMessages(bot);
   const last = visible.at(-1);
-  const activityAt = latestChatActivity(bot.tasks, last?.at, 0);
+  const activityAt = latestChatActivity(bot.tasks, last?.at, bot.createdAt ?? 0);
   const rowClass = cn(
     "flex w-full items-center rounded-xl border text-left",
     iconOnly
@@ -2231,13 +2231,8 @@ export function Sidebar({ open, onClose }: { open: boolean; onClose: () => void 
     );
   const unsectionedChief = matchingBots.find((bot) => bot.chiefOfStaff && !bot.section);
   const sectionChiefs = matchingBots.filter((bot) => bot.chiefOfStaff && bot.section);
-  const byRecentBot = (a: Bot, b: Bot) => {
-    const pin = Number(b.pinned ?? false) - Number(a.pinned ?? false);
-    if (pin !== 0) return pin;
-    return latestChatActivity(b.tasks, undefined, 0) - latestChatActivity(a.tasks, undefined, 0);
-  };
-  const byRecentGroup = (a: Group, b: Group) =>
-    latestChatActivity(b.tasks, undefined, b.createdAt) - latestChatActivity(a.tasks, undefined, a.createdAt);
+  const byRecentBot = compareBotsByRecentActivity;
+  const byRecentGroup = compareGroupsByRecentActivity;
   const sectionedBots = matchingBots
     .filter((bot) => !bot.chiefOfStaff && bot.section)
     .sort(byRecentBot);
