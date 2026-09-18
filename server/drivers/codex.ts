@@ -138,6 +138,10 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       asks: Map<string, (behavior: "allow" | "deny" | "answer", message?: string, source?: "user" | "timeout" | "system") => void>;
     }
     const active = new Map<string, Turn>();
+    // codex thread ids this instance started in asking mode.  See the resume
+    // decision in `sendTurn`: a sandbox is fixed at thread/start, so a later
+    // host-control turn can only reuse a thread it knows was started brokered.
+    const brokeredThreads = new Set<string>();
 
     const emit = (event: RuntimeEvent) => {
       for (const l of [...listeners]) l(event);
@@ -157,6 +161,24 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       const { threadId } = turn;
       if (active.has(threadId)) throw new Error("a turn is already running on this thread");
       const turnId = newId();
+      // Host control means the user's real desktop — the Local VM and a VPS
+      // also arrive as stdio mounts, but they are isolated and carry no
+      // scope.  A full-auto instance keeps its yolo switch for everything
+      // else, but a turn that can click on this computer runs brokered: the
+      // app-server is started on-request inside workspace-write, and every
+      // approval reaches the harness, where the bot's Auto policy and the
+      // destructive, sensitive and unattended guards decide.  That is what
+      // `localComputerMcp: true` promises in server/contracts.ts, and what
+      // lets a full-auto bot mount this computer at all.  The ACP core and
+      // claude drivers already do exactly this; codex computed
+      // `controlsHost` and spent it only on tagging the card's scope.
+      //
+      // Reached from a room as well as a 1:1 chat since the room lane started
+      // resolving computers, so a full-auto Codex bot with This Computer now
+      // asks in BOTH lanes.
+      const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
+      const brokered = controlsHost && config.fullAuto;
+      const turnFullAuto = config.fullAuto && !brokered;
       // a retry relaunches the whole app-server; the backoff is scaled down in
       // tests so a fake's transient failures don't stall real seconds
       const retryScale = Number(process.env.FAKE_CODEX_RETRY_SCALE ?? "1");
@@ -277,7 +299,6 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       // Host-scope tagging mirrors claude.ts: when this turn mounts the real
       // Mac (not a VM), every card carries approvalScope so the harness's
       // local-computer-block backstop applies to remembered always-allows.
-      const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
       const handleServerRequest = (msg: any) => {
         const method = msg.method as string;
         const params = msg.params ?? {};
@@ -297,7 +318,7 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             : isQuestion
               ? "ask_user"
               : "shell";
-        if (config.fullAuto && !isQuestion) {
+        if (turnFullAuto && !isQuestion) {
           return send({
             jsonrpc: "2.0",
             id: msg.id,
@@ -543,7 +564,17 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
       try {
         await request("initialize", { clientInfo: { name: "botfleet", version: "2" } });
         send({ jsonrpc: "2.0", method: "initialized", params: {} });
-        const cursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
+        const resumeCursor = typeof turn.resumeCursor === "string" ? turn.resumeCursor : null;
+        // `thread/resume` keeps the sandbox and approval policy the thread was
+        // STARTED with, so resuming a thread that was started full-auto would
+        // quietly hand this host-control turn danger-full-access and
+        // approvalPolicy "never" — no cards at all, the exact hole the
+        // brokered path closes.  A brokered turn therefore resumes only a
+        // thread this instance is known to have started brokered, and
+        // otherwise starts a fresh one.  The cost is one lost codex-side
+        // continuation per instance restart, for full-auto bots that also
+        // hold this computer; the alternative is an unbrokered host turn.
+        const cursor = brokered && !(resumeCursor && brokeredThreads.has(resumeCursor)) ? null : resumeCursor;
         let codexThreadId: string | null = null;
         let startedModel: string | null = null;
         if (cursor) {
@@ -560,12 +591,17 @@ export const CodexDriver: ProviderDriver<CodexConfig> = {
             cwd: turn.cwd ?? homedir(),
             model: selection.model,
             ...(selection.modelProvider ? { modelProvider: selection.modelProvider } : {}),
-            sandbox: config.fullAuto ? "danger-full-access" : "workspace-write",
-            approvalPolicy: config.fullAuto ? "never" : "on-request",
+            sandbox: turnFullAuto ? "danger-full-access" : "workspace-write",
+            approvalPolicy: turnFullAuto ? "never" : "on-request",
             ephemeral: false,
           });
           codexThreadId = started?.thread?.id ?? null;
           startedModel = started?.model ?? null;
+          // Remember which threads are safe for a later brokered turn to
+          // resume.  Only a brokered start is recorded, so an unknown cursor
+          // (a restart, or a thread started before this fix) is treated as
+          // full-auto and replaced rather than trusted.
+          if (brokered && codexThreadId) brokeredThreads.add(codexThreadId);
         }
         emit({ ...base(threadId, turnId), type: "session.started", sessionId: codexThreadId, model: startedModel ?? turn.model ?? null });
         await request("turn/start", {

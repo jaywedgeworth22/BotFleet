@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   ActiveTurnOwners,
   ExactTurnLeases,
+  TurnOwnerClaims,
   eligibleAutoFallbackChain,
   inspectThreadOwners,
   interruptThreadOwners,
@@ -280,5 +281,62 @@ describe("runtime-owner interruption", () => {
       inspectionFailed: false,
     });
     expect(onError).toHaveBeenCalledWith("refused", expect.any(Error));
+  });
+});
+
+describe("TurnOwnerClaims", () => {
+  // A room thread is shared by every member, and nothing serializes them at
+  // the thread level, so two members can hold a computer on one thread at
+  // once.  Keyed by thread alone, the second claim evicted the first: one
+  // resource stranded until restart, the other handed back mid-turn.
+  it("keeps two members of one room thread apart", () => {
+    const claims = new TurnOwnerClaims<string>();
+    claims.set("room-1", "bot-a", "lease-a");
+    claims.set("room-1", "bot-b", "lease-b");
+
+    expect(claims.size).toBe(2);
+    expect(claims.get("room-1", "bot-a")).toBe("lease-a");
+    expect(claims.get("room-1", "bot-b")).toBe("lease-b");
+
+    // A's turn ends.  B is still running, so B keeps what it holds.
+    expect(claims.release("room-1", "bot-a")).toBe("lease-a");
+    expect(claims.get("room-1", "bot-a")).toBeUndefined();
+    expect(claims.get("room-1", "bot-b")).toBe("lease-b");
+    expect(claims.size).toBe(1);
+  });
+
+  it("declines a thread-only release it cannot attribute, and takes it when it can", () => {
+    // `turn.completed` is thread-keyed and names no speaker.  With two
+    // members in flight, releasing either would be a guess — and guessing
+    // wrong hands back a container another bot is still working inside.
+    const claims = new TurnOwnerClaims<string>();
+    claims.set("room-1", "bot-a", "lease-a");
+    claims.set("room-1", "bot-b", "lease-b");
+
+    expect(claims.releaseSoleOwner("room-1")).toBeUndefined();
+    expect(claims.size).toBe(2);
+
+    // Once only one member is left, the same caller can attribute it.
+    claims.release("room-1", "bot-b");
+    expect(claims.releaseSoleOwner("room-1")).toBe("lease-a");
+    expect(claims.size).toBe(0);
+    expect(claims.releaseSoleOwner("room-1")).toBeUndefined();
+  });
+
+  it("keeps threads separate and answers the two lookups the dispatchers need", () => {
+    const claims = new TurnOwnerClaims<string>();
+    claims.set("room-1", "bot-a", "lease-a");
+    claims.set("chat-9", "bot-a", "lease-9");
+
+    expect(claims.ownersOf("room-1")).toEqual(["bot-a"]);
+    expect(claims.anyOnThread("chat-9")).toBe("lease-9");
+    expect(claims.anyOnThread("nobody")).toBeUndefined();
+    // `clearBot` on a provider reload has to find the claim by bot alone.
+    expect(claims.findByBot("bot-a")).toMatchObject({ threadId: "room-1", botId: "bot-a" });
+    expect(claims.findByBot("bot-z")).toBeUndefined();
+
+    // Releasing one thread's claim leaves the same bot's other one alone.
+    claims.release("room-1", "bot-a");
+    expect(claims.get("chat-9", "bot-a")).toBe("lease-9");
   });
 });

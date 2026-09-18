@@ -28,6 +28,22 @@ describe("CodexDriver.decodeConfig", () => {
   });
 });
 
+/** What the fake app-server writes to FAKE_CODEX_DUMP.  `calls` is every
+ * JSON-RPC method the driver sent, in order, with its params. */
+interface FakeDump {
+  calls: Array<{ method: string; params: { sandbox?: string; approvalPolicy?: string } }>;
+  decision: unknown;
+}
+
+/** The params the thread was STARTED with.  A codex sandbox and approval
+ * policy are fixed at `thread/start`, so this is the only place that says
+ * whether a turn was really brokered. */
+const startParams = (dump: FakeDump): FakeDump["calls"][number]["params"] => {
+  const started = dump.calls.find((c) => c.method === "thread/start");
+  if (!started) throw new Error("the fake app-server was never asked to start a thread");
+  return started.params;
+};
+
 describe("CodexDriver turns (fake app-server)", () => {
   let instance: ProviderInstance;
   let recorder: EventRecorder;
@@ -485,7 +501,108 @@ describe("CodexDriver turns (fake app-server)", () => {
     await recorder.until((e) => e.type === "turn.completed");
 
     expect(recorder.events.some((e) => e.type === "request.opened")).toBe(false);
-    expect(JSON.parse(readFileSync(dump, "utf8")).decision).toEqual({ decision: "approved" });
+    const written = JSON.parse(readFileSync(dump, "utf8")) as FakeDump;
+    expect(written.decision).toEqual({ decision: "approved" });
+    // and the yolo switch is still real for everything that is not this Mac
+    expect(startParams(written)).toMatchObject({
+      sandbox: "danger-full-access",
+      approvalPolicy: "never",
+    });
+  });
+
+  it("brokers a full-auto turn that controls this Mac, and asks anyway", async () => {
+    // A full-auto instance keeps its yolo switch for everything else, but a
+    // turn that can click on the person's own desktop runs brokered: the
+    // thread is started inside workspace-write with approvals on-request, so
+    // every ask reaches the harness and the bot's Auto policy, the
+    // destructive and sensitive guards, and the unattended block decide.
+    // That is what `localComputerMcp: true` promises in server/contracts.ts,
+    // and what lets a full-auto bot mount this computer at all.  The ACP
+    // core and claude drivers already did this; codex computed
+    // `controlsHost` and spent it only on tagging the card's scope, so a
+    // full-auto Codex bot with This Computer acted on the Mac with no card
+    // and no decision-log row.  Reached from a room as well as a 1:1 chat
+    // since the room lane started resolving computers.
+    await create({ mode: "approval", fullAuto: true });
+    const dump = join(scratch, "host-dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-host-brokered",
+      text: "clean up",
+      integrations: {
+        localComputer: { command: "/cua-driver", args: ["mcp"], env: {}, platform: "darwin", scope: "local-computer" },
+      },
+    });
+
+    // THE assertion: a card, from an instance whose config says full auto.
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    expect(opened).toMatchObject({ approvalScope: "local-computer" });
+    await instance.adapter.respondToRequest("t-host-brokered", opened.requestId!, { behavior: "allow" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    // and the sandbox the thread was STARTED in matches, because that is
+    // fixed at thread/start and no later ask can loosen it
+    expect(startParams(JSON.parse(readFileSync(dump, "utf8")) as FakeDump)).toMatchObject({
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request",
+    });
+  });
+
+  it("does not broker an isolated computer, which carries no host scope", async () => {
+    // The Local VM and a VPS also arrive as `localComputer`, and a full-auto
+    // bot is meant to keep running unattended inside them.  Only a mount
+    // carrying `scope: "local-computer"` is the person's own desktop.
+    await create({ mode: "approval", fullAuto: true });
+    const dump = join(scratch, "vm-dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-vm-fullauto",
+      text: "clean up",
+      integrations: { localComputer: { command: process.execPath, args: ["/tmp/container-mcp.js"], env: {} } },
+    });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    expect(recorder.events.some((e) => e.type === "request.opened")).toBe(false);
+    expect(startParams(JSON.parse(readFileSync(dump, "utf8")) as FakeDump)).toMatchObject({
+      sandbox: "danger-full-access",
+      approvalPolicy: "never",
+    });
+  });
+
+  it("will not resume a thread it cannot prove was started brokered", async () => {
+    // `thread/resume` keeps the sandbox and approval policy the thread was
+    // STARTED with, so resuming a thread started full-auto would quietly
+    // hand a host-control turn danger-full-access and approvalPolicy
+    // "never" — no cards at all, the exact hole the brokered path closes.
+    // The cost is one lost codex-side continuation per harness restart, for
+    // full-auto bots that also hold this computer.
+    // `approval` rather than `resume`: the fake answers `thread/resume` with
+    // "no such thread" in this mode, so if the brokered turn ever reached
+    // for the cursor the turn would fail instead of opening a card.
+    await create({ mode: "approval", fullAuto: true });
+    const dump = join(scratch, "resume-dump.json");
+    process.env.FAKE_CODEX_DUMP = dump;
+
+    await instance.adapter.sendTurn({
+      threadId: "t-host-resume",
+      text: "carry on",
+      resumeCursor: "codex-thread-started-full-auto",
+      integrations: {
+        localComputer: { command: "/cua-driver", args: ["mcp"], env: {}, platform: "darwin", scope: "local-computer" },
+      },
+    });
+    const opened = await recorder.until((e) => e.type === "request.opened");
+    await instance.adapter.respondToRequest("t-host-resume", opened.requestId!, { behavior: "allow" });
+    await recorder.until((e) => e.type === "turn.completed");
+
+    const written = JSON.parse(readFileSync(dump, "utf8")) as FakeDump;
+    expect(written.calls.some((c) => c.method === "thread/resume")).toBe(false);
+    expect(startParams(written)).toMatchObject({
+      sandbox: "workspace-write",
+      approvalPolicy: "on-request",
+    });
   });
 
   it("rejects a second turn while one is in flight", async () => {
