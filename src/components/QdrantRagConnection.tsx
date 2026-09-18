@@ -4,6 +4,7 @@ import { api, useSecretSources, useStore, type ConfigStatus } from "@/state/stor
 import { cn } from "@/lib/cn";
 import { SecretSourceBadge } from "./SecretSourceBadge";
 import {
+  qdrantAccessWarning,
   qdrantLastSuccessLabel,
   qdrantRouteLabel,
   qdrantStateLabel,
@@ -177,6 +178,13 @@ export function QdrantRagConnection() {
   const inputClass =
     "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13.5px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none";
 
+  // Half an Access pair sends no Access headers at all, so a service behind
+  // Access answers a login page and the panel reads like an outage.  The
+  // saved values decide this, not the fields being typed into, so the
+  // warning does not flicker between the id and the secret being entered; a
+  // fresh probe's verdict wins once there is one.
+  const accessWarning = qdrantAccessWarning(testResult?.accessTokenState ?? qdrant?.accessTokenState);
+
   return (
     <div className="rounded-xl border border-hairline/40 bg-card p-4">
       <div className="flex items-start justify-between gap-3">
@@ -290,6 +298,14 @@ export function QdrantRagConnection() {
                 under Zero Trust → Access → Service Auth.
               </div>
             </div>
+            {accessWarning && (
+              <div
+                role="status"
+                className="rounded-lg border border-warning/25 bg-warning/10 px-2.5 py-1.5 text-[12px] leading-[1.4] text-warning"
+              >
+                {accessWarning}
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <div className="flex flex-col gap-1">
                 <div className="flex items-center gap-2">

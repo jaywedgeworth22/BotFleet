@@ -95,6 +95,10 @@ export function buildMcpServers(turn: SendTurnInput): Record<string, unknown> | 
   }
   if (turn.integrations?.agents) servers.agents = { ...turn.integrations.agents };
   if (turn.integrations?.phone) servers.phone = { ...turn.integrations.phone };
+  // The shared-memory (recall) proxy rides the same stdio path every other
+  // integration here does; it was simply never added, so pi bots had no
+  // corpus at all while twelve other engines did.
+  if (turn.integrations?.qdrant) servers.qdrant = { ...turn.integrations.qdrant };
   if (turn.integrations?.dweb) {
     servers.dweb = {
       command: process.execPath,
@@ -878,6 +882,9 @@ export const PiDriver: ProviderDriver<PiConfig> = {
           computerMcp: true,
           composioMcp: true,
           phoneMcp: true,
+          // Shared memory (recall) mounts through the same extension, so the
+          // dispatcher may hand this engine the proxy.
+          qdrantMcp: true,
           // Host control (the user's real Mac) rides the pi-native permission
           // card (`ctx.ui.confirm` → extension_ui_request) gated in the
           // extension regardless of fullAuto, so it is offered in every mode
