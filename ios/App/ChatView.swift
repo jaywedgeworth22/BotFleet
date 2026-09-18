@@ -1208,13 +1208,10 @@ struct MessageRow: View {
                         subtitle: first.isEmpty || first == "Scheduled Run" ? nil : String(first.prefix(80)),
                         payload: body.isEmpty ? nil : body,
                         systemImage: headline == "Resource Alert" ? "gauge.with.dots.needle.67percent" : "clock.arrow.2.circlepath",
-                        // Distinct from `headline` (which is already the specific
-                        // "Scheduled Run" / "Run Now" / "Resource Alert" / "Webhook"
-                        // label) so VoiceOver doesn't announce it twice — the
-                        // Webhook/iMessage cards below have a natural type+headline
-                        // split; this generic card's headline IS the type, so the
-                        // category name is the one distinct thing left to say.
-                        accessibilityName: "Automated Instruction"
+                        // Headline is already the specific "Scheduled Run" /
+                        // "Run Now" / "Resource Alert" label, so VoiceOver
+                        // should say that — not a generic "Automated Instruction".
+                        accessibilityName: headline
                     )
                 }
             } else if message.role == .user, let webhook = WebhookMessageView.parse(message.text) {
@@ -1529,7 +1526,7 @@ struct ChannelEventCard: View {
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(expandable ? .isButton : [])
-        .accessibilityLabel("\(accessibilityName).  \(headline)")
+        .accessibilityLabel(accessibilityName == headline ? headline : "\(accessibilityName).  \(headline)")
         .accessibilityHint(payload == nil ? "" : (isExpanded ? "Hides the details" : "Shows the details"))
     }
 

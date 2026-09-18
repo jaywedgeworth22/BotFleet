@@ -209,7 +209,7 @@ export function PiMark({ size = 16, className }: IconProps) {
 
 export function ProviderMark({ driverKind, size, className, iconUrl }: IconProps & { driverKind: string; iconUrl?: string }) {
   if (iconUrl) {
-    return <img src={iconUrl} width={size} height={size} className={cn("object-contain", className)} alt={driverKind} aria-hidden />;
+    return <img src={iconUrl} width={size} height={size} className={cn("object-contain", className)} alt="" aria-hidden />;
   }
   switch (driverKind) {
     case "grok":

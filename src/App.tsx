@@ -311,12 +311,24 @@ function Shell() {
           <div className="text-[14px]">
             {state.connected ? "No bots yet" : "Connecting to the bot server…"}
           </div>
-          {!state.connected && (
+          {!state.connected && !window.ogb && (
             <div className="text-[12px]">
               Start it with <code className="rounded bg-raised px-1.5 py-0.5">pnpm dev:server</code>
             </div>
           )}
         </main>
+      )}
+      {(state.settingsOpen || state.computerOpen || state.inspectorOpen) && (
+        <div
+          aria-hidden
+          onMouseDown={(event) => {
+            if (event.target !== event.currentTarget) return;
+            if (state.settingsOpen) dispatch({ type: "toggleSettings", open: false });
+            else if (state.computerOpen) dispatch({ type: "toggleComputer", open: false });
+            else if (state.inspectorOpen) dispatch({ type: "toggleInspector", open: false });
+          }}
+          className="absolute inset-0 z-10 hidden bg-black/40 max-[1099px]:block"
+        />
       )}
       {state.settingsOpen && bot && <SettingsPanel bot={bot} />}
       {state.settingsOpen && group && <GroupSettingsPanel group={group} />}
