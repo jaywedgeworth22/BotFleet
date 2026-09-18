@@ -150,6 +150,7 @@ posixOnly("routine failure notification wiring", () => {
           botId: bot.id,
           title: "Routine Scout's routine failed",
         });
+<<<<<<< HEAD
         // The wake now reuses the bot's primary conversation instead of
         // minting a sibling thread (see RoutineManager#executeOnce), so the
         // failure attaches to the chat the user is already looking at and
