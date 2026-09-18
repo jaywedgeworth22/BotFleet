@@ -36,16 +36,13 @@ import { MacLocalControl } from "./MacLocalControl";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   autoSelectsLocalComputer,
-  engineReachKnown,
-  instanceSupportsCloudComputer,
   instanceSupportsLocalComputer,
-  instanceSupportsLocalVm,
   linuxAutoDescription,
   localComputerDisabledReason,
   localComputerSelectable,
 } from "@/lib/local-computer";
+import { botCloudBackend, cloudBackendInherited, cloudDestinationLabel } from "@/lib/cloud-backend";
 import { vpsComputerNeedsReplacement, type VpsComputerStatus } from "@/lib/vps-computer";
-import { resolveCloudBackend } from "../../server/computer-grants.ts";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -157,31 +154,23 @@ export function ComputerPanel({
   useEffect(() => {
     vmReadinessAttempts.current = 0;
   }, [bot.id, bot.computers]);
-  // Capability and readiness are different questions and stay apart: the
-  // reach says what this ENGINE can ever be given, and a snapshot that is
-  // not "available" says this engine is not usable right now.  Only the VM
-  // path has ever gated on both, and it keeps doing so here.
   const vmSupported = Boolean(
     selectedInstance?.snapshot.state === "available" &&
-      instanceSupportsLocalVm(state.instances, bot),
+      selectedInstance.capabilities?.computerMcp &&
+      selectedInstance.driverKind !== "boxAgent",
   );
-  // Resolved the way the server resolves it — workspace default included —
-  // because that is the backend the status body, the turn, and every
-  // lifecycle endpoint below actually use.  This used to be `bot.cloudBackend
-  // ?? "box"`, which only agrees with the server for a bot that has chosen
-  // its own backend or happens to sit on a "box" workspace default; for a bot
-  // inheriting a "vps" default it parsed a VPS status body as a box one,
-  // showed a sleeping box instead of a stopped container on sleep, and
-  // skipped the viewer-close call on a failed openDesktop — leaking an SSH
-  // desktop tunnel open on this user's own machine.  One resolved const feeds
-  // every site below (labels, the status-shape branch, the lifecycle effect,
-  // the sleep handler, the picker), so they cannot drift apart again.
-  const cloudBackend = resolveCloudBackend(bot.cloudBackend, state.config?.botDefaults?.cloudBackend);
-  const vpsSupported = instanceSupportsCloudComputer(state.instances, bot, "vps");
-  const cloudSupported = instanceSupportsCloudComputer(state.instances, bot, cloudBackend);
-  // Those two answers are only worth acting on once the engine list is in —
-  // see the cloud hold in the lifecycle effect below.
-  const reachKnown = engineReachKnown({ instances: state.instances, hydrationStatus: state.hydration.status });
+  const computerToolSupported = selectedInstance?.capabilities?.computerMcp === true;
+  const vpsSupported = Boolean(computerToolSupported && selectedInstance?.driverKind !== "boxAgent");
+  // Resolved, never `bot.cloudBackend ?? "box"`: a bot that never opened the
+  // picker inherits the workspace default, and the server resolves it that way
+  // for the status body this panel is about to parse.  Reading the bot's own
+  // field here made the panel label a VPS "ASCII.dev Box" and hand it the box
+  // lifecycle.  Everything downstream — labels, the status shape, the sleep and
+  // provision calls, this effect's deps — hangs off this one const.
+  const cloudBackend = botCloudBackend(bot, state.config?.botDefaults?.cloudBackend);
+  const cloudSupported = cloudBackend === "vps"
+    ? vpsSupported
+    : computerToolSupported || selectedInstance?.driverKind === "boxAgent";
   const botRoutines = state.routines
     .filter((routine) => routine.botId === bot.id)
     .sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity));
@@ -281,20 +270,6 @@ export function ComputerPanel({
         if (retryTimer !== undefined) window.clearTimeout(retryTimer);
       };
     }
-    // Everything below this line decides a CLOUD destination, and every path
-    // through it can send `POST /api/bots/:id/computer/provision` — which
-    // performs no capability check of its own and starts a container, or a
-    // BILLED ASCII.dev Box.  `instanceSupportsCloudComputer` fails OPEN for an
-    // engine this client has never heard of, on purpose, and an engine list
-    // that has not hydrated yet looks exactly like that.  Acting on it there
-    // would spend on a guess, so hold in `checking` until the list is known.
-    // `reachKnown` is a dependency of this effect, so the moment it lands the
-    // effect re-runs and the real answer decides — that re-run cannot be left
-    // to `cloudSupported`, which does not change at all for the common case
-    // of an engine that turns out to support cloud after all.  The local and
-    // VM paths above are untouched: both already fail CLOSED, so neither can
-    // spend anything on an empty list.
-    if (!reachKnown) return;
     if ((bot.computers ?? []).includes("cloud") && !cloudSupported) {
       setError("This model engine cannot use cloud computer tools. Choose Claude, an ACP engine, or the Computer engine.");
       setPhase("error");
@@ -409,10 +384,6 @@ export function ComputerPanel({
     bot.id,
     bot.computers,
     bot.autoStartVps,
-    // Now a resolved string (workspace default included) rather than the
-    // bot's own raw field — still a plain string dep, not an object whose
-    // identity changes every render, and this effect only calls setState, so
-    // resolving it here cannot introduce a re-render loop.
     cloudBackend,
     retry,
     capabilitiesReady,
@@ -422,7 +393,6 @@ export function ComputerPanel({
     vmSupported,
     cloudSupported,
     vpsSupported,
-    reachKnown,
     state.config?.vps?.sshAlias,
   ]);
 
@@ -1094,7 +1064,7 @@ export function ComputerPanel({
                 // button provisions an ASCII.dev Box or a container on the
                 // person's own server depending on cloudBackend, and one
                 // label for both hides which one is about to happen.
-                ["cloud", cloudBackend === "vps" ? "Self-hosted VPS" : "ASCII.dev Box"],
+                ["cloud", cloudDestinationLabel(cloudBackend)],
                 ["vm", "Local VM"],
                 ["local", "This Computer"],
                 ["off", "Off"],
@@ -1150,6 +1120,7 @@ export function ComputerPanel({
             <>
               <CloudBackendPicker
                 value={cloudBackend}
+                inherited={cloudBackendInherited(bot)}
                 vpsSupported={vpsSupported}
                 onChange={(backend) => dispatch({ type: "updateBot", botId: bot.id, patch: { cloudBackend: backend } })}
               />

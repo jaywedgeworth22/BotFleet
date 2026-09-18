@@ -7,10 +7,18 @@ import { cn } from "@/lib/cn";
 
 export function CloudBackendPicker({
   value,
+  inherited,
   vpsSupported,
   onChange,
 }: {
+  /** The backend actually in effect — resolved, so for a bot that never chose
+   * one this is the workspace default rather than the bot's empty field.  A
+   * lit segment says "this is what happens", and it has to be true. */
   value: CloudBackend;
+  /** That value came from the workspace default, not from this bot.  Without
+   * the note below, a resolved `value` is indistinguishable from a choice the
+   * person made, and picking either segment silently pins it. */
+  inherited?: boolean;
   vpsSupported: boolean;
   onChange: (backend: CloudBackend) => void;
 }) {
@@ -43,6 +51,12 @@ export function CloudBackendPicker({
           );
         })}
       </div>
+      {inherited && (
+        <div className="mt-2 text-[11.5px] text-ink-secondary">
+          This bot has not chosen one, so it follows the New Bots default in App Settings → Local VM.  Picking
+          either sets this bot's own, and it stops following.
+        </div>
+      )}
     </div>
   );
 }
