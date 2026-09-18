@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -230,7 +230,13 @@ describe("createComputerTools with confinement (workspace-only bots)", () => {
   });
 
   function confinedTools() {
-    return createComputerTools({ cwd: scratchDir, confinement: { workspaceRealpath: scratchDir } });
+    // realpath to mirror the production wiring in server/index.ts
+    // (it calls `realOrResolved(cwd)` so confinement sees a canonical
+    // path).  macOS resolves mkdtempSync(tmpdir()) through
+    // /private/var/folders/... while the raw tmpdir() path is
+    // /var/folders/..., so we must realpath or isInside rejects
+    // in-workspace paths.
+    return createComputerTools({ cwd: scratchDir, confinement: { workspaceRealpath: realpathSync(scratchDir) } });
   }
 
   function unconfinedTools() {
