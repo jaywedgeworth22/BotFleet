@@ -12,6 +12,7 @@ import { EngineGroupLabel } from "./EngineGroupLabel";
 import { ProviderMark } from "./ProviderIcons";
 import { splitEngineRail } from "@/lib/engine-rail";
 import { cn } from "@/lib/cn";
+import { ConfirmDialog } from "./ConfirmDialog";
 import {
   ADD_ENGINE_DRIVERS,
   addEngineDriverOption,
@@ -255,6 +256,7 @@ function EngineRow({
   const { refreshInstances } = useStore();
   const [open, setOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const wasOpenFor = useRef<string | null>(null);
 
@@ -296,7 +298,12 @@ function EngineRow({
 
   const deleteEngine = () => {
     if (isBusy || deleting) return;
-    if (!window.confirm(`Delete custom engine "${instance.displayName}"?`)) return;
+    setConfirmDelete(true);
+  };
+
+  const confirmDeleteEngine = () => {
+    if (isBusy || deleting) return;
+    setConfirmDelete(false);
     setDeleting(true);
     setError(null);
     deleteCustomEngine(buildEngineCredentialDeps(), instance.instanceId)
@@ -447,6 +454,14 @@ function EngineRow({
           onSave={(cli) => patchWithLocalError({ cli })}
         />
       )}
+      <ConfirmDialog
+        open={confirmDelete}
+        title="Delete Custom Engine?"
+        body={`Delete “${instance.displayName}”?  This cannot be undone.`}
+        confirmLabel="Delete Engine"
+        onCancel={() => setConfirmDelete(false)}
+        onConfirm={confirmDeleteEngine}
+      />
     </div>
   );
 }

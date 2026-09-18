@@ -321,6 +321,11 @@ describe("selectTurnFallback", () => {
     expect(decide(afterUser, { ok: false, stopReason: "interrupted" })).toBeUndefined();
   });
 
+  it("prompt_too_large does not fail over — the next engine gets the same prompt", () => {
+    const afterUser: FallbackScanMessage[] = [];
+    expect(decide(afterUser, { ok: false, stopReason: "prompt_too_large" })).toBeUndefined();
+  });
+
   it("walks the saved chain by used count", () => {
     const afterUser: FallbackScanMessage[] = [];
     expect(decide(afterUser, { ok: false, used: 1 })).toEqual({

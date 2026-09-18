@@ -4,6 +4,7 @@ import { ImagePlus, Loader2, Trash2 } from "lucide-react";
 import { type Group } from "@/state/store";
 import { imageAttachmentFromFile } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
+import { productErrorHeadline } from "@/lib/product-error";
 import {
   BOT_AVATAR_CROPS,
   botAvatarUrlFromStoredPath,
@@ -129,7 +130,7 @@ export function GroupProfileAvatarCard({
           </>
         )}
 
-        {error && <div role="alert" className="mt-3 text-[12px] text-danger">{error}</div>}
+        {error && <div role="alert" className="mt-3 text-[12px] text-danger" title={error}>{productErrorHeadline(error)}</div>}
       </div>
     </div>
   );
