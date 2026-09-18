@@ -7,6 +7,12 @@
 # /usr/bin:/bin:/usr/sbin:/sbin, which does not include Homebrew or nvm.
 # Prepend the common node locations so `node` resolves regardless of how this
 # script is invoked.
+#
+# `ubf` is a no-op when the local BotFleet checkout is already at origin/main.
+# Override with BOTFLEET_FORCE=1 to reinstall anyway.  The transaction inside
+# update-botfleet-mac.mjs has no built-in "already current" short circuit; the
+# skip happens here so a second `ubf` an hour later is sub-second instead of a
+# 2-minute interruption.
 set -euo pipefail
 
 # Extend PATH with every place node is commonly found on macOS (Homebrew Apple
@@ -58,6 +64,29 @@ if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
 fi
 if [[ -s "$HOME/.bun/bin/bun" ]]; then
   export PATH="$HOME/.bun/bin:$PATH"
+fi
+
+# Skip the close / rebuild / relaunch dance when the local BotFleet checkout is
+# already at origin/main.  Override the check with BOTFLEET_FORCE=1.
+# Override the checkout location with BOTFLEET_CHECKOUT (defaults to the parent
+# of the tracked implementation).
+if [[ -z "${BOTFLEET_CHECKOUT:-}" ]]; then
+  BOTFLEET_CHECKOUT="$(cd "$(dirname "$(dirname "$TRACKED_IMPL")")" && pwd)"
+fi
+if [[ "${BOTFLEET_FORCE:-}" == "1" ]]; then
+  echo "⚠️  BOTFLEET_FORCE=1 — running updater even if $BOTFLEET_CHECKOUT is already at origin/main."
+elif [[ -d "$BOTFLEET_CHECKOUT/.git" ]]; then
+  if git -C "$BOTFLEET_CHECKOUT" fetch --quiet origin main 2>/dev/null; then
+    LOCAL_HEAD=$(git -C "$BOTFLEET_CHECKOUT" rev-parse HEAD)
+    REMOTE_HEAD=$(git -C "$BOTFLEET_CHECKOUT" rev-parse origin/main)
+    if [[ "$LOCAL_HEAD" == "$REMOTE_HEAD" ]]; then
+      CURRENT=$(git -C "$BOTFLEET_CHECKOUT" log --oneline -1)
+      echo "✅ Already at $CURRENT.  Nothing to update.  (Set BOTFLEET_FORCE=1 to reinstall anyway.)"
+      exit 0
+    fi
+  else
+    echo "⚠️  Could not fetch origin/main from $BOTFLEET_CHECKOUT; running updater anyway."
+  fi
 fi
 
 if [[ -f "$LOCAL_IMPL" ]]; then
