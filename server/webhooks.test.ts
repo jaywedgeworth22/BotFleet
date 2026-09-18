@@ -120,7 +120,7 @@ describe("WebhookManager", () => {
     expect(h.queued[0]).not.toHaveProperty("durationMinutes");
     expect(h.queued[0]?.prompt).toContain("[USER-CONFIGURED WEBHOOK INSTRUCTIONS]");
     expect(h.queued[0]?.prompt).toContain("[UNTRUSTED WEBHOOK EVENT DATA]");
-    expect(h.queued[0]?.prompt).toContain('"lead": "Ada"');
+    expect(h.queued[0]?.prompt).toMatch(/"lead"\s*:\s*"Ada"/);
     expect(h.manager.list()[0]).toMatchObject({ lastRunId: "run-1", deliveryCount: 1 });
   });
 

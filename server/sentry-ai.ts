@@ -1,11 +1,16 @@
-// Sentry AI / agent observability for the BotFleet harness.
+// Sentry AI / agent observability for the BotFleet harness (Sentry Agents).
 //
 // Drivers speak CLI, ACP, or raw OpenAI-compatible HTTP — not the OpenAI,
 // Anthropic, Vercel AI, or LangChain SDKs — so official auto-instrumentation
 // has nothing to patch.  We emit the same gen_ai.* spans those integrations
 // would: invoke_agent, execute_tool, gen_ai.chat.  Conversation id is the
-// thread id.  Prompts, transcripts, and tool arguments stay off the wire
-// (they can carry credentials).
+// thread id (`setConversationId` + `gen_ai.conversation.id`).  Agent name is
+// the bot title (`gen_ai.agent.name`) so Agents Dashboard rows are identifiable.
+// `setUser` fills the Conversations User column from bot/room identity.
+//
+// Manual spans still omit raw prompts, transcripts, and tool arguments (they
+// can carry credentials).  SDK `dataCollection.genAI` is ON by default for
+// any future/auto integration path; kill with `SENTRY_AI_DATA_COLLECTION=0`.
 //
 // The gen_ai.* vocabulary here is SENTRY's, not Usage Monitor's.  `x_ai`,
 // `gcp.gemini`, and `moonshot` are Sentry provider names; the Usage Monitor
@@ -36,6 +41,8 @@ export type SentryBreadcrumb = {
 
 export type SentryAiSink = {
   setConversationId?: (id: string) => void;
+  /** Conversations User column.  Pass null to clear. */
+  setUser?: (user: { id?: string; username?: string; email?: string } | null) => void;
   startInactiveSpan: (opts: {
     op: string;
     name: string;
@@ -175,6 +182,9 @@ function liveSink(): SentryAiSink | null {
     setConversationId: (id) => {
       Sentry.setConversationId(id);
     },
+    setUser: (user) => {
+      Sentry.setUser(user);
+    },
     startInactiveSpan: (opts) => {
       const spanOptions: SentryStartSpanOptions = {
         op: opts.op,
@@ -207,8 +217,16 @@ function liveSink(): SentryAiSink | null {
   };
 }
 
-function applyConversation(sink: SentryAiSink, threadId: string): void {
+function applyConversation(sink: SentryAiSink, threadId: string, identity?: TurnIdentity | null): void {
   sink.setConversationId?.(threadId);
+  if (!sink.setUser) return;
+  const resolved = identity === undefined ? identityFor(threadId) : identity;
+  const id = clean(resolved?.botId) ?? clean(resolved?.roomId) ?? threadId;
+  const username = clean(resolved?.botName) ?? clean(resolved?.roomName);
+  sink.setUser({
+    id,
+    ...(username ? { username } : {}),
+  });
 }
 
 /** The still-open `gen_ai.invoke_agent` span for a thread, so a span opened
@@ -302,14 +320,16 @@ function failureTags(
 /** Map a harness runtime event onto gen_ai spans.  No-op without a sink. */
 export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | null = liveSink()): void {
   if (!sink) return;
-  applyConversation(sink, event.threadId);
   const key = turnKey(event.threadId, event.turnId);
   const provider = genAiProvider(event.provider);
+  // Resolve once per event so setUser and span attributes share the same snapshot.
+  const eventIdentity = identityFor(event.threadId);
+  applyConversation(sink, event.threadId, eventIdentity);
 
   switch (event.type) {
     case "turn.started": {
       reportedProviderErrors.delete(key);
-      const identity = identityFor(event.threadId);
+      const identity = eventIdentity;
       const span = sink.startInactiveSpan({
         op: "gen_ai.invoke_agent",
         name: `invoke_agent ${event.provider}`,

@@ -14,6 +14,8 @@ import {
 import { api, useStore, type ConfigStatus } from "@/state/store";
 import { Card, CommandLine } from "./SettingsPrimitives";
 import { cn } from "@/lib/cn";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { productErrorHeadline } from "@/lib/product-error";
 
 type Action = "pull" | "run" | "start" | "stop" | "remove" | "recreate";
 
@@ -106,6 +108,7 @@ export function LocalComputerSection() {
   const [loading, setLoading] = useState(true);
   const [pending, setPending] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [confirm, setConfirm] = useState<null | { title: string; body: string; confirmLabel: string; action: Action }>(null);
   const [modePending, setModePending] = useState(false);
   const [modeError, setModeError] = useState<string | null>(null);
     const [refreshKey, setRefreshKey] = useState(0);
@@ -163,15 +166,25 @@ export function LocalComputerSection() {
     setStatus(body as Status);
   };
 
-  const act = async (action: Action) => {
-    if (
-      action === "remove" &&
-      !window.confirm("Delete the Local VM? Files and browser sign-ins in its durable workspace will remain.")
-    ) return;
-    if (
-      action === "recreate" &&
-      !window.confirm("Replace the existing Local VM with the pinned image and safety limits? Files and browser sign-ins in its durable workspace will remain.")
-    ) return;
+  const act = async (action: Action, confirmed = false) => {
+    if (action === "remove" && !confirmed) {
+      setConfirm({
+        title: "Delete Local VM?",
+        body: "Delete the Local VM?  Files and browser sign-ins in its durable workspace will remain.",
+        confirmLabel: "Delete VM",
+        action,
+      });
+      return;
+    }
+    if (action === "recreate" && !confirmed) {
+      setConfirm({
+        title: "Replace Local VM?",
+        body: "Replace the existing Local VM with the pinned image and safety limits?  Files and browser sign-ins in its durable workspace will remain.",
+        confirmLabel: "Replace VM",
+        action,
+      });
+      return;
+    }
     setPending(action);
     setError(null);
     try {
@@ -274,7 +287,7 @@ export function LocalComputerSection() {
             </a>
           )}
         </div>
-        {error && <div className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger">{error}</div>}
+        {error && <div className="mt-3 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger" title={error}>{productErrorHeadline(error)}</div>}
       </Card>
 
       <Card
@@ -425,6 +438,18 @@ export function LocalComputerSection() {
           {status?.base_image_ref ? <> · Base: {status.base_image_ref}</> : null}
         </div>
       </Card>
+      <ConfirmDialog
+        open={Boolean(confirm)}
+        title={confirm?.title ?? ""}
+        body={confirm?.body ?? ""}
+        confirmLabel={confirm?.confirmLabel}
+        onCancel={() => setConfirm(null)}
+        onConfirm={() => {
+          const next = confirm?.action;
+          setConfirm(null);
+          if (next) void act(next, true);
+        }}
+      />
     </>
   );
 }

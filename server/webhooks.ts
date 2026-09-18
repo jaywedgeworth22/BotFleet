@@ -7,6 +7,7 @@ import { writeFileAtomic } from "./atomic.ts";
 import { DATA_DIR } from "./config.ts";
 import type { RoutineRunOn } from "./routines.ts";
 import { parseJson, schemaIssue, type JsonValue } from "./schema.ts";
+import { serializeWebhookPayload } from "./webhook-payload.ts";
 
 export interface WebhookTrigger {
   id: string;
@@ -145,7 +146,6 @@ export type WebhookManagerEvent =
 
 const MAX_DELIVERIES = 2_000;
 const MAX_ATTEMPTS = 2_000;
-const MAX_EVENT_CHARS = 48_000;
 const RATE_WINDOW_MS = 60_000;
 const RATE_LIMIT = 10;
 const MAX_PENDING_RUNS = 3;
@@ -292,18 +292,7 @@ function publicTrigger(trigger: StoredWebhookTrigger): WebhookTrigger {
 }
 
 function serializePayload(payload: JsonValue): string {
-  let text: string;
-  const plainText = z.string().safeParse(payload);
-  if (plainText.success) text = plainText.data;
-  else {
-    try {
-      text = JSON.stringify(payload, null, 2) ?? String(payload);
-    } catch {
-      text = String(payload);
-    }
-  }
-  if (text.length <= MAX_EVENT_CHARS) return text;
-  return `${text.slice(0, MAX_EVENT_CHARS)}\n\n[Payload truncated by BotFleet]`;
+  return serializeWebhookPayload(payload);
 }
 
 function previewPayload(payload: JsonValue): string {

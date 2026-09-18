@@ -14,6 +14,8 @@ import {
   type TeamMapSnapshot,
 } from "@/lib/team-map";
 import { cn } from "@/lib/cn";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { productErrorHeadline } from "@/lib/product-error";
 
 const statusTone = {
   success: "bg-success",
@@ -107,6 +109,7 @@ function SectionContextDialog({ section, label, onClose }: { section: string; la
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   const dirty = text !== savedText;
   const bytes = useMemo(() => new TextEncoder().encode(text).byteLength, [text]);
   onCloseRef.current = onClose;
@@ -115,7 +118,10 @@ function SectionContextDialog({ section, label, onClose }: { section: string; la
 
   const requestClose = useCallback(() => {
     if (savingRef.current) return;
-    if (dirtyRef.current && !window.confirm("Discard unsaved changes to this shared context?")) return;
+    if (dirtyRef.current) {
+      setConfirmDiscard(true);
+      return;
+    }
     onCloseRef.current();
   }, []);
 
@@ -201,6 +207,7 @@ function SectionContextDialog({ section, label, onClose }: { section: string; la
   };
 
   return createPortal(
+    <>
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/55 p-4 backdrop-blur-[2px] sm:p-6"
       onMouseDown={(event) => event.target === event.currentTarget && requestClose()}
@@ -261,7 +268,7 @@ function SectionContextDialog({ section, label, onClose }: { section: string; la
               </div>
             </>
           )}
-          {error && <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">{error}</div>}
+          {error && <div className="mt-3 rounded-lg border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger" title={error}>{productErrorHeadline(error)}</div>}
         </div>
 
         <footer className="flex items-center justify-end gap-2 border-t border-hairline/40 px-6 py-4 sm:px-8">
@@ -278,7 +285,19 @@ function SectionContextDialog({ section, label, onClose }: { section: string; la
           </button>
         </footer>
       </div>
-    </div>,
+    </div>
+    <ConfirmDialog
+      open={confirmDiscard}
+      title="Discard Unsaved Changes?"
+      body="Discard unsaved changes to this shared context?  This cannot be undone."
+      confirmLabel="Discard Changes"
+      onCancel={() => setConfirmDiscard(false)}
+      onConfirm={() => {
+        setConfirmDiscard(false);
+        onCloseRef.current();
+      }}
+    />
+    </>,
     document.body,
   );
 }
@@ -356,7 +375,7 @@ export function TeamMapPage() {
           ))}
         </div>
 
-        {error && <div className="mb-4 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger">{error}</div>}
+        {error && <div className="mb-4 rounded-xl border border-danger/30 bg-danger/10 px-3 py-2 text-[12px] text-danger" title={error}>{productErrorHeadline(error)}</div>}
 
         <div className="grid grid-cols-[repeat(auto-fit,minmax(300px,1fr))] gap-4">
           {sections.map((section) => (
