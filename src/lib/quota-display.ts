@@ -1,5 +1,5 @@
 /** Settings → Usage quota row: full per-model / per-window lines for hover and click. */
-import { NEAR_CAP_PERCENT } from "../../server/quota-window-map";
+import { lookupOwn, NEAR_CAP_PERCENT } from "../../server/quota-window-map";
 
 export type QuotaDisplayModel = {
   label: string;
@@ -279,7 +279,11 @@ export function windowHeadlines(windows: QuotaWindowDisplay[]): WindowHeadline[]
     const exhausted = pick.skip || (remainingPercent != null && remainingPercent <= 0);
     out.push({
       bucket,
-      display: BUCKET_DISPLAY[bucket] ?? pick.window ?? bucket,
+      // `bucketFor` passes an unrecognised window token through unchanged, so
+      // this is indexed with handoff text: a bare read would answer the
+      // `Object` function for "constructor" and the `localeCompare` sort below
+      // would throw on it.
+      display: lookupOwn(BUCKET_DISPLAY, bucket) ?? pick.window ?? bucket,
       remainingPercent: exhausted ? 0 : remainingPercent,
       resetAtMs: parseResetAt(pick.resetAt),
       exhausted,

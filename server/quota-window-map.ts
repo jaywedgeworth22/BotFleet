@@ -27,6 +27,22 @@ export type QuotaProviderIdentity = {
   via?: string | null;
 };
 
+/** Read one dictionary entry without walking the prototype chain.
+ *
+ *  Every table below is indexed with text that arrives from the AgentBar
+ *  handoff — an ordinary file any process running as this user can write —
+ *  and a bare `TABLE[key]` answers `Object.prototype`'s own members too.  A
+ *  `modelType` of "constructor" therefore resolves to the `Object` function,
+ *  which is truthy, so a `??` fallback beside it never fires and the caller
+ *  is handed a function where the type promises an array, a number or a
+ *  string.  `modelsToSkip` then does `new Set(<function>)` and throws, and a
+ *  window token of "constructor" made `windowLengthMs` return a function that
+ *  turned a cooldown's end into NaN.  Every lookup keyed by parsed text goes
+ *  through this, here and in server/usage-quota.ts and src/lib/quota-display.ts. */
+export function lookupOwn<T>(table: Readonly<Record<string, T>>, key: string): T | undefined {
+  return Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 /** The one provider allow-list for the AgentBar handoff and the Settings
  *  quota section.  The server parser (server/local-usage-monitor.ts) and the
  *  renderer (src/lib/usage-monitor-quota.ts) each used to declare their own,
@@ -91,7 +107,7 @@ export function normalizeQuotaProviderKey(value: string | null | undefined): str
 export function canonicalQuotaProvider(window: QuotaProviderIdentity): string {
   if (normalizeQuotaProviderKey(window.via) === "antigravity") return "google-antigravity";
   const key = normalizeQuotaProviderKey(window.providerKey || window.provider);
-  return QUOTA_PROVIDER_ALIASES[key] ?? key;
+  return lookupOwn(QUOTA_PROVIDER_ALIASES, key) ?? key;
 }
 
 /** The provider key whose quota an engine spends, for the cases where the
@@ -116,7 +132,7 @@ const DRIVER_KIND_PROVIDERS: Readonly<Record<string, string>> = {
 };
 
 export function quotaProviderForDriver(driverKind: string): string | null {
-  return DRIVER_KIND_PROVIDERS[driverKind] ?? null;
+  return lookupOwn(DRIVER_KIND_PROVIDERS, driverKind) ?? null;
 }
 
 /** How little of a window may be left before it counts as near its cap:
@@ -244,7 +260,7 @@ export const ENGINE_METER_NOTES: Readonly<Record<string, EngineMeterNote>> = {
 };
 
 export function engineMeterNote(driverKind: string): EngineMeterNote | null {
-  return ENGINE_METER_NOTES[driverKind] ?? null;
+  return lookupOwn(ENGINE_METER_NOTES, driverKind) ?? null;
 }
 
 /** The Claude subscription's three model families, spelled the way
@@ -293,7 +309,7 @@ export function familiesForWindow(window: QuotaWindowMatch): string[] {
   // `normalizeQuotaProviderKey` is only a lowercase/space/underscore folder;
   // camelCase has to be split first so "thirdParty" reaches "third-party".
   const key = normalizeQuotaProviderKey(window.modelType.replace(/([a-z0-9])([A-Z])/g, "$1-$2"));
-  return MODEL_TYPE_FAMILIES[key] ?? [window.modelType];
+  return lookupOwn(MODEL_TYPE_FAMILIES, key) ?? [window.modelType];
 }
 
 export function modelTypeFromId(modelId: string): string {

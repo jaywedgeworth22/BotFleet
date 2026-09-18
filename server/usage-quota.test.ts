@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { parseLocalQuotaPayload } from "./local-usage-monitor.ts";
 import { quotaCooldowns } from "./model-fallback.ts";
 import {
   driverKindsForWindow,
@@ -305,5 +306,81 @@ describe("local subscription caps", () => {
 
     await poller([localWindow({ resetAt: null, window: "billing-cycle" })]).poll();
     expect(quotaCooldowns.list()).toEqual([]);
+  });
+});
+
+describe("a handoff row that names a prototype member", () => {
+  // The handoff is read from disk on every poll and any process running as
+  // this user can write it.  Before the guards in quota-window-map.ts a
+  // `modelType` of "constructor" resolved to the `Object` function, so
+  // `new Set(familiesForWindow(...))` threw `function is not iterable` out of
+  // `poll()` — which `start()` calls fire-and-forget, with no process-level
+  // `unhandledRejection` handler anywhere in the repo (pinned at
+  // server/secret-persistence.test.ts) — and the harness died, then died
+  // again on every restart because the same file was read again.
+  const clock = Date.now();
+  const claude = { instanceId: "claude", driverKind: "claudeAgent", models: { options: [{ id: "claude-opus-4-6" }] } };
+  const handoff = (row: Record<string, unknown>) => ({
+    format: "usage-monitor-local-quotas",
+    version: 1,
+    generatedAt: new Date(clock).toISOString(),
+    windows: [{
+      id: "local-mac:anthropic:weekly",
+      provider: "anthropic",
+      providerKey: "anthropic",
+      label: "Weekly",
+      occurredAt: new Date(clock).toISOString(),
+      window: "1w",
+      resetAt: new Date(clock + (3 * 86_400_000)).toISOString(),
+      isExhausted: true,
+      ...row,
+    }],
+  });
+
+  // The REAL parser on every poll, so the row the poller sees is one the
+  // producer could actually write rather than a hand-built window — and a
+  // read counter, because the wedge this pins is invisible from one poll.
+  function hostilePoller(payload: unknown) {
+    let reads = 0;
+    const made = new UsageQuotaPoller(async () => {
+      reads += 1;
+      return parseLocalQuotaPayload(payload);
+    });
+    made.configure({ settings: () => ({}), instances: () => [claude] });
+    return { made, reads: () => reads };
+  }
+
+  beforeEach(() => { quotaCooldowns.clearWhere(() => true); });
+  afterEach(() => { quotaCooldowns.clearWhere(() => true); });
+
+  it("keeps polling instead of throwing on a modelType of \"constructor\"", async () => {
+    const { made, reads } = hostilePoller(handoff({ modelType: "constructor" }));
+    await expect(made.poll()).resolves.toBeUndefined();
+    // "constructor" is a family no catalog model is spelled with, so the row
+    // caps nothing: it is ignored, never obeyed.
+    expect(quotaCooldowns.list()).toEqual([]);
+    expect(reads()).toBe(1);
+    // And the poll released `inFlight`, so the next one really runs instead
+    // of returning at the guard for the life of the process.
+    await expect(made.poll()).resolves.toBeUndefined();
+    expect(reads()).toBe(2);
+    expect(quotaCooldowns.list()).toEqual([]);
+  });
+
+  it("does not cap on a window token of \"constructor\" with no reset", async () => {
+    const { made } = hostilePoller(handoff({ window: "constructor", resetAt: null, modelType: "" }));
+    await expect(made.poll()).resolves.toBeUndefined();
+    // An end BotFleet cannot compute is one it could never release, so the
+    // row does not cap at all — the same answer "billing-cycle" gets.
+    expect(quotaCooldowns.list()).toEqual([]);
+  });
+
+  it("answers null for every prototype member of the window-length table", () => {
+    for (const key of ["constructor", "__proto__", "toString", "valueOf", "hasOwnProperty"]) {
+      expect(windowLengthMs(key)).toBeNull();
+    }
+    // Without costing the table the tokens it really holds.
+    expect(windowLengthMs("weekly")).toBe(7 * 86_400_000);
+    expect(windowLengthMs("session")).toBe(5 * 3_600_000);
   });
 });

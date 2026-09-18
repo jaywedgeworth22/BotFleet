@@ -1,14 +1,18 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  canonicalQuotaProvider,
   driverKindsForWindow,
   engineMeterNote,
   familiesForWindow,
   isPlanLevelSkip,
+  isSupportedQuotaProvider,
+  lookupOwn,
   modelsToSkip,
   MODEL_TYPE_FAMILIES,
   modelTypeFromId,
   NEAR_CAP_PERCENT,
+  quotaProviderForDriver,
   type QuotaWindowMatch,
 } from "./quota-window-map.ts";
 
@@ -154,5 +158,53 @@ describe("the producer's family names", () => {
     // One constant behind the server's derived status, the grid cell and the
     // engine chip (src/lib/quota-display.ts re-exports this very binding).
     expect(NEAR_CAP_PERCENT).toBe(20);
+  });
+});
+
+describe("dictionary lookups on untrusted handoff text", () => {
+  // The handoff is a file any process running as this user can write, and
+  // every table in quota-window-map.ts is indexed with text out of it.  A
+  // bare `TABLE[key]` answers Object.prototype's own members, so a modelType
+  // of "constructor" resolved to the `Object` function, `??` never fired, and
+  // `new Set(familiesForWindow(...))` threw `function is not iterable` — out
+  // of a poll the harness runs fire-and-forget on boot.
+  const POLLUTED = ["constructor", "__proto__", "toString", "valueOf", "hasOwnProperty", "propertyIsEnumerable"];
+  const catalog = {
+    instanceId: "claude",
+    driverKind: "claudeAgent",
+    models: { options: [{ id: "claude-opus-4-6" }] },
+  };
+
+  it("passes a prototype member through as an ordinary family name", () => {
+    for (const key of POLLUTED) {
+      const row = window({ provider: "anthropic", label: "Weekly", modelType: key, modelId: null, skip: true, window: "1w" });
+      const families = familiesForWindow(row);
+      expect(Array.isArray(families)).toBe(true);
+      // Passed through unchanged, exactly as any other family the map does
+      // not know — never the prototype member of that name.
+      expect(families).toEqual([key]);
+      // The throw the finding reproduced: this is the call that did it.
+      expect(() => modelsToSkip(row, catalog)).not.toThrow();
+      expect(modelsToSkip(row, catalog)).toEqual([]);
+    }
+  });
+
+  it("keeps a prototype member out of the provider, driver and meter tables", () => {
+    for (const key of POLLUTED) {
+      expect(typeof canonicalQuotaProvider({ providerKey: key })).toBe("string");
+      expect(isSupportedQuotaProvider({ providerKey: key })).toBe(false);
+      expect(quotaProviderForDriver(key)).toBeNull();
+      expect(engineMeterNote(key)).toBeNull();
+    }
+  });
+
+  it("still answers for the keys the tables really hold", () => {
+    // The guard must not cost the lookups their real entries.
+    expect(familiesForWindow(window({ provider: "anthropic", label: "Weekly", modelType: "opus" }))).toEqual(["claude-opus"]);
+    expect(canonicalQuotaProvider({ providerKey: "claude-code" })).toBe("anthropic");
+    expect(quotaProviderForDriver("claudeAgent")).toBe("anthropic");
+    expect(engineMeterNote("piAgent")?.kind).toBe("metered");
+    expect(lookupOwn(MODEL_TYPE_FAMILIES, "opus")).toEqual(["claude-opus"]);
+    expect(lookupOwn(MODEL_TYPE_FAMILIES, "constructor")).toBeUndefined();
   });
 });

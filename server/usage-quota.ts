@@ -4,6 +4,7 @@ import {
   canonicalQuotaProvider,
   driverKindsForWindow,
   isPlanLevelSkip,
+  lookupOwn,
   modelsToSkip,
 } from "./quota-window-map.ts";
 
@@ -114,7 +115,11 @@ const NAMED_WINDOW_LENGTHS: Readonly<Record<string, number>> = {
 export function windowLengthMs(token: string | null | undefined): number | null {
   const raw = (token ?? "").trim().toLowerCase().replace(/[\s_-]+/g, "");
   if (!raw) return null;
-  const named = NAMED_WINDOW_LENGTHS[raw];
+  // `lookupOwn`, never `NAMED_WINDOW_LENGTHS[raw]`: the token comes from the
+  // handoff, and a bare index answers `Object.prototype`'s own members, so
+  // `window: "constructor"` returned the `Object` function as if it were a
+  // length — defeating the rule below that an unrecognised token does not cap.
+  const named = lookupOwn(NAMED_WINDOW_LENGTHS, raw);
   if (named) return named;
   const match = /^(\d+)(m|min|minutes?|h|hr|hours?|d|days?|w|weeks?)$/.exec(raw);
   if (!match) return null;
@@ -155,7 +160,10 @@ function localCooldownEnd(window: RemoteQuotaWindow, now: number): number | null
   const reset = resetsAtMs(window.resetAt);
   const length = windowLengthMs(window.window);
   const end = reset ?? (length === null ? null : now + length);
-  if (end === null || end <= now) return null;
+  // Finite, not merely "not in the past": a non-numeric length would make
+  // `now + length` a string, every comparison against which is false, so a
+  // NaN end could reach `recordInstanceCap` and be persisted as `null`.
+  if (end === null || !Number.isFinite(end) || end <= now) return null;
   return Math.min(end, now + MAX_LOCAL_COOLDOWN_MS);
 }
 
