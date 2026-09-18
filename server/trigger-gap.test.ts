@@ -119,4 +119,17 @@ describe("foldPrompts", () => {
     );
     expect(foldPrompts({ run: entry("a"), folded: [] })).toBe("");
   });
+
+  it("caps a distinct batch and keeps the newest deliveries", () => {
+    const huge = "x".repeat(40_000);
+    const folded = foldPrompts({
+      run: entry("a", `first-${huge}`),
+      folded: [entry("b", `second-${huge}`), entry("c", `third-${huge}`)],
+    });
+    expect(folded.length).toBeLessThanOrEqual(64_000);
+    expect(folded).toContain("3 deliveries");
+    expect(folded).toContain("[Earlier deliveries omitted for length]");
+    expect(folded).toContain("third-");
+    expect(folded).not.toContain("first-");
+  });
 });
