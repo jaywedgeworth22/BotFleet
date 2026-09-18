@@ -19,6 +19,7 @@ import {
   ANTIGRAVITY_COMPUTER_MCP_KEY,
   ANTIGRAVITY_HOST_CONTROL_NOTICE,
   AntigravityDriver,
+  antigravityHostPolicyRefusal,
   antigravityMcpServers,
   antigravityTurnErrorMessage,
   parseAntigravityTurnResult,
@@ -788,9 +789,11 @@ describe("Antigravity computer MCP config", () => {
 // C2: the driver declares `localComputerMcp: true` while `respondToRequest`
 // answers "unavailable" — print mode opens no ask, so there is no approval
 // card behind that flag.  What keeps the flag honest is per-turn: a turn that
-// can act on the person's own desktop loses the permission bypass, so agy's
-// accept-edits mode auto-denies `run_command` instead of running it unseen,
-// and the thread says so before the turn starts.
+// can act on the person's own desktop loses the permission bypass AND is
+// stopped at the init event unless agy reports a Tool Execution Policy that
+// asks a human first.  Dropping the bypass is not enough on its own: `--mode`
+// is the execution mode, not the permission switch, and a policy of
+// `always-proceed` runs `run_command` on this Mac regardless of it.
 describe("Antigravity host control", () => {
   const stdio = (scope?: "local-computer") => ({
     command: process.execPath,
@@ -824,12 +827,17 @@ describe("Antigravity host control", () => {
     name: string,
     fullAuto: boolean,
     integrations: Parameters<ProviderInstance["adapter"]["sendTurn"]>[0]["integrations"],
+    fakeEnv: Record<string, string> = {},
+    /** Runs after `turn.completed` and BEFORE dispose(), so an assertion about
+     * the child can tell the turn's own cleanup from the instance teardown
+     * reaping whatever was left over. */
+    beforeDispose?: () => Promise<void>,
   ) => {
     const dump = join(home, `${name}.json`);
     const instance = await AntigravityDriver.create({
       instanceId: `agy-host-${name}`,
       displayName: undefined,
-      environment: { HOME: home, FAKE_AGY_DUMP: dump },
+      environment: { HOME: home, FAKE_AGY_DUMP: dump, ...fakeEnv },
       enabled: true,
       config: { cli: FAKE_CLI, fullAuto },
     });
@@ -837,6 +845,7 @@ describe("Antigravity host control", () => {
     try {
       await instance.adapter.sendTurn({ threadId: `t-host-${name}`, text: "hi", integrations });
       await recorder.until((e) => e.type === "turn.completed");
+      if (beforeDispose) await beforeDispose();
       return {
         argv: JSON.parse(readFileSync(dump, "utf8")).argv as string[],
         events: [...recorder.events],
@@ -880,9 +889,13 @@ describe("Antigravity host control", () => {
     );
     expect(notices).toHaveLength(1);
     expect(notices[0]).toMatchObject({ itemType: "tool", toolKind: "notice" });
+    // The wording has to be true on this Mac.  The version this replaced
+    // claimed shell commands "are refused during this turn", which was false
+    // whenever agy's Tool Execution Policy was `always-proceed` — it ran them.
     expect(ANTIGRAVITY_HOST_CONTROL_NOTICE).toBe(
-      "Antigravity cannot ask for approval, so shell commands on this computer are refused during this turn.",
+      "Antigravity has no approval cards, so BotFleet checks its tool execution policy instead.  A policy that would run shell commands on this computer unasked stops the turn.",
     );
+    expect(ANTIGRAVITY_HOST_CONTROL_NOTICE).not.toContain("are refused during this turn");
     // A tool row that never completes spins for the whole turn, so the
     // notice settles itself in the same breath.
     const itemId = (notices[0] as any).itemId as string;
@@ -900,6 +913,194 @@ describe("Antigravity host control", () => {
 
   it("stays quiet when the bot has no host computer", async () => {
     const sandbox = await runTurn("quiet", true, sandboxIntegrations);
+    expect(
+      sandbox.events.some((e) => (e as any).title === ANTIGRAVITY_HOST_CONTROL_NOTICE),
+    ).toBe(false);
+  });
+
+  // How long the fake holds between its init event and its first tool.  The
+  // real CLI spends an LLM round trip there; without a gap of some kind a
+  // test could not tell a gate that stopped the turn in time from one that
+  // did not stop it at all.  Five seconds is far longer than any of these
+  // turns takes to settle, so a marker that exists is a real failure and
+  // never a slow machine.
+  const POLICY_HOLD_MS = "5000";
+
+  /** Wait for a file the fake CLI writes, rather than sleeping a fixed span. */
+  const awaitFile = async (path: string, withinMs = 8_000) => {
+    const deadline = Date.now() + withinMs;
+    while (!existsSync(path)) {
+      if (Date.now() > deadline) throw new Error(`${path} never appeared within ${withinMs}ms`);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+
+  it("stops a host-control turn before any tool runs when the policy is always-proceed", async () => {
+    // Measured on this Mac with agy 1.1.26: `--mode accept-edits` and no
+    // bypass reports `always-proceed` and then RUNS `run_command`.  Print mode
+    // opens no card and there is nobody to show one to, so the only honest
+    // answer is a turn that does not start.
+    const marker = join(home, "always-proceed-tool-ran");
+    const host = await runTurn("always-proceed", false, hostIntegrations, {
+      FAKE_AGY_PERMISSION_MODE: "always-proceed",
+      FAKE_AGY_INIT_HOLD_MS: POLICY_HOLD_MS,
+      FAKE_AGY_TOOL_MARKER: marker,
+    });
+
+    const completed = host.events.filter((e) => e.type === "turn.completed");
+    expect(completed).toHaveLength(1); // settled exactly once
+    expect(completed[0]).toMatchObject({ ok: false, stopReason: "host_control_policy" });
+
+    const errors = host.events.filter((e) => e.type === "runtime.error");
+    expect(errors).toHaveLength(1);
+    expect((errors[0] as any).message).toBe(antigravityHostPolicyRefusal("always-proceed"));
+    expect((errors[0] as any).message).toContain("always-proceed");
+    expect((errors[0] as any).message).toContain("request-review or strict");
+
+    // The child is killed, not merely ignored: the fake holds for five seconds
+    // between init and its first tool and this turn settled in milliseconds,
+    // so a marker on disk would mean the process outlived its own refusal.
+    expect(existsSync(marker)).toBe(false);
+    // Nothing from the killed child leaks into a turn the person was told had
+    // ended, either.
+    expect(
+      host.events.some((e) => e.type === "item.started" && (e as any).title === "write_to_file"),
+    ).toBe(false);
+    // The refusal comes after init, so the conversation id is still recorded.
+    expect(host.events.filter((e) => e.type === "session.started")).toHaveLength(1);
+  });
+
+  it("kills the refused child rather than reading past it", async () => {
+    // Ignoring the rest of the stream would leave agy running with a mounted
+    // computer and nobody watching — the turn would look ended while the
+    // process that could still act on this Mac was very much alive.  The
+    // SIGTERM is asserted BEFORE dispose(), so it is the refusal's own kill
+    // and not the instance teardown sweeping up afterwards.  The 1.5s bound is
+    // deliberate: settle() arms a post-settle reaper at 2s, which would hide a
+    // refusal that forgot to stop the child behind a two-second window where
+    // agy is still live on a mounted computer.  The signal is sent in the same
+    // tick as the refusal, so 1.5s is a wide margin, not a race.
+    const marker = join(home, "killed-tool-ran");
+    const killed = join(home, "killed-sigterm");
+    await runTurn(
+      "killed",
+      false,
+      hostIntegrations,
+      {
+        FAKE_AGY_PERMISSION_MODE: "always-proceed",
+        FAKE_AGY_INIT_HOLD_MS: POLICY_HOLD_MS,
+        FAKE_AGY_TOOL_MARKER: marker,
+        FAKE_AGY_KILLED_MARKER: killed,
+      },
+      async () => {
+        await awaitFile(killed, 1_500);
+        expect(existsSync(marker)).toBe(false);
+      },
+    );
+  });
+
+  it("emits nothing more from a refused turn, even when agy ran ahead", async () => {
+    // Killing the child does not recall the lines already in the pipe.  In
+    // burst mode the fake writes its whole turn as one chunk, so the driver
+    // parses the refusal and the rest of the stream in a single synchronous
+    // pass: replaying them would put a tool row, an answer and a token bill
+    // into a turn the person was told had ended, and `result` would try to
+    // settle it a second time.
+    const marker = join(home, "burst-tool-ran");
+    const host = await runTurn("burst", false, hostIntegrations, {
+      FAKE_AGY_PERMISSION_MODE: "always-proceed",
+      FAKE_AGY_TOOL_MARKER: marker,
+      FAKE_AGY_BURST: "1",
+    });
+    expect(existsSync(marker)).toBe(true); // the fake really did run ahead
+    const completed = host.events.filter((e) => e.type === "turn.completed");
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ ok: false, stopReason: "host_control_policy" });
+    expect(host.events.some((e) => e.type === "content.delta")).toBe(false);
+    expect(
+      host.events.some((e) => e.type === "item.started" && (e as any).title === "write_to_file"),
+    ).toBe(false);
+    expect(
+      host.events.some((e) => e.type === "item.completed" && (e as any).itemType === "assistant_text"),
+    ).toBe(false);
+    expect(host.events.some((e) => e.type === "thread.token-usage.updated")).toBe(false);
+  });
+
+  it("stops a host-control turn when agy reports no policy at all", async () => {
+    // An unreported value is not a safe value.  This check exists because the
+    // driver used to assume a refusal it had never verified; defaulting to
+    // "probably fine" would be that same mistake in a new coat of paint.
+    const marker = join(home, "omitted-tool-ran");
+    const host = await runTurn("omitted", false, hostIntegrations, {
+      FAKE_AGY_PERMISSION_MODE: "omit",
+      FAKE_AGY_INIT_HOLD_MS: POLICY_HOLD_MS,
+      FAKE_AGY_TOOL_MARKER: marker,
+    });
+    const completed = host.events.filter((e) => e.type === "turn.completed");
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ ok: false, stopReason: "host_control_policy" });
+    const error = host.events.find((e) => e.type === "runtime.error") as any;
+    expect(error.message).toBe(antigravityHostPolicyRefusal(null));
+    expect(error.message).toContain("was not reported");
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("stops a host-control turn on a policy value it does not recognize", async () => {
+    // `accept-edits` is a `--mode` value, not a Tool Execution Policy.  If agy
+    // ever reports something this driver has not measured, the turn stops and
+    // the message says only what is known — not what it would do.
+    const marker = join(home, "unknown-tool-ran");
+    const host = await runTurn("unknown-policy", false, hostIntegrations, {
+      FAKE_AGY_PERMISSION_MODE: "accept-edits",
+      FAKE_AGY_INIT_HOLD_MS: POLICY_HOLD_MS,
+      FAKE_AGY_TOOL_MARKER: marker,
+    });
+    expect(host.events.filter((e) => e.type === "turn.completed")[0]).toMatchObject({
+      ok: false,
+      stopReason: "host_control_policy",
+    });
+    const error = host.events.find((e) => e.type === "runtime.error") as any;
+    expect(error.message).toBe(antigravityHostPolicyRefusal("accept-edits"));
+    expect(error.message).toContain("is accept-edits");
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  it("runs a host-control turn under a policy that asks, and says so once", async () => {
+    // `request-review` is agy's shipped default and it pauses for a human, so
+    // there is nothing here for this driver to stop.
+    const marker = join(home, "request-review-tool-ran");
+    const host = await runTurn("request-review", false, hostIntegrations, {
+      FAKE_AGY_PERMISSION_MODE: "request-review",
+      FAKE_AGY_TOOL_MARKER: marker,
+    });
+    const completed = host.events.filter((e) => e.type === "turn.completed");
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ ok: true });
+    expect(host.events.some((e) => e.type === "runtime.error")).toBe(false);
+    expect(existsSync(marker)).toBe(true); // it really did reach its tool
+
+    const notices = host.events.filter(
+      (e) => e.type === "item.started" && (e as any).title === ANTIGRAVITY_HOST_CONTROL_NOTICE,
+    );
+    expect(notices).toHaveLength(1);
+    const noticeId = (notices[0] as any).itemId as string;
+    expect(
+      host.events.filter((e) => e.type === "item.completed" && (e as any).itemId === noticeId),
+    ).toHaveLength(1);
+  });
+
+  it("never gates a turn that has no host computer, whatever the policy says", async () => {
+    // The gate is about the person's own desktop.  A Local VM or a VPS is
+    // isolated, so `always-proceed` there is the owner's own call and this
+    // driver has no business ending the turn over it.
+    const marker = join(home, "sandbox-tool-ran");
+    const sandbox = await runTurn("sandbox-policy", false, sandboxIntegrations, {
+      FAKE_AGY_PERMISSION_MODE: "always-proceed",
+      FAKE_AGY_TOOL_MARKER: marker,
+    });
+    expect(sandbox.events.filter((e) => e.type === "turn.completed")[0]).toMatchObject({ ok: true });
+    expect(sandbox.events.some((e) => e.type === "runtime.error")).toBe(false);
+    expect(existsSync(marker)).toBe(true);
     expect(
       sandbox.events.some((e) => (e as any).title === ANTIGRAVITY_HOST_CONTROL_NOTICE),
     ).toBe(false);
