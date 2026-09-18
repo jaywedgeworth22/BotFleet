@@ -15,6 +15,7 @@ import {
   type ReactNode,
 } from "react";
 import type { CloudBackend, EffortLevel } from "../../server/contracts.ts";
+import type { AccessTokenState } from "../../server/recall-access.ts";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import type { RoutineRequestCardData } from "../../shared/routine-request";
@@ -415,6 +416,8 @@ export interface ConfigStatus {
     accessClientId: string;
     hasAccessClientSecret: boolean;
     hasAccessServiceToken: boolean;
+    /** Which half of the pair is missing, when one of them is. */
+    accessTokenState?: AccessTokenState;
   };
   /** Usage-monitor telemetry. `ingestUrl` is empty when unconfigured; the
    * token is never echoed back, only `hasToken`. */

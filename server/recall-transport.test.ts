@@ -67,6 +67,25 @@ describe("Recall readiness evidence", () => {
     unhealthy = true;
     expect(await recallStatus(settings)).toMatchObject({ ready: false, state: "degraded", lastSuccessAt: success.lastSuccessAt });
   });
+
+  it("reports a half-configured Access pair even on a healthy probe", async () => {
+    // Half a pair sends no Access headers at all, so a service behind Access
+    // answers a login page — and the panel has nothing to say about it
+    // unless the status payload carries which half is missing.  The probe
+    // itself can be perfectly green (this one is), which is exactly why the
+    // state rides along with it rather than only with an error.
+    const url = await service((_req, res) => json(res, valid));
+    const base = { url, collection: "selected-corpus", apiKey: "" };
+
+    expect(await recallStatus({ ...base, accessClientId: "", accessClientSecret: "shhh" }))
+      .toMatchObject({ ready: true, accessTokenState: "missing-id" });
+    expect(await recallStatus({ ...base, accessClientId: "fixture.access", accessClientSecret: "" }))
+      .toMatchObject({ ready: true, accessTokenState: "missing-secret" });
+    expect(await recallStatus({ ...base, accessClientId: "fixture.access", accessClientSecret: "shhh" }))
+      .toMatchObject({ accessTokenState: "complete" });
+    expect(await recallStatus({ ...base, accessClientId: "", accessClientSecret: "" }))
+      .toMatchObject({ accessTokenState: "none" });
+  });
 });
 
 describe("Recall transport credential and process boundaries", () => {

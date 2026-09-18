@@ -15,6 +15,19 @@ const argv = process.argv.slice(2);
 if (process.env.FAKE_AGY_IGNORE_SIGTERM === "1") {
   process.on("SIGTERM", () => {});
 }
+// SIGTERM is how the driver stops a turn: killCliTree signals the whole
+// process group.  Recording that it arrived is how a test tells a child that
+// was killed from one that was merely ignored and left running behind a turn
+// the person was already told had ended.
+if (process.env.FAKE_AGY_KILLED_MARKER) {
+  const killedMarker = process.env.FAKE_AGY_KILLED_MARKER;
+  process.on("SIGTERM", () => {
+    try {
+      writeFileSync(killedMarker, "sigterm");
+    } catch {}
+    process.exit(143);
+  });
+}
 if (process.env.FAKE_AGY_READY_FILE) {
   writeFileSync(process.env.FAKE_AGY_READY_FILE, "ready");
 }
@@ -39,8 +52,53 @@ if (process.env.FAKE_AGY_MCP_DUMP) {
   writeFileSync(process.env.FAKE_AGY_MCP_DUMP, config);
 }
 
-const out = (obj: unknown) => process.stdout.write(JSON.stringify(obj) + "\n");
+// FAKE_AGY_BURST=1 holds every line back and writes the whole turn as one
+// stdout chunk, so the driver parses all of it in a single synchronous pass.
+// That is the shape that shows whether a refusal at the init event really
+// stops the rest of the stream, rather than merely winning a race with the
+// next chunk to arrive.
+const burst = process.env.FAKE_AGY_BURST === "1";
+let burstBuf = "";
+const out = (obj: unknown) => {
+  const line = JSON.stringify(obj) + "\n";
+  if (burst) burstBuf += line;
+  else process.stdout.write(line);
+};
+const flush = () => {
+  if (!burstBuf) return;
+  const pending = burstBuf;
+  burstBuf = "";
+  process.stdout.write(pending);
+};
 const CONV = "conv-fake-123";
+
+// The Tool Execution Policy agy reports on its init event.  The real CLI
+// reports one of `always-proceed`, `request-review`, `strict` or
+// `proceed-in-sandbox` here; `accept-edits` is a `--mode` value on a different
+// axis and never appears in this field.  Default to `request-review`, agy's
+// shipped default, so a plain turn is not a turn the driver has to refuse.
+// FAKE_AGY_PERMISSION_MODE=omit drops the key entirely, for the driver's
+// unreported-policy path.
+const permissionMode = process.env.FAKE_AGY_PERMISSION_MODE ?? "request-review";
+const initPolicy: Record<string, string> = permissionMode === "omit" ? {} : { permission_mode: permissionMode };
+
+// A host-control turn is refused at the init event, and the only way a test
+// can see that the refusal beat the tool is if something separates the two.
+// The real CLI takes an LLM round trip there; a fake that emits init and its
+// first tool in the same tick could never tell a working gate from a broken
+// one.  FAKE_AGY_INIT_HOLD_MS is that gap: hold it long enough and a killed
+// child provably never reaches the marker below.
+const initHoldMs = Number(process.env.FAKE_AGY_INIT_HOLD_MS ?? 0);
+const holdAfterInit = async () => {
+  if (Number.isFinite(initHoldMs) && initHoldMs > 0) {
+    await new Promise((resolve) => setTimeout(resolve, initHoldMs));
+  }
+};
+// Written immediately before the first tool step: "the tool ran".  A turn the
+// driver stopped at init must leave no such file behind.
+const markToolRan = () => {
+  if (process.env.FAKE_AGY_TOOL_MARKER) writeFileSync(process.env.FAKE_AGY_TOOL_MARKER, "ran");
+};
 
 // Failure shapes the real agy produces, for the driver's error-mapping tests.
 // FAKE_AGY_RESULT_ERROR: emit init, then one `result` with status ERROR and
@@ -82,7 +140,7 @@ if (process.env.FAKE_AGY_LEAK_STDOUT) {
 }
 
 if (process.env.FAKE_AGY_RESULT_ERROR) {
-  out({ event: "init", conversation_id: CONV, init: { cwd: process.cwd(), tools: [], permission_mode: "accept-edits" } });
+  out({ event: "init", conversation_id: CONV, init: { cwd: process.cwd(), tools: [], ...initPolicy } });
   out({
     event: "result",
     conversation_id: CONV,
@@ -96,14 +154,18 @@ if (process.env.FAKE_AGY_RESULT_ERROR) {
       usage: { input_tokens: 0, output_tokens: 0, thinking_tokens: 0, cache_read_tokens: 0, total_tokens: 0 },
     },
   });
+  flush();
   process.exit(0);
 }
 
-out({ event: "init", conversation_id: CONV, init: { cwd: process.cwd(), tools: ["run_command", "write_to_file"], permission_mode: "accept-edits" } });
+out({ event: "init", conversation_id: CONV, init: { cwd: process.cwd(), tools: ["run_command", "write_to_file"], ...initPolicy } });
+await holdAfterInit();
+markToolRan();
 out({ event: "step_update", conversation_id: CONV, step_update: { conversation_id: CONV, step_index: 0, state: "ACTIVE", step_type: "tool", tool_name: "write_to_file", tool_info: { name: "write_to_file", parameters: {} } } });
 out({ event: "step_update", conversation_id: CONV, step_update: { conversation_id: CONV, step_index: 0, state: "DONE", step_type: "tool", tool_name: "write_to_file", tool_info: { name: "write_to_file", parameters: {} } } });
 out({ event: "step_update", conversation_id: CONV, step_update: { conversation_id: CONV, step_index: 1, state: "DONE", step_type: "agent_response", usage: { input_tokens: 100, output_tokens: 20, thinking_tokens: 0, cache_read_tokens: 5, total_tokens: 125 } } });
 out({ event: "result", conversation_id: CONV, result: { conversation_id: CONV, status: "SUCCESS", response: "done from fake agy", duration_seconds: 1, num_turns: 1, usage: { input_tokens: 100, output_tokens: 20, thinking_tokens: 0, cache_read_tokens: 5, total_tokens: 125 } } });
+flush();
 const postResultDelayMs = Number(process.env.FAKE_AGY_POST_RESULT_DELAY_MS ?? 0);
 if (Number.isFinite(postResultDelayMs) && postResultDelayMs > 0) {
   await new Promise((resolve) => setTimeout(resolve, postResultDelayMs));

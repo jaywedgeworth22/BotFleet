@@ -50,6 +50,22 @@ export function hasAccessServiceToken(clientId?: string | null, clientSecret?: s
   return Object.keys(accessHeaders(clientId, clientSecret)).length > 0;
 }
 
+/** Which of the four situations the service token is in.  `hasAccessServiceToken`
+ * answers yes-or-no, which cannot tell "no token" apart from "half a token" —
+ * and half a token is silent: `accessHeaders` sends nothing, so a service
+ * behind Access answers a login page and the panel reports what reads like an
+ * outage.  Naming the half-configured state is what lets the UI say which
+ * field is missing. */
+export type AccessTokenState = "none" | "complete" | "missing-id" | "missing-secret";
+
+export function accessTokenState(clientId?: string | null, clientSecret?: string | null): AccessTokenState {
+  const id = (clientId ?? "").trim();
+  const secret = (clientSecret ?? "").trim();
+  if (id && secret) return "complete";
+  if (!id && !secret) return "none";
+  return id ? "missing-secret" : "missing-id";
+}
+
 /** Just the host of a URL, or "" — the only part of a login URL that is safe
  * to echo.  An Access login URL carries the original request in its query
  * string, so the query never travels into a message. */
