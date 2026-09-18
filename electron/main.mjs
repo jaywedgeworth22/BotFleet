@@ -1474,10 +1474,10 @@ ipcMain.handle("engine:open-terminal", async (_event, command) => {
 // renderer sandboxed and let the main process open only ordinary web links.
 // A bot's working folder: the native picker, so the path is real and the
 // user never types one. Returns null when they cancel.
-ipcMain.handle("desktop:pick-folder", async (event, current) => {
+ipcMain.handle("desktop:pick-folder", async (event, current, title) => {
   const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
   const result = await dialog.showOpenDialog(win, {
-    title: "Choose a working folder",
+    title: typeof title === "string" && title.trim() ? title.trim().slice(0, 120) : "Choose a working folder",
     properties: ["openDirectory", "createDirectory"],
     ...(typeof current === "string" && current ? { defaultPath: current } : {}),
   });
