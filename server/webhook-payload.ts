@@ -46,6 +46,17 @@ function slimActor(value: JsonValue | undefined): JsonValue | undefined {
   return Object.keys(out).length ? out : undefined;
 }
 
+/** GitHub push `pusher` is `{ name, email }`, not a User actor. */
+function slimPusher(value: JsonValue | undefined): JsonValue | undefined {
+  const rec = asRecord(value);
+  if (!rec) return undefined;
+  const out: Record<string, JsonValue> = {};
+  assignDefined(out, "name", pickStr(rec, "name"));
+  assignDefined(out, "email", pickStr(rec, "email"));
+  assignDefined(out, "login", pickStr(rec, "login"));
+  return Object.keys(out).length ? out : undefined;
+}
+
 function slimRepo(value: JsonValue | undefined): JsonValue | undefined {
   const rec = asRecord(value);
   if (!rec) return undefined;
@@ -262,7 +273,7 @@ export function slimWebhookPayload(payload: JsonValue): JsonValue {
   assignDefined(out, "head_repository", slimRepo(root.head_repository));
   assignDefined(out, "sender", slimActor(root.sender));
   assignDefined(out, "organization", slimActor(root.organization));
-  assignDefined(out, "pusher", slimActor(root.pusher));
+  assignDefined(out, "pusher", slimPusher(root.pusher));
   assignDefined(out, "pull_request", slimPullRequest(root.pull_request));
   assignDefined(out, "issue", slimIssue(root.issue));
   assignDefined(out, "check_run", slimCheckRun(root.check_run));

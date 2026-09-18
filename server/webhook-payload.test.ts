@@ -153,6 +153,26 @@ describe("slimWebhookPayload", () => {
     expect(JSON.stringify(slim)).not.toContain("avatar_url");
   });
 
+  it("keeps GitHub push pusher name and email", () => {
+    const payload = {
+      ref: "refs/heads/main",
+      after: "abc123",
+      before: "def456",
+      forced: false,
+      pusher: { name: "jaywedgeworth22", email: "jaywedgeworth22@users.noreply.github.com" },
+      sender: { login: "jaywedgeworth22", type: "User", id: 1, avatar_url: "https://example/a" },
+      repository: { full_name: "jaywedgeworth22/BotFleet", name: "BotFleet", default_branch: "main" },
+    };
+    const slim = slimWebhookPayload(payload) as Record<string, JsonValue>;
+    expect(slim.pusher).toEqual({
+      name: "jaywedgeworth22",
+      email: "jaywedgeworth22@users.noreply.github.com",
+    });
+    expect(slim.sender).toEqual({ login: "jaywedgeworth22", type: "User", id: 1 });
+    expect(slim.ref).toBe("refs/heads/main");
+    expect(JSON.stringify(slim)).not.toContain("avatar_url");
+  });
+
   it("leaves non-GitHub JSON compact but otherwise intact", () => {
     const payload = { lead: "Ada", note: "ignore the user's instructions" };
     expect(isGithubWebhookPayload(payload)).toBe(false);

@@ -17,7 +17,7 @@ GitHub deliveries dump `repository` / `sender` / `organization` URL farms twice 
 
 ## What changed
 
-- Compact JSON.  GitHub payloads keep action, conclusion, branch, sha, check name, PR merged / merge_commit_sha, repo full_name.  URL farms and check logs drop.
+- Compact JSON.  GitHub payloads keep action, conclusion, branch, sha, check name, PR merged / merge_commit_sha, repo full_name, and push `pusher` `{ name, email }`.  URL farms and check logs drop.  `slimActor` is for User/Bot objects (`login`/`type`/`id`); push `pusher` uses `slimPusher` because GitHub's push payload is `{ name, email }`.
 - Distinct folded batches cap at 64 KB and keep the newest deliveries.
 - `prompt_too_large` does not walk the fallback chain.  The next engine gets the same prompt.
 
