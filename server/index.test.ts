@@ -920,6 +920,13 @@ describe("harness HTTP API", () => {
     try {
       expect(room.tasks).toHaveLength(1);
       expect(room.tasks[0].threadId).toBe(room.threadId);
+      expect(room.tasks[0].lastActivity).toEqual(expect.any(Number));
+      const listed = (await api("GET", "/api/bots?messages=0")).body.groups.find(
+        (candidate: { id: string }) => candidate.id === room.id,
+      );
+      expect(listed.tasks[0]).toEqual(
+        expect.objectContaining({ threadId: room.threadId, lastActivity: expect.any(Number) }),
+      );
       const originalThread = room.threadId;
 
       const created = await api("POST", `/api/groups/${room.id}/tasks`, { title: "Launch plan" });

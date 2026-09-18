@@ -1624,7 +1624,7 @@ function BotListItem({
   // the visible branch, so a version switch changes the row with the chat
   const visible = visibleMessages(bot);
   const last = visible.at(-1);
-  const activityAt = latestChatActivity(bot.tasks, last?.at, 0);
+  const activityAt = latestChatActivity(bot.tasks, last?.at, bot.createdAt ?? 0);
   const rowClass = cn(
     "flex w-full items-center rounded-xl border text-left",
     iconOnly
