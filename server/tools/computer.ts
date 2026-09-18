@@ -5,11 +5,22 @@
 // Like `agents.ts`, this module is completely free of dependencies on `server/index.ts`.
 // Destructive operations (bash, write_file, edit_file) require approval via the
 // permission broker before execution, which is enforced by `host.ts`.
+//
+// CONFINEMENT — `read_file`/`write_file`/`edit_file` are offered to a bot
+// that has only a workspace (no This Computer grant), which is a much weaker
+// trust posture: the model may be less reliable, and untrusted text it
+// ingested can steer it.  When `confinement` is set, every path argument is
+// resolved through `realOrResolved`/`isInside` (server/bot-cwd.ts) and
+// refused if it does not sit inside the bot's workspace realpath.  Same
+// pattern server/tools/github.ts uses for its repo directory; bash is gated
+// on `hostComputer` only, so a workspace-only bot never gets bash and
+// therefore never gets to `cd` out either.
 
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 
+import { isInside, realOrResolved } from "../bot-cwd.ts";
 import type { TurnToolCall, TurnToolOutcome, TurnToolRuntime } from "../contracts.ts";
 import type { AgentToolCallContext } from "./agents.ts";
 
@@ -21,11 +32,52 @@ export type ComputerToolExecutor = (
 
 export interface ComputerToolsOptions {
   cwd?: string;
+  /** When set, file tools refuse any path whose realpath escapes this
+   *  workspace root.  The same realpath-safe check server/tools/github.ts
+   *  applies to its repo directory.  Optional so existing callers (no
+   *  confinement wanted) keep today's behavior. */
+  confinement?: {
+    /** The precomputed realpath of the bot's workspace root. */
+    workspaceRealpath: string;
+  };
 }
 
 function resolvePath(target: string, cwd?: string): string {
   if (isAbsolute(target)) return target;
   return cwd ? resolve(cwd, target) : resolve(target);
+}
+
+/** Resolve the path the model asked for (supporting a relative path
+ *  against `cwd` the same way every existing file tool does) and require
+ *  its realpath to live inside the bot's workspace.  Returns either a
+ *  `{ok, real}` for the executor to use, or a finished `error` outcome
+ *  the executor should return verbatim — a single source of truth for the
+ *  same check across all three file tools. */
+function confineOrReject(
+  rawPath: string,
+  cwd: string,
+  confinement: { workspaceRealpath: string } | undefined,
+): { ok: true; fullPath: string } | { ok: false; outcome: TurnToolOutcome } {
+  const candidate = resolvePath(rawPath, cwd);
+  // No confinement requested: behave exactly as before so a This Computer
+  // bot (which opts out of confinement by design) keeps its whole-host view.
+  if (!confinement) return { ok: true, fullPath: candidate };
+  // realOrResolved gives a symlink-safe comparison even when the workspace
+  // or any of its sub-folders are themselves symlinks, the way
+  // bot-cwd.test.ts already exercises for the phone-originated cwd path.
+  const real = realOrResolved(candidate);
+  if (isInside(real, confinement.workspaceRealpath)) return { ok: true, fullPath: candidate };
+  return {
+    ok: false,
+    outcome: {
+      kind: "error",
+      content:
+        `Path "${rawPath}" is outside this bot's workspace. ` +
+        "File tools without a This Computer grant only reach files inside the bot's own workspace directory. " +
+        `Grant This Computer to read or write anywhere on the host.`,
+      detail: "outside_workspace",
+    },
+  };
 }
 
 export function createComputerTools(options: ComputerToolsOptions = {}): Record<string, ComputerToolExecutor> {
@@ -92,7 +144,9 @@ export function createComputerTools(options: ComputerToolsOptions = {}): Record<
       return { kind: "error", content: "path argument must be a non-empty string", detail: "invalid_argument" };
     }
 
-    const fullPath = resolvePath(rawPath.trim(), workingDir);
+    const confined = confineOrReject(rawPath.trim(), workingDir, options.confinement);
+    if (!confined.ok) return confined.outcome;
+    const fullPath = confined.fullPath;
     if (!existsSync(fullPath)) {
       return { kind: "error", content: `File not found: ${rawPath}`, detail: "not_found" };
     }
@@ -140,7 +194,9 @@ export function createComputerTools(options: ComputerToolsOptions = {}): Record<
       return { kind: "error", content: "content argument must be a string", detail: "invalid_argument" };
     }
 
-    const fullPath = resolvePath(rawPath.trim(), workingDir);
+    const confined = confineOrReject(rawPath.trim(), workingDir, options.confinement);
+    if (!confined.ok) return confined.outcome;
+    const fullPath = confined.fullPath;
     try {
       mkdirSync(dirname(fullPath), { recursive: true });
       writeFileSync(fullPath, content, "utf8");
@@ -170,7 +226,9 @@ export function createComputerTools(options: ComputerToolsOptions = {}): Record<
       return { kind: "error", content: "new_string argument must be a string", detail: "invalid_argument" };
     }
 
-    const fullPath = resolvePath(rawPath.trim(), workingDir);
+    const confined = confineOrReject(rawPath.trim(), workingDir, options.confinement);
+    if (!confined.ok) return confined.outcome;
+    const fullPath = confined.fullPath;
     if (!existsSync(fullPath)) {
       return { kind: "error", content: `File not found: ${rawPath}`, detail: "not_found" };
     }

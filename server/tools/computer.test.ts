@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -209,5 +209,148 @@ describe("computer tools", () => {
       const updated = readFileSync(filePath, "utf8");
       expect(updated).toBe("$& costs $$5");
     });
+  });
+});
+
+// CONFINEMENT — a workspace-only bot (no This Computer grant) gets the file
+// tools with `confinement` set, and every path is realpath-checked against
+// the bot's workspace root.  The exact same class of escape bot-cwd.test.ts
+// exercises for the phone-originated cwd path (symlinks out of the root,
+// `..` traversal, absolute path elsewhere) — so the same set of failure
+// scenarios lives here.
+describe("createComputerTools with confinement (workspace-only bots)", () => {
+  let scratchDir: string;
+
+  beforeEach(() => {
+    scratchDir = mkdtempSync(join(tmpdir(), "bf-comp-confinement-"));
+  });
+
+  afterEach(() => {
+    rmSync(scratchDir, { recursive: true, force: true });
+  });
+
+  function confinedTools() {
+    return createComputerTools({ cwd: scratchDir, confinement: { workspaceRealpath: scratchDir } });
+  }
+
+  function unconfinedTools() {
+    // A This Computer bot: explicitly without `confinement` so the existing
+    // whole-host view is unchanged.
+    return createComputerTools({ cwd: scratchDir });
+  }
+
+  it("reads a file inside the workspace (positive case)", async () => {
+    writeFileSync(join(scratchDir, "in.txt"), "hello\n");
+    const result = await confinedTools().read_file(
+      { id: "c-r1", name: "read_file", arguments: { path: join(scratchDir, "in.txt") } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("result");
+    expect(result.content).toContain("hello");
+  });
+
+  it("refuses to read an absolute path that escapes the workspace (e.g. /etc/passwd)", async () => {
+    const result = await confinedTools().read_file(
+      { id: "c-r2", name: "read_file", arguments: { path: "/etc/passwd" } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("error");
+    expect(result.detail).toBe("outside_workspace");
+    expect(result.content).toMatch(/outside this bot's workspace/i);
+  });
+
+  it("refuses to read a `..`-traversed path under the workspace that escapes it", async () => {
+    const result = await confinedTools().read_file(
+      { id: "c-r3", name: "read_file", arguments: { path: join(scratchDir, "..", "sibling.txt") } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("error");
+    expect(result.detail).toBe("outside_workspace");
+  });
+
+  it("refuses a symlink inside the workspace that points outside (e.g. ~/.ssh)", async () => {
+    const outsideDir = mkdtempSync(join(tmpdir(), "bf-comp-outside-"));
+    const outsideFile = join(outsideDir, "secret.txt");
+    writeFileSync(outsideFile, "ssh-private-key-bytes");
+    const link = join(scratchDir, "escape");
+    try {
+      symlinkSync(outsideFile, link, "file");
+    } catch {
+      rmSync(outsideDir, { recursive: true, force: true });
+      return; // no symlink permission on this runner
+    }
+    const result = await confinedTools().read_file(
+      { id: "c-r4", name: "read_file", arguments: { path: link } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("error");
+    expect(result.detail).toBe("outside_workspace");
+    rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  it("refuses to write an absolute path outside the workspace", async () => {
+    const result = await confinedTools().write_file(
+      { id: "c-w1", name: "write_file", arguments: { path: "/tmp/should-not-exist.txt", content: "nope" } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("error");
+    expect(result.detail).toBe("outside_workspace");
+  });
+
+  it("refuses to edit an absolute path outside the workspace", async () => {
+    const result = await confinedTools().edit_file(
+      { id: "c-e1", name: "edit_file", arguments: { path: "/etc/hostname", old_string: "x", new_string: "y" } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("error");
+    expect(result.detail).toBe("outside_workspace");
+  });
+
+  it("writes a new file inside the workspace (positive case)", async () => {
+    const target = join(scratchDir, "nested", "new.txt");
+    const result = await confinedTools().write_file(
+      { id: "c-w2", name: "write_file", arguments: { path: target, content: "ok" } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("result");
+  });
+
+  it("allows bash even when confinement is set — bash is gated on hostComputer only, so a workspace-only bot never sees it in production", async () => {
+    // Regression guard: the P0 fix confines FILE tools, not bash.  bash
+    // remains gated on hostComputer at the registry level, so a
+    // workspace-only bot never sees it; this test pins the executor's
+    // unchanged behavior (it still shells out unconfined) so a future
+    // refactor that tries to also gate bash inside this file cannot
+    // silently start adding a confinement check that changes the
+    // production guarantee.
+    const tools = confinedTools();
+    expect(tools.bash).toBeDefined();
+    const result = await tools.bash(
+      { id: "c-b1", name: "bash", arguments: { command: "true" } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.detail).not.toBe("outside_workspace");
+  });
+
+  it("a This Computer bot (no confinement set) keeps its whole-host view — this is the only path that legitimately touches /etc/hosts", async () => {
+    // The confining change is opt-in via the `confinement` option, so a
+    // caller (currently: the 1:1 and room dispatch paths when the bot has
+    // hasHostComputer) that omits it gets exactly the pre-fix behavior.
+    // macOS-only because /etc/hosts is a macOS path; skip elsewhere.
+    if (process.platform !== "darwin") return;
+    const result = await unconfinedTools().read_file(
+      { id: "c-r5", name: "read_file", arguments: { path: "/etc/hosts" } },
+      dummyIdentity,
+      dummyRuntime,
+    );
+    expect(result.kind).toBe("result");
   });
 });

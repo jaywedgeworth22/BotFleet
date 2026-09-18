@@ -12,13 +12,22 @@
 // the operator configured a corpus, not that THIS engine can reach it.  A
 // bot on pi, MiniMax or Grok would otherwise be told about tools its driver
 // cannot mount, which is the harness's own rule against describing a
-// capability that is not there.
+// capability that is not there.  PR #465 added a second mount path for
+// HTTP-lane drivers (MiniMax, OpenAI-compat, Grok HTTP) — the same recall
+// tools, in-process — and `recall` here is the matching gate flag the
+// dispatch sets whenever the HTTP-lane mount is active, so the prompt keeps
+// firing for that lane.
 
 /** The mounted integrations of one turn.  Structural on purpose: both the
  * 1:1 and the room assembly sites pass their own turn-input integrations
- * object, and only the presence of the `qdrant` mount matters here. */
+ * object plus the dispatch's HTTP-lane recall flag, and the function fires
+ * when EITHER mount path is active. */
 export interface RecallPromptIntegrations {
   qdrant?: unknown;
+  /** Set true when the HTTP-lane in-process recall mount (PR #465) is
+   *  active for this turn.  Independent of `qdrant` because the two
+   *  mounts never both fire at once — different engines, different gates. */
+  recall?: boolean;
 }
 
 /**
@@ -28,7 +37,7 @@ export interface RecallPromptIntegrations {
  * same system string as the composio and coordination sentences.
  */
 export function recallPromptFor(integrations?: RecallPromptIntegrations | null): string {
-  if (!integrations?.qdrant) return "";
+  if (!integrations?.qdrant && !integrations?.recall) return "";
   return (
     " You share a memory corpus with the rest of the fleet — lessons, preferences, infrastructure facts, decisions," +
     " and runbooks written by other seats and bots.  Search it with recall_search before you re-derive a lesson," +
