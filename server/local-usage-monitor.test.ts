@@ -107,6 +107,30 @@ describe("native Usage Monitor handoff", () => {
     expect(parsed.issues.cursor.length).toBeLessThanOrEqual(160);
   });
 
+  it("folds a wrapped reason onto one line instead of dropping it", () => {
+    // A reason is prose, so the producer may wrap it; ids and labels are not
+    // and keep refusing control characters outright.  Before the fold, a
+    // newline anywhere in the reason dropped it and left the engine's row
+    // saying nothing — exactly the silence this key exists to end.
+    const parsed = parseLocalQuotaPayload(payload([row()], {
+      issues: { claude: "  Sign in again.\n\tOpen AgentBar to retry.  ", openai: "stillbroken" },
+    }), now);
+    expect(parsed.issues.anthropic).toBe("Sign in again. Open AgentBar to retry.");
+    expect(parsed.issues.openai).toBeUndefined();
+  });
+
+  it("classifies a percentage exactly where the producer does", () => {
+    // 0 is exhausted, 20 and below is near its cap, 21 is healthy.  These are
+    // the producer's own boundaries, so a row's derived status can never
+    // contradict the `status` string travelling beside it in the same row.
+    const statuses = parseLocalQuotaSnapshot(payload([
+      row("openai", { id: "zero", remainingPercent: 0 }),
+      row("xai", { id: "at-threshold", remainingPercent: 20 }),
+      row("cursor", { id: "just-above", remainingPercent: 21 }),
+    ]), now);
+    expect(statuses.map((value) => value.status)).toEqual(["exhausted", "near_cap", "available"]);
+  });
+
   it("parses a handoff carrying neither optional key exactly as before", () => {
     const parsed = parseLocalQuotaPayload(payload(), now);
     expect(parsed.producer).toBeNull();

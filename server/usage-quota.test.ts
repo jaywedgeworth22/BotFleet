@@ -80,6 +80,49 @@ describe("usage quota mapping", () => {
     ).toEqual(["claude-sonnet-4-6", "gpt-oss-120b-medium"]);
   });
 
+  it("maps the producer's own family names onto every catalog model of that family", () => {
+    // AgentBar spells a family the way its own menu does — "opus", "sonnet",
+    // "haiku" for the Claude subscription and "gemini" / "third-party" for the
+    // two Antigravity pools — while the catalog spells the same families
+    // "claude-opus", "gemini-pro" and so on.  Unmapped, a family-level window
+    // matched no model at all and could only cap an exact modelId.
+    const family = (modelType: string, label = "Weekly"): RemoteQuotaWindow =>
+      ({ ...opus, id: `family:${modelType}`, label, modelId: null, modelType });
+    const claude = {
+      instanceId: "claude",
+      driverKind: "claudeAgent",
+      models: { options: [
+        { id: "claude-opus-4-6-thinking" },
+        { id: "claude-opus-4-6" },
+        { id: "claude-sonnet-4-6" },
+        { id: "claude-haiku-4-5" },
+      ] },
+    };
+    expect(modelsToSkip(family("opus"), claude)).toEqual(["claude-opus-4-6-thinking", "claude-opus-4-6"]);
+    expect(modelsToSkip(family("sonnet"), claude)).toEqual(["claude-sonnet-4-6"]);
+    expect(modelsToSkip(family("haiku"), claude)).toEqual(["claude-haiku-4-5"]);
+
+    const antigravity = {
+      instanceId: "antigravity",
+      driverKind: "antigravityAgent",
+      models: { options: [
+        { id: "gemini-3.6-pro" },
+        { id: "gemini-3.6-flash-high" },
+        { id: "claude-sonnet-4-6" },
+        { id: "gpt-oss-120b-medium" },
+      ] },
+    };
+    expect(modelsToSkip(family("gemini"), antigravity)).toEqual(["gemini-3.6-pro", "gemini-3.6-flash-high"]);
+    // Both spellings the producer could use for the second pool, and the pool
+    // label on its own for a row that names no family at all.
+    expect(modelsToSkip(family("third-party"), antigravity)).toEqual(["claude-sonnet-4-6", "gpt-oss-120b-medium"]);
+    expect(modelsToSkip(family("thirdParty"), antigravity)).toEqual(["claude-sonnet-4-6", "gpt-oss-120b-medium"]);
+    expect(familiesForWindow(family("", "Third-Party Models · Weekly"))).toContain("gpt");
+    // A family neither app knows is passed through, so a catalog model spelled
+    // the same way still matches instead of the window capping nothing.
+    expect(familiesForWindow(family("kimi"))).toEqual(["kimi"]);
+  });
+
   it("maps a Cursor monthly skip onto the whole cursor engine", () => {
     const monthly: RemoteQuotaWindow = {
       id: "cursor-monthly",
@@ -219,6 +262,25 @@ describe("local subscription caps", () => {
   it("caps one model when the window names one, and the plan when it names none", async () => {
     await poller([localWindow({ id: "codex-model", modelId: "gpt-5.2-codex" })]).poll();
     expect(quotaCooldowns.list().map((cd) => cd.model)).toEqual(["gpt-5.2-codex"]);
+  });
+
+  it("caps every model of a family when the window names a family instead of a model", async () => {
+    const claude = {
+      instanceId: "claude",
+      driverKind: "claudeAgent",
+      models: { options: [{ id: "claude-opus-4-6-thinking" }, { id: "claude-opus-4-6" }, { id: "claude-sonnet-4-6" }] },
+    };
+    await poller([localWindow({
+      id: "anthropic:opus:weekly",
+      provider: "anthropic",
+      providerKey: "anthropic",
+      sourceApp: "usage-monitor-mac:anthropic",
+      label: "Claude Opus weekly",
+      modelType: "opus",
+    })], {}, [claude]).poll();
+    // Both Opus entries, and only those: a spent Opus week must not take
+    // Sonnet down with it.
+    expect(quotaCooldowns.list().map((cd) => cd.model).sort()).toEqual(["claude-opus-4-6", "claude-opus-4-6-thinking"]);
   });
 
   it("derives an end from the window token, caps it at eight days, and skips a row with neither", async () => {

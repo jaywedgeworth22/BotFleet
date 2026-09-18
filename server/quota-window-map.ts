@@ -119,6 +119,18 @@ export function quotaProviderForDriver(driverKind: string): string | null {
   return DRIVER_KIND_PROVIDERS[driverKind] ?? null;
 }
 
+/** How little of a window may be left before it counts as near its cap:
+ *  exactly `remainingPercent <= 20`, with 0 reported as exhausted rather than
+ *  near-cap.  This is deliberately the producer's own boundary — AgentBar
+ *  classifies a window it writes at the same 20% and the same 0 — so the
+ *  status BotFleet derives from a percentage can never disagree with the
+ *  `status` string sitting beside it in the very same row.  Moving it here
+ *  would silently move the engine chip, the grid cell and the handoff apart.
+ *
+ *  MiniMax keeps its own 10% (server/minimax-balance.ts): that is a vendor
+ *  reading of a real balance rather than a share inferred from a percentage. */
+export const NEAR_CAP_PERCENT = 20;
+
 /** Whether BotFleet has an engine for this window's provider at all. */
 export function isSupportedQuotaProvider(window: QuotaProviderIdentity): boolean {
   const raw = normalizeQuotaProviderKey(window.providerKey || window.provider);
@@ -235,12 +247,53 @@ export function engineMeterNote(driverKind: string): EngineMeterNote | null {
   return ENGINE_METER_NOTES[driverKind] ?? null;
 }
 
+/** The Claude subscription's three model families, spelled the way
+ *  `modelTypeFromId` below spells them. */
+const CLAUDE_FAMILIES = ["claude-opus", "claude-sonnet", "claude-haiku", "claude"];
+const GEMINI_FAMILIES = ["gemini-pro", "gemini-flash", "gemini"];
+/** Antigravity's second pool is everything that is not Gemini: Claude and
+ *  GPT models drawn from one shared allowance. */
+const THIRD_PARTY_FAMILIES = [...CLAUDE_FAMILIES, "gpt"];
+
+/** AgentBar names a window's model family in the producer's own vocabulary —
+ *  "opus", "sonnet" and "haiku" for the Claude subscription, "gemini" and
+ *  "third-party" for the two Antigravity pools — while BotFleet's catalog
+ *  families (`modelTypeFromId` below) are spelled "claude-opus", "gemini-pro"
+ *  and so on.  Without this map a family-level window matched no catalog model
+ *  at all, so it could only ever cap an exact `modelId`: a spent Opus week
+ *  arriving as `modelType: "opus"` capped nothing.
+ *
+ *  A family the map does not know is passed through unchanged rather than
+ *  dropped, so a producer that starts publishing a new family name still
+ *  matches any catalog model whose own type is spelled the same way. */
+export const MODEL_TYPE_FAMILIES: Readonly<Record<string, string[]>> = {
+  opus: ["claude-opus"],
+  sonnet: ["claude-sonnet"],
+  haiku: ["claude-haiku"],
+  claude: CLAUDE_FAMILIES,
+  anthropic: CLAUDE_FAMILIES,
+  gemini: GEMINI_FAMILIES,
+  "gemini-models": GEMINI_FAMILIES,
+  "third-party": THIRD_PARTY_FAMILIES,
+  thirdparty: THIRD_PARTY_FAMILIES,
+  "third-party-models": THIRD_PARTY_FAMILIES,
+  gpt: ["gpt"],
+  codex: ["gpt"],
+  grok: ["grok"],
+  cursor: ["cursor"],
+  deepseek: ["deepseek"],
+};
+
 export function familiesForWindow(window: QuotaWindowMatch): string[] {
   const label = window.label.toLowerCase();
-  if (label.includes("claude and gpt")) return ["claude-opus", "claude-sonnet", "claude-haiku", "claude", "gpt"];
-  if (label.includes("gemini")) return ["gemini-pro", "gemini-flash", "gemini"];
+  if (label.includes("claude and gpt") || label.includes("third-party")) return THIRD_PARTY_FAMILIES;
+  if (label.includes("gemini")) return GEMINI_FAMILIES;
   if (label.includes("cursor")) return ["cursor"];
-  return window.modelType ? [window.modelType] : [];
+  if (!window.modelType) return [];
+  // `normalizeQuotaProviderKey` is only a lowercase/space/underscore folder;
+  // camelCase has to be split first so "thirdParty" reaches "third-party".
+  const key = normalizeQuotaProviderKey(window.modelType.replace(/([a-z0-9])([A-Z])/g, "$1-$2"));
+  return MODEL_TYPE_FAMILIES[key] ?? [window.modelType];
 }
 
 export function modelTypeFromId(modelId: string): string {

@@ -1,4 +1,5 @@
 /** Settings → Usage quota row: full per-model / per-window lines for hover and click. */
+import { NEAR_CAP_PERCENT } from "../../server/quota-window-map";
 
 export type QuotaDisplayModel = {
   label: string;
@@ -312,16 +313,18 @@ export function formatResetCountdown(resetAtMs: number | null, now = Date.now())
   return `${Math.max(minutes, 1)}m`;
 }
 
-/** How little of a window may be left before the engine chip warns.  The
- *  server derives its own `near_cap` status at the same 20%
- *  (server/local-usage-monitor.ts), so the chip and the row it sits over
- *  agree about one engine.
+/** How little of a window may be left before the engine chip warns.  One
+ *  constant, defined in server/quota-window-map.ts and re-exported here, so
+ *  the chip, the grid cell under it and the `near_cap` status the server
+ *  derives in server/local-usage-monitor.ts cannot drift apart — and so all
+ *  three keep matching the producer, which classifies the same window at the
+ *  same 20% before it ever reaches BotFleet.
  *
  *  MiniMax deliberately keeps its own 10% (server/minimax-balance.ts) or the
  *  balance-alert threshold the user set: that is a vendor reading about a
  *  real balance rather than a share BotFleet inferred from a percentage, and
  *  folding it into this constant would silently move MiniMax's alert point. */
-export const NEAR_CAP_PERCENT = 20;
+export { NEAR_CAP_PERCENT };
 
 /** The chip's own verdict, read off the same headline buckets the grid under
  *  it renders — so a red 0% cell can no longer sit below a green chip. */

@@ -537,5 +537,14 @@ describe("absolute allowances and handoff health", () => {
     expect(providerIssueLine("Claude", undefined)).toBeNull();
     const long = providerIssueLine("Cursor", "x".repeat(400));
     expect(long?.length).toBeLessThanOrEqual("Cursor: ".length + 160 + " (from AgentBar)".length);
+    // The reason is the producer's text and stays text: angle brackets are
+    // carried through verbatim rather than stripped or escaped here, because
+    // the row renders this as a JSX text child and never as markup.  Escaping
+    // it in the string would show the entity to the reader instead.
+    expect(providerIssueLine("Claude", '<b>read failed</b>', "agent-bar"))
+      .toBe("Claude: <b>read failed</b> (from AgentBar)");
+    // Wrapped prose folds onto the one line the row has room for.
+    expect(providerIssueLine("Claude", "Sign in again.\nOpen AgentBar to retry.", "agent-bar"))
+      .toBe("Claude: Sign in again. Open AgentBar to retry. (from AgentBar)");
   });
 });
