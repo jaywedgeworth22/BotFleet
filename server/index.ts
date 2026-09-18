@@ -184,6 +184,7 @@ import {
   interruptThreadOwners,
   scheduleStalledReleaseRecheck,
   stalledReleaseDecision,
+  TurnOwnerClaims,
   type InterruptOutcome,
   type StalledReleaseDecision,
 } from "./turn-safety.ts";
@@ -1444,7 +1445,11 @@ function releaseStalledTurnIfUnowned(
   stoppedTurns.delete(`${turn.botId}:${turn.threadId}`);
   activeTurnOwners.clearThread(turn.threadId);
   turnUsage.delete(turn.threadId);
-  releaseLocalVmThread(turn.threadId);
+  // The watchdog knows exactly whose turn stalled, so both releases can name
+  // the bot — the room lease included, since a stalled room dispatch returns
+  // before its own unwind and no turn.completed is coming.
+  releaseLocalVmThread(turn.threadId, turn.botId);
+  releaseRoomComputerLease(turn.threadId, turn.botId);
   const group = store.groupByThread(turn.threadId);
   const speaker = groupSpeakers.get(turn.threadId);
   if (group && group.busyBotId === turn.botId && speaker?.botId === turn.botId) {
@@ -1677,8 +1682,9 @@ let routines: RoutineManager | null = null;
 const localVmOwnerBusy = (botId: string) => store.bot(botId)?.busy === true;
 const localVmLeases = new LocalVmLeasePool(30 * 60_000);
 const localVmLifecycleBusy = new Set<string>();
-const localVmThreadTargets = new Map<string, LocalVmTarget>();
-const localVmActiveThreads = new Map<string, string>();
+// Keyed by thread AND bot: see `releaseLocalVmThread` and `TurnOwnerClaims`.
+const localVmThreadTargets = new TurnOwnerClaims<LocalVmTarget>();
+const localVmActiveThreads = new Map<string, { threadId: string; botId: string }>();
 let localVmImageBusy = false;
 let localVmProvisionBusy = false;
 let localVmModeChangeBusy = false;
@@ -1725,25 +1731,45 @@ function localVmIdleFor(target: LocalVmTarget): LocalVmIdleTimer {
   return idle;
 }
 
-// A VPS turn lease taken by a ROOM member, keyed by thread.  The 1:1 release
-// path hangs off `store.botByThread`, which is empty for a room thread, so a
-// room's lease needs a thread-keyed home and a thread-keyed release — the
-// same shape `localVmThreadTargets` already uses one function below.
-const roomComputerLeases = new Map<string, ExactTurnLease>();
+// A VPS turn lease taken by a ROOM member.  The 1:1 release path hangs off
+// `store.botByThread`, which is empty for a room thread, so a room's lease
+// needs its own home and its own release.
+//
+// Keyed by thread AND bot, because a room thread is shared: `drainRoomQueue`
+// starts every eligible queued round in one pass and `runGroupMemberTurn`'s
+// only entry guard is the per-bot `bot.busy`, so two members can be in flight
+// on one thread at once.  `ExactTurnLeases` is keyed by bot, so both of their
+// claims succeed — and a thread-keyed entry here would let the second `set`
+// evict the first, stranding one lease forever and releasing the other out
+// from under a live turn.
+const roomComputerLeases = new TurnOwnerClaims<ExactTurnLease>();
 
-function releaseRoomComputerLease(threadId: string): void {
-  const lease = roomComputerLeases.get(threadId);
-  if (!lease) return;
-  activeVpsThreads.release(lease);
-  roomComputerLeases.delete(threadId);
+/** Give back one room member's VPS lease.  Without a bot id — the
+ * `turn.completed` subscriber, which is thread-keyed and names no speaker —
+ * only a thread with exactly one claim is released; see `TurnOwnerClaims`. */
+function releaseRoomComputerLease(threadId: string, botId?: string): void {
+  const lease =
+    botId === undefined
+      ? roomComputerLeases.releaseSoleOwner(threadId)
+      : roomComputerLeases.release(threadId, botId);
+  if (lease) activeVpsThreads.release(lease);
 }
 
-function releaseLocalVmThread(threadId: string): void {
-  const target = localVmThreadTargets.get(threadId);
+/** Give back one turn's Local VM claim, matching `LocalVmLease.claim`, which
+ * identifies the turn by thread AND bot: a room thread is shared by every
+ * member, so a thread alone would let one member's unwind release the
+ * container another member is still clicking inside. */
+function releaseLocalVmThread(threadId: string, botId?: string): void {
+  const onThread = localVmThreadTargets.ownersOf(threadId);
+  // Same rule as the room lease: a thread-keyed caller releases only when the
+  // thread holds exactly one claim, and declines rather than guess otherwise.
+  const owner = botId ?? (onThread.length === 1 ? onThread[0] : undefined);
+  if (owner === undefined) return;
+  const target = localVmThreadTargets.release(threadId, owner);
   if (!target) return;
-  localVmLeaseFor(target).release(threadId);
-  if (localVmActiveThreads.get(target.key) === threadId) localVmActiveThreads.delete(target.key);
-  localVmThreadTargets.delete(threadId);
+  localVmLeaseFor(target).release(threadId, owner);
+  const active = localVmActiveThreads.get(target.key);
+  if (active && active.threadId === threadId && active.botId === owner) localVmActiveThreads.delete(target.key);
 }
 
 /** Claim the Local VM for one turn, or throw the reason it cannot be had.
@@ -1762,8 +1788,8 @@ async function acquireLocalVmMount(botId: string, threadId: string) {
   if (!localVmLeaseFor(target).claim(threadId, botId, localVmOwnerBusy)) {
     throw new Error("this Local VM is already being used by another turn — wait for that turn to finish");
   }
-  localVmThreadTargets.set(threadId, target);
-  localVmActiveThreads.set(target.key, threadId);
+  localVmThreadTargets.set(threadId, botId, target);
+  localVmActiveThreads.set(target.key, { threadId, botId });
   localVmIdleFor(target).touch();
   const localVm = await containerComputerStatus(undefined, undefined, target);
   if (!localVm.ready || !localVm.runtime) {
@@ -1808,12 +1834,15 @@ void (async () => {
 })();
 
 bus.subscribe((event: RuntimeEvent) => {
-  const localVmTarget = localVmThreadTargets.get(event.threadId);
+  const localVmTarget = localVmThreadTargets.anyOnThread(event.threadId);
   if (localVmTarget) {
     localVmLeaseFor(localVmTarget).touch(event.threadId);
     localVmIdleFor(localVmTarget).touch();
   }
   if (event.type === "turn.completed") {
+    // Thread-keyed, so this names no speaker.  Both releases decline rather
+    // than guess when two room members are in flight on one thread; the
+    // dispatches themselves release their exact keys.
     releaseLocalVmThread(event.threadId);
     releaseRoomComputerLease(event.threadId);
   }
@@ -3071,16 +3100,25 @@ async function startTurn(
       if (cfg.qdrant?.enabled !== false && instance.adapter.capabilities.qdrantMcp === true) {
         integrations.qdrant = qdrantIntegration(bot.id, threadId);
       }
-      // A bot works inside its own workspace directory rather than the
-      // user's home: a bot with file tools and acceptEdits gets a desk, not
-      // the whole house — and the workspace is where its MEMORY.md lives.
-      // Every engine that can read and write files has one, which since #442
-      // includes the HTTP engines: they reach the workspace through the
-      // `workspaceOrHostComputer` gate on the harness file tools.  Only
-      // boxAgent is left out, and for a reason that is about location rather
-      // than capability — its turn runs on box.ascii.dev, not this machine,
-      // so a folder here is not a folder it can open.
-      const worksInWorkspace = instance.driverKind !== "boxAgent";
+      // CLI engines work inside the bot's own workspace directory rather
+      // than the user's home: a bot with file tools and acceptEdits gets a
+      // desk, not the whole house — and the workspace is where its
+      // MEMORY.md lives. API/box engines have no local filesystem story.
+      //
+      // `grok` stays out deliberately, and the exclusion is a containment
+      // gap, not an oversight.  The workspace file tools — `read_file`,
+      // `write_file`, `edit_file` — are gated on `localComputer || workspace`
+      // (server/tools/registry.ts:475), and their executor resolves an
+      // absolute path verbatim with no containment check
+      // (server/tools/computer.ts:26-28).  So a workspace ALONE, with the
+      // bot's computers explicitly set to none, is enough to read any file
+      // the user can — `~/.botfleet/config.json` and its instance API keys
+      // included — and `read_file` carries no approval record, so no card
+      // ever appears.  That is already live on main for MiniMax and
+      // OpenAI-compat (board row 9998f9a9, P0).  Handing it to one more
+      // engine widens a known P0; Grok joins the others only once those
+      // tools are confined to the workspace real path.
+      const worksInWorkspace = instance.driverKind !== "grok" && instance.driverKind !== "boxAgent";
       const privateWorkspace = worksInWorkspace ? ensureWorkspace(bot.id) : undefined;
       const skillInstructions = renderSkillInstructions(selectedSkills, {
         includeRoot: worksInWorkspace && opts?.runOn !== "cloud",
@@ -3320,6 +3358,9 @@ async function startTurn(
           computerSystemPrompt(granted_mounts, {
             boxAgent: instance.driverKind === "boxAgent",
             hostPlatform: process.platform,
+            // The room lane passes the same flag.  A driver-loop engine holds
+            // the host through `bash` and the file tools, never a desktop.
+            toolLoopSurface: httpOnlyToolSurface,
           }) +
           // `integrations.composio` exists only when the selected driver
           // declared and mounted that capability above.
@@ -3375,7 +3416,7 @@ async function startTurn(
     } catch (e) {
       if (activeTurnOwners.forEvent(threadId, instanceId)?.dispatchId !== dispatchOwner.dispatchId) return;
       activeTurnOwners.settle(threadId, instanceId);
-      releaseLocalVmThread(threadId);
+      releaseLocalVmThread(threadId, bot.id);
       if (vpsLease) activeVpsThreads.release(vpsLease);
       watchdog.settle(threadId);
       turnUsage.delete(threadId);
@@ -4536,10 +4577,10 @@ async function runGroupMemberTurn(
   }`;
 
   // same workspace + memory as a 1:1 turn — the room is a different
-  // conversation, not a different bot.  boxAgent is the one exclusion, and
-  // it is about location rather than capability: its turn runs on
-  // box.ascii.dev, so a folder on this machine is not one it can open.
-  const worksInWorkspace = instance.driverKind !== "boxAgent";
+  // conversation, not a different bot.  The exclusions match the 1:1 lane's
+  // exactly, `grok` included; see the comment there for why widening it is
+  // held behind confining the workspace file tools.
+  const worksInWorkspace = instance.driverKind !== "grok" && instance.driverKind !== "boxAgent";
   const workspace = worksInWorkspace ? ensureWorkspace(bot.id) : undefined;
   // The room's folder pins here — on the first turn that actually
   // dispatches, not at PATCH time — so a folder set on a never-used room
@@ -4599,7 +4640,12 @@ async function runGroupMemberTurn(
     // different one.  Unwound the way a rejected dispatch is, because no
     // turn.completed will follow to do it.
     const message = error instanceof Error ? error.message : String(error);
-    releaseRoomComputerLease(threadId);
+    // Both claims, not just the VPS one: `acquireLocalVmMount` records the
+    // Local VM's thread and target before its own first await, so a resolver
+    // that throws after claiming (no Box key, an unready VM) leaves the
+    // container pinned against the idle reaper unless this hands it back.
+    releaseRoomComputerLease(threadId, bot.id);
+    releaseLocalVmThread(threadId, bot.id);
     activeTurnOwners.settle(threadId, instance.instanceId);
     store.appendMessage(threadId, {
       role: "bot",
@@ -4616,13 +4662,18 @@ async function runGroupMemberTurn(
     return true;
   }
   // Record the lease BEFORE the cancelled check: a stale dispatch still
-  // claimed it.  A VPS lease taken in a room is released by the
-  // turn.completed subscriber, which is thread-keyed for exactly this
-  // reason — the 1:1 release path hangs off `store.botByThread`, and a room
-  // thread has no owning bot.
-  if (turnComputers.vpsLease) roomComputerLeases.set(threadId, turnComputers.vpsLease);
+  // claimed it.  A VPS lease taken in a room is released by this dispatch's
+  // own unwind and, for a turn that reaches the provider, by the
+  // turn.completed subscriber — the 1:1 release path hangs off
+  // `store.botByThread`, and a room thread has no owning bot.  Keyed by
+  // thread AND bot so two members in flight on one thread cannot evict each
+  // other's entry.
+  if (turnComputers.vpsLease) roomComputerLeases.set(threadId, bot.id, turnComputers.vpsLease);
   if (turnComputers.cancelled) {
-    releaseRoomComputerLease(threadId);
+    // Same pairing as the catch above: the resolver takes the Local VM claim
+    // before its checkpoint, so a stop during resolution must give it back.
+    releaseRoomComputerLease(threadId, bot.id);
+    releaseLocalVmThread(threadId, bot.id);
     activeTurnOwners.settle(threadId, instance.instanceId);
     releaseRoomSpeaker();
     return false;
@@ -4655,6 +4706,7 @@ async function runGroupMemberTurn(
     computerSystemPrompt(turnComputers.mounts, {
       boxAgent: instance.driverKind === "boxAgent",
       hostPlatform: process.platform,
+      toolLoopSurface: httpOnlyToolSurface,
     }) +
     // The room lane mounts the same recall proxy the 1:1 lane does (see the
     // `integrations.qdrant` assignment above), so it owes the bot the same
@@ -4785,6 +4837,14 @@ async function runGroupMemberTurn(
       })
       .catch((err) => {
         activeTurnOwners.settle(threadId, instance.instanceId);
+        // A rejected dispatch produces no turn.completed, so nothing else
+        // will hand these back — and `watchdog.settle` below unregisters the
+        // stall path, so its grace release cannot pick them up either.  The
+        // 1:1 catch makes exactly these two calls for exactly this reason.
+        // Left stranded, `activeVpsThreads.hasBot` answers 409 to VPS sleep,
+        // remove, alias and backend changes for a turn that never ran.
+        releaseRoomComputerLease(threadId, bot.id);
+        releaseLocalVmThread(threadId, bot.id);
         const message = err instanceof Error ? err.message : "turn failed";
         store.appendMessage(threadId, {
           role: "bot",
@@ -4803,6 +4863,13 @@ async function runGroupMemberTurn(
   // produces turn.completed (or the stall watchdog's grace fallback runs).
   // Do not clear busy or start the next member on that same thread early.
   if (outcome === "stalled" || outcome === "timed_out") return false;
+  // The turn is over and this scope is the only place that knows whose it
+  // was, so hand both claims back by their exact keys.  The thread-keyed
+  // subscriber has normally done it already and these are no-ops; they are
+  // what covers the case it declines, when a second member is in flight on
+  // this same room thread and a thread alone cannot name the speaker.
+  releaseRoomComputerLease(threadId, bot.id);
+  releaseLocalVmThread(threadId, bot.id);
   // turn.completed normally performs this cleanup; this is the fallback.
   releaseRoomSpeaker();
   if (outcome === "dispatch_failed") {
@@ -5651,10 +5718,10 @@ function settleInterruptedBots(
     }
     activeTurnOwners.clearThread(inflight);
     watchdog.settle(inflight);
-    const vmThread = [...localVmThreadTargets.entries()].find(([, target]) =>
-      localVmLeaseFor(target).current(localVmOwnerBusy)?.botId === b.id
-    )?.[0];
-    if (vmThread) releaseLocalVmThread(vmThread);
+    // The claim itself names the bot, so this is the same test the lease
+    // lookup used to perform, one step earlier and one map less.
+    const vmClaim = localVmThreadTargets.findByBot(b.id);
+    if (vmClaim) releaseLocalVmThread(vmClaim.threadId, vmClaim.botId);
     stopScreenPoller(b.id);
     activeVpsThreads.clearBot(b.id);
     finalizeDelegationWatch(

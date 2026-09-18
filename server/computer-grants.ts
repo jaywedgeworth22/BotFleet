@@ -98,6 +98,25 @@ const SINGLE_PROMPTS = {
   local: " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully.",
 } satisfies Record<ComputerKind, string>;
 
+/** What a host grant actually puts in the engine's hands.
+ *
+ * An MCP engine mounts the Cua Driver server and really can see and click the
+ * desktop.  A toolLoop engine mounts no MCP server at all: its host surface is
+ * the harness's own `bash`, `read_file`, `write_file` and `edit_file` behind
+ * the `workspaceOrHostComputer` gate in server/tools/registry.ts, and that
+ * registry holds no screenshot, click or desktop-state tool.  Telling that
+ * engine to read the desktop first spends its turn reaching for tools that do
+ * not exist — so the sentence has to match the surface, not the grant. */
+function localPrompt(toolLoopSurface: boolean): string {
+  if (!toolLoopSurface) return SINGLE_PROMPTS.local;
+  return (
+    " You can act on the user's computer through the shell and file tools — run commands with `bash`, and read," +
+    " write, and edit files by path. You have no screen on this surface: there is no screenshot, click, or" +
+    " desktop-state tool, so do the work from the command line, and say so plainly if a task genuinely needs the" +
+    " graphical desktop."
+  );
+}
+
 /** One line per computer when several are mounted, naming the tool prefix so
  * the agent can tell them apart at the point of use. */
 function multiLine(mount: ComputerMount): string {
@@ -135,7 +154,14 @@ function selectionPolicy(remote: ComputerMount, host: ComputerMount): string {
  * and states the selection rule. */
 export function computerSystemPrompt(
   mounts: ComputerMount[],
-  opts: { boxAgent?: boolean; hostPlatform?: NodeJS.Platform } = {},
+  opts: {
+    boxAgent?: boolean;
+    hostPlatform?: NodeJS.Platform;
+    /** True for a driver-loop engine, which receives HTTP tool definitions
+     * rather than MCP servers.  Both dispatchers pass it, so the two lanes
+     * cannot describe the same grant differently. */
+    toolLoopSurface?: boolean;
+  } = {},
 ): string {
   if (mounts.length === 0) return "";
 
@@ -147,7 +173,12 @@ export function computerSystemPrompt(
     const [only] = mounts;
     // The box-native agent already runs on its box; describing the box to it
     // as a separate computer only confuses the agent about where it is.
-    const body = only.kind === "box" && opts.boxAgent ? "" : SINGLE_PROMPTS[only.kind];
+    const body =
+      only.kind === "box" && opts.boxAgent
+        ? ""
+        : only.kind === "local"
+          ? localPrompt(opts.toolLoopSurface === true)
+          : SINGLE_PROMPTS[only.kind];
     return body + protectedInput;
   }
 
