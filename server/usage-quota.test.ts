@@ -322,6 +322,32 @@ describe("local subscription caps", () => {
     expect(quotaCooldowns.list().map((cd) => cd.model)).toEqual(["claude-sonnet-4-6"]);
   });
 
+  it("lets a monthly row with an unmatched id cap the whole engine, as any plan-level row does", async () => {
+    // The one place the catalog check caps MORE than before rather than less,
+    // so it is pinned rather than left implicit.  A monthly / plan-limit row
+    // says the allowance itself is spent — `isPlanLevelSkip` has always made
+    // that `"*"` — and the old short-circuit on an unmatched id turned it into
+    // a cooldown key nothing looked up, which diverted nothing at all.  Only
+    // the collector's own verdict reaches this path, never a derived 0%, so
+    // the evidence for capping the engine is the producer's own.
+    const claude = {
+      instanceId: "claude",
+      driverKind: "claudeAgent",
+      models: { options: [{ id: "claude-opus-4-6" }] },
+    };
+    await poller([localWindow({
+      id: "anthropic:monthly",
+      provider: "anthropic",
+      providerKey: "anthropic",
+      sourceApp: "usage-monitor-mac:anthropic",
+      label: "Claude monthly",
+      window: "monthly",
+      modelId: "claude-opus-4-1-20250805",
+      modelType: "opus",
+    })], {}, [claude]).poll();
+    expect(quotaCooldowns.list().map((cd) => cd.model)).toEqual(["*"]);
+  });
+
   it("caps every model of a family when the window names a family instead of a model", async () => {
     const claude = {
       instanceId: "claude",
