@@ -12,12 +12,13 @@ import { fetchObservabilityStatus, sendObservabilityTestEvent } from "@/lib/obse
 import { buildObservabilityConfigPatch, initialSendDiagnostics } from "@/lib/observability-config";
 import { observabilityBadge, observabilityHost, type ObservabilityStatusView } from "@/lib/observability-status";
 import { refreshSentryFromRuntime } from "@/lib/sentry";
+import { productErrorHeadline } from "@/lib/product-error";
 
 const observabilityInputClass =
   "w-full rounded-lg border border-hairline/40 bg-inset px-3 py-2 text-[13px] text-ink placeholder:text-ink-secondary focus:border-hairline focus:outline-none disabled:cursor-not-allowed disabled:opacity-60";
 
 const cnSwitch = (on: boolean) =>
-  `relative h-6 w-11 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${on ? "bg-accent" : "bg-control"}`;
+  `relative h-6 w-11 shrink-0 rounded-full transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-40 ${on ? "bg-accent" : "bg-control"}`;
 const cnKnob = (on: boolean) =>
   `absolute top-[3px] h-[18px] w-[18px] rounded-full bg-white transition-all ${on ? "left-[21px]" : "left-[3px]"}`;
 
@@ -394,8 +395,8 @@ export function ObservabilitySection() {
               )}
             </div>
             {saveError && (
-              <div role="alert" className="text-[12px] text-danger">
-                {saveError}
+              <div role="alert" className="text-[12px] text-danger" title={saveError}>
+                {productErrorHeadline(saveError)}
               </div>
             )}
             <div className="text-[12px] leading-relaxed text-ink-secondary">

@@ -6,6 +6,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, Loader2, RefreshCw, Search, TriangleAlert, X } from "lucide-react";
 import { api, useStore } from "@/state/store";
 import { cn } from "@/lib/cn";
+import { ConfirmDialog } from "./ConfirmDialog";
+import { productErrorHeadline } from "@/lib/product-error";
 import { readCachedInventory, writeCachedInventory } from "@/lib/connected-apps-cache";
 
 interface ToolkitCard {
@@ -327,6 +329,7 @@ export function PluginsPanel() {
     cachedConnectorStatus === null ? "loading" : "ready",
   );
   const [error, setError] = useState<string | null>(null);
+  const [pendingDisconnect, setPendingDisconnect] = useState<null | { slug: string; account: { id: string; alias?: string }; label: string }>(null);
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState<"marketplace" | "connected">("marketplace");
 
@@ -703,7 +706,7 @@ export function PluginsPanel() {
             for the full catalog.
           </div>
         )}
-        {error && <div role="alert" className="mx-6 mt-2 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger sm:mx-8">{error}</div>}
+        {error && <div role="alert" className="mx-6 mt-2 rounded-lg bg-danger/10 px-3 py-2 text-[12px] text-danger sm:mx-8" title={error}>{productErrorHeadline(error)}</div>}
 
         <div className="min-h-0 flex-1 overflow-y-auto px-6 pb-7 pt-5 sm:px-8">
           {cards === null ? (
@@ -793,8 +796,7 @@ export function PluginsPanel() {
                               type="button"
                               disabled={busy}
                               onClick={() => {
-                                if (!window.confirm(disconnectAccountConfirmation(card.label, account))) return;
-                                disconnectAccount(card.slug, account.id);
+                                setPendingDisconnect({ slug: card.slug, account, label: card.label });
                               }}
                               className="rounded-md px-2 py-1 text-[11px] text-ink-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:opacity-40"
                               aria-label={`Disconnect ${account.alias || account.id} from ${card.label}`}
@@ -866,6 +868,17 @@ export function PluginsPanel() {
           )}
         </div>
       </div>
+      <ConfirmDialog
+        open={Boolean(pendingDisconnect)}
+        title="Disconnect Account?"
+        body={pendingDisconnect ? disconnectAccountConfirmation(pendingDisconnect.label, pendingDisconnect.account) : ""}
+        confirmLabel="Disconnect"
+        onCancel={() => setPendingDisconnect(null)}
+        onConfirm={() => {
+          if (pendingDisconnect) disconnectAccount(pendingDisconnect.slug, pendingDisconnect.account.id);
+          setPendingDisconnect(null);
+        }}
+      />
     </div>
   );
 }

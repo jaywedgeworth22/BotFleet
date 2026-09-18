@@ -7,6 +7,7 @@ import { GitBranch, Wrench } from "lucide-react";
 import { api, useStore, formatTime } from "@/state/store";
 import { MausAvatar } from "./Avatar";
 import { cn } from "@/lib/cn";
+import { productErrorHeadline } from "@/lib/product-error";
 import type { SearchHit } from "@/lib/search-hit";
 import { landOnSearchHit } from "@/lib/focus-message";
 
@@ -57,7 +58,7 @@ export function SearchResults({ query, onLanded }: { query: string; onLanded: ()
       <div className="px-3 pb-1 text-[11px] font-medium uppercase tracking-wide text-ink-secondary">
         Messages{hits ? ` · ${hits.length}${hits.length === 40 ? "+" : ""}` : ""}
       </div>
-      {error && <div className="px-3 py-2 text-[12.5px] text-danger">couldn't search: {error}</div>}
+      {error && <div className="px-3 py-2 text-[12.5px] text-danger" title={error}>{productErrorHeadline(error)}</div>}
       {hits && hits.length === 0 && !error && <div className="px-3 py-3 text-[13px] text-ink-secondary">No messages match “{q}”</div>}
       {hits?.map((hit) => {
         const bot = hit.botId ? state.bots.find((b) => b.id === hit.botId) : undefined;

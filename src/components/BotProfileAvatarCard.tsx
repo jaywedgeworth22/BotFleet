@@ -4,6 +4,7 @@ import { Check, ImagePlus, Loader2, Sparkles, Trash2 } from "lucide-react";
 import { api, useStore, type Bot, type ConfigStatus } from "@/state/store";
 import { guessImageMime, imageAttachmentFromFile } from "@/lib/composer-attachments";
 import { cn } from "@/lib/cn";
+import { productErrorHeadline } from "@/lib/product-error";
 import {
   PICKABLE_STATES,
   MAUS_COLORS,
@@ -371,7 +372,7 @@ export function BotProfileAvatarCard({
           )}
         </div>
 
-        {error && <div role="alert" className="mt-3 text-[12px] text-danger">{error}</div>}
+        {error && <div role="alert" className="mt-3 text-[12px] text-danger" title={error}>{productErrorHeadline(error)}</div>}
       </div>
     </div>
   );

@@ -97,7 +97,7 @@ struct GroupProfileView: View {
                     TextField("Name", text: $name)
                         .disabled(busy)
                         .autocorrectionDisabled()
-                    TextField("Bulletin (Instructions for the team)", text: $bulletin, axis: .vertical)
+                    TextField("Bulletin (Shared Brief for the team)", text: $bulletin, axis: .vertical)
                         .disabled(busy)
                         .lineLimit(2...6)
                 }
