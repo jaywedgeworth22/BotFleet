@@ -250,10 +250,13 @@ describe("Agent RAG proxy behind Cloudflare Access", () => {
       category: "lesson",
     });
 
-    // One probe, not one per call: the search verified the collection and
-    // the contribute a moment later rides that verdict (see the caching
-    // block below).
-    expect(service.seen.map((hit) => hit.path)).toEqual(["/health", "/recall/stats", "/recall/search", "/recall/contribute"]);
+    // The search may ride a cached verdict; the contribute re-probes first,
+    // every time, because the write body names no collection (see the
+    // caching block below).
+    expect(service.seen.map((hit) => hit.path)).toEqual([
+      "/health", "/recall/stats", "/recall/search",
+      "/health", "/recall/stats", "/recall/contribute",
+    ]);
     for (const hit of service.seen) {
       expect(hit.accessId).toBe("fixture-client.access");
       expect(hit.accessSecret).toBe("fixture-access-secret");
@@ -323,12 +326,20 @@ describe("Agent RAG proxy caches a verified collection and its search results", 
   // turn.  Before this, every search and every contribute re-ran the full
   // probe (GET /health then GET /recall/stats), so one search was three
   // round trips and the same two calls repeated for the life of the
-  // session — even though the collection cannot change under it.
+  // session — even though the collection rarely changes under it.
+  //
+  // Rarely is not never, and only searches take that bet.  A contribution
+  // re-probes every time: the write body names no collection, so the probe
+  // is the only check that the corpus about to be written is still the
+  // configured one.
 
-  /** A stub that records every path and can be told to fail one route once. */
-  async function startService(options: { failSearchOnce?: boolean } = {}) {
+  /** A stub that records every path, can be told to fail one route once, and
+   * can be told to start reporting a different collection once a search has
+   * been served — a service restarted under a running bot. */
+  async function startService(options: { failSearchOnce?: boolean; collectionAfterSearch?: string } = {}) {
     const paths: string[] = [];
     let searches = 0;
+    let owned = "agent-memory";
     const server = createServer((req, res) => {
       const url = req.url ?? "";
       paths.push(url);
@@ -345,10 +356,11 @@ describe("Agent RAG proxy caches a verified collection and its search results", 
           hits: [{ text: `a stored lesson for ${url}`, score: 0.9 }],
           mode: "hybrid",
           doc_id: "doc-7",
-          collection: "agent-memory",
+          collection: owned,
           points: 3,
           backend_ok: true,
         }));
+        if (url === "/recall/search" && options.collectionAfterSearch) owned = options.collectionAfterSearch;
       });
     });
     stub = server;
@@ -408,8 +420,51 @@ describe("Agent RAG proxy caches a verified collection and its search results", 
     await service.callTool("recall_search", { query: "how do we deploy" });
 
     expect(service.paths).toEqual([
-      "/health", "/recall/stats", "/recall/search", "/recall/contribute", "/recall/search",
+      "/health", "/recall/stats", "/recall/search",
+      // The contribution re-probes, then its own fresh verdict covers the
+      // search that follows it.
+      "/health", "/recall/stats", "/recall/contribute", "/recall/search",
     ]);
+  });
+
+  it("re-probes before every contribution, so a write never rides a cached verdict", async () => {
+    const service = await startService();
+
+    await service.callTool("recall_search", { query: "how do we deploy" });
+    await service.callTool("recall_contribute", {
+      text: "A lesson long enough to be a real contribution to the shared corpus.",
+      category: "lesson",
+    });
+    await service.callTool("recall_contribute", {
+      text: "A second lesson, also long enough to be a real contribution to the corpus.",
+      category: "lesson",
+    });
+
+    expect(service.paths).toEqual([
+      "/health", "/recall/stats", "/recall/search",
+      "/health", "/recall/stats", "/recall/contribute",
+      "/health", "/recall/stats", "/recall/contribute",
+    ]);
+  });
+
+  it("refuses a contribution when the service has started owning a different collection", async () => {
+    // The regression this pins: the contribute body carries no collection
+    // name, so if a service restarts owning another corpus within the
+    // verification TTL, a contribution that rode the search's cached verdict
+    // landed in the wrong corpus and reported success.
+    const service = await startService({ collectionAfterSearch: "someone-elses-memory" });
+
+    const found = await service.callTool("recall_search", { query: "how do we deploy" });
+    const refused = await service.callTool("recall_contribute", {
+      text: "A lesson long enough to be a real contribution to the shared corpus.",
+      category: "lesson",
+    });
+
+    expect(found).toContain("a stored lesson");
+    expect(refused).toContain("different collection");
+    expect(refused).not.toMatch(/Successfully contributed|doc-7/);
+    // The write never left the process: the probe ran and stopped it.
+    expect(service.paths).toEqual(["/health", "/recall/stats", "/recall/search", "/health", "/recall/stats"]);
   });
 });
 

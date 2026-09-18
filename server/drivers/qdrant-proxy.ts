@@ -146,9 +146,18 @@ async function runCli(subcommand: string, args: string[]): Promise<string> {
 // Both caches hold positive results only, both are short, and any failure
 // retires them: a stale "the corpus is fine" verdict is exactly the thing
 // worth being careful about, so it never survives an error.
+//
+// A WRITE never rides a cached verdict.  The costs are not symmetric: a
+// stale verdict on a search reads the wrong corpus and the bot sees the
+// wrong answers, but a stale verdict on a contribution PUTS a lesson in
+// somebody else's corpus and reports success.  The contribute body carries
+// no collection name, so the probe is the only thing standing between a
+// restarted service that now owns a different collection and a misfiled
+// lesson — which is why `recall_contribute` always pays for it.
 
-/** How long a successful collection probe stands for.  Short enough that a
- * service restarted under a running bot is re-probed within the minute. */
+/** How long a successful collection probe stands for a SEARCH.  Short enough
+ * that a service restarted under a running bot is re-probed within the
+ * minute.  Contributions ignore it entirely. */
 const COLLECTION_VERIFY_TTL_MS = 60_000;
 /** How long an identical search stays answerable from memory, and how many
  * distinct searches are remembered (least-recently-used evicted first). */
@@ -193,10 +202,12 @@ function writeSearchCache(key: string, text: string): void {
 }
 
 /** The service owns one corpus; verify it before sending a query or
- * contribution — but at most once per TTL, not once per call. */
-async function verifyCollection(signal: AbortSignal): Promise<void> {
+ * contribution.  A search may ride a verdict formed within the TTL; a write
+ * passes `fresh` and always re-probes, because a cached verdict is a claim
+ * about the past and a misfiled contribution cannot be taken back. */
+async function verifyCollection(signal: AbortSignal, options: { fresh?: boolean } = {}): Promise<void> {
   if (!DEFAULT_COLLECTION) return;
-  if (Date.now() < collectionVerifiedUntil) return;
+  if (!options.fresh && Date.now() < collectionVerifiedUntil) return;
   try {
     await probeRecallService(RECALL_URL, recallHttpHeaders(), DEFAULT_COLLECTION, signal);
   } catch (error) {
@@ -444,7 +455,10 @@ async function recallContribute(args: Record<string, unknown>): Promise<string> 
   try {
     const headers = recallHttpHeaders();
     const signal = AbortSignal.timeout(RECALL_TOOL_TIMEOUT_MS);
-    await verifyCollection(signal);
+    // A write never rides a cached verdict: the body names no collection, so
+    // this probe is the only check that the service still owns the one that
+    // was configured.
+    await verifyCollection(signal, { fresh: true });
 
     const res = await fetchRecall(`${RECALL_URL}/recall/contribute`, {
       method: "POST",
@@ -484,7 +498,14 @@ async function recallStats(): Promise<string> {
   const status = await recallStatus({ url: RECALL_URL, apiKey: RECALL_API_KEY, collection: DEFAULT_COLLECTION,
     accessClientId: ACCESS_CLIENT_ID, accessClientSecret: ACCESS_CLIENT_SECRET }, RECALL_TOOL_TIMEOUT_MS);
   if (!status.configured) return NOT_CONFIGURED_MESSAGE;
-  if (!status.ready) return `Bot RAG status check failed: ${status.error}.`;
+  if (!status.ready) {
+    // This call just saw the corpus fail its own check — a collection
+    // mismatch, an unhealthy backend, a gate.  Whatever an earlier probe
+    // concluded is now known to be out of date, so retire it here too
+    // instead of letting a search or a contribution act on it.
+    invalidateRecallCaches();
+    return `Bot RAG status check failed: ${status.error}.`;
+  }
   return `Bot RAG status [${status.collection}]:\n- Source: ${status.source}\n- Backend: healthy\n- Points: ${status.pointsCount?.toLocaleString()}\n- Checked: ${new Intl.DateTimeFormat("en-US", { timeZone: "America/Chicago", dateStyle: "medium", timeStyle: "short" }).format(status.checkedAt)} CT`;
 }
 
