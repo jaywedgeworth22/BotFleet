@@ -3,6 +3,11 @@
 # artifact set.  The default run only uploads a private Actions artifact.
 # Draft creation and publication are separate, explicit inputs.
 #
+# Publish target = the built-in GITHUB_TOKEN.  The job's `contents: write`
+# (set just below) is the only extra scope the release steps need, and
+# nothing in this repo listens for `released` events, so a fine-grained PAT
+# adds rotation without buying anything.  Decision on 2026-09-18.
+#
 # Every gate below exists because its absence shipped (or nearly shipped) a
 # broken build from a laptop:
 #   - clean output dirs        -> 0.1.15 "app is damaged" (stale dist/ broke the seal)
@@ -39,7 +44,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   # The one and only publish target. Must match electron-builder.yml
@@ -93,14 +98,15 @@ jobs:
       - name: Clean generated output
         run: rm -rf dist dist-server dist-native release
 
-      # Prefer the automation identity's Infisical values and accept the
-      # same-named GitHub secrets as a migration fallback.  A release without
-      # both values cannot be signed, so fail here with the missing names.
+      # MAC_CERT_P12_BASE64 / MAC_CERT_PASSWORD are not yet seeded in
+      # Infisical (orchestrator step 2) -- the GH_FALLBACK_ keeps this job
+      # green until they are.  Not `required`: decision 5 names both as
+      # pending an owner-supplied value, and a still-missing name here warns
+      # rather than failing this early.
       - name: Load the Developer ID certificate
         uses: ./.github/actions/infisical-secrets
         with:
           names: MAC_CERT_P12_BASE64 MAC_CERT_PASSWORD
-          required: MAC_CERT_P12_BASE64 MAC_CERT_PASSWORD
           project-id: ${{ secrets.INFISICAL_PROJECT_ID }}
           client-id: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_ID || secrets.INFISICAL_CLIENT_ID }}
           client-secret: ${{ secrets.INFISICAL_UNIVERSAL_AUTH_CLIENT_SECRET || secrets.INFISICAL_CLIENT_SECRET }}
