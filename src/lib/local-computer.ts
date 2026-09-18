@@ -1,6 +1,6 @@
 import type { CloudBackend } from "../../server/contracts.ts";
 import type { ComputerReach } from "../../server/computer-capability.ts";
-import type { Bot, InstanceInfo } from "@/state/store";
+import type { AppState, Bot, InstanceInfo } from "@/state/store";
 
 /** The engine's shipped reach, or `null` when the picker has never heard of
  *  the engine at all.  `null` is NOT "no reach": an engine the client does
@@ -129,6 +129,34 @@ export function instanceSupportsCloudComputer(
   const reach = reachFor(instances, bot);
   if (!reach) return true;
   return cloudBackend === "vps" ? reach.vps : reach.box;
+}
+
+/** Is the engine list loaded, so the reach answers above can be believed?
+ *
+ * The helpers fail OPEN for an instance the picker has never heard of, which
+ * is the right answer for an unknown ENGINE and the wrong one for a list that
+ * has not arrived yet.  `/api/instances` hydrates in parallel with the panel
+ * and a cold describe costs tens of seconds (`server/harness/registry.ts`),
+ * so during that window every bot looks like an unknown engine.  A caller
+ * that acts on fail-open there is not offering a destination optimistically —
+ * the computer panel's cloud lifecycle sends
+ * `POST /api/bots/:id/computer/provision`, which performs no capability check
+ * of its own and starts a container, or a BILLED ASCII.dev Box.  So the
+ * lifecycle holds until this answers true rather than spending on a guess.
+ *
+ * It cannot hold forever on a fleet that genuinely has no engines: hydration
+ * turns `ready` whether or not any row came back, and that ends the hold with
+ * the list believed empty.  A FAILED hydrate keeps holding, which is the
+ * point — nothing is known, and the app retries and re-hydrates on the next
+ * stream hello. */
+export function engineReachKnown({
+  instances,
+  hydrationStatus,
+}: {
+  instances: InstanceInfo[];
+  hydrationStatus: AppState["hydration"]["status"];
+}): boolean {
+  return instances.length > 0 || hydrationStatus === "ready";
 }
 
 /** Why a computer destination is not offered, in the words the picker shows.

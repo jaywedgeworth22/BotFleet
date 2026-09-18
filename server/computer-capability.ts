@@ -100,6 +100,21 @@ export function computerReach(input: ComputerCapabilityInput): ComputerReach {
     default:
       // No transport at all: an ACP engine configured without MCP servers
       // reaches nothing, and that is already what the server does today.
+      //
+      // Note what this branch does with `local`: it DISCARDS it.  That is the
+      // one cell where the derivation deviates from the rule it replaced —
+      // `server/index.ts`'s `mountsLocalComputer` read `localComputerMcp`
+      // alone, so it would have answered true for an engine with no transport
+      // at all.  Deliberate: a transport is how the harness can hand an engine
+      // a computer in the first place, and an engine it can neither mount an
+      // MCP server into nor hand tool definitions to has no way to be given
+      // the host either.  No shipped driver occupies the cell —
+      // `server/drivers/acp/core.ts` sets `computerMcp` and `localComputerMcp`
+      // from the one `mountsMcpServers` boolean, and every other built-in
+      // pairs `localComputerMcp` with `computerMcp` or `toolLoop` — which is
+      // why the engine-for-engine parity test still passes.  It is pinned as a
+      // deviation in `computer-capability.test.ts` rather than left to be
+      // rediscovered.
       return { ...NO_REACH };
   }
 }

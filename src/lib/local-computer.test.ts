@@ -5,6 +5,7 @@ import { engineFixture, type EngineFixture } from "../../server/computer-capabil
 import {
   autoSelectsLocalComputer,
   computerDestinationDisabledReason,
+  engineReachKnown,
   instanceSupportsCloudComputer,
   instanceSupportsLocalVm,
   instanceSupportsLocalComputer,
@@ -186,5 +187,38 @@ describe("computer destination eligibility", () => {
     expect(reason).toContain("Grok");
     expect(reason).toContain("Local VM");
     expect(computerDestinationDisabledReason("vm", instanceFor(engineFixture("Claude")), BOT, "box")).toBeNull();
+  });
+});
+
+describe("the engine list the eligibility answers rest on", () => {
+  it("is not known while the list is still hydrating, however fail-open reads", () => {
+    // The pairing that matters: the helpers answer "supported" for an empty
+    // list on purpose — an engine the client does not know is one the server
+    // may well accept — and an un-hydrated list is indistinguishable from
+    // that.  `/api/instances` is a parallel request and a cold describe costs
+    // tens of seconds, so the window is real.  The computer panel's cloud
+    // lifecycle spends money on that answer (a docker run, or a billed
+    // ASCII.dev Box), so it holds until this says the list is in.
+    expect(instanceSupportsCloudComputer([], BOT, "box")).toBe(true);
+    expect(engineReachKnown({ instances: [], hydrationStatus: "idle" })).toBe(false);
+    expect(engineReachKnown({ instances: [], hydrationStatus: "loading" })).toBe(false);
+  });
+
+  it("is known the moment a row lands, which is what re-runs the hold", () => {
+    expect(engineReachKnown({ instances: instanceFor(engineFixture("Claude")), hydrationStatus: "loading" })).toBe(true);
+  });
+
+  it("does not hold forever on a fleet that genuinely has no engines", () => {
+    // A settled hydrate answers the question even with nothing in it, so an
+    // empty list is believed rather than waited on.  Without this the panel
+    // would sit in "Checking…" for good.
+    expect(engineReachKnown({ instances: [], hydrationStatus: "ready" })).toBe(true);
+  });
+
+  it("keeps holding while hydration is failing, because nothing is known yet", () => {
+    // The app retries and re-hydrates on the next stream hello, so this is a
+    // hold rather than a dead end — and holding is the honest answer while
+    // the list cannot be fetched at all.
+    expect(engineReachKnown({ instances: [], hydrationStatus: "failed" })).toBe(false);
   });
 });

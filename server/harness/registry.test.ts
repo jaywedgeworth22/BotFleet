@@ -156,6 +156,26 @@ describe("ProviderRegistry", () => {
     expect(described.snapshot.reason).toContain("from-the-future");
     expect(described.displayName).toBe("Tomorrow");
     expect(described.models.options).toHaveLength(0);
+    // The shadow ships a computerReach like every other row, and the picker
+    // GATES destinations on that field now — so a row that shipped a
+    // permissive reach would offer a destination no driver here can drive.
+    // Derived from the all-false capabilities the shadow reports, not
+    // hardcoded beside them.
+    expect(described.computerReach).toEqual({ box: false, vps: false, vm: false, local: false });
+  });
+
+  it("still reaches its own box for a shadowed box-native engine", async () => {
+    // The other half of the shadow rule: reach is derived from the driver
+    // KIND as well as from the capabilities, because a remote agent's reach
+    // is a property of where the turn runs.  This is what the client computed
+    // for a shadow before the reach shipped, so a shadowed Computer engine
+    // must not quietly lose the one destination it has.
+    const registry = new ProviderRegistry([makeFakeDriver().driver]);
+    await registry.load({ computer: { driver: "boxAgent", displayName: "Computer" } });
+
+    const [described] = await registry.describe();
+    expect(described.snapshot.state).toBe("unavailable");
+    expect(described.computerReach).toEqual({ box: true, vps: false, vm: false, local: false });
   });
 
   it("downgrades a config-decode failure to a shadow with the error as reason", async () => {

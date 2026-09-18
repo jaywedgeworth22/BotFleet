@@ -91,6 +91,20 @@ describe("computer reach, every cell", () => {
       transport: "no transport, host control declared",
       driverKind: "someAcpAgent",
       capabilities: { localComputerMcp: true },
+      // Deliberately NOT local, and — like the remoteAgent twin above — a
+      // DEVIATION from the rule this replaced: `server/index.ts`'s
+      // `mountsLocalComputer` read `localComputerMcp` alone, so it answered
+      // true here.  The derivation asks for a transport first, because an
+      // engine the harness can neither mount an MCP server into nor hand tool
+      // definitions to has no way to be given the host either.  No shipped
+      // driver occupies this cell — drivers/acp/core.ts sets `computerMcp` and
+      // `localComputerMcp` from one `mountsMcpServers` boolean, and every
+      // other built-in pairs `localComputerMcp` with `computerMcp` or
+      // `toolLoop` — so this pins the rule rather than an engine's behaviour,
+      // and the engine-for-engine parity test below is not in conflict with
+      // it.  An engine that ever does occupy the cell is a driver change, and
+      // it loses host control the day it lands: that is the trade this cell
+      // records.
       expected: { box: false, vps: false, vm: false, local: false },
     },
     {
