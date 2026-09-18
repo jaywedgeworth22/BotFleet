@@ -185,7 +185,19 @@ describe("observability kill switch", () => {
     expect((await observability.apply()).enabled).toBe(true);
     expect(isSentryActive()).toBe(true);
     expect(record.inits).toHaveLength(1);
-    expect(record.inits[0]).toMatchObject({ dsn: CONFIG_DSN, sendDefaultPii: false, enableLogs: true });
+    expect(record.inits[0]).toMatchObject({
+      dsn: CONFIG_DSN,
+      sendDefaultPii: false,
+      enableLogs: true,
+      streamGenAiSpans: true,
+      dataCollection: {
+        userInfo: false,
+        cookies: false,
+        httpHeaders: { request: false, response: false },
+        urlQueryParams: false,
+        genAI: { inputs: false, outputs: false },
+      },
+    });
 
     cfg.observability = { ...cfg.observability, enabled: false };
     expect((await observability.apply()).enabled).toBe(false);

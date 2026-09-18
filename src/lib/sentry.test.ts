@@ -98,6 +98,8 @@ describe("browser Sentry", () => {
     expect(src).toMatch(/feedbackIntegration\(/);
     expect(src).toMatch(/autoInject:\s*false/);
     expect(src).toMatch(/enableLogs:\s*true/);
+    expect(src).toMatch(/sendDefaultPii:\s*false/);
+    expect(src).toMatch(/genAI:\s*\{\s*inputs:\s*false,\s*outputs:\s*false/);
   });
 
   it("iOS Cocoa reads SENTRY_DSN from Info.plist only", () => {

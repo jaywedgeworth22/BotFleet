@@ -312,6 +312,17 @@ async function applySentryConfigLocked(input: SentryRuntimeInput): Promise<Sentr
         ? [sdk.consoleLoggingIntegration({ levels: ["warn", "error"] })]
         : [],
       sendDefaultPii: false,
+      // Agents product: Conversations needs standalone gen_ai envelopes.
+      // dataCollection must be present for the product, but every category
+      // stays off — `{}` would opt into prompts, bodies, and user PII.
+      streamGenAiSpans: true,
+      dataCollection: {
+        userInfo: false,
+        cookies: false,
+        httpHeaders: { request: false, response: false },
+        urlQueryParams: false,
+        genAI: { inputs: false, outputs: false },
+      },
       profileSessionSampleRate: Number.isFinite(profileSessionSampleRate)
         ? Math.min(Math.max(profileSessionSampleRate, 0), 1)
         : 1,
