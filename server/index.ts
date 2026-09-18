@@ -112,6 +112,7 @@ import {
   resolveGrants,
   type ComputerMount,
 } from "./computer-grants.ts";
+import { computerReach } from "./computer-capability.ts";
 import {
   ensureDirs,
   instanceConfigs,
@@ -740,7 +741,12 @@ function botLocalAutoCapability(bot?: ComputerGrantSubject | null): LocalAutoCon
   return {
     hostPlatform: process.platform,
     ...(instance
-      ? { providerSupportsLocal: instance.adapter.capabilities.localComputerMcp === true }
+      ? {
+          providerSupportsLocal: computerReach({
+            driverKind: instance.driverKind,
+            capabilities: instance.adapter.capabilities,
+          }).local,
+        }
       : {}),
   };
 }
@@ -3067,9 +3073,15 @@ async function startTurn(
       // for a bot that has never chosen a backend of its own.
       const botBackend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
       const cloudBackend = opts?.runOn === "cloud" ? "box" : botBackend;
-      const mountsComputerMcp = instance.adapter.capabilities.computerMcp === true;
-      const mountsCloudComputer = mountsComputerMcp || instance.driverKind === "boxAgent";
-      const mountsLocalComputer = instance.adapter.capabilities.localComputerMcp === true;
+      // One derivation for every destination — see computer-capability.ts.
+      // These names are kept because the mount sites below read as "does
+      // this turn mount X", not "can this engine reach X".
+      const reach = computerReach({
+        driverKind: instance.driverKind,
+        capabilities: instance.adapter.capabilities,
+      });
+      const mountsCloudComputer = reach.box;
+      const mountsLocalComputer = reach.local;
       let previewCapture: (() => Promise<{ png: string; format: string }>) | null = null;
       const mounts: ComputerMount[] = [];
       let autoVpsProblem: string | null = null;
@@ -3077,7 +3089,7 @@ async function startTurn(
       // Explicit destinations are strict. In particular, Local VM must never
       // fall through to host CUA and accidentally click on the user's Mac.
       if (wantsVm) {
-        if (!mountsComputerMcp || instance.driverKind === "boxAgent") {
+        if (!reach.vm) {
           throw new Error("this model engine cannot use the Local VM — choose Claude or an ACP engine, or select another computer destination");
         }
         const localVmTarget = localVmTargetForBot(bot.id);
@@ -3150,7 +3162,7 @@ async function startTurn(
       // Explicit Cloud may prepare/start it. Auto remains read-only unless
       // the person explicitly opted this bot into remote lifecycle actions.
       if ((wantsCloud || autoCloud) && cloudBackend === "vps") {
-        const unsupported = vps.vpsDriverError(instance.driverKind, mountsComputerMcp);
+        const unsupported = vps.vpsDriverError(instance.driverKind, reach);
         if (unsupported && wantsCloud) throw new Error(unsupported);
         if (unsupported && autoCloud) autoVpsProblem = unsupported;
         if (!unsupported) {
@@ -4678,7 +4690,10 @@ async function runGroupMemberTurn(
     allowedDestinations,
   );
   const wantsLocal = granted.includes("local");
-  const mountsLocalComputer = instance.adapter.capabilities.localComputerMcp === true;
+  const mountsLocalComputer = computerReach({
+    driverKind: instance.driverKind,
+    capabilities: instance.adapter.capabilities,
+  }).local;
   const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
   // Same reasoning as the 1:1 dispatch: Bot RAG is host logic, not an MCP
   // mount, so any toolLoop driver qualifies once it is configured — and

@@ -9,6 +9,7 @@ import { decodeMinimaxConfig, resolveMinimaxCredentials, type MinimaxConfig } fr
 import { findCliCandidates } from "../env-path.ts";
 import { getCachedLocalMiniMaxConfig, getMiniMaxBalance } from "../minimax-balance.ts";
 import { quotaCooldowns } from "../model-fallback.ts";
+import { computerReach, type ComputerReach } from "../computer-capability.ts";
 import type {
   AnyProviderDriver,
   InstanceConfig,
@@ -129,6 +130,10 @@ export interface DescribedInstance {
     queueing?: boolean;
     approvalReview?: boolean;
   };
+  /** Which computer destinations this engine can be given at all — the ONE
+   *  answer, derived from the adapter's own flags in `computer-capability.ts`
+   *  and shipped so the picker looks it up rather than restating it. */
+  computerReach: ComputerReach;
   access: string;
   install: unknown;
   cli: string | undefined;
@@ -359,6 +364,14 @@ export class ProviderRegistry {
         snapshot: { state: "unavailable", reason: entry.shadow.reason } satisfies ProviderSnapshot,
         models: { default: "", options: [] },
         capabilities: { computerMcp: false, agentsMcp: false, localComputerMcp: false },
+        // A shadow has no adapter to ask, so the derivation is fed the same
+        // all-false capabilities reported above.  That leaves the box-native
+        // engine reaching its own box — which is what the client computed
+        // for a shadow before this was shipped rather than recomputed.
+        computerReach: computerReach({
+          driverKind: entry.shadow.driverKind,
+          capabilities: { computerMcp: false, localComputerMcp: false },
+        }),
         // an unknown driver has no driver record, hence no install path
         access: driver?.metadata.access ?? "subscription",
         install: driver?.install,
@@ -553,6 +566,13 @@ export class ProviderRegistry {
         localComputerMcp: inst.adapter.capabilities.localComputerMcp === true,
         approvalReview: inst.reviewPermission !== undefined,
       },
+      // Derived here, on the one wire where adapter capabilities already
+      // become an InstanceInfo, so the client never recomputes it and can
+      // never drift from the dispatch again.
+      computerReach: computerReach({
+        driverKind: inst.driverKind,
+        capabilities: inst.adapter.capabilities,
+      }),
       access: driver?.metadata.access ?? "subscription",
       install: driver?.install,
       cli: this.cliByInstance.get(inst.instanceId),

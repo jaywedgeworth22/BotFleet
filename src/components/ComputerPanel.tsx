@@ -36,12 +36,15 @@ import { MacLocalControl } from "./MacLocalControl";
 import { LocalComputerAutoWarning } from "./LocalComputerAutoWarning";
 import {
   autoSelectsLocalComputer,
+  instanceSupportsCloudComputer,
   instanceSupportsLocalComputer,
+  instanceSupportsLocalVm,
   linuxAutoDescription,
   localComputerDisabledReason,
   localComputerSelectable,
 } from "@/lib/local-computer";
 import { vpsComputerNeedsReplacement, type VpsComputerStatus } from "@/lib/vps-computer";
+import { resolveCloudBackend } from "../../server/computer-grants.ts";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
   const res = await fetch(path, { headers: { "content-type": "application/json" }, ...init });
@@ -153,17 +156,22 @@ export function ComputerPanel({
   useEffect(() => {
     vmReadinessAttempts.current = 0;
   }, [bot.id, bot.computers]);
+  // Capability and readiness are different questions and stay apart: the
+  // reach says what this ENGINE can ever be given, and a snapshot that is
+  // not "available" says this engine is not usable right now.  Only the VM
+  // path has ever gated on both, and it keeps doing so here.
   const vmSupported = Boolean(
     selectedInstance?.snapshot.state === "available" &&
-      selectedInstance.capabilities?.computerMcp &&
-      selectedInstance.driverKind !== "boxAgent",
+      instanceSupportsLocalVm(state.instances, bot),
   );
-  const computerToolSupported = selectedInstance?.capabilities?.computerMcp === true;
-  const vpsSupported = Boolean(computerToolSupported && selectedInstance?.driverKind !== "boxAgent");
   const cloudBackend = bot.cloudBackend ?? "box";
-  const cloudSupported = cloudBackend === "vps"
-    ? vpsSupported
-    : computerToolSupported || selectedInstance?.driverKind === "boxAgent";
+  // Where this bot's Cloud destination actually lands, workspace default
+  // included — the same resolver the turn uses.  `cloudBackend` above is
+  // still the bot's OWN setting, which is what the backend picker edits and
+  // what the labels below name.
+  const resolvedCloudBackend = resolveCloudBackend(bot.cloudBackend, state.config?.botDefaults?.cloudBackend);
+  const vpsSupported = instanceSupportsCloudComputer(state.instances, bot, "vps");
+  const cloudSupported = instanceSupportsCloudComputer(state.instances, bot, resolvedCloudBackend);
   const botRoutines = state.routines
     .filter((routine) => routine.botId === bot.id)
     .sort((a, b) => Number(b.enabled) - Number(a.enabled) || (a.nextRunAt ?? Infinity) - (b.nextRunAt ?? Infinity));
