@@ -248,6 +248,9 @@ export interface TaskUsage {
 export interface Bot {
   id: string;
   threadId: string;
+  /** Server-stamped create time. Used as the roster fallback when a bot
+   * has no messages and no task activity yet. */
+  createdAt?: number;
   /** every context this bot has, newest first */
   tasks?: Task[];
   name: string;
@@ -332,6 +335,23 @@ export function latestChatActivity(
 ): number {
   const fromTasks = (tasks ?? []).map((task) => task.lastActivity ?? task.createdAt);
   return Math.max(loadedLastAt ?? 0, createdAt, ...fromTasks);
+}
+
+/** Pinned first, then newest activity. Unread is a badge, not a sort key. */
+export function compareBotsByRecentActivity(a: Bot, b: Bot): number {
+  const pin = Number(b.pinned ?? false) - Number(a.pinned ?? false);
+  if (pin !== 0) return pin;
+  return (
+    latestChatActivity(b.tasks, visibleMessages(b).at(-1)?.at, b.createdAt ?? 0) -
+    latestChatActivity(a.tasks, visibleMessages(a).at(-1)?.at, a.createdAt ?? 0)
+  );
+}
+
+export function compareGroupsByRecentActivity(a: Group, b: Group): number {
+  return (
+    latestChatActivity(b.tasks, b.messages.at(-1)?.at, b.createdAt) -
+    latestChatActivity(a.tasks, a.messages.at(-1)?.at, a.createdAt)
+  );
 }
 
 /** All versions of a turn-starting message (itself + the forks that

@@ -334,6 +334,8 @@ public struct Room: Codable, Hashable, Identifiable, Sendable {
     public var working: Bool?
     public var messages: [Message]?
     public var hasMore: Bool?
+    /// Nested conversations in this channel. Absent on DMs and older harnesses.
+    public var tasks: [BotTask]?
 
     /// Older harnesses expose only `busyBotId`; current ones send `working`.
     public var isWorking: Bool { working ?? (busyBotId != nil) }

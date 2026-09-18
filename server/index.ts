@@ -922,7 +922,13 @@ function publicGroupState(group: GroupRecord) {
   const memberIds = group.dm
     ? group.memberIds
     : group.memberIds.filter((id) => store.bot(id));
-  return { ...group, memberIds, working: groupIsWorking(group) };
+  const tasks = group.dm ? undefined : store.groupTasks(group.id).map(wireGroupTask);
+  return {
+    ...group,
+    memberIds,
+    working: groupIsWorking(group),
+    ...(tasks ? { tasks } : {}),
+  };
 }
 
 function beginGroupTurnOperation(groupId: string, threadId: string): GroupTurnOperation {
