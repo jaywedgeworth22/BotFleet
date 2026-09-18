@@ -132,6 +132,45 @@ describe("computerSystemPrompt", () => {
     expect(prompt).toContain("You have 2 computers");
     expect(prompt).not.toContain("Default to");
   });
+
+  it("describes the host as a desktop only to an engine that is handed one", () => {
+    // An MCP engine mounts the Cua Driver server and really can see and click
+    // the desktop.  A driver-loop engine mounts no MCP server at all: its
+    // host surface is the harness's own bash and file tools, and that
+    // registry holds no screenshot, click or desktop-state tool.  Telling it
+    // to take a screenshot first spends its turn reaching for a tool that
+    // does not exist, so the sentence has to match the surface.
+    const host = nameMounts([mount("local")]);
+    const mcp = computerSystemPrompt(host, { hostPlatform: "darwin" });
+    const toolLoop = computerSystemPrompt(host, { hostPlatform: "darwin", toolLoopSurface: true });
+
+    expect(mcp).toContain("take a screenshot");
+    expect(mcp).toContain("computer tools");
+
+    expect(toolLoop).not.toContain("take a screenshot");
+    expect(toolLoop).not.toContain("accessibility actions");
+    expect(toolLoop).toContain("shell and file tools");
+    expect(toolLoop).toContain("`bash`");
+    // and it is told plainly that the screen is not there, so it neither
+    // reaches for the missing tool nor claims it looked.
+    expect(toolLoop).toContain("no screenshot, click, or desktop-state tool");
+    // Both still carry the shared tail, so the flag changes the description
+    // of the surface and nothing else.
+    expect(toolLoop).toContain("protected-input step");
+    expect(mcp).toContain("protected-input step");
+  });
+
+  it("leaves a remote computer's wording alone whatever surface the engine has", () => {
+    // Only the host mount's sentence is surface-dependent.  A VPS or a Local
+    // VM reaches a driver-loop engine the same way it reaches an MCP one, so
+    // the flag must not rewrite those.
+    for (const kind of ["vps", "vm"] as const) {
+      const mounts = nameMounts([mount(kind)]);
+      expect(computerSystemPrompt(mounts, { toolLoopSurface: true })).toBe(
+        computerSystemPrompt(mounts, { toolLoopSurface: false }),
+      );
+    }
+  });
 });
 
 describe("driver mounting (pi)", () => {
