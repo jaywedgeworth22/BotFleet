@@ -47,8 +47,10 @@ function recordingSink() {
   const contexts: Array<SentryCaptureContext | undefined> = [];
   const breadcrumbs: SentryBreadcrumb[] = [];
   const conversations: string[] = [];
+  const users: Array<{ id?: string; username?: string; email?: string } | null> = [];
   const sink: SentryAiSink = {
     setConversationId: (id) => conversations.push(id),
+    setUser: (user) => users.push(user),
     startInactiveSpan: (opts) => {
       // SAFETY: the field starts unset and only setStatus ever writes it, so
       // the assertion widens `undefined` to the shape that write produces.
@@ -83,7 +85,7 @@ function recordingSink() {
     },
     addBreadcrumb: (crumb) => breadcrumbs.push(crumb),
   };
-  return { sink, spans, exceptions, contexts, breadcrumbs, conversations };
+  return { sink, spans, exceptions, contexts, breadcrumbs, conversations, users };
 }
 
 afterEach(() => {
@@ -748,5 +750,22 @@ describe("Sentry provider vocabulary", () => {
   it("keeps an engine Sentry has no name for as its own kind", () => {
     expect(genAiProvider("opencodeGo")).toBe("opencodeGo");
     expect(genAiProvider("")).toBe("custom");
+  });
+});
+
+describe("Sentry Agents conversation identity", () => {
+  it("sets conversation id and user from bot identity for the Conversations User column", () => {
+    configureTurnIdentity(() => ({
+      botId: "bot-fixer",
+      botName: "Fixer",
+      roomId: "room-1",
+      roomName: "Ops",
+    }));
+    const { sink, conversations, users, spans } = recordingSink();
+    observeRuntimeEvent(base({ type: "turn.started" }), sink);
+    expect(conversations[0]).toBe("thread-1");
+    expect(users[0]).toEqual({ id: "bot-fixer", username: "Fixer" });
+    expect(spans[0].attributes["gen_ai.agent.name"]).toBe("Fixer");
+    expect(spans[0].attributes["gen_ai.conversation.id"]).toBe("thread-1");
   });
 });

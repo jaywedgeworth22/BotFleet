@@ -24,6 +24,7 @@ import {
 } from "@/lib/usage-monitor-quota";
 import { engineMeterNote, isPlanLevelSkip, quotaProviderForDriver, windowsForDriver } from "../../server/quota-window-map";
 import { botUsage, cachedInput, costCaption, formatTokens, formatUsd, hasFiniteCost, sumUsage, usageDetail } from "@/lib/usage";
+import { productErrorHeadline } from "@/lib/product-error";
 
 interface QuotaCooldownInfo {
   botId: string;
@@ -592,17 +593,7 @@ export function UsageSection() {
                   const value = group.remainingPercent == null
                     ? "not reported"
                     : `${group.remainingPercent}% available`;
-                  let line = `${group.label}: ${value} (5h window)`;
-                  if (group.group === "gemini") {
-                    const now = new Date();
-                    let target = new Date(now.getFullYear(), now.getMonth(), 17);
-                    if (now.getTime() > target.getTime()) {
-                      target.setMonth(target.getMonth() + 1);
-                    }
-                    const reset = formatResetCountdown(target.getTime(), now.getTime());
-                    line += `; monthly pool (resets in ${reset})`;
-                  }
-                  return line;
+                  return `${group.label}: ${value} (5h window)`;
                 })
               : [
                   // The wildcard cooldown (Cursor's monthly cap, an exhausted
@@ -1007,8 +998,8 @@ export function UsageSection() {
               )}
             </div>
             {saveError && (
-              <div role="alert" className="text-[12px] text-danger">
-                {saveError}
+              <div role="alert" className="text-[12px] text-danger" title={saveError}>
+                {productErrorHeadline(saveError)}
               </div>
             )}
             <div className="text-[12px] leading-relaxed text-ink-secondary">

@@ -6,11 +6,13 @@ import { CloudBackendPicker } from "./CloudBackendPicker";
 import { ModelPicker } from "./ModelPicker";
 import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { cn } from "@/lib/cn";
+import { railAsideClass } from "@/lib/layout-rails";
 import { requestNotificationPermission } from "@/lib/notify";
 import { botUsage, costCaption, formatTokens, formatUsd, hasFiniteCost } from "@/lib/usage";
 import { shortPath } from "@/lib/short-path";
 import { computerDestinationDisabledReason, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
 import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
+import { BotSkillsPanel } from "./BotSkillsPanel";
 import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./LocalComputerAutoWarning";
 import { VoiceSettings } from "./VoiceSettings";
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
@@ -382,7 +384,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
   return (
     <>
-    <aside className="animate-panel-in relative z-20 flex h-full w-[400px] shrink-0 flex-col border-l border-hairline/40 bg-panel">
+    <aside className={railAsideClass("w-[400px]")}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3">
         <button
@@ -763,6 +765,13 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
           {/* keyed so switching bots never shows one bot's notes under another's name */}
           <MemoryCard key={bot.id} bot={bot} />
+
+          {/* Skills sit beside Memory because they are the same kind of
+              thing: plain files in the bot's workspace that a person owns.
+              Keyed for the same reason — one bot's imports must never show
+              under another's name, and the read-then-enable gate is a
+              per-bot decision. */}
+          <BotSkillsPanel key={`skills-${bot.id}`} bot={bot} driverKind={engine?.driverKind} />
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
             <div>

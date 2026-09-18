@@ -286,6 +286,10 @@ export function selectTurnFallback(input: {
 }): TurnFallbackPick | undefined {
   if (input.ok) return undefined;
   if (input.stopReason === "interrupted" || input.stopReason === "cancelled") return undefined;
+  // The next engine receives the same prompt.  Falling over is how Compiler
+  // showed both `session/prompt timed out` and Antigravity's argv-only
+  // "prompt too large" on one webhook turn.
+  if (input.stopReason === "prompt_too_large") return undefined;
   if (input.produced && !input.quotaOrCap) return undefined;
   const chain = input.fallbacks;
   if (!chain?.length) return undefined;
