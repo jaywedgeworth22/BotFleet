@@ -970,7 +970,11 @@ describe("Antigravity host control", () => {
     expect(host.events.filter((e) => e.type === "session.started")).toHaveLength(1);
   });
 
-  it("kills the refused child rather than reading past it", async () => {
+  // Windows-only skip: killCliTree there is `taskkill /PID /T /F`, a hard kill
+  // that delivers no signal the child could ever observe, so there is nothing
+  // for the fake to record.  The always-proceed case above still proves on
+  // every platform that the tool never ran.
+  it.skipIf(process.platform === "win32")("kills the refused child rather than reading past it", async () => {
     // Ignoring the rest of the stream would leave agy running with a mounted
     // computer and nobody watching — the turn would look ended while the
     // process that could still act on this Mac was very much alive.  The
