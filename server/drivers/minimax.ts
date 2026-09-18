@@ -43,11 +43,15 @@ const CN_URL = "https://api.minimaxi.com/v1";
 const SNAPSHOT_CACHE_MS = 60_000;
 const SNAPSHOT_PROBE_TIMEOUT_MS = 8_000;
 
+// Plain MiniMax-M2.7 dropped: it billed the same $0.30/$1.20 per million as
+// M3's own <=512K tier for a fifth of the context, so M3 strictly dominated
+// it.  M2.7-highspeed stays — it is MiniMax's own faster-inference tier
+// (see UTILITY_MODEL below) priced at $0.60/$2.40, genuinely different from
+// M3's rate at any input size highspeed's own 204,800 context can hold.
 const MODELS: ModelCatalog = {
   default: "MiniMax-M3",
   options: [
     { id: "MiniMax-M3", label: "MiniMax M3", contextWindow: 1_000_000 },
-    { id: "MiniMax-M2.7", label: "MiniMax M2.7", contextWindow: 204_800 },
     { id: "MiniMax-M2.7-highspeed", label: "MiniMax M2.7 Highspeed", contextWindow: 204_800 },
   ],
 };
@@ -76,6 +80,9 @@ export const MINIMAX_PRICE_PER_MILLION: ChatCompletionsPriceTable = {
     { maxInputTokens: 512_000, input: 0.3, output: 1.2, cachedInput: 0.06 },
     { input: 0.6, output: 2.4, cachedInput: 0.12 },
   ],
+  // Retired from MODELS.options above (dominated by M3), but priced still —
+  // a bot whose saved selection or a typed custom slug still names this id
+  // keeps real cost tracking instead of silently going unpriced.
   "MiniMax-M2.7": [{ input: 0.3, output: 1.2, cachedInput: 0.06 }],
   "MiniMax-M2.7-highspeed": [{ input: 0.6, output: 2.4, cachedInput: 0.06 }],
 };
