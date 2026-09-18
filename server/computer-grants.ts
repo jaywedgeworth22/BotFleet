@@ -343,6 +343,20 @@ export function resolveCloudBackend(
   return botCloudBackend ?? workspaceDefault ?? "box";
 }
 
+/** True only when a cloud routine must ride the Box computer engine.
+ *
+ * `runOn === "cloud"` grants the cloud destination; the backend still decides
+ * whether that destination is Box or the operator's VPS.  Forcing boxAgent on
+ * every cloud run made VPS routines die in vpsDriverError.  VPS keeps the
+ * bot's own engine selection. */
+export function cloudRunUsesBoxAgent(
+  runOn: "maus" | "cloud" | undefined,
+  botCloudBackend: "box" | "vps" | undefined,
+  workspaceDefault?: "box" | "vps",
+): boolean {
+  return runOn === "cloud" && resolveCloudBackend(botCloudBackend, workspaceDefault) === "box";
+}
+
 
 /* ── Turn-time resolution ───────────────────────────────────────────────────
  *

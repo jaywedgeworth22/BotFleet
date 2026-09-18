@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computerLabel,
   resolveCloudBackend,
+  cloudRunUsesBoxAgent,
   autoDestinations,
   resolveGrants,
   computerSystemPrompt,
@@ -304,7 +305,19 @@ describe("workspace defaults", () => {
     expect(resolveCloudBackend("vps", undefined)).toBe("vps");
     expect(resolveCloudBackend(undefined, "vps")).toBe("vps");
   });
+
+
+  it("uses boxAgent only for cloud+box, not cloud+vps", () => {
+    expect(cloudRunUsesBoxAgent("cloud", "vps", undefined)).toBe(false);
+    expect(cloudRunUsesBoxAgent("cloud", undefined, "vps")).toBe(false);
+    expect(cloudRunUsesBoxAgent("cloud", "box", undefined)).toBe(true);
+    expect(cloudRunUsesBoxAgent("cloud", undefined, undefined)).toBe(true);
+    expect(cloudRunUsesBoxAgent("cloud", undefined, "box")).toBe(true);
+    expect(cloudRunUsesBoxAgent("maus", "box", undefined)).toBe(false);
+    expect(cloudRunUsesBoxAgent(undefined, "box", undefined)).toBe(false);
+  });
 });
+
 
 describe("operator allowlist", () => {
   it("passes every grant through when the allowlist is absent", () => {
