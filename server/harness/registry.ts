@@ -4,6 +4,8 @@
 // startup failure (that behavior is what makes settings forward/backward
 // compatible — do not remove it); dispose tears an instance down without
 // touching its siblings.
+import { usageQuotaPoller } from "../usage-quota.ts";
+import { windowHeadlines, windowsLabelFromHeadlines } from "../../src/lib/quota-display.ts";
 import { lastAntigravityQuotaSnapshot, quotaModelsFromSnapshot } from "../antigravity-quota.ts";
 import { decodeMinimaxConfig, resolveMinimaxCredentials, type MinimaxConfig } from "../drivers/minimax.ts";
 import { findCliCandidates } from "../env-path.ts";
@@ -412,6 +414,35 @@ export class ProviderRegistry {
         if (inst.instanceId === "antigravity") {
           const agModels = quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot());
           Object.assign(models, agModels);
+        } else if (inst.instanceId !== "minimax") {
+          const providerKey = inst.driverKind === "openai" ? "chatgpt" : inst.driverKind;
+          const instanceWindows = usageQuotaPoller.getWindows().filter(w => w.providerKey === providerKey);
+          if (instanceWindows.length > 0) {
+            const headlines = windowHeadlines(instanceWindows as any);
+            const externalWindowsLabel = windowsLabelFromHeadlines(headlines);
+            const has5h = headlines.find((h) => h.bucket === "5h");
+            const hasWeekly = headlines.find((h) => h.bucket === "weekly");
+            const hasMonthly = headlines.find((h) => h.bucket === "monthly");
+            const primary = has5h || headlines.find((h) => h.bucket === "hourly" || h.bucket === "daily");
+            const secondary = hasWeekly || hasMonthly;
+            
+            const externalPrimaryPercent = primary?.remainingPercent ?? undefined;
+            const externalSecondaryPercent = secondary?.remainingPercent ?? undefined;
+            const isExhausted = primary?.exhausted || secondary?.exhausted;
+
+            if (externalWindowsLabel || isExhausted) {
+              for (const id of catalogIds) {
+                const existing = models[id];
+                models[id] = {
+                  ...existing,
+                  capped: existing?.capped || Boolean(isExhausted),
+                  remainingPercent: existing?.remainingPercent ?? externalPrimaryPercent ?? null,
+                  secondaryRemainingPercent: existing?.secondaryRemainingPercent ?? externalSecondaryPercent ?? null,
+                  windowsLabel: existing?.windowsLabel ?? externalWindowsLabel,
+                };
+              }
+            }
+          }
         }
         // MiniMax's Token Plan quota (server/minimax-balance.ts) reports one
         // pool PER PRODUCT ("general" = chat, "video" = video generation, …)
