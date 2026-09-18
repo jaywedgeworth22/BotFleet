@@ -431,6 +431,13 @@ function EngineRow({
           {"  "}Files, Terminal, the web, connected apps, and this computer need Claude, Codex, Antigravity, or Cursor.
         </div>
       )}
+      {instance.driverKind === "boxAgent" && (
+        <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
+          <strong className="text-ink">Runs on Its Own Computer.</strong>
+          {"  "}A bot on the Computer engine runs its turn on box.ascii.dev, not on this computer, so it has no team tools, no peers to ask, no approval cards, no memory, and no skills.
+          {"  "}Pick another engine for a bot that has to work with the rest of your team.
+        </div>
+      )}
       {isCustom && (
         <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
           <strong className="text-ink">{customEngineCalloutTitle(instance.driverKind)}</strong>

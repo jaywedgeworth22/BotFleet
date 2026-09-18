@@ -411,6 +411,12 @@ export function ModelPicker({
                       {"  "}Files, Terminal, and the web need Claude, Codex, Antigravity, or Cursor.
                     </div>
                   )}
+                  {railInstance.driverKind === "boxAgent" && (
+                    <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
+                      <strong>Works Alone:</strong>
+                      {"  "}This bot runs its turn on box.ascii.dev, so it has no team tools, no peers to ask, no approval cards, no memory, and no skills.
+                    </div>
+                  )}
                 </div>
 
                 {pane === "custom" && canReturnToOfficial && (

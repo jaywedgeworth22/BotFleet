@@ -4,7 +4,7 @@
 // the fix — send the service-token header pair, and recognise the redirect.
 import { describe, expect, it } from "vitest";
 
-import { accessHeaders, accessLoginHint, hasAccessServiceToken, type ProbedResponse } from "./recall-access.ts";
+import { accessHeaders, accessLoginHint, accessTokenState, hasAccessServiceToken, type ProbedResponse } from "./recall-access.ts";
 
 /** A response double: only the four fields the hint reads. */
 function response(init: {
@@ -46,6 +46,32 @@ describe("accessHeaders", () => {
       "CF-Access-Client-Id": "client.access",
       "CF-Access-Client-Secret": "shhh",
     });
+  });
+});
+
+describe("accessTokenState", () => {
+  // Half a pair is the silent case: `accessHeaders` sends both halves or
+  // neither, so a stored secret with an empty id sends no Access headers at
+  // all and the service answers a login page that reads like an outage.
+  // Yes-or-no cannot say that; this can, and it says which half is missing.
+  it("separates a whole pair, no pair, and each half of one", () => {
+    expect(accessTokenState("client.access", "shhh")).toBe("complete");
+    expect(accessTokenState("", "")).toBe("none");
+    expect(accessTokenState(undefined, null)).toBe("none");
+    expect(accessTokenState("", "shhh")).toBe("missing-id");
+    expect(accessTokenState("client.access", "")).toBe("missing-secret");
+  });
+
+  it("treats whitespace as empty, the same way the header builder does", () => {
+    expect(accessTokenState("  ", "shhh")).toBe("missing-id");
+    expect(accessTokenState("client.access", "\n")).toBe("missing-secret");
+    expect(accessTokenState(" ", " ")).toBe("none");
+  });
+
+  it("agrees with hasAccessServiceToken about what counts as configured", () => {
+    for (const pair of [["a.access", "s"], ["", "s"], ["a.access", ""], ["", ""]] as const) {
+      expect(hasAccessServiceToken(...pair)).toBe(accessTokenState(...pair) === "complete");
+    }
   });
 });
 

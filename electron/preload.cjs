@@ -159,8 +159,10 @@ contextBridge.exposeInMainWorld("ogb", {
       return () => ipcRenderer.removeListener("desktop-workspace:state", handler);
     },
   },
-  /** Native folder picker for a bot's working folder; null when cancelled. */
-  pickFolder: (current) => ipcRenderer.invoke("desktop:pick-folder", current),
+  /** Native folder picker; null when cancelled.  `title` names what is
+   * being chosen — a working folder, a skill folder — so the dialog is not
+   * always labelled for the first caller that needed it. */
+  pickFolder: (current, title) => ipcRenderer.invoke("desktop:pick-folder", current, title),
   /** Writes the redacted diagnostics report to a user-chosen file; resolves
    * the path, or null when the save dialog was cancelled. */
   exportDiagnostics: () => ipcRenderer.invoke("desktop:export-diagnostics"),

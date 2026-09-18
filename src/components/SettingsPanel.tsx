@@ -12,6 +12,7 @@ import { botUsage, costCaption, formatTokens, formatUsd, hasFiniteCost } from "@
 import { shortPath } from "@/lib/short-path";
 import { computerDestinationDisabledReason, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
 import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
+import { BotSkillsPanel } from "./BotSkillsPanel";
 import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./LocalComputerAutoWarning";
 import { VoiceSettings } from "./VoiceSettings";
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
@@ -764,6 +765,13 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
           {/* keyed so switching bots never shows one bot's notes under another's name */}
           <MemoryCard key={bot.id} bot={bot} />
+
+          {/* Skills sit beside Memory because they are the same kind of
+              thing: plain files in the bot's workspace that a person owns.
+              Keyed for the same reason — one bot's imports must never show
+              under another's name, and the read-then-enable gate is a
+              per-bot decision. */}
+          <BotSkillsPanel key={`skills-${bot.id}`} bot={bot} driverKind={engine?.driverKind} />
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
             <div>

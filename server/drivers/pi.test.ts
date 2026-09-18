@@ -86,6 +86,21 @@ describe("buildMcpServers", () => {
     });
   });
 
+  it("passes the shared-memory (recall) proxy through as a stdio server", () => {
+    // pi carried composio, the computer, peers, the phone and dweb but never
+    // qdrant, so a pi bot was the one CLI engine with no corpus at all.
+    const servers = buildMcpServers({
+      threadId: "t",
+      text: "hi",
+      integrations: {
+        qdrant: { command: "node", args: ["q"], env: { OMB_QDRANT_COLLECTION: "agent-memory" } },
+      },
+    });
+    expect(servers).toEqual({
+      qdrant: { command: "node", args: ["q"], env: { OMB_QDRANT_COLLECTION: "agent-memory" } },
+    });
+  });
+
   it("wraps the cloud computer in the computer-proxy spawn contract", () => {
     const servers = buildMcpServers({
       threadId: "t",
@@ -280,6 +295,14 @@ describe("PiDriver turns (fake CLI)", () => {
     await create();
     expect(instance.adapter.capabilities.images).toBe(true);
     expect(instance.adapter.capabilities.effortLevels).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("declares the shared-memory mount the dispatcher gates on", async () => {
+    // The dispatcher only builds the qdrant integration for a driver that
+    // says it can mount it, so the flag and the mount above stand or fall
+    // together.
+    await create();
+    expect(instance.adapter.capabilities.qdrantMcp).toBe(true);
   });
 
   it("pins reasoning effort via set_thinking_level after the model", async () => {

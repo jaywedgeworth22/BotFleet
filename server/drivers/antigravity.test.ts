@@ -17,6 +17,7 @@ import { SPAWNED_PROXIES } from "../proxy-paths.ts";
 import { recordEvents, type EventRecorder } from "../testing/events.ts";
 import {
   ANTIGRAVITY_COMPUTER_MCP_KEY,
+  ANTIGRAVITY_HOST_CONTROL_NOTICE,
   AntigravityDriver,
   antigravityMcpServers,
   antigravityTurnErrorMessage,
@@ -781,5 +782,126 @@ describe("Antigravity computer MCP config", () => {
       recorder.stop();
       await instance.dispose();
     }
+  });
+});
+
+// C2: the driver declares `localComputerMcp: true` while `respondToRequest`
+// answers "unavailable" — print mode opens no ask, so there is no approval
+// card behind that flag.  What keeps the flag honest is per-turn: a turn that
+// can act on the person's own desktop loses the permission bypass, so agy's
+// accept-edits mode auto-denies `run_command` instead of running it unseen,
+// and the thread says so before the turn starts.
+describe("Antigravity host control", () => {
+  const stdio = (scope?: "local-computer") => ({
+    command: process.execPath,
+    args: ["--version"],
+    env: {},
+    ...(scope ? { scope } : {}),
+  });
+  // The person's own desktop: the one mount `hostToolPrefix` recognizes.
+  const hostIntegrations = { localComputer: stdio("local-computer") };
+  // Same stdio shape, no scope — a Local VM or a VPS.  Isolated, so the
+  // guard must NOT fire and a full-auto bot keeps its switch.
+  const sandboxIntegrations = { localComputer: stdio() };
+  // What startTurn actually sets now: the named-mount array.
+  const hostComputersIntegrations = {
+    computers: [{ name: "computer", label: "This Mac", kind: "local" as const, stdio: stdio("local-computer") }],
+  };
+
+  let home: string;
+  beforeEach(() => {
+    ensureDirs();
+    chmodSync(FAKE_CLI, 0o755);
+    // Mounting a computer rewrites `~/.gemini/config/mcp_config.json`, so
+    // every turn here gets a throwaway HOME rather than the developer's.
+    home = mkdtempSync(join(tmpdir(), "omb-agy-host-"));
+  });
+  afterEach(() => {
+    rmSync(home, { recursive: true, force: true });
+  });
+
+  const runTurn = async (
+    name: string,
+    fullAuto: boolean,
+    integrations: Parameters<ProviderInstance["adapter"]["sendTurn"]>[0]["integrations"],
+  ) => {
+    const dump = join(home, `${name}.json`);
+    const instance = await AntigravityDriver.create({
+      instanceId: `agy-host-${name}`,
+      displayName: undefined,
+      environment: { HOME: home, FAKE_AGY_DUMP: dump },
+      enabled: true,
+      config: { cli: FAKE_CLI, fullAuto },
+    });
+    const recorder = recordEvents(instance.adapter);
+    try {
+      await instance.adapter.sendTurn({ threadId: `t-host-${name}`, text: "hi", integrations });
+      await recorder.until((e) => e.type === "turn.completed");
+      return {
+        argv: JSON.parse(readFileSync(dump, "utf8")).argv as string[],
+        events: [...recorder.events],
+      };
+    } finally {
+      recorder.stop();
+      await instance.dispose();
+    }
+  };
+
+  it("drops the permission bypass for a turn that can act on this computer", async () => {
+    // --dangerously-skip-permissions approves a shell command with nobody
+    // watching.  On the person's own desktop that is the whole bug: there is
+    // no card to decline it, because print mode never opens one.
+    const host = await runTurn("host", true, hostIntegrations);
+    expect(host.argv).not.toContain("--dangerously-skip-permissions");
+    const mode = host.argv.indexOf("--mode");
+    expect(host.argv.slice(mode, mode + 2)).toEqual(["--mode", "accept-edits"]);
+
+    // The named-mount array startTurn writes today reaches the same guard.
+    const viaComputers = await runTurn("host-computers", true, hostComputersIntegrations);
+    expect(viaComputers.argv).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("leaves a full-auto turn alone when no host computer is mounted", async () => {
+    // An isolated sandbox is not the person's desktop, and neither is a bare
+    // turn.  Forcing the bypass off for those would take away a switch the
+    // owner opted into for work that was never brokered in the first place.
+    const sandbox = await runTurn("sandbox", true, sandboxIntegrations);
+    expect(sandbox.argv).toContain("--dangerously-skip-permissions");
+    expect(sandbox.argv).not.toContain("--mode");
+
+    const plain = await runTurn("plain", true, undefined);
+    expect(plain.argv).toContain("--dangerously-skip-permissions");
+  });
+
+  it("says in the thread that it cannot ask, once, at the start of a host-control turn", async () => {
+    const host = await runTurn("notice", false, hostIntegrations);
+    const notices = host.events.filter(
+      (e) => e.type === "item.started" && (e as any).title === ANTIGRAVITY_HOST_CONTROL_NOTICE,
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ itemType: "tool", toolKind: "notice" });
+    expect(ANTIGRAVITY_HOST_CONTROL_NOTICE).toBe(
+      "Antigravity cannot ask for approval, so shell commands on this computer are refused during this turn.",
+    );
+    // A tool row that never completes spins for the whole turn, so the
+    // notice settles itself in the same breath.
+    const itemId = (notices[0] as any).itemId as string;
+    expect(itemId).toBeTruthy();
+    const settled = host.events.filter(
+      (e) => e.type === "item.completed" && (e as any).itemId === itemId,
+    );
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({ itemType: "tool", ok: true });
+    // It is a notice about this turn, so it belongs after the turn opens.
+    const started = host.events.findIndex((e) => e.type === "turn.started");
+    expect(started).toBeGreaterThanOrEqual(0);
+    expect(host.events.indexOf(notices[0])).toBeGreaterThan(started);
+  });
+
+  it("stays quiet when the bot has no host computer", async () => {
+    const sandbox = await runTurn("quiet", true, sandboxIntegrations);
+    expect(
+      sandbox.events.some((e) => (e as any).title === ANTIGRAVITY_HOST_CONTROL_NOTICE),
+    ).toBe(false);
   });
 });

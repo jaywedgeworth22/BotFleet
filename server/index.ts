@@ -256,12 +256,14 @@ import {
   skillsSystemPrompt,
 } from "./skills.ts";
 import { fetchSkillFromSource } from "./skill-fetch.ts";
+import { readSkillFolder } from "./skill-folder.ts";
 import { readCuaConnection } from "./local-computer.ts";
 import { LocalVmIdleTimer } from "./local-vm-idle.ts";
 import { LocalVmLease, LocalVmLeasePool } from "./local-vm-lease.ts";
 import { RepeatDetector, callKey } from "./repeat-detector.ts";
 import { redactSecretsInText } from "./redact.ts";
-import { hasAccessServiceToken } from "./recall-access.ts";
+import { accessTokenState, hasAccessServiceToken } from "./recall-access.ts";
+import { recallPromptFor } from "./recall-prompt.ts";
 import { findRecallCli, recallStatus } from "./recall-transport.ts";
 import * as vps from "./vps-computer.ts";
 import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
@@ -3324,6 +3326,9 @@ async function startTurn(
           (integrations.composio
             ? " The user's connected apps (Gmail, Calendar, Slack, Notion, and the rest) are reachable through the composio tools — find the right one with COMPOSIO_SEARCH_TOOLS, read its arguments with COMPOSIO_GET_TOOL_SCHEMAS, then run it with COMPOSIO_MULTI_EXECUTE_TOOL. Reach for them before telling the user you have no access to a service."
             : "") +
+          // Same gate as composio above: the mounted integration, not the
+          // config — an engine without `qdrantMcp` never mounted the proxy.
+          recallPromptFor(integrations) +
           (coordinationPrompt ? ` ${coordinationPrompt}` : "") +
           credentialPrompt +
           routinePrompt +
@@ -4651,6 +4656,11 @@ async function runGroupMemberTurn(
       boxAgent: instance.driverKind === "boxAgent",
       hostPlatform: process.platform,
     }) +
+    // The room lane mounts the same recall proxy the 1:1 lane does (see the
+    // `integrations.qdrant` assignment above), so it owes the bot the same
+    // sentences about it.  Both sentences belong here, in the same order the
+    // 1:1 lane emits them; neither replaces the other.
+    recallPromptFor(integrations) +
     sectionContextSystemPrompt(bot.section) +
     (hasFileTools(worksInWorkspace, httpOnlyToolSurface, hasHostComputer)
       ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}`
@@ -5456,6 +5466,10 @@ function configStatus() {
       accessClientId: cfg.qdrant?.accessClientId || "",
       hasAccessClientSecret: Boolean(cfg.qdrant?.accessClientSecret),
       hasAccessServiceToken: hasAccessServiceToken(cfg.qdrant?.accessClientId, cfg.qdrant?.accessClientSecret),
+      // Which HALF is missing, not just whether the pair is whole: one half
+      // sends no Access headers at all, so the panel can warn before the
+      // operator meets a login page and reads it as an outage.
+      accessTokenState: accessTokenState(cfg.qdrant?.accessClientId, cfg.qdrant?.accessClientSecret),
     },
     usage: {
       ingestUrl: usageIngestUrl(cfg) ?? "",
@@ -8005,7 +8019,29 @@ const server = createServer(async (req, res) => {
     }
     if (m && method === "POST") {
       if (!store.bot(m[1])) return json(res, 404, { error: "no such bot" });
-      const parsed = z.object({ source: z.string().min(1).max(2000) }).safeParse(await readBody(req));
+      const body = await readBody(req);
+      // Two doors, one policy.  `source` fetches from GitHub; `folder` reads
+      // a skill already on this computer — the fleet's own ~/.claude/skills,
+      // one folder at a time — and both then go through installSkill, which
+      // scans and lands the skill DISABLED.  Reading a path off this disk is
+      // a physical action on this computer, so only a connection from this
+      // computer may ask for it, whatever Host it sends (the same rule
+      // POST /api/desktop/open takes).  The harness owner nonce is
+      // deliberately NOT required: neither the renderer nor the phone
+      // sidecar holds it, so requiring it would mean no person could ever
+      // press the button — see mayControlUpdates for the same reasoning.
+      const byFolder = z.object({ folder: z.string().min(1).max(4096) }).safeParse(body);
+      if (byFolder.success) {
+        if (!isLoopbackAddress(req.socket.remoteAddress)) {
+          return json(res, 403, { error: "forbidden: a skill folder can only be imported from this computer" });
+        }
+        const read = readSkillFolder(byFolder.data.folder);
+        if ("error" in read) return json(res, 422, { error: read.error });
+        const result = installSkill(m[1]!, read.source, read.files);
+        if ("error" in result) return json(res, 422, { error: result.error });
+        return json(res, 201, { installed: [result], errors: [] });
+      }
+      const parsed = z.object({ source: z.string().min(1).max(2000) }).safeParse(body);
       if (!parsed.success) return json(res, 400, { error: "source must be a GitHub URL or owner/repo" });
       const fetched = await fetchSkillFromSource(parsed.data.source);
       if ("error" in fetched) return json(res, 422, { error: fetched.error });
