@@ -265,6 +265,41 @@ describe("local subscription caps", () => {
     expect(quotaCooldowns.list().map((cd) => cd.model)).toEqual(["gpt-5.2-codex"]);
   });
 
+  it("ignores a model id this instance's catalog does not list, and falls back to its family", async () => {
+    // The producer spells a model the vendor's way; the catalog carries
+    // BotFleet's.  A cooldown under an id no bot looks up diverts nothing
+    // while still flipping the chip to "Partially capped", and it is
+    // re-recorded on every poll, so it cannot be cleared by hand either.
+    const claude = {
+      instanceId: "claude",
+      driverKind: "claudeAgent",
+      models: { options: [{ id: "claude-opus-4-6" }, { id: "claude-sonnet-4-6" }] },
+    };
+    const anthropicRow = (extra: Partial<RemoteQuotaWindow>): RemoteQuotaWindow => localWindow({
+      id: "anthropic:weekly",
+      provider: "anthropic",
+      providerKey: "anthropic",
+      sourceApp: "usage-monitor-mac:anthropic",
+      label: "Claude weekly",
+      ...extra,
+    });
+
+    // Unknown id, but the row names the family too: the family answers.
+    await poller([anthropicRow({ modelId: "claude-opus-4-1-20250805", modelType: "opus" })], {}, [claude]).poll();
+    expect(quotaCooldowns.list().map((cd) => cd.model)).toEqual(["claude-opus-4-6"]);
+    quotaCooldowns.clearWhere(() => true);
+
+    // Unknown id and nothing else to go on: the row caps nothing at all,
+    // rather than a key that diverts nothing or the whole engine.
+    await poller([anthropicRow({ modelId: "claude-opus-4-1-20250805", modelType: "" })], {}, [claude]).poll();
+    expect(quotaCooldowns.list()).toEqual([]);
+    quotaCooldowns.clearWhere(() => true);
+
+    // And an id the catalog really holds is still capped exactly.
+    await poller([anthropicRow({ modelId: "claude-sonnet-4-6", modelType: "sonnet" })], {}, [claude]).poll();
+    expect(quotaCooldowns.list().map((cd) => cd.model)).toEqual(["claude-sonnet-4-6"]);
+  });
+
   it("caps every model of a family when the window names a family instead of a model", async () => {
     const claude = {
       instanceId: "claude",

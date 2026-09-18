@@ -171,11 +171,26 @@ function localCooldownEnd(window: RemoteQuotaWindow, now: number): number | null
  *  model nor a model type is a plan-level cap on the whole engine; with a
  *  model type, `modelsToSkip` already owns the family-to-catalog mapping and
  *  is handed the file's own skip, because the display `skip` on a local row
- *  stays false by design. */
+ *  stays false by design.
+ *
+ *  A `modelId` is kept only when this instance's own catalog lists it.  The
+ *  producer spells a model the vendor's way — a dated id such as
+ *  `claude-opus-4-1-20250805` — while the catalog carries BotFleet's
+ *  (`claude-opus-4-6`), so an id that matches nothing is the ordinary case.
+ *  Recorded anyway it becomes a cooldown key no bot ever looks up: `isCooling`
+ *  never sees it and nothing is diverted, while the very same row reaches
+ *  `/api/quotas` and flips the engine chip to "Partially capped".  It is
+ *  re-recorded on every poll, so clearing it by hand does nothing either.
+ *  The row falls back to the family it also names, and a row naming only an
+ *  id this engine does not have caps nothing: it is not evidence about any
+ *  model the engine can run. */
 function localCapTargets(window: RemoteQuotaWindow, instance: QuotaPollerInstance): string[] {
-  if (window.modelId) return [window.modelId];
-  if (!window.modelType) return ["*"];
-  return modelsToSkip({ ...window, skip: true, skipReason: window.fileSkipReason ?? null }, instance);
+  const catalog = instance.models?.options ?? [];
+  if (window.modelId && catalog.some((row) => row.id === window.modelId)) return [window.modelId];
+  if (!window.modelType) return window.modelId ? [] : ["*"];
+  // `modelId: null` because `modelsToSkip` short-circuits on an id, and the
+  // only id this row carries is the one the catalog just refused.
+  return modelsToSkip({ ...window, modelId: null, skip: true, skipReason: window.fileSkipReason ?? null }, instance);
 }
 
 export class UsageQuotaPoller {
