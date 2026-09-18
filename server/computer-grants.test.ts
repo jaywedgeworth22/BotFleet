@@ -275,6 +275,13 @@ describe("workspace defaults", () => {
     expect(resolveCloudBackend("box", "vps")).toBe("box");
     expect(resolveCloudBackend("vps", "box")).toBe("vps");
   });
+
+  it("documents that runOn=cloud must not force box over cloudBackend=vps", () => {
+    // resolveMounts previously did: runOn === "cloud" ? "box" : botBackend.
+    // Backend choice is solely resolveCloudBackend; runOn only grants "cloud".
+    expect(resolveCloudBackend("vps", undefined)).toBe("vps");
+    expect(resolveCloudBackend(undefined, "vps")).toBe("vps");
+  });
 });
 
 describe("operator allowlist", () => {

@@ -547,12 +547,11 @@ async function resolveMounts<Lease>(
   const autoAllows = new Set(autoDestinations(allowed));
   const autoCloud = auto && autoAllows.has("cloud");
   const autoHost = auto && autoAllows.has("local");
-  // Cloud routines always use Box/BoxAgent.  The per-bot backend applies only
-  // to ordinary turns that mount a computer into the local agent.  Same rule
-  // as the destinations: the workspace default stands in only for a bot that
-  // has never chosen a backend of its own.
-  const botBackend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
-  const cloudBackend = runOn === "cloud" ? "box" : botBackend;
+  // Cloud destination (including runOn=cloud routines) resolves to ASCII.dev
+  // Box or the operator's Coolify-hosted VPS via resolveCloudBackend.  runOn
+  // selects the cloud *destination*; it must not override the bot/workspace
+  // cloudBackend (historical bug: runOn==="cloud" hardcoded "box" and blocked VPS).
+  const cloudBackend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
   // One derivation for every destination — see computer-capability.ts.  The
   // names below are kept because the mount sites read as "does this turn
   // mount X", not "can this engine reach X".
