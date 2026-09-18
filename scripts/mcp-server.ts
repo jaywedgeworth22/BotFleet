@@ -2,6 +2,8 @@
 // Model Context Protocol (MCP) Server for BotFleet
 // Standard JSON-RPC 2.0 stdio transport for external agent orchestration (Hermes, Claude Desktop, Cursor, etc.).
 import readline from "node:readline";
+import { initSentry } from "../server/sentry.ts";
+import { withMcpToolCallSpan } from "../server/sentry-mcp.ts";
 
 function isLoopbackHostname(hostname: string): boolean {
   const bare = hostname.toLowerCase().replace(/^\[|\]$/g, "");
@@ -1699,7 +1701,11 @@ export async function processMcpMessage(
       if (!isNotification) activeMcpRequests.set(id as string | number, controller);
       let result: unknown;
       try {
-        result = await toolHandler(name, toolArgs, request, controller.signal);
+        const toolName = typeof name === "string" ? name : "tool";
+        result = await withMcpToolCallSpan(
+          { toolName, requestId: isNotification ? null : id },
+          () => toolHandler(name, toolArgs, request, controller.signal),
+        );
       } finally {
         activeMcpControllers.delete(controller);
         if (!isNotification && activeMcpRequests.get(id as string | number) === controller) {
@@ -1773,6 +1779,7 @@ export async function drainInFlight(
 
 // Start stdio interface when executed directly
 if (process.argv[1] && (process.argv[1].endsWith("mcp-server.ts") || process.argv[1].endsWith("mcp-server.js"))) {
+  await initSentry();
   const rl = readline.createInterface({
     input: process.stdin,
     output: process.stdout,

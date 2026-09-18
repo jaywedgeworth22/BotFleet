@@ -76,7 +76,7 @@ describe("webhook-only ingress", () => {
       body: "ticket=42&priority=high",
     });
     expect(response.status).toBe(202);
-    expect(queued.at(-1)?.prompt).toContain('"ticket": "42"');
+    expect(queued.at(-1)?.prompt).toMatch(/"ticket"\s*:\s*"42"/);
   });
 
   it("refuses new deliveries while the runtime admission fence is held", async () => {
