@@ -1069,6 +1069,25 @@ describe("Antigravity host control", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
+  it("stops a host-control turn under proceed-in-sandbox, whose host behaviour is unmeasured", async () => {
+    // It auto-approves commands inside agy's terminal sandbox, and whether a
+    // host command counts as inside depends on a setting this driver never
+    // reads.  Unmeasured means refused, not assumed.
+    const marker = join(home, "sandbox-policy-tool-ran");
+    const host = await runTurn("sandbox-policy", false, hostIntegrations, {
+      FAKE_AGY_PERMISSION_MODE: "proceed-in-sandbox",
+      FAKE_AGY_INIT_HOLD_MS: POLICY_HOLD_MS,
+      FAKE_AGY_TOOL_MARKER: marker,
+    });
+    expect(host.events.filter((e) => e.type === "turn.completed")[0]).toMatchObject({
+      ok: false,
+      stopReason: "host_control_policy",
+    });
+    const error = host.events.find((e) => e.type === "runtime.error") as any;
+    expect(error.message).toContain("is proceed-in-sandbox");
+    expect(existsSync(marker)).toBe(false);
+  });
+
   it("runs a host-control turn under a policy that asks, and says so once", async () => {
     // `request-review` is agy's shipped default and it pauses for a human, so
     // there is nothing here for this driver to stop.

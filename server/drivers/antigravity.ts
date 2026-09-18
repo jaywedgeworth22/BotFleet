@@ -92,13 +92,17 @@ export const ANTIGRAVITY_HOST_CONTROL_NOTICE =
  * (default) mode" establish the other two as asking modes and `request-review`
  * as the shipped default.  `proceed-in-sandbox` "Auto-approves terminal
  * commands that run inside the secure sandbox, requesting manual approval only
- * when a command attempts to bypass the sandbox", so it asks for exactly the
- * commands that would reach the host — see the caveat on the check below.
+ * when a command attempts to bypass the sandbox".  That value is deliberately
+ * NOT in the set below: what it does on the host depends on agy's separate
+ * enableTerminalSandbox setting, which this driver never reads and never
+ * forces (it does not pass `--sandbox`), and nobody has measured it with the
+ * sandbox off.  Until someone does, it is refused like any other value whose
+ * behaviour on this computer is not known.
  *
  * Do not confuse these with Artifact Review Mode, whose values in the same
  * manual are (`always-proceed`, `agent-decides`, `asks-for-review`); only the
  * Tool Execution Policy gates `run_command`. */
-const ANTIGRAVITY_ASKING_POLICIES = new Set(["request-review", "strict", "proceed-in-sandbox"]);
+const ANTIGRAVITY_ASKING_POLICIES = new Set(["request-review", "strict"]);
 
 /** Why a host-control turn was stopped before it ran.  The `always-proceed`
  * wording is the measured case; an unreported or unrecognized value gets the
@@ -780,10 +784,8 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
             // unreported or unrecognized value is treated the same way: this
             // check exists because the driver used to assume a refusal it
             // never verified, and a default of "probably fine" would repeat
-            // exactly that.  Caveat on `proceed-in-sandbox`: it auto-approves
-            // commands INSIDE agy's terminal sandbox and asks only when one
-            // tries to leave it, and this driver never passes `--sandbox`, so
-            // it is trusting agy's own enableTerminalSandbox setting there.
+            // exactly that.  `proceed-in-sandbox` is refused too: its effect on the
+            // host turns on a second agy setting this driver does not read.
             if (controlsHost) {
               const reported =
                 typeof payload.permission_mode === "string"
