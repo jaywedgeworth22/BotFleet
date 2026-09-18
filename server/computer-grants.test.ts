@@ -276,6 +276,28 @@ describe("workspace defaults", () => {
     expect(resolveCloudBackend("vps", "box")).toBe("vps");
   });
 
+  it("agrees with the server's own VPS-provisioning gate for an inheriting bot", () => {
+    // server/index.ts refuses to provision a VPS unless bot.autoStartVps is
+    // set, once resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend)
+    // says "vps".  SettingsPanel decided whether to SHOW that toggle with the
+    // raw `bot.cloudBackend === "vps"` -- no `?? "box"`, no resolver -- so for
+    // a bot that never chose a backend under a "vps" workspace default it was
+    // `undefined === "vps"`, always false: the toggle the server demands never
+    // rendered.  The fix routes the client through the same resolver the
+    // server already uses, which is what this test pins.
+    // SAFETY: this is a literal test fixture, not parsed input — the widened
+    // annotation only lets `bot.cloudBackend` read as "never chosen" below.
+    const bot = { cloudBackend: undefined as "box" | "vps" | undefined };
+    // SAFETY: a literal test fixture; narrowing it to the union member is
+    // exactly the value being asserted on, not a claim about unparsed input.
+    const workspaceDefault = "vps" as const;
+    expect(resolveCloudBackend(bot.cloudBackend, workspaceDefault)).toBe("vps");
+    // The old client rule, restated for contrast: it never agreed with the
+    // resolver for exactly this inheriting-bot case.
+    const legacyClientRule = bot.cloudBackend === "vps";
+    expect(legacyClientRule).toBe(false);
+  });
+
   it("documents that runOn=cloud must not force box over cloudBackend=vps", () => {
     // resolveMounts previously did: runOn === "cloud" ? "box" : botBackend.
     // Backend choice is solely resolveCloudBackend; runOn only grants "cloud".
