@@ -45,7 +45,13 @@ import {
   IMAGE_LAYER_VERSION,
   MANAGED_LABEL,
 } from "./container-computer.ts";
-import { VPS_CONTAINER_LABEL, VPS_IMAGE, VPS_MANAGED_LABEL, VPS_VIEWER_LABEL } from "./vps-computer.ts";
+import {
+  VPS_CONTAINER_LABEL,
+  VPS_IMAGE,
+  VPS_MANAGED_LABEL,
+  VPS_VIEWER_LABEL,
+  vpsContainerName,
+} from "./vps-computer.ts";
 import { removeTempDir, spawnDetached, waitForExit } from "./testing/cleanup.ts";
 import { freePortBlock } from "./testing/ports.ts";
 
@@ -343,6 +349,7 @@ interface WireMessage {
   kind?: string;
   text?: string;
   card?: { requestId?: string; answered?: string; title?: string };
+  tool?: { name?: string; ok?: boolean };
   from?: { botId?: string };
 }
 
@@ -353,6 +360,9 @@ posixOnly("room turns carry the same computers as a direct chat", () => {
   let stderr = "";
   let mountsDump: string;
   let desklessDump: string;
+  // Every argv the fake docker was handed, which is the only record a test
+  // has that the VPS resolver actually ran for a given bot.
+  let dockerLog: string;
 
   const api = async (method: string, path: string, body?: unknown): Promise<{ status: number; body: any }> => {
     const res = await fetch(`${base}${path}`, {
@@ -429,7 +439,7 @@ posixOnly("room turns carry the same computers as a direct chat", () => {
     mkdirSync(fakeBin, { recursive: true });
     mountsDump = join(home, "mounts.dump.json");
     desklessDump = join(home, "deskless.dump.json");
-    const dockerLog = join(fakeBin, "docker.log");
+    dockerLog = join(fakeBin, "docker.log");
 
     writeFileSync(join(fakeBin, "docker"), FAKE_DOCKER, { mode: 0o755 });
     chmodSync(join(fakeBin, "docker"), 0o755);
@@ -466,6 +476,16 @@ posixOnly("room turns carry the same computers as a direct chat", () => {
             environment: { FAKE_ACP_MODE: "permission" },
             config: { cli: FAKE_CLI, fullAuto: false },
           },
+          // The one engine on this lane whose `sendTurn` can be made to
+          // REJECT rather than settle.  Antigravity creates its own
+          // per-thread workspace under the data dir before it emits a single
+          // event, and rethrows if that fails; every other CLI failure —
+          // a missing binary, a failed spawn, an unauthenticated CLI — runs
+          // through the ACP core's `finishBeforeDispatch`, which emits
+          // `turn.completed` and therefore never reaches the code this
+          // suite's rejection test is about.  The `agy` CLI is never
+          // spawned, so none has to exist.
+          gravity: { driver: "antigravityAgent" },
         },
       }),
       { mode: 0o600 },
@@ -542,6 +562,69 @@ posixOnly("room turns carry the same computers as a direct chat", () => {
       // The room's VPS turn lease is released on turn.completed like the 1:1
       // lane's — a backend change is refused (409) only while one is held, so
       // a 200 here is the release.
+      expect((await api("PATCH", `/api/bots/${bot.id}`, { cloudBackend: "box" })).status).toBe(200);
+    },
+    120_000,
+  );
+
+  it(
+    "hands a room member's VPS turn lease back when its dispatch is rejected",
+    async () => {
+      // The release the test above proves rides on `turn.completed`, and a
+      // REJECTED dispatch never produces one: the thread-keyed subscriber
+      // that normally gives the lease back is simply never called.  The
+      // lease then sits in `activeVpsThreads` for the life of the harness,
+      // and the bot answers 409 to a backend change — and to VPS sleep and
+      // remove — for a turn that never ran at all.  So the dispatcher has to
+      // unwind it itself, on the one exit where nothing else will.
+      //
+      // Cloud is asked for by name rather than left on Auto, because an
+      // explicit destination that cannot be had REFUSES the turn from inside
+      // the resolver — and the resolver gives its own lease back on that
+      // path.  So a turn that gets as far as the driver is a turn whose VPS
+      // resolved, which is exactly the turn that is still holding a lease
+      // when the driver throws.
+      const bot = await makeBot("Grounded", "gravity", { cloudBackend: "vps", computers: ["cloud"] });
+      const room = await makeRoom("Rejected", bot.id);
+
+      // Antigravity mkdirs `<data dir>/workspaces/<thread>` for its turn and
+      // rethrows if it cannot, before it has emitted anything — so an
+      // ordinary file sitting on that exact path is a dispatch that rejects
+      // rather than one that fails and settles.  The tag is the driver's own
+      // sanitisation of the thread id, which is why it is spelled the same
+      // way here.
+      const blocked = join(home, ".botfleet", "workspaces", room.threadId.replace(/[^\w-]/g, ""));
+      mkdirSync(dirname(blocked), { recursive: true });
+      writeFileSync(blocked, "");
+
+      expect((await api("POST", `/api/groups/${room.id}/messages`, { text: "check the desktop" })).status).toBe(202);
+
+      // The rejection itself, in the room's own transcript.  Matching on the
+      // failed mkdir is what distinguishes it from a turn that completed
+      // badly: that message only ever reaches a message row through the
+      // dispatcher's `.catch`, because the driver threw it instead of
+      // emitting it.
+      const failure = await until(async () => {
+        const row = (await messages(room.threadId)).find(
+          (m) => m.kind === "activity" && m.tool?.name?.includes("mkdir"),
+        );
+        return row ?? null;
+      }, "the rejected dispatch");
+      expect(failure.tool?.ok).toBe(false);
+      expect(await until(async () => ((await botById(bot.id))?.busy === false ? true : null), "the freed bot")).toBe(
+        true,
+      );
+
+      // There was a lease to lose.  The claim happens inside the resolver,
+      // immediately before it inspects the bot's own container, so the fake
+      // docker having been asked about THIS bot's container is the evidence
+      // that this turn really held one.
+      expect(readFileSync(dockerLog, "utf8")).toContain(vpsContainerName(bot.id));
+
+      // and it was handed back.  A backend change is refused with 409 while
+      // the bot is busy OR while a VPS turn lease is held, and the bot went
+      // idle above — so at this point only a stranded lease could refuse it,
+      // and a 200 is the release.
       expect((await api("PATCH", `/api/bots/${bot.id}`, { cloudBackend: "box" })).status).toBe(200);
     },
     120_000,
