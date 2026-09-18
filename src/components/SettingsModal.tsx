@@ -141,6 +141,7 @@ function CustomIngressFields() {
   // slot above -- the two actions are independent, so a failed Save must
   // not be mistaken for (or overwrite) a Test Setup result and vice versa.
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveErrorDetail, setSaveErrorDetail] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -175,6 +176,7 @@ function CustomIngressFields() {
     if (saving) return;
     setSaving(true);
     setSaveError(null);
+    setSaveErrorDetail(null);
     try {
       const trimmed = publicUrl.trim();
       const response = await fetch("/api/config", {
@@ -193,7 +195,8 @@ function CustomIngressFields() {
         }),
       });
       if (!response.ok) {
-        setSaveError(`Save failed: HTTP ${response.status}`);
+        setSaveError("Couldn't Save.\u00A0 Check the URL and try again.");
+        setSaveErrorDetail(`HTTP ${response.status}`);
         return;
       }
       const config = await response.json();
@@ -201,7 +204,8 @@ function CustomIngressFields() {
       setDirty(false);
       setSavedAt(Date.now());
     } catch (cause) {
-      setSaveError(cause instanceof Error ? cause.message : String(cause));
+      setSaveError("Couldn't Save.\u00A0 Check the URL and try again.");
+      setSaveErrorDetail(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSaving(false);
     }
@@ -217,6 +221,7 @@ function CustomIngressFields() {
   // being folded in unannounced.
   const runTest = async () => {
     setSaveError(null);
+    setSaveErrorDetail(null);
     const draft = publicUrl.trim();
     const savedUrl = persistedUrl.trim();
     const usingSavedFallback = !draft && Boolean(savedUrl);
@@ -249,6 +254,7 @@ function CustomIngressFields() {
     setEnabled(next);
     setDirty(true);
     setSaveError(null);
+    setSaveErrorDetail(null);
   };
 
   const toggleFreeUrl = () => {
@@ -285,6 +291,7 @@ function CustomIngressFields() {
             setPublicUrl(e.target.value);
             setDirty(true);
             setSaveError(null);
+            setSaveErrorDetail(null);
             // a new URL invalidates the previous test result
             if (test && test.kind !== "running") setTest(null);
           }}
@@ -322,7 +329,12 @@ function CustomIngressFields() {
             that result behind the save error — the two actions carry their
             own outcome and both are shown when both have one. */}
         {saveError ? (
-          <span role="alert" data-testid="ingress-save-error" className="text-[12px] leading-relaxed text-danger">
+          <span
+            role="alert"
+            data-testid="ingress-save-error"
+            className="text-[12px] leading-relaxed text-danger"
+            title={saveErrorDetail ?? undefined}
+          >
             {saveError}
           </span>
         ) : null}

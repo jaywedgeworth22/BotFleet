@@ -294,10 +294,10 @@ export function GroupSettingsPanel({ group }: { group: Group }) {
             />
           </Field>
 
-          {/* System Instructions / Bulletin */}
+          {/* Shared Brief / Bulletin */}
           <Field
-            label={`${terminology.singular} Instructions`}
-            description={`System instructions injected into every member bot's turn in this ${terminology.singular.toLowerCase()}.`}
+            label="Shared Brief"
+            description="Shown to every member on each turn."
           >
             <textarea
               rows={4}
