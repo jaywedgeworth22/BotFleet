@@ -4,7 +4,7 @@
 //   1. writes those mounts as a `dsh --patch` overlay of dsh-mcp-client rows
 //   2. sits `dsh-acp-bridge` in front so the wire can keep sending mcpServers
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 
@@ -76,9 +76,48 @@ export function dshMcpPatchYaml(servers: AcpStdioMcpServer[]): string {
   return `# BotFleet session/new mcpServers, delivered through dsh-mcp-client.\n- insert:\n${rows.join("\n")}\n`;
 }
 
+/** Write the overlay somewhere only this user can read it.
+ *
+ * The YAML carries every mount's environment verbatim, so for BotFleet's own
+ * mounts it holds OMB_COMMS_TOKEN, OMB_CONTROL_TOKEN and any Composio key —
+ * the same values treated as secrets everywhere else in the codebase.  Written
+ * at the process umask into a shared temp directory it would sit there
+ * world-readable for the whole DSH session, so it gets the pattern
+ * `server/drivers/antigravity.ts` already uses for a private file: a 0700
+ * directory of its own, and 0600 on the file.
+ *
+ * `mkdtemp(3)` both picks the name atomically — no window in which another
+ * user can win the path — and creates the directory 0700 on POSIX.  The chmod
+ * behind each write is the fallback for a platform or filesystem that ignores
+ * the mode; both are best-effort because Windows has no POSIX mode bits to
+ * set, and a per-user temp directory there is already private.
+ *
+ * The directory keeps the same prefix as the file so the bridge's cleanup can
+ * tell one BotFleet minted from any other directory it is handed.
+ */
 export function writeDshMcpPatch(servers: AcpStdioMcpServer[]): string {
-  const path = join(tmpdir(), `${DSH_MCP_PATCH_PREFIX}${randomUUID()}.yml`);
-  writeFileSync(path, dshMcpPatchYaml(servers), "utf8");
+  const directory = mkdtempSync(join(tmpdir(), DSH_MCP_PATCH_PREFIX));
+  try {
+    chmodSync(directory, 0o700);
+  } catch {
+    /* no POSIX mode bits on this platform */
+  }
+  const path = join(directory, `${DSH_MCP_PATCH_PREFIX}${randomUUID()}.yml`);
+  try {
+    writeFileSync(path, dshMcpPatchYaml(servers), { encoding: "utf8", mode: 0o600 });
+    try {
+      chmodSync(path, 0o600);
+    } catch {
+      /* no POSIX mode bits on this platform */
+    }
+  } catch (error) {
+    // A failed write must not leave the directory behind holding a partial
+    // overlay — the same guard `server/drivers/pi.ts` keeps over its own MCP
+    // config, and nothing downstream gets a path to clean up when the caller
+    // never receives one.
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
   return path;
 }
 
