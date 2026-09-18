@@ -277,6 +277,33 @@ describe("config status frames", () => {
       features: { skillRecorder: true },
     });
   });
+
+  it("round-trips botDefaults, so an inheriting bot's resolved backend survives a broadcast", () => {
+    // botDefaults was missing from the ConfigStatusFrame Pick, so every SSE
+    // `config` frame silently dropped it via the reducer's full `config:
+    // action.config` replace -- and every bot inheriting a workspace default
+    // reverted to resolveCloudBackend()'s bare "box" fallback the moment any
+    // config broadcast landed, including the apply-defaults broadcast that
+    // sets botDefaults in the first place.
+    // SAFETY: a literal test fixture, not parsed input — both assertions
+    // below just pin the fixture's own values, not a claim about unparsed
+    // data crossing an I/O boundary.
+    const botDefaults = {
+      computers: ["cloud", "vm"] as Array<"cloud" | "vm" | "local">,
+      cloudBackend: "vps" as const,
+      allowedComputers: null,
+    };
+    expect(
+      configStatusFromFrame({
+        composio: { configured: false },
+        box: { configured: false },
+        vps: { configured: false, sshAlias: "" },
+        rooms: { turnTimeoutMinutes: 5 },
+        localVm: { mode: "shared", maxInstances: 2 },
+        botDefaults,
+      }).botDefaults,
+    ).toEqual(botDefaults);
+  });
 });
 
 describe("task rename", () => {
