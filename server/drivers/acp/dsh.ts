@@ -39,7 +39,7 @@ export function dshSpawnArgs(config: AcpConfig, turn: Pick<SendTurnInput, "integ
   return harnessDshSpawnArgs(config, turn);
 }
 
-export const dshSupport = {
+export const dshSupport: AcpSupport = {
   ...harnessDshSupport,
   loginNote: harnessDshSupport.loginNote ?? "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",
   resumeMethod: "session/resume" as const,
@@ -47,6 +47,6 @@ export const dshSupport = {
   wrapSpawn: dshWrapSpawn,
   pickAuthMethod: () => null,
   classifyError: classifyDshError,
-} as AcpSupport;
+} satisfies AcpSupport;
 
 export const DshAgentDriver = createAcpDriver(dshSupport);
