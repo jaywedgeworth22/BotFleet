@@ -3298,9 +3298,18 @@ async function startTurn(
       // are still advertised (they're useful) but every path is checked
       // against the bot's workspace realpath.  This Computer opts out
       // because it is the explicit, full-host grant already.
+      //
+      // The root falls back from `cwd` to `privateWorkspace` because
+      // `pinTaskCwd` deliberately pins a resumed legacy session's cwd to
+      // null (the pre-workspace home-folder behavior, so the live session
+      // isn't moved under it), which would otherwise leave a workspace-only
+      // bot's file tools without confinement on every turn after the first.
+      // `privateWorkspace` is always defined when `worksInWorkspace` is
+      // true, so the fallback is total and the security boundary holds.
+      const confinementRoot = cwd ?? privateWorkspace ?? undefined;
       const confinementForTurn =
-        usesDriverToolLoop && worksInWorkspace && !hasHostComputer && cwd
-          ? { workspaceRealpath: realOrResolved(cwd) }
+        usesDriverToolLoop && worksInWorkspace && !hasHostComputer && confinementRoot
+          ? { workspaceRealpath: realOrResolved(confinementRoot) }
           : undefined;
       const turnTools = buildTurnTools(
         { ...integrations, localComputer: hasHostComputer, workspace: worksInWorkspace, recall: hasRecall, phone: hasPhone },
