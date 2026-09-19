@@ -422,7 +422,7 @@ export class ProviderRegistry {
           // identity mapping made `instanceWindows` empty for every non-MiniMax engine and silently
           // dropped every injected quota window.  See Sentry thread PRRT_kwDOUHUvas6j6pZT.
           const providerKey = quotaProviderForDriver(inst.driverKind);
-          if (!providerKey) continue;
+          if (providerKey) {
           const instanceWindows = usageQuotaPoller.getWindows().filter(w => w.providerKey === providerKey);
           if (instanceWindows.length > 0) {
             const headlines = windowHeadlines(instanceWindows as any);
@@ -432,7 +432,7 @@ export class ProviderRegistry {
             const hasMonthly = headlines.find((h) => h.bucket === "monthly");
             const primary = has5h || headlines.find((h) => h.bucket === "hourly" || h.bucket === "daily");
             const secondary = hasWeekly || hasMonthly;
-            
+
             const externalPrimaryPercent = primary?.remainingPercent ?? undefined;
             const externalSecondaryPercent = secondary?.remainingPercent ?? undefined;
             const isExhausted = primary?.exhausted || secondary?.exhausted;
@@ -449,6 +449,7 @@ export class ProviderRegistry {
                 };
               }
             }
+          }
           }
         }
         // MiniMax's Token Plan quota (server/minimax-balance.ts) reports one
