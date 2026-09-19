@@ -87,7 +87,7 @@ describe("MiniMax callout copy — ModelPicker rail", () => {
   const box = engineBox(MODEL_PICKER_SRC, '["minimax"].includes(railInstance.driverKind)');
 
   it("uses product chrome, not coordinator-speak", () => {
-    expect(box).toMatch(/Limited Tool Support/);
+    expect(box).toMatch(/Talks to the Team/);
     expect(box).not.toMatch(/harness tools/);
     expect(box).not.toMatch(/DSH/);
     for (const tool of TOOL_IDS) {
