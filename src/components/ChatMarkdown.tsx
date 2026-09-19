@@ -12,6 +12,7 @@ import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Check, Copy } from "lucide-react";
 import { isDarkSkin, useResolvedSkin } from "@/lib/skins";
+import { remarkMentions } from "@/lib/mentions";
 
 // tiny highlight cache so revisiting a thread doesn't re-tokenize settled
 // blocks; keys are content-hashed and capped. Streamed partials may land here
@@ -307,7 +308,7 @@ function ChatMarkdownComponent({ text, streaming = false }: { text: string; stre
   return (
     <div className="chat-md min-w-0 [&>*+*]:mt-2">
       <Markdown
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[remarkGfm, remarkMentions]}
         components={{
           pre({ children }: { children?: ReactNode }) {
             // fenced code arrives as <pre><code class="language-x">…</code></pre>
