@@ -33,7 +33,12 @@ struct CompanionApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
-                .preferredColorScheme(.light)
+                // Fleet UI ruling 2026-09-19: default theme is **system**, not
+                // light.  We removed the explicit `.preferredColorScheme(.light)`
+                // so the iOS app follows the OS appearance setting; a Light
+                // Mac still boots Light and a Dark Mac boots Dark.  The owner
+                // can override per-device via the iOS Settings → Display &
+                // Brightness system toggle.
                 .environmentObject(session)
                 .environmentObject(testFlightUpdate)
                 .safeAreaInset(edge: .top) {
