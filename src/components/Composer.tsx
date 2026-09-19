@@ -1,6 +1,6 @@
 import { track } from "@/lib/analytics";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp, Check, Clock, Hand, Mic, Paperclip, ShieldCheck, Square, Users, X, Zap } from "lucide-react";
+import { ArrowUp, Check, Clock, Hand, Mic, Paperclip, ShieldCheck, Square, Users, X, Zap, Hash, AppWindow } from "lucide-react";
 import { useStore, visibleMessages, type Bot, type Group, type Message } from "@/state/store";
 import { cn } from "@/lib/cn";
 import { useComposerDraft } from "@/lib/drafts";
@@ -25,20 +25,14 @@ import { useDesktopCapabilities } from "./DesktopCapabilities";
 import { ReplyQuote } from "./ReplyQuote";
 import { instanceSupportsLocalComputer } from "@/lib/local-computer";
 import { requiresLocalAutoConsent } from "../../shared/local-auto-consent";
-
-/** The active @mention query at the caret: the text between an `@` that
- * starts a word and the caret. null = no mention being typed. */
-function mentionQueryAt(text: string, caret: number): { start: number; query: string } | null {
-  const upto = text.slice(0, caret);
-  const at = upto.lastIndexOf("@");
-  if (at === -1) return null;
-  if (at > 0 && !/\s/.test(upto[at - 1])) return null; // user@host, not a tag
-  const query = upto.slice(at + 1);
-  if (query.length > 24 || query.includes("@") || query.includes("\n")) return null;
-  return { start: at, query };
-}
-
-type MentionChoice = { id: string; name: string; bot?: Bot };
+import { resolveRoomLabels } from "../../shared/terminology";
+import { readCachedInventory } from "@/lib/connected-apps-cache";
+import {
+  autocompleteQueryAt,
+  getAutocompleteCandidates,
+  applyAutocomplete,
+  type AutocompleteChoice,
+} from "@/lib/composer-autocomplete";
 
 function PermissionModeSelector({ bot, onSetAuto }: { bot: Bot; onSetAuto: (auto: boolean) => void }) {
   const [open, setOpen] = useState(false);
@@ -231,27 +225,26 @@ export function Composer({
   };
   const engineSupportsImages = imageTargetsSupport(text);
 
-  // ── @mention picker (tag another bot; the bot reaches it via ask_bot) ──
-  const mention = mentionQueryAt(text, caret);
+  // ── Autocomplete picker (@ for bots, # for apps/channels/etc) ──
+  const triggerInfo = autocompleteQueryAt(text, caret);
   const candidates = useMemo(() => {
-    if (!mention || mention.start === dismissedAt) return [];
-    const pool: MentionChoice[] = group
-      ? [
-          { id: "__everyone__", name: "everyone" },
-          ...(members ?? []).map((member) => ({ id: member.id, name: member.name, bot: member })),
-        ]
-      : state.bots
-          .filter((member) => member.id !== bot?.id && !member.hidden)
-          .map((member) => ({ id: member.id, name: member.name, bot: member }));
-    const q = mention.query.trim().toLowerCase();
-    // "@Scout " — the full name plus a space — is a COMPLETED tag, not a
-    // search: keep the picker closed so Enter sends instead of re-picking
-    if (mention.query.endsWith(" ") && pool.some((b) => b.name.toLowerCase() === q)) return [];
-    return pool.filter((b) => !q || b.name.toLowerCase().includes(q)).slice(0, 6);
-  }, [mention, dismissedAt, state.bots, bot?.id, group, members]);
+    if (!triggerInfo || triggerInfo.start === dismissedAt) return [];
+    const connectedApps = readCachedInventory()?.services;
+    const terminology = resolveRoomLabels(state.config?.terminology);
+    return getAutocompleteCandidates(triggerInfo, {
+      bots: state.bots,
+      groups: state.groups,
+      routines: state.routines,
+      connectedApps,
+      currentBotId: bot?.id,
+      group,
+      members,
+      terminologySingular: terminology.singular,
+    });
+  }, [triggerInfo, dismissedAt, state.bots, state.groups, state.routines, state.config?.terminology, bot?.id, group, members]);
   const pickerOpen = candidates.length > 0;
 
-  useEffect(() => setHighlight(0), [mention?.start, mention?.query]);
+  useEffect(() => setHighlight(0), [triggerInfo?.start, triggerInfo?.query]);
 
   // one line at rest, then grow with the draft — hard cap at six lines
   useEffect(() => {
@@ -263,15 +256,13 @@ export function Composer({
     el.style.height = `${Math.max(line, Math.min(el.scrollHeight, cap))}px`;
   }, [text]);
 
-  const pickMention = (peer: MentionChoice) => {
-    if (!mention) return;
-    const after = text.slice(caret);
-    const next = `${text.slice(0, mention.start)}@${peer.name} ${after}`;
-    setText(next);
-    const newCaret = mention.start + peer.name.length + 2;
+  const pickCandidate = (choice: AutocompleteChoice) => {
+    if (!triggerInfo) return;
+    const { text: nextText, caret: newCaret } = applyAutocomplete(text, caret, triggerInfo, choice);
+    setText(nextText);
     setCaret(newCaret);
     // picking completes this tag — close the popup so the next Enter sends
-    setDismissedAt(mention.start);
+    setDismissedAt(triggerInfo.start);
     requestAnimationFrame(() => {
       inputRef.current?.focus();
       inputRef.current?.setSelectionRange(newCaret, newCaret);
@@ -530,34 +521,64 @@ export function Composer({
         {pickerOpen && (
           <div
             role="listbox"
-            aria-label="Tag a Bot"
-            className="absolute bottom-full left-2 z-20 mb-2 w-72 overflow-hidden rounded-xl border border-hairline/40 bg-raised shadow-lg"
+            aria-label={triggerInfo?.trigger === "@" ? "Tag a Bot" : "Link an App or Channel"}
+            className="absolute bottom-full left-2 z-20 mb-2 w-80 max-h-72 overflow-y-auto rounded-xl border border-hairline/40 bg-raised shadow-lg"
           >
-            {candidates.map((peer, i) => (
+            <div className="border-b border-hairline/20 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-ink-secondary">
+              {triggerInfo?.trigger === "@" ? "Bots" : "Apps & Channels"}
+            </div>
+            {candidates.map((item, i) => (
               <button
-                key={peer.id}
+                key={item.id}
                 role="option"
                 aria-selected={i === highlight}
-                onClick={() => pickMention(peer)}
+                onClick={() => pickCandidate(item)}
                 onMouseEnter={() => setHighlight(i)}
                 className={cn(
-                  "flex w-full items-center gap-2.5 px-3 py-2 text-left",
+                  "flex w-full items-center gap-2.5 px-3 py-2 text-left transition-colors",
                   i === highlight ? "bg-raised-hover" : "",
                 )}
               >
-                {peer.bot ? (
-                  <MausAvatar
-                    color={peer.bot.color}
-                    state={normalizeState(peer.bot.mascotExpression) ?? "happy"}
-                    size={24}
-                  />
+                {item.kind === "bot" ? (
+                  item.bot ? (
+                    <MausAvatar
+                      color={item.bot.color}
+                      state={normalizeState(item.bot.mascotExpression) ?? "happy"}
+                      size={24}
+                    />
+                  ) : (
+                    <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-raised text-ink-secondary">
+                      <Users size={14} aria-hidden="true" />
+                    </span>
+                  )
+                ) : item.kind === "channel" ? (
+                  <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-raised text-ink-secondary">
+                    <Hash size={14} aria-hidden="true" />
+                  </span>
+                ) : item.kind === "routine" ? (
+                  <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-raised text-accent">
+                    <Zap size={14} aria-hidden="true" />
+                  </span>
                 ) : (
-                  <span className="flex size-6 items-center justify-center rounded-full bg-raised text-ink-secondary">
-                    <Users size={14} aria-hidden="true" />
+                  <span className="flex size-6 shrink-0 items-center justify-center rounded-full bg-raised text-accent">
+                    <AppWindow size={14} aria-hidden="true" />
                   </span>
                 )}
-                <span className="min-w-0 flex-1 truncate text-[14px] font-medium text-ink" title={peer.name}>{peer.name}</span>
-                <span className="shrink-0 text-xs text-ink-secondary">{peer.bot ? "Bot" : "Channel"}</span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-[14px] font-medium text-ink" title={item.name}>
+                      {triggerInfo?.trigger}{item.name}
+                    </span>
+                  </div>
+                  {item.description && (
+                    <div className="truncate text-[11.5px] text-ink-secondary" title={item.description}>
+                      {item.description}
+                    </div>
+                  )}
+                </div>
+                <span className="shrink-0 rounded bg-raised px-1.5 py-0.5 text-[10.5px] font-medium text-ink-secondary border border-hairline/30">
+                  {item.badge}
+                </span>
               </button>
             ))}
           </div>
@@ -667,12 +688,12 @@ export function Composer({
               }
               if (e.key === "Enter" || e.key === "Tab") {
                 e.preventDefault();
-                pickMention(candidates[highlight]);
+                pickCandidate(candidates[highlight]);
                 return;
               }
               if (e.key === "Escape") {
                 e.preventDefault();
-                setDismissedAt(mention?.start ?? null);
+                setDismissedAt(triggerInfo?.start ?? null);
                 return;
               }
             }
