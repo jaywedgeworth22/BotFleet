@@ -20,6 +20,17 @@ export interface AutocompleteChoice {
   connected?: boolean;
 }
 
+function findLastValidTrigger(upto: string, char: "@" | "#"): number {
+  let idx = upto.lastIndexOf(char);
+  while (idx !== -1) {
+    if (idx === 0 || /\s|[(\["'“‘]/.test(upto[idx - 1])) {
+      return idx;
+    }
+    idx = upto.lastIndexOf(char, idx - 1);
+  }
+  return -1;
+}
+
 /**
  * Detects whether the caret is positioned within an active `@` or `#` query.
  * Returns null if no trigger is active or if the trigger is part of an email,
@@ -27,21 +38,16 @@ export interface AutocompleteChoice {
  */
 export function autocompleteQueryAt(text: string, caret: number): AutocompleteTrigger | null {
   const upto = text.slice(0, caret);
-  const lastAt = upto.lastIndexOf("@");
-  const lastHash = upto.lastIndexOf("#");
-  const start = Math.max(lastAt, lastHash);
+  const validAt = findLastValidTrigger(upto, "@");
+  const validHash = findLastValidTrigger(upto, "#");
+  const start = Math.max(validAt, validHash);
   if (start === -1) return null;
-
-  // Ensure trigger starts a word: either at the start of text or preceded by whitespace / punctuation
-  if (start > 0 && !/\s|[(\["'“‘]/.test(upto[start - 1])) {
-    return null;
-  }
 
   const trigger = upto[start] as "@" | "#";
   const query = upto.slice(start + 1);
 
-  // Stop if query contains line breaks, trigger chars, or is excessively long
-  if (query.length > 30 || query.includes("\n") || query.includes("@") || query.includes("#")) {
+  // Stop if query contains line breaks or is excessively long
+  if (query.length > 30 || query.includes("\n")) {
     return null;
   }
 

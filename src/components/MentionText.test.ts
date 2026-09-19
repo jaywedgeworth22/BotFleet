@@ -26,6 +26,22 @@ describe("MentionText component", () => {
     );
     expect(html).not.toContain(`<span class="${MENTION_CLASS}">`);
   });
+
+  it("renders multi-word app mentions with spaces as a single entity", () => {
+    const html = ReactDOMServer.renderToStaticMarkup(
+      React.createElement(MentionText, { text: "Open #Google Sheets and check #Google Calendar" }),
+    );
+    expect(html).toContain(`<span class="${MENTION_CLASS}">#Google Sheets</span>`);
+    expect(html).toContain(`<span class="${MENTION_CLASS}">#Google Calendar</span>`);
+  });
+
+  it("renders quoted multi-word mentions", () => {
+    const html = ReactDOMServer.renderToStaticMarkup(
+      React.createElement(MentionText, { text: 'Ask @"Custom Bot" in #"Private Room"' }),
+    );
+    expect(html).toContain(`<span class="${MENTION_CLASS}">@&quot;Custom Bot&quot;</span>`);
+    expect(html).toContain(`<span class="${MENTION_CLASS}">#&quot;Private Room&quot;</span>`);
+  });
 });
 
 describe("remarkMentions plugin with Markdown", () => {

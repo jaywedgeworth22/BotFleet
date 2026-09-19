@@ -35,6 +35,22 @@ describe("autocompleteQueryAt", () => {
   it("ignores trigger across newlines", () => {
     expect(autocompleteQueryAt("@hello\nworld", 12)).toBeNull();
   });
+
+  it("does not dismiss valid @ trigger when an embedded # appears later (e.g. issue#5)", () => {
+    expect(autocompleteQueryAt("@scout issue#5", 14)).toEqual({
+      trigger: "@",
+      start: 0,
+      query: "scout issue#5",
+    });
+  });
+
+  it("prioritizes the valid trigger closest to caret", () => {
+    expect(autocompleteQueryAt("@scout and #general", 19)).toEqual({
+      trigger: "#",
+      start: 11,
+      query: "general",
+    });
+  });
 });
 
 describe("getAutocompleteCandidates", () => {

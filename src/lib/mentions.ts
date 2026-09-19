@@ -1,6 +1,25 @@
 // Mention and tag definitions, regex, and markdown plugin for @ (Bots) and # (Apps/Channels).
 
-export const MENTION_REGEX = /(?:^|(?<=[\s(\[\"'“‘]))([@#][a-zA-Z0-9_\-\.]+)(?=$|[\s)\]\"'”’.,:;!?])/g;
+import { POPULAR_APPS } from "./apps-catalog";
+
+const MULTI_WORD_APPS = POPULAR_APPS
+  .map((a) => a.name)
+  .filter((name) => name.includes(" "))
+  .map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+  .join("|");
+
+export const MENTION_REGEX = new RegExp(
+  `(?:^|(?<=[\\s(\\[\\\"'“‘]))([@#](?:${MULTI_WORD_APPS}|"[^"\\n]+"|'[^'\\n]+'|[“‘][^”’\\n]+[”’]|\\[[^\\]\\n]+\\]|[a-zA-Z0-9_\\-\\.]+))(?=$|[\\s)\\]\\\"'”’.,:;!?])`,
+  "g"
+);
+
+export const MENTION_TOKEN_REGEX = new RegExp(
+  `^[@#](?:${MULTI_WORD_APPS}|"[^"\\n]+"|'[^'\\n]+'|[“‘][^”’\\n]+[”’]|\\[[^\\]\\n]+\\]|[a-zA-Z0-9_\\-\\.]+)$`
+);
+
+export function isMentionToken(token: string): boolean {
+  return typeof token === "string" && MENTION_TOKEN_REGEX.test(token);
+}
 
 export const MENTION_CLASS = "font-bold text-[1.05em] text-accent inline-block align-baseline";
 
@@ -20,7 +39,7 @@ export function remarkMentions() {
           if (parts.length > 1) {
             const newChildren = parts
               .map((part: string) => {
-                if (part && (part.startsWith("@") || part.startsWith("#")) && /^[@#][a-zA-Z0-9_\-\.]+$/.test(part)) {
+                if (isMentionToken(part)) {
                   return {
                     type: "textDirective",
                     data: {

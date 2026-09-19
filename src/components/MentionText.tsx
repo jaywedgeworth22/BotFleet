@@ -1,5 +1,5 @@
 import { Fragment } from "react";
-import { MENTION_CLASS, MENTION_REGEX } from "@/lib/mentions";
+import { MENTION_CLASS, MENTION_REGEX, isMentionToken } from "@/lib/mentions";
 
 /**
  * Renders plain text with @bot and #app/#channel mentions styled bolder and slightly larger.
@@ -15,11 +15,7 @@ export function MentionText({ text }: { text: string }) {
   return (
     <>
       {parts.map((part, i) => {
-        if (
-          part &&
-          (part.startsWith("@") || part.startsWith("#")) &&
-          /^[@#][a-zA-Z0-9_\-\.]+$/.test(part)
-        ) {
+        if (isMentionToken(part)) {
           return (
             <span key={i} className={MENTION_CLASS}>
               {part}
