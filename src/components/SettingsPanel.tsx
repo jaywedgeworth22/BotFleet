@@ -334,11 +334,17 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
       providerSupportsLocal,
     },
   );
+  // Resolved the way the server resolves it, so this panel's destination
+  // label, its backend picker, its Start-VPS toggle, AND the
+  // destination-disabled check above all describe the machine the bot will
+  // actually open — not the empty field it happens to carry.  Hoisted above
+  // `destinationDisabled` because that helper takes cloudBackend too.
+  const cloudBackend = botCloudBackend(bot, state.config?.botDefaults?.cloudBackend);
   // The server refuses an unsupported destination at turn time; the picker
   // should not have offered it.  See computerDestinationDisabledReason.
   const destinationDisabled = (mode: "cloud" | "vm" | "local" | "off"): string | null => {
     if (mode === "local") return localSelectable ? null : localDisabledReason;
-    if (mode === "cloud" || mode === "vm") return computerDestinationDisabledReason(mode, state.instances, bot);
+    if (mode === "cloud" || mode === "vm") return computerDestinationDisabledReason(mode, state.instances, bot, cloudBackend);
     return null;
   };
   const patch = (
@@ -374,10 +380,6 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const canCoordinate = engine?.capabilities?.agentsMcp === true;
   const canUseConnectedApps = engine?.capabilities?.composioMcp === true;
   const canUseVps = engine?.capabilities?.computerMcp === true && engine.driverKind !== "boxAgent";
-  // Resolved the way the server resolves it, so this panel's destination label,
-  // its backend picker and its Start-VPS toggle all describe the machine the
-  // bot will actually open — not the empty field it happens to carry.
-  const cloudBackend = botCloudBackend(bot, state.config?.botDefaults?.cloudBackend);
   const connectedAppsConfigured = state.config?.composio?.configured === true;
   const connectedAppsEnabled = bot.composio !== false;
   const sectionName = bot.section?.trim() || "General";
