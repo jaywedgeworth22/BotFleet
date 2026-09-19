@@ -66,13 +66,34 @@ describe("recallPromptFor", () => {
     // a plain string, so nothing downstream can restore the gap.
     expect(prompt).not.toMatch(/[a-z][.!?] [A-Z]/);
   });
+
+  it("fires for the in-process HTTP recall lane added by PR #465 (recall: true)", async () => {
+    // MiniMax/OpenAI-compat/Grok HTTP drivers do not mount the qdrant
+    // stdio MCP server, so `integrations.qdrant` is undefined for them,
+    // but #465 mounts the same recall tools in-process via
+    // `createRecallTools` and threads a separate `recall: true` flag
+    // through the dispatch.  The prompt must fire for that lane or the
+    // model never hears about the corpus.
+    const prompt = recallPromptFor({ recall: true });
+    expect(prompt).toContain("recall_search");
+    expect(prompt).toContain("recall_contribute");
+
+    // And it still fires if the caller (the new dispatcher path) passes
+    // the `qdrant` mount alongside — both gates are equally valid.
+    const both = recallPromptFor({ qdrant: QDRANT_MOUNT, recall: true });
+    expect(both).toContain("recall_search");
+  });
 });
 
 describe("recall prompt wiring", () => {
   const INDEX_SRC = readFileSync(join(__dirname, "index.ts"), "utf8");
 
-  it("is concatenated at both the 1:1 and the room assembly sites", () => {
-    expect([...INDEX_SRC.matchAll(/recallPromptFor\(integrations\)/g)]).toHaveLength(2);
+  it("is concatenated at both the 1:1 and the room assembly sites, and threads the HTTP recall lane", () => {
+    // Both assembly sites pass the same shape: spread `integrations` and
+    // set `recall: <lane-flag>`.  The two-line pattern (1:1 + room) is
+    // what ensures a future lane cannot accidentally lose the prompt.
+    const callSites = [...INDEX_SRC.matchAll(/recallPromptFor\(\{ \.\.\.integrations, recall: \w+ \}\)/g)];
+    expect(callSites).toHaveLength(2);
   });
 
   it("is gated on the mounted integration rather than the config", () => {

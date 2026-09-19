@@ -39,7 +39,7 @@ import { approvalKey, autoVerdict, isCoarseApprovalKey } from "./auto-approve.ts
 import { requestReview, resolveAutoReviewMode, shouldReview } from "./auto-review.ts";
 import * as checkpoints from "./checkpoints.ts";
 import { appendDecision, readDecisions } from "./decision-log.ts";
-import { cwdConfinementError, protectedCwdDirs, validateBotCwd, type CwdConfinement } from "./bot-cwd.ts";
+import { cwdConfinementError, protectedCwdDirs, realOrResolved, validateBotCwd, type CwdConfinement } from "./bot-cwd.ts";
 import { resolveStaticFile } from "./static-files.ts";
 import { attachmentExists, extensionForMime, FILE_MAX_BYTES, IMAGE_MAX_BYTES, isImageMime, readAttachment, saveAttachment, saveImage, type SavedAttachment } from "./attachments.ts";
 import { openBotFleetDesktop } from "./desktop-open.ts";
@@ -3302,6 +3302,24 @@ async function startTurn(
       // toolLoop eligibility.  Re-deriving that here would just risk the
       // two checks drifting apart.
       const hasPhone = usesDriverToolLoop && Boolean(integrations.phone);
+      // Workspace confinement for read_file/write_file/edit_file: when a
+      // bot has a workspace but no This Computer grant, the file tools
+      // are still advertised (they're useful) but every path is checked
+      // against the bot's workspace realpath.  This Computer opts out
+      // because it is the explicit, full-host grant already.
+      //
+      // The root falls back from `cwd` to `privateWorkspace` because
+      // `pinTaskCwd` deliberately pins a resumed legacy session's cwd to
+      // null (the pre-workspace home-folder behavior, so the live session
+      // isn't moved under it), which would otherwise leave a workspace-only
+      // bot's file tools without confinement on every turn after the first.
+      // `privateWorkspace` is always defined when `worksInWorkspace` is
+      // true, so the fallback is total and the security boundary holds.
+      const confinementRoot = cwd ?? privateWorkspace ?? undefined;
+      const confinementForTurn =
+        usesDriverToolLoop && worksInWorkspace && !hasHostComputer && confinementRoot
+          ? { workspaceRealpath: realOrResolved(confinementRoot) }
+          : undefined;
       const turnTools = buildTurnTools(
         { ...integrations, localComputer: hasHostComputer, workspace: worksInWorkspace, recall: hasRecall, phone: hasPhone },
         { chiefOfStaff: Boolean(bot.chiefOfStaff) },
@@ -3335,6 +3353,7 @@ async function startTurn(
               workspace: worksInWorkspace,
               recall: hasRecall && recallSettingsForTurn ? { settings: recallSettingsForTurn, botName: bot.name } : undefined,
               phone: hasPhone,
+              confinement: confinementForTurn,
               cwd: cwd ?? bot.cwd ?? undefined,
               // Read here, not derived from the catalog above: this is what
               // gates create_bot inside the host's own executor (the cap and
@@ -3386,7 +3405,10 @@ async function startTurn(
             : "") +
           // Same gate as composio above: the mounted integration, not the
           // config — an engine without `qdrantMcp` never mounted the proxy.
-          recallPromptFor(integrations) +
+          // `hasRecall` extends the same prompt to the in-process HTTP
+          // recall lane mounted by PR #465 (MiniMax, OpenAI-compat, Grok
+          // HTTP) without those engines setting `integrations.qdrant`.
+          recallPromptFor({ ...integrations, recall: hasRecall }) +
           (coordinationPrompt ? ` ${coordinationPrompt}` : "") +
           credentialPrompt +
           routinePrompt +
@@ -4716,6 +4738,15 @@ async function runGroupMemberTurn(
     recallSettingsForRoomTurn && (recallSettingsForRoomTurn.url || findRecallCli()),
   );
   const hasRoomPhone = httpOnlyToolSurface && Boolean(integrations.phone);
+  // Workspace confinement for the room lane mirrors the 1:1 lane exactly:
+  // when a toolLoop driver qualifies for file tools but has no This Computer
+  // grant, every path is checked against the actual cwd the host is given
+  // (the group's pinned folder when the room has one, else the bot's own
+  // private workspace).  This Computer opts out, as in the 1:1 lane.
+  const confinementForRoom =
+    httpOnlyToolSurface && Boolean(workspace) && !hasHostComputer && cwd
+      ? { workspaceRealpath: realOrResolved(cwd) }
+      : undefined;
   const roomSystem =
     system +
     // Same sentence the 1:1 lane sends, in the same position: a computer the
@@ -4728,8 +4759,10 @@ async function runGroupMemberTurn(
     // The room lane mounts the same recall proxy the 1:1 lane does (see the
     // `integrations.qdrant` assignment above), so it owes the bot the same
     // sentences about it.  Both sentences belong here, in the same order the
-    // 1:1 lane emits them; neither replaces the other.
-    recallPromptFor(integrations) +
+    // 1:1 lane emits them; neither replaces the other.  `hasRoomRecall`
+    // extends the same prompt to the in-process HTTP recall lane mounted
+    // by PR #465 (MiniMax, OpenAI-compat, Grok HTTP), matching the 1:1 lane.
+    recallPromptFor({ ...integrations, recall: hasRoomRecall }) +
     sectionContextSystemPrompt(bot.section) +
     (hasFileTools(worksInWorkspace, httpOnlyToolSurface, hasHostComputer)
       ? `\n${memorySystemPrompt(bot.id).trim()}${skillsSystemPrompt(bot.id)}`
@@ -4768,6 +4801,7 @@ async function runGroupMemberTurn(
           workspace: Boolean(workspace),
           recall: hasRoomRecall && recallSettingsForRoomTurn ? { settings: recallSettingsForRoomTurn, botName: bot.name } : undefined,
           phone: hasRoomPhone,
+          confinement: confinementForRoom,
           cwd: cwd ?? bot.cwd ?? undefined,
           chiefOfStaff: Boolean(bot.chiefOfStaff),
           // Bound to THIS room turn's bot and thread in the same closure
