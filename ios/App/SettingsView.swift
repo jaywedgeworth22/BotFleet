@@ -337,7 +337,7 @@ private struct ComputerSettingsRow: View {
     }
 }
 
-private struct SettingsIcon: View {
+struct SettingsIcon: View {
     let symbol: String
     let color: Color
 
