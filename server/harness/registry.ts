@@ -12,6 +12,7 @@ import { findCliCandidates } from "../env-path.ts";
 import { getCachedLocalMiniMaxConfig, getMiniMaxBalance } from "../minimax-balance.ts";
 import { quotaCooldowns } from "../model-fallback.ts";
 import { computerReach, type ComputerReach } from "../computer-capability.ts";
+import { quotaProviderForDriver } from "../quota-window-map.ts";
 import type {
   AnyProviderDriver,
   InstanceConfig,
@@ -415,7 +416,13 @@ export class ProviderRegistry {
           const agModels = quotaModelsFromSnapshot(lastAntigravityQuotaSnapshot());
           Object.assign(models, agModels);
         } else if (inst.instanceId !== "minimax") {
-          const providerKey = inst.driverKind === "openai" ? "chatgpt" : inst.driverKind;
+          // Driver kinds (e.g. "claudeAgent", "codexAgent", "grokAgent") do not match the canonical
+          // provider keys quota windows are tagged with ("anthropic", "openai", "xai", ...). Use the
+          // shared DRIVER_KIND_PROVIDERS map so the filter actually finds the windows; the previous
+          // identity mapping made `instanceWindows` empty for every non-MiniMax engine and silently
+          // dropped every injected quota window.  See Sentry thread PRRT_kwDOUHUvas6j6pZT.
+          const providerKey = quotaProviderForDriver(inst.driverKind);
+          if (!providerKey) continue;
           const instanceWindows = usageQuotaPoller.getWindows().filter(w => w.providerKey === providerKey);
           if (instanceWindows.length > 0) {
             const headlines = windowHeadlines(instanceWindows as any);
