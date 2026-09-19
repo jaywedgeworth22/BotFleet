@@ -62,11 +62,12 @@ describe("DshAgentDriver config", () => {
 
   it("defaults to the model ids published by the DeepSeek provider package", () => {
     expect(STATIC_DSH_MODELS.default).toBe("deepseek-v4-flash");
+    // MiniMax-M2.7 dropped — M3 dominates it on context (1M vs 204k) and is
+    // the canonical DSH-hosted MiniMax row that gets the full tool surface.
     expect(STATIC_DSH_MODELS.options.map((option) => option.id)).toEqual([
       "deepseek-v4-flash",
       "deepseek-v4-pro",
       "MiniMax-M3",
-      "MiniMax-M2.7",
     ]);
   });
 
