@@ -200,7 +200,11 @@ main() {
       echo "check-only: no persisted session at ${OUT}" >&2
       exit 1
     fi
-    sid=$(head -1 "$OUT" | tr -d '[:space:]')
+    # Format: line 1 = session_id, line 2 = mcp_url (persisted by mint path).
+    # Older files (pre-persistence-of-url) carry only the sid; for those we
+    # refuse to guess the URL and ask the caller to re-mint, instead of
+    # returning a hardcoded template that may not match what the API issued.
+    sid=$(sed -n '1p' "$OUT" | tr -d '[:space:]')
     if [[ -z "$sid" ]]; then
       echo "check-only: persisted file at ${OUT} is empty" >&2
       exit 1
@@ -209,7 +213,11 @@ main() {
       echo "check-only: persisted session ${sid} is no longer valid" >&2
       exit 1
     fi
-    url="https://backend.composio.dev/tool_router/${sid}/mcp"
+    url=$(sed -n '2p' "$OUT" | tr -d '[:space:]')
+    if [[ -z "$url" ]]; then
+      echo "check-only: persisted file at ${OUT} has no mcp_url (pre-fix format); re-mint once and re-run" >&2
+      exit 1
+    fi
     print_summary "$sid" "$url" "$api_key"
     print_config_snippet "$url" "$api_key" "$PRINT_FOR"
     exit 0
@@ -223,7 +231,9 @@ main() {
   if [[ $PERSIST -eq 1 ]]; then
     mkdir -p "$(dirname "$OUT")"
     chmod 700 "$(dirname "$OUT")"
-    printf "%s\n" "$sid" > "$OUT"
+    # Persist sid + url together so --check-only can read the API-issued
+    # URL verbatim instead of reconstructing a guessed template.
+    printf "%s\n%s\n" "$sid" "$url" > "$OUT"
     chmod 600 "$OUT"
   fi
 
