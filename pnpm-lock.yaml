@@ -26,6 +26,9 @@ importers:
       clsx:
         specifier: ^2.1.1
         version: 2.1.1
+      harness:
+        specifier: github:jaywedgeworth22/Harness#main
+        version: https://codeload.github.com/jaywedgeworth22/Harness/tar.gz/bfd1bd3637226c9dba7a2dc4da7f263272b8a2d0
       lucide-react:
         specifier: ^0.539.0
         version: 0.539.0(react@19.2.8)
@@ -2789,6 +2792,12 @@ packages:
 
   graceful-fs@4.2.11:
     resolution: {integrity: sha512-RbJ5/jmFcNNCcDV5o9eTnBLJ/HszWV0P73bc+Ff4nS/rJj+YaS6IGyiOL0VoBYX+l1Wrl3k63h/KrH+nhJ0XvQ==}
+
+  harness@https://codeload.github.com/jaywedgeworth22/Harness/tar.gz/bfd1bd3637226c9dba7a2dc4da7f263272b8a2d0:
+    resolution: {tarball: https://codeload.github.com/jaywedgeworth22/Harness/tar.gz/bfd1bd3637226c9dba7a2dc4da7f263272b8a2d0}
+    version: 0.1.0
+    engines: {node: '>=22.0.0'}
+    hasBin: true
 
   has-flag@4.0.0:
     resolution: {integrity: sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ==}
@@ -6598,6 +6607,10 @@ snapshots:
       responselike: 2.0.1
 
   graceful-fs@4.2.11: {}
+
+  harness@https://codeload.github.com/jaywedgeworth22/Harness/tar.gz/bfd1bd3637226c9dba7a2dc4da7f263272b8a2d0:
+    optionalDependencies:
+      '@deepseek-ai/dsh': 0.1.5-rc.2
 
   has-flag@4.0.0: {}
 
