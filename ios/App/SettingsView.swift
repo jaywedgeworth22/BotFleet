@@ -67,6 +67,12 @@ struct SettingsView: View {
                 Text("Alerts arrive while BotFleet is open or was recently in the background. Closed-app delivery is not available yet.")
             }
 
+            // Closed-app push health — the same data the Mac's pairing page
+            // already renders, surfaced on the phone so a paired-and-quiet
+            // user can tell "no pushes happened" apart from "pushes happened
+            // but did not wake me".
+            PushHealthSection()
+
             if session.connection != nil {
                 Section {
                     pushHealthRow

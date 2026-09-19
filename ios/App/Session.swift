@@ -61,6 +61,14 @@ final class Session: ObservableObject {
     /// Distinguishes a real `.notDetermined` result from the in-memory value
     /// used while notification settings are still loading at launch.
     @Published private(set) var notificationAuthorizationResolved = false
+    /// What the paired Mac's push sender last reported about itself — counts,
+    /// timestamps, and Apple's own status strings.  Drives the "Closed-app
+    /// notifications" row in Settings.  Kept apart from `pushSenderHealth`,
+    /// which is `nil` while loading AND while the older sidecar returns 404:
+    /// the row distinguishes "asked, nothing to show" from "asked, not
+    /// supported here", and the two must not look identical.
+    @Published private(set) var pushSenderHealth: PushSenderHealth?
+    @Published private(set) var pushSenderHealthUnsupported = false
     /// A short-lived desktop handoff waiting for PairingView to present it.
     @Published private(set) var pairingInvite: PairingInvite?
     @Published var config: ConfigStatus?
@@ -1824,6 +1832,30 @@ final class Session: ObservableObject {
             pollMacUpdateWhileRunning()
             return status
         } catch {
+            return nil
+        }
+    }
+
+    /// Fetch the paired Mac's push-sender status.  An older sidecar that
+    /// predates `GET /api/companion/push-health` answers with 404 — that is
+    /// "this computer does not report closed-app delivery", not an error,
+    /// so it sets `pushSenderHealthUnsupported` rather than leaving
+    /// `pushSenderHealth` to time out into nothing.
+    @discardableResult
+    func loadPushSenderHealth() async -> PushSenderHealth? {
+        guard let client else { return nil }
+        do {
+            let health = try await client.pushSenderHealth()
+            pushSenderHealth = health
+            pushSenderHealthUnsupported = false
+            return health
+        } catch let APIError.status(code: 404, _) {
+            pushSenderHealth = nil
+            pushSenderHealthUnsupported = true
+            return nil
+        } catch {
+            pushSenderHealth = nil
+            pushSenderHealthUnsupported = false
             return nil
         }
     }

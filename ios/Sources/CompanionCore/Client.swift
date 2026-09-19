@@ -885,15 +885,14 @@ public struct CompanionClient: Sendable {
         )
     }
 
-    /// What the sidecar knows about the APNs sender right now.
-    ///
-    /// Mirrors `PushSenderHealth` in `companion/src/apns.ts` — counts,
-    /// Apple's own status string, and the moment of the last send or
-    /// error.  Nothing here is derived from the signing key itself.
-    ///
-    /// A 404 here means an older sidecar that does not report the route
-    /// at all; callers should treat that as "not reported by this
-    /// computer" rather than as a health failure.
+    /// A small, sidecar-terminated status for the closed-app push sender —
+    /// configured, last-sent, last-error counts and timestamps, and whether
+    /// Apple has rejected the signing key itself.  The route was added in
+    /// PR #383 alongside `registerPushToken(_:)`; an older sidecar returns
+    /// 404, which `Settings` surfaces as "not reported by this computer"
+    /// rather than as a generic error.  The response never carries anything
+    /// derived from the .p8 — only counts, timestamps, and Apple's own
+    /// status strings.
     public func pushSenderHealth() async throws -> PushSenderHealth {
         try await send(
             try makeRequest("GET", "/api/companion/push-health"),
