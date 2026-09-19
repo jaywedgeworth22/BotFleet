@@ -64,6 +64,15 @@ final class Session: ObservableObject {
     /// A short-lived desktop handoff waiting for PairingView to present it.
     @Published private(set) var pairingInvite: PairingInvite?
     @Published var config: ConfigStatus?
+    /// Cached APNs sender health from the sidecar, surfaced as a Settings
+    /// row so a closed-app wake problem is visible without opening a
+    /// console.  `nil` until the first fetch resolves, OR after a fetch
+    /// returns 404 (older sidecar).  See `PushSenderHealthView.notReported`.
+    @Published private(set) var pushSenderHealth: PushSenderHealth?
+    /// True once a refresh has resolved to 404 — i.e. the sidecar
+    /// predates PR #383 and does not report the route.  Distinct from
+    /// "have not fetched yet" so the row can render the right copy.
+    @Published private(set) var pushSenderHealthNotReported = false
 
     /// instanceId -> driverKind, cached from the last `instances()` fetch so
     /// the chat header can resolve a bot's current-model provider mark
@@ -165,6 +174,13 @@ final class Session: ObservableObject {
         }
         NotificationCoordinator.shared.approvalActionHandler = { [weak self] target, approve in
             _ = await self?.answerPendingRequest(target: target, approve: approve)
+        }
+        // Text-input reply on a question notification.  Same hydrate-and-
+        // resolve plumbing as Approve/Deny, because we still need to know
+        // which concrete request the body answers; only the leaf call is
+        // different (typed text, not a button).
+        NotificationCoordinator.shared.replyActionHandler = { [weak self] target, message in
+            _ = await self?.replyToPendingRequest(target: target, message: message)
         }
 #if DEBUG
         if ProcessInfo.processInfo.arguments.contains("-store-preview"),
@@ -371,6 +387,8 @@ final class Session: ObservableObject {
         token = nil
         rotation = CandidateRotation(hosts: [])
         state = CompanionState()
+        pushSenderHealth = nil
+        pushSenderHealthNotReported = false
         instanceDriverKinds = [:]
         cachedInstances = []
         pairingGeneration += 1
@@ -1039,6 +1057,109 @@ final class Session: ObservableObject {
             )
         }
         return outcome
+    }
+
+    /// Reply on a question notification, from a `UNTextInputNotificationAction`.
+    ///
+    /// Mirrors `answerPendingRequest(target:approve:)` exactly — the
+    /// hydrate-or-poll-for-client dance, the `ApprovalResolver` lookup,
+    /// the bounded background deadline, and the three follow-up banners
+    /// are all the same problem under the hood.  Only the leaf call
+    /// differs: we always send `behavior: "answer"` with the user's
+    /// typed text, because a reply action is always free text on a
+    /// question.
+    @discardableResult
+    func replyToPendingRequest(target: NotificationTarget, message: String) async -> ApprovalActionOutcome {
+        if client == nil { connect() }
+
+        let threadId = target.threadId
+        let attempt: @MainActor @Sendable () async throws -> Bool = {
+            while self.client == nil {
+                try await Task.sleep(nanoseconds: 100_000_000)
+                self.connect()
+            }
+            guard let client = self.client else { throw ApprovalActionFailed() }
+
+            var candidates = self.pendingApprovalRecords()
+            if candidates.first(where: { $0.threadId == threadId }) == nil {
+                _ = try? await self.hydrateSnapshot(using: client)
+                candidates = self.pendingApprovalRecords()
+            }
+
+            switch ApprovalResolver.resolve(
+                threadId: threadId, requestId: target.requestId, kind: target.kind, pending: candidates
+            ) {
+            case let .answer(requestId, isPermission):
+                // A reply is always free text; even on a permission card it
+                // is the user opting to answer in their own words.  Pass
+                // `isPermission: false` so `OptionCard.responseBehavior`
+                // chooses `behavior: "answer"` with a body.
+                let sent = await self.answer(
+                    threadId: threadId,
+                    requestId: requestId,
+                    choice: message,
+                    isPermission: false,
+                    quietly: true
+                )
+                if !sent { throw ApprovalActionFailed() }
+                return true
+            case .openApp:
+                return false
+            }
+        }
+        let bounded = await BackgroundRefreshCoordinator.run(
+            timeoutNanoseconds: Self.approvalActionTimeoutNanoseconds
+        ) { try await attempt() }
+
+        let outcome: ApprovalActionOutcome
+        switch bounded {
+        case .newData: outcome = .delivered
+        case .noData: outcome = .needsAppOpened
+        case .failed: outcome = .failed
+        }
+
+        switch outcome {
+        case .delivered:
+            break
+        case .needsAppOpened:
+            await openNotification(target)
+            NotificationCoordinator.shared.deliverFollowUp(
+                title: "Open BotFleet to Reply",
+                body: "Open the app to send that reply.",
+                target: target
+            )
+        case .failed:
+            NotificationCoordinator.shared.deliverFollowUp(
+                title: "Couldn't Deliver That Reply",
+                body: "Open BotFleet to try again.",
+                target: target
+            )
+        }
+        return outcome
+    }
+
+    /// Refresh the APNs sender health cached for the Settings row.
+    ///
+    /// A 404 is the explicit success case for this method: it means the
+    /// sidecar is older than PR #383 and does not report the route, which
+    /// the row renders as `PushSenderHealthView.notReported`.  All other
+    /// failures keep the previous cached value (Settings is informational,
+    /// not an action), so a transient network blip never blanks the row.
+    @discardableResult
+    func refreshPushSenderHealth() async -> Bool {
+        guard let client else { return false }
+        do {
+            let health = try await client.pushSenderHealth()
+            pushSenderHealth = health
+            pushSenderHealthNotReported = false
+            return true
+        } catch let error as APIError where error.isNotFound {
+            pushSenderHealth = nil
+            pushSenderHealthNotReported = true
+            return false
+        } catch {
+            return false
+        }
     }
 
     /// Make a new bot. The harness chooses its name, colour and greeting, so

@@ -8,6 +8,7 @@ struct SettingsView: View {
     @EnvironmentObject private var session: Session
     @State private var enablingNotifications = false
     @State private var confirmSimpleMerge = false
+    @State private var refreshingPushHealth = false
     private let onConnect: (() -> Void)?
 
     init(onConnect: (() -> Void)? = nil) {
@@ -64,6 +65,16 @@ struct SettingsView: View {
                 }
             } footer: {
                 Text("Alerts arrive while BotFleet is open or was recently in the background. Closed-app delivery is not available yet.")
+            }
+
+            if session.connection != nil {
+                Section {
+                    pushHealthRow
+                } header: {
+                    Text("Closed-app notifications")
+                } footer: {
+                    Text(pushHealthFooter)
+                }
             }
 
             if session.connection != nil {
@@ -151,7 +162,23 @@ struct SettingsView: View {
         }
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.inline)
-        .task { await session.refreshNotificationAuthorization() }
+        .task {
+            await session.refreshNotificationAuthorization()
+            // Refresh push-health once on appear.  The row stays useful on
+            // subsequent re-entries because `Session.pushSenderHealth` is
+            // cached; we deliberately do not poll it (it would re-fire on
+            // every background/foreground and the sidecar updates only on
+            // an actual send anyway).
+            if session.connection != nil {
+                await session.refreshPushSenderHealth()
+            }
+        }
+        .refreshable {
+            // Pull-to-refresh on the whole form: the row itself is the
+            // obvious target, but a system refresh on the parent makes
+            // the gesture discoverable without crowding the row.
+            await session.refreshPushSenderHealth()
+        }
         .confirmationDialog(
             "Merge Extra Threads?",
             isPresented: $confirmSimpleMerge,
@@ -202,6 +229,67 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// The push-sender health row.  Copy follows #389: a single line that
+    /// tells the owner what the sidecar reported, optionally with a
+    /// detail line under it.  Loading and "not reported" are visibly
+    /// different from "configured" so a missing key is not silently
+    /// rendered as healthy.
+    private var pushHealthRow: some View {
+        HStack(alignment: .top, spacing: 12) {
+            SettingsIcon(symbol: "antenna.radiowaves.left.and.right", color: .green)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(pushHealthPrimary)
+                    .font(.subheadline)
+                    .foregroundStyle(.primary)
+                if let detail = pushHealthDetail {
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if refreshingPushHealth {
+                ProgressView()
+                    .controlSize(.small)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Refreshes when pulled")
+        .task(id: session.connection?.id) {
+            // Re-fetch when the user pairs a new computer: the row's value
+            // belongs to the active pairing, not whatever was cached at
+            // launch.
+            await session.refreshPushSenderHealth()
+        }
+    }
+
+    /// One-line summary that fits in the row.  The detail line carries
+    /// the dropped/failed counts when there is anything worth surfacing.
+    private var pushHealthPrimary: String {
+        if session.pushSenderHealthNotReported {
+            return PushSenderHealthView.notReported
+        }
+        if let health = session.pushSenderHealth {
+            return PushSenderHealthView.summary(health)
+        }
+        return "Checking closed-app delivery…"
+    }
+
+    private var pushHealthDetail: String? {
+        guard let health = session.pushSenderHealth else { return nil }
+        return PushSenderHealthView.detail(health)
+    }
+
+    /// Short footer that explains the row without repeating the summary.
+    /// "Not reported" deserves its own copy because it points the user at
+    /// a software update rather than at a setting on their computer.
+    private var pushHealthFooter: String {
+        if session.pushSenderHealthNotReported {
+            return "This computer's BotFleet is older than the version that reports this row.  Update BotFleet on your computer to see it."
+        }
+        return "Pull down to refresh.  The status reflects what your computer last reported."
     }
 
     private var statusText: String { session.status.settingsText }
