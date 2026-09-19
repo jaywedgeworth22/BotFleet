@@ -319,12 +319,12 @@ describe("windowHeadlines + formatResetCountdown", () => {
 
 describe("formatDualQuotaBadge", () => {
   it("formats dual percentage when both primary and secondary exist", () => {
-    expect(formatDualQuotaBadge(75, 100)).toBe("(75%/100%)");
-    expect(formatDualQuotaBadge(92.24, 1.4)).toBe("(92%/1%)");
+    expect(formatDualQuotaBadge(75, 100)).toBe("(75% / 100%)");
+    expect(formatDualQuotaBadge(92.24, 1.4)).toBe("(92% / 1%)");
   });
 
   it("formats single percentage with windows label or left suffix", () => {
-    expect(formatDualQuotaBadge(75, null, { windowsLabel: "5hr/Week" })).toBe("(75%)");
+    expect(formatDualQuotaBadge(75, null, { windowsLabel: "5hr/Week" })).toBe("(75% for 5h / w)");
     expect(formatDualQuotaBadge(75, null)).toBe("75% left");
     expect(formatDualQuotaBadge(null, 50)).toBe("(50%)");
     expect(formatDualQuotaBadge(null, null)).toBeNull();
@@ -334,25 +334,25 @@ describe("formatDualQuotaBadge", () => {
 describe("windowsLabelFromHeadlines", () => {
   it("returns the combined '5hr/Week' badge when both buckets are present", () => {
     const headlines = windowHeadlines([
-      { label: "Cursor 5h", window: "5h", remainingPercent: 60, resetAt: null, skip: false },
-      { label: "Cursor weekly", window: "weekly", remainingPercent: 40, resetAt: null, skip: false },
+      { label: "Token Plan", window: "5-hour", remainingPercent: 100, skip: false },
+      { label: "Token Plan", window: "Weekly", remainingPercent: 100, skip: false },
     ]);
     expect(windowsLabelFromHeadlines(headlines)).toBe("5hr/Week");
   });
 
   it("returns the bare '5hr' badge when only the 5h bucket is present", () => {
-    const headlines = windowHeadlines([{ label: "Cursor 5h", window: "5h", remainingPercent: 60, resetAt: null, skip: false }]);
+    const headlines = windowHeadlines([{ label: "Token Plan", window: "5h", remainingPercent: 100, skip: false }]);
     expect(windowsLabelFromHeadlines(headlines)).toBe("5hr");
   });
 
   it("returns 'Week' when only the weekly bucket is present", () => {
-    const headlines = windowHeadlines([{ label: "Cursor weekly", window: "weekly", remainingPercent: 40, resetAt: null, skip: false }]);
+    const headlines = windowHeadlines([{ label: "Token Plan", window: "weekly", remainingPercent: 100, skip: false }]);
     expect(windowsLabelFromHeadlines(headlines)).toBe("Week");
   });
 
-  it("returns undefined for a monthly-only engine (no 5h or weekly window at all)", () => {
-    const headlines = windowHeadlines([{ label: "Cursor monthly", window: "monthly", remainingPercent: 100, resetAt: null, skip: false }]);
-    expect(windowsLabelFromHeadlines(headlines)).toBeUndefined();
+  it("returns 'Month' for a monthly-only engine", () => {
+    const headlines = windowHeadlines([{ label: "Cursor monthly", window: "monthly", remainingPercent: 100, skip: false }]);
+    expect(windowsLabelFromHeadlines(headlines)).toBe("Month");
   });
 
   it("returns undefined for an empty window list", () => {
