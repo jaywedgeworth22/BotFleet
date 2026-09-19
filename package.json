@@ -89,6 +89,7 @@
     "@sentry/react": "^10.73.0",
     "@trycua/cua-driver": "0.20.0",
     "clsx": "^2.1.1",
+    "harness": "github:jaywedgeworth22/Harness#main",
     "lucide-react": "^0.539.0",
     "posthog-js": "^1.415.6",
     "qrcode.react": "^4.2.0",
