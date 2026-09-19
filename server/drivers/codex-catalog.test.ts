@@ -59,7 +59,7 @@ describe("decodeCodexSelection", () => {
 describe("readCodexModelCatalog", () => {
   it("keeps the static fallback aligned with the current visible Codex rows", () => {
     expect(STATIC_CODEX_MODELS).toEqual({
-      default: "gpt-5.6-sol",
+      default: "gpt-6-astra",
       options: [
         { id: "gpt-6-astra", label: "GPT-6 Astra" },
         { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
@@ -233,7 +233,7 @@ name = "oMLX"
 `,
     });
     const catalog = await readCodexModelCatalog({ HOME: home });
-    expect(catalog.default).toBe("gpt-5.6-sol");
+    expect(catalog.default).toBe("gpt-6-astra");
     expect(catalog.options.every((option) => !option.custom)).toBe(true);
   });
 });
