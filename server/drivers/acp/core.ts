@@ -907,15 +907,21 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
             try {
               if (support.selectModel) {
                 const { configId, valueForModel, modelForValue } = support.selectModel;
-                const currentOf = (r: any) =>
-                  (Array.isArray(r?.configOptions) ? r.configOptions : []).find((o: any) => o?.id === configId)
-                    ?.currentValue ?? null;
-                let selectedValue = currentOf(sessionResult);
+                // The value a reply reports for this option, or `undefined` when
+                // it reports nothing.  "Not reported" must stay distinct from
+                // "reported as some other value": a stock `dsh` ACKs
+                // session/set_config_option with a bare `{}`, and reading that
+                // as a failed switch raised BOTFLEET-M on every dsh turn.
+                const reportedValue = (r: any) =>
+                  (Array.isArray(r?.configOptions) ? r.configOptions : []).find(
+                    (o: any) => o?.id === configId,
+                  )?.currentValue;
+                let selectedValue = reportedValue(sessionResult);
                 const requestedValue = cliTurn.model
                   ? (valueForModel?.(cliTurn.model) ?? cliTurn.model)
                   : null;
                 if (requestedValue && requestedValue !== selectedValue) {
-                  selectedValue = currentOf(
+                  const applied = reportedValue(
                     await request(
                       "session/set_config_option",
                       { sessionId, configId, value: requestedValue },
@@ -923,12 +929,15 @@ export function createAcpDriver(support: AcpSupport): ProviderDriver<AcpConfig> 
                     ),
                   );
                   // an agent that answers OK but keeps its old model is worse than
-                  // one that errors: it burns a paid turn on the wrong thing
-                  if (selectedValue !== requestedValue) {
+                  // one that errors: it burns a paid turn on the wrong thing.  Only
+                  // a *reported* mismatch proves that, though — a bare ACK that
+                  // reports no state cannot be held to a comparison it never made.
+                  if (applied !== undefined && applied !== requestedValue) {
                     throw new Error(
-                      `${DRIVER_KIND} did not switch to ${cliTurn.model} (still ${selectedValue ?? "unknown"})`,
+                      `${DRIVER_KIND} did not switch to ${cliTurn.model} (still ${applied ?? "unknown"})`,
                     );
                   }
+                  selectedValue = applied ?? requestedValue;
                 }
                 // Opaque option values are protocol details.  Persist the
                 // picker id in the task so resume and usage attribution keep

@@ -190,7 +190,10 @@ export const dshSupport: AcpSupport = {
       value: requested,
     });
     const confirmed = currentConfigValue(result, "reasoning_effort");
-    if (confirmed !== requested) {
+    // Only a *reported* mismatch means the setting did not take.  A reply that
+    // carries no option state (stock `dsh` answered `{}`) reports nothing to
+    // compare, and failing on that refused every effort-pinned turn.
+    if (confirmed !== undefined && confirmed !== requested) {
       throw new Error(
         `DeepSeek Harness did not switch reasoning effort to ${requested} (still ${String(confirmed ?? "unknown")})`,
       );
