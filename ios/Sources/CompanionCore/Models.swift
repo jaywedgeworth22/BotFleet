@@ -1462,3 +1462,33 @@ public struct MacUpdateRunRefusal: Error, LocalizedError, Sendable {
 
     public var errorDescription: String? { message }
 }
+
+/// `GET /api/companion/push-health`'s body.  Mirrors the TypeScript
+/// `PushSenderHealth` in `companion/src/apns.ts` — every field is either a
+/// count, a timestamp, or a status string Apple sent us; nothing derived
+/// from the signing key ever crosses this boundary.  Used by the iOS
+/// Settings card to answer "is closed-app wake actually working right now?".
+public struct PushSenderHealth: Decodable, Sendable {
+    /// Whether a usable .p8 has been found yet on the paired Mac.
+    public var configured: Bool
+    /// Production or sandbox APNs, once `configured` is true; `nil` before.
+    public var production: Bool?
+    /// Paired devices that currently hold a push token.
+    public var tokensRegistered: Int
+    /// Total push attempts this process has logged.
+    public var sent: Int
+    /// Total push attempts that ended in a non-2xx from Apple.
+    public var failed: Int
+    /// Last successful send, as milliseconds since the Unix epoch.
+    public var lastSentAt: Int?
+    /// Last failed send, in the same shape.
+    public var lastErrorAt: Int?
+    /// `403 ExpiredProviderToken` style — status plus Apple's reason.  Empty
+    /// when there has been no failure.
+    public var lastError: String?
+    /// Set when Apple refused the signing key itself.  Sending is off until
+    /// the key file changes; a new signature from the same key cannot help.
+    public var keyRejected: String?
+    /// Notifications dropped because a device's queue was already full.
+    public var dropped: Int
+}

@@ -885,6 +885,21 @@ public struct CompanionClient: Sendable {
         )
     }
 
+    /// A small, sidecar-terminated status for the closed-app push sender —
+    /// configured, last-sent, last-error counts and timestamps, and whether
+    /// Apple has rejected the signing key itself.  The route was added in
+    /// PR #383 alongside `registerPushToken(_:)`; an older sidecar returns
+    /// 404, which `Settings` surfaces as "not reported by this computer"
+    /// rather than as a generic error.  The response never carries anything
+    /// derived from the .p8 — only counts, timestamps, and Apple's own
+    /// status strings.
+    public func pushSenderHealth() async throws -> PushSenderHealth {
+        try await send(
+            try makeRequest("GET", "/api/companion/push-health"),
+            as: PushSenderHealth.self
+        )
+    }
+
     public func generateAvatar(botId: String, prompt: String) async throws -> Bot {
         var request = try makeRequest(
             "POST", "/api/bots/\(botId)/avatar/generate",
