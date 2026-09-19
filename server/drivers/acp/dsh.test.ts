@@ -108,6 +108,7 @@ describe("native DSH ACP turns", () => {
     delete process.env.FAKE_ACP_MODELS_JSON;
     delete process.env.FAKE_ACP_REASONING_EFFORTS;
     delete process.env.FAKE_ACP_REASONING_STICKS;
+    delete process.env.FAKE_ACP_CONFIG_REPLY_BARE;
     recorder?.stop();
     await instance?.dispose();
     await removeTempDir(scratch);
@@ -217,6 +218,28 @@ describe("native DSH ACP turns", () => {
     );
     const methods = JSON.parse(readFileSync(rpcDump, "utf8")) as string[];
     expect(methods).not.toContain("session/prompt");
+  });
+
+  it("accepts a bare set_config_option acknowledgement instead of failing the turn", async () => {
+    const flash = dshModelOptionValue("deepseek-v4-flash");
+    const pro = dshModelOptionValue("deepseek-v4-pro");
+    process.env.FAKE_ACP_MODELS_JSON = JSON.stringify([flash, pro]);
+    process.env.FAKE_ACP_REASONING_EFFORTS = "off,high,max";
+    process.env.FAKE_ACP_CONFIG_REPLY_BARE = "1";
+    await create();
+
+    await instance!.adapter.sendTurn({
+      threadId: "dsh-native-bare-config-reply",
+      text: "run on the pinned model and effort",
+      model: "deepseek-v4-pro",
+      effort: "max",
+    });
+    const done = await recorder!.until((event) => event.type === "turn.completed");
+
+    expect(done).toMatchObject({ ok: true });
+    expect(recorder!.events).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "session.started", model: "deepseek-v4-pro" }),
+    ]));
   });
 });
 
