@@ -1,4 +1,3 @@
-import codexMark from "/codex-mark.png";
 // Provider brand marks, keyed by driver kind. Official logos only.
 import { Monitor } from "lucide-react";
 import { cn } from "@/lib/cn";
@@ -50,15 +49,16 @@ export function ClaudeMark({ size = 16, className }: IconProps) {
 }
 
 export function CodexMark({ size = 16, className }: IconProps) {
+  // SVG path (the old rasterized PNG drifted gold in dark mode once CSS inverted
+  // it).  The path takes the ink color directly, so the mark stays neutral on
+  // every surface.
   return (
-    <img
-      src={codexMark}
-      width={size}
-      height={size}
-      className={cn("object-contain dark:invert", className)}
-      alt="Codex"
-      aria-hidden
-    />
+    <svg width={size} height={size} viewBox="0 0 24 24" className={cn("fill-[var(--color-ink)]", className)} aria-hidden>
+      <path
+        fillRule="evenodd"
+        d="M22.2819 9.8211a5.9847 5.9847 0 0 0-.5157-4.9108 6.0462 6.0462 0 0 0-6.5098-2.9A6.0651 6.0651 0 0 0 4.9807 4.1818a5.9847 5.9847 0 0 0-3.9977 2.9 6.0462 6.0462 0 0 0 .7427 7.0966 5.98 5.98 0 0 0 .511 4.9107 6.051 6.051 0 0 0 6.5146 2.9001A5.9847 5.9847 0 0 0 13.2599 24a6.0557 6.0557 0 0 0 5.7718-4.2058 5.9894 5.9894 0 0 0 3.9977-2.9001 6.0557 6.0557 0 0 0-.7475-7.0729zm-9.022 12.6081a4.4755 4.4755 0 0 1-2.8764-1.0408l.1419-.0804 4.7783-2.7582a.7948.7948 0 0 0 .3927-.6813v-6.7369l2.02 1.1686a.071.071 0 0 1 .038.052v5.5826a4.504 4.504 0 0 1-4.4945 4.4944zm-9.6607-4.1254a4.4708 4.4708 0 0 1-.5346-3.0137l.142.0852 4.783 2.7582a.7712.7712 0 0 0 .7806 0l5.8428-3.3685v2.3324a.0804.0804 0 0 1-.0332.0615L9.74 19.9502a4.4992 4.4992 0 0 1-6.1408-1.6464zM2.3408 7.8956a4.485 4.485 0 0 1 2.3655-1.9728V12.61a.7664.7664 0 0 0 .3879.6765l5.8144 3.3543-2.0201 1.1685a.0757.0757 0 0 1-.071 0L3.6053 14.026a4.504 4.504 0 0 1-1.2645-6.1304zm16.5963 3.8558L13.1038 8.364 15.1192 7.2a.0757.0757 0 0 1 .071 0l4.8303 2.7865a4.4944 4.4944 0 0 1-.6765 8.1042v-5.6772a.79.79 0 0 0-.407-.667zm2.0107-3.0231l-.142-.0852-4.7735-2.7818a.7759.7759 0 0 0-.7854 0L9.409 9.2297V6.8974a.0662.0662 0 0 1 .0284-.0615l4.8303-2.7818a4.4992 4.4992 0 0 1 6.6802 4.66zM8.3065 12.863l-2.02-1.1638a.0804.0804 0 0 1-.038-.0567V5.9955a4.4992 4.4992 0 0 1 7.3757-3.4537l-.142.0805L8.704 5.3805a.7948.7948 0 0 0-.3927.6813zm1.0976-2.3654l2.602-1.4998 2.6069 1.4998v2.9994l-2.5974 1.4997-2.6067-1.4997z"
+      />
+    </svg>
   );
 }
 
@@ -171,21 +171,35 @@ export function QwenMark({ size = 16, className }: IconProps) {
   );
 }
 
-/** Official MiniMax mark. Gradient id namespaced (bf-minimax-grad-*) so it
- * doesn't collide with other inline SVG gradients rendered on the same page. */
+/** Official MiniMax mark in the blue/white palette used by the Harness
+ * rebrand.  Two layered copies of the same M-wave path — the first paints the
+ * navy-to-blue gradient, the second lays a translucent white highlight on the
+ * left half so the mark reads as blue-with-white on any background. */
 export function MiniMaxMark({ size = 16, className }: IconProps) {
-  const grad = "bf-minimax-grad-1";
+  const base = "bf-minimax-grad-1";
+  const highlight = "bf-minimax-grad-1h";
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" className={className} aria-hidden>
       <path
-        fill={`url(#${grad})`}
+        fill={`url(#${base})`}
+        fillRule="nonzero"
+        d="M16.278 2c1.156 0 2.093.927 2.093 2.07v12.501a.74.74 0 00.744.709.74.74 0 00.743-.709V9.099a2.06 2.06 0 012.071-2.049A2.06 2.06 0 0124 9.1v6.561a.649.649 0 01-.652.645.649.649 0 01-.653-.645V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v7.472a2.037 2.037 0 01-2.048 2.026 2.037 2.037 0 01-2.048-2.026v-12.5a.785.785 0 00-.788-.753.785.785 0 00-.789.752l-.001 15.904A2.037 2.037 0 0113.441 22a2.037 2.037 0 01-2.048-2.026V18.04c0-.356.292-.645.652-.645.36 0 .652.289.652.645v1.934c0 .263.142.506.372.638.23.131.514.131.744 0a.734.734 0 00.372-.638V4.07c0-1.143.937-2.07 2.093-2.07zm-5.674 0c1.156 0 2.093.927 2.093 2.07v11.523a.648.648 0 01-.652.645.648.648 0 01-.652-.645V4.07a.785.785 0 00-.789-.78.785.785 0 00-.789.78v14.013a2.06 2.06 0 01-2.07 2.048 2.06 2.06 0 01-2.071-2.048V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v3.8a2.06 2.06 0 01-2.071 2.049A2.06 2.06 0 010 12.9v-1.378c0-.357.292-.646.652-.646.36 0 .653.29.653.646V12.9c0 .418.343.757.766.757s.766-.339.766-.757V9.099a2.06 2.06 0 012.07-2.048 2.06 2.06 0 012.071 2.048v8.984c0 .419.343.758.767.758.423 0 .766-.339.766-.758V4.07c0-1.143.937-2.07 2.093-2.07z"
+      />
+      <path
+        fill={`url(#${highlight})`}
         fillRule="nonzero"
         d="M16.278 2c1.156 0 2.093.927 2.093 2.07v12.501a.74.74 0 00.744.709.74.74 0 00.743-.709V9.099a2.06 2.06 0 012.071-2.049A2.06 2.06 0 0124 9.1v6.561a.649.649 0 01-.652.645.649.649 0 01-.653-.645V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v7.472a2.037 2.037 0 01-2.048 2.026 2.037 2.037 0 01-2.048-2.026v-12.5a.785.785 0 00-.788-.753.785.785 0 00-.789.752l-.001 15.904A2.037 2.037 0 0113.441 22a2.037 2.037 0 01-2.048-2.026V18.04c0-.356.292-.645.652-.645.36 0 .652.289.652.645v1.934c0 .263.142.506.372.638.23.131.514.131.744 0a.734.734 0 00.372-.638V4.07c0-1.143.937-2.07 2.093-2.07zm-5.674 0c1.156 0 2.093.927 2.093 2.07v11.523a.648.648 0 01-.652.645.648.648 0 01-.652-.645V4.07a.785.785 0 00-.789-.78.785.785 0 00-.789.78v14.013a2.06 2.06 0 01-2.07 2.048 2.06 2.06 0 01-2.071-2.048V9.1a.762.762 0 00-.766-.758.762.762 0 00-.766.758v3.8a2.06 2.06 0 01-2.071 2.049A2.06 2.06 0 010 12.9v-1.378c0-.357.292-.646.652-.646.36 0 .653.29.653.646V12.9c0 .418.343.757.766.757s.766-.339.766-.757V9.099a2.06 2.06 0 012.07-2.048 2.06 2.06 0 012.071 2.048v8.984c0 .419.343.758.767.758.423 0 .766-.339.766-.758V4.07c0-1.143.937-2.07 2.093-2.07z"
       />
       <defs>
-        <linearGradient id={grad} x1="0%" x2="100.182%" y1="50.057%" y2="50.057%">
-          <stop offset="0%" stopColor="#E2167E" />
-          <stop offset="100%" stopColor="#FE603C" />
+        <linearGradient id={base} x1="0%" x2="100.182%" y1="50.057%" y2="50.057%">
+          <stop offset="0%" stopColor="#0A2540" />
+          <stop offset="55%" stopColor="#1E40AF" />
+          <stop offset="100%" stopColor="#3B82F6" />
+        </linearGradient>
+        <linearGradient id={highlight} x1="0%" x2="100.182%" y1="50.057%" y2="50.057%">
+          <stop offset="0%" stopColor="#FFFFFF" stopOpacity={0.55} />
+          <stop offset="45%" stopColor="#FFFFFF" stopOpacity={0} />
+          <stop offset="100%" stopColor="#FFFFFF" stopOpacity={0} />
         </linearGradient>
       </defs>
     </svg>
