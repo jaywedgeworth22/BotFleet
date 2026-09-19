@@ -101,14 +101,19 @@ function currentConfigValue(result: unknown, configId: string): unknown {
 
 /** The harness's own current models.  The vision variant is deliberately
  * absent: `images: false` disables image attachment for the whole engine, so
- * shipping a vision model here offered a capability the composer refused. */
+ * shipping a vision model here offered a capability the composer refused.
+ *
+ * MiniMax-M2.7 is no longer listed here — M3 dominates it on both context
+ * (1M vs 204k) and the >512k tier only exists for M3, and the DSH engine is
+ * the path BotFleet already routes MiniMax users down when they want full
+ * tool support.  BotFleet's own minimax.ts price table still prices an M2.7
+ * id so a saved selection or typed custom slug does not silently go unpriced. */
 export const STATIC_DSH_MODELS: ModelCatalog = {
   default: "deepseek-v4-flash",
   options: [
     { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash" },
     { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro" },
     { id: "MiniMax-M3", label: "MiniMax M3", contextWindow: 1_000_000 },
-    { id: "MiniMax-M2.7", label: "MiniMax M2.7", contextWindow: 204_800 },
   ],
 };
 

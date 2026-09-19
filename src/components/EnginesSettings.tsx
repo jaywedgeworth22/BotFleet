@@ -9,6 +9,7 @@ import { Check, ChevronDown, Loader2, Plus, TriangleAlert, Upload, X } from "luc
 
 import { api, useStore, type InstanceInfo } from "@/state/store";
 import { EngineGroupLabel } from "./EngineGroupLabel";
+import { MiniMaxCallout } from "./MiniMaxCallout";
 import { ProviderMark } from "./ProviderIcons";
 import { splitEngineRail } from "@/lib/engine-rail";
 import { cn } from "@/lib/cn";
@@ -423,13 +424,7 @@ function EngineRow({
         </div>
       )}
       {["minimax"].includes(instance.driverKind) && (
-        <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
-          <strong className="text-ink">Talks to the Team.</strong>
-          {"  "}In a chat this bot starts, it can see the other bots, ask one, list routines, request a key, and propose a schedule.
-          {"  "}None of that runs when another bot asked it.
-          {"  "}A section lead can add a specialist, but only in a direct chat — not in a room.
-          {"  "}Files, Terminal, the web, connected apps, and this computer need Claude, Codex, Antigravity, or Cursor.
-        </div>
+        <MiniMaxCallout />
       )}
       {instance.driverKind === "boxAgent" && (
         <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
