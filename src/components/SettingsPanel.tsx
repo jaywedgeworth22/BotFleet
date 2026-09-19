@@ -10,8 +10,8 @@ import { railAsideClass } from "@/lib/layout-rails";
 import { requestNotificationPermission } from "@/lib/notify";
 import { botUsage, costCaption, formatTokens, formatUsd, hasFiniteCost } from "@/lib/usage";
 import { shortPath } from "@/lib/short-path";
-import { computerDestinationDisabledReason, instanceSupportsCloudComputer, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
-import { resolveCloudBackend } from "../../server/computer-grants.ts";
+import { botCloudBackend, cloudBackendInherited, cloudDestinationLabel } from "@/lib/cloud-backend";
+import { computerDestinationDisabledReason, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
 import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
 import { BotSkillsPanel } from "./BotSkillsPanel";
 import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./LocalComputerAutoWarning";
@@ -334,22 +334,17 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
       providerSupportsLocal,
     },
   );
-  // Resolved the way the server resolves it — workspace default included —
-  // so the destination label, the eligibility check, the backend picker, and
-  // the Start-VPS toggle below all describe the bot's ACTUAL cloud backend,
-  // not the empty field an inheriting bot carries.  One const feeds all of
-  // them so they cannot drift apart again.
-  const cloudBackend = resolveCloudBackend(bot.cloudBackend, state.config?.botDefaults?.cloudBackend);
+  // Resolved the way the server resolves it, so this panel's destination
+  // label, its backend picker, its Start-VPS toggle, AND the
+  // destination-disabled check above all describe the machine the bot will
+  // actually open — not the empty field it happens to carry.  Hoisted above
+  // `destinationDisabled` because that helper takes cloudBackend too.
+  const cloudBackend = botCloudBackend(bot, state.config?.botDefaults?.cloudBackend);
   // The server refuses an unsupported destination at turn time; the picker
   // should not have offered it.  See computerDestinationDisabledReason.
   const destinationDisabled = (mode: "cloud" | "vm" | "local" | "off"): string | null => {
     if (mode === "local") return localSelectable ? null : localDisabledReason;
-    if (mode === "cloud" || mode === "vm") {
-      // The resolved backend, not the bot's own field: a bot that never
-      // chose one still lands wherever the workspace default sends it, and
-      // Cloud's engine rule differs between a hosted box and a VPS.
-      return computerDestinationDisabledReason(mode, state.instances, bot, cloudBackend);
-    }
+    if (mode === "cloud" || mode === "vm") return computerDestinationDisabledReason(mode, state.instances, bot, cloudBackend);
     return null;
   };
   const patch = (
@@ -384,7 +379,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
   const canAutoReview = engine?.capabilities?.approvalReview === true;
   const canCoordinate = engine?.capabilities?.agentsMcp === true;
   const canUseConnectedApps = engine?.capabilities?.composioMcp === true;
-  const canUseVps = instanceSupportsCloudComputer(state.instances, bot, "vps");
+  const canUseVps = engine?.capabilities?.computerMcp === true && engine.driverKind !== "boxAgent";
   const connectedAppsConfigured = state.config?.composio?.configured === true;
   const connectedAppsEnabled = bot.composio !== false;
   const sectionName = bot.section?.trim() || "General";
@@ -675,13 +670,12 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
               {([
-                // The cloud destination is whichever backend this bot
-                // resolves to.  Labelling it "ASCII.dev Box" while the bot
-                // is headed for a VPS tells the person the wrong thing about
-                // where their bot is about to click — which is exactly what
-                // reading the bot's own field did for every bot inheriting a
-                // "vps" workspace default.
-                ["cloud", cloudBackend === "vps" ? "Self-hosted VPS" : "ASCII.dev Box"],
+                // The cloud destination is whichever backend this bot resolves
+                // to.  Labelling it "ASCII.dev Box" while the bot is headed
+                // for a VPS tells the person the wrong thing about where their
+                // bot is about to click — and reading the bot's own field did
+                // exactly that for every bot inheriting a "vps" default.
+                ["cloud", cloudDestinationLabel(cloudBackend)],
                 ["vm", "Local VM"],
                 ["local", "This Computer"],
                 ["off", "Off"],
@@ -740,15 +734,10 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               <>
                 <CloudBackendPicker
                   value={cloudBackend}
+                  inherited={cloudBackendInherited(bot)}
                   vpsSupported={canUseVps}
                   onChange={(backend) => patch({ cloudBackend: backend })}
                 />
-                {/* Resolved, not `bot.cloudBackend === "vps"`: that raw field
-                    is `undefined` for an inheriting bot, so this toggle never
-                    rendered for one even on a "vps" workspace default — while
-                    the server (server/index.ts) resolves the same backend and
-                    refuses to provision that VPS without `autoStartVps` set,
-                    demanding a switch the UI had hidden. */}
                 {!(bot.computers?.length) && cloudBackend === "vps" && (
                   <div className="mt-3 flex items-center justify-between gap-4 rounded-lg bg-inset px-3 py-2.5">
                     <div className="min-w-0">
