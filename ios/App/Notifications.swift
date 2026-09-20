@@ -19,6 +19,11 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
     /// Set by `Session`; answers Approve/Deny straight from a notification
     /// action, without opening the app.
     var approvalActionHandler: ((_ target: NotificationTarget, _ approve: Bool) async -> Void)?
+    /// Set by `Session`; sends the typed body of a `UNTextInputNotificationAction`
+    /// reply on a question notification straight to the harness without
+    /// opening the app.  The body rides on the closure because
+    /// `UNTextInputNotificationAction` does not put it on `userInfo`.
+    var replyActionHandler: ((_ target: NotificationTarget, _ message: String) async -> Void)?
     /// Harness frames APNs has already shown.  The sidecar pushes only to a
     /// phone whose stream is down and wakes the app, which then reconnects
     /// and is replayed the same frame — without this, every closed-app
@@ -155,11 +160,22 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         if response.notification.request.trigger is UNPushNotificationTrigger {
             notePushDelivered(userInfo: userInfo)
         }
-        switch NotificationTarget.actionRoute(actionIdentifier: response.actionIdentifier, userInfo: userInfo) {
+        // `UNTextInputNotificationAction` carries the typed reply here —
+        // iOS does not put it on `userInfo`.  Pulling it for every action
+        // is cheap (just a wrapper type-check), and `actionRoute` ignores
+        // the body unless the action is `BOTFLEET_REPLY`.
+        let textInputBody = (response as? UNTextInputNotificationResponse)?.userText
+        switch NotificationTarget.actionRoute(
+            actionIdentifier: response.actionIdentifier,
+            userInfo: userInfo,
+            textInputBody: textInputBody
+        ) {
         case let .approve(target):
             sendApprovalAction(target, approve: true, completionHandler: completionHandler)
         case let .deny(target):
             sendApprovalAction(target, approve: false, completionHandler: completionHandler)
+        case let .reply(target, message):
+            sendReplyAction(target, message: message, completionHandler: completionHandler)
         case let .open(target):
             // Covers both the explicit Open action and a plain tap
             // (`UNNotificationDefaultActionIdentifier`) — the app's existing
@@ -186,6 +202,25 @@ final class NotificationCoordinator: NSObject, UNUserNotificationCenterDelegate 
         }
         Task {
             await approvalActionHandler(target, approve)
+            completionHandler()
+        }
+    }
+
+    /// A reply action is a network call the same way Approve/Deny is.
+    /// Same shape as `sendApprovalAction`, kept separate so a future
+    /// reply-only outcome (e.g. a follow-up banner on failure) has a
+    /// place to land without entangling the approval path.
+    private func sendReplyAction(
+        _ target: NotificationTarget,
+        message: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        guard let replyActionHandler else {
+            completionHandler()
+            return
+        }
+        Task {
+            await replyActionHandler(target, message)
             completionHandler()
         }
     }

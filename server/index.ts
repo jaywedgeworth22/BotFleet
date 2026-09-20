@@ -4910,17 +4910,25 @@ async function runGroupMemberTurn(
   });
   const completionFold = completionFolds.get(threadId);
   if (completionFold) await completionFold;
-  // A timed-out provider still owns the room thread until its interrupt
-  // produces turn.completed (or the stall watchdog's grace fallback runs).
-  // Do not clear busy or start the next member on that same thread early.
-  if (outcome === "stalled" || outcome === "timed_out") return false;
   // The turn is over and this scope is the only place that knows whose it
   // was, so hand both claims back by their exact keys.  The thread-keyed
   // subscriber has normally done it already and these are no-ops; they are
   // what covers the case it declines, when a second member is in flight on
   // this same room thread and a thread alone cannot name the speaker.
+  //
+  // This must run BEFORE the stalled/timed-out early return: a room stall or
+  // a deadline expiry returns here with no turn.completed ever coming, so
+  // the thread-keyed subscriber's releaseSoleOwner is the only path that
+  // would free the lease — and releaseSoleOwner declines while a second
+  // member is in flight on the same thread.  Doing it here means a stalled
+  // or timed-out room turn never strands its lease until the next member
+  // finishes and self-heals (which is what board aac035dd tracked).
   releaseRoomComputerLease(threadId, bot.id);
   releaseLocalVmThread(threadId, bot.id);
+  // A timed-out provider still owns the room thread until its interrupt
+  // produces turn.completed (or the stall watchdog's grace fallback runs).
+  // Do not clear busy or start the next member on that same thread early.
+  if (outcome === "stalled" || outcome === "timed_out") return false;
   // turn.completed normally performs this cleanup; this is the fallback.
   releaseRoomSpeaker();
   if (outcome === "dispatch_failed") {

@@ -35,7 +35,10 @@ struct ProviderMarkView: View {
         case "deepseek", "deepseekAgent", "dsh", "dshAgent":
             return .asset("ProviderMarkDeepSeek")
         case "codex":
-            return .asset("ProviderMarkCodex")
+            // Template-rendered so the mark picks up the foreground style on
+            // every surface and never ships a fixed brand color that drifts in
+            // dark mode (the old rasterized PNG read as gold on dark backgrounds).
+            return .templateAsset("ProviderMarkCodex")
         case "openai-compat", "openai":
             return .templateAsset("ProviderMarkOpenAI")
         case "gemini", "geminiAgent", "antigravity", "antigravityAgent":

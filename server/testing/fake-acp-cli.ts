@@ -30,6 +30,9 @@
 //   FAKE_ACP_MODEL_STICKS  session/set_config_option succeeds but leaves the
 //                        model where it was, so the confirmation guard in
 //                        core.ts has something to catch
+//   FAKE_ACP_CONFIG_REPLY_BARE  session/set_config_option applies the value but
+//                        answers with a bare `{}`, the shape stock dsh used:
+//                        no configOptions, so nothing to confirm against
 //   FAKE_ACP_USAGE_ROOT  put the prompt result's usage at the root instead of
 //                        under _meta (what opencode 1.18.18 actually does)
 //
@@ -419,7 +422,8 @@ function handle(msg: any) {
       if (process.env.FAKE_ACP_DUMP) {
         writeFileSync(`${process.env.FAKE_ACP_DUMP}.config.json`, JSON.stringify(configCalls, null, 2));
       }
-      result(msg.id, { configOptions: configOptions() });
+      // A stock dsh ACKs the switch with `{}` and no state to confirm against.
+      result(msg.id, process.env.FAKE_ACP_CONFIG_REPLY_BARE ? {} : { configOptions: configOptions() });
       break;
     }
     case "session/prompt": {

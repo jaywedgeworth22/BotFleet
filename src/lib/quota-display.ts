@@ -1,5 +1,5 @@
 /** Settings → Usage quota row: full per-model / per-window lines for hover and click. */
-import { lookupOwn, NEAR_CAP_PERCENT } from "../../server/quota-window-map";
+import { lookupOwn, NEAR_CAP_PERCENT } from "../../server/quota-window-map.ts";
 
 export type QuotaDisplayModel = {
   label: string;
@@ -531,15 +531,22 @@ export function minimaxQuotaLine(row: MiniMaxQuotaView, now: number = Date.now()
 export function windowsLabelFromHeadlines(headlines: WindowHeadline[]): string | undefined {
   const has5h = headlines.some((h) => h.bucket === "5h");
   const hasWeekly = headlines.some((h) => h.bucket === "weekly");
-  if (has5h && hasWeekly) return "5hr/Week";
-  if (has5h) return "5hr";
-  if (hasWeekly) return "Week";
+  const hasMonthly = headlines.some((h) => h.bucket === "monthly");
+  const hasDaily = headlines.some((h) => h.bucket === "daily");
+  const hasHourly = headlines.some((h) => h.bucket === "hourly");
+
+  const primary = has5h ? "5hr" : hasHourly ? "Hour" : hasDaily ? "Day" : undefined;
+  const secondary = hasWeekly ? "Week" : hasMonthly ? "Month" : undefined;
+
+  if (primary && secondary) return `${primary}/${secondary}`;
+  if (primary) return primary;
+  if (secondary) return secondary;
   return undefined;
 }
 
 /** Formats dual-window quota percentage for ModelPicker row.
- *  When both primary (5h) and secondary (weekly/monthly) percentages exist: "(XX%/YY%)".
- *  When only primary exists: "(XX%)" if a windows label exists, or "XX% left" otherwise. */
+ *  When both primary (5h) and secondary (weekly/monthly) percentages exist: "(XX% / YY% for 5h / w)".
+ *  When only primary exists: "(XX% for 5h)" if a windows label exists, or "XX% left" otherwise. */
 export function formatDualQuotaBadge(
   remainingPercent?: number | null,
   secondaryRemainingPercent?: number | null,
@@ -548,14 +555,27 @@ export function formatDualQuotaBadge(
   if (remainingPercent == null && secondaryRemainingPercent == null) return null;
   const p1 = remainingPercent != null ? Math.round(remainingPercent) : null;
   const p2 = secondaryRemainingPercent != null ? Math.round(secondaryRemainingPercent) : null;
+  
+  let suffix = "";
+  if (options?.windowsLabel) {
+    let w = options.windowsLabel.toLowerCase();
+    w = w.replace(/hr/g, "h");
+    w = w.replace(/hour/g, "h");
+    w = w.replace(/week/g, "w");
+    w = w.replace(/month/g, "m");
+    w = w.replace(/day/g, "d");
+    w = w.replace(/\//g, " / ");
+    suffix = ` for ${w}`;
+  }
+
   if (p1 != null && p2 != null) {
-    return `(${p1}%/${p2}%)`;
+    return `(${p1}% / ${p2}%${suffix})`;
   }
   if (p1 != null) {
-    return options?.windowsLabel ? `(${p1}%)` : `${p1}% left`;
+    return options?.windowsLabel ? `(${p1}%${suffix})` : `${p1}% left`;
   }
   if (p2 != null) {
-    return `(${p2}%)`;
+    return `(${p2}%${suffix})`;
   }
   return null;
 }

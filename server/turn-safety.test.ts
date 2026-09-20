@@ -323,6 +323,33 @@ describe("TurnOwnerClaims", () => {
     expect(claims.releaseSoleOwner("room-1")).toBeUndefined();
   });
 
+  it("the room stall/timeout path uses the exact key, so a second member in flight does not strand the lease", () => {
+    // Board aac035dd tracked this exact shape: a room turn that stalls (or
+    // times out) returns before its own unwind, no turn.completed comes, and
+    // the only other path that releases the room computer lease is the
+    // thread-keyed `turn.completed` subscriber — and that subscriber's
+    // `releaseSoleOwner` declines while a second member is in flight on the
+    // same thread.  The dispatcher's own settlement has to release by exact
+    // key BEFORE the stalled/timed-out early return, or the lease strands
+    // until the next sole-owner completion heals it.
+    const claims = new TurnOwnerClaims<string>();
+    claims.set("room-1", "bot-a", "lease-a");
+    claims.set("room-1", "bot-b", "lease-b");
+
+    // The thread-only path declines — both members are in flight.
+    expect(claims.releaseSoleOwner("room-1")).toBeUndefined();
+    expect(claims.size).toBe(2);
+
+    // The dispatcher's stall/timeout settlement uses the exact key: the
+    // stalled turn knows its own bot id, so it can attribute the release.
+    expect(claims.release("room-1", "bot-a")).toBe("lease-a");
+    expect(claims.get("room-1", "bot-a")).toBeUndefined();
+    // bot-b is still working — its lease is preserved exactly because the
+    // release named the speaker, not the thread.
+    expect(claims.get("room-1", "bot-b")).toBe("lease-b");
+    expect(claims.size).toBe(1);
+  });
+
   it("keeps threads separate and answers the two lookups the dispatchers need", () => {
     const claims = new TurnOwnerClaims<string>();
     claims.set("room-1", "bot-a", "lease-a");

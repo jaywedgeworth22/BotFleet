@@ -39,6 +39,10 @@ public enum NotificationActionIdentifier {
     public static let approve = "BOTFLEET_APPROVE"
     public static let deny = "BOTFLEET_DENY"
     public static let open = "BOTFLEET_OPEN"
+    /// Free-text reply on the question notification.  The body of a
+    /// `UNTextInputNotificationAction` arrives separately from `userInfo`,
+    /// so its routing takes the typed string in addition to the target.
+    public static let reply = "BOTFLEET_REPLY"
 }
 
 /// Builds the categories this app registers with `UNUserNotificationCenter`.
@@ -70,12 +74,21 @@ public enum NotificationCategories {
             intentIdentifiers: [],
             options: []
         )
-        // A question is answerable only with free text, which no
-        // notification action can supply — Open is the only honest choice,
-        // never Approve/Deny.
+        // A question is answerable with free text, which iOS supplies via a
+        // UNTextInputNotificationAction.  That action's body arrives in the
+        // response, not `userInfo`, so the routing case below takes it
+        // separately.  Open is kept so a long question still has a way out
+        // when the user wants to read thread context first.
+        let reply = UNTextInputNotificationAction(
+            identifier: NotificationActionIdentifier.reply,
+            title: "Reply",
+            options: [.authenticationRequired],
+            textInputButtonTitle: "Send",
+            textInputPlaceholder: "Type your answer"
+        )
         let question = UNNotificationCategory(
             identifier: NotificationCategoryIdentifier.question,
-            actions: [open],
+            actions: [reply, open],
             intentIdentifiers: [],
             options: []
         )
@@ -100,6 +113,10 @@ public enum NotificationActionRoute: Equatable, Sendable {
     /// Bring the app to this target's thread — a tap, or the explicit
     /// Open action.
     case open(NotificationTarget)
+    /// Send the typed `message` as the answer to this target.  The body of
+    /// a `UNTextInputNotificationAction` is not part of `userInfo`, so it
+    /// rides on the route value itself.
+    case reply(NotificationTarget, message: String)
     /// The user dismissed the notification without acting.
     case dismiss
     /// An action arrived without the ids it needs — a malformed or stale
@@ -113,15 +130,28 @@ public extension NotificationTarget {
     /// notifications carry the same top-level `threadId`/`botId` keys (see
     /// `fromRemoteUserInfo`), so this one function covers both delivery
     /// paths and both categories.
+    ///
+    /// `textInputBody` is the user-typed reply when the action is a
+    /// `UNTextInputNotificationAction`; non-text-input callers pass nil
+    /// and any non-nil value on a non-reply action is ignored.
     static func actionRoute(
         actionIdentifier: String,
-        userInfo: [AnyHashable: Any]
+        userInfo: [AnyHashable: Any],
+        textInputBody: String? = nil
     ) -> NotificationActionRoute {
         switch actionIdentifier {
         case NotificationActionIdentifier.approve:
             return fromRemoteUserInfo(userInfo).map(NotificationActionRoute.approve) ?? .ignore
         case NotificationActionIdentifier.deny:
             return fromRemoteUserInfo(userInfo).map(NotificationActionRoute.deny) ?? .ignore
+        case NotificationActionIdentifier.reply:
+            // Empty input is treated as a dismiss: the user opened the
+            // notification, saw the text field, and backed out.  Sending
+            // an empty answer would either fail server-side or land as
+            // a malformed empty choice — both worse than letting it go.
+            let trimmed = textInputBody?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !trimmed.isEmpty else { return .dismiss }
+            return fromRemoteUserInfo(userInfo).map { .reply($0, message: trimmed) } ?? .ignore
         case NotificationActionIdentifier.open, UNNotificationDefaultActionIdentifier:
             return fromRemoteUserInfo(userInfo).map(NotificationActionRoute.open) ?? .ignore
         case UNNotificationDismissActionIdentifier:
