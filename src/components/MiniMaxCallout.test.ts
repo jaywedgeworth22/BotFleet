@@ -12,10 +12,10 @@ import { join } from "node:path";
  * - a chat this bot starts can talk to the team
  * - a turn another bot asked does not
  * - a section lead can add a specialist only in a direct chat
- * - files / Terminal / the web / connected apps / this computer need
- *   Claude, Codex, Antigravity, or Cursor
- * - the path to MiniMax with full tool support is the DeepSeek Harness
- *   engine with MiniMax M3
+ * - MiniMax direct has Files, Terminal, and this computer
+ * - MiniMax direct does not have web access or connected apps
+ * - DeepSeek Harness with MiniMax M3 adds connected apps and more tools,
+ *   but cannot accept image attachments
  *
  * The compact default state must stay short enough that the model list
  * underneath it remains visible at narrow widths.
@@ -45,8 +45,8 @@ describe("MiniMaxCallout — always-visible compact line", () => {
     expect(box).toMatch(/<strong[^>]*>\s*Talks to the Team\.\s*<\/strong>/);
   });
 
-  it("names the surfaces MiniMax-direct does not have, in one short sentence", () => {
-    expect(box).toMatch(/Lacks Files, Terminal, the web, and connected apps\./);
+  it("names the surfaces MiniMax direct includes, in one short sentence", () => {
+    expect(box).toMatch(/Includes Files, Terminal, and this computer\./);
   });
 
   it("keeps the compact line short so model names stay visible underneath", () => {
@@ -54,7 +54,7 @@ describe("MiniMaxCallout — always-visible compact line", () => {
     // the immediate next text.  Cap it at ~140 characters so the model list
     // under the picker lands on one screen even at 320px widths.
     const compactMatch = box.match(
-      /<strong[^>]*>Talks to the Team\.[\s\S]*?Lacks Files, Terminal, the web, and connected apps\./,
+      /<strong[^>]*>Talks to the Team\.[\s\S]*?Includes Files, Terminal, and this computer\./,
     );
     expect(compactMatch).not.toBeNull();
     const compactText = compactMatch?.[0] ?? "";
@@ -66,8 +66,8 @@ describe("MiniMaxCallout — always-visible compact line", () => {
 describe("MiniMaxCallout — disclosure", () => {
   const box = readFileBox();
 
-  it("puts the longer explanation behind a 'Why this engine?' disclosure", () => {
-    expect(box).toMatch(/Why this engine\?/);
+  it("puts the longer explanation behind a 'Why This Engine?' disclosure", () => {
+    expect(box).toMatch(/Why This Engine\?/);
     expect(box).toMatch(/aria-expanded/);
     expect(box).toMatch(/aria-controls=\{detailId\}/);
     expect(box).toMatch(/const detailId = `minimax-callout-detail-\${instanceId}`/);
@@ -84,16 +84,17 @@ describe("MiniMaxCallout — disclosure", () => {
     expect(box).toMatch(/not in a room/);
   });
 
-  it("points files, Terminal, the web, connected apps, and this computer at the CLI engines", () => {
-    expect(box).toMatch(/Claude, Codex, Antigravity, or Cursor/);
-    expect(box).toMatch(/this computer/);
+  it("states MiniMax direct's tool limits accurately", () => {
+    expect(box).toMatch(/does not include web access or connected apps/);
   });
 
-  it("points owners at DeepSeek Harness with MiniMax M3 for full tool support", () => {
-    // The disclosure explicitly mentions the engine the user already sees in
-    // the rail ("DeepSeek Harness") and the model inside that engine that
-    // gets the full capability surface ("MiniMax M3").
-    expect(box).toMatch(/DeepSeek Harness engine with MiniMax M3/);
+  it("describes the DeepSeek Harness option without claiming image support", () => {
+    expect(box).toMatch(/DeepSeek Harness with MiniMax M3 adds connected apps and more tools/);
+    expect(box).toMatch(/cannot accept image attachments/);
+  });
+
+  it("hides the decorative disclosure chevron from assistive technology", () => {
+    expect(box).toMatch(/<ChevronDown[\s\S]*?aria-hidden="true"/);
   });
 });
 
