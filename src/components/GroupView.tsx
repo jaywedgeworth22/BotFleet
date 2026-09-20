@@ -1540,6 +1540,7 @@ export function GroupView({ group }: { group: Group }) {
                 />
               }
               visible={presenceVisible}
+              startedAt={presenceSpeaker?.activityStartedAt}
               label={activityLabel}
               answering={popping !== null}
               modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} size={14} /> : undefined}

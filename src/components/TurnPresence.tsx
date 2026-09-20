@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 import { cn } from "@/lib/cn";
 
 export function TurnPresence({
+  startedAt,
   avatar,
   visible,
   label = "Thinking",
@@ -19,6 +20,7 @@ export function TurnPresence({
   answering?: boolean;
   modelMark?: ReactNode;
   modelName?: string;
+  startedAt?: number;
   children?: ReactNode;
 }) {
   const [mounted, setMounted] = useState(visible);
@@ -28,14 +30,14 @@ export function TurnPresence({
 
   useEffect(() => {
     if (visible && phase === "think") {
-      setElapsed(0);
-      const start = Date.now();
+      const start = startedAt ?? Date.now();
+      setElapsed(Math.max(1, Math.floor((Date.now() - start) / 1000)));
       const timer = setInterval(() => {
         setElapsed(Math.max(1, Math.floor((Date.now() - start) / 1000)));
       }, 1000);
       return () => clearInterval(timer);
     }
-  }, [visible, phase]);
+  }, [visible, phase, startedAt]);
 
   useEffect(() => {
     if (visible) {
