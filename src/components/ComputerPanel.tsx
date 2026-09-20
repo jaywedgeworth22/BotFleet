@@ -41,6 +41,7 @@ import {
   localComputerDisabledReason,
   localComputerSelectable,
 } from "@/lib/local-computer";
+import { botCloudBackend, cloudBackendInherited, cloudDestinationLabel } from "@/lib/cloud-backend";
 import { vpsComputerNeedsReplacement, type VpsComputerStatus } from "@/lib/vps-computer";
 
 async function api(path: string, init?: RequestInit): Promise<any> {
@@ -160,7 +161,13 @@ export function ComputerPanel({
   );
   const computerToolSupported = selectedInstance?.capabilities?.computerMcp === true;
   const vpsSupported = Boolean(computerToolSupported && selectedInstance?.driverKind !== "boxAgent");
-  const cloudBackend = bot.cloudBackend ?? "box";
+  // Resolved, never `bot.cloudBackend ?? "box"`: a bot that never opened the
+  // picker inherits the workspace default, and the server resolves it that way
+  // for the status body this panel is about to parse.  Reading the bot's own
+  // field here made the panel label a VPS "ASCII.dev Box" and hand it the box
+  // lifecycle.  Everything downstream — labels, the status shape, the sleep and
+  // provision calls, this effect's deps — hangs off this one const.
+  const cloudBackend = botCloudBackend(bot, state.config?.botDefaults?.cloudBackend);
   const cloudSupported = cloudBackend === "vps"
     ? vpsSupported
     : computerToolSupported || selectedInstance?.driverKind === "boxAgent";
@@ -1057,7 +1064,7 @@ export function ComputerPanel({
                 // button provisions an ASCII.dev Box or a container on the
                 // person's own server depending on cloudBackend, and one
                 // label for both hides which one is about to happen.
-                ["cloud", cloudBackend === "vps" ? "Self-hosted VPS" : "ASCII.dev Box"],
+                ["cloud", cloudDestinationLabel(cloudBackend)],
                 ["vm", "Local VM"],
                 ["local", "This Computer"],
                 ["off", "Off"],
@@ -1113,6 +1120,7 @@ export function ComputerPanel({
             <>
               <CloudBackendPicker
                 value={cloudBackend}
+                inherited={cloudBackendInherited(bot)}
                 vpsSupported={vpsSupported}
                 onChange={(backend) => dispatch({ type: "updateBot", botId: bot.id, patch: { cloudBackend: backend } })}
               />

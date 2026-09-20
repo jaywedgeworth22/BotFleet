@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { accessHeaders, accessLoginHint } from "./recall-access.ts";
+import { accessHeaders, accessLoginHint, accessTokenState, type AccessTokenState } from "./recall-access.ts";
 import { RECALL_CLI_TIMEOUT_MS, describeCliFailure } from "./cli-failure.ts";
 import { redactSecretsInText } from "./redact.ts";
 
@@ -159,6 +159,10 @@ export interface RecallStatus {
   backendOk?: boolean;
   embedderHealthy?: boolean;
   accessGated?: boolean;
+  /** Whether the Cloudflare Access service token is whole.  Reported even on
+   * a healthy probe, because half a pair sends no Access headers at all and
+   * the panel needs to say so before the operator meets a login page. */
+  accessTokenState?: AccessTokenState;
   error?: string;
 }
 
@@ -175,7 +179,8 @@ export function recallStatus(settings: RecallSettings, timeoutMs = RECALL_STATUS
   if (existing) return existing;
   const run = async (): Promise<RecallStatus> => {
     const base = { source, configured: source !== "unconfigured", url: settings.url || null,
-      collection: settings.collection || null, checkedAt: Date.now(), lastSuccessAt: lastSuccesses.get(key) ?? null };
+      collection: settings.collection || null, checkedAt: Date.now(), lastSuccessAt: lastSuccesses.get(key) ?? null,
+      accessTokenState: accessTokenState(settings.accessClientId, settings.accessClientSecret) };
     if (source === "unconfigured") return { ...base, ready: false, state: "unconfigured",
       error: "Bot RAG is not configured — set a Service URL in Settings" };
     try {

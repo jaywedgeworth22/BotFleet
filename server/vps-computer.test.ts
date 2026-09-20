@@ -31,6 +31,7 @@ import {
   reuseVps,
   type VpsCommandRunner,
 } from "./vps-computer.ts";
+import { computerReach, type ComputerCapabilityFlags } from "./computer-capability.ts";
 
 const BOT_ID = "bot-1234-abcd";
 const CONFIG: AppConfig = { vps: { sshAlias: "production-vps" } };
@@ -499,9 +500,17 @@ describe("VPS computer", () => {
   });
 
   it("fails clearly for BoxAgent and engines without computer MCP", () => {
-    expect(vpsDriverError("boxAgent", true)).toMatch(/cannot use a self-hosted VPS/);
-    expect(vpsDriverError("codex", false)).toMatch(/cannot mount/);
-    expect(vpsDriverError("claudeAgent", true)).toBeNull();
+    // The reach comes from the one derivation, so these stay true to what
+    // the dispatch itself computed rather than to a hand-passed boolean.
+    const reachOf = (driverKind: string, capabilities: ComputerCapabilityFlags) =>
+      computerReach({ driverKind, capabilities });
+    expect(
+      vpsDriverError("boxAgent", reachOf("boxAgent", { computerMcp: true })),
+    ).toMatch(/cannot use a self-hosted VPS/);
+    expect(vpsDriverError("codex", reachOf("codex", {}))).toMatch(/cannot mount/);
+    expect(
+      vpsDriverError("claudeAgent", reachOf("claudeAgent", { computerMcp: true })),
+    ).toBeNull();
   });
 
   it("fails cleanly when no VPS alias is configured", async () => {

@@ -10,8 +10,10 @@ import { railAsideClass } from "@/lib/layout-rails";
 import { requestNotificationPermission } from "@/lib/notify";
 import { botUsage, costCaption, formatTokens, formatUsd, hasFiniteCost } from "@/lib/usage";
 import { shortPath } from "@/lib/short-path";
+import { botCloudBackend, cloudBackendInherited, cloudDestinationLabel } from "@/lib/cloud-backend";
 import { computerDestinationDisabledReason, instanceSupportsLocalComputer, localComputerDisabledReason, localComputerSelectable } from "@/lib/local-computer";
 import { BotProfileAvatarCard } from "./BotProfileAvatarCard";
+import { BotSkillsPanel } from "./BotSkillsPanel";
 import { LocalComputerAutoWarning, shouldWarnBeforeAddingLocalAuto } from "./LocalComputerAutoWarning";
 import { VoiceSettings } from "./VoiceSettings";
 import { BOT_PROFILE_LIMITS } from "../../shared/bot-profile";
@@ -332,11 +334,17 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
       providerSupportsLocal,
     },
   );
+  // Resolved the way the server resolves it, so this panel's destination
+  // label, its backend picker, its Start-VPS toggle, AND the
+  // destination-disabled check above all describe the machine the bot will
+  // actually open — not the empty field it happens to carry.  Hoisted above
+  // `destinationDisabled` because that helper takes cloudBackend too.
+  const cloudBackend = botCloudBackend(bot, state.config?.botDefaults?.cloudBackend);
   // The server refuses an unsupported destination at turn time; the picker
   // should not have offered it.  See computerDestinationDisabledReason.
   const destinationDisabled = (mode: "cloud" | "vm" | "local" | "off"): string | null => {
     if (mode === "local") return localSelectable ? null : localDisabledReason;
-    if (mode === "cloud" || mode === "vm") return computerDestinationDisabledReason(mode, state.instances, bot);
+    if (mode === "cloud" || mode === "vm") return computerDestinationDisabledReason(mode, state.instances, bot, cloudBackend);
     return null;
   };
   const patch = (
@@ -662,11 +670,12 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             </div>
             <div className="mt-3 flex overflow-hidden rounded-lg border border-hairline/40">
               {([
-                // The cloud destination is whichever backend this bot is set
-                // to.  Labelling it "ASCII.dev Box" while cloudBackend is
-                // "vps" tells the person the wrong thing about where their
-                // bot is about to click.
-                ["cloud", (bot.cloudBackend ?? "box") === "vps" ? "Self-hosted VPS" : "ASCII.dev Box"],
+                // The cloud destination is whichever backend this bot resolves
+                // to.  Labelling it "ASCII.dev Box" while the bot is headed
+                // for a VPS tells the person the wrong thing about where their
+                // bot is about to click — and reading the bot's own field did
+                // exactly that for every bot inheriting a "vps" default.
+                ["cloud", cloudDestinationLabel(cloudBackend)],
                 ["vm", "Local VM"],
                 ["local", "This Computer"],
                 ["off", "Off"],
@@ -724,11 +733,12 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
             {(!(bot.computers?.length) || bot.computers?.includes("cloud")) && (
               <>
                 <CloudBackendPicker
-                  value={bot.cloudBackend ?? "box"}
+                  value={cloudBackend}
+                  inherited={cloudBackendInherited(bot)}
                   vpsSupported={canUseVps}
                   onChange={(backend) => patch({ cloudBackend: backend })}
                 />
-                {!(bot.computers?.length) && bot.cloudBackend === "vps" && (
+                {!(bot.computers?.length) && cloudBackend === "vps" && (
                   <div className="mt-3 flex items-center justify-between gap-4 rounded-lg bg-inset px-3 py-2.5">
                     <div className="min-w-0">
                       <div className="text-[13px] text-ink">Start VPS automatically</div>
@@ -764,6 +774,13 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
 
           {/* keyed so switching bots never shows one bot's notes under another's name */}
           <MemoryCard key={bot.id} bot={bot} />
+
+          {/* Skills sit beside Memory because they are the same kind of
+              thing: plain files in the bot's workspace that a person owns.
+              Keyed for the same reason — one bot's imports must never show
+              under another's name, and the read-then-enable gate is a
+              per-bot decision. */}
+          <BotSkillsPanel key={`skills-${bot.id}`} bot={bot} driverKind={engine?.driverKind} />
 
           <div className="flex items-center justify-between gap-4 rounded-xl bg-card p-4">
             <div>

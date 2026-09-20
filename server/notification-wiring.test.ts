@@ -150,7 +150,11 @@ posixOnly("routine failure notification wiring", () => {
           botId: bot.id,
           title: "Routine Scout's routine failed",
         });
-        expect(frame.notification.threadId).not.toBe(bot.threadId);
+        // The wake now reuses the bot's primary conversation instead of
+        // minting a sibling thread (see RoutineManager#executeOnce), so the
+        // failure attaches to the chat the user is already looking at and
+        // the receipts endpoint reports the same thread.
+        expect(frame.notification.threadId).toBe(bot.threadId);
         expect(frame.notification.body).toContain("Broken nightly report");
 
         const receipts = await api("GET", "/api/routines");
@@ -158,7 +162,7 @@ posixOnly("routine failure notification wiring", () => {
         expect(receipt).toMatchObject({
           status: "failed",
           botId: bot.id,
-          threadId: frame.notification.threadId,
+          threadId: bot.threadId,
         });
 
         // A unique bot patch is an SSE ordering barrier: by the time it is

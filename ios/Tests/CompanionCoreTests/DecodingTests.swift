@@ -112,6 +112,26 @@ final class DecodingTests: XCTestCase {
         XCTAssertNotEqual(live.queued, true)
     }
 
+    func testRoomTasksCarryLastActivityForRosterSort() throws {
+        let room = try JSONDecoder().decode(
+            Room.self,
+            from: Data(#"""
+            {"id":"room-1","threadId":"task-1","name":"Launch","memberIds":["bot-1"],
+             "defaultResponder":{"kind":"everyone"},"bulletin":"","unread":false,"createdAt":1,
+             "tasks":[{"threadId":"task-1","title":"Main","createdAt":1,"lastActivity":50},
+                      {"threadId":"task-2","title":"Nested","createdAt":2,"lastActivity":900}]}
+            """#.utf8)
+        )
+        XCTAssertEqual(room.tasks?.count, 2)
+        XCTAssertEqual(room.tasks?.last?.lastActivity, 900)
+        let stamp = ChatListOrder.activity(
+            createdAt: room.createdAt,
+            taskActivities: (room.tasks ?? []).map { $0.lastActivity ?? $0.createdAt },
+            loadedMessageAt: nil
+        )
+        XCTAssertEqual(stamp, 900)
+    }
+
     func testRoomWorkingFlagCoversSetupWithoutABusyResponder() throws {
         let room = try JSONDecoder().decode(
             Room.self,

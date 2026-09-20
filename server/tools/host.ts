@@ -71,6 +71,12 @@ export interface TurnToolHostContext {
   workspace?: boolean;
   /** Working directory for file and shell operations. */
   cwd?: string;
+  /** When set, the file tools refuse any path whose realpath escapes this
+   *  workspace root.  Passed straight through to `createComputerTools`'s
+   *  `confinement` option.  A bot with a workspace but no This Computer
+   *  grant is the case that needs this; a bot with This Computer has no
+   *  confinement by design. */
+  confinement?: { workspaceRealpath: string };
   /** Fleet recall settings, present exactly when Bot RAG is configured for
    *  this turn — carries what `createRecallTools` needs (the resolved
    *  service settings and the seat name `recall_contribute` defaults to). */
@@ -94,7 +100,7 @@ const failed = (content: string, detail?: string): TurnToolOutcome =>
  *  caller's identity, so nothing downstream can forge it. */
 export function createTurnToolHost(ctx: TurnToolHostContext): TurnToolHost {
   // A Map, not the record itself: `call.name` is whatever the model said.
-  const computerTools = createComputerTools({ cwd: ctx.cwd });
+  const computerTools = createComputerTools({ cwd: ctx.cwd, confinement: ctx.confinement });
   const executors = new Map<string, AgentToolExecutor>([
     ...Object.entries(createAgentTools(ctx.deps)),
     ...Object.entries(computerTools),

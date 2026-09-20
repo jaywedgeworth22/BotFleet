@@ -46,6 +46,7 @@ import { showWorkingDots } from "@/lib/turn-tail";
 import { liveActivityLabel } from "@/lib/live-activity";
 import { modelChip } from "@/lib/model-chip";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { MentionText } from "./MentionText";
 import { OptionCard, shouldHideOnboardingCard } from "./OptionCard";
 import { ApprovalCard } from "./ApprovalCard";
 import { Composer } from "./Composer";
@@ -508,7 +509,7 @@ function Bubble({
               <div
                 className={cn(collapsible && "max-h-40 overflow-hidden [mask-image:linear-gradient(to_bottom,black_60%,transparent)]")}
               >
-                {visibleText}
+                <MentionText text={visibleText} />
               </div>
               {message.steered && (
                 <div className="mt-1 text-[11px] text-ink-secondary/70" title="Sent while the bot was working — it saw this before its next step, inside the same turn.">
@@ -623,9 +624,9 @@ function ActivityChip({ bot, message }: { bot: Bot, message: Message }) {
                   View Chat
                 </button>
              </div>
-             <div className="mt-1 text-[13px] text-ink whitespace-pre-wrap">
-               {message.text}
-             </div>
+              <div className="mt-1 text-[13px] text-ink whitespace-pre-wrap">
+                <MentionText text={message.text ?? ""} />
+              </div>
           </div>
         </div>
       );

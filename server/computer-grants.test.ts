@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   computerLabel,
   resolveCloudBackend,
+  cloudRunUsesBoxAgent,
   autoDestinations,
   resolveGrants,
   computerSystemPrompt,
@@ -132,6 +133,45 @@ describe("computerSystemPrompt", () => {
     expect(prompt).toContain("You have 2 computers");
     expect(prompt).not.toContain("Default to");
   });
+
+  it("describes the host as a desktop only to an engine that is handed one", () => {
+    // An MCP engine mounts the Cua Driver server and really can see and click
+    // the desktop.  A driver-loop engine mounts no MCP server at all: its
+    // host surface is the harness's own bash and file tools, and that
+    // registry holds no screenshot, click or desktop-state tool.  Telling it
+    // to take a screenshot first spends its turn reaching for a tool that
+    // does not exist, so the sentence has to match the surface.
+    const host = nameMounts([mount("local")]);
+    const mcp = computerSystemPrompt(host, { hostPlatform: "darwin" });
+    const toolLoop = computerSystemPrompt(host, { hostPlatform: "darwin", toolLoopSurface: true });
+
+    expect(mcp).toContain("take a screenshot");
+    expect(mcp).toContain("computer tools");
+
+    expect(toolLoop).not.toContain("take a screenshot");
+    expect(toolLoop).not.toContain("accessibility actions");
+    expect(toolLoop).toContain("shell and file tools");
+    expect(toolLoop).toContain("`bash`");
+    // and it is told plainly that the screen is not there, so it neither
+    // reaches for the missing tool nor claims it looked.
+    expect(toolLoop).toContain("no screenshot, click, or desktop-state tool");
+    // Both still carry the shared tail, so the flag changes the description
+    // of the surface and nothing else.
+    expect(toolLoop).toContain("protected-input step");
+    expect(mcp).toContain("protected-input step");
+  });
+
+  it("leaves a remote computer's wording alone whatever surface the engine has", () => {
+    // Only the host mount's sentence is surface-dependent.  A VPS or a Local
+    // VM reaches a driver-loop engine the same way it reaches an MCP one, so
+    // the flag must not rewrite those.
+    for (const kind of ["vps", "vm"] as const) {
+      const mounts = nameMounts([mount(kind)]);
+      expect(computerSystemPrompt(mounts, { toolLoopSurface: true })).toBe(
+        computerSystemPrompt(mounts, { toolLoopSurface: false }),
+      );
+    }
+  });
 });
 
 describe("driver mounting (pi)", () => {
@@ -236,7 +276,48 @@ describe("workspace defaults", () => {
     expect(resolveCloudBackend("box", "vps")).toBe("box");
     expect(resolveCloudBackend("vps", "box")).toBe("vps");
   });
+
+  it("agrees with the server's own VPS-provisioning gate for an inheriting bot", () => {
+    // server/index.ts refuses to provision a VPS unless bot.autoStartVps is
+    // set, once resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend)
+    // says "vps".  SettingsPanel decided whether to SHOW that toggle with the
+    // raw `bot.cloudBackend === "vps"` -- no `?? "box"`, no resolver -- so for
+    // a bot that never chose a backend under a "vps" workspace default it was
+    // `undefined === "vps"`, always false: the toggle the server demands never
+    // rendered.  The fix routes the client through the same resolver the
+    // server already uses, which is what this test pins.
+    // SAFETY: this is a literal test fixture, not parsed input — the widened
+    // annotation only lets `bot.cloudBackend` read as "never chosen" below.
+    const bot = { cloudBackend: undefined as "box" | "vps" | undefined };
+    // SAFETY: a literal test fixture; narrowing it to the union member is
+    // exactly the value being asserted on, not a claim about unparsed input.
+    const workspaceDefault = "vps" as const;
+    expect(resolveCloudBackend(bot.cloudBackend, workspaceDefault)).toBe("vps");
+    // The old client rule, restated for contrast: it never agreed with the
+    // resolver for exactly this inheriting-bot case.
+    const legacyClientRule = bot.cloudBackend === "vps";
+    expect(legacyClientRule).toBe(false);
+  });
+
+  it("documents that runOn=cloud must not force box over cloudBackend=vps", () => {
+    // resolveMounts previously did: runOn === "cloud" ? "box" : botBackend.
+    // Backend choice is solely resolveCloudBackend; runOn only grants "cloud".
+    expect(resolveCloudBackend("vps", undefined)).toBe("vps");
+    expect(resolveCloudBackend(undefined, "vps")).toBe("vps");
+  });
+
+
+  it("uses boxAgent only for cloud+box, not cloud+vps", () => {
+    expect(cloudRunUsesBoxAgent("cloud", "vps", undefined)).toBe(false);
+    expect(cloudRunUsesBoxAgent("cloud", undefined, "vps")).toBe(false);
+    expect(cloudRunUsesBoxAgent("cloud", "box", undefined)).toBe(true);
+    expect(cloudRunUsesBoxAgent("cloud", undefined, undefined)).toBe(true);
+    expect(cloudRunUsesBoxAgent("cloud", undefined, "box")).toBe(true);
+    expect(cloudRunUsesBoxAgent("maus", "box", undefined)).toBe(false);
+    expect(cloudRunUsesBoxAgent(undefined, "box", undefined)).toBe(false);
+  });
 });
+
 
 describe("operator allowlist", () => {
   it("passes every grant through when the allowlist is absent", () => {

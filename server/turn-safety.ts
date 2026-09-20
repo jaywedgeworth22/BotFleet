@@ -123,6 +123,93 @@ export class ExactTurnLeases {
   }
 }
 
+/** One claim in a `TurnOwnerClaims` map, with the pair that owns it. */
+export interface TurnOwnerClaim<T> {
+  readonly threadId: string;
+  readonly botId: string;
+  readonly value: T;
+}
+
+/** A per-turn resource held against a THREAD AND A BOT rather than a thread.
+ *
+ * A 1:1 thread has exactly one bot, so for that lane the two keys are the same
+ * key.  A room thread is shared by every member, and nothing serializes them
+ * at the thread level: `drainRoomQueue` starts every eligible queued round in
+ * one pass and `runGroupMemberTurn`'s only entry guard is the per-bot
+ * `bot.busy`, so two members really can be in flight on one thread at once.
+ * Keyed by thread alone, the second member's claim evicted the first — one
+ * resource stranded until the harness restarts, the other handed back while
+ * its turn was still using it.
+ *
+ * Some callers know only the thread: `turn.completed` is a thread-keyed event
+ * and names no speaker.  Those use `releaseSoleOwner`, which releases when the
+ * thread holds exactly one claim and DECLINES rather than guess when it holds
+ * two — the dispatches themselves release their own exact keys, so declining
+ * costs nothing and guessing wrong takes a container away from a live turn. */
+export class TurnOwnerClaims<T> {
+  private readonly byKey = new Map<string, TurnOwnerClaim<T>>();
+
+  // Length-prefixed rather than delimited, because both ids are opaque
+  // strings: a thread called `a:b` with a bot called `c` must not land on
+  // the same key as a thread called `a` with a bot called `b:c`.
+  private static key(threadId: string, botId: string): string {
+    return `${threadId.length}:${threadId}:${botId}`;
+  }
+
+  set(threadId: string, botId: string, value: T): void {
+    this.byKey.set(TurnOwnerClaims.key(threadId, botId), { threadId, botId, value });
+  }
+
+  get(threadId: string, botId: string): T | undefined {
+    return this.byKey.get(TurnOwnerClaims.key(threadId, botId))?.value;
+  }
+
+  /** Take back one exact claim, returning what it held so the caller can
+   * unwind it — or undefined when that pair holds nothing. */
+  release(threadId: string, botId: string): T | undefined {
+    const key = TurnOwnerClaims.key(threadId, botId);
+    const claim = this.byKey.get(key);
+    if (!claim) return undefined;
+    this.byKey.delete(key);
+    return claim.value;
+  }
+
+  /** Take back the claim on a thread that has exactly one, for a caller that
+   * knows the thread but not the speaker.  Undefined when the thread holds
+   * none, and undefined when it holds more than one. */
+  releaseSoleOwner(threadId: string): T | undefined {
+    const owners = this.ownersOf(threadId);
+    if (owners.length !== 1) return undefined;
+    return this.release(threadId, owners[0]!);
+  }
+
+  /** Every bot holding a claim on this thread. */
+  ownersOf(threadId: string): string[] {
+    const owners: string[] = [];
+    for (const claim of this.byKey.values()) if (claim.threadId === threadId) owners.push(claim.botId);
+    return owners;
+  }
+
+  /** Any one claim on this thread, for callers that only need to know whether
+   * the thread is holding something — the runtime-event touch, which keeps a
+   * live claim from expiring and does not care whose it is. */
+  anyOnThread(threadId: string): T | undefined {
+    for (const claim of this.byKey.values()) if (claim.threadId === threadId) return claim.value;
+    return undefined;
+  }
+
+  /** The bot's claim, whichever thread it is on — what a provider reload has
+   * to go on, since it clears a bot rather than a conversation. */
+  findByBot(botId: string): TurnOwnerClaim<T> | undefined {
+    for (const claim of this.byKey.values()) if (claim.botId === botId) return claim;
+    return undefined;
+  }
+
+  get size(): number {
+    return this.byKey.size;
+  }
+}
+
 export interface AutoFallbackCandidate {
   instanceId: string;
   enabled?: boolean;

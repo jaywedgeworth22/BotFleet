@@ -116,6 +116,25 @@ export const SDK_REJECTED_DSN_MESSAGE =
 /** Split a DSN into the two halves that are safe to show.  Returns null for
  * anything that is not a DSN, which is how a malformed stored value becomes
  * a visible `lastError` instead of a silently inert SDK. */
+
+/** GenAI prompt/response capture for Sentry Agents.  ON by default so the
+ * Agents Dashboard and Conversations can show model I/O when an official
+ * integration records it.  Kill-switch: `SENTRY_AI_DATA_COLLECTION=0`
+ * (also `false` / `off` / `no`).  Manual `gen_ai.*` spans in sentry-ai.ts
+ * still omit raw prompts/tool args — those often carry credentials. */
+export function isGenAiDataCollectionEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
+  const raw = (env.SENTRY_AI_DATA_COLLECTION ?? "1").trim().toLowerCase();
+  return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+}
+
+/** `dataCollection.genAI` block handed to `Sentry.init`. */
+export function genAiDataCollectionOptions(
+  env: NodeJS.ProcessEnv = process.env,
+): { genAI: { inputs: boolean; outputs: boolean } } {
+  const on = isGenAiDataCollectionEnabled(env);
+  return { genAI: { inputs: on, outputs: on } };
+}
+
 export function describeDsn(dsn: string): { host: string; projectId: string } | null {
   let parsed: URL;
   try {
@@ -279,6 +298,7 @@ async function applySentryConfigLocked(input: SentryRuntimeInput): Promise<Sentr
   // digest is in here for the same reason — a rotated key keeps the host
   // and the project id, so without it the old credential would stay
   // installed while Settings reported the new one as active.
+  const genAiCollection = isGenAiDataCollectionEnabled();
   const fingerprint = [
     parsed.host,
     parsed.projectId,
@@ -286,6 +306,8 @@ async function applySentryConfigLocked(input: SentryRuntimeInput): Promise<Sentr
     input.environment,
     String(input.tracesSampleRate),
     input.logsEnabled ? "logs" : "nologs",
+    genAiCollection ? "ai-data-on" : "ai-data-off",
+    "stream-genai",
   ].join("|");
   if (initialized && activeFingerprint === fingerprint) {
     runtimeState = { ...base, active: true, profilingAvailable: runtimeState.profilingAvailable };
@@ -312,17 +334,11 @@ async function applySentryConfigLocked(input: SentryRuntimeInput): Promise<Sentr
         ? [sdk.consoleLoggingIntegration({ levels: ["warn", "error"] })]
         : [],
       sendDefaultPii: false,
-      // Agents product: Conversations needs standalone gen_ai envelopes.
-      // dataCollection must be present for the product, but every category
-      // stays off — `{}` would opt into prompts, bodies, and user PII.
+      // Sentry Agents (SaaS): standalone gen_ai envelopes for Conversations.
+      // Opt-out only for self-hosted that cannot ingest them.
       streamGenAiSpans: true,
-      dataCollection: {
-        userInfo: false,
-        cookies: false,
-        httpHeaders: { request: false, response: false },
-        urlQueryParams: false,
-        genAI: { inputs: false, outputs: false },
-      },
+      // GenAI I/O collection ON by default; kill with SENTRY_AI_DATA_COLLECTION=0.
+      dataCollection: genAiDataCollectionOptions(),
       profileSessionSampleRate: Number.isFinite(profileSessionSampleRate)
         ? Math.min(Math.max(profileSessionSampleRate, 0), 1)
         : 1,

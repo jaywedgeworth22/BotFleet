@@ -3,6 +3,11 @@
 # artifact set.  The default run only uploads a private Actions artifact.
 # Draft creation and publication are separate, explicit inputs.
 #
+# Publish target = the built-in GITHUB_TOKEN.  The job's `contents: write`
+# (set just below) is the only extra scope the release steps need, and
+# nothing in this repo listens for `released` events, so a fine-grained PAT
+# adds rotation without buying anything.  Decision on 2026-09-18.
+#
 # Every gate below exists because its absence shipped (or nearly shipped) a
 # broken build from a laptop:
 #   - clean output dirs        -> 0.1.15 "app is damaged" (stale dist/ broke the seal)
@@ -39,7 +44,7 @@ on:
         default: false
 
 permissions:
-  contents: read
+  contents: write
 
 env:
   # The one and only publish target. Must match electron-builder.yml
@@ -96,6 +101,11 @@ jobs:
       # Prefer the automation identity's Infisical values and accept the
       # same-named GitHub secrets as a migration fallback.  A release without
       # both values cannot be signed, so fail here with the missing names.
+      # (Not optional: with them empty the import step below would decode an
+      # empty .p12 and die inside `security import`, and the signature gate
+      # after packaging would fail anyway -- a still-empty vault cannot make
+      # this job green, so stop early with a message that names the secrets.
+      # scripts/release-workflow.node-test.mjs asserts this `required:` line.)
       - name: Load the Developer ID certificate
         uses: ./.github/actions/infisical-secrets
         with:

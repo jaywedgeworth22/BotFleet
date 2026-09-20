@@ -1,5 +1,5 @@
-import type { UsageMonitorQuotaWindow } from "@/lib/usage-monitor-quota";
-import { formatResetCountdown } from "@/lib/quota-display";
+import { isQuotaCellExhausted, type UsageMonitorQuotaWindow } from "@/lib/usage-monitor-quota";
+import { absoluteQuotaLabel, formatResetCountdown } from "@/lib/quota-display";
 
 function percentLabel(window: UsageMonitorQuotaWindow): string {
   const percent = window.remainingPercent;
@@ -39,8 +39,14 @@ export function UsageMonitorQuotaGrid({ windows }: { windows: UsageMonitorQuotaW
   return (
     <div className="ml-9 mt-1.5 grid grid-cols-2 gap-2" aria-label="Usage Monitor quota windows">
       {rows.map((window) => {
-        const exhausted = window.skip || window.remainingPercent === 0;
+        // One shared verdict, never an expression of its own: the chip above
+        // this grid and the routing behind it have to agree with the cell.
+        const exhausted = isQuotaCellExhausted(window);
         const resetAt = window.resetAt ?? undefined;
+        // "$0 of $400 on Ultra" / "12 of 300 requests": the figures the
+        // collector already measured, which used to be rounded away into
+        // the percentage above and then dropped.
+        const absolute = absoluteQuotaLabel(window);
         return (
           <div
             key={`${window.providerKey ?? window.provider}:${window.window}:${window.label}`}
@@ -52,6 +58,11 @@ export function UsageMonitorQuotaGrid({ windows }: { windows: UsageMonitorQuotaW
             <div className={`mt-0.5 text-[12px] tabular-nums ${exhausted ? "text-amber-700 dark:text-amber-300" : "text-ink-secondary"}`}>
               {percentLabel(window)}
             </div>
+            {absolute && (
+              <div className="truncate text-[10.5px] text-ink-secondary" title={absolute}>
+                {absolute}
+              </div>
+            )}
             <div
               className="truncate text-[10.5px] text-ink-secondary"
               title={resetHover(resetAt)}

@@ -22,6 +22,7 @@ import { showToolCallsEnabled, summarizeToolCallsEnabled } from "@/lib/feature-f
 import { normalizeState } from "@/lib/mascot";
 import { effectiveDefaultResponder, groupResponseHint } from "@/lib/group-routing";
 import { ChatMarkdown } from "./ChatMarkdown";
+import { MentionText } from "./MentionText";
 import { Composer } from "./Composer";
 import { ErrorRow, TurnErrorAnnouncement, latestTurnErrorMessage } from "./ErrorRow";
 import { ChatFindBar } from "./ChatFindBar";
@@ -210,7 +211,7 @@ function GroupTextRow({
               {attachedImages && attachedImages.files.length > 0 && (
                 <AttachedFileChips paths={attachedImages.files} />
               )}
-              {attachedImages?.display ?? m.text}
+              <MentionText text={attachedImages?.display ?? m.text ?? ""} />
             </>
           ) : (
             <ChatMarkdown text={m.text ?? ""} />

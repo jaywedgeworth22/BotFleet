@@ -15,6 +15,8 @@ import {
   type ReactNode,
 } from "react";
 import type { CloudBackend, EffortLevel } from "../../server/contracts.ts";
+import type { AccessTokenState } from "../../server/recall-access.ts";
+import type { ComputerReach } from "../../server/computer-capability.ts";
 import type { MausColor, MausMotion } from "@/lib/mascot";
 import type { BotAvatarCrop } from "../../shared/bot-avatar";
 import type { RoutineRequestCardData } from "../../shared/routine-request";
@@ -248,6 +250,9 @@ export interface TaskUsage {
 export interface Bot {
   id: string;
   threadId: string;
+  /** Server-stamped create time. Used as the roster fallback when a bot
+   * has no messages and no task activity yet. */
+  createdAt?: number;
   /** every context this bot has, newest first */
   tasks?: Task[];
   name: string;
@@ -334,6 +339,23 @@ export function latestChatActivity(
   return Math.max(loadedLastAt ?? 0, createdAt, ...fromTasks);
 }
 
+/** Pinned first, then newest activity. Unread is a badge, not a sort key. */
+export function compareBotsByRecentActivity(a: Bot, b: Bot): number {
+  const pin = Number(b.pinned ?? false) - Number(a.pinned ?? false);
+  if (pin !== 0) return pin;
+  return (
+    latestChatActivity(b.tasks, visibleMessages(b).at(-1)?.at, b.createdAt ?? 0) -
+    latestChatActivity(a.tasks, visibleMessages(a).at(-1)?.at, a.createdAt ?? 0)
+  );
+}
+
+export function compareGroupsByRecentActivity(a: Group, b: Group): number {
+  return (
+    latestChatActivity(b.tasks, b.messages.at(-1)?.at, b.createdAt) -
+    latestChatActivity(a.tasks, a.messages.at(-1)?.at, a.createdAt)
+  );
+}
+
 /** All versions of a turn-starting message (itself + the forks that
  * replaced it), oldest first. Length 1 = never edited. A turn starter is a
  * person's "user" message OR an auto-delivered routine/webhook/resource
@@ -415,6 +437,8 @@ export interface ConfigStatus {
     accessClientId: string;
     hasAccessClientSecret: boolean;
     hasAccessServiceToken: boolean;
+    /** Which half of the pair is missing, when one of them is. */
+    accessTokenState?: AccessTokenState;
   };
   /** Usage-monitor telemetry. `ingestUrl` is empty when unconfigured; the
    * token is never echoed back, only `hasToken`. */
@@ -423,6 +447,8 @@ export interface ConfigStatus {
     configured: boolean;
     hasToken: boolean;
     hasReadToken?: boolean;
+    /** Whether a locally-observed subscription cap diverts auto-fallback. */
+    localQuotaRouting?: boolean;
     projects: Array<{ slug: string; match: string[] }>;
   };
   /** Opt-in flags. Absent means off. */
@@ -485,7 +511,7 @@ export function getConversationMode(config?: ConfigStatus | null): ConversationM
 
 export type ConfigStatusFrame = Pick<
   ConfigStatus,
-  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability" | "infisical"
+  "xai" | "deepseek" | "composio" | "box" | "vps" | "rooms" | "botDefaults" | "ingress" | "localVm" | "opencodeGo" | "tts" | "imageGen" | "profile" | "autoUpdate" | "terminology" | "roomLabels" | "conversationMode" | "qdrant" | "usage" | "features" | "observability" | "infisical"
 >;
 
 export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
@@ -496,6 +522,10 @@ export function configStatusFromFrame(frame: ConfigStatusFrame): ConfigStatus {
     box: frame.box,
     vps: frame.vps,
     rooms: frame.rooms,
+    // Every inheriting bot's resolved cloud backend depends on this
+    // surviving each SSE `config` frame — drop it here and
+    // resolveCloudBackend() silently falls back to "box" fleet-wide.
+    botDefaults: frame.botDefaults,
     ingress: frame.ingress,
     localVm: frame.localVm,
     opencodeGo: frame.opencodeGo,
@@ -581,6 +611,12 @@ export interface InstanceInfo {
      * bot's active conversation. */
     approvalReview?: boolean;
   };
+  /** Which computer destinations this engine can be given at all, derived
+   *  server-side in `server/computer-capability.ts` and shipped whole.  The
+   *  picker LOOKS THIS UP; it does not restate the rule, because the last
+   *  hand-mirrored copy drifted and offered destinations the turn refused.
+   *  Optional only so a row from an older server stays fail-closed. */
+  computerReach?: ComputerReach;
   /** `custom` engines sit below the rail divider — no subscription catalog. */
   access?: "subscription" | "custom";
   install?: EngineInstall;

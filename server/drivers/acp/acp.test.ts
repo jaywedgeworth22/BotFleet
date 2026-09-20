@@ -242,6 +242,7 @@ describe("ACP turns (fake CLI)", () => {
     delete process.env.OMB_TTS_KEY;
     delete process.env.FAKE_ACP_MODELS;
     delete process.env.FAKE_ACP_MODEL_STICKS;
+    delete process.env.FAKE_ACP_CONFIG_REPLY_BARE;
     delete process.env.FAKE_ACP_USAGE_ROOT;
     recorder?.stop();
     await instance?.dispose();
@@ -846,6 +847,23 @@ describe("ACP turns (fake CLI)", () => {
     expect(err.message).toMatch(/did not switch to m-two \(still m-one\)/);
     // the whole point: no paid turn is spent on the wrong model
     expect(recorder.events.some((e) => e.type === "content.delta")).toBe(false);
+  });
+
+  // Stock `dsh` answers session/set_config_option with a bare `{}`: it applies
+  // the switch but echoes no state.  That is not the silent-stick case above —
+  // there is no reported value to compare — so the guard must not fail the
+  // turn (BOTFLEET-M).
+  it("a bare set_config_option acknowledgement is not read as a failed switch", async () => {
+    process.env.FAKE_ACP_MODELS = "m-one,m-two";
+    process.env.FAKE_ACP_CONFIG_REPLY_BARE = "1";
+    await create(SelectModelDriver);
+    await instance.adapter.sendTurn({ threadId: "t-bare-model", text: "go", model: "m-two" });
+
+    const started = await recorder.until((e) => e.type === "session.started");
+    expect(started).toMatchObject({ model: "m-two" });
+    const done = await recorder.until((e) => e.type === "turn.completed");
+    expect(done).toMatchObject({ ok: true });
+    expect(recorder.events.some((e) => e.type === "content.delta")).toBe(true);
   });
 
   it("selects the model on a resumed session too, not just a new one", async () => {

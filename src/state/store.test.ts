@@ -6,6 +6,8 @@ import {
   initialState,
   isHarnessUnreachableError,
   latestChatActivity,
+  compareBotsByRecentActivity,
+  compareGroupsByRecentActivity,
   mergeHydrateBots,
   mergeHydrateGroups,
   openNotificationTarget,
@@ -123,6 +125,78 @@ describe("latestChatActivity", () => {
   });
 });
 
+describe("compareBotsByRecentActivity", () => {
+  const bot = (
+    overrides: Partial<Bot> & Pick<Bot, "id" | "name"> & { lastAt?: number; lastActivity?: number; pinned?: boolean },
+  ): Bot =>
+    ({
+      id: overrides.id,
+      threadId: `${overrides.id}-thread`,
+      name: overrides.name,
+      title: "",
+      description: "",
+      notifications: true,
+      color: "blue",
+      unread: false,
+      modelSelection: { instanceId: "i", model: "m" },
+      createdAt: 1,
+      pinned: overrides.pinned,
+      tasks: overrides.lastActivity
+        ? [{ threadId: `${overrides.id}-thread`, title: "Chat", createdAt: 1, lastActivity: overrides.lastActivity }]
+        : [{ threadId: `${overrides.id}-thread`, title: "Chat", createdAt: 1 }],
+      messages: overrides.lastAt
+        ? [{ id: `${overrides.id}-m`, role: "bot", kind: "text", at: overrides.lastAt, text: "hi" }]
+        : [],
+    }) as Bot;
+
+  it("sorts newest activity first, ignoring unread", () => {
+    const plumber = bot({ id: "plumber", name: "Plumber", lastAt: 1005, lastActivity: 1005 });
+    const monitor = bot({ id: "monitor", name: "Monitor", lastAt: 801, lastActivity: 801 });
+    const fixer = bot({ id: "fixer", name: "Fixer", lastAt: 10, lastActivity: 10 });
+    plumber.unread = false;
+    monitor.unread = true;
+    fixer.unread = true;
+    const ordered = [fixer, monitor, plumber].sort(compareBotsByRecentActivity).map((row) => row.name);
+    expect(ordered).toEqual(["Plumber", "Monitor", "Fixer"]);
+  });
+
+  it("keeps pinned bots above newer unpinned activity", () => {
+    const pinned = bot({ id: "pin", name: "Pinned", lastAt: 1, pinned: true });
+    const fresh = bot({ id: "fresh", name: "Fresh", lastAt: 99 });
+    expect([fresh, pinned].sort(compareBotsByRecentActivity).map((row) => row.name)).toEqual(["Pinned", "Fresh"]);
+  });
+
+  it("uses a live last message even when task lastActivity is stale", () => {
+    const stale = bot({ id: "stale", name: "Stale", lastActivity: 10, lastAt: 500 });
+    const older = bot({ id: "older", name: "Older", lastActivity: 20, lastAt: 20 });
+    expect([older, stale].sort(compareBotsByRecentActivity).map((row) => row.name)).toEqual(["Stale", "Older"]);
+  });
+});
+
+describe("compareGroupsByRecentActivity", () => {
+  const group = (id: string, lastAt: number, taskActivity?: number): Group =>
+    ({
+      id,
+      threadId: `${id}-thread`,
+      name: id,
+      memberIds: [],
+      defaultResponder: { kind: "mentions" },
+      bulletin: "",
+      unread: false,
+      createdAt: 1,
+      messages: lastAt ? [{ id: `${id}-m`, role: "user", kind: "text", at: lastAt, text: "hi" }] : [],
+      tasks: taskActivity
+        ? [{ threadId: `${id}-extra`, title: "Extra", createdAt: 1, lastActivity: taskActivity }]
+        : undefined,
+    }) as Group;
+
+  it("sorts channels by last message or nested task activity, descending", () => {
+    const launch = group("launch", 50, 900);
+    const older = group("older", 100);
+    expect([older, launch].sort(compareGroupsByRecentActivity).map((row) => row.name)).toEqual(["launch", "older"]);
+  });
+});
+
 describe("notification routing", () => {
   const bots = [{ id: "bot-1", threadId: "main-thread", tasks: [{ threadId: "detached-thread" }] }] as never;
   const groups = [{
@@ -202,6 +276,33 @@ describe("config status frames", () => {
       profile: { name: "Ian", email: "ian@example.test" },
       features: { skillRecorder: true },
     });
+  });
+
+  it("round-trips botDefaults, so an inheriting bot's resolved backend survives a broadcast", () => {
+    // botDefaults was missing from the ConfigStatusFrame Pick, so every SSE
+    // `config` frame silently dropped it via the reducer's full `config:
+    // action.config` replace -- and every bot inheriting a workspace default
+    // reverted to resolveCloudBackend()'s bare "box" fallback the moment any
+    // config broadcast landed, including the apply-defaults broadcast that
+    // sets botDefaults in the first place.
+    // SAFETY: a literal test fixture, not parsed input — both assertions
+    // below just pin the fixture's own values, not a claim about unparsed
+    // data crossing an I/O boundary.
+    const botDefaults = {
+      computers: ["cloud", "vm"] as Array<"cloud" | "vm" | "local">,
+      cloudBackend: "vps" as const,
+      allowedComputers: null,
+    };
+    expect(
+      configStatusFromFrame({
+        composio: { configured: false },
+        box: { configured: false },
+        vps: { configured: false, sshAlias: "" },
+        rooms: { turnTimeoutMinutes: 5 },
+        localVm: { mode: "shared", maxInstances: 2 },
+        botDefaults,
+      }).botDefaults,
+    ).toEqual(botDefaults);
   });
 });
 

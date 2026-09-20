@@ -50,13 +50,40 @@ final class NotificationActionsTests: XCTestCase {
 
     /// A question is answerable only with free text — no notification
     /// action can supply that, so unlike the approval category this one
-    /// must never offer Approve or Deny.
-    func testQuestionCategoryHasOnlyOpen() throws {
+    /// must never offer Approve or Deny.  PR #389 added a text-input
+    /// Reply action so a typed answer can be sent straight from the lock
+    /// screen; Open stays alongside it as the "read context first" path.
+    func testQuestionCategoryHasReplyAndOpen() throws {
         let question = try XCTUnwrap(
             NotificationCategories.all().first { $0.identifier == NotificationCategoryIdentifier.question }
         )
-        XCTAssertEqual(question.actions.map(\.identifier), [NotificationActionIdentifier.open])
-        XCTAssertEqual(question.actions.map(\.title), ["Open"])
+        XCTAssertEqual(
+            question.actions.map(\.identifier),
+            [NotificationActionIdentifier.reply, NotificationActionIdentifier.open]
+        )
+        XCTAssertEqual(question.actions.map(\.title), ["Reply", "Open"])
+
+        let reply = try XCTUnwrap(
+            question.actions.first { $0.identifier == NotificationActionIdentifier.reply }
+        )
+        // Free-text answers still go straight to the harness from the
+        // lock screen, so the device has to be unlocked first — same
+        // `.authenticationRequired` gate as Approve.  This is a
+        // `UNTextInputNotificationAction`, asserted below so a future
+        // refactor cannot quietly drop the typed-reply path.
+        XCTAssertTrue(reply.options.contains(.authenticationRequired))
+        XCTAssertTrue(reply is UNTextInputNotificationAction)
+        // `UNTextInputNotificationAction` exposes its placeholder and
+        // button title; both must be set so the system prompt is
+        // informative rather than an empty box.
+        let textInput = try XCTUnwrap(reply as? UNTextInputNotificationAction)
+        XCTAssertEqual(textInput.textInputButtonTitle, "Send")
+        XCTAssertFalse((textInput.textInputPlaceholder ?? "").isEmpty)
+
+        let open = try XCTUnwrap(
+            question.actions.first { $0.identifier == NotificationActionIdentifier.open }
+        )
+        XCTAssertTrue(open.options.contains(.foreground))
     }
 
     // MARK: - Kind decides the category, not isBlocking
@@ -159,6 +186,107 @@ final class NotificationActionsTests: XCTestCase {
         )
         XCTAssertEqual(
             NotificationTarget.actionRoute(actionIdentifier: NotificationActionIdentifier.deny, userInfo: malformed),
+            .ignore
+        )
+    }
+
+    // MARK: - Text-input reply routing (PR #389)
+
+    /// Reply action on a question: the typed body rides on the route.
+    /// `userInfo` carries the same ids as Approve/Deny/Open — only the
+    /// typed text is extra, because iOS keeps it off `userInfo`.
+    private let questionPayload: [AnyHashable: Any] = [
+        "threadId": "task-3", "botId": "bot-2", "kind": "question", "requestId": "req-7",
+    ]
+
+    func testReplyActionRoutesToReplyCarryingTheTypedBody() {
+        XCTAssertEqual(
+            NotificationTarget.actionRoute(
+                actionIdentifier: NotificationActionIdentifier.reply,
+                userInfo: questionPayload,
+                textInputBody: "tomorrow at 3"
+            ),
+            .reply(
+                NotificationTarget(botId: "bot-2", threadId: "task-3", requestId: "req-7", kind: "question")!,
+                message: "tomorrow at 3"
+            )
+        )
+    }
+
+    /// An empty / whitespace reply must not produce a `.reply` route with
+    /// an empty message — the user opened the text field and backed out,
+    /// which is a dismiss, not an empty answer to send to the harness.
+    func testReplyWithEmptyOrWhitespaceBodyIsTreatedAsADismiss() {
+        XCTAssertEqual(
+            NotificationTarget.actionRoute(
+                actionIdentifier: NotificationActionIdentifier.reply,
+                userInfo: questionPayload,
+                textInputBody: ""
+            ),
+            .dismiss
+        )
+        XCTAssertEqual(
+            NotificationTarget.actionRoute(
+                actionIdentifier: NotificationActionIdentifier.reply,
+                userInfo: questionPayload,
+                textInputBody: "   \n  "
+            ),
+            .dismiss
+        )
+        // A nil body (the caller did not pass the optional) is the same
+        // dismissal case.
+        XCTAssertEqual(
+            NotificationTarget.actionRoute(
+                actionIdentifier: NotificationActionIdentifier.reply,
+                userInfo: questionPayload,
+                textInputBody: nil
+            ),
+            .dismiss
+        )
+    }
+
+    /// Surrounding whitespace is trimmed so a stray newline from the
+    /// keyboard does not become part of the message.
+    func testReplyTrimsSurroundingWhitespaceBeforeSending() {
+        XCTAssertEqual(
+            NotificationTarget.actionRoute(
+                actionIdentifier: NotificationActionIdentifier.reply,
+                userInfo: questionPayload,
+                textInputBody: "  pick option B  \n"
+            ),
+            .reply(
+                NotificationTarget(botId: "bot-2", threadId: "task-3", requestId: "req-7", kind: "question")!,
+                message: "pick option B"
+            )
+        )
+    }
+
+    /// The reply action is registered; no other action should ever
+    /// silently consume a text-input body.
+    func testNonReplyActionsIgnoreTheTextInputBody() {
+        let expected = NotificationActionRoute.approve(
+            NotificationTarget(botId: "bot-1", threadId: "task-2", requestId: "req-9", kind: "approval")!
+        )
+        XCTAssertEqual(
+            NotificationTarget.actionRoute(
+                actionIdentifier: NotificationActionIdentifier.approve,
+                userInfo: payload,
+                textInputBody: "should be ignored"
+            ),
+            expected
+        )
+    }
+
+    /// A reply with no target ids is the same dead-letter as Approve/Deny
+    /// with no ids — never invent one.
+    func testReplyWithoutUsableIdsIsIgnored() {
+        let malformed: [AnyHashable: Any] = ["botId": "bot-2"] // no threadId
+        XCTAssertEqual(
+            NotificationTarget.actionRoute(
+                actionIdentifier: NotificationActionIdentifier.reply,
+                userInfo: malformed,
+                textInputBody: "hi"
+            ),
             .ignore
         )
     }

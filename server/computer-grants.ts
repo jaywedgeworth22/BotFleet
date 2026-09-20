@@ -17,6 +17,10 @@
  * surface, prompt, and allow-list they always have. Distinct names appear only
  * once a second computer is actually mounted.
  */
+import { computerReach, type ComputerReach } from "./computer-capability.ts";
+import { shouldMountLocalComputer } from "./local-routing.ts";
+
+import type { AppConfig } from "./config.ts";
 
 /** One computer granted to a bot for one turn. Exactly one of `box` / `stdio`
  * is set: the cloud box speaks through BotFleet's REST-to-MCP adapter, while
@@ -95,6 +99,25 @@ const SINGLE_PROMPTS = {
   local: " You can act on the user's computer through the computer tools — take a screenshot or read the desktop state first, prefer accessibility actions over raw coordinates, and act carefully.",
 } satisfies Record<ComputerKind, string>;
 
+/** What a host grant actually puts in the engine's hands.
+ *
+ * An MCP engine mounts the Cua Driver server and really can see and click the
+ * desktop.  A toolLoop engine mounts no MCP server at all: its host surface is
+ * the harness's own `bash`, `read_file`, `write_file` and `edit_file` behind
+ * the `workspaceOrHostComputer` gate in server/tools/registry.ts, and that
+ * registry holds no screenshot, click or desktop-state tool.  Telling that
+ * engine to read the desktop first spends its turn reaching for tools that do
+ * not exist — so the sentence has to match the surface, not the grant. */
+function localPrompt(toolLoopSurface: boolean): string {
+  if (!toolLoopSurface) return SINGLE_PROMPTS.local;
+  return (
+    " You can act on the user's computer through the shell and file tools — run commands with `bash`, and read," +
+    " write, and edit files by path. You have no screen on this surface: there is no screenshot, click, or" +
+    " desktop-state tool, so do the work from the command line, and say so plainly if a task genuinely needs the" +
+    " graphical desktop."
+  );
+}
+
 /** One line per computer when several are mounted, naming the tool prefix so
  * the agent can tell them apart at the point of use. */
 function multiLine(mount: ComputerMount): string {
@@ -132,7 +155,14 @@ function selectionPolicy(remote: ComputerMount, host: ComputerMount): string {
  * and states the selection rule. */
 export function computerSystemPrompt(
   mounts: ComputerMount[],
-  opts: { boxAgent?: boolean; hostPlatform?: NodeJS.Platform } = {},
+  opts: {
+    boxAgent?: boolean;
+    hostPlatform?: NodeJS.Platform;
+    /** True for a driver-loop engine, which receives HTTP tool definitions
+     * rather than MCP servers.  Both dispatchers pass it, so the two lanes
+     * cannot describe the same grant differently. */
+    toolLoopSurface?: boolean;
+  } = {},
 ): string {
   if (mounts.length === 0) return "";
 
@@ -144,7 +174,12 @@ export function computerSystemPrompt(
     const [only] = mounts;
     // The box-native agent already runs on its box; describing the box to it
     // as a separate computer only confuses the agent about where it is.
-    const body = only.kind === "box" && opts.boxAgent ? "" : SINGLE_PROMPTS[only.kind];
+    const body =
+      only.kind === "box" && opts.boxAgent
+        ? ""
+        : only.kind === "local"
+          ? localPrompt(opts.toolLoopSurface === true)
+          : SINGLE_PROMPTS[only.kind];
     return body + protectedInput;
   }
 
@@ -306,4 +341,413 @@ export function resolveCloudBackend(
   workspaceDefault?: "box" | "vps",
 ): "box" | "vps" {
   return botCloudBackend ?? workspaceDefault ?? "box";
+}
+
+/** True only when a cloud routine must ride the Box computer engine.
+ *
+ * `runOn === "cloud"` grants the cloud destination; the backend still decides
+ * whether that destination is Box or the operator's VPS.  Forcing boxAgent on
+ * every cloud run made VPS routines die in vpsDriverError.  VPS keeps the
+ * bot's own engine selection. */
+export function cloudRunUsesBoxAgent(
+  runOn: "maus" | "cloud" | undefined,
+  botCloudBackend: "box" | "vps" | undefined,
+  workspaceDefault?: "box" | "vps",
+): boolean {
+  return runOn === "cloud" && resolveCloudBackend(botCloudBackend, workspaceDefault) === "box";
+}
+
+
+/* ── Turn-time resolution ───────────────────────────────────────────────────
+ *
+ * Everything above answers "what was this bot granted".  What follows answers
+ * "what can it actually hold for THIS turn", which is the half that has to
+ * talk to the world: a Local VM has to be claimed, a VPS provisioned, a cloud
+ * box woken, host control read off Cua Driver's descriptor.
+ *
+ * It lives here rather than inline in the dispatcher because there are two
+ * dispatchers.  `startTurn` resolved all of this and a room turn resolved none
+ * of it, so a bot holding Cua, a Box, a Local VM or a VPS in a direct chat
+ * lost every one of them the moment it spoke in a room — while the HTTP lane
+ * in that same room kept host `bash` through `hasHostComputer`.  A room is a
+ * different conversation, not a different bot, so both lanes call this.
+ *
+ * The world arrives through `deps` rather than imports: the leases, the busy
+ * flags and the message sink are the dispatcher's own state, and injecting
+ * them is also what lets the policy be tested without a running harness. */
+
+/** The bot fields a computer grant reads.  Deliberately narrow — this is a
+ * capability decision, not a bot editor. */
+export interface TurnComputerBot {
+  id: string;
+  name: string;
+  computers?: ComputerDestination[];
+  cloudBackend?: "box" | "vps";
+  autoStartVps?: boolean;
+}
+
+/** The engine fields a computer grant reads, flattened off the adapter so a
+ * test can ask a policy question without a provider instance. */
+export interface TurnComputerEngine {
+  driverKind: string;
+  /** Can mount the full computer-use MCP surface (GUI, Local VM, VPS). */
+  computerMcp: boolean;
+  /** Brokers host-control asks through the harness permission broker.  The
+   * rule lives in `server/contracts.ts`, and it is the only thing that makes
+   * mounting the person's own desktop honest. */
+  localComputerMcp: boolean;
+  /** Runs the harness tool loop itself, so it has host tools without Cua. */
+  toolLoop: boolean;
+}
+
+/** The one frame this resolver broadcasts: a cloud computer changing state
+ * while the person waits for their turn to start. */
+export interface ComputerStateFrame {
+  kind: "computer";
+  botId: string;
+  state: "provisioning" | "waking";
+}
+
+/** One VPS or cloud-box status, in the shape this resolver reads it. */
+interface RemoteComputerStatus {
+  ready?: boolean;
+  sshAlias?: string | null;
+  container_id?: string | null;
+  problem?: string | null;
+}
+
+/** What the resolver needs from the running harness.  `Lease` is the VPS turn
+ * lease handle, inferred from whatever pool the dispatcher passes. */
+export interface TurnComputerDeps<Lease = unknown> {
+  hostPlatform: NodeJS.Platform;
+  /** Cua Driver's already-running connection descriptor, or null. */
+  readHostConnection(): ComputerMount["stdio"] | null;
+  /** Claim the Local VM for this turn, or throw the reason it cannot be had.
+   * The lease, the lifecycle busy flags and the idle backstop are the
+   * dispatcher's state, so the dispatcher owns the claim. */
+  acquireLocalVm(): Promise<ComputerMount["stdio"]>;
+  vps: {
+    vpsDriverError(driverKind: string, reach: ComputerReach): string | null;
+    vpsComputerAction(action: "provision", cfg: AppConfig, botId: string): Promise<RemoteComputerStatus>;
+    inspectVpsForAuto(cfg: AppConfig, botId: string): Promise<RemoteComputerStatus>;
+    vpsComputerMcp(cfg: AppConfig, botId: string, containerRef?: string): { command: string; args: string[]; env: Record<string, string> };
+    vpsComputerScreenshot(cfg: AppConfig, botId: string): Promise<{ png: string; format: string }>;
+  };
+  box: {
+    boxConfigured(cfg: AppConfig): boolean;
+    findBox(cfg: AppConfig, botId: string): Promise<{ id: string; state: string } | null>;
+    /** The caller never reads the result — it re-finds the box afterwards,
+     * so a provision that half-succeeded is still seen as it really is. */
+    provisionBox(cfg: AppConfig, botId: string, botName: string): Promise<{ boxId: string }>;
+    readyBox(cfg: AppConfig, botId: string): Promise<{ id: string; state: string } | null>;
+    screenshotBox(cfg: AppConfig, botId: string, knownBoxId?: string): Promise<{ png: string; format: string }>;
+  };
+  /** The per-bot VPS turn lease, so a second turn cannot enter the same box. */
+  vpsLeases: {
+    claim(botId: string, threadId: string, dispatchId: number): Lease;
+    release(lease: Lease): void;
+  };
+  /** The loopback control pair a computer bridge calls back on. */
+  controlIntegration(botId: string): { url: string; token: string };
+  broadcast(frame: ComputerStateFrame): void;
+  /** One activity chip on the turn's own thread.  The caller shapes it,
+   * because a room chip carries the speaking member and a 1:1 chip does not. */
+  notice(text: string, ok: boolean): void;
+  /** The dispatcher's "is this still the current turn" guard, awaited at every
+   * point the inline block awaited one.  `false` means stop: a newer dispatch
+   * owns the thread, or this one was cancelled. */
+  checkpoint(): Promise<boolean>;
+}
+
+/** The computers one turn actually holds. */
+export interface TurnComputerMounts<Lease = unknown> {
+  /** Named and ready to hand to the driver. */
+  mounts: ComputerMount[];
+  /** A screen the harness can poll while the bot works, when this grant has
+   * one.  Only the 1:1 lane starts a poller today — see the room call site. */
+  previewCapture: (() => Promise<{ png: string; format: string }>) | null;
+  /** A claimed VPS turn lease the caller must release when its turn settles. */
+  vpsLease: Lease | undefined;
+  /** True when `checkpoint()` said this turn is no longer the current one.
+   * The caller abandons the turn; `mounts` is empty. */
+  cancelled: boolean;
+  /** `wantsLocal && localComputerMcp` — the host-tool gate both lanes hand to
+   * `buildTurnTools`, kept here so the two dispatchers cannot drift.
+   * Deliberately independent of `mounts`: a toolLoop engine has host tools
+   * through the harness executor whether or not Cua Driver is running. */
+  hasHostComputer: boolean;
+}
+
+/** Resolve every computer this bot may hold for this turn.
+ *
+ * Explicit destinations are strict and throw.  `auto` degrades quietly to no
+ * computer, because a routine or webhook that only needs a shell must not die
+ * because a desktop was unavailable. */
+export interface ResolveTurnComputerMountsInput<Lease> {
+  bot: TurnComputerBot;
+  cfg: AppConfig;
+  engine: TurnComputerEngine;
+  threadId: string;
+  /** This dispatch's id, so the VPS lease names the turn that took it. */
+  dispatchId: number;
+  /** `opts.runOn` from the dispatcher: a cloud routine names its own home. */
+  runOn?: string;
+  /** The operator-level allowlist, already read off the config. */
+  allowed: ComputerDestination[] | null;
+  deps: TurnComputerDeps<Lease>;
+}
+
+export async function resolveTurnComputerMounts<Lease>(
+  input: ResolveTurnComputerMountsInput<Lease>,
+): Promise<TurnComputerMounts<Lease>> {
+  // A refusal must not strand the VPS turn lease the resolution may already
+  // have claimed.  The dispatcher used to hold that handle in its own scope
+  // and release it from its own catch; now that the claim happens in here,
+  // so does the release.  Watching every claim through this shim is what
+  // makes it reachable on a path that threw rather than returned, and
+  // `release` checks lease identity, so a newer turn's claim is never taken
+  // away by a losing one.
+  let claimed: Lease | undefined;
+  const watched: TurnComputerDeps<Lease> = {
+    ...input.deps,
+    vpsLeases: {
+      claim: (botId, threadId, dispatchId) => {
+        claimed = input.deps.vpsLeases.claim(botId, threadId, dispatchId);
+        return claimed;
+      },
+      release: (lease) => {
+        input.deps.vpsLeases.release(lease);
+        claimed = undefined;
+      },
+    },
+  };
+  try {
+    return await resolveMounts({ ...input, deps: watched });
+  } catch (error) {
+    if (claimed !== undefined) input.deps.vpsLeases.release(claimed);
+    throw error;
+  }
+}
+
+async function resolveMounts<Lease>(
+  input: ResolveTurnComputerMountsInput<Lease>,
+): Promise<TurnComputerMounts<Lease>> {
+  const { bot, cfg, engine, threadId, dispatchId, runOn, allowed, deps } = input;
+  const hostPlatform = deps.hostPlatform;
+  let previewCapture: (() => Promise<{ png: string; format: string }>) | null = null;
+  let vpsLease: Lease | undefined;
+  const mounts: ComputerMount[] = [];
+  let autoVpsProblem: string | null = null;
+  const stopped = (): TurnComputerMounts<Lease> => ({
+    mounts: [],
+    previewCapture,
+    vpsLease,
+    cancelled: true,
+    hasHostComputer: false,
+  });
+
+  // Every destination the person granted, not just the first.  A grant is a
+  // capability, not a preference: each one is resolved on its own terms below
+  // and mounted with its own tools, so the agent chooses per task.  Granting
+  // only the VM therefore means only the VM.
+  const { granted, auto } = resolveGrants(bot.computers, runOn, cfg.botDefaults?.computers, allowed);
+  const wantsCloud = granted.includes("cloud");
+  const wantsVm = granted.includes("vm");
+  const wantsLocal = granted.includes("local");
+  // `auto` says the bot never chose; these say where auto is still allowed to
+  // look.  They are separate because the auto path mounts two different
+  // things — a cloud computer and, failing that, the host — and an operator
+  // who disabled only one of them meant only one of them.
+  const autoAllows = new Set(autoDestinations(allowed));
+  const autoCloud = auto && autoAllows.has("cloud");
+  const autoHost = auto && autoAllows.has("local");
+  // Cloud destination (including runOn=cloud routines) resolves to ASCII.dev
+  // Box or the operator's Coolify-hosted VPS via resolveCloudBackend.  runOn
+  // selects the cloud *destination*; it must not override the bot/workspace
+  // cloudBackend (historical bug: runOn==="cloud" hardcoded "box" and blocked VPS).
+  const cloudBackend = resolveCloudBackend(bot.cloudBackend, cfg.botDefaults?.cloudBackend);
+  // One derivation for every destination — see computer-capability.ts.  The
+  // names below are kept because the mount sites read as "does this turn
+  // mount X", not "can this engine reach X".
+  const reach = computerReach({
+    driverKind: engine.driverKind,
+    capabilities: { computerMcp: engine.computerMcp, localComputerMcp: engine.localComputerMcp, toolLoop: engine.toolLoop },
+  });
+  const mountsCloudComputer = reach.box;
+  const mountsLocalComputer = reach.local;
+  const hasHostComputer = Boolean(wantsLocal && mountsLocalComputer);
+
+  // Explicit destinations are strict.  In particular, Local VM must never
+  // fall through to host CUA and accidentally click on the user's Mac.
+  if (wantsVm) {
+    if (!reach.vm) {
+      throw new Error("this model engine cannot use the Local VM — choose Claude or an ACP engine, or select another computer destination");
+    }
+    const stdio = await deps.acquireLocalVm();
+    if (!(await deps.checkpoint())) return stopped();
+    mounts.push({ name: "", label: computerLabel("vm", hostPlatform), kind: "vm", stdio });
+  }
+  // Deliberately not an "else": "the Local VM and this computer" is a
+  // legitimate grant, and each destination resolves independently.
+  if (wantsLocal) {
+    // This computer is the one destination that degrades instead of refusing:
+    // the safe direction is "no computer", never a different one, and a
+    // routine or webhook that only needs the shell must not die because the
+    // desktop is unavailable.  The chip says why the tools are missing so a
+    // person can fix the cause.  Engines that broker host asks (ACP, Claude,
+    // pi, codex) mount it in every mode; an engine with no approval channel
+    // never does.
+    const hostSupportsLocal = shouldMountLocalComputer({
+      requested: "local",
+      hostPlatform,
+      providerSupportsLocal: true,
+    });
+    const cua = hostSupportsLocal && mountsLocalComputer ? deps.readHostConnection() : null;
+    const unavailable = !hostSupportsLocal
+      ? "local computer control is not available on this platform"
+      : !mountsLocalComputer
+        ? "this model engine has no approval channel for actions on this computer, so BotFleet did not mount it"
+        : !cua && !engine.toolLoop
+          ? "CUA Driver is not ready for this computer — check permissions and restart BotFleet"
+          : null;
+    if (unavailable) {
+      deps.notice(`local computer not mounted: ${unavailable}`, false);
+    } else if (cua) {
+      mounts.push({ name: "", label: computerLabel("local", hostPlatform), kind: "local", stdio: cua });
+    }
+  }
+
+  // A VPS is a local-agent computer mount, never a remote agent runner.
+  // Explicit Cloud may prepare/start it.  Auto remains read-only unless the
+  // person explicitly opted this bot into remote lifecycle actions.
+  if ((wantsCloud || autoCloud) && cloudBackend === "vps") {
+    const unsupported = deps.vps.vpsDriverError(engine.driverKind, reach);
+    if (unsupported && wantsCloud) throw new Error(unsupported);
+    if (unsupported && autoCloud) autoVpsProblem = unsupported;
+    if (!unsupported) {
+      vpsLease = deps.vpsLeases.claim(bot.id, threadId, dispatchId);
+      const remote = wantsCloud || bot.autoStartVps
+        ? await deps.vps.vpsComputerAction("provision", cfg, bot.id)
+        : await deps.vps.inspectVpsForAuto(cfg, bot.id);
+      if (!(await deps.checkpoint())) return stopped();
+      if (remote?.ready && remote.sshAlias) {
+        const targetCfg = { ...cfg, vps: { sshAlias: remote.sshAlias } };
+        const vpsMcp = deps.vps.vpsComputerMcp(targetCfg, bot.id, remote.container_id ?? undefined);
+        const vpsControl = deps.controlIntegration(bot.id);
+        mounts.push({
+          name: "",
+          label: computerLabel("vps", hostPlatform),
+          kind: "vps",
+          stdio: {
+            ...vpsMcp,
+            env: { ...vpsMcp.env, OMB_CONTROL_URL: vpsControl.url, OMB_CONTROL_TOKEN: vpsControl.token },
+          },
+        });
+        previewCapture = () => deps.vps.vpsComputerScreenshot(targetCfg, bot.id);
+      } else {
+        deps.vpsLeases.release(vpsLease);
+        vpsLease = undefined;
+        if (wantsCloud) {
+          throw new Error(remote?.problem ?? "the VPS computer could not be created or reached");
+        }
+        autoVpsProblem = remote?.problem ?? "the VPS computer could not be reached";
+      }
+    }
+  }
+
+  // Cloud is also strict when explicitly selected.  Auto (unset) reuses an
+  // existing cloud box, then falls back to host CUA without provisioning.
+  if ((wantsCloud || autoCloud) && cloudBackend === "box" && deps.box.boxConfigured(cfg)) {
+    if (!mountsCloudComputer && wantsCloud) {
+      throw new Error("this model engine cannot use computer tools — choose Claude, an ACP engine, or the Computer engine");
+    }
+    let b = await deps.box.findBox(cfg, bot.id).catch(() => null);
+    if (!(await deps.checkpoint())) return stopped();
+    // Explicit Cloud and the box-native Computer engine provision on first
+    // use.  Auto remains non-surprising and only reuses an existing box.
+    if (!b && mountsCloudComputer && (wantsCloud || engine.driverKind === "boxAgent")) {
+      deps.broadcast({ kind: "computer", botId: bot.id, state: "provisioning" });
+      await deps.box.provisionBox(cfg, bot.id, bot.name);
+      if (!(await deps.checkpoint())) return stopped();
+      b = await deps.box.findBox(cfg, bot.id).catch(() => null);
+      if (!(await deps.checkpoint())) return stopped();
+    }
+    // an archived box answers every action with an error until it resumes —
+    // wake it here, once, instead of letting the agent discover it one failed
+    // tool call at a time.  Only worth the resume (~8s, and it un-pauses
+    // billing) when the bot can act.
+    if (b && mountsCloudComputer && !["idle", "ready", "running"].includes(b.state)) {
+      deps.broadcast({ kind: "computer", botId: bot.id, state: "waking" });
+      b = (await deps.box.readyBox(cfg, bot.id).catch(() => null)) ?? b;
+      if (!(await deps.checkpoint())) return stopped();
+    }
+    if (b) {
+      const known = b;
+      previewCapture = () => deps.box.screenshotBox(cfg, bot.id, known.id);
+      if (mountsCloudComputer) {
+        mounts.push({
+          name: "",
+          label: computerLabel("box", hostPlatform),
+          kind: "box",
+          box: {
+            kind: "box",
+            boxId: known.id,
+            token: cfg.box!.token!,
+            control: deps.controlIntegration(bot.id),
+          },
+        });
+      }
+    }
+  }
+  if (wantsCloud && cloudBackend === "box" && !deps.box.boxConfigured(cfg)) {
+    throw new Error("Cloud box is not configured — add a Box API key or choose Local VM");
+  }
+  if (wantsCloud && cloudBackend === "box" && !mounts.some((m) => m.kind === "box")) {
+    throw new Error("the cloud computer could not be created or reached");
+  }
+
+  // Auto-only host fallback.  Electron owns cua-driver/TCC attribution; the
+  // harness only reads its already-running connection descriptor.
+  if (
+    mounts.length === 0 &&
+    autoHost &&
+    shouldMountLocalComputer({ requested: undefined, hostPlatform, providerSupportsLocal: mountsLocalComputer })
+  ) {
+    const cua = deps.readHostConnection();
+    if (cua) {
+      mounts.push({ name: "", label: computerLabel("local", hostPlatform), kind: "local", stdio: cua });
+    }
+  }
+  if (autoCloud && cloudBackend === "vps" && mounts.length === 0 && autoVpsProblem) {
+    const hint = bot.autoStartVps
+      ? "Check the VPS connection in App Settings → Connections."
+      : "Open Computer and enable Start VPS automatically, or choose Cloud to start it manually.";
+    throw new Error(`${autoVpsProblem}. ${hint}`);
+  }
+
+  // Name the servers once, here, so a room turn and a direct turn hand the
+  // driver byte-identical mounts.
+  return { mounts: nameMounts(mounts), previewCapture, vpsLease, cancelled: false, hasHostComputer };
+}
+
+/** Hand every grant to the driver, on whichever lane resolved it.
+ *
+ * With one computer the server keeps its historical name, so a
+ * single-computer bot's tool surface, prompt, and allow-list do not move at
+ * all.  `computer` / `localComputer` stay populated with the first mount of
+ * each shape for consumers that still expect exactly one computer. */
+export function applyComputerMounts(
+  integrations: {
+    computers?: ComputerMount[];
+    computer?: ComputerMount["box"];
+    localComputer?: ComputerMount["stdio"];
+  },
+  mounts: ComputerMount[],
+): void {
+  if (!mounts.length) return;
+  integrations.computers = mounts;
+  const firstBox = mounts.find((m) => m.box);
+  const firstStdio = mounts.find((m) => m.stdio);
+  if (firstBox?.box) integrations.computer = firstBox.box;
+  if (firstStdio?.stdio) integrations.localComputer = firstStdio.stdio;
 }

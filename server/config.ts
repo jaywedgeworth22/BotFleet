@@ -282,6 +282,9 @@ const appConfigSchema = z.object({
     ingestUrl: optionalText,
     ingestToken: optionalText,
     readToken: optionalText,
+    // Whether a subscription window the native Usage Monitor app reports
+    // spent on this Mac may divert auto-fallback.  Absent means on.
+    localQuotaRouting: z.boolean().optional(),
     projects: z
       .array(z.object({ slug: z.string(), match: z.array(z.string()).optional() }))
       .optional(),
@@ -388,6 +391,9 @@ export interface AppConfig {
     ingestUrl?: string;
     ingestToken?: string;
     readToken?: string;
+    /** Whether a locally-observed subscription cap diverts auto-fallback.
+     *  Absent means on; only a stored `false` turns it off. */
+    localQuotaRouting?: boolean;
     projects?: Array<{ slug: string; match?: string[] }>;
   };
   /** Error and performance reporting.  `sentryDsn` is the operator's own
@@ -579,6 +585,11 @@ export function usageIngestUrl(cfg: AppConfig): string | null {
 
 /** Project classification rules, in the order they should be consulted.
  * Rules with no usable slug or no match terms are dropped. */
+/** Local subscription caps divert auto-fallback unless turned off. */
+export function localQuotaRoutingEnabled(cfg: AppConfig): boolean {
+  return cfg.usage?.localQuotaRouting !== false;
+}
+
 export function usageProjectRules(cfg: AppConfig): Array<{ slug: string; match: string[] }> {
   const rules = cfg.usage?.projects ?? [];
   return rules
