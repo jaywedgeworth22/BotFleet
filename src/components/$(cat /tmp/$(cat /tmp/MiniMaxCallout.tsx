@@ -2,9 +2,9 @@
 // chrome owners see on the engines-settings row and the model-picker rail.
 //
 // Compact by default so the heading + model list underneath stay visible at
-// narrow widths.  A "Why this engine?" disclosure folds the fuller explanation
-// (chat vs room semantics, the DeepSeek Harness + MiniMax M3 path for full
-// tool support) behind one tap.
+// narrow widths.  A "Why This Engine?" disclosure folds the fuller explanation
+// (chat vs room semantics and the DeepSeek Harness + MiniMax M3 option)
+// behind one tap.
 import { useState } from "react";
 import { ChevronDown } from "lucide-react";
 
@@ -21,7 +21,7 @@ export function MiniMaxCallout({ instanceId }: { instanceId: string }) {
       <div className="flex items-start gap-1.5">
         <div className="min-w-0 flex-1">
           <strong className="text-ink">Talks to the Team.</strong>
-          {"  "}Lacks Files, Terminal, the web, and connected apps.
+          {"  "}Includes Files, Terminal, and this computer.
         </div>
         <button
           type="button"
@@ -30,9 +30,10 @@ export function MiniMaxCallout({ instanceId }: { instanceId: string }) {
           aria-controls={detailId}
           className="shrink-0 rounded px-1 py-0.5 text-[11px] font-medium text-ink-secondary hover:bg-accent/15 hover:text-ink"
         >
-          Why this engine?
+          Why This Engine?
           <ChevronDown
             size={11}
+            aria-hidden="true"
             className={cn("ml-0.5 inline-block transition-transform", open && "rotate-180")}
           />
         </button>
@@ -47,8 +48,8 @@ export function MiniMaxCallout({ instanceId }: { instanceId: string }) {
             A section lead can add a specialist, but only in a direct chat — not in a room.
           </span>
           <span>
-            Files, Terminal, the web, connected apps, and this computer need Claude, Codex, Antigravity, or Cursor.
-            {"  "}Want MiniMax with full tool support?  Use the DeepSeek Harness engine with MiniMax M3 as the model.
+            MiniMax direct does not include web access or connected apps.
+            {"  "}DeepSeek Harness with MiniMax M3 adds connected apps and more tools, but it cannot accept image attachments.
           </span>
         </div>
       )}
