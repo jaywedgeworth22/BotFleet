@@ -424,7 +424,7 @@ function EngineRow({
         </div>
       )}
       {["minimax"].includes(instance.driverKind) && (
-        <MiniMaxCallout />
+        <MiniMaxCallout instanceId={instance.instanceId} />
       )}
       {instance.driverKind === "boxAgent" && (
         <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">

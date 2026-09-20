@@ -69,7 +69,8 @@ describe("MiniMaxCallout — disclosure", () => {
   it("puts the longer explanation behind a 'Why this engine?' disclosure", () => {
     expect(box).toMatch(/Why this engine\?/);
     expect(box).toMatch(/aria-expanded/);
-    expect(box).toMatch(/aria-controls="minimax-callout-detail"/);
+    expect(box).toMatch(/aria-controls=\{detailId\}/);
+    expect(box).toMatch(/const detailId = `minimax-callout-detail-\${instanceId}`/);
   });
 
   it("explains team-chat vs peer-asked semantics", () => {
