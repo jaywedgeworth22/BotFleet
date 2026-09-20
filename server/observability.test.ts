@@ -190,12 +190,11 @@ describe("observability kill switch", () => {
       sendDefaultPii: false,
       enableLogs: true,
       streamGenAiSpans: true,
+      // Main's Sentry Agents implementation (#469) narrows dataCollection to
+      // the genAI block; GenAI I/O collection defaults on (kill with
+      // SENTRY_AI_DATA_COLLECTION=0).
       dataCollection: {
-        userInfo: false,
-        cookies: false,
-        httpHeaders: { request: false, response: false },
-        urlQueryParams: false,
-        genAI: { inputs: false, outputs: false },
+        genAI: { inputs: true, outputs: true },
       },
     });
 
