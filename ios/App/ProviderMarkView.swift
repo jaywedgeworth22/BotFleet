@@ -32,6 +32,12 @@ struct ProviderMarkView: View {
             return .asset("ProviderMarkClaude")
         case "grok", "grokAgent":
             return .templateAsset("ProviderMarkGrok")
+        case "grok-bot":
+            // The bot variant of the Grok mark — same X-shape with a small
+            // filled dot in the upper-right corner so a row of "Grok / Grok
+            // Bot" reads as related but distinguishable.  Mirrors the
+            // grok-bot.svg in CodeCaps' ProviderMarks folder.
+            return .templateAsset("ProviderMarkGrokBot")
         case "deepseek", "deepseekAgent", "dsh", "dshAgent":
             return .asset("ProviderMarkDeepSeek")
         case "codex":
@@ -70,6 +76,7 @@ struct ProviderMarkView: View {
         switch driverKind {
         case "claude", "claudeAgent": return "Claude"
         case "grok", "grokAgent": return "Grok"
+        case "grok-bot": return "Grok Bot"
         case "deepseek", "deepseekAgent", "dsh", "dshAgent": return "DeepSeek"
         case "codex": return "Codex"
         case "openai-compat", "openai": return "OpenAI"
