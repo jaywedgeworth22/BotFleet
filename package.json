@@ -82,13 +82,15 @@
     "control-plane:check": "pnpm --filter @botfleet/control-plane check",
     "control-plane:test": "pnpm --filter @botfleet/control-plane test",
     "control-plane:dry-run": "pnpm --filter @botfleet/control-plane dry-run",
-    "test:board-audit": "node --test scripts/audit-effort-board.node-test.mjs"
+    "test:board-audit": "node --test scripts/audit-effort-board.node-test.mjs",
+    "postinstall": "node scripts/compile-harness-dep.mjs"
   },
   "dependencies": {
     "@sentry/node": "^10.73.0",
     "@sentry/react": "^10.73.0",
     "@trycua/cua-driver": "0.20.0",
     "clsx": "^2.1.1",
+    "harness": "github:jaywedgeworth22/Harness#main",
     "lucide-react": "^0.539.0",
     "posthog-js": "^1.415.6",
     "qrcode.react": "^4.2.0",
