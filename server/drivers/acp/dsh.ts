@@ -19,7 +19,7 @@ import {
   dshVersionCompatibilityReason,
 } from "harness/dsh/acp";
 
-import type { SendTurnInput } from "../../contracts.ts";
+import type { ProviderErrorCode, SendTurnInput } from "../../contracts.ts";
 import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
 import { dshWrapSpawn } from "./dsh-mcp.ts";
 
@@ -39,22 +39,38 @@ export function dshSpawnArgs(config: AcpConfig, turn: Pick<SendTurnInput, "integ
   return harnessDshSpawnArgs(config, turn);
 }
 
-export const dshSupport: AcpSupport = {
+/**
+ * The Harness package's error codes include "unknown"; BotFleet's
+ * ProviderErrorCode does not — an unrecognized harness code is the same as
+ * no classification here.
+ */
+function dshClassifyError(error: unknown): ProviderErrorCode | undefined {
+  const code = classifyDshError(error);
+  return code === "unknown" ? undefined : code;
+}
+
+function currentConfigValue(result: unknown, configId: string): unknown {
+  if (!result || typeof result !== "object") return undefined;
+  const options = (result as { configOptions?: unknown }).configOptions;
+  if (!Array.isArray(options)) return undefined;
+  const option = options.find(
+    (candidate) => candidate && typeof candidate === "object" && (candidate as { id?: unknown }).id === configId,
+  );
+  return option && typeof option === "object" ? (option as { currentValue?: unknown }).currentValue : undefined;
+}
+
+export const dshSupport = {
   ...harnessDshSupport,
   loginNote: harnessDshSupport.loginNote ?? "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",
   resumeMethod: "session/resume" as const,
   spawnArgs: dshSpawnArgs,
   wrapSpawn: dshWrapSpawn,
-  grok/harness-package
-=======
-  resumeMethod: "session/resume",
-  selectModel: {
-    configId: "model",
-    valueForModel: dshModelOptionValue,
-    modelForValue: dshModelIdFromOptionValue,
-  },
-  versionCompatibilityReason: (version, config) => dshVersionCompatibilityReason(version, config.cli),
-
+  pickAuthMethod: () => null,
+  classifyError: dshClassifyError,
+  isAuthenticated: (env: Record<string, string | undefined>, _config: AcpConfig) =>
+    harnessDshSupport.isAuthenticated?.(env) ?? false,
+  authFailure: "continue" as const,
+  buildPromptText: (turn: SendTurnInput) => (turn.system ? `${turn.system}\n\n${turn.text}` : turn.text),
   async configureSession({ request, sessionId, turn }) {
     if (!turn.effort) return;
     const requested = turn.effort === "none" ? "off" : turn.effort;
@@ -73,22 +89,6 @@ export const dshSupport: AcpSupport = {
       );
     }
   },
-
-  transformEnv: (_env) => {},
-
-  classifyError: classifyDshError,
-
-  credentialEnv: [
-    "DEEPSEEK_API_KEY",
-    "MINIMAX_API_KEY",
-    "DSH_HOME",
-    "DSH_RUNTIME_ROOT",
-    "DSH_PERMISSION_MODE",
-  ],
-
-  main
-  pickAuthMethod: () => null,
-  classifyError: classifyDshError,
 } satisfies AcpSupport;
 
 export const DshAgentDriver = createAcpDriver(dshSupport);
