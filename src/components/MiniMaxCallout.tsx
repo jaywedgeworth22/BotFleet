@@ -10,8 +10,12 @@ import { ChevronDown } from "lucide-react";
 
 import { cn } from "@/lib/cn";
 
-export function MiniMaxCallout() {
+export function MiniMaxCallout({ instanceId }: { instanceId: string }) {
   const [open, setOpen] = useState(false);
+  // The disclosure id must be unique per engine instance: the engines page
+  // can render several MiniMax callouts, and duplicate ids break
+  // aria-controls for every callout after the first.
+  const detailId = `minimax-callout-detail-${instanceId}`;
   return (
     <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
       <div className="flex items-start gap-1.5">
@@ -23,7 +27,7 @@ export function MiniMaxCallout() {
           type="button"
           onClick={() => setOpen((value) => !value)}
           aria-expanded={open}
-          aria-controls="minimax-callout-detail"
+          aria-controls={detailId}
           className="shrink-0 rounded px-1 py-0.5 text-[11px] font-medium text-ink-secondary hover:bg-accent/15 hover:text-ink"
         >
           Why this engine?
@@ -34,7 +38,7 @@ export function MiniMaxCallout() {
         </button>
       </div>
       {open && (
-        <div id="minimax-callout-detail" className="mt-1.5 flex flex-col gap-1">
+        <div id={detailId} className="mt-1.5 flex flex-col gap-1">
           <span>
             In a chat this bot starts, it can see the other bots, ask one, list routines, request a key, and propose a schedule.
             {"  "}None of that runs when another bot asked it.

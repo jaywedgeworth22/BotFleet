@@ -404,7 +404,7 @@ export function ModelPicker({
                     </div>
                   )}
                   {["minimax"].includes(railInstance.driverKind) && (
-                    <MiniMaxCallout />
+                    <MiniMaxCallout instanceId={railInstance.instanceId} />
                   )}
                   {railInstance.driverKind === "boxAgent" && (
                     <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
