@@ -7,7 +7,7 @@
  * core and the Node stdio bridge.  Edit engine shape in Harness, not here.
  */
 import {
-  STATIC_DSH_MODELS,
+  STATIC_DSH_MODELS as harnessDshModels,
   DSH_MINIMUM_ACP_VERSION,
   DSH_PROVIDER_ID,
   classifyDshError,
@@ -24,8 +24,15 @@ import { createAcpDriver, type AcpConfig, type AcpSupport } from "./core.ts";
 import { dshWrapSpawn } from "./dsh-mcp.ts";
 
 export { dshWrapSpawn, isStockDshCli } from "./dsh-mcp.ts";
+/** BotFleet DSH model catalog.  The Harness package still publishes
+ * MiniMax-M2.7, but it is dropped here per the product decision (M3 dominates
+ * on context and is the canonical DSH-hosted MiniMax row). */
+export const STATIC_DSH_MODELS = {
+  ...harnessDshModels,
+  options: harnessDshModels.options.filter((option) => option.id !== "MiniMax-M2.7"),
+};
+
 export {
-  STATIC_DSH_MODELS,
   DSH_MINIMUM_ACP_VERSION,
   DSH_PROVIDER_ID,
   classifyDshError,
@@ -61,6 +68,8 @@ function currentConfigValue(result: unknown, configId: string): unknown {
 
 export const dshSupport = {
   ...harnessDshSupport,
+  models: STATIC_DSH_MODELS,
+  resolveModels: () => STATIC_DSH_MODELS,
   loginNote: harnessDshSupport.loginNote ?? "DSH CLI auth missing — add ~/.dsh/.credentials.yaml",
   resumeMethod: "session/resume" as const,
   spawnArgs: dshSpawnArgs,

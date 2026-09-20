@@ -9,6 +9,7 @@ import { isCustomOnly, splitEngineRail } from "@/lib/engine-rail";
 import { ProviderMark } from "./ProviderIcons";
 import { EngineSetup, needsCli, needsSignIn } from "./EngineSetup";
 import { EngineGroupLabel } from "./EngineGroupLabel";
+import { MiniMaxCallout } from "./MiniMaxCallout";
 import { formatDualQuotaBadge } from "@/lib/quota-display";
 import { cn } from "@/lib/cn";
 import { COMPACT_SQUARE } from "@/lib/compact-chip";
@@ -403,13 +404,7 @@ export function ModelPicker({
                     </div>
                   )}
                   {["minimax"].includes(railInstance.driverKind) && (
-                    <div className="mt-2 rounded bg-accent/10 px-2 py-1.5 text-[11px] leading-relaxed text-ink-secondary border border-accent/20">
-                      <strong className="text-ink">Talks to the Team.</strong>
-                      {  }In a chat this bot starts, it can see the other bots, ask one, list routines, request a key, and propose a schedule.
-                      {  }None of that runs when another bot asked it.
-                      {  }A section lead can add a specialist, but only in a direct chat — not in a room.
-                      {  }Files, Terminal, the web, connected apps, and this computer need Claude, Codex, Antigravity, or Cursor.
-                    </div>
+                    <MiniMaxCallout instanceId={railInstance.instanceId} />
                   )}
                   {railInstance.driverKind === "boxAgent" && (
                     <div className="mt-2 rounded bg-warning/10 px-2 py-1.5 text-[11px] leading-relaxed text-warning-dark border border-warning/20">
