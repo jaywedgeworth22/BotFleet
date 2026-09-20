@@ -102,10 +102,10 @@ elif [[ -n "$BOTFLEET_CHECKOUT" && -d "$BOTFLEET_CHECKOUT/.git" ]]; then
 fi
 
 if [[ -f "$LOCAL_IMPL" ]]; then
-  exec "$NODE_BIN" "$LOCAL_IMPL" "$@"
+  exec "$NODE_BIN" "$LOCAL_IMPL" "$@" </dev/null
 fi
 if [[ -f "$TRACKED_IMPL" ]]; then
-  exec "$NODE_BIN" "$TRACKED_IMPL" "$@"
+  exec "$NODE_BIN" "$TRACKED_IMPL" "$@" </dev/null
 fi
 
 echo "BotFleet updater implementation is missing.  Expected $TRACKED_IMPL" >&2

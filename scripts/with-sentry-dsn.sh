@@ -63,7 +63,7 @@ resolve_secret() {
     if [[ -n "$project_id" ]]; then
       args+=(--projectId="$project_id")
     fi
-    val="$(infisical secrets get "$name" "${args[@]}" 2>/dev/null || true)"
+    val="$(infisical secrets get "$name" "${args[@]}" </dev/null 2>/dev/null || true)"
   fi
 
   if [[ -z "$val" && -f "$HANDOFF_FILE" ]]; then

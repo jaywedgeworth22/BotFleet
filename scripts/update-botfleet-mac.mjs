@@ -442,7 +442,7 @@ export function run(command, args, { cwd, env, allowFailure = false, inherit = f
     const child = spawn(command, args, {
       cwd,
       env: env ? { ...process.env, ...env } : process.env,
-      stdio: inherit ? ["inherit", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
+      stdio: inherit ? ["ignore", "inherit", "inherit"] : ["ignore", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
