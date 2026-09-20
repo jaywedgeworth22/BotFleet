@@ -180,7 +180,13 @@ function liveSink(): SentryAiSink | null {
   if (!Sentry) return null;
   return {
     setConversationId: (id) => {
-      Sentry.setConversationId(id);
+      try {
+        if (typeof Sentry.setConversationId === "function") {
+          Sentry.setConversationId(id);
+        }
+      } catch {
+        // Conversation tagging must never take down a turn.
+      }
     },
     setUser: (user) => {
       Sentry.setUser(user);
@@ -218,15 +224,19 @@ function liveSink(): SentryAiSink | null {
 }
 
 function applyConversation(sink: SentryAiSink, threadId: string, identity?: TurnIdentity | null): void {
-  sink.setConversationId?.(threadId);
-  if (!sink.setUser) return;
-  const resolved = identity === undefined ? identityFor(threadId) : identity;
-  const id = clean(resolved?.botId) ?? clean(resolved?.roomId) ?? threadId;
-  const username = clean(resolved?.botName) ?? clean(resolved?.roomName);
-  sink.setUser({
-    id,
-    ...(username ? { username } : {}),
-  });
+  try {
+    sink.setConversationId?.(threadId);
+    if (!sink.setUser) return;
+    const resolved = identity === undefined ? identityFor(threadId) : identity;
+    const id = clean(resolved?.botId) ?? clean(resolved?.roomId) ?? threadId;
+    const username = clean(resolved?.botName) ?? clean(resolved?.roomName);
+    sink.setUser({
+      id,
+      ...(username ? { username } : {}),
+    });
+  } catch {
+    /* conversation tagging must never take down a turn */
+  }
 }
 
 /** The still-open `gen_ai.invoke_agent` span for a thread, so a span opened
@@ -286,7 +296,18 @@ export function genAiProvider(driverKind: string): string {
   return GEN_AI_PROVIDERS.get(kind) ?? (driverKind || "custom");
 }
 
-function endTurn(key: string, ok: boolean, usage?: { input?: number; output?: number; cachedInput?: number }): void {
+function applyCost(span: SpanLike, cost: number | null | undefined, billingMode?: "actual" | "estimated"): void {
+  if (billingMode === "estimated") return;
+  if (cost == null || !Number.isFinite(cost) || cost < 0) return;
+  span.setAttribute("gen_ai.usage.cost", cost);
+}
+
+function endTurn(
+  key: string,
+  ok: boolean,
+  usage?: { input?: number; output?: number; cachedInput?: number; cost?: number | null },
+  billingMode?: "actual" | "estimated",
+): void {
   const turn = turns.get(key);
   reportedProviderErrors.delete(key);
   if (!turn) return;
@@ -295,6 +316,7 @@ function endTurn(key: string, ok: boolean, usage?: { input?: number; output?: nu
   if (usage?.input != null) turn.span.setAttribute("gen_ai.usage.input_tokens", usage.input);
   if (usage?.output != null) turn.span.setAttribute("gen_ai.usage.output_tokens", usage.output);
   if (usage?.cachedInput != null) turn.span.setAttribute("gen_ai.usage.input_tokens.cached", usage.cachedInput);
+  applyCost(turn.span, usage?.cost, billingMode);
   if (!ok) turn.span.setStatus?.({ code: 2, message: "internal_error" });
   turn.span.end();
   turns.delete(key);
@@ -330,12 +352,13 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
     case "turn.started": {
       reportedProviderErrors.delete(key);
       const identity = eventIdentity;
+      const named = agentName(identity, event.provider);
       const span = sink.startInactiveSpan({
         op: "gen_ai.invoke_agent",
-        name: `invoke_agent ${event.provider}`,
+        name: `invoke_agent ${named}`,
         attributes: {
           "gen_ai.operation.name": "invoke_agent",
-          "gen_ai.agent.name": agentName(identity, event.provider),
+          "gen_ai.agent.name": named,
           "gen_ai.provider.name": provider,
           "gen_ai.conversation.id": event.threadId,
           "gen_ai.system": provider,
@@ -522,7 +545,7 @@ export function observeRuntimeEvent(event: RuntimeEvent, sink: SentryAiSink | nu
           });
         }
       }
-      endTurn(key, event.ok, event.usage);
+      endTurn(key, event.ok, { ...event.usage, cost: event.cost }, event.billingMode);
       break;
     }
     default:

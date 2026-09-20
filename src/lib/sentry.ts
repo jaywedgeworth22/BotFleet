@@ -57,6 +57,14 @@ const browserPort: SentryBrowserPort = {
       environment: options.environment,
       tracesSampleRate: options.tracesSampleRate,
       enableLogs: true,
+      sendDefaultPii: false,
+      dataCollection: {
+        userInfo: false,
+        cookies: false,
+        httpHeaders: { request: false, response: false },
+        urlQueryParams: false,
+        genAI: { inputs: false, outputs: false },
+      },
       replaysSessionSampleRate: options.replaysSessionSampleRate,
       replaysOnErrorSampleRate: options.replaysOnErrorSampleRate,
       integrations: [

@@ -185,7 +185,18 @@ describe("observability kill switch", () => {
     expect((await observability.apply()).enabled).toBe(true);
     expect(isSentryActive()).toBe(true);
     expect(record.inits).toHaveLength(1);
-    expect(record.inits[0]).toMatchObject({ dsn: CONFIG_DSN, sendDefaultPii: false, enableLogs: true });
+    expect(record.inits[0]).toMatchObject({
+      dsn: CONFIG_DSN,
+      sendDefaultPii: false,
+      enableLogs: true,
+      streamGenAiSpans: true,
+      // Main's Sentry Agents implementation (#469) narrows dataCollection to
+      // the genAI block; GenAI I/O collection defaults on (kill with
+      // SENTRY_AI_DATA_COLLECTION=0).
+      dataCollection: {
+        genAI: { inputs: true, outputs: true },
+      },
+    });
 
     cfg.observability = { ...cfg.observability, enabled: false };
     expect((await observability.apply()).enabled).toBe(false);
