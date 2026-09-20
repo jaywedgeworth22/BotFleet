@@ -52,6 +52,13 @@ vi.mock("../minimax-balance.ts", () => ({
   // reporting every MiniMax instance as unavailable instead of failing the
   // test loudly. Real value: same as loadLocalMiniMaxConfig's mock above.
   getCachedLocalMiniMaxConfig: () => localMiniMaxConfig,
+  // The dual-window badge tests isolate the snapshot path, not the cap
+  // broadcast, so the real implementation would only add noise — the
+  // actual broadcast logic is covered in server/minimax-balance.test.ts.
+  // Returning a plain object that satisfies the call site keeps describe()
+  // honest about reporting unavailable when a chunk in registry.ts
+  // reaches for an unexpected export.
+  applyMiniMaxBalanceToRegistry: () => ({ capped: false }),
 }));
 
 import { resolveMinimaxCredentials } from "../drivers/minimax.ts";
