@@ -82,7 +82,8 @@
     "control-plane:check": "pnpm --filter @botfleet/control-plane check",
     "control-plane:test": "pnpm --filter @botfleet/control-plane test",
     "control-plane:dry-run": "pnpm --filter @botfleet/control-plane dry-run",
-    "test:board-audit": "node --test scripts/audit-effort-board.node-test.mjs"
+    "test:board-audit": "node --test scripts/audit-effort-board.node-test.mjs",
+    "postinstall": "node scripts/compile-harness-dep.mjs"
   },
   "dependencies": {
     "@sentry/node": "^10.73.0",
