@@ -17,7 +17,7 @@ import { mergeLocalInject } from "./local-inject.ts";
  * every row is available for the current account or transport.
  */
 export const STATIC_CODEX_MODELS: ModelCatalog = {
-  default: "gpt-6-astra",
+  default: "gpt-5.6-luna",
   options: [
     { id: "gpt-6-astra", label: "GPT-6 Astra" },
     { id: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
