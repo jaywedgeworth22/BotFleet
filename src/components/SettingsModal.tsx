@@ -27,6 +27,7 @@ import { useUpdaterState } from "@/lib/updater";
 import {
   availableLabel,
   idleLabel,
+  installBlockedBusy,
   installBlockedReason,
   installedLabel,
   lastRunDetail,
@@ -418,7 +419,7 @@ function UpdatesRow() {
   // Why Install Update is down.  The harness ships a reason with every
   // refusal it can see coming, and no surface rendered one — so a card with an
   const blockedReason = source === "harness" ? installBlockedReason(status) : null;
-  const isBusyBlocked = blockedReason !== null && Boolean(status?.capabilities.codes?.includes("busy"));
+  const isBusyBlocked = installBlockedBusy(status);
   const isBlocked = blockedReason !== null && !isBusyBlocked;
   const subtitleReason = isBusyBlocked ? "Work will pause and resume after update" : blockedReason;
   const subtitle =

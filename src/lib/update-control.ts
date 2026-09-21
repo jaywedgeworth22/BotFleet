@@ -331,6 +331,18 @@ export function installBlockedReason(status: UpdateStatus | null): string | null
  * none at all), which is what an older harness with no `codes` array always
  * looks like.
  */
+/**
+ * Whether the selected blocker's reason is the transient busy one — the only
+ * refusal `force` can talk past.  Reads the same first code
+ * `installBlockedReason` renders, so a structural blocker that merely shares
+ * the list with "busy" (an outdated updater on a working Mac, say) is never
+ * misclassified as forceable and the real guidance is never swapped for
+ * pause-and-resume copy.
+ */
+export function installBlockedBusy(status: UpdateStatus | null): boolean {
+  return installBlockedReason(status) !== null && status?.capabilities.codes?.[0] === "busy";
+}
+
 export function installBlockedReasonDetail(status: UpdateStatus | null): string | null {
   if (!status?.available || status.running || status.capabilities.canRun) return null;
   const reason = status.capabilities.reasons[0];

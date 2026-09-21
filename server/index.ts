@@ -6305,12 +6305,14 @@ async function beginRuntimeQuiesce(force = false) {
   if (force) {
     const interruptedRuns: RoutineRun[] = [];
     if (routines) {
+      // Cancel queued runs too: a queued run is still counted by
+      // currentRuntimeReadiness, so leaving it in place would make the final
+      // safety check roll the forced update back every time instead of pausing
+      // and resuming it from the snapshot.
       for (const run of routines.listRuns()) {
         if (["running", "waiting", "queued"].includes(run.status)) {
           interruptedRuns.push({ ...run });
-          if (run.status === "running" || run.status === "waiting") {
-            await routines.cancelRun(run.id).catch(() => {});
-          }
+          await routines.cancelRun(run.id).catch(() => {});
         }
       }
     }
@@ -8754,20 +8756,28 @@ const server = createServer(async (req, res) => {
         });
       }
       if (routines) {
+        // Validate routine conflicts before mutating anything: cancelling
+        // first and rejecting after would leave the manual turn the user tried
+        // to stop still running while unrelated automation was already
+        // cancelled and the bot snoozed.
+        if (expectedThreadId !== undefined) {
+          const botRuns = routines.listRuns().filter(
+            (run) =>
+              !run.coalescedInto &&
+              run.botId === bot.id &&
+              ["queued", "running", "waiting"].includes(run.status),
+          );
+          const runInOtherThread = botRuns.find((run) => run.threadId && run.threadId !== expectedThreadId);
+          if (runInOtherThread && !botRuns.some((run) => run.threadId === expectedThreadId)) {
+            return json(res, 409, { error: "this bot is running a routine in another conversation" });
+          }
+        }
         // Cancel all active and queued routine runs for this bot and snooze automated triggers
         // so background webhooks and scheduled routines do not restart it.
         const cancelledRuns = await routines.cancelAllRunsForBot(bot.id);
         routines.snoozeBot(bot.id);
         if (cancelledRuns.length > 0) {
           stopped = true;
-          if (expectedThreadId !== undefined) {
-            const runInOtherThread = cancelledRuns.find(
-              (r) => r.threadId && r.threadId !== expectedThreadId,
-            );
-            if (runInOtherThread && !cancelledRuns.some((r) => r.threadId === expectedThreadId)) {
-              return json(res, 409, { error: "this bot is running a routine in another conversation" });
-            }
-          }
         }
       }
       // Latch the stop before anything is awaited.  The driver may settle the

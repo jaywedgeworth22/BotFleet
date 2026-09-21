@@ -9,6 +9,7 @@ import {
   availableLabel,
   bannerDismissKey,
   bannerIsActionable,
+  installBlockedBusy,
   installBlockedReason,
   installBlockedReasonDetail,
   lastRunDetail,
@@ -276,7 +277,7 @@ function LocalUpdateCard({
   // while the Install button was conditioned away, which read as a card that
   // had simply lost its button.  The reason takes the subtitle instead.
   const blockedReason = installBlockedReason(status);
-  const isBusyBlocked = blockedReason !== null && Boolean(status.capabilities.codes?.includes("busy"));
+  const isBusyBlocked = installBlockedBusy(status);
   const isBlocked = blockedReason !== null && !isBusyBlocked;
   const subtitle = running
     ? runningLabel(running)

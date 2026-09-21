@@ -1,6 +1,7 @@
 import { track } from "@/lib/analytics";
 import {
   availableLabel,
+  installBlockedBusy,
   installBlockedReason,
   installBlockedReasonDetail,
   mayUseLegacyLocalUpdate,
@@ -157,7 +158,7 @@ function UpdateButton() {
     // change, so it read as dead.  It says why instead, and stays down.
     const blockedReason = installBlockedReason(harnessStatus);
     const blockedReasonDetail = installBlockedReasonDetail(harnessStatus);
-    const isBusyBlocked = blockedReason !== null && Boolean(harnessStatus.capabilities.codes?.includes("busy"));
+    const isBusyBlocked = installBlockedBusy(harnessStatus);
     const isBlocked = blockedReason !== null && !isBusyBlocked;
     const label = harnessRunning
       ? runningLabel(harnessRunning)
