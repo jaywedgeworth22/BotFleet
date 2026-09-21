@@ -14,6 +14,7 @@ import {
   NEAR_CAP_PERCENT,
   providerIssueLine,
   quotaLinesSummary,
+  quotaProducerLabel,
   remainingPercentLabel,
   windowHeadlines,
   windowsLabelFromHeadlines,
