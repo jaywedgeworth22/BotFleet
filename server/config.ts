@@ -232,7 +232,7 @@ const appConfigSchema = z.object({
   /** Voice credentials and the selected voice id. `provider` picks the
    * engine: "elevenlabs" (default; needs a key) or "system" (the Mac's
    * built-in voices, no key). */
-  tts: z.object({ key: optionalText, voice: optionalText, provider: z.enum(["elevenlabs", "system"]).optional(), credentialStorage: externalCredentialStorage }).optional(),
+  tts: z.object({ key: optionalText, voice: optionalText, provider: z.enum(["minimax", "elevenlabs", "system"]).optional(), credentialStorage: externalCredentialStorage }).optional(),
   /** OpenAI key used only by the in-process avatar image generator. */
   imageGen: z.object({ key: optionalText, credentialStorage: externalCredentialStorage }).optional(),
   autoUpdate: z
@@ -351,7 +351,7 @@ export interface AppConfig {
   vps?: { sshAlias?: string; memoryGib?: number; cpus?: number };
   opencodeGo?: { apiKey?: string; credentialStorage?: "external" };
   deepseek?: { key?: string; url?: string; credentialStorage?: "external" };
-  tts?: { key?: string; voice?: string; provider?: "elevenlabs" | "system"; credentialStorage?: "external" };
+  tts?: { key?: string; voice?: string; provider?: "minimax" | "elevenlabs" | "system"; credentialStorage?: "external" };
   imageGen?: { key?: string; credentialStorage?: "external" };
   autoUpdate?: {
     enabled?: boolean;
