@@ -74,6 +74,8 @@ describe("DshAgentDriver config", () => {
   it("encodes the ACP model option with its provider while preserving the picker id", () => {
     expect(dshModelOptionValue("deepseek-v4-pro")).toBe('["deepseek-official","deepseek-v4-pro"]');
     expect(dshModelIdFromOptionValue('["deepseek-official","deepseek-v4-pro"]')).toBe("deepseek-v4-pro");
+    expect(dshModelOptionValue("MiniMax-M3")).toBe('["minimax","MiniMax-M3"]');
+    expect(dshModelIdFromOptionValue('["minimax","MiniMax-M3"]')).toBe("MiniMax-M3");
     expect(dshModelIdFromOptionValue('["other-provider","deepseek-v4-pro"]')).toBeNull();
     expect(dshModelIdFromOptionValue("deepseek-v4-pro")).toBeNull();
   });
