@@ -38,7 +38,7 @@ Mirrors the established `applyAntigravityUsageToRegistry` pattern
 
 **Resolves** board item `555c5227` (P2 / BF-FIXER, 2026-09-19).
 
-### Why this ship vs. the full chip-path fix
+### Why This Ship vs. The Full Chip-Path Fix
 
 The board's recommended fix called for hardening the chip path at
 `server/index.ts:2281` (narrow matcher over error message strings like
@@ -58,16 +58,16 @@ observations steered this pass toward the polling-path fix instead:
 
 ## Findings Filed / Surfaced But Not Shipped This Turn
 
-### Same Surface, Different Failure Mode — pre-existing items not in scope
+### Same Surface, Different Failure Mode — Pre-existing Items Not in Scope
 
 | Board id                          | Severity | Owner                     | Why not this PR                                                                            |
 | --------------------------------- | -------- | ------------------------- | ------------------------------------------------------------------------------------------ |
-| `8cf2a359` (900s turn stalls, MiniMax) | P2 | BF-FIXER                  | Different code path (acp/core.ts:1050), needs separate inspection. Out of this PR's scope. |
+| `8cf2a359` (900s turn stalls, MiniMax) | P2 | BF-FIXER                  | Different code path (acp/core.ts:1050), needs separate inspection.  Out of this PR's scope. |
 | `752b8c0a` (duplicate of 555c5227) | P2 | MM                        | Belongs to issue #286 (board-row reconciliation), not the quota surface itself.             |
 | `a2218cad` (Composio unreachable for HTTP-lane bots) | P2 | CLAUDE | Distinct runtime — Claude's surface.                                                       |
 | `752b8c0a`, `5c89b8b1`-series     | mixed    | various                   | All BF-FIXER PLANNED items require deeper, single-domain inspection per item.              |
 
-### V2 / Next-Wave — surfaced during this turn
+### V2 / Next-Wave — Surfaced During This Turn
 
 1. **V2 chip-path hardening** — at `server/index.ts:2281`, the
    narrow-matcher logic the board item recommended ("insufficient
