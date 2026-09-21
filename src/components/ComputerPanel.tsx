@@ -256,7 +256,7 @@ export function ComputerPanel({
               status.container === "missing" &&
               status.image &&
               status.create_supported;
-            setError(canCreateHere ? null : `${status.problem ?? "The Local VM is not ready"}. Open App Settings → Local VM.`);
+            setError(canCreateHere ? null : `${status.problem ?? "The Local VM is not ready"}.  Open App Settings → Computers.`);
             setPhase("vm-unavailable");
           }
         })
@@ -1106,7 +1106,7 @@ export function ComputerPanel({
                   i > 0 && "border-l border-hairline/40",
                   disabled && "cursor-not-allowed opacity-40",
                   (mode === "off" ? (bot.computers ?? []).length === 0 : (bot.computers ?? []).includes(mode as any))
-                    ? "bg-control text-ink"
+                    ? "bg-control text-ink font-medium"
                     : "text-ink-secondary hover:bg-control/60 hover:text-ink",
                 )}
               >
