@@ -551,7 +551,12 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // that can auto-approve shell regardless (see the file header).  A
       // full-auto instance keeps its switch for every other turn.
       const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
-      const isAutoApproved = turn.autoApprove === true;
+      // Auto Mode is for turns a person is present for.  A webhook/resource
+      // turn begins with nobody watching, so it must not inherit the
+      // permission bypass even when the bot has autoApprove on — the broker
+      // path enforces this in autoVerdict ("unattended-block"), and print
+      // mode has no broker, so the driver enforces it here instead.
+      const isAutoApproved = turn.autoApprove === true && turn.unattended !== true;
       // The per-bot override is scoped to host-control turns only: letting a
       // bot-level autoApprove flag flip fullAuto for sandbox/cloud/VM turns
       // would silently promote an engine-level security gate the owner never

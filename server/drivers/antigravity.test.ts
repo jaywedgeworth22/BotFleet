@@ -833,6 +833,7 @@ describe("Antigravity host control", () => {
      * reaping whatever was left over. */
     beforeDispose?: () => Promise<void>,
     autoApprove?: boolean,
+    unattended?: boolean,
   ) => {
     const dump = join(home, `${name}.json`);
     const instance = await AntigravityDriver.create({
@@ -844,7 +845,7 @@ describe("Antigravity host control", () => {
     });
     const recorder = recordEvents(instance.adapter);
     try {
-      await instance.adapter.sendTurn({ threadId: `t-host-${name}`, text: "hi", integrations, autoApprove });
+      await instance.adapter.sendTurn({ threadId: `t-host-${name}`, text: "hi", integrations, autoApprove, unattended });
       await recorder.until((e) => e.type === "turn.completed");
       if (beforeDispose) await beforeDispose();
       return {
@@ -890,6 +891,16 @@ describe("Antigravity host control", () => {
     expect(sandbox.argv).not.toContain("--dangerously-skip-permissions");
     const mode = sandbox.argv.indexOf("--mode");
     expect(sandbox.argv.slice(mode, mode + 2)).toEqual(["--mode", "accept-edits"]);
+  });
+
+  it("withholds the bypass for an unattended host-control turn even with autoApprove", async () => {
+    // A webhook/resource turn begins with nobody watching: it must not
+    // inherit Auto Mode, so no --dangerously-skip-permissions even though
+    // the bot has autoApprove on and controls the host.
+    const host = await runTurn("host-unattended", false, hostIntegrations, {}, undefined, true, true);
+    expect(host.argv).not.toContain("--dangerously-skip-permissions");
+    const mode = host.argv.indexOf("--mode");
+    expect(host.argv.slice(mode, mode + 2)).toEqual(["--mode", "accept-edits"]);
   });
 
   it("leaves a full-auto turn alone when no host computer is mounted", async () => {

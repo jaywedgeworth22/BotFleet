@@ -3434,6 +3434,7 @@ async function startTurn(
         integrations,
         cwd,
         autoApprove: bot.autoApprove === true,
+        unattended: isUnattended(bot.id),
       };
       const started = await instance.adapter.sendTurn(turnInput);
       // A driver may settle before launch (for example, a failed capability
@@ -4889,6 +4890,7 @@ async function runGroupMemberTurn(
         tools: roomTurnTools,
         toolHost: roomToolHost,
         autoApprove: bot.autoApprove === true,
+        unattended: isUnattended(bot.id),
         ...memberTurnSelection(selection),
       })
       .catch((err) => {

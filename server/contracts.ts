@@ -300,6 +300,12 @@ export interface SendTurnInput {
   cwd?: string;
   /** True when the bot has autoApprove enabled by the user. */
   autoApprove?: boolean;
+  /** True when this turn began from an outside event (webhook, resource
+   *  threshold) or was inherited from an already-unattended bot.  Auto Mode
+   *  is something a person switched on for turns they are present for, so a
+   *  driver that converts autoApprove into a permission bypass must treat an
+   *  unattended turn as a hard stop (see auto-approve.ts). */
+  unattended?: boolean;
 }
 
 /** One tool call the model asked for, decoded.  `arguments` is always an
