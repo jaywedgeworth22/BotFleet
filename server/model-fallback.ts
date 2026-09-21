@@ -13,7 +13,7 @@ export interface FallbackScanMessage {
   role: string;
   kind: string;
   text?: string;
-  tool?: { name?: string; ok?: boolean };
+  tool?: { name?: string; ok?: boolean; kind?: string };
 }
 
 export interface TurnFallbackPick extends ModelSelection {
@@ -162,8 +162,10 @@ export function turnProducedAssistantOutput(
     if (message.kind === "text") return !textIsError;
     if (message.kind !== "activity") return false;
     if (message.tool?.ok !== true) return false;
+    if (message.tool.kind === "notice") return false;
     const name = message.tool.name ?? "";
     if (/^(retrying|working)\b/i.test(name)) return false;
+    if (name.startsWith("Antigravity has no approval cards")) return false;
     return true;
   });
 }

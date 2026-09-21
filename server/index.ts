@@ -3433,6 +3433,8 @@ async function startTurn(
             : ""),
         integrations,
         cwd,
+        autoApprove: bot.autoApprove === true,
+        unattended: isUnattended(bot.id),
       };
       const started = await instance.adapter.sendTurn(turnInput);
       // A driver may settle before launch (for example, a failed capability
@@ -4569,6 +4571,19 @@ async function runGroupMemberTurn(
     return true;
   }
   if (!turnSelection) stoppedTurns.delete(`${bot.id}:${threadId}`);
+  if (cardContinuation === undefined && hop === 0) {
+    // A person started this room round — the room-lane mirror of startTurn's
+    // clearUnattended on a typed 1:1 message.  The unattended mark survives
+    // for 30 minutes after a webhook/resource turn, so without this a human
+    // room message in that window would inherit "unattended" and wrongly
+    // lose the driver's autoApprove bypass (or worse, be treated as a turn
+    // nobody is watching).  It must happen here, after the busy checks: an
+    // earlier clear would drop the mark while an in-flight unattended turn
+    // still consults it on every permission ask.  Automated rounds — card
+    // continuations, resumes, bot-to-bot chains — keep the mark they
+    // arrived with.
+    clearUnattended(bot.id);
+  }
   store.setActivity(bot.id, "working");
   store.patchBot(bot.id, { inflightThreadId: threadId });
   store.patchGroup(group.id, { busyBotId: bot.id }); // the store's change stream carries the frame
@@ -4887,6 +4902,8 @@ async function runGroupMemberTurn(
         integrations,
         tools: roomTurnTools,
         toolHost: roomToolHost,
+        autoApprove: bot.autoApprove === true,
+        unattended: isUnattended(bot.id),
         ...memberTurnSelection(selection),
       })
       .catch((err) => {
