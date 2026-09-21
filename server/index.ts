@@ -6250,15 +6250,58 @@ function beginUpdateAdmission(): (() => void) | null {
   };
 }
 
+interface InterruptedBotResumeEntry {
+  botId: string;
+  threadId: string;
+  promptMessageId?: string;
+  promptText?: string;
+}
+
+async function resumeInterruptedChatTurns(
+  entries: InterruptedBotResumeEntry[],
+  context: string,
+) {
+  for (const entry of entries) {
+    try {
+      const resumeBot = entry?.botId ? store.bot(entry.botId) : undefined;
+      const resumeThreadId = entry?.threadId;
+      if (!resumeBot || typeof resumeThreadId !== "string") continue;
+      if (store.groupByThread(resumeThreadId)) {
+        console.log(
+          `[${context}] skipping interrupted room turn for bot ${resumeBot.id} — restart it from the room`,
+        );
+        continue;
+      }
+      const resumeMessages = store.messagesFor(resumeThreadId);
+      const resumePrompt =
+        resumeMessages.find((message) => message.id === entry.promptMessageId) ??
+        [...resumeMessages]
+          .reverse()
+          .find((message) => message.role === "user" && message.kind === "text" && message.text);
+      if (!resumePrompt?.text) {
+        console.log(`[${context}] no resumable prompt for bot ${resumeBot.id} on thread ${resumeThreadId}`);
+        continue;
+      }
+      await startTurn(resumeBot.id, resumePrompt.text, {
+        threadId: resumeThreadId,
+        userMessage: resumeMessages.some((message) => message.id === resumePrompt.id) ? resumePrompt : undefined,
+      });
+      console.log(`[${context}] re-dispatched interrupted turn for bot ${resumeBot.id}`);
+    } catch (err) {
+      console.warn(`[${context}] could not resume interrupted turn:`, err);
+    }
+  }
+}
+
 // Undo a forced quiesce that cannot proceed.  A refused update must hand the
 // harness back in working order — requeue the cancelled routine runs, drop the
-// stop latches, discard the resume snapshot (no reboot is coming, and a stale
-// snapshot would corrupt a future update's resume), and restart the schedulers —
-// instead of leaving the runtime fenced and rejecting new turns until a manual
-// unquiesce or restart.
+// stop latches, re-dispatch interrupted chat turns, discard the resume snapshot
+// (no reboot is coming, and a stale snapshot would corrupt a future update's resume),
+// and restart the schedulers — instead of leaving the runtime fenced and rejecting new
+// turns until a manual unquiesce or restart.
 function rollbackForcedQuiesce(
   interruptedRuns: RoutineRun[],
-  interruptedBots: Array<{ botId: string; threadId: string }>,
+  interruptedBots: InterruptedBotResumeEntry[],
 ) {
   for (const run of interruptedRuns) {
     try {
@@ -6275,6 +6318,7 @@ function rollbackForcedQuiesce(
   routines?.start();
   resourceTriggers.start();
   infisical.start();
+  void resumeInterruptedChatTurns(interruptedBots, "quiesce-rollback");
 }
 
 async function beginRuntimeQuiesce(force = false) {
@@ -6317,20 +6361,23 @@ async function beginRuntimeQuiesce(force = false) {
       }
     }
 
-    const interruptedBots: Array<{
-      botId: string;
-      threadId: string;
-      promptMessageId?: string;
-      promptText?: string;
-    }> = [];
+    const interruptedBots: InterruptedBotResumeEntry[] = [];
     for (const bot of store.bots) {
       if (bot.busy) {
         const liveThreadId = bot.inflightThreadId ?? bot.threadId;
+        // Routine runs are already captured in interruptedRuns and will be
+        // requeued by the scheduler.  Do not also record them as chat turns,
+        // which would cause the automation to execute twice and repeat side effects.
+        const routineRun = interruptedRuns.some(
+          (run) => run.botId === bot.id || (run.threadId && run.threadId === liveThreadId),
+        );
+        if (routineRun) continue;
+
         // Enough to re-dispatch the turn after the update: the user message
         // the interrupted turn was answering.  It is looked up by id at
         // resume time (with the text as a fallback) and passed back as the
         // turn's existing message, never re-appended to the transcript.
-        const entry: { botId: string; threadId: string; promptMessageId?: string; promptText?: string } = {
+        const entry: InterruptedBotResumeEntry = {
           botId: bot.id,
           threadId: liveThreadId,
         };
@@ -6408,7 +6455,26 @@ function endRuntimeQuiesce() {
     resourceTriggers.start();
     const pendingResumePath = join(DATA_DIR, "pending-update-resume.json");
     if (existsSync(pendingResumePath)) {
-      try { unlinkSync(pendingResumePath); } catch {}
+      try {
+        const raw = readFileSync(pendingResumePath, "utf-8");
+        const resumeState = JSON.parse(raw);
+        if (Array.isArray(resumeState.interruptedRuns)) {
+          for (const run of resumeState.interruptedRuns) {
+            if (run?.id) routines?.requeueRun(run.id);
+          }
+        }
+        if (Array.isArray(resumeState.interruptedBots)) {
+          for (const entry of resumeState.interruptedBots) {
+            if (entry?.botId && entry?.threadId) {
+              stoppedTurns.delete(`${entry.botId}:${entry.threadId}`);
+            }
+          }
+          void resumeInterruptedChatTurns(resumeState.interruptedBots, "unquiesce-resume");
+        }
+        unlinkSync(pendingResumePath);
+      } catch (err) {
+        console.warn("[unquiesce] failed to restore resume snapshot:", err);
+      }
     }
   }
   return { ...currentRuntimeReadiness(), quiescing: false };
@@ -10876,36 +10942,7 @@ if (existsSync(pendingResumePath)) {
     // re-runs from the user message it was answering, passed back as the
     // turn's existing message so the transcript is not duplicated.
     if (Array.isArray(resumeState.interruptedBots)) {
-      for (const entry of resumeState.interruptedBots) {
-        try {
-          const resumeBot = entry?.botId ? store.bot(entry.botId) : undefined;
-          const resumeThreadId = entry?.threadId;
-          if (!resumeBot || typeof resumeThreadId !== "string") continue;
-          if (store.groupByThread(resumeThreadId)) {
-            console.log(
-              `[update-resume] skipping interrupted room turn for bot ${resumeBot.id} — restart it from the room`,
-            );
-            continue;
-          }
-          const resumeMessages = store.messagesFor(resumeThreadId);
-          const resumePrompt =
-            resumeMessages.find((message) => message.id === entry.promptMessageId) ??
-            [...resumeMessages]
-              .reverse()
-              .find((message) => message.role === "user" && message.kind === "text" && message.text);
-          if (!resumePrompt?.text) {
-            console.log(`[update-resume] no resumable prompt for bot ${resumeBot.id} on thread ${resumeThreadId}`);
-            continue;
-          }
-          await startTurn(resumeBot.id, resumePrompt.text, {
-            threadId: resumeThreadId,
-            userMessage: resumeMessages.some((message) => message.id === resumePrompt.id) ? resumePrompt : undefined,
-          });
-          console.log(`[update-resume] re-dispatched interrupted turn for bot ${resumeBot.id}`);
-        } catch (err) {
-          console.warn("[update-resume] could not resume interrupted turn:", err);
-        }
-      }
+      await resumeInterruptedChatTurns(resumeState.interruptedBots, "update-resume");
     }
     unlinkSync(pendingResumePath);
     queueMicrotask(() => routines?.tick());
