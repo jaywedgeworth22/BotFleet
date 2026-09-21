@@ -78,6 +78,7 @@ export function parseArguments(argv) {
     else if (arg === "--progress") parsed.progress = resolve(requiredValue(arg, args.shift()));
     else if (arg === "--run-id") parsed.runId = requiredValue(arg, args.shift());
     else if (arg === "--no-open") parsed.openApplication = false;
+    else if (arg === "--force" || arg === "-f") parsed.force = true;
     else if (arg === "--help" || arg === "-h") parsed.help = true;
     else throw new Error(`Unknown option: ${arg}`);
   }
@@ -719,7 +720,8 @@ async function strictRuntimePreflight(config, expectedBuild, { requireIdle }) {
 }
 
 export async function runtimePreflight(config, expectedBuild) {
-  const strict = await strictRuntimePreflight(config, expectedBuild, { requireIdle: true });
+  const requireIdle = !config?.force && process.env.BOTFLEET_FORCE !== "1";
+  const strict = await strictRuntimePreflight(config, expectedBuild, { requireIdle });
   if (strict) return strict;
   return { safe: false, reason: "Runtime does not expose complete authenticated readiness; manual first adoption is required" };
 }
@@ -737,7 +739,8 @@ export async function fenceRuntimeAdmission(config, adapters = {}) {
   const releaseAdmission = adapters.releaseRuntimeAdmission ?? releaseRuntimeAdmission;
   const owner = await readRuntimeOwner(config.dataDirectory);
   if (!owner) return { safe: false, reason: "Authenticated runtime owner is unavailable for the admission fence" };
-  const response = await request(`http://127.0.0.1:${owner.port}/api/runtime/quiesce`, {
+  const forceQuery = (config?.force || process.env.BOTFLEET_FORCE === "1") ? "?force=true" : "";
+  const response = await request(`http://127.0.0.1:${owner.port}/api/runtime/quiesce${forceQuery}`, {
     method: "POST",
     headers: { Authorization: `Bearer ${owner.nonce}` },
     accept: [200, 409],
@@ -757,7 +760,8 @@ export async function fenceRuntimeAdmission(config, adapters = {}) {
       };
     }
   };
-  const identityError = authenticatedRuntimeError(runtime, owner, undefined, { requireIdle: true });
+  const requireIdle = !config?.force && process.env.BOTFLEET_FORCE !== "1";
+  const identityError = authenticatedRuntimeError(runtime, owner, undefined, { requireIdle });
   if (identityError || !fenceHeld) {
     return refuseAfterFence(identityError || "Runtime refused the admission fence because work is active");
   }
@@ -1150,6 +1154,7 @@ function createConfig(parsed) {
     gracefulExitMs: Number(process.env.BOTFLEET_GRACEFUL_EXIT_MS || 20_000),
     termExitMs: Number(process.env.BOTFLEET_TERM_EXIT_MS || 20_000),
     startupTimeoutMs: Number(process.env.BOTFLEET_STARTUP_TIMEOUT_MS || 90_000),
+    force: Boolean(parsed.force || process.env.BOTFLEET_FORCE === "1"),
     parsed,
   };
 }

@@ -7,7 +7,7 @@ import {
   type LocalAutoConsentCapability,
 } from "../shared/local-auto-consent.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import {  readFileSync, unlinkSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, appendFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
@@ -270,7 +270,7 @@ import { accessTokenState, hasAccessServiceToken } from "./recall-access.ts";
 import { recallPromptFor } from "./recall-prompt.ts";
 import { findRecallCli, recallStatus } from "./recall-transport.ts";
 import * as vps from "./vps-computer.ts";
-import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
+import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { RoutineRequestError, RoutineRequestService } from "./routine-requests.ts";
 import { fetchBotDirectory, matchDirectoryBots, type MatchedDirectoryBot } from "./bot-directory.ts";
 import { scoutProject, suggestTeam } from "./project-scout.ts";
@@ -2894,6 +2894,9 @@ async function startTurn(
   }
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
+  if (!opts?.automationSource) {
+    routines?.clearBotSnooze(botId);
+  }
   if (providerReloadInProgress) {
     throw Object.assign(new Error("provider settings are being reloaded — retry when the reload finishes"), {
       status: 409,
@@ -6247,19 +6250,198 @@ function beginUpdateAdmission(): (() => void) | null {
   };
 }
 
-function beginRuntimeQuiesce() {
-  const readiness = currentRuntimeReadiness();
-  if (!readiness.safeToRestart) return { ...readiness, quiescing: false };
-  if (!runtimeQuiescing) {
-    // This function has no await before the admission flag.  A request,
-    // scheduler tick, or queue drain cannot enter between the final complete
-    // readiness snapshot and the fence becoming visible to every dispatcher.
-    runtimeQuiescing = true;
-    routines?.stop();
-    resourceTriggers.stop();
-    infisical.stop();
+interface InterruptedBotResumeEntry {
+  botId: string;
+  threadId: string;
+  promptMessageId?: string;
+  promptText?: string;
+}
+
+async function resumeInterruptedChatTurns(
+  entries: InterruptedBotResumeEntry[],
+  context: string,
+) {
+  for (const entry of entries) {
+    try {
+      const resumeBot = entry?.botId ? store.bot(entry.botId) : undefined;
+      const resumeThreadId = entry?.threadId;
+      if (!resumeBot || typeof resumeThreadId !== "string") continue;
+      if (store.groupByThread(resumeThreadId)) {
+        console.log(
+          `[${context}] skipping interrupted room turn for bot ${resumeBot.id} — restart it from the room`,
+        );
+        continue;
+      }
+      const resumeMessages = store.messagesFor(resumeThreadId);
+      const resumePrompt =
+        resumeMessages.find((message) => message.id === entry.promptMessageId) ??
+        [...resumeMessages]
+          .reverse()
+          .find((message) => message.role === "user" && message.kind === "text" && message.text);
+      if (!resumePrompt?.text) {
+        console.log(`[${context}] no resumable prompt for bot ${resumeBot.id} on thread ${resumeThreadId}`);
+        continue;
+      }
+      await startTurn(resumeBot.id, resumePrompt.text, {
+        threadId: resumeThreadId,
+        userMessage: resumeMessages.some((message) => message.id === resumePrompt.id) ? resumePrompt : undefined,
+      });
+      console.log(`[${context}] re-dispatched interrupted turn for bot ${resumeBot.id}`);
+    } catch (err) {
+      console.warn(`[${context}] could not resume interrupted turn:`, err);
+    }
   }
-  return { ...readiness, quiescing: true };
+}
+
+// Undo a forced quiesce that cannot proceed.  A refused update must hand the
+// harness back in working order — requeue the cancelled routine runs, drop the
+// stop latches, re-dispatch interrupted chat turns, discard the resume snapshot
+// (no reboot is coming, and a stale snapshot would corrupt a future update's resume),
+// and restart the schedulers — instead of leaving the runtime fenced and rejecting new
+// turns until a manual unquiesce or restart.
+function rollbackForcedQuiesce(
+  interruptedRuns: RoutineRun[],
+  interruptedBots: InterruptedBotResumeEntry[],
+) {
+  for (const run of interruptedRuns) {
+    try {
+      routines?.requeueRun(run.id);
+    } catch {}
+  }
+  for (const { botId, threadId } of interruptedBots) {
+    stoppedTurns.delete(`${botId}:${threadId}`);
+  }
+  try {
+    unlinkSync(join(DATA_DIR, "pending-update-resume.json"));
+  } catch {}
+  runtimeQuiescing = false;
+  routines?.start();
+  resourceTriggers.start();
+  infisical.start();
+  void resumeInterruptedChatTurns(interruptedBots, "quiesce-rollback");
+}
+
+async function beginRuntimeQuiesce(force = false) {
+  const readiness = currentRuntimeReadiness();
+  if (!force && !readiness.safeToRestart) {
+    return { ...readiness, quiescing: false };
+  }
+  if (runtimeQuiescing) {
+    return { ...readiness, quiescing: true };
+  }
+  if (force) {
+    // Room turns cannot be re-dispatched after an update without duplicating
+    // the transcript (startGroupTurn always appends the prompt), so a live
+    // room turn refuses the forced update outright — before the fence goes up
+    // and before anything is interrupted.
+    const roomTurnActive = store.bots.some(
+      (bot) => bot.busy && store.groupByThread(bot.inflightThreadId ?? bot.threadId),
+    );
+    if (roomTurnActive) {
+      return { ...currentRuntimeReadiness(), quiescing: false };
+    }
+  }
+  runtimeQuiescing = true;
+  routines?.stop();
+  resourceTriggers.stop();
+  infisical.stop();
+
+  if (force) {
+    const interruptedRuns: RoutineRun[] = [];
+    if (routines) {
+      // Cancel queued runs too: a queued run is still counted by
+      // currentRuntimeReadiness, so leaving it in place would make the final
+      // safety check roll the forced update back every time instead of pausing
+      // and resuming it from the snapshot.
+      for (const run of routines.listRuns()) {
+        if (["running", "waiting", "queued"].includes(run.status)) {
+          interruptedRuns.push({ ...run });
+          await routines.cancelRun(run.id).catch(() => {});
+        }
+      }
+    }
+
+    const interruptedBots: InterruptedBotResumeEntry[] = [];
+    for (const bot of store.bots) {
+      if (bot.busy) {
+        const liveThreadId = bot.inflightThreadId ?? bot.threadId;
+        // Routine runs are already captured in interruptedRuns and will be
+        // requeued by the scheduler.  Do not also record them as chat turns,
+        // which would cause the automation to execute twice and repeat side effects.
+        const routineRun = interruptedRuns.some(
+          (run) => run.botId === bot.id || (run.threadId && run.threadId === liveThreadId),
+        );
+        if (routineRun) continue;
+
+        // Enough to re-dispatch the turn after the update: the user message
+        // the interrupted turn was answering.  It is looked up by id at
+        // resume time (with the text as a fallback) and passed back as the
+        // turn's existing message, never re-appended to the transcript.
+        const entry: InterruptedBotResumeEntry = {
+          botId: bot.id,
+          threadId: liveThreadId,
+        };
+        const promptMessage = [...store.messagesFor(liveThreadId)]
+          .reverse()
+          .find((message) => message.role === "user" && message.kind === "text" && message.text);
+        if (promptMessage?.text) {
+          entry.promptMessageId = promptMessage.id;
+          entry.promptText = promptMessage.text;
+        }
+        interruptedBots.push(entry);
+        stoppedTurns.add(`${bot.id}:${liveThreadId}`);
+        await interruptThreadEverywhere(liveThreadId).catch(() => {});
+        closeOpenApprovals(liveThreadId);
+      }
+    }
+
+    if (interruptedRuns.length > 0 || interruptedBots.length > 0) {
+      const resumeSnapshot = {
+        timestamp: Date.now(),
+        interruptedRuns,
+        interruptedBots,
+      };
+      let snapshotSaved = false;
+      try {
+        writeFileSync(join(DATA_DIR, "pending-update-resume.json"), JSON.stringify(resumeSnapshot, null, 2), {
+          mode: 0o600,
+        });
+        snapshotSaved = true;
+      } catch (err) {
+        console.warn("Failed to write pending-update-resume.json:", err);
+      }
+      if (!snapshotSaved) {
+        // The snapshot is the only recovery path for interrupted work, so an
+        // update that cannot persist it must not proceed.  Roll the forced
+        // quiesce back and hand the fence back refused so the updater stands
+        // down.
+        rollbackForcedQuiesce(interruptedRuns, interruptedBots);
+        const abortedReadiness = currentRuntimeReadiness();
+        return { ...abortedReadiness, quiescing: false };
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, 200));
+
+    // Report the actual final safety state.  Forcing interrupts the routines
+    // and busy bots above, but anything else still counted — a queued send, a
+    // completion fold, a provider reload, a VM lifecycle operation — has not
+    // been settled, and claiming safeToRestart here would let the updater kill
+    // the harness mid-operation.  If it has not drained, the update is refused
+    // and the forced quiesce is rolled back: leaving the runtime fenced here
+    // would reject new turns until a manual unquiesce or restart, with no
+    // update coming to relieve it.
+    const finalReadiness = currentRuntimeReadiness();
+    if (!finalReadiness.safeToRestart) {
+      rollbackForcedQuiesce(interruptedRuns, interruptedBots);
+      const rolledBack = currentRuntimeReadiness();
+      return { ...rolledBack, quiescing: false };
+    }
+    return { ...finalReadiness, quiescing: true };
+  }
+
+  const idleReadiness = currentRuntimeReadiness();
+  return { ...idleReadiness, quiescing: true };
 }
 
 function endRuntimeQuiesce() {
@@ -6271,6 +6453,29 @@ function endRuntimeQuiesce() {
     infisical.start();
     routines?.start();
     resourceTriggers.start();
+    const pendingResumePath = join(DATA_DIR, "pending-update-resume.json");
+    if (existsSync(pendingResumePath)) {
+      try {
+        const raw = readFileSync(pendingResumePath, "utf-8");
+        const resumeState = JSON.parse(raw);
+        if (Array.isArray(resumeState.interruptedRuns)) {
+          for (const run of resumeState.interruptedRuns) {
+            if (run?.id) routines?.requeueRun(run.id);
+          }
+        }
+        if (Array.isArray(resumeState.interruptedBots)) {
+          for (const entry of resumeState.interruptedBots) {
+            if (entry?.botId && entry?.threadId) {
+              stoppedTurns.delete(`${entry.botId}:${entry.threadId}`);
+            }
+          }
+          void resumeInterruptedChatTurns(resumeState.interruptedBots, "unquiesce-resume");
+        }
+        unlinkSync(pendingResumePath);
+      } catch (err) {
+        console.warn("[unquiesce] failed to restore resume snapshot:", err);
+      }
+    }
   }
   return { ...currentRuntimeReadiness(), quiescing: false };
 }
@@ -8517,6 +8722,7 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
+      routines?.clearBotSnooze(bot.id);
       const body = await readBody(req);
       const behavior = requestBehavior(body.behavior);
       if (!behavior) return json(res, 400, { error: "behavior must be allow, deny, or answer" });
@@ -8598,13 +8804,47 @@ const server = createServer(async (req, res) => {
       if (expectedThreadId !== undefined && (typeof expectedThreadId !== "string" || !/^[\w-]+$/.test(expectedThreadId))) {
         return json(res, 400, { error: "threadId must be a task id" });
       }
-      const routineRun = routines!.activeRunForBot(bot.id);
-      if (routineRun) {
-        if (expectedThreadId !== undefined && routineRun.threadId !== expectedThreadId) {
-          return json(res, 409, { error: "this bot is running a routine in another conversation" });
+      let stopped = false;
+      let refused = false;
+      // Validate the target thread before mutating anything: a stale Stop
+      // request must not cancel unrelated automation or snooze the bot.  The
+      // live thread is the room thread when the bot is busy in a group,
+      // otherwise the bot's in-flight (or visible) thread.
+      const interruptBusyGroup = store.groups.find((g) => g.busyBotId === bot.id);
+      const interruptLiveThreadId = interruptBusyGroup
+        ? interruptBusyGroup.threadId
+        : (bot.inflightThreadId ?? bot.threadId);
+      if (expectedThreadId !== undefined && interruptLiveThreadId !== expectedThreadId) {
+        return json(res, 409, {
+          error: interruptBusyGroup
+            ? `this bot is working in channel ${interruptBusyGroup.id}`
+            : "the bot switched tasks before it could be interrupted",
+        });
+      }
+      if (routines) {
+        // Validate routine conflicts before mutating anything: cancelling
+        // first and rejecting after would leave the manual turn the user tried
+        // to stop still running while unrelated automation was already
+        // cancelled and the bot snoozed.
+        if (expectedThreadId !== undefined) {
+          const botRuns = routines.listRuns().filter(
+            (run) =>
+              !run.coalescedInto &&
+              run.botId === bot.id &&
+              ["queued", "running", "waiting"].includes(run.status),
+          );
+          const runInOtherThread = botRuns.find((run) => run.threadId && run.threadId !== expectedThreadId);
+          if (runInOtherThread && !botRuns.some((run) => run.threadId === expectedThreadId)) {
+            return json(res, 409, { error: "this bot is running a routine in another conversation" });
+          }
         }
-        await routines!.cancelRun(routineRun.id);
-        return json(res, 200, { ok: true, stopped: true });
+        // Cancel all active and queued routine runs for this bot and snooze automated triggers
+        // so background webhooks and scheduled routines do not restart it.
+        const cancelledRuns = await routines.cancelAllRunsForBot(bot.id);
+        routines.snoozeBot(bot.id);
+        if (cancelledRuns.length > 0) {
+          stopped = true;
+        }
       }
       // Latch the stop before anything is awaited.  The driver may settle the
       // turn the instant it is killed, so the turn.completed fold can run
@@ -8619,23 +8859,16 @@ const server = createServer(async (req, res) => {
         pendingCredentialFallback.delete(turnKey);
         pendingMemberFallback.delete(threadId);
       };
-      let stopped = false;
-      let refused = false;
       // a bot busy in a ROOM is running on the room's thread — stopping it
       // from its own chat must reach that turn, not just the 1:1 thread
-      const busyGroup = store.groups.find((g) => g.busyBotId === bot.id);
+      // (interruptBusyGroup was already validated against expectedThreadId above)
+      const busyGroup = interruptBusyGroup;
       if (busyGroup) {
-        if (expectedThreadId !== undefined && busyGroup.threadId !== expectedThreadId) {
-          return json(res, 409, { error: `this bot is working in channel ${busyGroup.id}` });
-        }
         latchStop(busyGroup.threadId);
         const groupOutcome = await interruptThreadEverywhere(busyGroup.threadId);
         if (groupOutcome.stopped) stopped = true;
         if (groupOutcome.refused) refused = true;
         closeOpenApprovals(busyGroup.threadId);
-      }
-      if (expectedThreadId !== undefined && !busyGroup && bot.threadId !== expectedThreadId) {
-        return json(res, 409, { error: "the bot switched tasks before it could be interrupted" });
       }
       // A turn started on one task keeps running while the user reads another,
       // so the live thread — not the visible one — is what has to be stopped.
@@ -9012,11 +9245,18 @@ const server = createServer(async (req, res) => {
       if (!isLoopbackAddress(req.socket.remoteAddress) || !authorizedRuntime(harnessOwner, req.headers.authorization)) {
         return json(res, 401, { error: "unauthorized" });
       }
+      let force = url.searchParams.get("force") === "1" || url.searchParams.get("force") === "true";
+      if (!force && method === "POST" && req.headers["content-type"]?.includes("application/json")) {
+        try {
+          const body = await readBody(req);
+          if (body?.force === true) force = true;
+        } catch {}
+      }
       const readiness = path !== "/api/runtime/quiesce"
         ? currentRuntimeReadiness()
         : method === "DELETE"
           ? endRuntimeQuiesce()
-          : beginRuntimeQuiesce();
+          : await beginRuntimeQuiesce(force);
       const refused = method === "POST" && path === "/api/runtime/quiesce" && !readiness.safeToRestart;
       return json(res, refused ? 409 : 200, {
         ...runtimeBuildIdentity, pid: process.pid, ...readiness,
@@ -10678,6 +10918,37 @@ resourceTriggers.start();
 if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   enableQuotaCooldownPersist(join(DATA_DIR, "quota-cooldowns.json"));
   startAntigravityQuotaPoller();
+}
+
+// Post-update resumption: If an update quiesced active work and rebooted successfully,
+// clear all bot snoozes, requeue interrupted runs, and resume routines on this new build.
+const pendingResumePath = join(DATA_DIR, "pending-update-resume.json");
+if (existsSync(pendingResumePath)) {
+  try {
+    const raw = readFileSync(pendingResumePath, "utf-8");
+    const resumeState = JSON.parse(raw);
+    console.log("[update-resume] Found pending update resume snapshot — requeuing runs");
+    // NB: bot snoozes are deliberately left alone.  The forced quiesce path
+    // never creates snoozes — it cancels routine runs and latches chat turns
+    // directly — so any snooze on disk is an unrelated manual stop that must
+    // survive the update.
+    if (Array.isArray(resumeState.interruptedRuns)) {
+      for (const run of resumeState.interruptedRuns) {
+        if (run?.id) routines?.requeueRun(run.id);
+      }
+    }
+    // Re-dispatch the chat turns a forced update interrupted, so the
+    // "pause & install" promise holds: work pauses, then resumes.  The turn
+    // re-runs from the user message it was answering, passed back as the
+    // turn's existing message so the transcript is not duplicated.
+    if (Array.isArray(resumeState.interruptedBots)) {
+      await resumeInterruptedChatTurns(resumeState.interruptedBots, "update-resume");
+    }
+    unlinkSync(pendingResumePath);
+    queueMicrotask(() => routines?.tick());
+  } catch (err) {
+    console.warn("[update-resume] Error processing pending resume file:", err);
+  }
 }
 
 server.on("error", (error: NodeJS.ErrnoException) => {

@@ -167,6 +167,9 @@ interface RoutineFile {
   runs: RoutineRun[];
   /** Durable commit receipts for cross-file confirmation recovery. */
   routineRequestReceipts?: RoutineRequestReceipt[];
+  /** Manual bot snoozes, keyed by bot id.  `null` is an indefinite snooze
+   * (Infinity is not valid JSON); a number is the epoch-ms expiry. */
+  botSnoozes?: Record<string, number | null>;
 }
 
 export type RoutineRequestOwner = Pick<RoutineRequestReceipt, "requestId" | "messageId" | "botId" | "threadId">;
@@ -341,6 +344,9 @@ export class RoutineManager {
    * during the quiet period does not sit until the next periodic tick. */
   private gapWake: ReturnType<typeof setTimeout> | null = null;
   private gapWakeAt = 0;
+  /** When a user manually interrupts/stops a bot, automated runs for that bot
+   * are snoozed so background webhooks and routines do not restart it. */
+  private readonly botSnoozeUntil = new Map<string, number>();
 
   constructor(options: RoutineManagerOptions) {
     this.options = options;
@@ -367,6 +373,18 @@ export class RoutineManager {
             Number.isFinite(receipt?.appliedAt)
           )
         : [];
+      // Manual snoozes survive restarts: a crash or relaunch must not clear
+      // a user's explicit stop and let the next schedule or webhook restart
+      // the bot.  Expired finite snoozes are dropped, not revived.
+      if (disk.botSnoozes) {
+        for (const [botId, until] of Object.entries(disk.botSnoozes)) {
+          if (until === null) {
+            this.botSnoozeUntil.set(botId, Infinity);
+          } else if (typeof until === "number" && Number.isFinite(until) && until > this.now()) {
+            this.botSnoozeUntil.set(botId, until);
+          }
+        }
+      }
     } catch {
       this.routines = [];
       this.runs = [];
@@ -416,6 +434,67 @@ export class RoutineManager {
       (candidate) => !candidate.coalescedInto && candidate.botId === botId && ["running", "waiting"].includes(candidate.status),
     );
     return run ? { ...run } : null;
+  }
+
+  snoozeBot(botId: string, durationMs = Infinity): void {
+    this.botSnoozeUntil.set(botId, durationMs === Infinity ? Infinity : this.now() + durationMs);
+    this.save();
+  }
+
+  clearBotSnooze(botId: string): void {
+    if (this.botSnoozeUntil.delete(botId)) this.save();
+  }
+
+  clearAllBotSnoozes(): void {
+    if (this.botSnoozeUntil.size > 0) {
+      this.botSnoozeUntil.clear();
+      this.save();
+    }
+  }
+
+  isBotSnoozed(botId: string): boolean {
+    const until = this.botSnoozeUntil.get(botId);
+    if (!until) return false;
+    if (until !== Infinity && this.now() >= until) {
+      this.botSnoozeUntil.delete(botId);
+      return false;
+    }
+    return true;
+  }
+
+  requeueRun(runId: string): boolean {
+    const run = this.runs.find((candidate) => candidate.id === runId);
+    if (run && ["cancelled", "running", "waiting"].includes(run.status)) {
+      run.status = "queued";
+      run.outcomeCode = undefined;
+      run.failurePhase = undefined;
+      run.finishedAt = undefined;
+      this.save();
+      this.emitRun(run);
+      return true;
+    }
+    return false;
+  }
+
+  async cancelAllRunsForBot(botId: string): Promise<RoutineRun[]> {
+    const cancelled: RoutineRun[] = [];
+    for (const run of this.runs) {
+      if (!run.coalescedInto && run.botId === botId && ["queued", "running", "waiting"].includes(run.status)) {
+        run.status = "cancelled";
+        run.outcomeCode = "cancelled";
+        run.failurePhase = "lifecycle";
+        run.finishedAt = this.now();
+        this.emitRun(run);
+        if (run.threadId) {
+          await this.options.interruptTurn?.(run.botId, run.threadId, run.runOn ?? "maus").catch(() => {});
+        }
+        cancelled.push({ ...run });
+      }
+    }
+    if (cancelled.length > 0) {
+      this.save();
+    }
+    return cancelled;
   }
 
   routineRequestReceipt(requestId: string): RoutineRequestReceipt | null {
@@ -624,6 +703,7 @@ export class RoutineManager {
     }
     const routine = this.routines.find((r) => r.id === id);
     if (!routine) return null;
+    this.clearBotSnooze(routine.botId);
     let run!: RoutineRun;
     this.commitMutation(() => {
       run = this.newRun(routine, this.now(), true);
@@ -650,6 +730,7 @@ export class RoutineManager {
     if (this.options.botState(input.botId) === "missing") {
       throw Object.assign(new Error("The assigned MAUS no longer exists"), { status: 410 });
     }
+    const snoozed = this.isBotSnoozed(input.botId);
     const run: RoutineRun = {
       id: randomUUID(),
       routineId: input.webhookId,
@@ -658,7 +739,10 @@ export class RoutineManager {
       botId: input.botId,
       runOn: input.runOn,
       scheduledFor: input.receivedAt,
-      status: "queued",
+      status: snoozed ? "cancelled" : "queued",
+      outcomeCode: snoozed ? "cancelled" : undefined,
+      failurePhase: snoozed ? "lifecycle" : undefined,
+      finishedAt: snoozed ? this.now() : undefined,
       manual: false,
       triggerSource: "webhook",
       webhookId: input.webhookId,
@@ -668,7 +752,9 @@ export class RoutineManager {
     this.runs.push(run);
     this.save();
     this.emitRun(run);
-    queueMicrotask(() => void this.tick());
+    if (!snoozed) {
+      queueMicrotask(() => void this.tick());
+    }
     return { ...run };
   }
 
@@ -686,6 +772,7 @@ export class RoutineManager {
     if (this.options.botState(input.botId) === "missing") {
       throw Object.assign(new Error("The assigned MAUS no longer exists"), { status: 410 });
     }
+    const snoozed = this.isBotSnoozed(input.botId);
     const run: RoutineRun = {
       id: randomUUID(),
       routineId: input.triggerId,
@@ -694,7 +781,10 @@ export class RoutineManager {
       botId: input.botId,
       runOn: input.runOn,
       scheduledFor: input.receivedAt,
-      status: "queued",
+      status: snoozed ? "cancelled" : "queued",
+      outcomeCode: snoozed ? "cancelled" : undefined,
+      failurePhase: snoozed ? "lifecycle" : undefined,
+      finishedAt: snoozed ? this.now() : undefined,
       manual: false,
       triggerSource: "resource",
       webhookId: input.triggerId,
@@ -704,7 +794,9 @@ export class RoutineManager {
     this.runs.push(run);
     this.save();
     this.emitRun(run);
-    queueMicrotask(() => void this.tick());
+    if (!snoozed) {
+      queueMicrotask(() => void this.tick());
+    }
     return { ...run };
   }
 
@@ -796,7 +888,7 @@ export class RoutineManager {
       this.reconcileOrphanedRuns(now);
       let changed = false;
       for (const routine of this.routines) {
-        if (!routine.enabled || routine.nextRunAt == null || routine.nextRunAt > now) continue;
+        if (!routine.enabled || routine.nextRunAt == null || routine.nextRunAt > now || this.isBotSnoozed(routine.botId)) continue;
         const scheduledFor = routine.nextRunAt;
         const late = now - scheduledFor;
         if (late > CATCH_UP_MS) {
@@ -822,6 +914,7 @@ export class RoutineManager {
 
       for (const run of [...this.runs].reverse()) {
         if (run.status !== "queued") continue;
+        if (this.isBotSnoozed(run.botId)) continue;
         const state = this.options.botState(run.botId);
         if (state === "busy") continue;
         if (state === "missing") {
@@ -1213,11 +1306,23 @@ export class RoutineManager {
     boundStalePromptSnapshots(this.runs, PROMPT_SNAPSHOT_LIMIT, receiptResultIds);
     mkdirSync(dirname(this.file), { recursive: true });
     const temp = `${this.file}.tmp`;
+    const now = this.now();
+    const botSnoozes: Record<string, number | null> = {};
+    for (const [botId, until] of this.botSnoozeUntil) {
+      if (until === Infinity) {
+        botSnoozes[botId] = null;
+      } else if (until > now) {
+        botSnoozes[botId] = until;
+      } else {
+        this.botSnoozeUntil.delete(botId);
+      }
+    }
     writeFileSync(temp, JSON.stringify({
       version: 1,
       routines: this.routines,
       runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts,
+      ...(Object.keys(botSnoozes).length > 0 ? { botSnoozes } : {}),
     } satisfies RoutineFile, null, 2));
     renameSync(temp, this.file);
   }
