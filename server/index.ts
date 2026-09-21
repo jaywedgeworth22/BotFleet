@@ -4423,6 +4423,16 @@ async function runGroupMemberTurn(
     ? group.threadId === threadId
     : Boolean(group && store.groupTaskByThread(group.id, threadId));
   if (!group || !bot || !ownsThread) return false;
+  if (cardContinuation === undefined && hop === 0) {
+    // A person started this room round — the room-lane mirror of startTurn's
+    // clearUnattended on a typed 1:1 message.  The unattended mark survives
+    // for 30 minutes after a webhook/resource turn, so without this a human
+    // room message in that window would inherit "unattended" and wrongly
+    // lose the driver's autoApprove bypass (or worse, be treated as a turn
+    // nobody is watching).  Automated rounds — card continuations, resumes,
+    // bot-to-bot chains — keep the mark they arrived with.
+    clearUnattended(bot.id);
+  }
   if (providerReloadInProgress) {
     queueRoomRound({ groupId: group.id, threadId, botId: bot.id, hop, cardContinuation, turnSelection }, Date.now());
     return true;
