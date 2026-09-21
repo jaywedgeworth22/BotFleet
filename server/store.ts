@@ -460,6 +460,7 @@ export interface BotRecord {
   /** Derived from `activity` — kept so the 200+ readers across the app and
    * tests keep working unchanged. Write through setActivity(), never here. */
   busy?: boolean;
+  activityStartedAt?: number;
   /** What the bot is doing right now, as the harness sees it. `busy` alone
    * could not tell working from waiting-on-you from a stalled engine.
    * Transient like busy: reset to idle on load. */
@@ -1485,6 +1486,7 @@ export class Store {
     if (bot.activity === activity && Boolean(bot.busy) === busy) return bot;
     bot.activity = activity;
     bot.busy = busy;
+    bot.activityStartedAt = Date.now();
     this.saveBots();
     this.emit({ type: "bot", botId });
     return bot;

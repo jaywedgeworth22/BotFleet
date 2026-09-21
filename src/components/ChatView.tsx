@@ -1526,6 +1526,7 @@ export function ChatView({ bot }: { bot: Bot }) {
               />
             }
             visible={presenceVisible}
+            startedAt={bot.activityStartedAt}
             label={activityLabel}
             answering={popping !== null || Boolean(streaming)}
             modelMark={presenceModel ? <ProviderMark driverKind={presenceModel.driverKind} size={14} /> : undefined}
