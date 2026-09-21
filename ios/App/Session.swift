@@ -1300,6 +1300,17 @@ final class Session: ObservableObject {
         }
     }
 
+    /// Ask the paired Mac to open or unhide the BotFleet desktop app.
+    func openDesktopApp() async throws {
+        guard let client else { throw APIError.transport("This computer is not paired.") }
+        do {
+            try await client.openDesktopApp()
+        } catch let error as APIError where error.isUnauthorized {
+            status = .unauthorized
+            throw error
+        }
+    }
+
     func markRead(_ chat: Chat) async {
         await perform(quietly: true) {
             switch chat {

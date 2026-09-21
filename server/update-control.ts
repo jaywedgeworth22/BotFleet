@@ -191,6 +191,7 @@ export interface LaunchPlan {
    * PATH, which on this Mac does not include Homebrew — so the wrapper's
    * `exec node` would not resolve without it. */
   nodeDirectory: string;
+  force?: boolean;
 }
 
 export interface LaunchResult {
@@ -635,9 +636,10 @@ export function pruneRunArtifacts(runsDirectory: string, options: {
  * do anything a second time under a run id that already has an outcome. */
 export function launchPlanCommand(plan: LaunchPlan): { command: string; args: string[] } {
   const quote = (value: string) => `'${value.split("'").join(`'\\''`)}'`;
+  const forceArg = plan.force ? " --force" : "";
   const script = [
     `export PATH=${quote(plan.nodeDirectory)}:"$PATH"`,
-    `exec /bin/bash ${quote(plan.scriptPath)} --progress ${quote(plan.progressPath)} --run-id ${quote(plan.runId)}`,
+    `exec /bin/bash ${quote(plan.scriptPath)} --progress ${quote(plan.progressPath)} --run-id ${quote(plan.runId)}${forceArg}`,
   ].join("\n");
   return {
     command: "/bin/launchctl",
@@ -724,7 +726,7 @@ async function defaultLaunch(plan: LaunchPlan): Promise<LaunchResult> {
   try {
     const child = spawn(
       "/bin/bash",
-      [plan.scriptPath, "--progress", plan.progressPath, "--run-id", plan.runId],
+      [plan.scriptPath, "--progress", plan.progressPath, "--run-id", plan.runId, ...(plan.force ? ["--force"] : [])],
       {
         detached: true,
         stdio: ["ignore", log, log],
@@ -1423,6 +1425,7 @@ export function createUpdateControl(overrides: Partial<UpdateControlDeps> = {}):
         scriptPath: deps.scriptPath,
         label: deps.label,
         nodeDirectory: deps.nodeDirectory,
+        force,
       });
     } catch (error) {
       // Nothing started, so the record must not outlive the attempt.

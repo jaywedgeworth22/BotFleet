@@ -706,7 +706,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                     (mode === "off"
                       ? bot.computers !== undefined && bot.computers.length === 0
                       : (bot.computers ?? []).includes(mode as any))
-                      ? "bg-control text-ink"
+                      ? "bg-control text-ink font-medium"
                       : "text-ink-secondary hover:bg-control/60 hover:text-ink",
                   )}
                 >
@@ -726,7 +726,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
               ))}
             {(bot.computers ?? []).length > 1 && (
               <div className="mt-3 rounded-lg bg-inset px-3 py-2.5 text-[11.5px] text-ink-secondary">
-                This bot has {(bot.computers ?? []).length} computers and its own tools for each. It picks per task,
+                This bot has {(bot.computers ?? []).length} computers and its own tools for each.  It picks per task,
                 preferring a remote desktop and using this computer only when the work genuinely needs it.
               </div>
             )}
@@ -743,7 +743,7 @@ export function SettingsPanel({ bot }: { bot: Bot }) {
                     <div className="min-w-0">
                       <div className="text-[13px] text-ink">Start VPS automatically</div>
                       <div className="mt-0.5 text-[11.5px] text-ink-secondary">
-                        Allow Auto to create or wake this bot's managed container when needed.
+                        Off by default.  When enabled, Auto may create or wake this bot's managed container.
                       </div>
                     </div>
                     <button

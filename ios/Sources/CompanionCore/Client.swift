@@ -1156,6 +1156,13 @@ public struct CompanionClient: Sendable {
         try await send(try makeRequest("POST", "/api/groups/\(roomId)/read"))
     }
 
+    // MARK: - Mac desktop
+
+    /// Ask the paired Mac to open or bring to front the BotFleet desktop app.
+    public func openDesktopApp() async throws {
+        try await send(try makeRequest("POST", "/api/desktop/open", body: [:]))
+    }
+
     // MARK: - Mac update
 
     /// The paired Mac's current update status: installed build, anything

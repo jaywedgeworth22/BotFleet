@@ -832,6 +832,8 @@ describe("Antigravity host control", () => {
      * the child can tell the turn's own cleanup from the instance teardown
      * reaping whatever was left over. */
     beforeDispose?: () => Promise<void>,
+    autoApprove?: boolean,
+    unattended?: boolean,
   ) => {
     const dump = join(home, `${name}.json`);
     const instance = await AntigravityDriver.create({
@@ -843,7 +845,7 @@ describe("Antigravity host control", () => {
     });
     const recorder = recordEvents(instance.adapter);
     try {
-      await instance.adapter.sendTurn({ threadId: `t-host-${name}`, text: "hi", integrations });
+      await instance.adapter.sendTurn({ threadId: `t-host-${name}`, text: "hi", integrations, autoApprove, unattended });
       await recorder.until((e) => e.type === "turn.completed");
       if (beforeDispose) await beforeDispose();
       return {
@@ -868,6 +870,37 @@ describe("Antigravity host control", () => {
     // The named-mount array startTurn writes today reaches the same guard.
     const viaComputers = await runTurn("host-computers", true, hostComputersIntegrations);
     expect(viaComputers.argv).not.toContain("--dangerously-skip-permissions");
+  });
+
+  it("retains the permission bypass on host control when turn has autoApprove: true", async () => {
+    // When the operator explicitly sets autoApprove on the bot, the turn is
+    // authorized to run autonomously without interactive approval cards.
+    const host = await runTurn("host-auto-approved", false, hostIntegrations, {}, undefined, true);
+    expect(host.argv).toContain("--dangerously-skip-permissions");
+    expect(host.argv).not.toContain("--mode");
+    expect(
+      host.events.some((e) => (e as any).title === ANTIGRAVITY_HOST_CONTROL_NOTICE),
+    ).toBe(false);
+  });
+
+  it("does not let bot-level autoApprove flip the bypass for a non-host turn", async () => {
+    // autoApprove is scoped to host-control turns.  A bot with Auto Mode on
+    // running in a sandbox/cloud/VM turn must not bypass the permission
+    // broker unless the engine-level fullAuto switch is on (see P1 review).
+    const sandbox = await runTurn("sandbox-auto-approved", false, sandboxIntegrations, {}, undefined, true);
+    expect(sandbox.argv).not.toContain("--dangerously-skip-permissions");
+    const mode = sandbox.argv.indexOf("--mode");
+    expect(sandbox.argv.slice(mode, mode + 2)).toEqual(["--mode", "accept-edits"]);
+  });
+
+  it("withholds the bypass for an unattended host-control turn even with autoApprove", async () => {
+    // A webhook/resource turn begins with nobody watching: it must not
+    // inherit Auto Mode, so no --dangerously-skip-permissions even though
+    // the bot has autoApprove on and controls the host.
+    const host = await runTurn("host-unattended", false, hostIntegrations, {}, undefined, true, true);
+    expect(host.argv).not.toContain("--dangerously-skip-permissions");
+    const mode = host.argv.indexOf("--mode");
+    expect(host.argv.slice(mode, mode + 2)).toEqual(["--mode", "accept-edits"]);
   });
 
   it("leaves a full-auto turn alone when no host computer is mounted", async () => {
@@ -1126,6 +1159,30 @@ describe("Antigravity host control", () => {
     expect(existsSync(marker)).toBe(true);
     expect(
       sandbox.events.some((e) => (e as any).title === ANTIGRAVITY_HOST_CONTROL_NOTICE),
+    ).toBe(false);
+  });
+
+  it("runs a host-control turn under always-proceed when turn has autoApprove: true", async () => {
+    // When the operator configured autoApprove: true on the bot, always-proceed
+    // is expected rather than an unbrokered hazard.  The turn must run to
+    // completion without being killed by the policy guard.
+    const marker = join(home, "auto-approved-always-proceed-ran");
+    const host = await runTurn(
+      "auto-approved-always-proceed",
+      false,
+      hostIntegrations,
+      {
+        FAKE_AGY_PERMISSION_MODE: "always-proceed",
+        FAKE_AGY_TOOL_MARKER: marker,
+      },
+      undefined,
+      true,
+    );
+    expect(host.events.filter((e) => e.type === "turn.completed")[0]).toMatchObject({ ok: true });
+    expect(host.events.some((e) => e.type === "runtime.error")).toBe(false);
+    expect(existsSync(marker)).toBe(true);
+    expect(
+      host.events.some((e) => (e as any).title === ANTIGRAVITY_HOST_CONTROL_NOTICE),
     ).toBe(false);
   });
 });

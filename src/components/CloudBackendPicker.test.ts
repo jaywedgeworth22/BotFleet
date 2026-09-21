@@ -8,14 +8,14 @@ import { CloudBackendPicker } from "./CloudBackendPicker";
 const markup = (props: Parameters<typeof CloudBackendPicker>[0]) =>
   renderToStaticMarkup(createElement(CloudBackendPicker, props));
 
-/** The lit segment, read the way a person reads it: `bg-raised` is the class
+/** The lit segment, read the way a person reads it: `bg-control` is the class
  * the selected button carries and the unselected one does not. */
 const litSegment = (html: string): "box" | "vps" | null => {
   const buttons = html.match(/<button[^>]*>(?:(?!<\/button>).)*<\/button>/gs) ?? [];
-  const lit = buttons.filter((b) => b.includes("bg-raised ") || /class="[^"]*bg-raised"/.test(b));
+  const lit = buttons.filter((b) => b.includes("bg-control ") || /class="[^"]*bg-control"/.test(b));
   if (lit.length !== 1) return null;
   if (lit[0].includes("Self-hosted VPS")) return "vps";
-  return lit[0].includes(">Box<") ? "box" : null;
+  return lit[0].includes(">ASCII.dev Box<") || lit[0].includes(">Box<") ? "box" : null;
 };
 
 const base = { vpsSupported: true, onChange: () => {} };
@@ -41,7 +41,7 @@ describe("CloudBackendPicker", () => {
   it("says the choice is inherited, and that picking pins it", () => {
     const html = markup({ ...base, value: "vps", inherited: true });
     expect(html).toContain("has not chosen one");
-    expect(html).toContain("App Settings → Local VM");
+    expect(html).toContain("App Settings → Computers");
     expect(html).toContain("stops following");
   });
 
@@ -56,7 +56,7 @@ describe("CloudBackendPicker", () => {
     // Shipped copy renders in HTML, so the gap has to be a character the
     // renderer keeps rather than two spaces it collapses.
     const html = markup({ ...base, value: "box", inherited: true });
-    expect(html).toContain("Local VM.  Picking");
+    expect(html).toContain("Computers.  Picking");
   });
 
   it("lights VPS while disabling it, for an inheriting bot on an engine that cannot drive one", () => {

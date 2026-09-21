@@ -102,6 +102,26 @@ describe("turnProducedAssistantOutput", () => {
     expect(turnProducedAssistantOutput([{ role: "bot", kind: "screen" }])).toBe(false);
   });
 
+  it("never counts a notice chip or Antigravity host control notice as produced output", () => {
+    expect(
+      turnProducedAssistantOutput([
+        { role: "bot", kind: "activity", tool: { name: "notice", ok: true, kind: "notice" } },
+      ]),
+    ).toBe(false);
+    expect(
+      turnProducedAssistantOutput([
+        {
+          role: "bot",
+          kind: "activity",
+          tool: {
+            name: "Antigravity has no approval cards, so BotFleet checks its tool execution policy instead.  A policy that would run shell commands on this computer unasked stops the turn.",
+            ok: true,
+          },
+        },
+      ]),
+    ).toBe(false);
+  });
+
   it("successful text reply does not fail over", () => {
     const afterUser: FallbackScanMessage[] = [{ role: "bot", kind: "text", text: "Here you go." }];
     expect(turnProducedAssistantOutput(afterUser)).toBe(true);

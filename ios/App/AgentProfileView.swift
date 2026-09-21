@@ -57,10 +57,42 @@ struct AgentProfileView: View {
     private var voiceConfigured: Bool { config?.isTTSConfigured == true }
     private var hasWorkspaceDefaultVoice: Bool { config?.hasWorkspaceDefaultVoice == true }
     private var selectedVoiceCanSpeak: Bool { config?.canSpeak(agentVoice: voice) == true }
-    /// Which engine's words to use. An unloaded status is ElevenLabs for the
-    /// same reason a missing `provider` is: that is the server's own fallback,
-    /// and the copy that shipped.
-    private var usesSystemVoices: Bool { config?.voiceProvider == .system }
+    private var voiceProvider: VoiceProvider { config?.voiceProvider ?? .minimax }
+
+    private var unavailableVoiceLabel: String {
+        switch voiceProvider {
+        case .minimax: return "MiniMax voice is not configured"
+        case .elevenlabs: return "ElevenLabs is not configured"
+        case .system: return "Built-in Mac voices are unavailable"
+        case .unknown: return "Voice is not configured"
+        }
+    }
+
+    private var unavailableVoiceGuidance: String {
+        switch voiceProvider {
+        case .minimax:
+            return "Add the shared MiniMax key in this agent's profile on the computer. The key is never returned to iOS."
+        case .elevenlabs:
+            return "Add the shared ElevenLabs key in this agent's profile on the computer. The key is never returned to iOS."
+        case .system:
+            return "Built-in Mac voices need no key, and this computer has none available. Switch the voice engine in this agent's profile on the computer to keep using voice."
+        case .unknown:
+            return "Configure the selected voice engine in this agent's profile on the computer. Provider keys are never returned to iOS."
+        }
+    }
+
+    private var missingDefaultVoiceGuidance: String {
+        switch voiceProvider {
+        case .minimax:
+            return "No workspace default voice is selected. Choose an agent-specific voice above; synthesis still uses the shared MiniMax key on your computer."
+        case .elevenlabs:
+            return "No workspace default voice is selected. Choose an agent-specific voice above; synthesis still uses the shared ElevenLabs key on your computer."
+        case .system:
+            return "No workspace default voice is selected. Choose an agent-specific voice above; synthesis still uses the built-in Mac voices on your computer."
+        case .unknown:
+            return "No workspace default voice is selected. Choose an agent-specific voice above; synthesis still uses the selected voice engine on your computer."
+        }
+    }
 
     var body: some View {
         NavigationStack {
@@ -256,28 +288,17 @@ struct AgentProfileView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.secondary)
                         }
-                    } else if usesSystemVoices {
-                        Label("Built-in Mac voices are unavailable", systemImage: "speaker.slash")
-                            .foregroundStyle(.secondary)
                     } else {
-                        Label("ElevenLabs is not configured", systemImage: "speaker.slash")
+                        Label(unavailableVoiceLabel, systemImage: "speaker.slash")
                             .foregroundStyle(.secondary)
                     }
                 } header: {
                     Text("Voice")
                 } footer: {
                     if !voiceConfigured {
-                        if usesSystemVoices {
-                            Text("Built-in Mac voices need no key, and this computer has none available. Switch the voice engine to ElevenLabs in this agent's profile on the computer to keep using voice.")
-                        } else {
-                            Text("Add the shared ElevenLabs key in this agent's profile on the computer. The key is never returned to iOS.")
-                        }
+                        Text(unavailableVoiceGuidance)
                     } else if !hasWorkspaceDefaultVoice {
-                        if usesSystemVoices {
-                            Text("No workspace default voice is selected. Choose an agent-specific voice above; synthesis still uses the built-in Mac voices on your computer.")
-                        } else {
-                            Text("No workspace default voice is selected. Choose an agent-specific voice above; synthesis still uses the shared ElevenLabs key on your computer.")
-                        }
+                        Text(missingDefaultVoiceGuidance)
                     } else {
                         Text("The voice choice belongs to this agent. Workspace default uses the shared voice selected on your computer.")
                     }
