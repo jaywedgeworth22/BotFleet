@@ -73,15 +73,13 @@ export function describeVoice(cfg: AppConfig) {
   };
 }
 
-export function verifyKey(key: string) {
+export function verifyKey(key: string, cfg: AppConfig) {
   // Key verification probes a real endpoint, so it has to choose the
-  // active provider.  In practice verifyKey is only ever called from the
-  // settings patch handler when the operator saves a fresh key, and the
-  // panel already knows which provider is selected; the active cfg is
-  // always available.  We default to MiniMax here because that is what
-  // the engine-picker routes to; an ElevenLabs key still works against
-  // /v1/models on the ElevenLabs host if MiniMax happens to be the
-  // configured provider, the call returns 401 with a precise message.
+  // active provider.  The caller passes the new cfg that the patch is
+  // about to land — voiceProvider() resolves against that, so pasting an
+  // ElevenLabs key while switching providers still validates against the
+  // right service.
+  if (voiceProvider(cfg) === "elevenlabs") return elevenlabs.verifyKey(key);
   return minimax.verifyKey(key);
 }
 
