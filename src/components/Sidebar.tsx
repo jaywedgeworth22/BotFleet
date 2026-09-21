@@ -1,6 +1,7 @@
 import { track } from "@/lib/analytics";
 import {
   availableLabel,
+  installBlockedBusy,
   installBlockedReason,
   installBlockedReasonDetail,
   mayUseLegacyLocalUpdate,
@@ -157,18 +158,20 @@ function UpdateButton() {
     // change, so it read as dead.  It says why instead, and stays down.
     const blockedReason = installBlockedReason(harnessStatus);
     const blockedReasonDetail = installBlockedReasonDetail(harnessStatus);
+    const isBusyBlocked = installBlockedBusy(harnessStatus);
+    const isBlocked = blockedReason !== null && !isBusyBlocked;
     const label = harnessRunning
       ? runningLabel(harnessRunning)
       : harnessAvailable
-        ? `${availableLabel(harnessStatus)} — ${blockedReason ?? "install"}`
+        ? `${availableLabel(harnessStatus)} — ${isBusyBlocked ? "pause & install" : (blockedReason ?? "install")}`
         : upToDate
           ? "You're up to date"
           : "Check for Updates";
     // The harness's own diagnostic sentence behind a mapped reason, for the
     // hover only — the label above stays short.  Falls back to the label
     // itself when there is nothing extra to say.
-    const tooltip = harnessAvailable && blockedReasonDetail
-      ? `${availableLabel(harnessStatus)} — ${blockedReasonDetail}`
+    const tooltip = harnessAvailable && (isBusyBlocked ? "Active work will pause and resume after update" : blockedReasonDetail)
+      ? `${availableLabel(harnessStatus)} — ${isBusyBlocked ? "Active work will pause and resume after update" : blockedReasonDetail}`
       : label;
     return (
       // The title rides on the wrapper: a disabled button is not hovered, so
@@ -177,11 +180,11 @@ function UpdateButton() {
         <button
           onClick={() => {
             if (harnessRunning) return;
-            if (harnessAvailable) return void local.install();
+            if (harnessAvailable) return void local.install({ force: true });
             setCheckedAt(Date.now());
             void local.check();
           }}
-          disabled={busy || blockedReason !== null || !harnessStatus.capabilities.canCheck}
+          disabled={busy || isBlocked || !harnessStatus.capabilities.canCheck}
           aria-label={label}
           className="relative flex size-10 items-center justify-center rounded-md text-accent hover:bg-raised disabled:opacity-60"
         >

@@ -1152,4 +1152,148 @@ describe("RoutineManager", () => {
     expect(h.started).toHaveLength(1);
     expect(h.manager.listRuns()[0]).toMatchObject({ status: "running", scheduledFor: lateAt });
   });
+
+  describe("bot snooze and cancellation", () => {
+    it("snoozes a bot and prevents routine dispatch while snoozed", async () => {
+      const h = harness();
+      const routine = h.manager.create({
+        name: "Compiler check",
+        prompt: "Check compiler status",
+        botId: "compiler-bot",
+        schedule: { type: "daily", time: "09:00", weekdays: [0, 1, 2, 3, 4, 5, 6] },
+      });
+      h.manager.snoozeBot("compiler-bot");
+      expect(h.manager.isBotSnoozed("compiler-bot")).toBe(true);
+
+      h.setNow(routine.nextRunAt! + 1000);
+      await h.manager.tick();
+      expect(h.started).toHaveLength(0);
+      expect(h.manager.listRuns()).toHaveLength(0);
+
+      h.manager.clearBotSnooze("compiler-bot");
+      expect(h.manager.isBotSnoozed("compiler-bot")).toBe(false);
+      await h.manager.tick();
+      expect(h.started).toHaveLength(1);
+      expect(h.manager.listRuns()[0]).toMatchObject({ status: "running", botId: "compiler-bot" });
+    });
+
+    it("cancels all queued, running, and waiting runs for a bot", async () => {
+      const h = harness();
+      const r1 = h.manager.enqueueWebhook({
+        webhookId: "wh-1",
+        webhookName: "Hook 1",
+        prompt: "Run 1",
+        botId: "compiler-bot",
+        runOn: "maus",
+        deliveryId: "del-1",
+        receivedAt: Date.now(),
+      });
+      const r2 = h.manager.enqueueWebhook({
+        webhookId: "wh-2",
+        webhookName: "Hook 2",
+        prompt: "Run 2",
+        botId: "compiler-bot",
+        runOn: "maus",
+        deliveryId: "del-2",
+        receivedAt: Date.now(),
+      });
+      const rOther = h.manager.enqueueWebhook({
+        webhookId: "wh-3",
+        webhookName: "Hook 3",
+        prompt: "Run Other",
+        botId: "other-bot",
+        runOn: "maus",
+        deliveryId: "del-3",
+        receivedAt: Date.now(),
+      });
+
+      expect(h.manager.listRuns().filter((r) => r.botId === "compiler-bot" && ["queued", "running"].includes(r.status))).toHaveLength(2);
+
+      const cancelled = await h.manager.cancelAllRunsForBot("compiler-bot");
+      expect(cancelled).toHaveLength(2);
+      expect(cancelled.map((r) => r.id)).toEqual([r1.id, r2.id]);
+      expect(h.manager.listRuns().find((r) => r.id === r1.id)?.status).toBe("cancelled");
+      expect(h.manager.listRuns().find((r) => r.id === r2.id)?.status).toBe("cancelled");
+      expect(h.manager.listRuns().find((r) => r.id === rOther.id)?.status).not.toBe("cancelled");
+    });
+
+    it("marks newly incoming webhooks and resource triggers as cancelled if bot is snoozed", () => {
+      const h = harness();
+      h.manager.snoozeBot("compiler-bot");
+
+      const webhookRun = h.manager.enqueueWebhook({
+        webhookId: "wh-1",
+        webhookName: "Hook 1",
+        prompt: "Run while snoozed",
+        botId: "compiler-bot",
+        runOn: "maus",
+        deliveryId: "del-1",
+        receivedAt: Date.now(),
+      });
+      expect(webhookRun.status).toBe("cancelled");
+      expect(webhookRun.outcomeCode).toBe("cancelled");
+
+      const resourceRun = h.manager.enqueueResource({
+        triggerId: "res-1",
+        triggerName: "Res 1",
+        prompt: "Resource alert",
+        botId: "compiler-bot",
+        runOn: "maus",
+        deliveryId: "del-2",
+        receivedAt: Date.now(),
+      });
+      expect(resourceRun.status).toBe("cancelled");
+    });
+
+    it("requeues cancelled runs and clears snooze on runNow", async () => {
+      const h = harness();
+      const routine = h.manager.create({
+        name: "Build",
+        prompt: "Build",
+        botId: "compiler-bot",
+        schedule: { type: "daily", time: "09:00", weekdays: [0, 1, 2, 3, 4, 5, 6] },
+      });
+      h.manager.snoozeBot("compiler-bot");
+
+      const run = h.manager.runNow(routine.id);
+      expect(run).not.toBeNull();
+      expect(h.manager.isBotSnoozed("compiler-bot")).toBe(false);
+
+      const cancelled = await h.manager.cancelAllRunsForBot("compiler-bot");
+      expect(cancelled).toHaveLength(1);
+      expect(h.manager.listRuns()[0]?.status).toBe("cancelled");
+
+      const requeued = h.manager.requeueRun(run!.id);
+      expect(requeued).toBe(true);
+      expect(h.manager.listRuns()[0]?.status).toBe("queued");
+    });
+
+    it("persists bot snoozes across manager restarts", () => {
+      const h = harness();
+      h.manager.snoozeBot("compiler-bot");
+      h.manager.snoozeBot("finite-bot", 60_000);
+      const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+      expect(disk.botSnoozes).toMatchObject({ "compiler-bot": null, "finite-bot": expect.any(Number) });
+
+      const restarted = new RoutineManager(h.options);
+      expect(restarted.isBotSnoozed("compiler-bot")).toBe(true);
+      expect(restarted.isBotSnoozed("finite-bot")).toBe(true);
+
+      // An expired finite snooze does not revive after a restart.
+      h.setNow(h.options.now!() + 61_000);
+      const later = new RoutineManager(h.options);
+      expect(later.isBotSnoozed("finite-bot")).toBe(false);
+      expect(later.isBotSnoozed("compiler-bot")).toBe(true);
+    });
+
+    it("drops a persisted snooze once it is cleared", () => {
+      const h = harness();
+      h.manager.snoozeBot("compiler-bot");
+      h.manager.clearBotSnooze("compiler-bot");
+      const restarted = new RoutineManager(h.options);
+      expect(restarted.isBotSnoozed("compiler-bot")).toBe(false);
+      const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+      expect(disk.botSnoozes ?? {}).not.toHaveProperty("compiler-bot");
+    });
+  });
 });

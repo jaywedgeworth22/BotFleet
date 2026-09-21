@@ -27,6 +27,7 @@ import { useUpdaterState } from "@/lib/updater";
 import {
   availableLabel,
   idleLabel,
+  installBlockedBusy,
   installBlockedReason,
   installedLabel,
   lastRunDetail,
@@ -65,7 +66,7 @@ const SECTIONS: Array<{
   { id: "engines", label: "Engines", icon: Terminal, keywords: ["models", "claude", "grok", "providers", "cli"] },
   { id: "models", label: "Models", icon: Layers, keywords: ["model", "fallback", "primary", "engine", "per bot", "fleet"] },
   { id: "companion", label: "Phone", icon: Smartphone, keywords: ["companion", "phone", "pair", "mobile", "gateway", "sidecar"] },
-  { id: "computers", label: "Local VM", icon: Monitor, keywords: ["vm", "virtual", "desktop"] },
+  { id: "computers", label: "Computers", icon: Monitor, keywords: ["vm", "virtual", "desktop", "computer", "vps", "box", "mac", "sandbox"] },
   { id: "usage", label: "Usage", icon: Coins, keywords: ["tokens", "cost", "billing"] },
   { id: "observability", label: "Observability", icon: Activity, keywords: ["sentry", "errors", "crashes", "traces", "logs", "diagnostics"] },
   { id: "secrets", label: "Secrets", icon: KeyRound, keywords: ["infisical", "vault", "credentials", "secret", "provenance"] },
@@ -417,11 +418,13 @@ function UpdatesRow() {
       : null;
   // Why Install Update is down.  The harness ships a reason with every
   // refusal it can see coming, and no surface rendered one — so a card with an
-  // update on it and no button gave no clue what to do about it.
   const blockedReason = source === "harness" ? installBlockedReason(status) : null;
+  const isBusyBlocked = installBlockedBusy(status);
+  const isBlocked = blockedReason !== null && !isBusyBlocked;
+  const subtitleReason = isBusyBlocked ? "Work will pause and resume after update" : blockedReason;
   const subtitle =
     source === "harness" && status
-      ? `Installed ${installedLabel(status)}.${"\u00A0 "}${harnessLine}${blockedReason ? `.${"\u00A0 "}${blockedReason}` : ""}`
+      ? `Installed ${installedLabel(status)}.${"\u00A0 "}${harnessLine}${subtitleReason ? `.${"\u00A0 "}${subtitleReason}` : ""}`
       : `${feedLabel}${"\u00A0 "}Auto-checks at most once per 6 hours;${"\u00A0 "}you can manually check any time if an update is available.`;
   const lastRun = source === "harness" ? lastRunLabel(status?.lastRun ?? null) : null;
   // The updater's own message for that run — a hover only, never inline.
@@ -494,8 +497,8 @@ function UpdatesRow() {
             </button>
             {hasUpdate && (
               <button
-                onClick={() => void local.install()}
-                disabled={local.busy !== null || blockedReason !== null}
+                onClick={() => void local.install({ force: true })}
+                disabled={local.busy !== null || isBlocked}
                 className="rounded-lg bg-accent px-3 py-1.5 text-[13px] font-medium text-white disabled:bg-control disabled:text-ink-secondary"
               >
                 {local.busy === "install" ? "Starting…" : "Install Update"}

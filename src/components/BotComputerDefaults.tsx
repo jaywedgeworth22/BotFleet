@@ -184,7 +184,7 @@ export function BotComputerDefaults() {
                   i > 0 && "border-l border-hairline/40",
                   saving && "opacity-60",
                   enabled
-                    ? "bg-control text-ink"
+                    ? "bg-control text-ink font-medium"
                     : "text-ink-secondary hover:bg-control/60 hover:text-ink",
                 )}
               >
@@ -198,7 +198,7 @@ export function BotComputerDefaults() {
             ? "Every destination is allowed — the shipped default."
             : allowed.length === 0
               ? "No destination is allowed.  Every bot is locked to its current choice (or auto) until you re-enable one."
-              : `${allowed.length} of 3 destinations allowed. A bot that picked a disabled destination keeps that choice, but the run is refused.`}
+              : `${allowed.length} of 3 destinations allowed.  A bot that picked a disabled destination keeps that choice, but the run is refused.`}
         </div>
       </Card>
 
@@ -219,7 +219,7 @@ export function BotComputerDefaults() {
                 i > 0 && "border-l border-hairline/40",
                 saving && "opacity-60",
                 computers.includes(mode)
-                  ? "bg-control text-ink"
+                  ? "bg-control text-ink font-medium"
                   : "text-ink-secondary hover:bg-control/60 hover:text-ink",
               )}
             >
@@ -239,7 +239,9 @@ export function BotComputerDefaults() {
                   "flex-1 py-1.5 text-[12px]",
                   i > 0 && "border-l border-hairline/40",
                   option === "vps" && !vpsConfigured && "cursor-not-allowed opacity-40",
-                  backend === option ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/60 hover:text-ink",
+                  backend === option
+                    ? "bg-control text-ink font-medium"
+                    : "text-ink-secondary hover:bg-control/60 hover:text-ink",
                 )}
               >
                 {option === "vps" ? "Self-hosted VPS" : "ASCII.dev Box (VM)"}
@@ -247,10 +249,15 @@ export function BotComputerDefaults() {
             ))}
           </div>
         )}
+        {computers.includes("cloud") && !vpsConfigured && (
+          <div className="mt-2 text-[11.5px] text-ink-secondary">
+            To use Self-hosted VPS, add an SSH host alias in App Settings → Connections.
+          </div>
+        )}
         <div className="mt-2 text-[11.5px] text-ink-secondary">
           {computers.length === 0
             ? "New bots use whatever computer already exists, and create nothing."
-            : `New bots get ${computers.length > 1 ? "all of these" : "this"}. Bots you have already set up keep their own choice, and a bot you turned off stays off.`}
+            : `New bots get ${computers.length > 1 ? "all of these" : "this"}.  Bots you have already set up keep their own choice, and a bot you turned off stays off.`}
         </div>
         <div className="mt-3 flex items-center gap-2">
           <button
