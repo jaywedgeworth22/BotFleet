@@ -915,6 +915,8 @@ struct MascotStack: View {
 /// Connection state, shown only when it is not "fine".
 struct StatusBanner: View {
     @EnvironmentObject private var session: Session
+    @State private var isOpening = false
+    @State private var openError: String?
 
     var body: some View {
         Group {
@@ -922,19 +924,48 @@ struct StatusBanner: View {
             case .live, .unpaired:
                 EmptyView()
             case .connecting:
-                banner("Connecting…", systemImage: "arrow.triangle.2.circlepath", tint: .secondary)
+                if let openError {
+                    banner(openError, systemImage: "exclamationmark.triangle", tint: .red) {
+                        Task { await openMacApp() }
+                    }
+                } else if isOpening {
+                    banner("Opening BotFleet on Mac…", systemImage: "arrow.triangle.2.circlepath", tint: .secondary)
+                } else {
+                    banner("Connecting…", systemImage: "arrow.triangle.2.circlepath", tint: .secondary)
+                }
             case let .offline(reason):
-                banner(reason, systemImage: "wifi.slash", tint: .orange)
+                if isOpening {
+                    banner("Opening BotFleet on Mac…", systemImage: "arrow.triangle.2.circlepath", tint: .secondary)
+                } else if let openError {
+                    banner(openError, systemImage: "exclamationmark.triangle", tint: .red) {
+                        Task { await openMacApp() }
+                    }
+                } else {
+                    banner("Open BotFleet on Mac", systemImage: "macwindow", tint: .orange) {
+                        Task { await openMacApp() }
+                    }
+                }
             case .unauthorized:
                 banner("This phone was unpaired on the computer.", systemImage: "lock.slash", tint: .red)
             }
         }
         .animation(.default, value: session.status)
+        .animation(.default, value: isOpening)
+        .animation(.default, value: openError)
+        .onChange(of: session.status) { newStatus in
+            if case .live = newStatus {
+                openError = nil
+            }
+        }
     }
 
-    private func banner(_ text: String, systemImage: String, tint: Color) -> some View {
+    private func banner(_ text: String, systemImage: String, tint: Color, action: (() -> Void)? = nil) -> some View {
         Button {
-            Task { await session.refresh() }
+            if let action {
+                action()
+            } else {
+                Task { await session.refresh() }
+            }
         } label: {
             Label(text, systemImage: systemImage)
                 .font(.footnote)
@@ -945,6 +976,20 @@ struct StatusBanner: View {
                 .padding(.bottom, 8)
         }
         .buttonStyle(.plain)
+        .disabled(isOpening)
+    }
+
+    @MainActor
+    private func openMacApp() async {
+        isOpening = true
+        openError = nil
+        do {
+            try await session.openDesktopApp()
+            await session.refresh()
+        } catch {
+            openError = error.localizedDescription
+        }
+        isOpening = false
     }
 }
 
