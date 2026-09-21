@@ -7,7 +7,7 @@ import {
   type LocalAutoConsentCapability,
 } from "../shared/local-auto-consent.ts";
 import { randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
-import {  readFileSync, unlinkSync, appendFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, appendFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { isIP } from "node:net";
@@ -270,7 +270,7 @@ import { accessTokenState, hasAccessServiceToken } from "./recall-access.ts";
 import { recallPromptFor } from "./recall-prompt.ts";
 import { findRecallCli, recallStatus } from "./recall-transport.ts";
 import * as vps from "./vps-computer.ts";
-import { RoutineManager, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
+import { RoutineManager, type RoutineRun, type RoutineRunOn, type RoutineRunTrigger } from "./routines.ts";
 import { RoutineRequestError, RoutineRequestService } from "./routine-requests.ts";
 import { fetchBotDirectory, matchDirectoryBots, type MatchedDirectoryBot } from "./bot-directory.ts";
 import { scoutProject, suggestTeam } from "./project-scout.ts";
@@ -2894,6 +2894,9 @@ async function startTurn(
   }
   const bot = store.bot(botId);
   if (!bot) throw Object.assign(new Error("no such bot"), { status: 404 });
+  if (!opts?.automationSource) {
+    routines?.clearBotSnooze(botId);
+  }
   if (providerReloadInProgress) {
     throw Object.assign(new Error("provider settings are being reloaded — retry when the reload finishes"), {
       status: 409,
@@ -6247,19 +6250,63 @@ function beginUpdateAdmission(): (() => void) | null {
   };
 }
 
-function beginRuntimeQuiesce() {
+async function beginRuntimeQuiesce(force = false) {
   const readiness = currentRuntimeReadiness();
-  if (!readiness.safeToRestart) return { ...readiness, quiescing: false };
-  if (!runtimeQuiescing) {
-    // This function has no await before the admission flag.  A request,
-    // scheduler tick, or queue drain cannot enter between the final complete
-    // readiness snapshot and the fence becoming visible to every dispatcher.
-    runtimeQuiescing = true;
-    routines?.stop();
-    resourceTriggers.stop();
-    infisical.stop();
+  if (!force && !readiness.safeToRestart) {
+    return { ...readiness, quiescing: false };
   }
-  return { ...readiness, quiescing: true };
+  if (runtimeQuiescing) {
+    return { ...readiness, quiescing: true };
+  }
+  runtimeQuiescing = true;
+  routines?.stop();
+  resourceTriggers.stop();
+  infisical.stop();
+
+  if (force) {
+    const interruptedRuns: RoutineRun[] = [];
+    if (routines) {
+      for (const run of routines.listRuns()) {
+        if (["running", "waiting", "queued"].includes(run.status)) {
+          interruptedRuns.push({ ...run });
+          if (run.status === "running" || run.status === "waiting") {
+            await routines.cancelRun(run.id).catch(() => {});
+          }
+        }
+      }
+    }
+
+    const interruptedBots: Array<{ botId: string; threadId: string }> = [];
+    for (const bot of store.bots) {
+      if (bot.busy) {
+        const liveThreadId = bot.inflightThreadId ?? bot.threadId;
+        interruptedBots.push({ botId: bot.id, threadId: liveThreadId });
+        stoppedTurns.add(`${bot.id}:${liveThreadId}`);
+        await interruptThreadEverywhere(liveThreadId).catch(() => {});
+        closeOpenApprovals(liveThreadId);
+      }
+    }
+
+    if (interruptedRuns.length > 0 || interruptedBots.length > 0) {
+      const resumeSnapshot = {
+        timestamp: Date.now(),
+        interruptedRuns,
+        interruptedBots,
+      };
+      try {
+        writeFileSync(join(DATA_DIR, "pending-update-resume.json"), JSON.stringify(resumeSnapshot, null, 2), {
+          mode: 0o600,
+        });
+      } catch (err) {
+        console.warn("Failed to write pending-update-resume.json:", err);
+      }
+    }
+
+    await new Promise((r) => setTimeout(r, 200));
+  }
+
+  const finalReadiness = currentRuntimeReadiness();
+  return { ...finalReadiness, safeToRestart: true, quiescing: true };
 }
 
 function endRuntimeQuiesce() {
@@ -6271,6 +6318,10 @@ function endRuntimeQuiesce() {
     infisical.start();
     routines?.start();
     resourceTriggers.start();
+    const pendingResumePath = join(DATA_DIR, "pending-update-resume.json");
+    if (existsSync(pendingResumePath)) {
+      try { unlinkSync(pendingResumePath); } catch {}
+    }
   }
   return { ...currentRuntimeReadiness(), quiescing: false };
 }
@@ -8517,6 +8568,7 @@ const server = createServer(async (req, res) => {
     if (m && method === "POST") {
       const bot = store.bot(m[1]);
       if (!bot) return json(res, 404, { error: "no such bot" });
+      routines?.clearBotSnooze(bot.id);
       const body = await readBody(req);
       const behavior = requestBehavior(body.behavior);
       if (!behavior) return json(res, 400, { error: "behavior must be allow, deny, or answer" });
@@ -8598,13 +8650,24 @@ const server = createServer(async (req, res) => {
       if (expectedThreadId !== undefined && (typeof expectedThreadId !== "string" || !/^[\w-]+$/.test(expectedThreadId))) {
         return json(res, 400, { error: "threadId must be a task id" });
       }
-      const routineRun = routines!.activeRunForBot(bot.id);
-      if (routineRun) {
-        if (expectedThreadId !== undefined && routineRun.threadId !== expectedThreadId) {
-          return json(res, 409, { error: "this bot is running a routine in another conversation" });
+      let stopped = false;
+      let refused = false;
+      if (routines) {
+        // Cancel all active and queued routine runs for this bot and snooze automated triggers
+        // so background webhooks and scheduled routines do not restart it.
+        const cancelledRuns = await routines.cancelAllRunsForBot(bot.id);
+        routines.snoozeBot(bot.id);
+        if (cancelledRuns.length > 0) {
+          stopped = true;
+          if (expectedThreadId !== undefined) {
+            const runInOtherThread = cancelledRuns.find(
+              (r) => r.threadId && r.threadId !== expectedThreadId,
+            );
+            if (runInOtherThread && !cancelledRuns.some((r) => r.threadId === expectedThreadId)) {
+              return json(res, 409, { error: "this bot is running a routine in another conversation" });
+            }
+          }
         }
-        await routines!.cancelRun(routineRun.id);
-        return json(res, 200, { ok: true, stopped: true });
       }
       // Latch the stop before anything is awaited.  The driver may settle the
       // turn the instant it is killed, so the turn.completed fold can run
@@ -8619,8 +8682,6 @@ const server = createServer(async (req, res) => {
         pendingCredentialFallback.delete(turnKey);
         pendingMemberFallback.delete(threadId);
       };
-      let stopped = false;
-      let refused = false;
       // a bot busy in a ROOM is running on the room's thread — stopping it
       // from its own chat must reach that turn, not just the 1:1 thread
       const busyGroup = store.groups.find((g) => g.busyBotId === bot.id);
@@ -9012,11 +9073,18 @@ const server = createServer(async (req, res) => {
       if (!isLoopbackAddress(req.socket.remoteAddress) || !authorizedRuntime(harnessOwner, req.headers.authorization)) {
         return json(res, 401, { error: "unauthorized" });
       }
+      let force = url.searchParams.get("force") === "1" || url.searchParams.get("force") === "true";
+      if (!force && method === "POST" && req.headers["content-type"]?.includes("application/json")) {
+        try {
+          const body = await readBody(req);
+          if (body?.force === true) force = true;
+        } catch {}
+      }
       const readiness = path !== "/api/runtime/quiesce"
         ? currentRuntimeReadiness()
         : method === "DELETE"
           ? endRuntimeQuiesce()
-          : beginRuntimeQuiesce();
+          : await beginRuntimeQuiesce(force);
       const refused = method === "POST" && path === "/api/runtime/quiesce" && !readiness.safeToRestart;
       return json(res, refused ? 409 : 200, {
         ...runtimeBuildIdentity, pid: process.pid, ...readiness,
@@ -10678,6 +10746,27 @@ resourceTriggers.start();
 if (!process.env.OMB_DISABLE_ANTIGRAVITY_QUOTA) {
   enableQuotaCooldownPersist(join(DATA_DIR, "quota-cooldowns.json"));
   startAntigravityQuotaPoller();
+}
+
+// Post-update resumption: If an update quiesced active work and rebooted successfully,
+// clear all bot snoozes, requeue interrupted runs, and resume routines on this new build.
+const pendingResumePath = join(DATA_DIR, "pending-update-resume.json");
+if (existsSync(pendingResumePath)) {
+  try {
+    const raw = readFileSync(pendingResumePath, "utf-8");
+    const resumeState = JSON.parse(raw);
+    console.log("[update-resume] Found pending update resume snapshot — unsnoozing bots and requeuing runs");
+    routines?.clearAllBotSnoozes();
+    if (Array.isArray(resumeState.interruptedRuns)) {
+      for (const run of resumeState.interruptedRuns) {
+        if (run?.id) routines?.requeueRun(run.id);
+      }
+    }
+    unlinkSync(pendingResumePath);
+    queueMicrotask(() => routines?.tick());
+  } catch (err) {
+    console.warn("[update-resume] Error processing pending resume file:", err);
+  }
 }
 
 server.on("error", (error: NodeJS.ErrnoException) => {

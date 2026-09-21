@@ -538,7 +538,7 @@ export function useUpdateControl(pollMs = 5_000): UpdateControlView {
     setBusy("install");
     setError(null);
     try {
-      const result = await requestUpdateRun(options ?? {});
+      const result = await requestUpdateRun(options ?? { force: true });
       // The refusal's own status is the one that explains it — take it even
       // when the answer is no.
       if (result.status) setStatus(result.status);

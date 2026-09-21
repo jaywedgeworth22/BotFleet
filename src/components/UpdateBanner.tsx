@@ -276,10 +276,12 @@ function LocalUpdateCard({
   // while the Install button was conditioned away, which read as a card that
   // had simply lost its button.  The reason takes the subtitle instead.
   const blockedReason = installBlockedReason(status);
+  const isBusyBlocked = blockedReason !== null && Boolean(status.capabilities.codes?.includes("busy"));
+  const isBlocked = blockedReason !== null && !isBusyBlocked;
   const subtitle = running
     ? runningLabel(running)
     : status.available
-      ? (blockedReason ?? "This Mac can build and install it.")
+      ? (isBusyBlocked ? "Work will pause and resume after update." : (blockedReason ?? "This Mac can build and install it."))
       : (lastRunLabel(status.lastRun) ?? "");
   // The harness's own diagnostic sentence — a checkout path, a script path,
   // an updater's raw failure line — for the hover only.  `subtitle` is
@@ -340,8 +342,8 @@ function LocalUpdateCard({
         <div className="mt-2.5 flex gap-2">
           {status.available && (
             <button
-              onClick={() => void local.install()}
-              disabled={local.busy !== null || blockedReason !== null}
+              onClick={() => void local.install({ force: true })}
+              disabled={local.busy !== null || isBlocked}
               className={primaryAction}
             >
               {local.busy === "install" ? (
