@@ -32,6 +32,8 @@ struct ChatListView: View {
     @AppStorage("companion.chats.botChatsExpanded") private var botChatsExpanded = false
     @AppStorage("companion.chats.collapsedSections") private var collapsedSectionsStr = ""
     @FocusState private var searchFocused: Bool
+    /// Drives the live-session "Open BotFleet on Mac" header control.
+    @State private var isOpeningMacApp = false
 
     /// Room for the floating bar, so the last row can scroll clear of it.
     private static let barClearance: CGFloat = 96
@@ -379,6 +381,33 @@ struct ChatListView: View {
 
             Spacer(minLength: 8)
 
+            // Wake or unhide the Mac desktop app while connected.  Closing
+            // every BotFleet window leaves the Electron process and sidecar
+            // running, so the phone stays .live and the offline status banner
+            // — the action's other home — is hidden.  A live session needs
+            // its own entry point.
+            if sessionIsLive, session.connection != nil {
+                Button {
+                    Task { await openMacApp() }
+                } label: {
+                    Group {
+                        if isOpeningMacApp {
+                            ProgressView()
+                                .controlSize(.small)
+                        } else {
+                            Image(systemName: "macwindow")
+                                .font(.system(size: 18, weight: .medium))
+                        }
+                    }
+                    .foregroundStyle(Color.primary)
+                    .frame(width: 44, height: 44)
+                }
+                .buttonStyle(.plain)
+                .glassCapsule()
+                .accessibilityLabel("Open BotFleet on Mac")
+                .disabled(isOpeningMacApp)
+            }
+
             NavigationLink { SettingsView() } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 18, weight: .medium))
@@ -402,6 +431,23 @@ struct ChatListView: View {
         case .offline: return "\(name) · offline"
         case .unauthorized: return "\(name) · unpaired"
         case .unpaired: return "Not paired"
+        }
+    }
+
+    /// Ask the paired Mac to open or unhide BotFleet.  Failures become human
+    /// copy on the global action-error alert — never raw transport errors.
+    @MainActor
+    private func openMacApp() async {
+        isOpeningMacApp = true
+        defer { isOpeningMacApp = false }
+        do {
+            try await session.openDesktopApp()
+        } catch {
+            // An unauthorized failure already flips the session to
+            // .unauthorized, whose banner explains itself — don't also alert.
+            if case .live = session.status {
+                session.actionError = "Could not open BotFleet on Mac.  Check that your Mac is awake and reachable."
+            }
         }
     }
 
