@@ -552,9 +552,13 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // full-auto instance keeps its switch for every other turn.
       const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
       const isAutoApproved = turn.autoApprove === true;
+      // The per-bot override is scoped to host-control turns only: letting a
+      // bot-level autoApprove flag flip fullAuto for sandbox/cloud/VM turns
+      // would silently promote an engine-level security gate the owner never
+      // switched on.  Non-host turns keep exactly what config.fullAuto says.
       const turnConfig: AntigravityConfig = {
         ...config,
-        fullAuto: controlsHost ? isAutoApproved : (isAutoApproved || config.fullAuto),
+        fullAuto: controlsHost ? isAutoApproved : config.fullAuto,
       };
 
       // Default cwd to a per-thread workspace under DATA_DIR — deliberately

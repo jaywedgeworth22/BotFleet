@@ -882,6 +882,16 @@ describe("Antigravity host control", () => {
     ).toBe(false);
   });
 
+  it("does not let bot-level autoApprove flip the bypass for a non-host turn", async () => {
+    // autoApprove is scoped to host-control turns.  A bot with Auto Mode on
+    // running in a sandbox/cloud/VM turn must not bypass the permission
+    // broker unless the engine-level fullAuto switch is on (see P1 review).
+    const sandbox = await runTurn("sandbox-auto-approved", false, sandboxIntegrations, {}, undefined, true);
+    expect(sandbox.argv).not.toContain("--dangerously-skip-permissions");
+    const mode = sandbox.argv.indexOf("--mode");
+    expect(sandbox.argv.slice(mode, mode + 2)).toEqual(["--mode", "accept-edits"]);
+  });
+
   it("leaves a full-auto turn alone when no host computer is mounted", async () => {
     // An isolated sandbox is not the person's desktop, and neither is a bare
     // turn.  Forcing the bypass off for those would take away a switch the
