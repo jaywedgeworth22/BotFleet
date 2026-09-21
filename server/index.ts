@@ -6276,11 +6276,31 @@ async function beginRuntimeQuiesce(force = false) {
       }
     }
 
-    const interruptedBots: Array<{ botId: string; threadId: string }> = [];
+    const interruptedBots: Array<{
+      botId: string;
+      threadId: string;
+      promptMessageId?: string;
+      promptText?: string;
+    }> = [];
     for (const bot of store.bots) {
       if (bot.busy) {
         const liveThreadId = bot.inflightThreadId ?? bot.threadId;
-        interruptedBots.push({ botId: bot.id, threadId: liveThreadId });
+        // Enough to re-dispatch the turn after the update: the user message
+        // the interrupted turn was answering.  It is looked up by id at
+        // resume time (with the text as a fallback) and passed back as the
+        // turn's existing message, never re-appended to the transcript.
+        const entry: { botId: string; threadId: string; promptMessageId?: string; promptText?: string } = {
+          botId: bot.id,
+          threadId: liveThreadId,
+        };
+        const promptMessage = [...store.messagesFor(liveThreadId)]
+          .reverse()
+          .find((message) => message.role === "user" && message.kind === "text" && message.text);
+        if (promptMessage?.text) {
+          entry.promptMessageId = promptMessage.id;
+          entry.promptText = promptMessage.text;
+        }
+        interruptedBots.push(entry);
         stoppedTurns.add(`${bot.id}:${liveThreadId}`);
         await interruptThreadEverywhere(liveThreadId).catch(() => {});
         closeOpenApprovals(liveThreadId);
@@ -6293,20 +6313,48 @@ async function beginRuntimeQuiesce(force = false) {
         interruptedRuns,
         interruptedBots,
       };
+      let snapshotSaved = false;
       try {
         writeFileSync(join(DATA_DIR, "pending-update-resume.json"), JSON.stringify(resumeSnapshot, null, 2), {
           mode: 0o600,
         });
+        snapshotSaved = true;
       } catch (err) {
         console.warn("Failed to write pending-update-resume.json:", err);
+      }
+      if (!snapshotSaved) {
+        // The snapshot is the only recovery path for interrupted work, so an
+        // update that cannot persist it must not proceed.  Restore what can
+        // be restored — requeue the cancelled routine runs, drop the stop
+        // latches — and hand the fence back refused so the updater stands down.
+        for (const run of interruptedRuns) {
+          try {
+            routines?.requeueRun(run.id);
+          } catch {}
+        }
+        for (const { botId, threadId } of interruptedBots) {
+          stoppedTurns.delete(`${botId}:${threadId}`);
+        }
+        runtimeQuiescing = false;
+        routines?.start();
+        resourceTriggers.start();
+        infisical.start();
+        const abortedReadiness = currentRuntimeReadiness();
+        return { ...abortedReadiness, quiescing: false };
       }
     }
 
     await new Promise((r) => setTimeout(r, 200));
   }
 
+  // Report the actual final safety state.  Forcing interrupts the routines
+  // and busy bots above, but anything else still counted — a queued send, a
+  // completion fold, a provider reload, a VM lifecycle operation — has not
+  // been settled, and claiming safeToRestart here would let the updater kill
+  // the harness mid-operation.  Until those drain, quiesce is refused and the
+  // updater's fence stays down.
   const finalReadiness = currentRuntimeReadiness();
-  return { ...finalReadiness, safeToRestart: true, quiescing: true };
+  return { ...finalReadiness, quiescing: true };
 }
 
 function endRuntimeQuiesce() {
@@ -8652,6 +8700,21 @@ const server = createServer(async (req, res) => {
       }
       let stopped = false;
       let refused = false;
+      // Validate the target thread before mutating anything: a stale Stop
+      // request must not cancel unrelated automation or snooze the bot.  The
+      // live thread is the room thread when the bot is busy in a group,
+      // otherwise the bot's in-flight (or visible) thread.
+      const interruptBusyGroup = store.groups.find((g) => g.busyBotId === bot.id);
+      const interruptLiveThreadId = interruptBusyGroup
+        ? interruptBusyGroup.threadId
+        : (bot.inflightThreadId ?? bot.threadId);
+      if (expectedThreadId !== undefined && interruptLiveThreadId !== expectedThreadId) {
+        return json(res, 409, {
+          error: interruptBusyGroup
+            ? `this bot is working in channel ${interruptBusyGroup.id}`
+            : "the bot switched tasks before it could be interrupted",
+        });
+      }
       if (routines) {
         // Cancel all active and queued routine runs for this bot and snooze automated triggers
         // so background webhooks and scheduled routines do not restart it.
@@ -8684,19 +8747,14 @@ const server = createServer(async (req, res) => {
       };
       // a bot busy in a ROOM is running on the room's thread — stopping it
       // from its own chat must reach that turn, not just the 1:1 thread
-      const busyGroup = store.groups.find((g) => g.busyBotId === bot.id);
+      // (interruptBusyGroup was already validated against expectedThreadId above)
+      const busyGroup = interruptBusyGroup;
       if (busyGroup) {
-        if (expectedThreadId !== undefined && busyGroup.threadId !== expectedThreadId) {
-          return json(res, 409, { error: `this bot is working in channel ${busyGroup.id}` });
-        }
         latchStop(busyGroup.threadId);
         const groupOutcome = await interruptThreadEverywhere(busyGroup.threadId);
         if (groupOutcome.stopped) stopped = true;
         if (groupOutcome.refused) refused = true;
         closeOpenApprovals(busyGroup.threadId);
-      }
-      if (expectedThreadId !== undefined && !busyGroup && bot.threadId !== expectedThreadId) {
-        return json(res, 409, { error: "the bot switched tasks before it could be interrupted" });
       }
       // A turn started on one task keeps running while the user reads another,
       // so the live thread — not the visible one — is what has to be stopped.
@@ -10760,6 +10818,42 @@ if (existsSync(pendingResumePath)) {
     if (Array.isArray(resumeState.interruptedRuns)) {
       for (const run of resumeState.interruptedRuns) {
         if (run?.id) routines?.requeueRun(run.id);
+      }
+    }
+    // Re-dispatch the chat turns a forced update interrupted, so the
+    // "pause & install" promise holds: work pauses, then resumes.  The turn
+    // re-runs from the user message it was answering, passed back as the
+    // turn's existing message so the transcript is not duplicated.
+    if (Array.isArray(resumeState.interruptedBots)) {
+      for (const entry of resumeState.interruptedBots) {
+        try {
+          const resumeBot = entry?.botId ? store.bot(entry.botId) : undefined;
+          const resumeThreadId = entry?.threadId;
+          if (!resumeBot || typeof resumeThreadId !== "string") continue;
+          if (store.groupByThread(resumeThreadId)) {
+            console.log(
+              `[update-resume] skipping interrupted room turn for bot ${resumeBot.id} — restart it from the room`,
+            );
+            continue;
+          }
+          const resumeMessages = store.messagesFor(resumeThreadId);
+          const resumePrompt =
+            resumeMessages.find((message) => message.id === entry.promptMessageId) ??
+            [...resumeMessages]
+              .reverse()
+              .find((message) => message.role === "user" && message.kind === "text" && message.text);
+          if (!resumePrompt?.text) {
+            console.log(`[update-resume] no resumable prompt for bot ${resumeBot.id} on thread ${resumeThreadId}`);
+            continue;
+          }
+          await startTurn(resumeBot.id, resumePrompt.text, {
+            threadId: resumeThreadId,
+            userMessage: resumeMessages.some((message) => message.id === resumePrompt.id) ? resumePrompt : undefined,
+          });
+          console.log(`[update-resume] re-dispatched interrupted turn for bot ${resumeBot.id}`);
+        } catch (err) {
+          console.warn("[update-resume] could not resume interrupted turn:", err);
+        }
       }
     }
     unlinkSync(pendingResumePath);
