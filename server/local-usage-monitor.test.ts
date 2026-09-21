@@ -93,10 +93,10 @@ describe("native Usage Monitor handoff", () => {
   it("carries the producer and its per-provider read failures, capped and as plain text", () => {
     const hostile = `<script>alert("quota")</script> ${"a long unhelpful reason ".repeat(20)}`;
     const parsed = parseLocalQuotaPayload(payload([row()], {
-      producer: "agent-bar",
+      producer: "codecaps",
       issues: { claude: "Sign in again to refresh quota", kimi: "no BotFleet engine", cursor: hostile },
     }), now);
-    expect(parsed.producer).toBe("agent-bar");
+    expect(parsed.producer).toBe("codecaps");
     // Provider keys are canonicalized, so the producer may spell a provider
     // either way; a provider BotFleet has no engine for is dropped.
     expect(parsed.issues.anthropic).toBe("Sign in again to refresh quota");

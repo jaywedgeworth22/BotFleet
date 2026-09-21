@@ -946,7 +946,7 @@ export function UsageSection() {
               <div className="min-w-0">
                 <div className="text-[13px] text-ink">Local subscription caps divert auto-fallback</div>
                 <div className="mt-0.5 text-[11.5px] leading-relaxed text-ink-secondary">
-                  AgentBar reads each subscription on this Mac and writes what is left to a local file.{'\u00A0'} When it reports a window spent, BotFleet stops routing turns to that engine until the window resets.{'\u00A0'} Only its own verdict counts, never a percentage BotFleet inferred.
+                  CodeCaps reads each subscription on this Mac and writes what is left to a local file.{'\u00A0'} When it reports a window spent, BotFleet stops routing turns to that engine until the window resets.{'\u00A0'} Only its own verdict counts, never a percentage BotFleet inferred.
                 </div>
               </div>
               <button
