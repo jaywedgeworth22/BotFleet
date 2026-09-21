@@ -924,25 +924,27 @@ struct StatusBanner: View {
             case .live, .unpaired:
                 EmptyView()
             case .connecting:
-                if let openError {
-                    banner(openError, systemImage: "exclamationmark.triangle", tint: .red) {
-                        Task { await openMacApp() }
-                    }
-                } else if isOpening {
+                if isOpening {
                     banner("Opening BotFleet on Mac…", systemImage: "arrow.triangle.2.circlepath", tint: .secondary)
                 } else {
                     banner("Connecting…", systemImage: "arrow.triangle.2.circlepath", tint: .secondary)
                 }
             case let .offline(reason):
-                if isOpening {
-                    banner("Opening BotFleet on Mac…", systemImage: "arrow.triangle.2.circlepath", tint: .secondary)
-                } else if let openError {
-                    banner(openError, systemImage: "exclamationmark.triangle", tint: .red) {
-                        Task { await openMacApp() }
-                    }
-                } else {
-                    banner("Open BotFleet on Mac", systemImage: "macwindow", tint: .orange) {
-                        Task { await openMacApp() }
+                VStack(spacing: 6) {
+                    banner(reason, systemImage: "wifi.slash", tint: .orange)
+
+                    if session.connection != nil {
+                        if isOpening {
+                            banner("Opening BotFleet on Mac…", systemImage: "arrow.triangle.2.circlepath", tint: .secondary)
+                        } else if let openError {
+                            banner(openError, systemImage: "exclamationmark.triangle", tint: .red) {
+                                Task { await openMacApp() }
+                            }
+                        } else {
+                            banner("Open BotFleet on Mac", systemImage: "macwindow", tint: .secondary) {
+                                Task { await openMacApp() }
+                            }
+                        }
                     }
                 }
             case .unauthorized:
@@ -952,10 +954,8 @@ struct StatusBanner: View {
         .animation(.default, value: session.status)
         .animation(.default, value: isOpening)
         .animation(.default, value: openError)
-        .onChange(of: session.status) { newStatus in
-            if case .live = newStatus {
-                openError = nil
-            }
+        .onChange(of: session.status) { _ in
+            openError = nil
         }
     }
 
@@ -973,7 +973,7 @@ struct StatusBanner: View {
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
                 .glassCapsule(interactive: true)
-                .padding(.bottom, 8)
+                .padding(.bottom, 4)
         }
         .buttonStyle(.plain)
         .disabled(isOpening)
@@ -987,7 +987,7 @@ struct StatusBanner: View {
             try await session.openDesktopApp()
             await session.refresh()
         } catch {
-            openError = error.localizedDescription
+            openError = "Could not open BotFleet on Mac.  Check that your Mac is awake and reachable."
         }
         isOpening = false
     }
