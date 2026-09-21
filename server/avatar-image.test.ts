@@ -29,7 +29,7 @@ describe("avatar image generation", () => {
     expect(initial).toEqual({ avatarUrl: "/api/attachments/old.webp", avatarCrop: "circle" });
   });
 
-  it("uses one low-quality square GPT Image 2 request and decodes WebP bytes", async () => {
+  it("uses one low-quality square MiniMax dall-e-3 request by default and decodes the b64 JSON body", async () => {
     const bytes = Buffer.from("generated-webp");
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
       data: [{ b64_json: bytes.toString("base64") }],
@@ -39,14 +39,37 @@ describe("avatar image generation", () => {
     expect(result).toEqual({ bytes, mime: "image/webp" });
     expect(fetchMock).toHaveBeenCalledOnce();
     const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe("https://api.openai.com/v1/images/generations");
+    expect(url).toBe("https://api.minimax.io/v1/images/generations");
     expect(init?.headers).toMatchObject({ authorization: "Bearer sk-image" });
     expect(JSON.parse(String(init?.body))).toMatchObject({
-      model: "gpt-image-2",
+      model: "dall-e-3",
       size: "1024x1024",
       quality: "low",
+      response_format: "b64_json",
+    });
+  });
+
+  it("still routes to OpenAI gpt-image-2 + webp when the operator picks that provider", async () => {
+    const bytes = Buffer.from("generated-webp");
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      data: [{ b64_json: bytes.toString("base64") }],
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+
+    const result = await generateAvatarImage("sk-image", BOT, "blue robot", fetchMock, 120_000, "openai");
+    expect(result).toEqual({ bytes, mime: "image/webp" });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe("https://api.openai.com/v1/images/generations");
+    expect(JSON.parse(String(init?.body))).toMatchObject({
+      model: "gpt-image-2",
       output_format: "webp",
     });
+  });
+
+  it("says to add a MiniMax key when the default provider is selected and no key is set", async () => {
+    await expect(generateAvatarImage("", BOT, "blue robot", vi.fn()))
+      .rejects.toMatchObject({ message: /MiniMax API key/i, status: 409 });
+    await expect(generateAvatarImage("", BOT, "blue robot", vi.fn(), 120_000, "openai"))
+      .rejects.toMatchObject({ message: /OpenAI image API key/i, status: 409 });
   });
 
   it("never exposes malformed upstream bodies as image data", async () => {

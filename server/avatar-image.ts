@@ -6,6 +6,18 @@ export const AVATAR_DIRECTION_MAX_CHARS = 400;
 export const AVATAR_IMAGE_TIMEOUT_MS = 120_000;
 const MAX_UPSTREAM_RESPONSE_BYTES = 15 * 1024 * 1024;
 
+/** Which model+endpoint family to call.  MiniMax is the default: cheaper
+ *  for the operator, OpenAI-compatible request shape, and the same shape
+ *  fits a future MiniMax-M-image native endpoint without changing this
+ *  function's contract.  OpenAI remains a fallback for users who already
+ *  configured a key under the legacy `openaiImageApiKey` label. */
+export type AvatarImageProvider = "minimax" | "openai";
+
+const MINIMAX_IMAGE_API = process.env.OMB_MINIMAX_IMAGE_API || "https://api.minimax.io/v1";
+const MINIMAX_IMAGE_MODEL = "dall-e-3";
+const OPENAI_IMAGE_API = "https://api.openai.com/v1";
+const OPENAI_IMAGE_MODEL = "gpt-image-2";
+
 export const avatarGenerationRequestSchema = z.object({
   prompt: z.string().trim().max(AVATAR_DIRECTION_MAX_CHARS).default(""),
 });
@@ -95,31 +107,59 @@ export async function generateAvatarImage(
   direction: string,
   fetchImpl: typeof fetch = fetch,
   timeoutMs = AVATAR_IMAGE_TIMEOUT_MS,
+  provider: AvatarImageProvider = "minimax",
 ): Promise<GeneratedAvatarImage> {
-  if (!apiKey.trim()) throw Object.assign(new Error("Add an OpenAI image API key first"), { status: 409 });
+  if (!apiKey.trim()) {
+    throw Object.assign(
+      new Error(
+        provider === "minimax"
+          ? "Add a MiniMax API key in Settings to generate a custom avatar."
+          : "Add an OpenAI image API key first",
+      ),
+      { status: 409 },
+    );
+  }
+
+  // OpenAI's gpt-image-2 path keeps its original `output_format: "webp"` body
+  // and returns webp bytes; the MiniMax surface uses an OpenAI-compatible
+  // dall-e-3-shaped request that returns b64 JSON.  Dispatching the body
+  // keeps both providers honest about what they actually accept.
+  const isMiniMax = provider === "minimax";
+  const url = isMiniMax ? `${MINIMAX_IMAGE_API}/images/generations` : `${OPENAI_IMAGE_API}/images/generations`;
+  const model = isMiniMax ? MINIMAX_IMAGE_MODEL : OPENAI_IMAGE_MODEL;
+  const errorPrefix = isMiniMax ? "MiniMax" : "OpenAI";
+  const body = isMiniMax
+    ? JSON.stringify({
+        model,
+        prompt: avatarGenerationPrompt(bot, direction),
+        size: "1024x1024",
+        quality: "low",
+        response_format: "b64_json",
+      })
+    : JSON.stringify({
+        model,
+        prompt: avatarGenerationPrompt(bot, direction),
+        size: "1024x1024",
+        quality: "low",
+        output_format: "webp",
+      });
 
   const timeoutSignal = AbortSignal.timeout(timeoutMs);
   let response: Response;
   try {
-    response = await fetchImpl("https://api.openai.com/v1/images/generations", {
+    response = await fetchImpl(url, {
       method: "POST",
       headers: {
         authorization: `Bearer ${apiKey.trim()}`,
         "content-type": "application/json",
       },
-      body: JSON.stringify({
-        model: "gpt-image-2",
-        prompt: avatarGenerationPrompt(bot, direction),
-        size: "1024x1024",
-        quality: "low",
-        output_format: "webp",
-      }),
+      body,
       signal: timeoutSignal,
     });
   } catch (error) {
     const timedOut = timeoutSignal.aborted || (error instanceof Error && error.name === "TimeoutError");
     throw Object.assign(
-      new Error(timedOut ? "Avatar generation timed out" : "Could not reach OpenAI image generation"),
+      new Error(timedOut ? "Avatar generation timed out" : `Could not reach ${errorPrefix} image generation`),
       { status: 502 },
     );
   }
@@ -137,7 +177,7 @@ export async function generateAvatarImage(
     throw error;
   }
   if (!response.ok) {
-    let message = `OpenAI image generation failed (HTTP ${response.status})`;
+    let message = `${errorPrefix} image generation failed (HTTP ${response.status})`;
     try {
       const parsed = z.object({ error: z.object({ message: z.string() }) }).safeParse(JSON.parse(text));
       if (parsed.success) message = parsed.data.error.message.slice(0, 500);
@@ -151,19 +191,19 @@ export async function generateAvatarImage(
   try {
     parsedJson = JSON.parse(text);
   } catch {
-    throw Object.assign(new Error("OpenAI returned an invalid image response"), { status: 502 });
+    throw Object.assign(new Error(`${errorPrefix} returned an invalid image response`), { status: 502 });
   }
   const parsed = generatedImageResponseSchema.safeParse(parsedJson);
   if (!parsed.success) {
-    throw Object.assign(new Error("OpenAI returned no generated image"), { status: 502 });
+    throw Object.assign(new Error(`${errorPrefix} returned no generated image`), { status: 502 });
   }
   const encoded = parsed.data.data[0]!.b64_json;
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.length % 4 !== 0) {
-    throw Object.assign(new Error("OpenAI returned invalid image data"), { status: 502 });
+    throw Object.assign(new Error(`${errorPrefix} returned invalid image data`), { status: 502 });
   }
   const bytes = Buffer.from(encoded, "base64");
   if (bytes.byteLength === 0) {
-    throw Object.assign(new Error("OpenAI returned an empty image"), { status: 502 });
+    throw Object.assign(new Error(`${errorPrefix} returned an empty image`), { status: 502 });
   }
   return { bytes, mime: "image/webp" };
 }

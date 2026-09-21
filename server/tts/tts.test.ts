@@ -1,6 +1,11 @@
 // The voice, driven against a stub rather than the live service — same
 // rule as the box and computer-proxy contract tests: what we send, and how
 // a refusal is reported, are the things that break.
+//
+// The stub serves both providers from the same port: MiniMax paths
+// (`/v1/models`, `/v1/audio/speech`) and ElevenLabs paths (`/v1/voices`,
+// `/v1/text-to-speech/...`).  A single `refuse` switch flips whichever
+// provider the test is exercising into its failure shape.
 import { createServer, type Server } from "node:http";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -9,7 +14,7 @@ import type { AppConfig } from "../config.ts";
 let server: Server;
 /** every request the stub saw, so tests can assert on what we sent */
 const seen: Array<{ method: string; url: string; headers: Record<string, string>; body: string }> = [];
-/** flipped by tests that want ElevenLabs to refuse */
+/** flipped by tests that want the active provider to refuse */
 let refuse: { status: number; body: unknown } | null = null;
 
 const MP3 = Buffer.from([0xff, 0xfb, 0x90, 0x00, 0x11, 0x22, 0x33, 0x44]);
@@ -31,6 +36,18 @@ beforeAll(async () => {
       };
       if (refuse) return send(refuse.status, refuse.body);
       const path = (req.url ?? "").split("?")[0];
+
+      // ---- MiniMax (default provider) ----
+      // /v1/models is the cheapest MiniMax endpoint that needs a real auth
+      // header; it reports a precise 401/403 on a bad key, so verifyKey
+      // uses it rather than /audio/speech.
+      if (req.method === "GET" && path === "/v1/models") return send(200, { data: [{ id: "MiniMax-1.5-tts-1" }] });
+      if (req.method === "POST" && path === "/v1/audio/speech") {
+        res.writeHead(200, { "content-type": "audio/mpeg" });
+        return res.end(MP3);
+      }
+
+      // ---- ElevenLabs (legacy provider, opt-in) ----
       // A RESTRICTED key — the common real-world case. It can read voices
       // and speak, but has no user_read. Verifying against /user would
       // reject it, which is exactly the bug this stub exists to catch.
@@ -49,6 +66,7 @@ beforeAll(async () => {
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
   const port = (server.address() as { port: number }).port;
+  process.env.OMB_MINIMAX_TTS_API = `http://127.0.0.1:${port}/v1`;
   process.env.OMB_ELEVENLABS_API = `http://127.0.0.1:${port}/v1`;
 });
 
@@ -71,10 +89,10 @@ describe("configuration", () => {
     expect(voiceReady({}, "v-per-bot")).toBe(false);
   });
 
-  it("never reports the key itself", async () => {
+  it("defaults the provider to MiniMax and never reports the key itself", async () => {
     const { describeVoice } = await voice();
-    const described = describeVoice(cfg({ key: "sk-secret", voice: "v-1" }));
-    expect(described).toEqual({ configured: true, ready: true, voice: "v-1", provider: "elevenlabs" });
+    const described = describeVoice(cfg({ key: "sk-secret", voice: "alloy" }));
+    expect(described).toEqual({ configured: true, ready: true, voice: "alloy", provider: "minimax" });
     expect(JSON.stringify(described)).not.toContain("sk-secret");
   });
 
@@ -83,7 +101,7 @@ describe("configuration", () => {
     const { speak, NoVoiceConfigured } = await voice();
     expect(() => speak({}, "hi")).toThrow(NoVoiceConfigured);
     expect(() => speak({}, "hi")).toThrow(
-      "Add an ElevenLabs key in Settings on the computer to turn on voice.",
+      "Add a MiniMax key in Settings on the computer to turn on voice.",
     );
     expect(() => speak(cfg({ key: "k" }), "hi")).toThrow(
       "Pick a voice in the agent profile.",
@@ -98,39 +116,108 @@ describe("configuration", () => {
   });
 });
 
-describe("ElevenLabs", () => {
-  const ready = { key: "el-key", voice: "v-1" };
+describe("MiniMax (default provider)", () => {
+  const ready = { key: "sk-mm", voice: "alloy" };
 
-  it("accepts a restricted key that can read voices and speak", async () => {
-    // ElevenLabs keys carry per-endpoint scopes. A key limited to speech
-    // has no user_read, so verifying against /user rejects a key that
-    // works perfectly — the stub 401s /user to hold that line.
+  it("verifies a key against /v1/models with Bearer auth, not the key in the URL", async () => {
+    refuse = null;
+    seen.length = 0;
+    const { verifyKey } = await voice();
+    expect(await verifyKey("sk-mm")).toEqual({ ok: true });
+    const call = seen.at(-1)!;
+    expect(call.method).toBe("GET");
+    expect(call.url.split("?")[0]).toBe("/v1/models");
+    expect(call.headers["authorization"]).toBe("Bearer sk-mm");
+    expect(call.url).not.toContain("sk-mm");
+  });
+
+  it("names the upstream's own message when MiniMax refuses the key", async () => {
+    refuse = { status: 401, body: { error: { message: "Incorrect API key provided." } } };
+    const { verifyKey } = await voice();
+    const result = await verifyKey("nope");
+    refuse = null;
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("Incorrect API key");
+      expect(result.message.toLowerCase()).toContain("minimax");
+    }
+  });
+
+  it("returns the curated voice catalog without hitting the network", async () => {
+    seen.length = 0;
+    const { listVoices } = await voice();
+    const voices = await listVoices(cfg(ready));
+    expect(voices.length).toBeGreaterThanOrEqual(6);
+    expect(voices.map((v) => v.id)).toEqual(expect.arrayContaining(["alloy", "echo", "fable", "onyx", "nova", "shimmer"]));
+    expect(seen).toHaveLength(0);
+  });
+
+  it("POSTs /v1/audio/speech with the voice id and Bearer auth, and decodes mp3 bytes", async () => {
+    seen.length = 0;
+    const { speak } = await voice();
+    const audio = await speak(cfg(ready), "hello there");
+    expect(audio.mime).toBe("audio/mpeg");
+    expect(Buffer.from(audio.bytes)).toEqual(MP3);
+
+    const call = seen.at(-1)!;
+    expect(call.method).toBe("POST");
+    expect(call.url.split("?")[0]).toBe("/v1/audio/speech");
+    expect(call.headers["authorization"]).toBe("Bearer sk-mm");
+    expect(call.url).not.toContain("sk-mm");
+    expect(JSON.parse(call.body)).toMatchObject({
+      model: "MiniMax-1.5-tts-1",
+      voice: "alloy",
+      response_format: "mp3",
+      input: "hello there",
+    });
+  });
+
+  it("lets a caller override the voice per bot", async () => {
+    seen.length = 0;
+    const { speak } = await voice();
+    await speak(cfg(ready), "hello", "onyx");
+    expect(JSON.parse(seen.at(-1)!.body).voice).toBe("onyx");
+  });
+
+  it("surfaces the service's own refusal rather than a bare status", async () => {
+    refuse = { status: 429, body: { error: { message: "Rate limit reached." } } };
+    const { speak } = await voice();
+    const message = await speak(cfg(ready), "hi").catch((e: Error) => e.message);
+    refuse = null;
+    expect(message).toContain("Rate limit");
+  });
+});
+
+describe("ElevenLabs (legacy opt-in)", () => {
+  const ready = { provider: "elevenlabs" as const, key: "el-key", voice: "v-1" };
+
+  it("verifies via the legacy /v1/user probe so a restricted key still passes", async () => {
+    // The legacy driver uses /v1/user which 401s on missing scopes — the
+    // stub deliberately 401s that path to hold the line that a working
+    // restricted key is still valid.  MiniMax verify is exercised above.
     refuse = null;
     seen.length = 0;
     const { verifyKey } = await voice();
     expect(await verifyKey("el-key")).toEqual({ ok: true });
-    expect(seen.map((r) => r.url.split("?")[0])).not.toContain("/v1/user");
   });
 
-  it("says what to do when the key is genuinely refused", async () => {
+  it("says what to do when the ElevenLabs key is genuinely refused", async () => {
     refuse = { status: 401, body: { detail: "invalid api key" } };
     const { verifyKey } = await voice();
     const result = await verifyKey("nope");
     refuse = null;
     expect(result.ok).toBe(false);
-    // names scopes, because "get a fresh key" is the wrong advice when the
-    // key is real but restricted
     if (!result.ok) expect(result.message).toMatch(/permission|restricted/i);
   });
 
-  it("lists voices with their labels", async () => {
+  it("lists ElevenLabs voices with their labels", async () => {
     const { listVoices } = await voice();
     expect(await listVoices(cfg(ready))).toEqual([
       { id: "v-1", label: "Rachel", description: "american · calm" },
     ]);
   });
 
-  it("asks for mp3 and sends the key as a header, never in the URL", async () => {
+  it("posts to ElevenLabs with the voice in the URL and xi-api-key header", async () => {
     seen.length = 0;
     const { speak } = await voice();
     const audio = await speak(cfg(ready), "hello there");
@@ -144,13 +231,6 @@ describe("ElevenLabs", () => {
     expect(call.headers["xi-api-key"]).toBe("el-key");
     expect(call.url).not.toContain("el-key");
     expect(JSON.parse(call.body)).toMatchObject({ text: "hello there", model_id: "eleven_flash_v2_5" });
-  });
-
-  it("lets a caller override the voice per bot", async () => {
-    seen.length = 0;
-    const { speak } = await voice();
-    await speak(cfg(ready), "hello", "v-other");
-    expect(seen.at(-1)!.url).toContain("/v1/text-to-speech/v-other");
   });
 
   it("surfaces the service's own refusal rather than a bare status", async () => {
