@@ -29,7 +29,7 @@ beforeAll(async () => {
       if (refuse) return send(refuse.status, refuse.body);
       const path = (req.url ?? "").split("?")[0];
       if (req.method === "GET" && path === "/v1/models") {
-        return send(200, { data: [{ id: "MiniMax-1.5-tts-1" }] });
+        return send(200, { data: [{ id: "speech-2.8-turbo" }, { id: "speech-2.8-hd" }] });
       }
       if (req.method === "POST" && path === "/v1/audio/speech") {
         res.writeHead(200, { "content-type": "audio/mpeg" });
@@ -88,7 +88,7 @@ describe("verifyKey", () => {
     const result = await verifyKey("bad");
     refuse = null;
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.message).toMatch(/MiniMax-1\.5-tts-1/);
+    if (!result.ok) expect(result.message).toMatch(/speech-2\.8-turbo/);
   });
 
   it("returns a network-shaped failure when the fetch throws", async () => {
@@ -141,7 +141,7 @@ describe("synthesize", () => {
     expect(call.headers["content-type"]).toBe("application/json");
     expect(call.headers["accept"]).toBe("audio/mpeg");
     expect(JSON.parse(call.body)).toEqual({
-      model: "MiniMax-1.5-tts-1",
+      model: "speech-2.8-turbo",
       input: "hi there",
       voice: "alloy",
       response_format: "mp3",

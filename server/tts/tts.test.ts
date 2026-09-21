@@ -41,7 +41,7 @@ beforeAll(async () => {
       // /v1/models is the cheapest MiniMax endpoint that needs a real auth
       // header; it reports a precise 401/403 on a bad key, so verifyKey
       // uses it rather than /audio/speech.
-      if (req.method === "GET" && path === "/v1/models") return send(200, { data: [{ id: "MiniMax-1.5-tts-1" }] });
+      if (req.method === "GET" && path === "/v1/models") return send(200, { data: [{ id: "speech-2.8-turbo" }, { id: "speech-2.8-hd" }] });
       if (req.method === "POST" && path === "/v1/audio/speech") {
         res.writeHead(200, { "content-type": "audio/mpeg" });
         return res.end(MP3);
@@ -165,7 +165,7 @@ describe("MiniMax (default provider)", () => {
     expect(call.headers["authorization"]).toBe("Bearer sk-mm");
     expect(call.url).not.toContain("sk-mm");
     expect(JSON.parse(call.body)).toMatchObject({
-      model: "MiniMax-1.5-tts-1",
+      model: "speech-2.8-turbo",
       voice: "alloy",
       response_format: "mp3",
       input: "hello there",

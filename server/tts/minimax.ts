@@ -14,7 +14,10 @@
 // only place that has to learn it.
 
 const API = process.env.OMB_MINIMAX_TTS_API || "https://api.minimax.io/v1";
-const MODEL = "MiniMax-1.5-tts-1";
+// MiniMax's current TTS line is speech-2.8 — turbo is the cheap default,
+// hd is the premium option.  A config-driven override lets the operator
+// pick per-bot without a redeploy.
+const MODEL = process.env.OMB_MINIMAX_TTS_MODEL || "speech-2.8-turbo";
 const FORMAT = "mp3";
 const DEFAULT_VOICE = "alloy";
 
