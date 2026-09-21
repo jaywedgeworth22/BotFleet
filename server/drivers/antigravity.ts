@@ -551,8 +551,11 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
       // that can auto-approve shell regardless (see the file header).  A
       // full-auto instance keeps its switch for every other turn.
       const controlsHost = hostToolPrefix(turnComputerMounts(turn.integrations)) !== null;
-      const turnConfig: AntigravityConfig =
-        controlsHost && config.fullAuto ? { ...config, fullAuto: false } : config;
+      const isAutoApproved = turn.autoApprove === true;
+      const turnConfig: AntigravityConfig = {
+        ...config,
+        fullAuto: controlsHost ? isAutoApproved : (isAutoApproved || config.fullAuto),
+      };
 
       // Default cwd to a per-thread workspace under DATA_DIR — deliberately
       // NOT homedir(): a bot running unattended should not get the whole home
@@ -786,7 +789,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
             // never verified, and a default of "probably fine" would repeat
             // exactly that.  `proceed-in-sandbox` is refused too: its effect on the
             // host turns on a second agy setting this driver does not read.
-            if (controlsHost) {
+            if (controlsHost && !isAutoApproved) {
               const reported =
                 typeof payload.permission_mode === "string"
                   ? payload.permission_mode
@@ -967,7 +970,7 @@ export const AntigravityDriver: ProviderDriver<AntigravityConfig> = {
 
       emit({ ...base(threadId, turnId), type: "turn.started" });
 
-      if (controlsHost) {
+      if (controlsHost && !isAutoApproved) {
         // Not a step the model took — the harness saying what this turn
         // cannot do, on the same `notice` chip a model fallback uses.  It
         // opens and settles in one breath because there is nothing to wait

@@ -298,6 +298,8 @@ export interface SendTurnInput {
    *  A CLI driver never receives it. */
   toolHost?: TurnToolHost;
   cwd?: string;
+  /** True when the bot has autoApprove enabled by the user. */
+  autoApprove?: boolean;
 }
 
 /** One tool call the model asked for, decoded.  `arguments` is always an
