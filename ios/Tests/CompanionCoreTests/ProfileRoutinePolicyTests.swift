@@ -47,43 +47,27 @@ final class ProfileRoutinePolicyTests: XCTestCase {
         XCTAssertTrue(withDefault.canSpeak(agentVoice: nil))
     }
 
-    func testOnlyTheEngineTheServerNamesGetsItsOwnExplanation() throws {
-        // The built-in engine is the reason "configured" stopped meaning "a
-        // key is on file" — so the copy that explains a false has to know
-        // which engine it is talking about.
+    func testVoiceProviderClassificationMatchesServerDefault() throws {
         XCTAssertEqual(try decodeConfig(#"{"tts":{"configured":false,"provider":"system"}}"#).voiceProvider, .system)
-
-        // Everything else is ElevenLabs: `voiceProvider(cfg)` in
-        // `server/tts/index.ts` matches that one exact string and falls back
-        // for the rest. Each case is asserted on its own, because a rule that
-        // merely matched "system" loosely would still pass the assertion
-        // above while explaining someone's ElevenLabs setup as a Mac voice.
+        XCTAssertEqual(try decodeConfig(#"{"tts":{"configured":true,"provider":"elevenlabs"}}"#).voiceProvider, .elevenlabs)
+        XCTAssertEqual(try decodeConfig(#"{"tts":{"configured":false,"provider":"minimax"}}"#).voiceProvider, .minimax)
         XCTAssertEqual(
-            try decodeConfig(#"{"tts":{"configured":true,"ready":true,"voice":"v"}}"#).voiceProvider, .elevenlabs,
-            "a computer older than the choice does not send the field at all"
+            try decodeConfig(#"{"tts":{"configured":true,"ready":true,"voice":"v"}}"#).voiceProvider, .minimax,
+            "a missing provider uses the server's MiniMax default"
         )
         XCTAssertEqual(
-            try decodeConfig(#"{"tts":{"configured":true,"provider":"elevenlabs"}}"#).voiceProvider, .elevenlabs
+            try decodeConfig("{}").voiceProvider, .minimax,
+            "a missing voice block also uses the server's MiniMax default"
         )
         XCTAssertEqual(
-            try decodeConfig(#"{"tts":{"configured":false,"provider":"System"}}"#).voiceProvider, .elevenlabs,
-            "only the exact string the server writes selects the built-in engine"
+            try decodeConfig(#"{"tts":{"configured":false,"provider":"cartesia"}}"#).voiceProvider, .unknown,
+            "a future provider must not borrow MiniMax or ElevenLabs setup copy"
         )
         XCTAssertEqual(
-            try decodeConfig(#"{"tts":{"configured":false,"provider":"cartesia"}}"#).voiceProvider, .elevenlabs,
-            "an engine this build has never heard of must not borrow another engine's copy"
-        )
-        XCTAssertEqual(
-            try decodeConfig(#"{"tts":{"configured":false,"provider":"system-voices"}}"#).voiceProvider, .elevenlabs,
-            "a future engine whose name merely contains the old one is still unknown: matching loosely would explain it with Mac-voice copy and a Mac-voice remedy"
-        )
-        XCTAssertEqual(
-            try decodeConfig("{}").voiceProvider, .elevenlabs,
-            "no voice block at all is not the built-in engine either"
+            try decodeConfig(#"{"tts":{"configured":false,"provider":"System"}}"#).voiceProvider, .unknown,
+            "provider matching follows the server's exact wire values"
         )
 
-        // The flag itself stays provider-neutral: the meaning of a true moved,
-        // not its shape, and nothing above may quietly change who can speak.
         XCTAssertTrue(try decodeConfig(#"{"tts":{"configured":true,"provider":"system","voice":"Albert"}}"#).canSpeak(agentVoice: nil))
         XCTAssertFalse(try decodeConfig(#"{"tts":{"configured":false,"provider":"system","voice":"Albert"}}"#).canSpeak(agentVoice: nil))
     }
