@@ -396,9 +396,17 @@ export type LocalQuotaFreshnessView = {
 
 /** The app that writes the local handoff.  It names itself in the payload;
  *  the fallback is the menu-bar app that has always written this file, since
- *  the file is the only thing that could say otherwise. */
+ *  the file is the only thing that could say otherwise.
+ *
+ *  CodeCaps renamed on the wire from `agent-bar` to `codecaps` on 2026-09-20
+ *  (PR #22 in jaywedgeworth22/codecaps).  Both values resolve to the new
+ *  brand in the UI; anything else falls through to "CodeCaps" as the
+ *  assumed writer of the local handoff path. */
 export function quotaProducerLabel(producer?: string | null): string {
-  return (producer ?? "").trim().toLowerCase() === "usage-monitor" ? "Usage Monitor" : "AgentBar";
+  const value = (producer ?? "").trim().toLowerCase();
+  if (value === "usage-monitor") return "Usage Monitor";
+  if (value === "codecaps" || value === "agent-bar") return "CodeCaps";
+  return "CodeCaps";
 }
 
 /** Sentence-case status line for an empty quota grid, or null while the
@@ -422,7 +430,7 @@ export function localQuotaStatusLine(freshness: LocalQuotaFreshnessView | null |
   return `${producer}'s quota file could not be read`;
 }
 
-/** "Claude: sign in again to refresh quota (from AgentBar)" — the reason a
+/** "Claude: sign in again to refresh quota (from CodeCaps)" — the reason a
  *  provider reported nothing, attributed to the app that measured it.  The
  *  reason is the producer's own user-safe text: rendered as plain text,
  *  never markup, and capped again here in case it reached this module by

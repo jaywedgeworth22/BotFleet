@@ -208,7 +208,7 @@ describe("local subscription caps", () => {
   const codex = { instanceId: "codex", driverKind: "codex", models: { options: [{ id: "gpt-5.2-codex" }] } };
 
   const poller = (windows: RemoteQuotaWindow[], settings: QuotaPollerSettings = {}, instances = [codex]) => {
-    const made = new UsageQuotaPoller(async () => ({ windows, freshness: { state: "fresh", generatedAt: new Date(Date.now()).toISOString(), ageMs: 0 }, producer: "agent-bar", issues: {} }));
+    const made = new UsageQuotaPoller(async () => ({ windows, freshness: { state: "fresh", generatedAt: new Date(Date.now()).toISOString(), ageMs: 0 }, producer: "codecaps", issues: {} }));
     made.configure({ settings: () => settings, instances: () => instances });
     return made;
   };
@@ -412,7 +412,7 @@ describe("local subscription caps", () => {
       let reads = 0;
       const made = new UsageQuotaPoller(async () => {
         reads += 1;
-        return { windows: [exploding], freshness: { state: "fresh", generatedAt: new Date().toISOString(), ageMs: 0 }, producer: "agent-bar", issues: {} };
+        return { windows: [exploding], freshness: { state: "fresh", generatedAt: new Date().toISOString(), ageMs: 0 }, producer: "codecaps", issues: {} };
       });
       made.configure({ settings: () => ({}), instances: () => [codex] });
 

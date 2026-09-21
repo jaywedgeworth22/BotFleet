@@ -522,29 +522,46 @@ describe("absolute allowances and handoff health", () => {
     expect(localQuotaStatusLine({ state: "fresh", generatedAt: new Date().toISOString() })).toBeNull();
     expect(localQuotaStatusLine(null)).toBeNull();
     expect(localQuotaStatusLine({ state: "missing" })).toBe(
-      "AgentBar is not running, so no local subscription quota is available",
+      "CodeCaps is not running, so no local subscription quota is available",
     );
     const written = Date.now() - 1_800_000;
-    expect(localQuotaStatusLine({ state: "stale", generatedAt: new Date(written).toISOString(), producer: "agent-bar" }))
-      .toBe(`AgentBar has not written quota since ${new Date(written).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
-    expect(localQuotaStatusLine({ state: "unreadable" })).toBe("AgentBar's quota file could not be read");
+    expect(localQuotaStatusLine({ state: "stale", generatedAt: new Date(written).toISOString(), producer: "codecaps" }))
+      .toBe(`CodeCaps has not written quota since ${new Date(written).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`);
+    expect(localQuotaStatusLine({ state: "unreadable" })).toBe("CodeCaps's quota file could not be read");
+  });
+
+  it("maps the legacy agent-bar producer to the new CodeCaps label", () => {
+    // CodeCaps renamed on the wire from "agent-bar" to "codecaps" on
+    // 2026-09-20.  An older build still writing "agent-bar" must render
+    // under the new brand, not the old one — that's the whole point of the
+    // back-compat alias in `quotaProducerLabel`.
+    expect(quotaProducerLabel("agent-bar")).toBe("CodeCaps");
+    expect(quotaProducerLabel("codecaps")).toBe("CodeCaps");
+    expect(quotaProducerLabel("usage-monitor")).toBe("Usage Monitor");
+    expect(quotaProducerLabel(undefined)).toBe("CodeCaps");
+    expect(quotaProducerLabel(null)).toBe("CodeCaps");
+    expect(quotaProducerLabel("  AGENT-BAR  ")).toBe("CodeCaps");
   });
 
   it("attributes a provider's read failure to the app that measured it", () => {
-    expect(providerIssueLine("Claude", "Sign in again to refresh quota", "agent-bar"))
-      .toBe("Claude: Sign in again to refresh quota (from AgentBar)");
-    expect(providerIssueLine("Claude", "  ", "agent-bar")).toBeNull();
+    expect(providerIssueLine("Claude", "Sign in again to refresh quota", "codecaps"))
+      .toBe("Claude: Sign in again to refresh quota (from CodeCaps)");
+    expect(providerIssueLine("Claude", "  ", "codecaps")).toBeNull();
     expect(providerIssueLine("Claude", undefined)).toBeNull();
     const long = providerIssueLine("Cursor", "x".repeat(400));
-    expect(long?.length).toBeLessThanOrEqual("Cursor: ".length + 160 + " (from AgentBar)".length);
+    expect(long?.length).toBeLessThanOrEqual("Cursor: ".length + 160 + " (from CodeCaps)".length);
     // The reason is the producer's text and stays text: angle brackets are
     // carried through verbatim rather than stripped or escaped here, because
     // the row renders this as a JSX text child and never as markup.  Escaping
     // it in the string would show the entity to the reader instead.
-    expect(providerIssueLine("Claude", '<b>read failed</b>', "agent-bar"))
-      .toBe("Claude: <b>read failed</b> (from AgentBar)");
+    expect(providerIssueLine("Claude", '<b>read failed</b>', "codecaps"))
+      .toBe("Claude: <b>read failed</b> (from CodeCaps)");
     // Wrapped prose folds onto the one line the row has room for.
-    expect(providerIssueLine("Claude", "Sign in again.\nOpen AgentBar to retry.", "agent-bar"))
-      .toBe("Claude: Sign in again. Open AgentBar to retry. (from AgentBar)");
+    expect(providerIssueLine("Claude", "Sign in again.\nOpen CodeCaps to retry.", "codecaps"))
+      .toBe("Claude: Sign in again. Open CodeCaps to retry. (from CodeCaps)");
+    // Back-compat: an older CodeCaps build still writing "agent-bar" still
+    // resolves to the same rendered string.
+    expect(providerIssueLine("Claude", "Sign in again to refresh quota", "agent-bar"))
+      .toBe("Claude: Sign in again to refresh quota (from CodeCaps)");
   });
 });
