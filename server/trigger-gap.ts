@@ -79,6 +79,10 @@ export function coalesce(candidates: readonly GapCandidate[], key: string): GapD
  * Identical prompts are the common case — one webhook, one template — so
  * repeating it N times would spend context saying nothing.  The count is
  * what carries the news. */
+/** Folded distinct deliveries stay under this so a gap batch cannot rebuild
+ * the 700 KB prompt that timed out Grok ACP and then failed Antigravity. */
+export const MAX_FOLD_CHARS = 64_000;
+
 export function foldPrompts(decision: GapDecision): string {
   const prompts = [decision.run, ...decision.folded]
     .map((candidate) => (candidate.prompt ?? "").trim())
@@ -91,5 +95,23 @@ export function foldPrompts(decision: GapDecision): string {
       : `${distinct[0]}\n\n(${prompts.length} deliveries arrived while this trigger was waiting.  They are identical; handle them together.)`;
   }
   const header = `${prompts.length} deliveries arrived while this trigger was waiting.  Handle them together.`;
-  return [header, ...distinct.map((prompt, index) => `--- ${index + 1} ---\n${prompt}`)].join("\n\n");
+  const sections = distinct.map((prompt, index) => `--- ${index + 1} ---\n${prompt}`);
+  const full = [header, ...sections].join("\n\n");
+  if (full.length <= MAX_FOLD_CHARS) return full;
+  // Newest conclusions matter for compile-gate.  Keep from the end.
+  const omitted = "[Earlier deliveries omitted for length]";
+  const kept: string[] = [];
+  let used = header.length + 2 + omitted.length;
+  for (let i = sections.length - 1; i >= 0; i--) {
+    const extra = 2 + sections[i]!.length;
+    if (kept.length > 0 && used + extra > MAX_FOLD_CHARS) break;
+    if (kept.length === 0 && used + extra > MAX_FOLD_CHARS) {
+      const budget = Math.max(0, MAX_FOLD_CHARS - used - 2);
+      kept.unshift(sections[i]!.slice(0, budget));
+      break;
+    }
+    kept.unshift(sections[i]!);
+    used += extra;
+  }
+  return [header, omitted, ...kept].join("\n\n");
 }
