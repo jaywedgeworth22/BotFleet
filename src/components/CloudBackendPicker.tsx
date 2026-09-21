@@ -27,8 +27,8 @@ export function CloudBackendPicker({
       <div className="text-[12px] font-medium text-ink">Cloud Backend</div>
       <div className="mt-0.5 text-[11.5px] text-ink-secondary">
         {value === "vps"
-          ? "Your own SSH-configured Linux host, with a separate desktop per bot on that one machine. Auto reuses a running container by default; enable Start VPS automatically to let it create or wake one. Open the live desktop securely from the computer panel."
-          : "ASCII.dev Box is the default hosted computer, one per bot. Choose Self-hosted VPS to run the desktops on your own server instead."}
+          ? "Your own SSH-configured Linux host, with a separate desktop per bot on that one machine.  Auto reuses a running container by default; enable Start VPS automatically to let it create or wake one.  Open the live desktop securely from the computer panel."
+          : "ASCII.dev Box is the default hosted computer, one per bot.  Choose Self-hosted VPS to run the desktops on your own server instead."}
       </div>
       <div className="mt-2 flex overflow-hidden rounded-lg border border-hairline/40">
         {(["box", "vps"] as const).map((backend, i) => {
@@ -43,17 +43,19 @@ export function CloudBackendPicker({
                 "flex-1 py-1.5 text-[12px]",
                 i > 0 && "border-l border-hairline/40",
                 disabled && "cursor-not-allowed opacity-40",
-                value === backend ? "bg-raised text-ink" : "text-ink-secondary hover:bg-raised/60 hover:text-ink",
+                value === backend
+                  ? "bg-control text-ink font-medium"
+                  : "text-ink-secondary hover:bg-control/60 hover:text-ink",
               )}
             >
-              {backend === "vps" ? "Self-hosted VPS" : "Box"}
+              {backend === "vps" ? "Self-hosted VPS" : "ASCII.dev Box"}
             </button>
           );
         })}
       </div>
       {inherited && (
         <div className="mt-2 text-[11.5px] text-ink-secondary">
-          This bot has not chosen one, so it follows the New Bots default in App Settings → Local VM.  Picking
+          This bot has not chosen one, so it follows the New Bots default in App Settings → Computers.  Picking
           either sets this bot's own, and it stops following.
         </div>
       )}
