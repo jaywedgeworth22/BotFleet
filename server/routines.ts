@@ -167,6 +167,9 @@ interface RoutineFile {
   runs: RoutineRun[];
   /** Durable commit receipts for cross-file confirmation recovery. */
   routineRequestReceipts?: RoutineRequestReceipt[];
+  /** Manual bot snoozes, keyed by bot id.  `null` is an indefinite snooze
+   * (Infinity is not valid JSON); a number is the epoch-ms expiry. */
+  botSnoozes?: Record<string, number | null>;
 }
 
 export type RoutineRequestOwner = Pick<RoutineRequestReceipt, "requestId" | "messageId" | "botId" | "threadId">;
@@ -370,6 +373,18 @@ export class RoutineManager {
             Number.isFinite(receipt?.appliedAt)
           )
         : [];
+      // Manual snoozes survive restarts: a crash or relaunch must not clear
+      // a user's explicit stop and let the next schedule or webhook restart
+      // the bot.  Expired finite snoozes are dropped, not revived.
+      if (disk.botSnoozes) {
+        for (const [botId, until] of Object.entries(disk.botSnoozes)) {
+          if (until === null) {
+            this.botSnoozeUntil.set(botId, Infinity);
+          } else if (typeof until === "number" && Number.isFinite(until) && until > this.now()) {
+            this.botSnoozeUntil.set(botId, until);
+          }
+        }
+      }
     } catch {
       this.routines = [];
       this.runs = [];
@@ -423,14 +438,18 @@ export class RoutineManager {
 
   snoozeBot(botId: string, durationMs = Infinity): void {
     this.botSnoozeUntil.set(botId, durationMs === Infinity ? Infinity : this.now() + durationMs);
+    this.save();
   }
 
   clearBotSnooze(botId: string): void {
-    this.botSnoozeUntil.delete(botId);
+    if (this.botSnoozeUntil.delete(botId)) this.save();
   }
 
   clearAllBotSnoozes(): void {
-    this.botSnoozeUntil.clear();
+    if (this.botSnoozeUntil.size > 0) {
+      this.botSnoozeUntil.clear();
+      this.save();
+    }
   }
 
   isBotSnoozed(botId: string): boolean {
@@ -1287,11 +1306,23 @@ export class RoutineManager {
     boundStalePromptSnapshots(this.runs, PROMPT_SNAPSHOT_LIMIT, receiptResultIds);
     mkdirSync(dirname(this.file), { recursive: true });
     const temp = `${this.file}.tmp`;
+    const now = this.now();
+    const botSnoozes: Record<string, number | null> = {};
+    for (const [botId, until] of this.botSnoozeUntil) {
+      if (until === Infinity) {
+        botSnoozes[botId] = null;
+      } else if (until > now) {
+        botSnoozes[botId] = until;
+      } else {
+        this.botSnoozeUntil.delete(botId);
+      }
+    }
     writeFileSync(temp, JSON.stringify({
       version: 1,
       routines: this.routines,
       runs: this.runs,
       routineRequestReceipts: this.routineRequestReceipts,
+      ...(Object.keys(botSnoozes).length > 0 ? { botSnoozes } : {}),
     } satisfies RoutineFile, null, 2));
     renameSync(temp, this.file);
   }

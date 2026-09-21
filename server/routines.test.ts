@@ -1267,5 +1267,33 @@ describe("RoutineManager", () => {
       expect(requeued).toBe(true);
       expect(h.manager.listRuns()[0]?.status).toBe("queued");
     });
+
+    it("persists bot snoozes across manager restarts", () => {
+      const h = harness();
+      h.manager.snoozeBot("compiler-bot");
+      h.manager.snoozeBot("finite-bot", 60_000);
+      const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+      expect(disk.botSnoozes).toMatchObject({ "compiler-bot": null, "finite-bot": expect.any(Number) });
+
+      const restarted = new RoutineManager(h.options);
+      expect(restarted.isBotSnoozed("compiler-bot")).toBe(true);
+      expect(restarted.isBotSnoozed("finite-bot")).toBe(true);
+
+      // An expired finite snooze does not revive after a restart.
+      h.setNow(h.options.now!() + 61_000);
+      const later = new RoutineManager(h.options);
+      expect(later.isBotSnoozed("finite-bot")).toBe(false);
+      expect(later.isBotSnoozed("compiler-bot")).toBe(true);
+    });
+
+    it("drops a persisted snooze once it is cleared", () => {
+      const h = harness();
+      h.manager.snoozeBot("compiler-bot");
+      h.manager.clearBotSnooze("compiler-bot");
+      const restarted = new RoutineManager(h.options);
+      expect(restarted.isBotSnoozed("compiler-bot")).toBe(false);
+      const disk = JSON.parse(readFileSync(h.options.file!, "utf8"));
+      expect(disk.botSnoozes ?? {}).not.toHaveProperty("compiler-bot");
+    });
   });
 });
