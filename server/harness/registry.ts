@@ -9,7 +9,7 @@ import { windowHeadlines, windowsLabelFromHeadlines } from "../../src/lib/quota-
 import { lastAntigravityQuotaSnapshot, quotaModelsFromSnapshot } from "../antigravity-quota.ts";
 import { decodeMinimaxConfig, resolveMinimaxCredentials, type MinimaxConfig } from "../drivers/minimax.ts";
 import { findCliCandidates } from "../env-path.ts";
-import { getCachedLocalMiniMaxConfig, getMiniMaxBalance } from "../minimax-balance.ts";
+import { applyMiniMaxBalanceToRegistry, getCachedLocalMiniMaxConfig, getMiniMaxBalance } from "../minimax-balance.ts";
 import { quotaCooldowns } from "../model-fallback.ts";
 import { computerReach, type ComputerReach } from "../computer-capability.ts";
 import { quotaProviderForDriver } from "../quota-window-map.ts";
@@ -475,6 +475,16 @@ export class ProviderRegistry {
           // the turns — and this reading is what publishes `quota.capped`.
           const ctx = this.minimaxContextByInstance.get(inst.instanceId);
           const balance = await getMiniMaxBalance(ctx?.apiKey, ctx?.apiUrl);
+          // Broadcast an account-level cap (wallet empty, both Token
+          // Plan windows at 0%) to every bot reusing the instance so
+          // they fall to their fallback chain instead of each bot
+          // re-paging the same dead wallet. Mirrors how
+          // `applyAntigravityUsageToRegistry` handles Antigravity —
+          // see server/antigravity-quota.ts:185 and board
+          // 555c5227 for the original finding. Idempotent across
+          // consecutive describe() calls; cleared automatically when
+          // the balance recovers to `ok` or `near_cap`.
+          applyMiniMaxBalanceToRegistry(balance);
           const general = balance.models?.general;
           // A pay-as-you-go account with an empty wallet has no "general"
           // pool at all (server/minimax-balance.ts never populates `models`
