@@ -6250,6 +6250,33 @@ function beginUpdateAdmission(): (() => void) | null {
   };
 }
 
+// Undo a forced quiesce that cannot proceed.  A refused update must hand the
+// harness back in working order — requeue the cancelled routine runs, drop the
+// stop latches, discard the resume snapshot (no reboot is coming, and a stale
+// snapshot would corrupt a future update's resume), and restart the schedulers —
+// instead of leaving the runtime fenced and rejecting new turns until a manual
+// unquiesce or restart.
+function rollbackForcedQuiesce(
+  interruptedRuns: RoutineRun[],
+  interruptedBots: Array<{ botId: string; threadId: string }>,
+) {
+  for (const run of interruptedRuns) {
+    try {
+      routines?.requeueRun(run.id);
+    } catch {}
+  }
+  for (const { botId, threadId } of interruptedBots) {
+    stoppedTurns.delete(`${botId}:${threadId}`);
+  }
+  try {
+    unlinkSync(join(DATA_DIR, "pending-update-resume.json"));
+  } catch {}
+  runtimeQuiescing = false;
+  routines?.start();
+  resourceTriggers.start();
+  infisical.start();
+}
+
 async function beginRuntimeQuiesce(force = false) {
   const readiness = currentRuntimeReadiness();
   if (!force && !readiness.safeToRestart) {
@@ -6257,6 +6284,18 @@ async function beginRuntimeQuiesce(force = false) {
   }
   if (runtimeQuiescing) {
     return { ...readiness, quiescing: true };
+  }
+  if (force) {
+    // Room turns cannot be re-dispatched after an update without duplicating
+    // the transcript (startGroupTurn always appends the prompt), so a live
+    // room turn refuses the forced update outright — before the fence goes up
+    // and before anything is interrupted.
+    const roomTurnActive = store.bots.some(
+      (bot) => bot.busy && store.groupByThread(bot.inflightThreadId ?? bot.threadId),
+    );
+    if (roomTurnActive) {
+      return { ...currentRuntimeReadiness(), quiescing: false };
+    }
   }
   runtimeQuiescing = true;
   routines?.stop();
@@ -6324,37 +6363,36 @@ async function beginRuntimeQuiesce(force = false) {
       }
       if (!snapshotSaved) {
         // The snapshot is the only recovery path for interrupted work, so an
-        // update that cannot persist it must not proceed.  Restore what can
-        // be restored — requeue the cancelled routine runs, drop the stop
-        // latches — and hand the fence back refused so the updater stands down.
-        for (const run of interruptedRuns) {
-          try {
-            routines?.requeueRun(run.id);
-          } catch {}
-        }
-        for (const { botId, threadId } of interruptedBots) {
-          stoppedTurns.delete(`${botId}:${threadId}`);
-        }
-        runtimeQuiescing = false;
-        routines?.start();
-        resourceTriggers.start();
-        infisical.start();
+        // update that cannot persist it must not proceed.  Roll the forced
+        // quiesce back and hand the fence back refused so the updater stands
+        // down.
+        rollbackForcedQuiesce(interruptedRuns, interruptedBots);
         const abortedReadiness = currentRuntimeReadiness();
         return { ...abortedReadiness, quiescing: false };
       }
     }
 
     await new Promise((r) => setTimeout(r, 200));
+
+    // Report the actual final safety state.  Forcing interrupts the routines
+    // and busy bots above, but anything else still counted — a queued send, a
+    // completion fold, a provider reload, a VM lifecycle operation — has not
+    // been settled, and claiming safeToRestart here would let the updater kill
+    // the harness mid-operation.  If it has not drained, the update is refused
+    // and the forced quiesce is rolled back: leaving the runtime fenced here
+    // would reject new turns until a manual unquiesce or restart, with no
+    // update coming to relieve it.
+    const finalReadiness = currentRuntimeReadiness();
+    if (!finalReadiness.safeToRestart) {
+      rollbackForcedQuiesce(interruptedRuns, interruptedBots);
+      const rolledBack = currentRuntimeReadiness();
+      return { ...rolledBack, quiescing: false };
+    }
+    return { ...finalReadiness, quiescing: true };
   }
 
-  // Report the actual final safety state.  Forcing interrupts the routines
-  // and busy bots above, but anything else still counted — a queued send, a
-  // completion fold, a provider reload, a VM lifecycle operation — has not
-  // been settled, and claiming safeToRestart here would let the updater kill
-  // the harness mid-operation.  Until those drain, quiesce is refused and the
-  // updater's fence stays down.
-  const finalReadiness = currentRuntimeReadiness();
-  return { ...finalReadiness, quiescing: true };
+  const idleReadiness = currentRuntimeReadiness();
+  return { ...idleReadiness, quiescing: true };
 }
 
 function endRuntimeQuiesce() {
@@ -10813,8 +10851,11 @@ if (existsSync(pendingResumePath)) {
   try {
     const raw = readFileSync(pendingResumePath, "utf-8");
     const resumeState = JSON.parse(raw);
-    console.log("[update-resume] Found pending update resume snapshot — unsnoozing bots and requeuing runs");
-    routines?.clearAllBotSnoozes();
+    console.log("[update-resume] Found pending update resume snapshot — requeuing runs");
+    // NB: bot snoozes are deliberately left alone.  The forced quiesce path
+    // never creates snoozes — it cancels routine runs and latches chat turns
+    // directly — so any snooze on disk is an unrelated manual stop that must
+    // survive the update.
     if (Array.isArray(resumeState.interruptedRuns)) {
       for (const run of resumeState.interruptedRuns) {
         if (run?.id) routines?.requeueRun(run.id);
