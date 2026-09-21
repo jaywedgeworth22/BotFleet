@@ -570,8 +570,12 @@ public struct InstanceList: Codable, Sendable {
 /// Which engine actually speaks — `VoiceProvider` in `server/tts/index.ts`.
 /// Derived from `ConfigFlag.provider`, never decoded straight off the wire.
 public enum VoiceProvider: Hashable, Sendable {
+    case minimax
     case elevenlabs
     case system
+    /// A provider this phone build does not know yet. Keep its setup copy
+    /// generic rather than sending the person toward the wrong credential.
+    case unknown
 }
 
 public struct ConfigFlag: Codable, Hashable, Sendable {
@@ -673,14 +677,17 @@ public struct ConfigStatus: Codable, Sendable {
         return isTTSConfigured && (hasAgentVoice || hasWorkspaceDefaultVoice)
     }
 
-    /// `voiceProvider(cfg)` in `server/tts/index.ts`: only the exact string
-    /// `"system"` selects the built-in engine. A missing field — a computer
-    /// older than the choice — and an engine this build has never heard of
-    /// both fall back to ElevenLabs, which is the server's own rule and what
-    /// keeps an unrecognised engine from being explained to the user with
-    /// copy written for a different one.
+    /// Mirrors `voiceProvider(cfg)` in `server/tts/index.ts`: a missing
+    /// provider is MiniMax because that is the server default. Known values
+    /// get provider-specific setup copy; an engine this phone build has never
+    /// heard of stays unknown rather than borrowing another provider's copy.
     public var voiceProvider: VoiceProvider {
-        tts?.provider == "system" ? .system : .elevenlabs
+        switch tts?.provider {
+        case nil, "minimax": return .minimax
+        case "elevenlabs": return .elevenlabs
+        case "system": return .system
+        default: return .unknown
+        }
     }
 }
 
