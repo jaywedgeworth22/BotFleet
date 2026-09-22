@@ -799,12 +799,49 @@ export function ensureDirs() {
   for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR]) mkdirSync(dir, { recursive: true });
 }
 
+/** Migration: pin legacy ElevenLabs installs (tts.key + tts.voice, no
+ * tts.provider) to provider: "elevenlabs" so PR #513's MiniMax default does
+ * not silently route a valid ElevenLabs key to MiniMax's `/v1/models`.
+ * Idempotent: returns false if provider is already set, if the tts section
+ * is empty, or if only a voice (no key) is present.  Mutates the cfg in
+ * place so `loadConfig()` can persist the pinned value via `saveConfig`.
+ *
+ * The shape check is "key is present" rather than "voice is also present"
+ * because a user who only configured a key (no voice picked yet) should
+ * still default to ElevenLabs — that's the operator's existing surface,
+ * not MiniMax's. */
+export function migrateLegacyElevenLabsTtsProvider(cfg: AppConfig): boolean {
+  if (!cfg.tts) return false;
+  if (cfg.tts.provider !== undefined) return false;
+  // Trim because a stale env-overlay can leave a whitespace-only key that
+  // would not match any provider's `verifyKey` probe; that case is "no key".
+  if (!cfg.tts.key?.trim()) return false;
+  cfg.tts = { ...cfg.tts, provider: "elevenlabs" };
+  return true;
+}
+
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
   try {
     cfg = parseStoredConfig(parseJson(readFileSync(join(DATA_DIR, "config.json"), "utf8")));
   } catch {
     /* first run — env fallbacks below */
+  }
+  // Migration: existing installations with `tts.key` + `tts.voice` but no
+  // `tts.provider` were silently ElevenLabs installs before PR #513 flipped
+  // the default to MiniMax.  Without this pin, every legacy ElevenLabs user
+  // would route their valid ElevenLabs key to MiniMax's `/v1/models` after
+  // upgrade and lose audio until they re-entered the provider manually.
+  // Pin provider: "elevenlabs" on those configs and persist the change so
+  // the next launch is idempotent.
+  if (migrateLegacyElevenLabsTtsProvider(cfg)) {
+    try {
+      saveConfig(cfg);
+    } catch {
+      // Best-effort migration write; the in-memory cfg is already correct
+      // for this session, so a save failure here only delays the on-disk
+      // pin until the next operator-driven save lands.
+    }
   }
   // these secrets OS-encrypted and hands them to this process as env at
   // spawn, leaving config.json without the plaintext field — so the file

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   DATA_DIR,
+  migrateLegacyElevenLabsTtsProvider,
   allowedBotComputers,
   filterAllowedComputers,
   instanceConfigs,
@@ -697,7 +698,7 @@ describe("credential env preference", () => {
     expect(cfg.xai).toEqual({ key: "env-xai", url: "https://api.example.test/v1" });
     expect(cfg.box).toEqual({ token: "env-box" });
     expect(cfg.opencodeGo).toEqual({ apiKey: "env-ocg" });
-    expect(cfg.tts).toEqual({ key: "env-tts", voice: "narrator" });
+    expect(cfg.tts).toEqual({ key: "env-tts", voice: "narrator", provider: "elevenlabs" });
     expect(cfg.imageGen).toEqual({ key: "env-image" });
     expect(cfg.deepseek).toEqual({ key: "env-deepseek", url: "https://env.example.test" });
   });
@@ -1195,6 +1196,37 @@ describe("observability settings", () => {
   it("keeps an explicit zero sample rate instead of defaulting it away", () => {
     expect(observabilitySettings({ observability: { tracesSampleRate: 0 } }).tracesSampleRate).toBe(0);
     expect(observabilitySettings({ observability: { logsEnabled: false } }).logsEnabled).toBe(false);
+  });
+});
+
+describe("migrateLegacyElevenLabsTtsProvider", () => {
+  it("pins provider: elevenlabs on a legacy config that has tts.key but no provider", () => {
+    const cfg: AppConfig = { tts: { key: "sk-eleven-legacy", voice: "Rachel" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(true);
+    expect(cfg.tts?.provider).toBe("elevenlabs");
+    expect(cfg.tts?.key).toBe("sk-eleven-legacy");
+    expect(cfg.tts?.voice).toBe("Rachel");
+  });
+
+  it("is a no-op when tts.provider is already set", () => {
+    const cfg: AppConfig = { tts: { key: "k", provider: "minimax" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+    expect(cfg.tts?.provider).toBe("minimax");
+  });
+
+  it("is a no-op when tts is absent", () => {
+    const cfg: AppConfig = {};
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+  });
+
+  it("is a no-op when only tts.voice is set (no key)", () => {
+    const cfg: AppConfig = { tts: { voice: "Rachel" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+  });
+
+  it("treats a whitespace-only key as 'no key' so a stale env overlay can't pin", () => {
+    const cfg: AppConfig = { tts: { key: "   ", voice: "Rachel" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
   });
 });
 
