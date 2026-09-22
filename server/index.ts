@@ -11632,7 +11632,7 @@ server.listen(PORT, "127.0.0.1", () => {
 // included, that a real caller's SIGTERM already gets.
 //
 // Gated strictly on the marker: the always-on launchd harness
-// (com.jay.botfleet-server) never sets it, so this is a no-op in production,
+// (app.botfleet.server) never sets it, so this is a no-op in production,
 // where the parent legitimately is launchd for the process's whole life.
 if (process.env.BOTFLEET_TEST_CHILD === "1") {
   const parentPidAtBoot = Number(process.env.BOTFLEET_TEST_PARENT_PID) || process.ppid;
