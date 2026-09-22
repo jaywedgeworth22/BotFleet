@@ -75,8 +75,9 @@ export async function verifyKey(key: string): Promise<VerifyResult> {
       headers: { authorization: `Bearer ${key}` },
       signal: AbortSignal.timeout(20_000),
     });
-    if (res.ok) return { ok: true };
-    return { ok: false, message: message(res.status, "checking that key", await safeJson(res)) };
+    const body = (await safeJson(res)) as VoiceListResponse | null;
+    if (res.ok && body?.base_resp?.status_code === 0) return { ok: true };
+    return { ok: false, message: message(res.status, "checking that key", body) };
   } catch {
     return { ok: false, message: "Couldn't reach MiniMax to check that key — check your connection." };
   }
