@@ -10343,7 +10343,7 @@ const server = createServer(async (req, res) => {
       // while switching from ElevenLabs validates against the wrong service
       const newTts = patch.tts;
       if (newTts?.key?.trim()) {
-        const check = await tts.verifyKey(newTts.key.trim());
+        const check = await tts.verifyKey(newTts.key.trim(), { tts: newTts });
         if (!check.ok) return json(res, 400, { error: check.message });
       }
       // The secret store is canonical for the names it holds, so a save of one
