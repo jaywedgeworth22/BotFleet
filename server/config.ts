@@ -799,35 +799,30 @@ export function ensureDirs() {
   for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR]) mkdirSync(dir, { recursive: true });
 }
 
-/** Migration: pin legacy ElevenLabs installs (tts.key + tts.voice, no
- * tts.provider) to provider: "elevenlabs" so PR #513's MiniMax default does
- * not silently route a valid ElevenLabs key to MiniMax's `/v1/models`.
+/** Migration: pin legacy ElevenLabs installs (tts.key set, tts.provider
+ * absent) to provider: "elevenlabs" so PR #513's MiniMax default does not
+ * silently route a valid ElevenLabs key to MiniMax's `/v1/models`.
  * Idempotent: returns false if provider is already set, if the tts section
- * is empty, if only a voice (no key) is present, or if only a key (no voice)
- * is present.  Mutates the cfg in place so the current `loadConfig()` call
- * carries the pin; the call site skips `saveConfig` so a desktop install —
- * whose real key lives in the OS keychain and arrives via `OMB_TTS_KEY`
- * AFTER the file is read — never has that key written back into
- * config.json in cleartext.
+ * is empty, or if only a voice (no key) is present.  Mutates the cfg in
+ * place so the current `loadConfig()` call carries the pin; the call site
+ * skips `saveConfig` so a desktop install — whose real key lives in the OS
+ * keychain and arrives via `OMB_TTS_KEY` AFTER the file is read — never has
+ * that key written back into config.json in cleartext.
  *
- * The shape check requires both `tts.key` and `tts.voice`.  Voice is the
- * ElevenLabs voice-id field; MiniMax stores its model id under
- * `tts.minimax.voice`, so a `tts.voice` set on a MiniMax-keyed record would
- * be incoherent.  A key-only record is the only shape that is genuinely
- * ambiguous (it could be either a legacy ElevenLabs install waiting for a
- * voice, or a fresh MiniMax key-only save) — leaving it alone is the safer
- * default: a legacy install without a voice has no audio anyway, and a
- * fresh MiniMax save keeps routing to MiniMax's `/v1/t2a_v2` instead of
- * being hijacked to ElevenLabs with a key it cannot use. */
+ * The shape check is key + no-provider.  Voice is intentionally NOT part of
+ * the discriminator: a legacy install may carry its ElevenLabs voice only on
+ * each bot (`speak()` and `voiceReady()` accept a per-bot `voiceId` when the
+ * workspace fallback is absent), so a key-only record is a legitimate legacy
+ * shape, not an ambiguous one.  Fresh MiniMax key-only saves are
+ * distinguished by `credentialConfigPatch` persisting `provider: "minimax"`
+ * alongside the key — every post-default save carries the explicit provider,
+ * so any record that arrives here without one predates the default. */
 export function migrateLegacyElevenLabsTtsProvider(cfg: AppConfig): boolean {
   if (!cfg.tts) return false;
   if (cfg.tts.provider !== undefined) return false;
   // Trim because a stale env-overlay can leave a whitespace-only key that
   // would not match any provider's `verifyKey` probe; that case is "no key".
   if (!cfg.tts.key?.trim()) return false;
-  // Same trim, same reason — a whitespace-only voice id is not a real
-  // ElevenLabs voice selection and shouldn't pin the migration either.
-  if (!cfg.tts.voice?.trim()) return false;
   cfg.tts = { ...cfg.tts, provider: "elevenlabs" };
   return true;
 }

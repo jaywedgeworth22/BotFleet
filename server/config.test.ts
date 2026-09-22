@@ -1245,24 +1245,30 @@ describe("migrateLegacyElevenLabsTtsProvider", () => {
     expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
   });
 
-  it("treats a key-only config (no voice) as ambiguous and leaves it alone", () => {
-    // Voice is the ElevenLabs voice id; a record with a key but no voice is
-    // either a fresh MiniMax key-only save (which should keep using the
-    // MiniMax default) or a legacy ElevenLabs install still missing its
-    // voice selection.  Pinning it would mis-route the former and produce
-    // an ElevenLabs auth failure against a key that was just verified against
-    // MiniMax's `/v1/models`.  The ambiguous record is left untouched and
-    // the next save — operator-initiated, with the fields it really wants
-    // persisted — is what resolves it.
-    const cfg: AppConfig = { tts: { key: "sk-just-a-key" } };
-    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
-    expect(cfg.tts?.provider).toBeUndefined();
-    expect(cfg.tts?.key).toBe("sk-just-a-key");
+  it("pins a legacy ElevenLabs install with key only — per-bot voice case", () => {
+    // Legacy installs that store their ElevenLabs voice only on each bot
+    // (server/tts/index.ts `speak()` and `voiceReady()` accept a per-bot
+    // `voiceId` when the workspace fallback is absent) carry `tts.key` set
+    // and `tts.voice` absent in the workspace config.  Without this branch
+    // the migration would skip them and the next TTS call would route the
+    // valid ElevenLabs credential to MiniMax's `/v1/models` — 401.  The
+    // marker that distinguishes them from a fresh MiniMax key-only save is
+    // the absent `tts.provider` field; `credentialConfigPatch` always
+    // persists `provider: "minimax"` alongside the key on new saves.
+    const cfg: AppConfig = { tts: { key: "sk-eleven-per-bot" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(true);
+    expect(cfg.tts?.provider).toBe("elevenlabs");
+    expect(cfg.tts?.key).toBe("sk-eleven-per-bot");
   });
 
-  it("treats a whitespace-only voice as 'no voice' so a stale env overlay can't pin", () => {
-    const cfg: AppConfig = { tts: { key: "sk-eleven-legacy", voice: "   " } };
+  it("skips a fresh MiniMax key-only save because the provider is already explicit", () => {
+    // Post-default saves always carry `provider: "minimax"` alongside the
+    // key — the early-return on `cfg.tts.provider !== undefined` keeps the
+    // migration from hijacking a key that was just verified against
+    // MiniMax's `/v1/models` to ElevenLabs.
+    const cfg: AppConfig = { tts: { key: "sk-fresh-minimax", provider: "minimax" } };
     expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+    expect(cfg.tts?.provider).toBe("minimax");
   });
 });
 

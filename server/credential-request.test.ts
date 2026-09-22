@@ -16,7 +16,7 @@ const MAPPINGS: Array<[CredentialTargetId, CredentialConfig]> = [
   ["deepseekApiKey", { deepseek: { key: "secret" } }],
   ["boxToken", { box: { token: "secret" } }],
   ["opencodeGoApiKey", { opencodeGo: { apiKey: "secret" } }],
-  ["ttsKey", { tts: { key: "secret" } }],
+  ["ttsKey", { tts: { key: "secret", provider: "minimax" } }],
   ["openaiImageApiKey", { imageGen: { key: "secret" } }],
 ];
 

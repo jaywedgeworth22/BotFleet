@@ -48,7 +48,13 @@ export type CredentialConfig = {
   deepseek?: { key?: string };
   box?: { token?: string };
   opencodeGo?: { apiKey?: string };
-  tts?: { key?: string };
+  // TTS persists the active provider alongside the key so the
+  // migrateLegacyElevenLabsTtsProvider migration can identify post-MiniMax-default
+  // saves (provider explicitly set) versus legacy ElevenLabs installs (provider
+  // absent) without having to inspect the workspace voice field — a legacy
+  // install may carry its voice only on each bot, so a voice-based check
+  // would mis-classify it as ambiguous.
+  tts?: { key?: string; provider?: string };
   imageGen?: { key?: string };
 };
 
@@ -67,7 +73,10 @@ export function credentialConfigPatch(id: CredentialTargetId, value: string): Cr
     case "opencodeGoApiKey":
       return { opencodeGo: { apiKey: value } };
     case "ttsKey":
-      return { tts: { key: value } };
+      // Persist the active provider alongside the key so
+      // migrateLegacyElevenLabsTtsProvider can distinguish this save (provider
+      // explicitly set) from a legacy ElevenLabs install (provider absent).
+      return { tts: { key: value, provider: "minimax" } };
     case "openaiImageApiKey":
       return { imageGen: { key: value } };
   }
