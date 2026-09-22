@@ -33,9 +33,11 @@ describe("avatar image generation", () => {
     // image-01 emits PNG bytes when `response_format: "base64"`; the bytes
     // themselves don't carry a magic prefix in this fixture but the dispatch
     // contract still says "image/png" so browsers sniffing by magic accept it.
+    // MiniMax nests the array under `data.image_base64` (per the official
+    // image_generation response shape), unlike OpenAI's flat top-level array.
     const bytes = Buffer.from("generated-png");
     const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
-      image_base64: [bytes.toString("base64")],
+      data: { image_base64: [bytes.toString("base64")] },
     }), { status: 200, headers: { "content-type": "application/json" } }));
 
     const result = await generateAvatarImage("sk-image", BOT, "blue robot", fetchMock);

@@ -28,12 +28,12 @@ const generatedImageResponseSchema = z.object({
   data: z.array(z.object({ b64_json: z.string().min(1) })).min(1),
 });
 /** MiniMax's `image-01` with `response_format: "base64"` returns an array of
- * base64 PNG strings under `image_base64` (not the OpenAI `data[].b64_json`
- * shape). Accept the documented shape first, then the OpenAI shape as a
- * defensive fallback so a future MiniMax response tweak doesn't 502 every
- * existing call. */
+ * base64 PNG strings nested under `data.image_base64` (not OpenAI's flat
+ * `image_base64`, not OpenAI's `data[].b64_json`). Accept the documented
+ * MiniMax shape first, then the two OpenAI-shaped fallbacks so a future
+ * MiniMax response tweak doesn't 502 every existing call. */
 const minimaxBase64ImageResponseSchema = z.object({
-  image_base64: z.array(z.string().min(1)).min(1),
+  data: z.object({ image_base64: z.array(z.string().min(1)).min(1) }),
 });
 
 type AvatarIdentity = Pick<BotRecord, "name" | "title" | "description">;
@@ -215,7 +215,7 @@ export async function generateAvatarImage(
   if (isMiniMax) {
     const parsedMm = minimaxBase64ImageResponseSchema.safeParse(parsedJson);
     const encodedMm = parsedMm.success
-      ? parsedMm.data.image_base64[0]!
+      ? parsedMm.data.data.image_base64[0]!
       : (() => {
           // Defensive fallback: OpenAI-shaped `data[].b64_json` from a
           // hypothetical future MiniMax response tweak still decodes, but
