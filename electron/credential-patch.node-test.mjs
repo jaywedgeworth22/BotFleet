@@ -37,7 +37,13 @@ describe("desktop credential:set patches (CREDENTIAL_PATCH)", () => {
     for (const name of names) assert.equal(typeof patch[name], "function", `${name} is not a function`);
   });
 
-  it("every patch builder yields { section: { field: value } } and passes the value through unchanged", () => {
+  it("every patch builder yields { section: { ... } } and passes the value through unchanged", () => {
+    // ttsKey intentionally persists a second field alongside the key
+    // (provider: "minimax") so migrateLegacyElevenLabsTtsProvider can
+    // distinguish fresh MiniMax saves from legacy ElevenLabs installs;
+    // that extra field is pinned by the dedicated regression test below
+    // rather than by a one-field assertion here.
+    const multiField = new Set(["ttsKey"]);
     for (const name of names) {
       const sentinel = `sentinel-${name}`;
       const result = patch[name](sentinel);
@@ -45,9 +51,13 @@ describe("desktop credential:set patches (CREDENTIAL_PATCH)", () => {
       assert.equal(sections.length, 1, `${name} must patch exactly one config section, got ${sections.join(", ")}`);
       const [section] = sections;
       const fields = Object.keys(result[section]);
-      assert.equal(fields.length, 1, `${name} must patch exactly one field of "${section}", got ${fields.join(", ")}`);
-      const [field] = fields;
-      assert.equal(result[section][field], sentinel, `${name} did not pass its value through unchanged`);
+      if (multiField.has(name)) {
+        assert.ok(fields.length >= 1, `${name} must patch at least one field of "${section}", got ${fields.join(", ")}`);
+      } else {
+        assert.equal(fields.length, 1, `${name} must patch exactly one field of "${section}", got ${fields.join(", ")}`);
+      }
+      const primaryField = multiField.has(name) ? "key" : fields[0];
+      assert.equal(result[section][primaryField], sentinel, `${name} did not pass its value through unchanged`);
     }
   });
 
@@ -66,5 +76,17 @@ describe("desktop credential:set patches (CREDENTIAL_PATCH)", () => {
   it("wires the Infisical machine-identity secret into config.infisical.clientSecret", () => {
     assert.ok(Object.hasOwn(patch, "infisicalClientSecret"), "CREDENTIAL_PATCH is missing infisicalClientSecret");
     assert.deepEqual(patch.infisicalClientSecret("shh"), { infisical: { clientSecret: "shh" } });
+  });
+
+  it("persists provider: 'minimax' alongside the key on a fresh ttsKey save", () => {
+    // Mirror of shared/credential-request.ts credentialConfigPatch("ttsKey", …):
+    // a fresh MiniMax save must carry the explicit provider so the legacy
+    // ElevenLabs migration (server/config.ts migrateLegacyElevenLabsTtsProvider)
+    // skips it. Without this, a packaged Electron save — which routes through
+    // CREDENTIAL_PATCH instead of the shared helper — looks identical to a
+    // legacy ElevenLabs install and the just-validated MiniMax key gets
+    // routed to ElevenLabs on the next TTS call.
+    assert.ok(Object.hasOwn(patch, "ttsKey"), "CREDENTIAL_PATCH is missing ttsKey");
+    assert.deepEqual(patch.ttsKey("sk-fresh"), { tts: { key: "sk-fresh", provider: "minimax" } });
   });
 });
