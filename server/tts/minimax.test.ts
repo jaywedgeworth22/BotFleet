@@ -73,6 +73,15 @@ describe("verifyKey", () => {
     expect(call.headers["authorization"]).toBe("Bearer sk-good");
   });
 
+  it("rejects a key when MiniMax returns HTTP 200 with a non-zero base_resp", async () => {
+    refuse = { status: 200, body: { voice_list: [], base_resp: { status_code: 1001, status_msg: "auth failed" } } };
+    const { verifyKey } = await driver();
+    const result = await verifyKey("bad");
+    refuse = null;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("auth failed");
+  });
+
   it("surfaces the upstream's own message on 401", async () => {
     refuse = { status: 401, body: { base_resp: { status_msg: "Incorrect API key" } } };
     const { verifyKey } = await driver();
