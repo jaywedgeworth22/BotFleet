@@ -720,6 +720,22 @@ describe("credential env preference", () => {
     expect(cfg.deepseek?.key).toBe("file-deepseek");
   });
 
+  it("pins the legacy ElevenLabs migration when the real key arrives via env-overlay (file has only the env-voice)", () => {
+    // Packaged-app install where the desktop shell moved the ElevenLabs
+    // key into credentials.bin and leaves config.json with empty key +
+    // a real voice selection.  Pre-fix, the migration ran before the
+    // OMB_TTS_KEY env overlay, saw an empty key, never fired, and the
+    // next TTS call routed the just-injected ElevenLabs credential to
+    // MiniMax's `/v1/models` — 401.  Post-fix, the migration runs after
+    // the overlay and pins provider=elevenlabs in memory for this load.
+    writeFileSync(
+      join(DATA_DIR, "config.json"),
+      JSON.stringify({ tts: { voice: "Rachel" } }),
+    );
+    process.env.OMB_TTS_KEY = "env-eleven-key";
+    expect(loadConfig().tts).toEqual({ key: "env-eleven-key", voice: "Rachel", provider: "elevenlabs" });
+  });
+
   it("treats a blanked file field as absent when env supplies the secret", () => {
     // after migration the desktop shell may leave "" behind (a cleared key
     // that was saved mid-session); the env-injected value must still win
@@ -1226,6 +1242,26 @@ describe("migrateLegacyElevenLabsTtsProvider", () => {
 
   it("treats a whitespace-only key as 'no key' so a stale env overlay can't pin", () => {
     const cfg: AppConfig = { tts: { key: "   ", voice: "Rachel" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+  });
+
+  it("treats a key-only config (no voice) as ambiguous and leaves it alone", () => {
+    // Voice is the ElevenLabs voice id; a record with a key but no voice is
+    // either a fresh MiniMax key-only save (which should keep using the
+    // MiniMax default) or a legacy ElevenLabs install still missing its
+    // voice selection.  Pinning it would mis-route the former and produce
+    // an ElevenLabs auth failure against a key that was just verified against
+    // MiniMax's `/v1/models`.  The ambiguous record is left untouched and
+    // the next save — operator-initiated, with the fields it really wants
+    // persisted — is what resolves it.
+    const cfg: AppConfig = { tts: { key: "sk-just-a-key" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+    expect(cfg.tts?.provider).toBeUndefined();
+    expect(cfg.tts?.key).toBe("sk-just-a-key");
+  });
+
+  it("treats a whitespace-only voice as 'no voice' so a stale env overlay can't pin", () => {
+    const cfg: AppConfig = { tts: { key: "sk-eleven-legacy", voice: "   " } };
     expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
   });
 });
