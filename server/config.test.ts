@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
   DATA_DIR,
+  migrateLegacyElevenLabsTtsProvider,
   allowedBotComputers,
   filterAllowedComputers,
   instanceConfigs,
@@ -697,7 +698,7 @@ describe("credential env preference", () => {
     expect(cfg.xai).toEqual({ key: "env-xai", url: "https://api.example.test/v1" });
     expect(cfg.box).toEqual({ token: "env-box" });
     expect(cfg.opencodeGo).toEqual({ apiKey: "env-ocg" });
-    expect(cfg.tts).toEqual({ key: "env-tts", voice: "narrator" });
+    expect(cfg.tts).toEqual({ key: "env-tts", voice: "narrator", provider: "elevenlabs" });
     expect(cfg.imageGen).toEqual({ key: "env-image" });
     expect(cfg.deepseek).toEqual({ key: "env-deepseek", url: "https://env.example.test" });
   });
@@ -717,6 +718,22 @@ describe("credential env preference", () => {
     expect(cfg.tts?.key).toBe("file-tts");
     expect(cfg.imageGen?.key).toBe("file-image");
     expect(cfg.deepseek?.key).toBe("file-deepseek");
+  });
+
+  it("pins the legacy ElevenLabs migration when the real key arrives via env-overlay (file has only the env-voice)", () => {
+    // Packaged-app install where the desktop shell moved the ElevenLabs
+    // key into credentials.bin and leaves config.json with empty key +
+    // a real voice selection.  Pre-fix, the migration ran before the
+    // OMB_TTS_KEY env overlay, saw an empty key, never fired, and the
+    // next TTS call routed the just-injected ElevenLabs credential to
+    // MiniMax's `/v1/models` — 401.  Post-fix, the migration runs after
+    // the overlay and pins provider=elevenlabs in memory for this load.
+    writeFileSync(
+      join(DATA_DIR, "config.json"),
+      JSON.stringify({ tts: { voice: "Rachel" } }),
+    );
+    process.env.OMB_TTS_KEY = "env-eleven-key";
+    expect(loadConfig().tts).toEqual({ key: "env-eleven-key", voice: "Rachel", provider: "elevenlabs" });
   });
 
   it("treats a blanked file field as absent when env supplies the secret", () => {
@@ -1195,6 +1212,63 @@ describe("observability settings", () => {
   it("keeps an explicit zero sample rate instead of defaulting it away", () => {
     expect(observabilitySettings({ observability: { tracesSampleRate: 0 } }).tracesSampleRate).toBe(0);
     expect(observabilitySettings({ observability: { logsEnabled: false } }).logsEnabled).toBe(false);
+  });
+});
+
+describe("migrateLegacyElevenLabsTtsProvider", () => {
+  it("pins provider: elevenlabs on a legacy config that has tts.key but no provider", () => {
+    const cfg: AppConfig = { tts: { key: "sk-eleven-legacy", voice: "Rachel" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(true);
+    expect(cfg.tts?.provider).toBe("elevenlabs");
+    expect(cfg.tts?.key).toBe("sk-eleven-legacy");
+    expect(cfg.tts?.voice).toBe("Rachel");
+  });
+
+  it("is a no-op when tts.provider is already set", () => {
+    const cfg: AppConfig = { tts: { key: "k", provider: "minimax" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+    expect(cfg.tts?.provider).toBe("minimax");
+  });
+
+  it("is a no-op when tts is absent", () => {
+    const cfg: AppConfig = {};
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+  });
+
+  it("is a no-op when only tts.voice is set (no key)", () => {
+    const cfg: AppConfig = { tts: { voice: "Rachel" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+  });
+
+  it("treats a whitespace-only key as 'no key' so a stale env overlay can't pin", () => {
+    const cfg: AppConfig = { tts: { key: "   ", voice: "Rachel" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+  });
+
+  it("pins a legacy ElevenLabs install with key only — per-bot voice case", () => {
+    // Legacy installs that store their ElevenLabs voice only on each bot
+    // (server/tts/index.ts `speak()` and `voiceReady()` accept a per-bot
+    // `voiceId` when the workspace fallback is absent) carry `tts.key` set
+    // and `tts.voice` absent in the workspace config.  Without this branch
+    // the migration would skip them and the next TTS call would route the
+    // valid ElevenLabs credential to MiniMax's `/v1/models` — 401.  The
+    // marker that distinguishes them from a fresh MiniMax key-only save is
+    // the absent `tts.provider` field; `credentialConfigPatch` always
+    // persists `provider: "minimax"` alongside the key on new saves.
+    const cfg: AppConfig = { tts: { key: "sk-eleven-per-bot" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(true);
+    expect(cfg.tts?.provider).toBe("elevenlabs");
+    expect(cfg.tts?.key).toBe("sk-eleven-per-bot");
+  });
+
+  it("skips a fresh MiniMax key-only save because the provider is already explicit", () => {
+    // Post-default saves always carry `provider: "minimax"` alongside the
+    // key — the early-return on `cfg.tts.provider !== undefined` keeps the
+    // migration from hijacking a key that was just verified against
+    // MiniMax's `/v1/models` to ElevenLabs.
+    const cfg: AppConfig = { tts: { key: "sk-fresh-minimax", provider: "minimax" } };
+    expect(migrateLegacyElevenLabsTtsProvider(cfg)).toBe(false);
+    expect(cfg.tts?.provider).toBe("minimax");
   });
 });
 

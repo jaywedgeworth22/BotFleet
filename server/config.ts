@@ -799,6 +799,34 @@ export function ensureDirs() {
   for (const dir of [DATA_DIR, EVENTS_DIR, NATIVE_DIR]) mkdirSync(dir, { recursive: true });
 }
 
+/** Migration: pin legacy ElevenLabs installs (tts.key set, tts.provider
+ * absent) to provider: "elevenlabs" so PR #513's MiniMax default does not
+ * silently route a valid ElevenLabs key to MiniMax's `/v1/models`.
+ * Idempotent: returns false if provider is already set, if the tts section
+ * is empty, or if only a voice (no key) is present.  Mutates the cfg in
+ * place so the current `loadConfig()` call carries the pin; the call site
+ * skips `saveConfig` so a desktop install — whose real key lives in the OS
+ * keychain and arrives via `OMB_TTS_KEY` AFTER the file is read — never has
+ * that key written back into config.json in cleartext.
+ *
+ * The shape check is key + no-provider.  Voice is intentionally NOT part of
+ * the discriminator: a legacy install may carry its ElevenLabs voice only on
+ * each bot (`speak()` and `voiceReady()` accept a per-bot `voiceId` when the
+ * workspace fallback is absent), so a key-only record is a legitimate legacy
+ * shape, not an ambiguous one.  Fresh MiniMax key-only saves are
+ * distinguished by `credentialConfigPatch` persisting `provider: "minimax"`
+ * alongside the key — every post-default save carries the explicit provider,
+ * so any record that arrives here without one predates the default. */
+export function migrateLegacyElevenLabsTtsProvider(cfg: AppConfig): boolean {
+  if (!cfg.tts) return false;
+  if (cfg.tts.provider !== undefined) return false;
+  // Trim because a stale env-overlay can leave a whitespace-only key that
+  // would not match any provider's `verifyKey` probe; that case is "no key".
+  if (!cfg.tts.key?.trim()) return false;
+  cfg.tts = { ...cfg.tts, provider: "elevenlabs" };
+  return true;
+}
+
 export function loadConfig(): AppConfig {
   let cfg: AppConfig = {};
   try {
@@ -874,6 +902,28 @@ export function loadConfig(): AppConfig {
   // mapped field is recorded for the Secrets card.  With no store configured
   // the snapshot is null and this is a no-op.
   resolveSecretFields(cfg, process.env, infisicalSnapshot());
+  // Migration: existing installations with `tts.key` + `tts.voice` but no
+  // `tts.provider` were silently ElevenLabs installs before PR #513 flipped
+  // the default to MiniMax.  Without this pin, every legacy ElevenLabs user
+  // would route their valid ElevenLabs key to MiniMax's `/v1/models` after
+  // upgrade and lose audio until they re-entered the provider manually.
+  //
+  // Runs AFTER the env overlay and the secret store so a packaged-app
+  // install whose real key was moved into the OS keychain — leaving an
+  // empty tombstone on disk and surfacing it later as `OMB_TTS_KEY` — sees
+  // the credential that the migration needs.  Earlier (the pre-fix
+  // placement) the file's empty key reached `key?.trim()` and the pin
+  // never fired, so the next TTS call still picked MiniMax and shipped the
+  // ElevenLabs key to the wrong `/v1/models`.
+  //
+  // The pin is in-memory only: re-running the migration next launch is
+  // cheap and idempotent, and persisting it back through `saveConfig` here
+  // would write the env-injected (or store-injected) credential into
+  // config.json in cleartext for desktop installs whose whole point of
+  // moving the key into the keychain was to keep it OUT of that file.  An
+  // operator-driven save can still write the pin alongside any other
+  // tts.* they choose to persist.
+  migrateLegacyElevenLabsTtsProvider(cfg);
   return cfg;
 }
 
