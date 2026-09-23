@@ -1,7 +1,7 @@
 // Closed-app wake: when a paired phone has no live SSE stream, the sidecar
 // sends an APNs alert so iOS can relaunch the companion.  The .p8 never
 // leaves this process; tests inject sendImpl.
-import { connect as http2Connect, type ClientHttp2Session } from "node:http2";
+import { connect as http2Connect, constants as http2Constants, type ClientHttp2Session } from "node:http2";
 import { createHash, createPrivateKey, sign as cryptoSign } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
@@ -271,8 +271,9 @@ export interface ApnsSendResult {
    * transport error so the health page can name what actually went wrong
    * (e.g. "ECONNRESET", "ERR_HTTP2_PROTOCOL_ERROR"). */
   errorCode?: string;
-  /** Apple's own `timestamp` field on a 403 InvalidProviderToken body —
-   * the exact value the Apple debug page asks for. */
+  /** Apple's own `timestamp` field — sent on a 403 InvalidProviderToken
+   * body and on a 410 Unregistered body (the token's invalidation time).
+   * The exact value the Apple debug page asks for. */
   errorTimestamp?: number;
 }
 
@@ -350,27 +351,44 @@ function backoffMs(attempt: number): number {
 // rebuilds the cache entry — close it cleanly when the stream is idle and
 // no peer still holds a request, and rebuild lazily after a GOAWAY.
 
-/** What an `http2.connect(...)` call takes, narrowed to the options we use. */
+/** What an `http2.connect(...)` call takes, narrowed to the options we use.
+ * Node silently ignores unknown keys here, so placement matters:
+ * `keepaliveTimeoutMillis` / `keepaliveIntervalMillis` are not real options
+ * at all, `initialWindowSize` only applies nested under `settings`, and
+ * `maxSessionMemory` is measured in MEGAbytes — 10_485_760 would be ~10 TB,
+ * not 10 MiB.  The HTTP/2 PING keepalive Apple asks for has no connect
+ * option either; the default factory runs `session.ping` on
+ * `pingIntervalMs`. */
 export interface Http2ConnectOptions {
-  peerMaxConcurrentStreams: number;
-  initialWindowSize: number;
+  /** The local settings frame sent to the peer. */
+  settings: {
+    /** 1 MiB initial flow-control window — Apple's documented guidance. */
+    initialWindowSize: number;
+    /** Concurrent-stream cap; 500 is the documented APNs guidance. */
+    maxConcurrentStreams: number;
+  };
+  /** Session memory cap in MEGAbytes — 10 means 10 MiB. */
   maxSessionMemory: number;
-  keepaliveTimeoutMillis: number;
-  keepaliveIntervalMillis: number;
-  /** Seconds — `client.connect` takes this as a number, not ms. */
+  /** TCP keepalive, applied with `socket.setKeepAlive` once the session
+   * connects; the delay is milliseconds. */
+  keepAlive: boolean;
   keepAliveInitialDelay: number;
+  /** HTTP/2 PING keepalive cadence in milliseconds. */
+  pingIntervalMs: number;
 }
 
 /** Apple's recommended dial for long-lived APNs HTTP/2 senders.  Pulled from
- * the APNs HTTP/2 reference; PING every 30s after a 60s idle, and the
- * 1 MiB initial window + 500 concurrent streams is the documented cap. */
+ * the APNs HTTP/2 reference: TCP keepalive after 30s idle, an HTTP/2 PING
+ * every 30s, and the 1 MiB initial window + 500 concurrent streams cap. */
 export const DEFAULT_HTTP2_OPTIONS: Http2ConnectOptions = {
-  peerMaxConcurrentStreams: 500,
-  initialWindowSize: 1_048_576,
-  maxSessionMemory: 10_485_760,
-  keepaliveTimeoutMillis: 60_000,
-  keepaliveIntervalMillis: 30_000,
-  keepAliveInitialDelay: 30,
+  settings: {
+    initialWindowSize: 1_048_576,
+    maxConcurrentStreams: 500,
+  },
+  maxSessionMemory: 10,
+  keepAlive: true,
+  keepAliveInitialDelay: 30_000,
+  pingIntervalMs: 30_000,
 };
 
 /** One transport session: the http2 client + a notifier for the call site. */
@@ -386,11 +404,69 @@ export type Http2SessionFactory = (host: string, keyId: string) => Http2ApnsSess
 
 /** Default factory — `node:http2` with Apple's recommended settings. */
 export const defaultHttp2SessionFactory: Http2SessionFactory = (host, _keyId) => {
-  const session = http2Connect(`https://${host}`, DEFAULT_HTTP2_OPTIONS);
-  // A GOAWAY mid-request comes back as a stream error; the next call opens
-  // a fresh session.  We don't preemptively close on GOAWAY because the
-  // session is still usable for streams the peer hadn't refused yet — the
-  // caller's per-stream error is what triggers a rebuild on next send.
+  const session = http2Connect(
+    `https://${host}`,
+    {
+      settings: DEFAULT_HTTP2_OPTIONS.settings,
+      maxSessionMemory: DEFAULT_HTTP2_OPTIONS.maxSessionMemory,
+    },
+    (_session, socket) => {
+      // TCP keepalive: `http2.connect` exposes no typed option for it, so
+      // set it on the underlying socket the moment the connection is up.
+      socket.setKeepAlive(
+        DEFAULT_HTTP2_OPTIONS.keepAlive,
+        DEFAULT_HTTP2_OPTIONS.keepAliveInitialDelay,
+      );
+    },
+  );
+  // A session-level 'error' with no listener is an uncaught exception: one
+  // DNS/TCP/TLS failure would take the whole companion process down.
+  // Handle it, drop the session from the cache, and reject everything still
+  // in flight on it — a send waiting on a dead session must fail, not hang.
+  session.on("error", (err) => {
+    failCachedSession(host, session, err);
+    try {
+      session.destroy();
+    } catch {
+      /* already gone */
+    }
+  });
+  // A GOAWAY means the peer refuses new streams on this session.  In-flight
+  // streams still settle on their own, so evict rather than destroy: the
+  // next send opens a fresh session while this one drains.
+  session.on("goaway", () => {
+    evictCachedSession(host, session);
+  });
+  // A close with requests still pending is a dropped connection: those
+  // streams will never settle on their own, so reject them now.
+  session.on("close", () => {
+    failCachedSession(
+      host,
+      session,
+      Object.assign(new Error("APNs http2 session closed with requests in flight"), {
+        code: "ERR_HTTP2_SESSION_EOF",
+        name: "Error",
+      }),
+    );
+  });
+  // The PING keepalive Apple asks long-lived senders for.  Node has no
+  // connect option for it, so run `session.ping` on a cadence; the timer is
+  // unref'd so it never keeps the process alive, and it stops with the
+  // session.
+  const ping = setInterval(() => {
+    if (session.closed || session.destroyed) {
+      clearInterval(ping);
+      return;
+    }
+    try {
+      session.ping(() => {
+        /* a failed PING surfaces as the session 'error' handled above */
+      });
+    } catch {
+      clearInterval(ping);
+    }
+  }, DEFAULT_HTTP2_OPTIONS.pingIntervalMs);
+  ping.unref?.();
   return { raw: session };
 };
 
@@ -487,21 +563,25 @@ interface SessionCacheEntry {
   factory: Http2SessionFactory;
   session: Http2ApnsSession | null;
   lastKeyId: string | null;
+  /** Reject callbacks for the sends in flight on `session`.  A fatal
+   * session event drains this set so those sends reject instead of
+   * hanging forever on a dead connection. */
+  pending: Set<(err: unknown) => void>;
 }
 
 const sessionCache = new Map<string, SessionCacheEntry>();
 
-/** Build (or reuse) the persistent session for `(host, keyId)`.  Pulled out
- * so tests can inject a factory that counts how many times a fresh session
+/** Build (or reuse) the cache entry for `(host, keyId)`.  Pulled out so
+ * tests can inject a factory that counts how many times a fresh session
  * was opened — the rebuild-on-rotation invariant asserts on that count. */
-export function getOrOpenSession(
+function getOrOpenEntry(
   host: string,
   keyId: string,
   factory: Http2SessionFactory,
-): Http2ApnsSession {
+): SessionCacheEntry {
   let entry = sessionCache.get(host);
   if (!entry) {
-    entry = { factory, session: null, lastKeyId: null };
+    entry = { factory, session: null, lastKeyId: null, pending: new Set() };
     sessionCache.set(host, entry);
   }
   // Always replace a session whose key changed — a rotated .p8 should never
@@ -520,7 +600,43 @@ export function getOrOpenSession(
     entry.lastKeyId = keyId;
     entry.session = factory(host, keyId);
   }
-  return entry.session;
+  return entry;
+}
+
+/** Build (or reuse) the persistent session for `(host, keyId)`. */
+export function getOrOpenSession(
+  host: string,
+  keyId: string,
+  factory: Http2SessionFactory,
+): Http2ApnsSession {
+  return getOrOpenEntry(host, keyId, factory).session as Http2ApnsSession;
+}
+
+/** Evict a session from the cache without touching its in-flight sends:
+ * the next send opens a fresh session while this one drains.  Used on
+ * GOAWAY, where the peer keeps serving streams it already accepted. */
+function evictCachedSession(host: string, session: ClientHttp2Session): void {
+  const entry = sessionCache.get(host);
+  if (!entry || !entry.session || entry.session.raw !== session) return;
+  entry.session = null;
+}
+
+/** A session died underneath its sends (error or close).  Drop it from the
+ * cache and reject every send still waiting on it — a dead session must
+ * fail its queue, never hang it. */
+function failCachedSession(host: string, session: ClientHttp2Session, err: unknown): void {
+  const entry = sessionCache.get(host);
+  if (!entry || !entry.session || entry.session.raw !== session) return;
+  entry.session = null;
+  const pending = [...entry.pending];
+  entry.pending.clear();
+  for (const reject of pending) {
+    try {
+      reject(err);
+    } catch {
+      /* a drained rejector must never take the sweep down with it */
+    }
+  }
 }
 
 /** Clear every cached session.  Exposed so tests can reset between runs
@@ -541,34 +657,64 @@ export function dropHttp2Sessions(): void {
   sessionCache.clear();
 }
 
-/** Default production impl: POST through a persistent http2 session.  Accepts
- * the same `(URL | string, init)` shape as `fetch` so a test can swap a
- * `fetchImpl` in and the rest of `sendApnsAlert` does not change. */
-export const apnsHttp2Fetch: ApnsHttp2Fetch = (input, init) => {
-  const url = typeof input === "string" ? new URL(input) : input;
-  const host = url.host;
-  const keyId = url.pathname.split("/").pop() ?? "";
-  return new Promise<Response>((resolve, reject) => {
-    const factory = defaultHttp2SessionFactory;
-    const session = getOrOpenSession(host, keyId, factory);
-    if (session.raw.closed || session.raw.destroyed) {
-      // Mid-GOAWAY race: drop the cache and re-open.
-      dropHttp2Sessions();
-      const fresh = getOrOpenSession(host, keyId, factory);
-      sendOver(fresh.raw, url, init, resolve, reject);
-      return;
-    }
-    sendOver(session.raw, url, init, resolve, reject);
-  });
-};
+/** How long one push may sit unanswered before the stream is cancelled and
+ * the send fails with ETIMEDOUT.  Apple answers in milliseconds; a stream
+ * with no response after 30s is a stalled gateway, and letting it hang
+ * would park that phone's queue and starve the circuit breaker of the
+ * failures it counts. */
+export const APNS_REQUEST_DEADLINE_MS = 30_000;
+
+export interface ApnsHttp2FetchOptions {
+  /** Sessions are keyed by the signing key id, passed in explicitly —
+   * never derived from the request URL, whose last path segment is the
+   * DEVICE TOKEN.  Keying by that would close and re-open the TLS session
+   * for every phone, paying a fresh handshake per push. */
+  keyId: string;
+  /** Session factory; tests inject a fake, production uses the default. */
+  factory?: Http2SessionFactory;
+  /** Per-request deadline in ms; defaults to APNS_REQUEST_DEADLINE_MS. */
+  requestDeadlineMs?: number;
+}
+
+/** Build the default production transport: POST through a persistent http2
+ * session, accepting the same `(URL | string, init)` shape as `fetch` so a
+ * test can swap a `fetchImpl` in and the rest of `sendApnsAlert` does not
+ * change.  The key id and session factory come in through options, so the
+ * session cache is keyed by the signing key and tests can inject their own
+ * session. */
+export function createApnsHttp2Fetch(options: ApnsHttp2FetchOptions): ApnsHttp2Fetch {
+  const factory = options.factory ?? defaultHttp2SessionFactory;
+  const keyId = options.keyId;
+  const deadlineMs = options.requestDeadlineMs ?? APNS_REQUEST_DEADLINE_MS;
+  return (input, init) => {
+    const url = typeof input === "string" ? new URL(input) : input;
+    const host = url.host;
+    return new Promise<Response>((resolve, reject) => {
+      let entry = getOrOpenEntry(host, keyId, factory);
+      const open = entry.session as Http2ApnsSession;
+      if (open.raw.closed || open.raw.destroyed) {
+        // Mid-GOAWAY race: drop the cache and re-open.
+        dropHttp2Sessions();
+        entry = getOrOpenEntry(host, keyId, factory);
+      }
+      sendOver(entry, url, init, resolve, reject, deadlineMs);
+    });
+  };
+}
 
 function sendOver(
-  raw: ClientHttp2Session,
+  entry: SessionCacheEntry,
   url: URL,
   init: { method?: string; headers?: Record<string, string>; body?: string } | undefined,
   resolve: (response: Response) => void,
   reject: (reason: unknown) => void,
+  deadlineMs: number,
 ): void {
+  const raw = entry.session?.raw;
+  if (!raw) {
+    reject(new Error("APNs http2 session is not open"));
+    return;
+  }
   const headers: Record<string, string> = { ":method": init?.method ?? "POST", ":path": url.pathname, ...(init?.headers ?? {}) };
   // Host header is required by HTTP/2; Node fills `:authority` from the
   // connect URL automatically, but we set Host explicitly so the header map
@@ -576,9 +722,16 @@ function sendOver(
   headers[":authority"] = url.host;
   headers["host"] = url.host;
   let settled = false;
+  let deadline: ReturnType<typeof setTimeout> | null = null;
+  // Registered on the cache entry: when the session itself fails, its
+  // handler drains the entry's pending set and this send rejects instead
+  // of hanging on a dead connection.
+  const onSessionFailure = (err: unknown) => settle(() => reject(err));
   const settle = (fn: () => void) => {
     if (settled) return;
     settled = true;
+    if (deadline) clearTimeout(deadline);
+    entry.pending.delete(onSessionFailure);
     fn();
   };
   let req: ReturnType<ClientHttp2Session["request"]>;
@@ -589,6 +742,27 @@ function sendOver(
     return;
   }
   req.setEncoding("utf8");
+  entry.pending.add(onSessionFailure);
+  // Bound the request: a stalled stream never settles on its own, and an
+  // unbounded wait would park this phone's queue and starve the circuit
+  // breaker of the failures it counts.  On expiry, cancel the stream and
+  // fail the send as a timeout so the retry ladder and breaker see it.
+  deadline = setTimeout(() => {
+    settle(() => {
+      try {
+        req.close(http2Constants.NGHTTP2_CANCEL);
+      } catch {
+        /* the stream is already gone */
+      }
+      reject(
+        Object.assign(new Error(`APNs request exceeded the ${deadlineMs}ms deadline`), {
+          code: "ETIMEDOUT",
+          name: "TimeoutError",
+        }),
+      );
+    });
+  }, deadlineMs);
+  deadline.unref?.();
   const bodyChunks: string[] = [];
   req.on("response", (responseHeaders) => {
     const status = Number(responseHeaders[":status"] ?? 0);
@@ -628,11 +802,17 @@ export async function sendApnsAlert(
   alert: ApnsAlert,
   options: ApnsSendOptions = {},
 ): Promise<ApnsSendResult> {
-  // The default transport is the http2 path; tests inject `fetchImpl` and
-  // bypass it entirely.  `fetchImpl` keeps the same URL-or-string input
-  // shape as the production impl so a test that swaps in a fake does not
-  // have to know about http2.
-  const fetchImpl: typeof fetch = (options.fetchImpl as typeof fetch | undefined) ?? (apnsHttp2Fetch as unknown as typeof fetch);
+  // The default transport is the http2 path, keyed by the SIGNING KEY and
+  // opened through the injected session factory when one is given; tests
+  // inject `fetchImpl` and bypass it entirely.  `fetchImpl` keeps the same
+  // URL-or-string input shape as the production impl so a test that swaps
+  // in a fake does not have to know about http2.
+  const fetchImpl: typeof fetch =
+    (options.fetchImpl as typeof fetch | undefined) ??
+    (createApnsHttp2Fetch({
+      keyId: config.keyId,
+      factory: options.http2SessionFactory,
+    }) as unknown as typeof fetch);
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
   const maxAttempts = Math.max(1, options.maxAttempts ?? APNS_MAX_ATTEMPTS);
@@ -691,8 +871,9 @@ export async function sendApnsAlert(
     lastFailureKind = classifyHttpResponse(res.status, reason);
 
     // Apple has unregistered this token.  The caller drops it; sending again
-    // would only earn the same answer.
-    if (res.status === 410) return { ok: false, status: 410, reason, attempts, failureKind: "bad_token" };
+    // would only earn the same answer.  The 410 body carries Apple's
+    // invalidation `timestamp` — keep it for the health page.
+    if (res.status === 410) return { ok: false, status: 410, reason, attempts, failureKind: "bad_token", errorTimestamp: timestamp };
 
     // A stale provider token is the one failure worth retrying instantly:
     // sign a new one and go straight back, no backoff, exactly once.
@@ -895,14 +1076,19 @@ function createHealthTracker(tokensRegistered: () => number): HealthTracker {
       let formatted: string;
       if (reason) {
         formatted = `${status} ${reason}`;
-        // Apple stamps InvalidProviderToken rejections with a `timestamp`
-        // field the debug page asks for verbatim.  Surface it on the
-        // health so the owner does not have to dig through the log.
-        if (failureKind === "key_fault" && typeof errorTimestamp === "number") {
+        // Apple stamps a `timestamp` on the two verdicts that carry one:
+        // 403 InvalidProviderToken and 410 Unregistered — the token's
+        // invalidation time, which the debug page asks for verbatim.
+        // Surface it on the health so the owner does not have to dig
+        // through the log.
+        if ((failureKind === "key_fault" || status === 410) && typeof errorTimestamp === "number") {
           formatted = `${formatted} (timestamp=${errorTimestamp})`;
         }
       } else {
         formatted = String(status);
+        if (status === 410 && typeof errorTimestamp === "number") {
+          formatted = `${formatted} (timestamp=${errorTimestamp})`;
+        }
       }
       lastError = formatted;
     },
